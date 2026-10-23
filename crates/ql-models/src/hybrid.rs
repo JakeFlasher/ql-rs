@@ -59,14 +59,37 @@ fn go_sqrt_moment_params<T: Real>(p: &HestonHullWhiteParams<T>) -> (T, T, T) {
     let theta = p.theta_v.max_val(T::from_f64(1e-14));
     let k = p.kappa_v.max_val(T::from_f64(1e-12));
     let stationary_var = theta * p.xi_v * p.xi_v / (k * 2.0);
-    let a = (theta - stationary_var / (theta * 8.0))
-        .max_val(T::from_f64(1e-14))
-        .sqrt();
+    let raw = theta - stationary_var / (theta * 8.0);
+    let smooth_floor = T::from_f64(0.5) * (raw + (raw * raw + T::from_f64(1e-12)).sqrt());
+    let a = smooth_floor.sqrt();
     let b = p.v0.max_val(T::zero()).sqrt() - a;
     // Matching the initial and stationary square-root moments with the CIR
     // mean-reversion scale gives the exponential moment used by
     // Grzelak--Oosterlee in the stock/rate covariance integral.
     (a, b, k)
+}
+
+fn hw_cross_integral<T: Real>(kappa_r: T, c: T, t: T) -> T {
+    if kappa_r.val().abs() < 1e-6 {
+        if c.val().abs() < 1e-6 {
+            t * t * 0.5 - c * t * t * t / 6.0
+        } else {
+            (c * t - T::one() + (-c * t).exp()) / (c * c)
+        }
+    } else {
+        let first = if c.val().abs() < 1e-7 {
+            t - c * t * t * 0.5 + c * c * t * t * t / 6.0
+        } else {
+            (T::one() - (-c * t).exp()) / c
+        };
+        let d = kappa_r - c;
+        let second = if d.val().abs() < 1e-7 {
+            t * (-c * t).exp() * (T::one() - d * t * 0.5 + d * d * t * t / 6.0)
+        } else {
+            ((-c * t).exp() - (-kappa_r * t).exp()) / d
+        };
+        (first - second) / kappa_r
+    }
 }
 
 pub fn h1_hw_char_func_unit_spot<T: Real>(
@@ -105,20 +128,14 @@ pub fn h1_hw_char_func_unit_spot<T: Real>(
     } else {
         let kr = p.kappa_r;
         let int0 = (kr * t - T::one() + (-kr * t).exp()) / (kr * kr);
-        let ksum = kr + c_go;
-        let int1 = if ksum.val().abs() < 1e-8 {
-            t * t * 0.5
-        } else {
-            (ksum * t - T::one() + (-ksum * t).exp()) / (ksum * ksum)
-        };
+        let int1 = hw_cross_integral(kr, c_go, t);
         p.rho_sr * p.eta_r * 2.0 * (a_go * int0 + b_go * int1)
     };
     let hyb = hw_var + cross;
     let uu = T::from_f64(u);
     // Construct in complex form to preserve both real and imaginary parts;
     // the factor is exp(-½Σ²(u²+i u)).
-    let iz = Complex::i() * uu;
-    let q = iz * iz + iz;
+    let q = Complex::new(uu * uu, uu);
     let fac = (-q * Complex::from_real(hyb * 0.5)).exp();
     let out = z * fac;
     (out.re, out.im)
@@ -164,11 +181,11 @@ impl CosHestonHullWhiteEngine {
             expiry,
         );
         let t = expiry.max_val(T::zero());
-        let _vbar = if p.kappa_v.val().abs() < 1e-8 {
-            let kt = p.kappa_v * t;
-            p.v0 - (p.v0 - p.theta_v) * kt * 0.5 + (p.v0 - p.theta_v) * kt * kt / 6.0
+        let mean_var = if p.kappa_v.val().abs() < 1e-8 {
+            p.v0 * t - (p.v0 - p.theta_v) * p.kappa_v * t * t * 0.5
+                + (p.v0 - p.theta_v) * p.kappa_v * p.kappa_v * t * t * t / 6.0
         } else {
-            p.theta_v + (p.v0 - p.theta_v) * (T::one() - (-p.kappa_v * t).exp()) / (p.kappa_v * t)
+            p.theta_v * t + (p.v0 - p.theta_v) * (T::one() - (-p.kappa_v * t).exp()) / p.kappa_v
         };
         let (a_go, b_go, c_go) = go_sqrt_moment_params(p);
         let cross = if p.kappa_r.val().abs() < 1e-8 {
@@ -176,15 +193,10 @@ impl CosHestonHullWhiteEngine {
         } else {
             let kr = p.kappa_r;
             let int0 = (kr * t - T::one() + (-kr * t).exp()) / (kr * kr);
-            let ks = kr + c_go;
-            let int1 = if ks.val().abs() < 1e-8 {
-                t * t * 0.5
-            } else {
-                (ks * t - T::one() + (-ks * t).exp()) / (ks * ks)
-            };
+            let int1 = hw_cross_integral(kr, c_go, t);
             p.rho_sr * p.eta_r * 2.0 * (a_go * int0 + b_go * int1)
         };
-        let hyb = (extra + cross).max_val(T::zero());
+        let hyb = (extra + cross).max_val(-mean_var * 0.9);
         CosHestonEngine {
             n_terms: self.n_terms,
             l_trunc: self.l_trunc,
@@ -207,7 +219,7 @@ impl CosHestonHullWhiteEngine {
             std::slice::from_ref(&strike),
             is_call,
             hyb,
-            T::zero(),
+            -hyb * 0.5,
         )[0]
     }
 

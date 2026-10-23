@@ -169,8 +169,7 @@ fn baw_put<T: Real>(spot: T, strike: T, rate: T, div: T, vol: T, expiry: T) -> T
     let d1 = ((x / strike).ln() + (rate - div + v2 * 0.5) * expiry) / (vol * expiry.sqrt());
     let d = (-div * expiry).exp() * (-d1).norm_cdf();
     let pdf = d1.norm_pdf();
-    let fx = -(-div * expiry).exp() * d1.norm_cdf()
-        + T::one() / q1 * (T::one() - d)
+    let fx = -(T::one() - T::one() / q1) * (T::one() - d)
         + (-div * expiry).exp() * pdf / (q1 * vol * expiry.sqrt());
     // second derivative of the residual, assembled from the BS gamma and the
     // analytic derivative of the boundary term.
@@ -293,19 +292,21 @@ fn bs_psi<T: Real>(s: T, t: T, gamma: T, h: T, i2: T, i1: T, t1: T, r: T, b: T, 
     let rho = (t1 / t).sqrt();
     let kappa = T::from_f64(2.0) * b / (v * v) + T::from_f64(2.0) * gamma - T::one();
     let lambda = -r + gamma * b + gamma * (gamma - T::one()) * v * v * 0.5;
-    let e1 = (-(s / h).ln() - (b + (gamma - 0.5) * v * v) * t) / st;
-    let e2 = e1 - T::from_f64(2.0) * (i2 / s).ln() / st;
-    let e3 = (-(s / i1).ln() - (b + (gamma - 0.5) * v * v) * t) / st;
-    let e4 = e3 - T::from_f64(2.0) * (i1 / s).ln() / st;
-    let f1 = (-(s / h).ln() - (b + (gamma - 0.5) * v * v) * t1) / st1;
-    let f2 = f1 - T::from_f64(2.0) * (i2 / s).ln() / st1;
-    let f3 = (-(s / i1).ln() - (b + (gamma - 0.5) * v * v) * t1) / st1;
-    let f4 = f3 - T::from_f64(2.0) * (i1 / s).ln() / st1;
-    let p11 = ql_math::bivariate_normal_cdf(-e1, -f1, rho);
-    let p12 = ql_math::bivariate_normal_cdf(-e2, -f2, rho);
-    let p13 = ql_math::bivariate_normal_cdf(-e3, -f3, rho);
-    let p14 = ql_math::bivariate_normal_cdf(-e4, -f4, rho);
-    lambda.exp() * (p11 - (i2 / s).pow(kappa) * p12 - (i1 / s).pow(kappa) * (p13 - p14))
+    let drift = b + (gamma - 0.5) * v * v;
+    let e1 = -((s / i1).ln() + drift * t1) / st1;
+    let e2 = -((i2 * i2 / (s * i1)).ln() + drift * t1) / st1;
+    let e3 = -((s / i1).ln() - drift * t1) / st1;
+    let e4 = -((i2 * i2 / (s * i1)).ln() - drift * t1) / st1;
+    let f1 = -((s / h).ln() + drift * t) / st;
+    let f2 = -((i2 * i2 / (s * h)).ln() + drift * t) / st;
+    let f3 = -((i1 * i1 / (s * h)).ln() + drift * t) / st;
+    let f4 = -((s * i1 * i1 / (h * i2 * i2)).ln() + drift * t) / st;
+    let p11 = ql_math::bivariate_normal_cdf(e1, f1, rho);
+    let p12 = ql_math::bivariate_normal_cdf(e2, f2, rho);
+    let p13 = ql_math::bivariate_normal_cdf(e3, f3, -rho);
+    let p14 = ql_math::bivariate_normal_cdf(e4, f4, -rho);
+    (lambda * t).exp()
+        * (p11 - (i2 / s).pow(kappa) * p12 - (i1 / s).pow(kappa) * p13 + (i1 / i2).pow(kappa) * p14)
 }
 fn bs2002_call<T: Real>(s: T, k: T, r: T, q: T, v: T, t: T) -> T {
     if t.val() <= 0.0 || v.val() <= 0.0 || q.val() <= 0.0 {
@@ -333,16 +334,17 @@ fn bs2002_call<T: Real>(s: T, k: T, r: T, q: T, v: T, t: T) -> T {
         return s - k;
     }
     let phi = |gamma: T, h: T, i: T| bs_phi(s, t1, gamma, h, i, r, b, v);
-    a2 * s.pow(beta) - a2 * phi(beta, i2, i2) + phi(T::one(), i2, i2)
-        - phi(T::one(), i1, i2)
-        - k * phi(T::zero(), i2, i2)
-        + k * phi(T::zero(), i1, i2)
-        + a1 * phi(beta, i1, i2)
-        - a1 * bs_psi(s, t, beta, i2, i2, i1, t1, r, b, v)
-        + bs_psi(s, t, T::one(), i2, i2, i1, t1, r, b, v)
-        - bs_psi(s, t, T::one(), k, i2, i1, t1, r, b, v)
-        - k * bs_psi(s, t, T::zero(), i2, i2, i1, t1, r, b, v)
-        + k * bs_psi(s, t, T::zero(), k, i2, i1, t1, r, b, v)
+    let sb = s.pow(beta);
+    let raw = a2 * sb * (T::one() - phi(beta, i2, i2))
+        + s * (phi(T::one(), i2, i2) - phi(T::one(), i1, i2))
+        - k * (phi(T::zero(), i2, i2) - phi(T::zero(), i1, i2))
+        + a1 * sb * (phi(beta, i1, i2) - bs_psi(s, t, beta, i2, i2, i1, t1, r, b, v))
+        + s * (bs_psi(s, t, T::one(), i2, i2, i1, t1, r, b, v)
+            - bs_psi(s, t, T::one(), k, i2, i1, t1, r, b, v))
+        - k * (bs_psi(s, t, T::zero(), i2, i2, i1, t1, r, b, v)
+            - bs_psi(s, t, T::zero(), k, i2, i1, t1, r, b, v));
+    raw.max_val(european(s, k, r, q, v, t, true))
+        .max_val((s - k).max_val(T::zero()))
 }
 impl BjerksundStensland2002Engine {
     pub fn price<T: Real>(
@@ -400,11 +402,6 @@ impl JuQuadraticEngine {
             };
             let disc = ((beta - T::one()) * (beta - T::one()) + alpha_over_h * 4.0).sqrt();
             let q2 = (-(beta - T::one()) + disc) * 0.5;
-            let lambda_prime = if h.val().abs() < 1e-10 {
-                T::zero()
-            } else {
-                -alpha / (h * h * disc)
-            };
             let residual = |x: T| {
                 let d1 = ((x / k).ln() + (r - q + v2 * 0.5) * t) / (v * t.sqrt());
                 x - k
@@ -422,24 +419,27 @@ impl JuQuadraticEngine {
             let aa = (-q * t).exp() * pdf / (v * t.sqrt());
             let f_xx = -gam - (-aa / star_t + aa * d1s0 / (star_t * v * t.sqrt())) / q2;
             let star = ift_lift_1d(star0, residual, f_x, f_xx.val());
+            let d1s = ((star / k).ln() + (r - q + v2 * 0.5) * t) / (v * t.sqrt());
+            let pdf_s = d1s.norm_pdf();
             let euro_star = european(star, k, r, q, v, t, true);
             let h_a = star - k - euro_star;
             if s.val() >= root {
                 return s - k;
             }
             let ell = (s / star).ln();
-            let d_ve_dt = -q * star * (-q * t).exp() * d1s0.norm_cdf()
-                + r * k * (-r * t).exp() * (d1s0 - v * t.sqrt()).norm_cdf()
-                + star * (-q * t).exp() * pdf * v / (t.sqrt() * 2.0);
-            let ve_h = if r.val().abs() < 1e-10 {
-                T::zero()
-            } else {
-                d_ve_dt / (r * (-r * t).exp())
-            };
-            let denom_l = q2 * 2.0 + beta - 1.0;
-            let bju = (T::one() - h) * alpha * lambda_prime / (denom_l * 2.0);
-            let cju = -(T::one() - h) / denom_l
-                * (alpha * ve_h / h_a + alpha_over_h + alpha * lambda_prime / (denom_l * 2.0));
+            let d_ve_dt = -q * star * (-q * t).exp() * d1s.norm_cdf()
+                + r * k * (-r * t).exp() * (d1s - v * t.sqrt()).norm_cdf()
+                + star * (-q * t).exp() * pdf_s * v / (t.sqrt() * 2.0);
+            let disc0 = (-r * t).exp();
+            let alpha_lambda_prime = -alpha_over_h * alpha_over_h / disc;
+            let alpha_ve_h = T::from_f64(2.0) / (v2 * disc0) * d_ve_dt
+                + (alpha_over_h - T::from_f64(2.0) / (v2 * t)) * euro_star / disc0;
+            let denom_l = q2 - T::one();
+            let bju = (T::one() - h) * alpha_lambda_prime / (T::from_f64(2.0) * denom_l);
+            let cju = -((T::one() - h) / denom_l)
+                * (alpha_ve_h / h_a
+                    + alpha_over_h
+                    + alpha_lambda_prime / (T::from_f64(2.0) * denom_l));
             let den = T::one() - bju * ell * ell - cju * ell;
             european(s, k, r, q, v, t, true) + h_a * (s / star).pow(q2) / den
         }
