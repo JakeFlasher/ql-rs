@@ -172,6 +172,18 @@ impl Fd2dHestonEngine {
         );
         match option.barrier_type {
             ql_instruments::BarrierType::UpAndIn | ql_instruments::BarrierType::DownAndIn => {
+                let out_no_rebate = self.price_knockout_barrier(
+                    p,
+                    spot,
+                    T::from_f64(option.strike),
+                    lower,
+                    upper,
+                    T::zero(),
+                    rate,
+                    div,
+                    expiry,
+                    option.option_type.is_call(),
+                );
                 self.price_european(
                     p,
                     spot,
@@ -180,7 +192,8 @@ impl Fd2dHestonEngine {
                     div,
                     expiry,
                     option.option_type.is_call(),
-                ) - out
+                ) - out_no_rebate
+                    + (out - out_no_rebate)
             }
             ql_instruments::BarrierType::UpAndOut | ql_instruments::BarrierType::DownAndOut => out,
         }
