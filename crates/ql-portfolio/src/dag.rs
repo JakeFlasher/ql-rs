@@ -1,6 +1,7 @@
 use ql_ad::Real;
-use ql_curves::YieldTermStructure;
+use ql_curves::{DiscountCurve, DiscountCurveId, ForwardIndexId, MarketContext, YieldTermStructure};
 use ql_models::{HestonParams, heston_cos_price};
+use ql_instruments::{ResolvedVanillaSwap, SwapType, VanillaSwapSpec};
 use ql_scripting::{BytecodeProgram, OpCode};
 use ql_time::{Date, DayCounter, Frequency};
 use rayon::prelude::*;
@@ -155,6 +156,36 @@ impl MarketSnapshot {
             self.eq_vol,
         ])
     }
+
+    /// Materialize the snapshot in the shared market-context representation
+    /// used by portfolio and pricing services.
+    pub fn to_market_context(&self) -> MarketContext<f64> {
+        let times = vec![1.0, 2.0, 5.0];
+        let ois = self
+            .ois_quotes
+            .iter()
+            .zip(times.iter())
+            .map(|(&r, &t)| (-r * t).exp())
+            .collect();
+        let fwd = self
+            .fwd_quotes
+            .iter()
+            .zip(times.iter())
+            .map(|(&r, &t)| (-r * t).exp())
+            .collect();
+        MarketContext::new()
+            .with_reference_date(self.ref_date)
+            .with_discount_curve(
+                DiscountCurveId::USD_SOFR,
+                DiscountCurve::new(self.ref_date, times.clone(), ois),
+            )
+            .with_forward_curve(
+                ForwardIndexId::USD_SOFR,
+                DiscountCurve::new(self.ref_date, times, fwd),
+            )
+            .with_spot("EQ", self.eq_spot)
+            .with_vol("EQ", self.eq_vol)
+    }
 }
 #[derive(Clone, Debug)]
 pub enum PortfolioTrade {
@@ -273,12 +304,10 @@ impl PortfolioDag {
         let mut report = self
             .try_evaluate_portfolio(trades, s)
             .unwrap_or_else(|e| panic!("portfolio evaluation failed: {e}"));
-        // The legacy report fields were cumulative and are consumed by the
-        // terminal's delta telemetry.  Preserve that behaviour only in this
-        // infallible compatibility wrapper; the fallible API below exposes
-        // per-call values directly as required for service accounting.
-        report.curve_recomputes = self.total_curve_recomputes;
-        report.trade_recomputes = self.total_trade_recomputes;
+        // Both APIs expose per-call counters.  Lifetime totals are available
+        // through the explicitly named total_* fields.
+        report.curve_recomputes = report.last_curve_recomputes;
+        report.trade_recomputes = report.last_trade_recomputes;
         report.total_curve_recomputes = self.total_curve_recomputes;
         report.total_trade_recomputes = self.total_trade_recomputes;
         report
@@ -414,26 +443,32 @@ impl PortfolioDag {
             } => {
                 let n = *maturity_years;
                 let (npv, dv) = curves.value_and_par_dv01(|params| {
+                    let ois_n = curves.ois_pillars;
                     let ois = ql_curves::DiscountCurve::new(
                         s.ref_date,
                         curves.curves[0].times.clone(),
-                        params[..3].to_vec(),
+                        params[..ois_n].to_vec(),
                     );
                     let fwd = ql_curves::DiscountCurve::new(
                         s.ref_date,
                         curves.curves[1].times.clone(),
-                        params[3..].to_vec(),
+                        params[ois_n..].to_vec(),
                     );
-                    let mut v = ql_ad::TapeVar::from_f64(0.);
-                    for m in 1..=n {
-                        let t = m as f64;
-                        let fr = fwd.discount_factor(t - 1.) / fwd.discount_factor(t)
-                            - ql_ad::TapeVar::from_f64(1.);
-                        v += (fr - ql_ad::TapeVar::from_f64(*fixed_rate))
-                            * ois.discount_factor(t)
-                            * ql_ad::TapeVar::from_f64(*notional);
-                    }
-                    v
+                    let spec = VanillaSwapSpec {
+                        effective_date: s.ref_date,
+                        termination_date: s.ref_date.add_months((n as i32).saturating_mul(12), false),
+                        notional: *notional,
+                        fixed_rate_or_coupon: *fixed_rate,
+                        fixed_tenor: ql_time::Period::Years(1),
+                        float_tenor: ql_time::Period::Years(1),
+                        calendar: Arc::new(ql_time::BitsetCalendar::weekend_only()),
+                        bdc: ql_time::BusinessDayConvention::Unadjusted,
+                        fixed_dc: DayCounter::Act365Fixed,
+                        float_dc: DayCounter::Act365Fixed,
+                        swap_type: SwapType::Payer,
+                    };
+                    let resolved: ResolvedVanillaSwap = spec.resolve(s.ref_date);
+                    resolved.npv(&ois, &fwd)
                 });
                 TradeValuation {
                     id: *id,

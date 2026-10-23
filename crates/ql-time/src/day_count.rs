@@ -38,15 +38,17 @@ impl DayCounter {
         let sign = if d2 > d1 { 1.0 } else { -1.0 };
         let (a, b) = if sign > 0.0 { (d1, d2) } else { (d2, d1) };
         let value = match self {
-            Self::Act360 => (b - a) as f64 / 360.0,
-            Self::Act365Fixed => (b - a) as f64 / 365.0,
+            Self::Act360 => (i64::from(b.days()) - i64::from(a.days())) as f64 / 360.0,
+            Self::Act365Fixed => (i64::from(b.days()) - i64::from(a.days())) as f64 / 365.0,
             Self::Act365Leap => act365_l(a, b),
             Self::ActActIsda => act365_isda(a, b),
             Self::ActActIcma { frequency } => {
                 let rs = ref_start.unwrap_or(a);
                 let re = ref_end
                     .unwrap_or_else(|| rs.add_months(12 / frequency.periods_per_year(), false));
-                (b - a) as f64 / ((re - rs) as f64 * frequency.periods_per_year() as f64)
+                (i64::from(b.days()) - i64::from(a.days())) as f64
+                    / ((i64::from(re.days()) - i64::from(rs.days())) as f64
+                        * frequency.periods_per_year() as f64)
             }
             Self::Thirty360Us => thirty_us(a, b) as f64 / 360.0,
             Self::Thirty360Euro => thirty_euro(a, b) as f64 / 360.0,
@@ -57,7 +59,7 @@ impl DayCounter {
     }
 }
 fn act365_l(a: Date, b: Date) -> f64 {
-    let days = (b - a) as f64;
+    let days = (i64::from(b.days()) - i64::from(a.days())) as f64;
     let mut y = a.year();
     while y <= b.year() {
         if Date::is_leap_year(y)
@@ -80,7 +82,8 @@ fn act365_isda(a: Date, b: Date) -> f64 {
         let lo = a.max(ys);
         let hi = b.min(ye);
         if hi > lo {
-            total += (hi - lo) as f64 / if Date::is_leap_year(y) { 366.0 } else { 365.0 };
+            total += (i64::from(hi.days()) - i64::from(lo.days())) as f64
+                / if Date::is_leap_year(y) { 366.0 } else { 365.0 };
         }
         y += 1;
     }

@@ -126,7 +126,7 @@ pub fn euler_gaussian_es_allocation_aad(
     assert_eq!(means.len(), weights.len());
     assert_eq!(covariance.len(), weights.len());
     assert!(covariance.iter().all(|row| row.len() == weights.len()));
-    TapeScope::start_recording_with_capacity(weights.len() * weights.len() * 4 + 32);
+    let guard = TapeScope::guard_with_capacity(weights.len() * weights.len() * 4 + 32);
     let vars: Vec<TapeVar<f64>> = weights
         .iter()
         .map(|&w| TapeScope::with_active(|tape| tape.input(w)))
@@ -155,7 +155,7 @@ pub fn euler_gaussian_es_allocation_aad(
         marginal_es: marginal,
         component_es: component,
     };
-    TapeScope::stop_recording();
+    let _ = guard.stop();
     result
 }
 

@@ -162,7 +162,7 @@ impl CalibratedCommodityCurve {
     where
         F: FnOnce(&CommodityFuturesCurve<TapeVar<f64>>) -> TapeVar<f64>,
     {
-        TapeScope::start_recording();
+        let guard = TapeScope::guard();
         let vars: Vec<_> = self
             .log_base_forwards
             .iter()
@@ -186,7 +186,7 @@ impl CalibratedCommodityCurve {
             .map(|(j, v)| adj.gradient(*v) / self.market_futures[j])
             .collect();
         let value = out.val;
-        TapeScope::stop_recording();
+        let _ = guard.stop();
         (value, deltas)
     }
 }

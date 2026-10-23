@@ -23,7 +23,7 @@ impl<T: Real> HullWhite1F<T> {
         let f = curve.instantaneous_forward(t);
         let var_r = if (self.a * t).val().abs() < 1e-6 {
             let tt = T::from_f64(t);
-            tt - self.a * tt * tt + self.a * self.a * tt * tt * tt * 4.0 / 3.0
+            tt - self.a * tt * tt + self.a * self.a * tt * tt * tt * 2.0 / 3.0
         } else {
             (T::one() - (-self.a * T::from_f64(2.0 * t)).exp()) / (self.a * T::from_f64(2.0))
         };
@@ -44,7 +44,7 @@ impl<T: Real> HullWhite1F<T> {
         let b = self.b_factor(expiry, maturity);
         let var_r = if (self.a * expiry).val().abs() < 1e-6 {
             let tt = T::from_f64(expiry);
-            tt - self.a * tt * tt + self.a * self.a * tt * tt * tt * 4.0 / 3.0
+            tt - self.a * tt * tt + self.a * self.a * tt * tt * tt * 2.0 / 3.0
         } else {
             (T::one() - (-self.a * T::from_f64(2.0 * expiry)).exp()) / (self.a * T::from_f64(2.0))
         };

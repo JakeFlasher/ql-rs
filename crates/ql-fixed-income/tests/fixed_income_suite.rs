@@ -7,6 +7,7 @@ use ql_time::Date;
 #[test]
 fn nss_short_end_and_ols_recovery() {
     let curve = NelsonSiegelSvensson {
+        reference_date: Date(0),
         beta0: 0.03,
         beta1: -0.01,
         beta2: 0.02,

@@ -19,7 +19,7 @@ impl std::error::Error for AdError {}
 
 /// Lift a converged scalar root into an AD scalar. The residual is evaluated once
 /// at the converged root; `f_x` is the scalar derivative with respect to the root.
-pub fn ift_lift_1d<T: Real, F: Fn(T) -> T>(x_star: f64, residual: F, f_x: T, f_xx: f64) -> T {
+pub fn ift_lift_1d<T: Real, F: FnOnce(T) -> T>(x_star: f64, residual: F, f_x: T, f_xx: f64) -> T {
     // A singular/non-finite Jacobian cannot be lifted reliably.  Returning a
     // primal constant is preferable to injecting infinities/NaNs into every
     // sensitivity lane.
@@ -28,38 +28,22 @@ pub fn ift_lift_1d<T: Real, F: Fn(T) -> T>(x_star: f64, residual: F, f_x: T, f_x
         return T::from_f64(x_star);
     }
 
-    // Polish the scalar root once, but only using primal values.  This removes
-    // residual noise from the AD lift while retaining a useful correction when
-    // a numerical root solver stopped just short of convergence.
-    let r0 = residual(T::from_f64(x_star)).val();
-    let x_polished = if r0.is_finite() && r0.abs() > 1e-15 {
-        let step = (-r0 / fx0).clamp(-0.5 * x_star.abs().max(1.0), 0.5 * x_star.abs().max(1.0));
-        let candidate = x_star + step;
-        let r_candidate = residual(T::from_f64(candidate)).val();
-        if r_candidate.is_finite() && r_candidate.abs() < r0.abs() {
-            candidate
-        } else {
-            x_star
-        }
-    } else {
-        x_star
-    };
-
-    let x = T::from_f64(x_polished);
+    // Evaluate the graph once.  The primal component performs one Newton
+    // polish while the tangent/adjoint components provide the exact implicit
+    // lift; evaluating the residual repeatedly would duplicate a TapeVar
+    // pricing graph on the active reverse tape.
+    let x = T::from_f64(x_star);
     let r_eval = residual(x);
-    // Keep only the tangent/adjoint part of the residual.  Its primal value is
-    // identically zero, so d has zero primal and d*d cannot create a spurious
-    // first-order term from 2*d0*d1 in Dual/Dual2 arithmetic.
-    let r_diff = r_eval - T::from_f64(r_eval.val());
-    let d = -r_diff / f_x;
-    x + d - T::from_f64(0.5 * f_xx) * d * d / f_x
+    let d = -r_eval / f_x;
+    let d_tan = -(r_eval - T::from_f64(r_eval.val())) / f_x;
+    x + d - T::from_f64(0.5 * f_xx) * d_tan * d_tan / f_x
 }
 
 /// Fallible counterpart to [`ift_lift_1d`].  Existing callers retain the
 /// backwards-compatible infallible API above; new solvers can surface a typed
 /// domain error instead of silently returning a constant when the Jacobian is
 /// unusable.
-pub fn try_ift_lift_1d<T: Real, F: Fn(T) -> T>(
+pub fn try_ift_lift_1d<T: Real, F: FnOnce(T) -> T>(
     x_star: f64,
     residual: F,
     f_x: T,

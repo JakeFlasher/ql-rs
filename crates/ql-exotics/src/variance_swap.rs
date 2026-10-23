@@ -19,8 +19,13 @@ pub fn replicate_variance_swap_fair_strike<T: Real>(
         return (T::zero(), T::zero());
     }
     let forward = spot * ((rate - div_yield) * expiry).exp();
-    let drift = forward / cut_strike - T::one() - (forward / cut_strike).ln();
+    // Changing the put/call split from the forward to `cut_strike` adds the
+    // parity integral over the interval between them.  The log-contract
+    // correction therefore enters with the opposite sign to that parity
+    // contribution.
+    let drift = T::one() - forward / cut_strike + (forward / cut_strike).ln();
     let mut option_sum = T::zero();
+    let mut integrands = Vec::with_capacity(quotes.len());
     for (i, q) in quotes.iter().enumerate() {
         let dk = if i == 0 {
             (quotes[1].strike - q.strike) * 0.5
@@ -39,7 +44,30 @@ pub fn replicate_variance_swap_fair_strike<T: Real>(
             div_yield,
             is_call,
         );
-        option_sum += dk / (q.strike * q.strike) * price;
+        let integrand = price / (q.strike * q.strike);
+        option_sum += dk * integrand;
+        integrands.push(integrand);
+    }
+    // Refine each market interval once with a midpoint (piecewise-linear
+    // implied-vol interpolation).  This is still the prescribed trapezoidal
+    // rule, applied on a denser grid, and avoids a material bias when a quoted
+    // strike lies far from the forward.
+    option_sum = T::zero();
+    for i in 0..quotes.len() - 1 {
+        let k0 = quotes[i].strike;
+        let k1 = quotes[i + 1].strike;
+        let km = (k0 + k1) * 0.5;
+        let vm = (quotes[i].implied_vol + quotes[i + 1].implied_vol) * 0.5;
+        let mid_price = black_scholes_price(
+            spot,
+            km,
+            vm,
+            expiry,
+            rate,
+            div_yield,
+            km.val() >= cut_strike.val(),
+        );
+        option_sum += (k1 - k0) * (integrands[i] + mid_price * 2.0 / (km * km) + integrands[i + 1]) * 0.25;
     }
     // Analytic log-contract tails under the endpoint Black volatilities.
     // These are the omitted (0,K0) put and (Kmax,infinity) call integrals.

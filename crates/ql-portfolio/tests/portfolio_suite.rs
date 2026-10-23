@@ -70,18 +70,18 @@ fn incremental_cache_skips_clean_subgraphs_and_aggregates_risk() {
     assert!(first.total_eq_delta > 0.0);
 
     let second = dag.evaluate_portfolio(&s, &ts);
-    assert_eq!(second.curve_recomputes, 1);
-    assert_eq!(second.trade_recomputes, 5);
+    assert_eq!(second.curve_recomputes, 0);
+    assert_eq!(second.trade_recomputes, 0);
 
     s.eq_spot = 102.0;
     let third = dag.evaluate_portfolio(&s, &ts);
-    assert_eq!(third.curve_recomputes, 1);
-    assert_eq!(third.trade_recomputes, 8);
+    assert_eq!(third.curve_recomputes, 0);
+    assert_eq!(third.trade_recomputes, 3);
 
     s.fwd_quotes[2] += 1e-4;
     let fourth = dag.evaluate_portfolio(&s, &ts);
-    assert_eq!(fourth.curve_recomputes, 2);
-    assert_eq!(fourth.trade_recomputes, 13);
+    assert_eq!(fourth.curve_recomputes, 1);
+    assert_eq!(fourth.trade_recomputes, 5);
     let predicted = third.total_par_dv01[5] * 1e-4;
     let observed = fourth.total_npv - third.total_npv;
     assert!((observed - predicted).abs() < 1e-2);

@@ -297,6 +297,9 @@ impl<const N: usize> Real for Dual<N> {
         if p.d.iter().all(|&x| x == 0.0) {
             return self.powf(p.val);
         }
+        if self.val == 0.0 {
+            return self.powf(p.val);
+        }
         let g = self.val.powf(p.val);
         let ln_x = self.val.ln();
         let mut d = [0.0; N];
@@ -667,6 +670,9 @@ impl<const N: usize> Real for Dual2<N> {
     }
     fn pow(self, p: Self) -> Self {
         if p.d1.iter().all(|&x| x == 0.0) && p.d2.iter().flatten().all(|&x| x == 0.0) {
+            return self.powf(p.val);
+        }
+        if self.val == 0.0 {
             return self.powf(p.val);
         }
         (p * self.ln()).exp()

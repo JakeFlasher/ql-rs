@@ -81,8 +81,8 @@ impl Period {
     pub fn months(self) -> i32 {
         match self {
             Self::Months(x) => x,
-            Self::Years(x) => 12 * x,
-            Self::Frequency(n, f) => n * f.months(),
+            Self::Years(x) => x.saturating_mul(12),
+            Self::Frequency(n, f) => n.saturating_mul(f.months()),
             _ => 0,
         }
     }
@@ -91,6 +91,7 @@ impl Period {
 impl Date {
     pub const EPOCH: Self = Self(0);
     pub const MIN: Self = Self(-719_468); // 0000-03-01-ish, practical lower bound
+    pub const MAX: Self = Self(i32::MAX);
     pub const fn from_days(days: i32) -> Self {
         Self(days)
     }
@@ -159,15 +160,19 @@ impl Date {
     }
     pub fn add_months(self, months: i32, eom: bool) -> Self {
         let (y, m, d) = self.ymd();
-        let z = y.saturating_mul(12) + (m as i32 - 1) + months;
-        let ny = z.div_euclid(12);
+        let z = (y as i64) * 12 + (m as i64 - 1) + months as i64;
+        let ny64 = z.div_euclid(12);
+        if ny64 < i32::MIN as i64 || ny64 > i32::MAX as i64 {
+            return if z < 0 { Self::MIN } else { Self::MAX };
+        }
+        let ny = ny64 as i32;
         let nm = (z.rem_euclid(12) + 1) as u8;
         let nd = if eom && d == days_in_month(y, m) {
             days_in_month(ny, nm)
         } else {
             d.min(days_in_month(ny, nm))
         };
-        Self::from_ymd(ny, nm, nd).expect("valid")
+        Self::from_ymd(ny, nm, nd).unwrap_or(if z < 0 { Self::MIN } else { Self::MAX })
     }
     pub fn imm_date(year: i32, month: u8) -> Result<Self, TimeError> {
         crate::imm_date(year, month)
@@ -183,10 +188,10 @@ impl Date {
             Period::Years(n) => self.add_months(n.saturating_mul(12), eom),
             Period::Frequency(n, f) => {
                 if f.months() != 0 {
-                    self.add_months(n * f.months(), eom)
+                    self.add_months(n.saturating_mul(f.months()), eom)
                 } else {
                     self.add_days(match f {
-                        Frequency::Weekly => 7 * n,
+                        Frequency::Weekly => n.saturating_mul(7),
                         Frequency::Daily => n,
                         _ => n,
                     })

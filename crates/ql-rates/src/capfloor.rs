@@ -218,7 +218,7 @@ impl CalibratedCapletVolCurve {
         &self,
         pricer: F,
     ) -> (f64, Vec<f64>) {
-        TapeScope::start_recording_with_capacity(self.caplet_vols.len() * 64);
+        let guard = TapeScope::guard_with_capacity(self.caplet_vols.len() * 64);
         let vars: Vec<_> = self
             .caplet_vols
             .iter()
@@ -227,7 +227,7 @@ impl CalibratedCapletVolCurve {
         let out = pricer(&vars);
         let adj = TapeScope::gradient_from(out);
         let g: Vec<f64> = vars.iter().map(|v| adj.gradient(*v)).collect();
-        TapeScope::stop_recording();
+        let _ = guard.stop();
         let mut q = vec![0.; self.ift_jacobian.len()];
         for j in 0..g.len() {
             for k in 0..q.len() {

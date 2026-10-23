@@ -3,6 +3,7 @@ use ql_curves::YieldTermStructure;
 use ql_time::{Date, DayCounter};
 #[derive(Clone, Copy, Debug)]
 pub struct NelsonSiegelSvensson<T: Real> {
+    pub reference_date: Date,
     pub beta0: T,
     pub beta1: T,
     pub beta2: T,
@@ -67,6 +68,7 @@ impl<T: Real> NelsonSiegelSvensson<T> {
             .solve(&y, 1e-12)
             .expect("NSS least-squares solve");
         Self {
+            reference_date: Date(0),
             beta0: T::from_f64(b[0]),
             beta1: T::from_f64(b[1]),
             beta2: T::from_f64(b[2]),
@@ -76,17 +78,15 @@ impl<T: Real> NelsonSiegelSvensson<T> {
         }
     }
 
-    pub fn with_reference_date(self, _reference_date: Date) -> Self {
-        // The original public struct intentionally remains constructible via
-        // a six-field literal.  Keep this builder for callers that carry a
-        // reference date, while the parametric curve itself is time-based.
+    pub fn with_reference_date(mut self, reference_date: Date) -> Self {
+        self.reference_date = reference_date;
         self
     }
 }
 
 impl<T: Real> YieldTermStructure<T> for NelsonSiegelSvensson<T> {
     fn reference_date(&self) -> Date {
-        Date(0)
+        self.reference_date
     }
     fn discount_factor(&self, t: f64) -> T {
         NelsonSiegelSvensson::discount_factor(self, T::from_f64(t))
@@ -98,8 +98,8 @@ impl<T: Real> YieldTermStructure<T> for NelsonSiegelSvensson<T> {
         NelsonSiegelSvensson::forward_rate(self, T::from_f64(t))
     }
     fn forward_rate(&self, d1: Date, d2: Date, dc: DayCounter) -> T {
-        let t1 = dc.year_fraction(Date(0), d1, None, None);
-        let t2 = dc.year_fraction(Date(0), d2, None, None);
+        let t1 = dc.year_fraction(self.reference_date, d1, None, None);
+        let t2 = dc.year_fraction(self.reference_date, d2, None, None);
         let tau = dc.year_fraction(d1, d2, None, None);
         (<Self as YieldTermStructure<T>>::discount_factor(self, t1)
             / <Self as YieldTermStructure<T>>::discount_factor(self, t2)

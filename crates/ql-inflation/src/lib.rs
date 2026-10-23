@@ -262,7 +262,7 @@ impl CalibratedInflationCurve {
     where
         F: Fn(&ZeroInflationCurve<TapeVar>) -> TapeVar,
     {
-        TapeScope::start_recording();
+        let guard = TapeScope::guard();
         let vars: Vec<_> = self
             .curve
             .zero_rates
@@ -273,7 +273,7 @@ impl CalibratedInflationCurve {
         let out = f(&curve);
         let adj = TapeScope::gradient_from(out);
         let pillar: Vec<f64> = vars.iter().map(|v| adj.gradient(*v)).collect();
-        TapeScope::stop_recording();
+        let _ = guard.stop();
         let q = &self.sensitivities.transpose() * nalgebra::DVector::from_vec(pillar);
         (out.val, q.iter().copied().collect())
     }

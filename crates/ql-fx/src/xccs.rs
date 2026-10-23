@@ -235,7 +235,7 @@ impl CalibratedXccsCurve {
     where
         F: Fn(&DiscountCurve<TapeVar<f64>>) -> TapeVar<f64>,
     {
-        TapeScope::start_recording_with_capacity(8192);
+        let guard = TapeScope::guard_with_capacity(8192);
         let vars: Vec<_> = self
             .for_csa_curve
             .discounts
@@ -250,7 +250,7 @@ impl CalibratedXccsCurve {
         let out = pricer(&curve);
         let adj = TapeScope::gradient_from(out);
         let grad = DVector::from_vec(vars.iter().map(|v| adj.gradient(*v)).collect());
-        TapeScope::stop_recording();
+        let _ = guard.stop();
         let q = self.basis_jacobian.transpose() * grad;
         (out.val, q.iter().copied().collect())
     }

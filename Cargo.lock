@@ -500,6 +500,7 @@ dependencies = [
  "nalgebra",
  "ql-ad",
  "ql-curves",
+ "ql-instruments",
  "ql-math",
  "ql-models",
  "ql-scripting",

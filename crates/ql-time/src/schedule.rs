@@ -235,11 +235,11 @@ impl ScheduleBuilder {
 }
 fn scale_period(p: Period, n: i32) -> Period {
     match p {
-        Period::Days(v) => Period::Days(v * n),
-        Period::Weeks(v) => Period::Weeks(v * n),
-        Period::Months(v) => Period::Months(v * n),
-        Period::Years(v) => Period::Years(v * n),
-        Period::Frequency(v, f) => Period::Frequency(v * n, f),
+        Period::Days(v) => Period::Days(v.saturating_mul(n)),
+        Period::Weeks(v) => Period::Weeks(v.saturating_mul(n)),
+        Period::Months(v) => Period::Months(v.saturating_mul(n)),
+        Period::Years(v) => Period::Years(v.saturating_mul(n)),
+        Period::Frequency(v, f) => Period::Frequency(v.saturating_mul(n), f),
     }
 }
 impl From<Frequency> for Period {

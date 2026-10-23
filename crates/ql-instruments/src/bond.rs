@@ -68,7 +68,7 @@ impl FixedRateBondSpec {
         for i in 1..s.dates.len() {
             a.push(s.dates[i - 1]);
             b.push(s.dates[i]);
-            p.push((s.dates[i] - reference_date) as f64 / 365.0);
+            p.push(self.day_counter.year_fraction(reference_date, s.dates[i], None, None));
         }
         ResolvedFixedRateBond {
             settlement_date: reference_date,

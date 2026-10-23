@@ -1,5 +1,6 @@
 use crate::curves::DiscountCurve;
 use ql_ad::Real;
+use ql_ad::TapeVar;
 use ql_time::Date;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -134,6 +135,45 @@ impl<T: Real> MarketContext<T> {
     }
     pub fn vol(&self, name: &str) -> Option<T> {
         self.vols.get(name).copied()
+    }
+}
+
+impl MarketContext<f64> {
+    /// Lift all typed curve nodes and scalar market observables onto a fresh
+    /// reverse-mode scalar type.  The structure (pillar times and identifiers)
+    /// is retained, so callers can record one coherent tape pass over the
+    /// context rather than rebuilding ad-hoc maps.
+    pub fn to_ad(&self) -> MarketContext<TapeVar<f64>> {
+        let mut out = MarketContext::<TapeVar<f64>>::default().with_reference_date(self.reference_date);
+        for (id, curve) in &self.discount_curves {
+            let vars = curve
+                .discounts
+                .iter()
+                .copied()
+                .map(TapeVar::from_f64)
+                .collect::<Vec<_>>();
+            out.discount_curves.insert(*id, curve.to_ad_curve(&vars));
+        }
+        for (id, curve) in &self.forward_curves {
+            let vars = curve
+                .discounts
+                .iter()
+                .copied()
+                .map(TapeVar::from_f64)
+                .collect::<Vec<_>>();
+            out.forward_curves.insert(*id, curve.to_ad_curve(&vars));
+        }
+        out.spots = self
+            .spots
+            .iter()
+            .map(|(k, v)| (k.clone(), TapeVar::from_f64(*v)))
+            .collect();
+        out.vols = self
+            .vols
+            .iter()
+            .map(|(k, v)| (k.clone(), TapeVar::from_f64(*v)))
+            .collect();
+        out
     }
 }
 

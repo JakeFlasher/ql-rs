@@ -51,9 +51,9 @@ fn leg_from_schedule(
         l.notionals.push(notional);
         l.rates_or_spreads.push(rate);
         l.gearings.push(1.0);
-        l.payment_times.push((b - ref_date) as f64 / 365.0);
-        l.accrual_start_times.push((a - ref_date) as f64 / 365.0);
-        l.accrual_end_times.push((b - ref_date) as f64 / 365.0);
+        l.payment_times.push(dc.year_fraction(ref_date, b, None, None));
+        l.accrual_start_times.push(dc.year_fraction(ref_date, a, None, None));
+        l.accrual_end_times.push(dc.year_fraction(ref_date, b, None, None));
     }
     l.day_counter = Some(dc.clone());
     l

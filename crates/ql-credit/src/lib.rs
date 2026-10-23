@@ -347,7 +347,7 @@ impl CalibratedCreditCurve {
     where
         F: FnOnce(&SurvivalProbabilityCurve<TapeVar<f64>>) -> TapeVar<f64>,
     {
-        TapeScope::start_recording_with_capacity(16_384);
+        let guard = TapeScope::guard_with_capacity(16_384);
         let vars: Vec<_> = self
             .curve
             .hazard_rates
@@ -358,7 +358,7 @@ impl CalibratedCreditCurve {
         let out = f(&c);
         let adj = TapeScope::gradient_from(out);
         let g: Vec<f64> = vars.iter().map(|v| adj.gradient(*v)).collect();
-        TapeScope::stop_recording();
+        let _ = guard.stop();
         let q = self.sensitivity.transpose() * DVector::from_vec(g);
         (out.val, q.iter().copied().collect())
     }
@@ -394,7 +394,7 @@ impl CalibratedCreditCurve {
         times.sort_by(f64::total_cmp);
         times.dedup_by(|a, b| (*a - *b).abs() < 1e-14);
 
-        TapeScope::start_recording_with_capacity(16_384);
+        let guard = TapeScope::guard_with_capacity(16_384);
         let vars: Vec<_> = self
             .curve
             .hazard_rates
@@ -510,7 +510,7 @@ impl CalibratedCreditCurve {
             }
             let adj = TapeScope::gradient_from(total);
             let gradient: Vec<f64> = vars.iter().map(|v| adj.gradient(*v)).collect();
-            TapeScope::stop_recording();
+            let _ = guard.stop();
             let q = self.sensitivity.transpose() * DVector::from_vec(gradient);
             return (total.val, q.iter().copied().collect());
         }
@@ -571,7 +571,7 @@ impl CalibratedCreditCurve {
         }
         let adj = TapeScope::gradient_from(total);
         let gradient: Vec<f64> = vars.iter().map(|v| adj.gradient(*v)).collect();
-        TapeScope::stop_recording();
+        let _ = guard.stop();
         let q = self.sensitivity.transpose() * DVector::from_vec(gradient);
         (total.val, q.iter().copied().collect())
     }

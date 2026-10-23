@@ -198,7 +198,9 @@ pub fn inv_norm_cdf_f64(p: f64) -> f64 {
     for _ in 0..2 {
         let e = norm_cdf_f64(x) - p;
         let pdf = (-0.5 * x * x).exp() / (2.0 * std::f64::consts::PI).sqrt();
-        x -= e / pdf;
+        if pdf > 0.0 {
+            x -= e / pdf;
+        }
     }
     x
 }

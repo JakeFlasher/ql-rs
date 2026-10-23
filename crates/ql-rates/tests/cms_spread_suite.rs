@@ -35,8 +35,8 @@ fn cms_spread_parity_and_collar() {
     let collar = LognormalCmsSpreadPricer::collar_pv(&s, 0.03, 0.0);
     assert!(
         (collar
-            - (LognormalCmsSpreadPricer::floorlet_pv(&s, 0.0)
-                - LognormalCmsSpreadPricer::caplet_pv(&s, 0.03)))
+            - (LognormalCmsSpreadPricer::caplet_pv(&s, 0.03)
+                - LognormalCmsSpreadPricer::floorlet_pv(&s, 0.0)))
         .abs()
             < 1e-12
     );
