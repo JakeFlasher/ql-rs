@@ -31,6 +31,7 @@ pub struct MarketContext<T: Real = f64> {
     pub forward_curves: HashMap<ForwardIndexId, DiscountCurve<T>>,
     pub named_discount_curves: HashMap<String, Arc<dyn crate::curves::YieldTermStructure<T>>>,
     pub named_forward_curves: HashMap<String, Arc<dyn crate::curves::YieldTermStructure<T>>>,
+    pub curve_store: HashMap<String, Arc<dyn crate::curves::YieldTermStructure<T>>>,
     pub spots: HashMap<String, T>,
     pub vols: HashMap<String, T>,
 }
@@ -67,6 +68,7 @@ impl<T: Real> Default for MarketContext<T> {
             forward_curves: HashMap::new(),
             named_discount_curves: HashMap::new(),
             named_forward_curves: HashMap::new(),
+            curve_store: HashMap::new(),
             spots: HashMap::new(),
             vols: HashMap::new(),
         }
@@ -90,12 +92,16 @@ impl<T: Real + 'static> MarketContext<T> {
     }
     pub fn insert_discount_curve(&mut self, id: DiscountCurveId, c: DiscountCurve<T>) {
         let name = format!("{id:?}");
-        self.named_discount_curves.insert(name, Arc::new(c.clone()));
+        let arc: Arc<dyn crate::curves::YieldTermStructure<T>> = Arc::new(c.clone());
+        self.curve_store.insert(name.clone(), arc.clone());
+        self.named_discount_curves.insert(name, arc);
         self.discount_curves.insert(id, c);
     }
     pub fn insert_forward_curve(&mut self, id: ForwardIndexId, c: DiscountCurve<T>) {
         let name = format!("{id:?}");
-        self.named_forward_curves.insert(name, Arc::new(c.clone()));
+        let arc: Arc<dyn crate::curves::YieldTermStructure<T>> = Arc::new(c.clone());
+        self.curve_store.insert(name.clone(), arc.clone());
+        self.named_forward_curves.insert(name, arc);
         self.forward_curves.insert(id, c);
     }
     pub fn discount_curve(&self, id: DiscountCurveId) -> Option<&DiscountCurve<T>> {
@@ -109,7 +115,9 @@ impl<T: Real + 'static> MarketContext<T> {
         name: impl Into<String>,
         curve: Arc<dyn crate::curves::YieldTermStructure<T>>,
     ) -> Self {
-        self.named_discount_curves.insert(name.into(), curve);
+        let name = name.into();
+        self.curve_store.insert(name.clone(), curve.clone());
+        self.named_discount_curves.insert(name, curve);
         self
     }
     pub fn with_forward(
@@ -117,7 +125,9 @@ impl<T: Real + 'static> MarketContext<T> {
         name: impl Into<String>,
         curve: Arc<dyn crate::curves::YieldTermStructure<T>>,
     ) -> Self {
-        self.named_forward_curves.insert(name.into(), curve);
+        let name = name.into();
+        self.curve_store.insert(name.clone(), curve.clone());
+        self.named_forward_curves.insert(name, curve);
         self
     }
     pub fn with_spot(mut self, name: impl Into<String>, value: T) -> Self {
@@ -129,7 +139,11 @@ impl<T: Real + 'static> MarketContext<T> {
         self
     }
     pub fn discount(&self, name: &str) -> Option<&dyn crate::curves::YieldTermStructure<T>> {
-        if let Some(c) = self.named_discount_curves.get(name) {
+        if let Some(c) = self
+            .curve_store
+            .get(name)
+            .or_else(|| self.named_discount_curves.get(name))
+        {
             return Some(c.as_ref());
         }
         let id = match name.to_ascii_uppercase().as_str() {
@@ -143,7 +157,11 @@ impl<T: Real + 'static> MarketContext<T> {
             .map(|c| c as &dyn crate::curves::YieldTermStructure<T>)
     }
     pub fn forward(&self, name: &str) -> Option<&dyn crate::curves::YieldTermStructure<T>> {
-        if let Some(c) = self.named_forward_curves.get(name) {
+        if let Some(c) = self
+            .curve_store
+            .get(name)
+            .or_else(|| self.named_forward_curves.get(name))
+        {
             return Some(c.as_ref());
         }
         let id = match name.to_ascii_uppercase().as_str() {

@@ -133,3 +133,16 @@ fn simd_exp_matches_scalar() {
         assert!((a - b.exp()).abs() < 1e-12);
     }
 }
+
+#[test]
+fn simd_normal_cdf_matches_erfc_tail() {
+    let x = Simd::<f64, 8>::from_array([-8.0, -4.0, -2.0, -0.5, 0.0, 0.5, 2.0, 4.0]);
+    let y = <Simd<f64, 8> as SimdReal>::norm_cdf(x).to_array();
+    for (a, b) in y
+        .into_iter()
+        .zip([-8.0, -4.0, -2.0, -0.5, 0.0, 0.5, 2.0, 4.0])
+    {
+        let reference = 0.5 * libm::erfc(-b * std::f64::consts::FRAC_1_SQRT_2);
+        assert!((a - reference).abs() < 1e-12, "{b}: {a} vs {reference}");
+    }
+}

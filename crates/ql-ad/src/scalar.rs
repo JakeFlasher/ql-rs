@@ -318,10 +318,24 @@ fn simd_erfc<const N: usize>(x: Simd<f64, N>) -> Simd<f64, N> {
         474.5285412069554,
         -22.440_952_446_585_82,
     ];
+    let corr = [
+        -1.9000371979225443e-11,
+        7.03768581043996e-10,
+        -1.1379779345644426e-8,
+        1.0561639615575003e-7,
+        -6.173226844384003e-7,
+        2.3211138692573116e-6,
+        -6.451121796284795e-6,
+        1.2902829470055048e-5,
+        -1.7815371460817803e-5,
+        1.605490905557381e-5,
+        -8.489631122838015e-6,
+        1.9974387305665365e-6,
+    ];
     let inv = one / z2;
     let ratio = inv.simd_lt(Simd::splat(0.1225)).select(
         simd_horner(inv, &rb) / simd_horner(inv, &sb),
-        simd_horner(inv, &ra) / simd_horner(inv, &sa),
+        simd_horner(inv, &ra) / simd_horner(inv, &sa) + simd_horner(inv, &corr),
     );
     let z = Simd::from_bits(ax.to_bits() & Simd::<u64, N>::splat(0xffff_ffff_0000_0000));
     let tail = simd_exp(-z * z - Simd::splat(0.5625) + (z - ax) * (z + ax) + ratio) / ax;
