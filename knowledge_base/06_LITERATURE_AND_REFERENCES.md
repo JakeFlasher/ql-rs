@@ -1,6 +1,6 @@
 # Literature and References
 
-The 34 papers below are the mathematical and systems references for ql-rs. Each entry names the principal equation or algorithm and the implementing crate/module.
+The 42 papers below are the mathematical and systems references for ql-rs. Each entry names the principal equation or algorithm and the implementing crate/module.
 
 ## AAD, IFT, DML, and contract languages
 
@@ -76,6 +76,22 @@ The 34 papers below are the mathematical and systems references for ql-rs. Each 
 
 14. **`34_Turfus_RomeroBermudez_2023_Analytic_RFR_Option_Pricing_Smile_Skew.pdf`** — Hull–White and quadratic-skew short-rate pricing kernels and effective term variance for compounded RFR caplets and swaptions inform ql-rates::rfr.
 
+15. **`35_Grzelak_Oosterlee_2011_Heston_Stochastic_Interest_Rates.pdf`** — Closed-form affine approximation of the Heston–Hull–White (`H1-HW` and `H2-HW`) characteristic function with non-zero equity–rate correlation $\rho_{Sr}$ informs `ql-models::hybrid::CosHestonHullWhiteEngine`.
+
+16. **`36_Li_Deng_Zhou_2008_Multi_Asset_Spread_Option_Pricing.pdf`** — Second-order exercise-boundary approximation and Extended Kirk formula for 2-asset and multi-asset spread and basket options inform `ql-exotics::basket_rainbow::DengLiZhouSpreadBasketEngine`.
+
+17. **`37_Choi_2018_Sum_of_All_BSM_Models_Basket_Spread_Options.pdf`** — Factor-rotated Gauss–Hermite quadrature and moment-matching benchmarks for multi-asset BSM basket and spread options inform `ql-exotics::basket_rainbow`.
+
+18. **`38_GriveauBillion_Richard_Roncalli_2013_Fast_Risk_Parity_Portfolios.pdf`** — Cyclical Coordinate Descent (CCD) and Spinu Newton–Cholesky optimization on the strictly convex risk-budgeting potential $\frac{1}{2} y^\top \Sigma y - \sum_i b_i \ln y_i$ inform `ql-portfolio::allocation` and suite 20.
+
+19. **`39_Bruder_Roncalli_2012_Risk_Budgeting_Approach.pdf`** — Risk Budgeting Euler decomposition $RC_i = w_i (\Sigma w)_i / \sqrt{w^\top \Sigma w}$, closed-form bivariate solution, and volatility ordering $\sigma_{\text{MV}} \le \sigma_{\text{RB}} \le \sigma_{\text{WB}}$ inform `ql-portfolio::allocation`.
+
+20. **`40_He_Litterman_1999_Intuition_Behind_Black_Litterman_Portfolios.pdf`** — CAPM equilibrium implied excess returns $\Pi = \delta \Sigma w_{\text{mkt}}$ and Bayesian posterior view-tilting $(\mu_{\text{BL}}, \Sigma_{\text{BL}})$ inform `ql-portfolio::allocation::BlackLittermanSpec`.
+
+21. **`41_BaroneAdesi_Whaley_1987_Efficient_Analytic_Approximation_American_Options.pdf`** — Quadratic free-boundary early-exercise approximation and critical spot $S^*$ root-finding for American calls and puts inform `ql-instruments::american` and suite 19.
+
+22. **`42_Miemiec_2014_Pricing_CMS_Spread_Options_QuantLib.pdf`** — Shifted-lognormal Gauss–Hermite conditioning and Linear-TSR convexity adjustment for CMS spread coupons, caplets, floorlets, and collars inform `ql-rates::cms_spread`.
+
 ## Reference repositories
 
 | Repository | Role in ql-rs design |
@@ -93,4 +109,4 @@ The 34 papers below are the mathematical and systems references for ql-rs. Each 
 
 ## Classic analytical references
 
-The engines also follow Black (1976), Heston (1993), Merton (1976), Kou (2002), Madan–Carr–Chang (1998), Carr–Geman–Madan–Yor (2002), Fang–Oosterlee (2008), Reiner–Rubinstein (1991), Broadie–Glasserman–Kou (1997), Ikeda–Kunitomo (1992), Geske (1979), Rubinstein (1991), Drezner (1978), Genz (2004), Turnbull–Wakeman (1991), Demeterfi–Derman–Kamal–Zou (1999), Goldman–Sosin–Gatto (1979), Conze–Viswanathan (1991), Margrabe (1978), Kirk (1995), Schwartz–Smith (2000), Tsiveriotis–Fernandes (1998), Vasicek (2002), Andersen–Sidenius–Basu (2003), Castagna–Mercurio (2007), Lyashenko–Mercurio (2019), Willems (2020), Rockafellar–Uryasev (2000), Acerbi–Tasche (2002), and ISDA SIMM methodology.
+The engines also follow Black (1976), Heston (1993), Merton (1976), Kou (2002), Madan–Carr–Chang (1998), Carr–Geman–Madan–Yor (2002), Fang–Oosterlee (2008), Barone-Adesi–Whaley (1987), Bjerksund–Stensland (1993, 2002), Ju–Zhong (1999), Reiner–Rubinstein (1991), Broadie–Glasserman–Kou (1997), Ikeda–Kunitomo (1992), Geske (1979), Rubinstein (1991), Stulz (1982), Zhang (1995), Levy (1992), Longstaff (1990), Drezner (1978), Genz (2004), Turnbull–Wakeman (1991), Demeterfi–Derman–Kamal–Zou (1999), Goldman–Sosin–Gatto (1979), Conze–Viswanathan (1991), Margrabe (1978), Kirk (1995), Li–Deng–Zhou (2008), Schwartz–Smith (2000), Tsiveriotis–Fernandes (1998), Vasicek (2002), Andersen–Sidenius–Basu (2003), Castagna–Mercurio (2007), Brigo–Mercurio (2006), Lyashenko–Mercurio (2019), Willems (2020), He–Litterman (1999), Bruder–Roncalli (2012), Spinu (2013), Rockafellar–Uryasev (2000), Acerbi–Tasche (2002), and ISDA SIMM methodology.

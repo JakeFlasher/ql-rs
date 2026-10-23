@@ -403,33 +403,13 @@ impl Neg for TapeVar<f64> {
 impl Add<f64> for TapeVar<f64> {
     type Output = Self;
     fn add(self, o: f64) -> Self {
-        active_binary(
-            self,
-            TapeVar {
-                val: o,
-                idx: CONST_IDX,
-                tape_id: self.tape_id,
-            },
-            self.val + o,
-            1.0,
-            0.0,
-        )
+        active_unary(self, self.val + o, 1.0)
     }
 }
 impl Sub<f64> for TapeVar<f64> {
     type Output = Self;
     fn sub(self, o: f64) -> Self {
-        active_binary(
-            self,
-            TapeVar {
-                val: o,
-                idx: CONST_IDX,
-                tape_id: self.tape_id,
-            },
-            self.val - o,
-            1.0,
-            0.0,
-        )
+        active_unary(self, self.val - o, 1.0)
     }
 }
 impl Mul<f64> for TapeVar<f64> {
@@ -473,17 +453,7 @@ impl Add<TapeVar<f64>> for f64 {
 impl Sub<TapeVar<f64>> for f64 {
     type Output = TapeVar<f64>;
     fn sub(self, o: TapeVar<f64>) -> TapeVar<f64> {
-        active_binary(
-            TapeVar {
-                val: self,
-                idx: CONST_IDX,
-                tape_id: o.tape_id,
-            },
-            o,
-            self - o.val,
-            0.0,
-            -1.0,
-        )
+        -o + self
     }
 }
 impl Mul<TapeVar<f64>> for f64 {
@@ -495,17 +465,7 @@ impl Mul<TapeVar<f64>> for f64 {
 impl Div<TapeVar<f64>> for f64 {
     type Output = TapeVar<f64>;
     fn div(self, o: TapeVar<f64>) -> TapeVar<f64> {
-        active_binary(
-            TapeVar {
-                val: self,
-                idx: CONST_IDX,
-                tape_id: o.tape_id,
-            },
-            o,
-            self / o.val,
-            0.0,
-            -self / (o.val * o.val),
-        )
+        active_unary(o, self / o.val, -self / (o.val * o.val))
     }
 }
 impl Real for TapeVar<f64> {
@@ -579,15 +539,16 @@ impl Real for TapeVar<f64> {
         )
     }
     fn erfc(self) -> Self {
-        Self::one() - self.erf()
+        active_unary(
+            self,
+            libm::erfc(self.val),
+            -2.0 / std::f64::consts::PI.sqrt() * (-self.val * self.val).exp(),
+        )
     }
     fn norm_cdf(self) -> Self {
         active_unary(
             self,
-            0.5 * (1.0
-                + crate::dual::Dual::<1>::from_value(self.val * std::f64::consts::FRAC_1_SQRT_2)
-                    .erf()
-                    .val()),
+            0.5 * libm::erfc(-self.val * std::f64::consts::FRAC_1_SQRT_2),
             (-0.5 * self.val * self.val).exp() / (2.0 * std::f64::consts::PI).sqrt(),
         )
     }

@@ -257,8 +257,8 @@ impl Fd2dHestonEngine {
         g: &crate::HestonGrid2D,
         rate: T,
         div: T,
-        h: f64,
-        theta: f64,
+        h: T,
+        theta: T,
         bc_low: T,
         bc_high: T,
     ) -> Vec<T> {
@@ -271,7 +271,7 @@ impl Fd2dHestonEngine {
         let mut b = vec![T::zero(); nx];
         let mut sol = vec![T::zero(); nx];
         let mut tri_scratch = vec![T::zero(); nx];
-        let z = T::from_f64(theta * h);
+        let z = theta * h;
         for j in 0..nv {
             lo.fill(T::zero());
             di.fill(T::one());
@@ -310,8 +310,8 @@ impl Fd2dHestonEngine {
         g: &crate::HestonGrid2D,
         p: &HestonParams<T>,
         rate: T,
-        h: f64,
-        theta: f64,
+        h: T,
+        theta: T,
         bc_low: T,
         bc_high: T,
     ) -> Vec<T> {
@@ -322,7 +322,7 @@ impl Fd2dHestonEngine {
             out[j] = bc_low;
             out[(nx - 1) * nv + j] = bc_high;
         }
-        let z = T::from_f64(theta * h);
+        let z = theta * h;
         let mut lo = vec![T::zero(); nv];
         let mut di = vec![T::one(); nv];
         let mut up = vec![T::zero(); nv];
@@ -406,17 +406,17 @@ impl Fd2dHestonEngine {
         }
 
         let steps = self.nt.max(2);
-        let dt = expiry.val() / steps as f64;
-        let mut tau = 0.0;
+        let dt = expiry / T::from_f64(steps as f64);
+        let mut tau = T::zero();
         for step in 0..=steps {
             let (h, th, scheme) = if step < 2 {
-                (dt * 0.5, 1.0, AdiScheme::Douglas)
+                (dt * 0.5, T::one(), AdiScheme::Douglas)
             } else {
-                (dt, self.theta, self.scheme)
+                (dt, T::from_f64(self.theta), self.scheme)
             };
             tau += h;
-            let df_r = (-rate * T::from_f64(tau)).exp();
-            let df_q = (-div * T::from_f64(tau)).exp();
+            let df_r = (-rate * tau).exp();
+            let df_q = (-div * tau).exp();
             let bc_low = if lower_barrier.is_some() {
                 rebate
             } else if is_call {
@@ -439,13 +439,13 @@ impl Fd2dHestonEngine {
             let mut y0 = vec![T::zero(); u.len()];
             let mut rhs1 = vec![T::zero(); u.len()];
             for k in 0..u.len() {
-                y0[k] = old[k] + T::from_f64(h) * (a0[k] + a1[k] + a2[k]);
-                rhs1[k] = y0[k] - T::from_f64(th * h) * a1[k];
+                y0[k] = old[k] + h * (a0[k] + a1[k] + a2[k]);
+                rhs1[k] = y0[k] - th * h * a1[k];
             }
             let y1 = self.sweep_x(&rhs1, &g, rate, div, h, th, bc_low, bc_high);
             let mut rhs2 = vec![T::zero(); u.len()];
             for k in 0..u.len() {
-                rhs2[k] = y1[k] - T::from_f64(th * h) * a2[k];
+                rhs2[k] = y1[k] - th * h * a2[k];
             }
             let y2 = self.sweep_v(&rhs2, &g, p, rate, h, th, bc_low, bc_high);
 
@@ -455,13 +455,13 @@ impl Fd2dHestonEngine {
                     let (a0_y2, _, _) = self.apply(&y2, &g, p, rate, div);
                     let mut r1 = vec![T::zero(); u.len()];
                     for k in 0..u.len() {
-                        let y0_tilde = y0[k] + T::from_f64(0.5 * h) * (a0_y2[k] - a0[k]);
-                        r1[k] = y0_tilde - T::from_f64(th * h) * a1[k];
+                        let y0_tilde = y0[k] + h * 0.5 * (a0_y2[k] - a0[k]);
+                        r1[k] = y0_tilde - th * h * a1[k];
                     }
                     let y1_tilde = self.sweep_x(&r1, &g, rate, div, h, th, bc_low, bc_high);
                     let mut r2 = vec![T::zero(); u.len()];
                     for k in 0..u.len() {
-                        r2[k] = y1_tilde[k] - T::from_f64(th * h) * a2[k];
+                        r2[k] = y1_tilde[k] - th * h * a2[k];
                     }
                     self.sweep_v(&r2, &g, p, rate, h, th, bc_low, bc_high)
                 }
@@ -470,15 +470,14 @@ impl Fd2dHestonEngine {
                     let mut r1 = vec![T::zero(); u.len()];
                     for k in 0..u.len() {
                         let dl = (a0_y2[k] - a0[k]) + (a1_y2[k] - a1[k]) + (a2_y2[k] - a2[k]);
-                        let y0_hat = y0[k]
-                            + T::from_f64(th * h) * (a0_y2[k] - a0[k])
-                            + T::from_f64((0.5 - th) * h) * dl;
-                        r1[k] = y0_hat - T::from_f64(th * h) * a1[k];
+                        let y0_hat =
+                            y0[k] + th * h * (a0_y2[k] - a0[k]) + (T::from_f64(0.5) - th) * h * dl;
+                        r1[k] = y0_hat - th * h * a1[k];
                     }
                     let y1_hat = self.sweep_x(&r1, &g, rate, div, h, th, bc_low, bc_high);
                     let mut r2 = vec![T::zero(); u.len()];
                     for k in 0..u.len() {
-                        r2[k] = y1_hat[k] - T::from_f64(th * h) * a2[k];
+                        r2[k] = y1_hat[k] - th * h * a2[k];
                     }
                     self.sweep_v(&r2, &g, p, rate, h, th, bc_low, bc_high)
                 }
@@ -487,13 +486,13 @@ impl Fd2dHestonEngine {
                     let mut r1 = vec![T::zero(); u.len()];
                     for k in 0..u.len() {
                         let dl = (a0_y2[k] - a0[k]) + (a1_y2[k] - a1[k]) + (a2_y2[k] - a2[k]);
-                        let y0_tilde = y0[k] + T::from_f64(0.5 * h) * dl;
-                        r1[k] = y0_tilde - T::from_f64(th * h) * a1_y2[k];
+                        let y0_tilde = y0[k] + h * 0.5 * dl;
+                        r1[k] = y0_tilde - th * h * a1_y2[k];
                     }
                     let y1_tilde = self.sweep_x(&r1, &g, rate, div, h, th, bc_low, bc_high);
                     let mut r2 = vec![T::zero(); u.len()];
                     for k in 0..u.len() {
-                        r2[k] = y1_tilde[k] - T::from_f64(th * h) * a2_y2[k];
+                        r2[k] = y1_tilde[k] - th * h * a2_y2[k];
                     }
                     self.sweep_v(&r2, &g, p, rate, h, th, bc_low, bc_high)
                 }

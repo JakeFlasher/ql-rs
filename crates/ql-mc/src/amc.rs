@@ -1,5 +1,6 @@
 use crate::PhiloxRng;
 use nalgebra::{DMatrix, DVector};
+use ql_ad::Real;
 #[derive(Clone, Debug)]
 pub struct ExerciseBoundaryPolicy {
     pub coeffs: Vec<Vec<f64>>,
@@ -42,6 +43,24 @@ impl AmcEngine {
         expiry: f64,
         is_call: bool,
     ) -> ExerciseBoundaryPolicy {
+        self.calibrate_policy_with_div(strike, spot, vol, rate, 0.0, expiry, is_call)
+    }
+
+    /// Calibrate a Longstaff--Schwartz policy under a continuous dividend
+    /// yield.  The policy basis is unchanged; only the risk-neutral drift is
+    /// shifted from `rate` to `rate-div`.
+    #[allow(clippy::needless_range_loop)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn calibrate_policy_with_div(
+        &self,
+        strike: f64,
+        spot: f64,
+        vol: f64,
+        rate: f64,
+        div: f64,
+        expiry: f64,
+        is_call: bool,
+    ) -> ExerciseBoundaryPolicy {
         let n = self.n_steps.max(1);
         let paths = self.n_calibration_paths.max(self.basis_degree + 2);
         let dt = expiry / n as f64;
@@ -51,7 +70,8 @@ impl AmcEngine {
             s[p][0] = spot;
             for j in 0..n {
                 let z = rng.normal4(p as u64, j as u32)[0];
-                s[p][j + 1] = s[p][j] * ((rate - 0.5 * vol * vol) * dt + vol * dt.sqrt() * z).exp();
+                s[p][j + 1] =
+                    s[p][j] * ((rate - div - 0.5 * vol * vol) * dt + vol * dt.sqrt() * z).exp();
             }
         }
         let mut cf = (0..paths)
@@ -97,6 +117,18 @@ impl AmcEngine {
             spot_scale: spot.max(strike),
         }
     }
+
+    pub fn calibrate_put_policy_with_div(
+        &self,
+        strike: f64,
+        spot: f64,
+        vol: f64,
+        rate: f64,
+        div: f64,
+        expiry: f64,
+    ) -> ExerciseBoundaryPolicy {
+        self.calibrate_policy_with_div(strike, spot, vol, rate, div, expiry, false)
+    }
     #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
     pub fn price_with_policy(
         &self,
@@ -105,6 +137,21 @@ impl AmcEngine {
         spot: f64,
         vol: f64,
         rate: f64,
+        expiry: f64,
+        is_call: bool,
+    ) -> (f64, f64) {
+        self.price_with_policy_and_div(policy, strike, spot, vol, rate, 0.0, expiry, is_call)
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+    pub fn price_with_policy_and_div(
+        &self,
+        policy: &ExerciseBoundaryPolicy,
+        strike: f64,
+        spot: f64,
+        vol: f64,
+        rate: f64,
+        div: f64,
         expiry: f64,
         is_call: bool,
     ) -> (f64, f64) {
@@ -118,7 +165,7 @@ impl AmcEngine {
             let mut payoff = None;
             for j in 1..=n {
                 let z = rng.normal4(p as u64, j as u32)[0];
-                s *= ((rate - 0.5 * vol * vol) * dt + vol * dt.sqrt() * z).exp();
+                s *= ((rate - div - 0.5 * vol * vol) * dt + vol * dt.sqrt() * z).exp();
                 let g = intrinsic(s, strike, is_call);
                 if j < n && !policy.coeffs[j].is_empty() && g > 0. {
                     let b = basis(s / strike - 1., self.basis_degree);
@@ -145,6 +192,52 @@ impl AmcEngine {
             / self.n_valuation_paths.max(1) as f64)
             .sqrt();
         (mean, se)
+    }
+
+    /// Pathwise AD valuation with a frozen exercise policy.  The stopping
+    /// decision is deliberately made on primal values (the envelope theorem),
+    /// while the discounted payoff remains in the generic AD domain.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::needless_range_loop)]
+    pub fn price_with_policy_ad<T: Real>(
+        &self,
+        policy: &ExerciseBoundaryPolicy,
+        spot: T,
+        strike: T,
+        rate: T,
+        div: T,
+        vol: T,
+        expiry: T,
+    ) -> T {
+        let n = self.n_steps.max(1);
+        let dt = expiry / T::from_f64(n as f64);
+        let rng = PhiloxRng::new(self.seed + 1_000_000);
+        let mut total = T::zero();
+        for p in 0..self.n_valuation_paths.max(1) {
+            let mut s = spot;
+            let mut payoff = T::zero();
+            for j in 1..=n {
+                let z = rng.normal4(p as u64, j as u32)[0];
+                s *= ((rate - div - vol * vol * 0.5) * dt + vol * dt.sqrt() * z).exp();
+                let exercise = (strike - s).max_val(T::zero());
+                let cont = if j < n && !policy.coeffs[j].is_empty() {
+                    let x = s.val() / strike.val() - 1.0;
+                    policy.coeffs[j]
+                        .iter()
+                        .zip(basis(x, self.basis_degree))
+                        .map(|(a, b)| a * b)
+                        .sum::<f64>()
+                } else {
+                    f64::NEG_INFINITY
+                };
+                if j == n || (exercise.val() > cont && exercise.val() > 0.0) {
+                    payoff = exercise * (-rate * dt * j as f64).exp();
+                    break;
+                }
+            }
+            total += payoff;
+        }
+        total / self.n_valuation_paths.max(1) as f64
     }
     pub fn price_american(
         &self,

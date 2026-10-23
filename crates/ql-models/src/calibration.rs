@@ -1,6 +1,6 @@
 use crate::{CosHestonEngine, HestonParams};
 use nalgebra::{DMatrix, DVector};
-use ql_ad::{Dual, IftSystemSensitivity};
+use ql_ad::{Dual, Dual2, IftSystemSensitivity};
 use ql_math::{MathError, levenberg_marquardt};
 #[derive(Copy, Clone, Debug)]
 pub struct HestonMarketQuote {
@@ -73,7 +73,43 @@ pub fn calibrate_heston(
     };
     let (r, j) = f(&sol);
     let rmse = (r.norm_squared() / quotes.len().max(1) as f64).sqrt();
-    let sens = IftSystemSensitivity::new(j.transpose() * &j, -j.transpose());
+    let mut h_opt = j.transpose() * &j;
+    for q in quotes {
+        let vars = [
+            Dual2::<5>::variable(params.v0, 0),
+            Dual2::<5>::variable(params.kappa, 1),
+            Dual2::<5>::variable(params.theta, 2),
+            Dual2::<5>::variable(params.sigma_v, 3),
+            Dual2::<5>::variable(params.rho, 4),
+        ];
+        let p2 = engine.price(
+            &HestonParams {
+                v0: vars[0],
+                kappa: vars[1],
+                theta: vars[2],
+                sigma_v: vars[3],
+                rho: vars[4],
+            },
+            Dual2::from_value(spot),
+            Dual2::from_value(q.strike),
+            Dual2::from_value(rate),
+            Dual2::from_value(div),
+            Dual2::from_value(q.expiry),
+            q.is_call,
+        );
+        let residual = p2.val - q.market_price;
+        for i in 0..5 {
+            for jcol in 0..5 {
+                h_opt[(i, jcol)] += residual * p2.d2[i][jcol];
+            }
+        }
+    }
+    if h_opt.determinant().abs() < 1e-14 {
+        for i in 0..5 {
+            h_opt[(i, i)] += 1e-8;
+        }
+    }
+    let sens = IftSystemSensitivity::new(h_opt, -j.transpose());
     Ok(CalibratedHestonModel {
         params,
         rmse,

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0] — Institutional analytics
+
+- Remediated second-order IFT curvature, AD expiry jets, tail-safe normal tails, exact Heston calibration Hessians, portfolio rate DV01s, AMC envelope AD, commodity VJPs, Dupire jets, and differential-regression scaling.
+- Added analytical American option engines, hybrid Heston/Hull–White pricing, rainbow/spread/basket/cliquet APIs, CMS spread pricing, catastrophe bonds, and Black–Litterman/risk-parity allocation.
+- Expanded the statistical benchmark harness to 20 suites and the terminal SDK to 18 logical tabs; regenerated the 20-row benchmark reports.
+
 ## [0.1.0] — Release
 
 Initial release of the 23-crate `ql-rs` workspace.

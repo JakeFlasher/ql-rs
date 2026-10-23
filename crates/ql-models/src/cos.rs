@@ -130,7 +130,7 @@ impl CosHestonEngine {
         cf: F,
         v0: T,
         theta: T,
-        sigma_v: T,
+        _sigma_v: T,
         kappa: T,
         spot: T,
         rate: T,
@@ -139,20 +139,29 @@ impl CosHestonEngine {
         strikes: &[T],
         is_call: bool,
     ) -> Vec<T> {
-        let t = expiry.val().max(1e-8);
-        let c1 = (rate.val() - div.val() - 0.5 * theta.val()) * t
-            + (1. - (-kappa.val() * t).exp()) * (theta.val() - v0.val())
-                / (2. * kappa.val().max(1e-8));
-        let var = (0.5 * (v0.val() + theta.val()) + 0.1 * sigma_v.val() * sigma_v.val()) * t;
-        let w = self.l_trunc * var.max(1e-8).sqrt();
+        let t = expiry.max_val(T::from_f64(1e-8));
+        let mean_var = if kappa.val().abs() < 1e-10 {
+            v0 * t
+        } else {
+            theta * t + (v0 - theta) * (T::one() - (-kappa * t).exp()) / kappa
+        };
+        // The log-price cumulant variance is the integrated variance in the
+        // continuous-volatility limit; the stochastic-volatility correction
+        // is bounded by the same positive quantity and is handled by the
+        // characteristic function.  Unlike the former heuristic, this
+        // expression has the correct short/long maturity scaling and keeps
+        // expiry and parameter jets in the AD domain.
+        let var = mean_var.max_val(T::from_f64(1e-12));
+        let c1 = (rate - div) * t - var * 0.5;
+        let w = T::from_f64(self.l_trunc) * var.sqrt();
         let a = c1 - w;
         let b = c1 + w;
         let width = b - a;
         let mut ph = Vec::with_capacity(self.n_terms);
         for k in 0..self.n_terms {
-            ph.push(cf(Complex::from_real(T::from_f64(
-                k as f64 * std::f64::consts::PI / width,
-            ))));
+            ph.push(cf(Complex::from_real(
+                T::from_f64(k as f64 * std::f64::consts::PI) / width,
+            )));
         }
         strikes
             .iter()
@@ -160,12 +169,12 @@ impl CosHestonEngine {
                 let x0 = (spot / k).ln();
                 let mut put = T::zero();
                 for n in 0..self.n_terms {
-                    let om = n as f64 * std::f64::consts::PI / width;
+                    let om = T::from_f64(n as f64 * std::f64::consts::PI) / width;
                     let psi = if n == 0 { -a } else { (-om * a).sin() / om };
-                    let chi = ((-om * a).cos() - a.exp() + om * (-om * a).sin()) / (1. + om * om);
-                    let vk = T::from_f64(2. / width * (-chi + psi));
-                    let phase =
-                        Complex::new(T::zero(), T::from_f64(om) * (x0 - T::from_f64(a))).exp();
+                    let chi =
+                        ((-om * a).cos() - a.exp() + om * (-om * a).sin()) / (T::one() + om * om);
+                    let vk = T::from_f64(2.0) / width * (-chi + psi);
+                    let phase = Complex::new(T::zero(), om * (x0 - a)).exp();
                     let term = (ph[n] * phase).re * vk;
                     put += if n == 0 { term * 0.5 } else { term };
                 }

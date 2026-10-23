@@ -2,7 +2,7 @@
 
 ## Verdict
 
-`ql-rs` is a cohesive 23-crate, MIT/Apache-2.0 quantitative-finance workspace. It keeps the domain fidelity that made QuantLib useful while replacing hidden mutation with immutable values, generic scalar kernels, exact IFT risk, data-oriented storage, and explicit parallel execution. The implementation is accompanied by 18 numerical benchmark suites and a 34-paper research catalog.
+`ql-rs` is a cohesive 23-crate, MIT/Apache-2.0 quantitative-finance workspace. It keeps the domain fidelity that made QuantLib useful while replacing hidden mutation with immutable values, generic scalar kernels, exact first- and second-order IFT risk, data-oriented storage, and explicit parallel execution. The implementation is accompanied by 20 numerical benchmark suites and a 42-paper research catalog.
 
 ## Three empirical pillars
 
@@ -38,9 +38,9 @@ The comparison in `03_CROSS_LANGUAGE_BENCHMARK_ARCHITECTURES.md` shows that the 
 | `03_CROSS_LANGUAGE_BENCHMARK_ARCHITECTURES.md` | Immutable, AAD, XVA, and scripting architecture patterns. |
 | `04_SOTA_QUANT_COMPUTING_PARADIGMS.md` | Mathematical foundations for AD, IFT, PDE, MC, and XVA. |
 | `05_BLUEPRINT_MODERN_RUST_QUANTLIB.md` | Detailed 23-crate software and mathematical blueprint. |
-| `06_LITERATURE_AND_REFERENCES.md` | Annotated 34-paper and repository bibliography. |
+| `06_LITERATURE_AND_REFERENCES.md` | Annotated 42-paper and repository bibliography. |
 | `07_BENCHMARK_METHODOLOGY_AND_STUDY.md` | Harness design, suite descriptions, and empirical interpretation. |
-| `08_BENCHMARK_RESULTS.md` | Reproducible 18-suite benchmark output. |
+| `08_BENCHMARK_RESULTS.md` | Reproducible 20-suite benchmark output. |
 
 ## Release verification
 

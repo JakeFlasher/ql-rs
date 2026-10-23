@@ -10,6 +10,7 @@ categories=["finance"]
 rayon.workspace = true
 ql-ad.workspace = true
 ql-math.workspace = true
+nalgebra.workspace = true
 ql-time.workspace = true
 ql-curves.workspace = true
 ql-vol.workspace = true

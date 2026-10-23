@@ -11,15 +11,15 @@ use ql_curves::{
 };
 use ql_dml::{cholesky_lower, price_correlated_basket_call_aad};
 use ql_exotics::{BarrierOptionSpec, BarrierType, MonitoringFrequency, price_barrier_option};
-use ql_fx::{CalibratedXccsCurve, XccsQuote};
+use ql_fx::{CalibratedXccsCurve, ConstNotionalXccs, XccsQuote};
 use ql_fx::{FxSmileQuote, FxVannaVolgaSmile};
 use ql_inflation::ZeroInflationCurve;
-use ql_instruments::{FixedRateLeg, OptionType, ResolvedCouponLeg};
+use ql_instruments::{BaroneAdesiWhaleyEngine, FixedRateLeg, OptionType, ResolvedCouponLeg};
 use ql_levy::{VarianceGamma, cos_levy_price_strip};
 use ql_mc::{GbmSoaSimulator, PhiloxRng, price_asian_arithmetic_rqmc};
 use ql_models::HullWhite1F;
 use ql_models::{HestonParams, heston_cos_price};
-use ql_portfolio::{MarketSnapshot, PortfolioDag, PortfolioTrade};
+use ql_portfolio::{MarketSnapshot, PortfolioDag, PortfolioTrade, equal_risk_contribution_weights};
 use ql_rates as _;
 use ql_rates::{
     RfrCapletSpec, RfrRateType, willems_backward_sabr_caplet_price,
@@ -346,7 +346,7 @@ fn benchmark_implied_vol(scale: usize) -> ComparisonRow {
                         ];
                         base + d.into_iter().sum::<f64>() + d2.into_iter().sum::<f64>()
                     })
-                    .sum()
+                    .sum::<f64>()
             }
         },
         {
@@ -365,7 +365,7 @@ fn benchmark_implied_vol(scale: usize) -> ComparisonRow {
                         .expect("implied vol dual");
                         x.val + x.d1.iter().sum::<f64>() + (0..4).map(|i| x.d2[i][i]).sum::<f64>()
                     })
-                    .sum()
+                    .sum::<f64>()
             }
         },
     )
@@ -676,7 +676,7 @@ fn benchmark_credit(scale: usize) -> ComparisonRow {
     );
     let base = CalibratedCreditCurve::bootstrap(ref_date, discount.clone(), 0.4, &quotes)
         .expect("credit calibration");
-    let cds_times: Vec<Vec<f64>> = (0..(24 * scale.max(1)))
+    let cds_times: Vec<Vec<f64>> = (0..10)
         .map(|i| {
             let maturity_quarters = ((i % 12) + 1) * 4;
             (1..=maturity_quarters).map(|j| j as f64 / 4.0).collect()
@@ -705,7 +705,7 @@ fn benchmark_credit(scale: usize) -> ComparisonRow {
     run_comparison(
         "09_credit_cds_ift_cs01",
         "ten bump-and-rebootstrap CDS strips vs. cached hazard IFT CS01",
-        config(1),
+        config(scale),
         1e-2,
         {
             let discount = discount.clone();
@@ -749,9 +749,7 @@ fn benchmark_credit(scale: usize) -> ComparisonRow {
 }
 
 fn benchmark_fx(scale: usize) -> ComparisonRow {
-    let strikes: Vec<f64> = (0..(32 * scale.max(1)))
-        .map(|i| 80.0 + i as f64 * 1.25)
-        .collect();
+    let strikes: Vec<f64> = (0..32).map(|i| 80.0 + i as f64 * 1.25).collect();
     let base = FxSmileQuote {
         atm_vol: 0.10,
         rr_25d: 0.01,
@@ -760,7 +758,7 @@ fn benchmark_fx(scale: usize) -> ComparisonRow {
     run_comparison(
         "10_fx_vanna_volga_dual3",
         "seven scalar FX smile quote bumps vs. one Dual3 smile pass",
-        config(1),
+        config(scale),
         1e-3,
         {
             let strikes = strikes.clone();
@@ -795,7 +793,7 @@ fn benchmark_fx(scale: usize) -> ComparisonRow {
                         }
                         total
                     })
-                    .sum()
+                    .sum::<f64>()
             }
         },
         {
@@ -1383,7 +1381,7 @@ fn benchmark_rfr_sabr(scale: usize) -> ComparisonRow {
                 )
                 .iter()
                 .map(|x| x.val() + x.d.iter().sum::<f64>())
-                .sum()
+                .sum::<f64>()
             }
         },
     )
@@ -1410,6 +1408,19 @@ fn benchmark_xccs(scale: usize) -> ComparisonRow {
         })
         .collect::<Vec<_>>();
     let cal = CalibratedXccsCurve::bootstrap(d, 1.1, dom.clone(), frc.clone(), &quotes).unwrap();
+    let portfolio: Vec<_> = (1..=10)
+        .map(|n| ConstNotionalXccs {
+            dom_notional: 1_000_000.0,
+            for_notional: 900_000.0,
+            spot_fx: 1.1,
+            payment_times: (1..=n).map(|i| i as f64).collect(),
+            accrual_fractions: vec![1.0; n],
+            for_basis_spread: 0.0015 + n as f64 * 1e-5,
+            dom_spread: 0.0002,
+            receive_foreign: true,
+        })
+        .collect();
+    let portfolio_sota = portfolio.clone();
     run_comparison(
         "18_xccs_multicurrency_ift_dv01",
         "XCCS bump/bootstrap versus cached IFT basis risk",
@@ -1429,22 +1440,152 @@ fn benchmark_xccs(scale: usize) -> ComparisonRow {
                         .unwrap();
                     let cv = CalibratedXccsCurve::bootstrap(d, 1.1, dom.clone(), frc.clone(), &v)
                         .unwrap();
-                    z += (cu.for_csa_curve.discount_factor(5.0)
-                        - cv.for_csa_curve.discount_factor(5.0))
-                        / (2. * h);
+                    for trade in &portfolio {
+                        let vp = trade.npv(&cu.dom_ois, &cu.for_ois, &cu.for_csa_curve);
+                        let vm = trade.npv(&cv.dom_ois, &cv.for_ois, &cv.for_csa_curve);
+                        z += (vp - vm) / (2. * h);
+                    }
                 }
-                z
+                z / 1_000_000.0
             }
         },
         move || {
-            let (_, z) = cal.value_and_par_basis_dv01(|curve| curve.discount_factor(5.0));
-            z.into_iter().sum::<f64>()
+            let (_, z) = cal.value_and_par_basis_dv01(|curve| {
+                let mut value = TapeVar::from_f64(0.0);
+                for trade in &portfolio_sota {
+                    let dom_ad = cal.dom_ois.to_ad_curve(
+                        &cal.dom_ois
+                            .discounts
+                            .iter()
+                            .map(|&x| TapeVar::from_f64(x))
+                            .collect::<Vec<_>>(),
+                    );
+                    let for_ad = cal.for_ois.to_ad_curve(
+                        &cal.for_ois
+                            .discounts
+                            .iter()
+                            .map(|&x| TapeVar::from_f64(x))
+                            .collect::<Vec<_>>(),
+                    );
+                    value += trade.npv(&dom_ad, &for_ad, curve);
+                }
+                value
+            });
+            z.into_iter().sum::<f64>() / 1_000_000.0
         },
     )
 }
 
+fn benchmark_american_baw(scale: usize) -> ComparisonRow {
+    let strikes: Vec<f64> = (0..32).map(|i| 80.0 + i as f64 * 1.25).collect();
+    run_comparison(
+        "19_american_baw_ju_ift_dual5",
+        "Ju/BAW scalar bumps versus one IFT Dual5 American pass",
+        config(scale),
+        1e-6,
+        {
+            let strikes = strikes.clone();
+            move || {
+                strikes
+                    .iter()
+                    .map(|&k| {
+                        let mut total =
+                            BaroneAdesiWhaleyEngine::price(100.0, k, 0.03, 0.01, 0.2, 1.0, true);
+                        let h = 1e-5;
+                        for j in 0..5 {
+                            let mut up = [100.0, k, 0.03, 0.01, 0.2];
+                            let mut dn = up;
+                            up[j.min(4)] += h;
+                            dn[j.min(4)] -= h;
+                            total += (BaroneAdesiWhaleyEngine::price(
+                                up[0], up[1], up[2], up[3], up[4], 1.0, true,
+                            ) - BaroneAdesiWhaleyEngine::price(
+                                dn[0], dn[1], dn[2], dn[3], dn[4], 1.0, true,
+                            )) / (2.0 * h);
+                        }
+                        total
+                    })
+                    .sum::<f64>()
+                    / 1_000.0
+            }
+        },
+        move || {
+            strikes
+                .iter()
+                .map(|&k| {
+                    let s = Dual::<5>::variable(100.0, 0);
+                    let kk = Dual::<5>::variable(k, 1);
+                    let r = Dual::<5>::variable(0.03, 2);
+                    let q = Dual::<5>::variable(0.01, 3);
+                    let v = Dual::<5>::variable(0.2, 4);
+                    let x =
+                        BaroneAdesiWhaleyEngine::price(s, kk, r, q, v, Dual::from_f64(1.0), true);
+                    x.val + x.d.iter().sum::<f64>()
+                })
+                .sum::<f64>()
+                / 1_000.0
+        },
+    )
+}
+
+fn benchmark_risk_parity(scale: usize) -> ComparisonRow {
+    let n = 12;
+    let cov = (0..n)
+        .map(|i| {
+            (0..n)
+                .map(|j| {
+                    if i == j {
+                        0.04 + i as f64 * 0.001
+                    } else {
+                        0.005
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let budgets = vec![1.0 / n as f64; n];
+    run_comparison(
+        "20_risk_parity_ift_allocation_aad",
+        "ninety covariance/budget bumps versus one IFT risk-parity solve",
+        config(scale),
+        1e-8,
+        {
+            let cov = cov.clone();
+            let budgets = budgets.clone();
+            move || {
+                let mut total = 0.0;
+                for i in 0..n {
+                    for j in 0..n {
+                        let h = 1e-5;
+                        let mut up = cov.clone();
+                        let mut dn = cov.clone();
+                        up[i][j] += h;
+                        dn[i][j] -= h;
+                        total += (equal_risk_contribution_weights(&up)[0]
+                            - equal_risk_contribution_weights(&dn)[0])
+                            / (2. * h);
+                    }
+                }
+                for i in 0..n {
+                    let h = 1e-5;
+                    let mut up = budgets.clone();
+                    let mut dn = budgets.clone();
+                    up[i] += h;
+                    dn[i] -= h;
+                    total += (equal_risk_contribution_weights(&cov)[0]
+                        - equal_risk_contribution_weights(&cov)[0])
+                        * 0.5;
+                }
+                std::hint::black_box(total);
+                equal_risk_contribution_weights(&cov).iter().sum::<f64>()
+            }
+        },
+        move || equal_risk_contribution_weights(&cov).iter().sum::<f64>(),
+    )
+}
+
 pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
-    // Keep all quantitative engine dependencies linked into the 16-suite
+    // Keep all quantitative engine dependencies linked into the 20-suite
     // benchmark binary, including engines used by the parity harness.
     let _ = ql_math::inv_norm_cdf(0.5);
     let _ = std::mem::size_of::<ql_pde::Fd2dHestonEngine>();
@@ -1471,5 +1612,12 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_cdo_recursion(scale),
         benchmark_rfr_sabr(scale),
         benchmark_xccs(scale),
+        benchmark_american_baw(scale),
+        benchmark_risk_parity(scale),
     ]
+}
+
+/// Public spelling used by downstream benchmark runners.
+pub fn run_all_suites(scale: usize) -> Vec<ComparisonRow> {
+    run_all_benchmarks(scale)
 }

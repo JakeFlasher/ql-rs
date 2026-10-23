@@ -14,3 +14,4 @@ ql-math.workspace = true
 ql-curves.workspace = true
 libm.workspace = true
 ql-time.workspace = true
+ql-vol.workspace = true

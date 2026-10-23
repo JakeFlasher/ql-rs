@@ -1,7 +1,8 @@
 use crate::curves::{DiscountCurve, YieldTermStructure};
-use nalgebra::DMatrix;
-use ql_ad::{Dual, IftSystemSensitivity, Real, TapeScope, TapeVar};
+use nalgebra::{DMatrix, DVector};
+use ql_ad::{Dual, Dual2, IftSystemSensitivity, Real, TapeScope, TapeVar};
 use ql_time::{Date, DayCounter, Frequency, Period};
+use std::any::Any;
 use thiserror::Error;
 
 #[derive(Debug, Error, Clone)]
@@ -174,6 +175,55 @@ pub struct CalibratedCurveSystem {
     pub quotes: Vec<f64>,
     pub curves: Vec<DiscountCurve<f64>>,
     pub sensitivity: IftSystemSensitivity,
+    /// Calibration instruments retained so second-order quote curvature can
+    /// include the implicit-function constraint Hessians.
+    pub instruments: Vec<RateInstrumentSpec>,
+    pub ois_pillars: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum RateInstrumentKind {
+    Deposit(DepositInstrument),
+    OisSwap(OisSwapInstrument),
+    IrsSwap(IrsSwapInstrument),
+}
+
+#[derive(Debug, Clone)]
+pub struct RateInstrumentSpec {
+    pub kind: RateInstrumentKind,
+    pub reference_date: Date,
+    pub ois_times: Vec<f64>,
+    pub fwd_times: Vec<f64>,
+}
+
+impl RateInstrumentSpec {
+    fn residual<T: Real>(&self, parameters: &[T], ois_pillars: usize) -> T {
+        let ois = DiscountCurve::new(
+            self.reference_date,
+            self.ois_times.clone(),
+            parameters[..ois_pillars].to_vec(),
+        );
+        match &self.kind {
+            RateInstrumentKind::Deposit(x) => x.residual(&ois),
+            RateInstrumentKind::OisSwap(x) => x.residual(&ois),
+            RateInstrumentKind::IrsSwap(x) => {
+                let fwd = DiscountCurve::new(
+                    self.reference_date,
+                    self.fwd_times.clone(),
+                    parameters[ois_pillars..].to_vec(),
+                );
+                x.residual_with_discount(&fwd, &ois)
+            }
+        }
+    }
+}
+
+pub fn instrument_residual_with_pillars<T: Real>(
+    instrument: &RateInstrumentSpec,
+    parameters: &[T],
+    ois_pillars: usize,
+) -> T {
+    instrument.residual(parameters, ois_pillars)
 }
 impl CalibratedCurveSystem {
     pub fn from_single_curve_helpers(
@@ -202,13 +252,33 @@ impl CalibratedCurveSystem {
             }
         }
         let jq = -DMatrix::identity(k, k);
-        Ok(Self::new(
+        let mut out = Self::new(
             theta.clone(),
             helpers.iter().map(|h| h.quote_value()).collect(),
             jt,
             jq,
             vec![curve],
-        ))
+        );
+        let times = out.curves[0].times.clone();
+        out.instruments = helpers
+            .iter()
+            .filter_map(|h| {
+                let kind = if let Some(x) = h.as_any().downcast_ref::<DepositInstrument>() {
+                    RateInstrumentKind::Deposit(x.clone())
+                } else {
+                    let x = h.as_any().downcast_ref::<OisSwapInstrument>()?;
+                    RateInstrumentKind::OisSwap(x.clone())
+                };
+                Some(RateInstrumentSpec {
+                    kind,
+                    reference_date,
+                    ois_times: times.clone(),
+                    fwd_times: Vec::new(),
+                })
+            })
+            .collect();
+        out.ois_pillars = helpers.len();
+        Ok(out)
     }
     pub fn from_multicurve_helpers(
         reference_date: Date,
@@ -266,7 +336,34 @@ impl CalibratedCurveSystem {
             .map(|h| h.quote_value())
             .collect::<Vec<_>>();
         quotes.extend(fwd_helpers.iter().map(|h| h.fixed_rate));
-        Ok(Self::new(params, quotes, jt, jq, vec![ois, fwd]))
+        let ois_times = ois.times.clone();
+        let fwd_times = fwd.times.clone();
+        let mut instruments = Vec::with_capacity(k);
+        for h in ois_helpers {
+            let kind = if let Some(x) = h.as_any().downcast_ref::<DepositInstrument>() {
+                RateInstrumentKind::Deposit(x.clone())
+            } else if let Some(x) = h.as_any().downcast_ref::<OisSwapInstrument>() {
+                RateInstrumentKind::OisSwap(x.clone())
+            } else {
+                continue;
+            };
+            instruments.push(RateInstrumentSpec {
+                kind,
+                reference_date,
+                ois_times: ois_times.clone(),
+                fwd_times: fwd_times.clone(),
+            });
+        }
+        instruments.extend(fwd_helpers.iter().cloned().map(|x| RateInstrumentSpec {
+            kind: RateInstrumentKind::IrsSwap(x),
+            reference_date,
+            ois_times: ois_times.clone(),
+            fwd_times: fwd_times.clone(),
+        }));
+        let mut out = Self::new(params, quotes, jt, jq, vec![ois, fwd]);
+        out.instruments = instruments;
+        out.ois_pillars = ois_helpers.len();
+        Ok(out)
     }
 }
 impl CalibratedCurveSystem {
@@ -277,11 +374,14 @@ impl CalibratedCurveSystem {
         j_q: DMatrix<f64>,
         curves: Vec<DiscountCurve<f64>>,
     ) -> Self {
+        let ois_pillars = curves.first().map_or(0, |c| c.times.len());
         Self {
             parameters,
             quotes,
             curves,
             sensitivity: IftSystemSensitivity::new(j_theta, j_q),
+            instruments: Vec::new(),
+            ois_pillars,
         }
     }
     pub fn vjp(&self, p: &[f64]) -> Vec<f64> {
@@ -340,12 +440,36 @@ impl CalibratedCurveSystem {
             }
         }
         let j = self.sensitivity.jacobian_dtheta_dq();
-        let gamma = j.transpose() * h * j;
+        let mut h_eff = h;
+        if self.instruments.len() == k {
+            let lambda = self
+                .sensitivity
+                .lu_t
+                .solve(&DVector::from_vec(g.clone()))
+                .expect("singular IFT Jacobian");
+            let seeded: Vec<Dual2<64>> = self
+                .parameters
+                .iter()
+                .enumerate()
+                .map(|(i, &x)| Dual2::<64>::variable(x, i))
+                .collect();
+            for (m, instrument) in self.instruments.iter().enumerate() {
+                let residual =
+                    instrument_residual_with_pillars(instrument, &seeded, self.ois_pillars);
+                for i in 0..k {
+                    for jcol in 0..k {
+                        h_eff[(i, jcol)] -= lambda[m] * residual.d2[i][jcol];
+                    }
+                }
+            }
+        }
+        let gamma = j.transpose() * h_eff * j;
         let dv = self.sensitivity.vjp(&g);
         (value, dv, gamma)
     }
 }
-pub trait SingleCurveHelper: Send + Sync {
+pub trait SingleCurveHelper: Send + Sync + Any {
+    fn as_any(&self) -> &dyn Any;
     fn pillar_time(&self, reference_date: Date) -> f64;
     fn quote_value(&self) -> f64;
     fn residual_curve(&self, curve: &DiscountCurve<f64>) -> f64;
@@ -378,6 +502,9 @@ pub trait SingleCurveHelper: Send + Sync {
     }
 }
 impl SingleCurveHelper for DepositInstrument {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
     fn pillar_time(&self, reference_date: Date) -> f64 {
         (self.end - reference_date) as f64 / 365.0
     }
@@ -392,6 +519,9 @@ impl SingleCurveHelper for DepositInstrument {
     }
 }
 impl SingleCurveHelper for FraInstrument {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
     fn pillar_time(&self, reference_date: Date) -> f64 {
         (self.fixing_end - reference_date) as f64 / 365.0
     }
@@ -494,6 +624,9 @@ impl BasisSwapInstrument {
     }
 }
 impl SingleCurveHelper for OisSwapInstrument {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
     fn pillar_time(&self, reference_date: Date) -> f64 {
         (self.end - reference_date) as f64 / 365.0
     }

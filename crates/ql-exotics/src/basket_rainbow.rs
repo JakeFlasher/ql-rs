@@ -1,0 +1,171 @@
+use ql_ad::Real;
+use ql_math::bivariate_normal_cdf;
+use ql_vol::black_scholes_price;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum RainbowKind {
+    CallOnMin,
+    CallOnMax,
+    PutOnMin,
+    PutOnMax,
+}
+
+fn dvals<T: Real>(s: T, k: T, r: T, q: T, v: T, t: T) -> (T, T) {
+    let st = v * t.sqrt();
+    let d1 = ((s / k).ln() + (r - q + v * v * 0.5) * t) / st;
+    (d1, d1 - st)
+}
+
+pub struct StulzRainbowEngine;
+impl StulzRainbowEngine {
+    #[allow(clippy::too_many_arguments)]
+    pub fn price<T: Real>(
+        s1: T,
+        s2: T,
+        k: T,
+        r: T,
+        q1: T,
+        q2: T,
+        v1: T,
+        v2: T,
+        rho: T,
+        t: T,
+        kind: RainbowKind,
+    ) -> T {
+        if k.val() <= 0.0 {
+            return match kind {
+                RainbowKind::CallOnMin => Self::expected_min(s1, s2, q1, q2, v1, v2, rho, t),
+                RainbowKind::CallOnMax => s1 * (-q1 * t).exp() + s2 * (-q2 * t).exp(),
+                RainbowKind::PutOnMin | RainbowKind::PutOnMax => T::zero(),
+            };
+        }
+        let (a1, b1) = dvals(s1, k, r, q1, v1, t);
+        let (a2, b2) = dvals(s2, k, r, q2, v2, t);
+        let cmin = s1 * (-q1 * t).exp() * bivariate_normal_cdf(a1, a2, rho)
+            + s2 * (-q2 * t).exp() * bivariate_normal_cdf(a2, a1, rho)
+            - k * (-r * t).exp() * bivariate_normal_cdf(b1, b2, rho);
+        let c1 = black_scholes_price(s1, k, v1, t, r, q1, true);
+        let c2 = black_scholes_price(s2, k, v2, t, r, q2, true);
+        let cmax = c1 + c2 - cmin;
+        let emin = Self::expected_min(s1, s2, q1, q2, v1, v2, rho, t);
+        let emax = s1 * (-q1 * t).exp() + s2 * (-q2 * t).exp() - emin;
+        match kind {
+            RainbowKind::CallOnMin => cmin,
+            RainbowKind::CallOnMax => cmax,
+            RainbowKind::PutOnMin => cmin - emin + k * (-r * t).exp(),
+            RainbowKind::PutOnMax => cmax - emax + k * (-r * t).exp(),
+        }
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn expected_min<T: Real>(s1: T, s2: T, q1: T, q2: T, v1: T, v2: T, rho: T, t: T) -> T {
+        let var = (v1 * v1 + v2 * v2 - rho * 2.0 * v1 * v2).max_val(T::from_f64(1e-14));
+        let st = var.sqrt() * t.sqrt();
+        if st.val() < 1e-8 {
+            return s1.min_val(s2);
+        }
+        let d = ((s1 / s2).ln() + (q2 - q1 + var * 0.5) * t) / st;
+        s1 * (-q1 * t).exp() * d.norm_cdf() + s2 * (-q2 * t).exp() * (-d + st).norm_cdf()
+    }
+}
+
+pub struct TwoAssetCorrelationEngine;
+impl TwoAssetCorrelationEngine {
+    #[allow(clippy::too_many_arguments)]
+    pub fn price<T: Real>(
+        s1: T,
+        s2: T,
+        k1: T,
+        k2: T,
+        r: T,
+        q1: T,
+        q2: T,
+        v1: T,
+        v2: T,
+        rho: T,
+        t: T,
+        is_call: bool,
+    ) -> T {
+        let (d11, d21) = dvals(s1, k1, r, q1, v1, t);
+        let (d12, d22) = dvals(s2, k2, r, q2, v2, t);
+        let joint = s1 * (-q1 * t).exp() * bivariate_normal_cdf(d11, d12, rho)
+            + s2 * (-q2 * t).exp() * bivariate_normal_cdf(d12, d11, rho)
+            - (k1 + k2) * (-r * t).exp() * bivariate_normal_cdf(d21, d22, rho);
+        let _ = is_call;
+        joint.max_val(T::zero())
+    }
+}
+
+pub struct DengLiZhouSpreadBasketEngine;
+impl DengLiZhouSpreadBasketEngine {
+    #[allow(clippy::too_many_arguments)]
+    pub fn price_spread<T: Real>(
+        s1: T,
+        s2: T,
+        k: T,
+        r: T,
+        q1: T,
+        q2: T,
+        v1: T,
+        v2: T,
+        rho: T,
+        t: T,
+        is_call: bool,
+    ) -> T {
+        if k.val().abs() < 1e-14 {
+            let vv = (v1 * v1 + v2 * v2 - rho * 2.0 * v1 * v2).max_val(T::from_f64(1e-14));
+            let st = vv.sqrt() * t.sqrt();
+            let d1 = ((s1 / s2).ln() + (q2 - q1 + vv * 0.5) * t) / st;
+            let d2 = d1 - st;
+            let call = s1 * (-q1 * t).exp() * d1.norm_cdf() - s2 * (-q2 * t).exp() * d2.norm_cdf();
+            return if is_call {
+                call
+            } else {
+                call - s1 * (-q1 * t).exp() + s2 * (-q2 * t).exp()
+            };
+        }
+        let f1 = s1 * ((r - q1) * t).exp();
+        let f2 = s2 * ((r - q2) * t).exp();
+        let f = f1 / (f1 + f2).max_val(T::from_f64(1e-14));
+        let v = (v1 * v1 * f * f
+            + v2 * v2 * (T::one() - f) * (T::one() - f)
+            + rho * 2.0 * v1 * v2 * f * (T::one() - f))
+            .max_val(T::zero())
+            .sqrt();
+        let k_adj = k + f2;
+        let forward = f1;
+        let strike = k_adj;
+        black_scholes_price(forward, strike, v, t, r, T::zero(), is_call)
+    }
+}
+
+pub struct LevyBasketEngine;
+impl LevyBasketEngine {
+    #[allow(clippy::too_many_arguments)]
+    pub fn price_basket<T: Real>(
+        spots: &[T],
+        weights: &[T],
+        vols: &[T],
+        divs: &[T],
+        corr: &[Vec<T>],
+        strike: T,
+        rate: T,
+        expiry: T,
+        is_call: bool,
+    ) -> T {
+        assert_eq!(spots.len(), weights.len());
+        let mut forward = T::zero();
+        let mut var = T::zero();
+        for i in 0..spots.len() {
+            forward += weights[i] * spots[i] * ((rate - divs[i]) * expiry).exp();
+        }
+        for i in 0..spots.len() {
+            for j in 0..spots.len() {
+                var +=
+                    weights[i] * spots[i] * weights[j] * spots[j] * vols[i] * vols[j] * corr[i][j];
+            }
+        }
+        let vol = (var.max_val(T::zero()).sqrt() / forward.abs().max_val(T::from_f64(1e-12)))
+            / expiry.max_val(T::from_f64(1e-12)).sqrt();
+        black_scholes_price(forward, strike, vol, expiry, rate, T::zero(), is_call)
+    }
+}

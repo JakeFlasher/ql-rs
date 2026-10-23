@@ -85,6 +85,17 @@ impl DiffPolynomialRegressor {
         let mut lhs = DMatrix::zeros(k, k);
         let mut rhs = DVector::zeros(k);
         let y2 = payoffs.iter().map(|x| x * x).sum::<f64>() / m as f64;
+        let lam: Vec<f64> = (0..d)
+            .map(|q| {
+                let z2 = diffs
+                    .iter()
+                    .map(|row| row[q] * std[q])
+                    .map(|v| v * v)
+                    .sum::<f64>()
+                    / m as f64;
+                diff_weight * y2 / z2.max(1e-12)
+            })
+            .collect();
         for s in 0..m {
             let (phi, der) = tmp.basis(&states[s]);
             for i in 0..k {
@@ -96,14 +107,7 @@ impl DiffPolynomialRegressor {
             if diff_weight > 0. {
                 for q in 0..d {
                     let z = diffs[s][q] * std[q];
-                    let lam = diff_weight * y2
-                        / (diffs
-                            .iter()
-                            .map(|r| r[q] * std[q])
-                            .map(|v| v * v)
-                            .sum::<f64>()
-                            / m as f64)
-                            .max(1e-12);
+                    let lam = lam[q];
                     for i in 0..k {
                         rhs[i] += lam * der[q][i] * z;
                         for j in 0..k {

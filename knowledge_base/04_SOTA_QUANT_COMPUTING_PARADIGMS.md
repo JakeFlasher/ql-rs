@@ -59,6 +59,19 @@ Consequently, the SOTA calibration/bootstrapping workflow is:
 3. **Propagate Adjoints via Linear Solve**: Given price adjoints $\bar{\theta} = (\partial V / \partial \theta)^\top$ from the downstream pricing engine, compute market-quote adjoints $\bar{q} = (\partial V / \partial q)^\top$ by solving a single $K \times K$ linear system:
    $$\left(\frac{\partial F}{\partial \theta}\right)^\top w = \bar{\theta}, \qquad \bar{q} = -\left(\frac{\partial F}{\partial q}\right)^\top w$$
 
+### 2.3 Second-Order IFT Calibration Curvature (Exact Par-Rate Cross-Gamma)
+Differentiating $P(q) = V(\theta(q))$ twice with respect to market quotes $q$ requires **both** the cashflow curvature and the calibration manifold curvature:
+$$\frac{\mathrm{d}^2 P}{\mathrm{d} q^2} = J^\top \left(\nabla^2_\theta V(\theta^*) - \sum_{m=1}^K \lambda_m \nabla^2_\theta F_m(\theta^*, q)\right) J, \qquad J = \frac{\mathrm{d}\theta}{\mathrm{d}q} = -J_\theta^{-1} J_q, \quad \lambda = (J_\theta^\top)^{-1} \nabla_\theta V(\theta^*)$$
+Omitting the second term $-\sum_{m=1}^K \lambda_m J^\top (\nabla^2_\theta F_m) J$ yields zero par-rate convexity for any payoff linear in discount factors $\theta$ (such as a zero-coupon bond $V(\theta) = \theta_k$). Similarly, for overdetermined least-squares calibration $\min_\theta \frac{1}{2}\|r(\theta, q)\|^2$ with $r_i(\theta, q) = P_i(\theta) - q_i$, differentiating the stationarity system $g(\theta, q) = J(\theta)^\top r(\theta, q) = 0$ yields the exact second-order optimality Jacobian:
+$$\frac{\partial g}{\partial \theta} = J^\top J + \sum_{i=1}^m r_i(\theta^*) \nabla^2_\theta P_i(\theta^*), \qquad \frac{\partial g}{\partial q} = -J^\top$$
+
+### 2.4 IFT Lifting of Free-Boundary American Options & Convex Risk-Parity Optimization
+1. **Free-Boundary American Option Approximations (Barone–Adesi–Whaley 1987, Ju–Zhong 1999)**:
+   - Analytic American approximations determine the critical early-exercise boundary $S^*$ via a nonlinear scalar equation $f(S^*; S, K, r, q, \sigma, T) = 0$, while at $S = S^*$ the smooth-pasting condition $\frac{\partial V}{\partial S^*}\big|_{S^*} = 0$ holds to first order (and for second-order or general parameter sensitivities $\theta \in \{K, r, q, \sigma, T\}$, `ift_lift_1d` lifts the converged `f64` boundary $S^*$ into `Dual<N>` / `Dual2<N>` / `TapeVar` in a single residual evaluation without recording Newton iterations).
+2. **Risk Budgeting / Equal Risk Contribution (Spinu 2013, Griveau-Billion–Richard–Roncalli 2013)**:
+   - Solving the strictly convex risk-budgeting optimization $\min_{y > 0} \frac{1}{2} y^\top \Sigma y - \sum_{i=1}^N b_i \ln y_i$ satisfies the first-order optimality system $F(y, \Sigma, b) = \Sigma y - b / y = 0$ with positive-definite diagonal-plus-covariance Hessian $H_y = \frac{\partial F}{\partial y} = \Sigma + \operatorname{diag}(b_i / y_i^{*2})$.
+   - Solving for $y^*$ in pure `f64` via Cyclical Coordinate Descent + Newton–Cholesky and lifting $y^*$ into `T: Real` via a single linear solve $H_y \, \mathrm{d}y = -(\mathrm{d}\Sigma \, y^* - \mathrm{d}b / y^*)$ yields exact `Dual<N>` and `TapeVar` sensitivities of risk-parity portfolio weights $w^* = y^* / (\mathbf{1}^\top y^*)$ with respect to every covariance entry $\Sigma_{ij}$ and risk budget $b_i$ in $\mathcal{O}(N^3)$ time without taping through solver iterations.
+
 > [!TIP]
 > **Verified in Cloned Repos**: Both `attack68/rateslib` (`repos/rateslib/rust/src/curves/`) and `jmelo11/quantsupport` implement curve Jacobians to propagate sensitivities from discount factors/zero rates back to par swap/FRA quotes without taping the iterative solver loop.
 

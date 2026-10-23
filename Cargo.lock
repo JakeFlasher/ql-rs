@@ -292,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "ql-ad"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libm",
  "nalgebra",
@@ -300,7 +300,7 @@ dependencies = [
 
 [[package]]
 name = "ql-benches"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libm",
  "ql-ad",
@@ -327,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "ql-commodities"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ql-ad",
  "ql-curves",
@@ -338,7 +338,7 @@ dependencies = [
 
 [[package]]
 name = "ql-credit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nalgebra",
  "ql-ad",
@@ -350,7 +350,7 @@ dependencies = [
 
 [[package]]
 name = "ql-curves"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nalgebra",
  "ql-ad",
@@ -361,7 +361,7 @@ dependencies = [
 
 [[package]]
 name = "ql-dml"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nalgebra",
  "ql-ad",
@@ -371,7 +371,7 @@ dependencies = [
 
 [[package]]
 name = "ql-exotics"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ql-ad",
  "ql-instruments",
@@ -382,7 +382,7 @@ dependencies = [
 
 [[package]]
 name = "ql-fixed-income"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nalgebra",
  "ql-ad",
@@ -396,7 +396,7 @@ dependencies = [
 
 [[package]]
 name = "ql-fx"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nalgebra",
  "ql-ad",
@@ -408,7 +408,7 @@ dependencies = [
 
 [[package]]
 name = "ql-inflation"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nalgebra",
  "ql-ad",
@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "ql-instruments"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nalgebra",
  "ql-ad",
@@ -434,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "ql-levy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libm",
  "ql-ad",
@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "ql-math"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libm",
  "nalgebra",
@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "ql-mc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nalgebra",
  "ql-ad",
@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "ql-models"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libm",
  "nalgebra",
@@ -477,12 +477,13 @@ dependencies = [
  "ql-curves",
  "ql-math",
  "ql-time",
+ "ql-vol",
  "thiserror",
 ]
 
 [[package]]
 name = "ql-pde"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ql-ad",
  "ql-instruments",
@@ -492,8 +493,9 @@ dependencies = [
 
 [[package]]
 name = "ql-portfolio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "nalgebra",
  "ql-ad",
  "ql-curves",
  "ql-math",
@@ -506,7 +508,7 @@ dependencies = [
 
 [[package]]
 name = "ql-rates"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ql-ad",
  "ql-curves",
@@ -520,7 +522,7 @@ dependencies = [
 
 [[package]]
 name = "ql-scripting"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ql-ad",
  "ql-mc",
@@ -529,7 +531,7 @@ dependencies = [
 
 [[package]]
 name = "ql-terminal"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ql-ad",
  "ql-benches",
@@ -557,7 +559,7 @@ dependencies = [
 
 [[package]]
 name = "ql-time"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "smallvec",
@@ -566,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "ql-vol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "implied-vol",
  "nalgebra",
@@ -577,7 +579,7 @@ dependencies = [
 
 [[package]]
 name = "ql-xva"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ql-ad",
  "ql-curves",

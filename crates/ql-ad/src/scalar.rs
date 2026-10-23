@@ -100,7 +100,7 @@ pub type F64x4 = Simd<f64, 4>;
 pub type F64x8 = Simd<f64, 8>;
 
 fn norm_cdf_f64(x: f64) -> f64 {
-    0.5 * (1.0 + libm::erf(x * std::f64::consts::FRAC_1_SQRT_2))
+    0.5 * libm::erfc(-x * std::f64::consts::FRAC_1_SQRT_2)
 }
 fn norm_pdf_f64(x: f64) -> f64 {
     std::f64::consts::TAU.sqrt().recip() * (-0.5 * x * x).exp()

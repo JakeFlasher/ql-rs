@@ -333,7 +333,33 @@ impl PortfolioDag {
                 is_call,
                 notional,
             } => {
-                let r = -curves.curves[0].discount_factor(*expiry).ln() / expiry.max(1e-6);
+                let (npv, par_dv01) = curves.value_and_par_dv01(|params| {
+                    let ois = ql_curves::DiscountCurve::new(
+                        s.ref_date,
+                        curves.curves[0].times.clone(),
+                        params[..3].to_vec(),
+                    );
+                    let r = -ois.discount_factor(*expiry).ln() / expiry.max(1e-6);
+                    let hp = HestonParams {
+                        v0: ql_ad::TapeVar::from_f64(s.heston_params.v0),
+                        kappa: ql_ad::TapeVar::from_f64(s.heston_params.kappa),
+                        theta: ql_ad::TapeVar::from_f64(s.heston_params.theta),
+                        sigma_v: ql_ad::TapeVar::from_f64(s.heston_params.sigma_v),
+                        rho: ql_ad::TapeVar::from_f64(s.heston_params.rho),
+                    };
+                    heston_cos_price(
+                        ql_ad::TapeVar::from_f64(s.eq_spot),
+                        ql_ad::TapeVar::from_f64(*strike),
+                        ql_ad::TapeVar::from_f64(*expiry),
+                        r,
+                        ql_ad::TapeVar::zero(),
+                        &hp,
+                        128,
+                        10.0,
+                        *is_call,
+                    ) * *notional
+                });
+                let spot = ql_ad::Dual::<1>::variable(s.eq_spot, 0);
                 let params = HestonParams {
                     v0: ql_ad::Dual::from_value(s.heston_params.v0),
                     kappa: ql_ad::Dual::from_value(s.heston_params.kappa),
@@ -341,7 +367,7 @@ impl PortfolioDag {
                     sigma_v: ql_ad::Dual::from_value(s.heston_params.sigma_v),
                     rho: ql_ad::Dual::from_value(s.heston_params.rho),
                 };
-                let spot = ql_ad::Dual::<1>::variable(s.eq_spot, 0);
+                let r = -curves.curves[0].discount_factor(*expiry).ln() / expiry.max(1e-6);
                 let price = heston_cos_price(
                     spot,
                     ql_ad::Dual::from_value(*strike),
@@ -355,8 +381,8 @@ impl PortfolioDag {
                 );
                 TradeValuation {
                     id: *id,
-                    npv: *notional * price.val,
-                    par_dv01: vec![0.; 6],
+                    npv,
+                    par_dv01,
                     eq_delta: *notional * price.d[0],
                 }
             }
@@ -365,6 +391,25 @@ impl PortfolioDag {
                 program,
                 expiry,
             } => {
+                let (npv, par_dv01) = curves.value_and_par_dv01(|params| {
+                    let ois = ql_curves::DiscountCurve::new(
+                        s.ref_date,
+                        curves.curves[0].times.clone(),
+                        params[..3].to_vec(),
+                    );
+                    let r = -ois.discount_factor(*expiry).ln() / expiry.max(1e-6);
+                    ql_scripting::ScriptMcEngine {
+                        n_paths: 1024,
+                        seed: 42,
+                    }
+                    .price_gbm(
+                        program,
+                        ql_ad::TapeVar::from_f64(s.eq_spot),
+                        ql_ad::TapeVar::from_f64(s.eq_vol),
+                        r,
+                        ql_ad::TapeVar::zero(),
+                    )
+                });
                 let r = -curves.curves[0].discount_factor(*expiry).ln() / expiry.max(1e-6);
                 let spot = ql_ad::Dual::<1>::variable(s.eq_spot, 0);
                 let price = ql_scripting::ScriptMcEngine {
@@ -380,8 +425,8 @@ impl PortfolioDag {
                 );
                 TradeValuation {
                     id: *id,
-                    npv: price.val,
-                    par_dv01: vec![0.; 6],
+                    npv,
+                    par_dv01,
                     eq_delta: price.d[0],
                 }
             }

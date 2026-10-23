@@ -33,11 +33,11 @@ pub fn lifted_heston_kernel(h: f64, n: usize, r_n: f64) -> (Vec<f64>, Vec<f64>) 
 }
 
 #[inline]
-fn phi1(x: f64) -> f64 {
-    if x.abs() < 1e-8 {
-        1.0 + 0.5 * x + x * x / 6.0 + x * x * x / 24.0
+fn phi1<T: Real>(x: T) -> T {
+    if x.val().abs() < 1e-6 {
+        T::one() - x * 0.5 + x * x / 6.0 - x * x * x / 24.0
     } else {
-        (x.exp() - 1.0) / x
+        (T::one() - (-x).exp()) / x
     }
 }
 
@@ -74,14 +74,19 @@ pub fn lifted_heston_char_func_unit_spot<T: Real>(
     let n = c.len();
     let n_steps = steps.max(1);
     let dt = expiry / T::from_f64(n_steps as f64);
-    let dt_val = dt.val();
-    let half_exp: Vec<f64> = gamma.iter().map(|&g| (-0.5 * g * dt_val).exp()).collect();
-    let half_phi: Vec<f64> = gamma
+    let half_exp: Vec<T> = gamma
         .iter()
-        .map(|&g| 0.5 * phi1(-0.5 * g * dt_val))
+        .map(|&g| (-T::from_f64(0.5 * g) * dt).exp())
         .collect();
-    let full_exp: Vec<f64> = gamma.iter().map(|&g| (-g * dt_val).exp()).collect();
-    let full_phi: Vec<f64> = gamma.iter().map(|&g| phi1(-g * dt_val)).collect();
+    let half_phi: Vec<T> = gamma
+        .iter()
+        .map(|&g| phi1(-T::from_f64(0.5 * g) * dt) * 0.5)
+        .collect();
+    let full_exp: Vec<T> = gamma
+        .iter()
+        .map(|&g| (-T::from_f64(g) * dt).exp())
+        .collect();
+    let full_phi: Vec<T> = gamma.iter().map(|&g| phi1(-T::from_f64(g) * dt)).collect();
 
     let riccati = |psi: Complex<T>| -> Complex<T> {
         let half = T::from_f64(0.5);
@@ -99,20 +104,20 @@ pub fn lifted_heston_char_func_unit_spot<T: Real>(
         let f_k = riccati(aggregate);
         let mut mid_aggregate = Complex::zero();
         for i in 0..n {
-            let mid = psi[i] * T::from_f64(half_exp[i]) + f_k * (dt * T::from_f64(half_phi[i]));
+            let mid = psi[i] * half_exp[i] + f_k * (dt * half_phi[i]);
             mid_aggregate = mid_aggregate + mid * T::from_f64(c[i]);
         }
         let f_mid = riccati(mid_aggregate);
         for i in 0..n {
-            psi[i] = psi[i] * T::from_f64(full_exp[i]) + f_mid * (dt * T::from_f64(full_phi[i]));
+            psi[i] = psi[i] * full_exp[i] + f_mid * (dt * full_phi[i]);
         }
         let tau_mid = expiry - dt * T::from_f64(step as f64 + 0.5);
-        let kernel_mid: f64 = c
+        let kernel_mid = c
             .iter()
             .zip(gamma.iter())
-            .map(|(&ci, &gi)| ci * phi1(-gi * tau_mid.val()))
-            .sum();
-        let g_mid = p.v0 + p.lambda * p.theta * tau_mid * T::from_f64(kernel_mid);
+            .map(|(&ci, &gi)| T::from_f64(ci) * phi1(-T::from_f64(gi) * tau_mid))
+            .fold(T::zero(), |acc, x| acc + x);
+        let g_mid = p.v0 + p.lambda * p.theta * tau_mid * kernel_mid;
         phi_int = phi_int + f_mid * (dt * g_mid);
     }
     (z * (rate - div) * expiry + phi_int).exp()

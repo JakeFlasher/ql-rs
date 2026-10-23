@@ -3,6 +3,19 @@
 use core::simd::Simd;
 use ql_ad::*;
 
+#[test]
+fn tail_safe_erfc_and_normal_cdf_match_scalar() {
+    let erfc_scalar = Real::erfc(6.0_f64);
+    let erfc_dual = Dual::<1>::from_value(6.0).erfc();
+    assert!(erfc_scalar > 2e-17);
+    assert!((erfc_scalar - erfc_dual.val).abs() < 1e-30);
+
+    let cdf_scalar = (-8.0_f64).norm_cdf();
+    let cdf_dual = Dual::<1>::from_value(-8.0).norm_cdf();
+    assert!(cdf_scalar > 6e-16);
+    assert!((cdf_scalar - cdf_dual.val).abs() < 1e-30);
+}
+
 fn composite_fn<T: Real>(x: T) -> T {
     x.exp()
         + x.ln()

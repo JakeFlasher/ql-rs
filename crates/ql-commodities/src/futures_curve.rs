@@ -1,4 +1,4 @@
-use ql_ad::{Dual, Real};
+use ql_ad::{Dual, Real, TapeScope, TapeVar};
 
 #[derive(Clone, Copy, Debug)]
 pub struct SeasonalParams<T: Real> {
@@ -149,5 +149,41 @@ impl CalibratedCommodityCurve {
             },
         };
         (pricer(&curve).val, out)
+    }
+
+    /// Evaluate a portfolio once on the log-forward state tape and lift the
+    /// adjoint through `d log(F_j) / d F_j = 1/F_j`.  The seasonal factors are
+    /// part of the curve state, not of the market quote, so no second
+    /// seasonal subtraction occurs in this VJP.
+    pub fn value_and_par_futures_delta<F>(&self, pricer: F) -> (f64, Vec<f64>)
+    where
+        F: FnOnce(&CommodityFuturesCurve<TapeVar<f64>>) -> TapeVar<f64>,
+    {
+        TapeScope::start_recording();
+        let vars: Vec<_> = self
+            .log_base_forwards
+            .iter()
+            .map(|&x| TapeScope::with_active(|t| t.input(x)))
+            .collect();
+        let curve = CommodityFuturesCurve {
+            times: self.times.iter().map(|&x| TapeVar::from_f64(x)).collect(),
+            log_base_forwards: vars.clone(),
+            seasonal: SeasonalParams {
+                a1: TapeVar::from_f64(self.seasonal.a1),
+                b1: TapeVar::from_f64(self.seasonal.b1),
+                a2: TapeVar::from_f64(self.seasonal.a2),
+                b2: TapeVar::from_f64(self.seasonal.b2),
+            },
+        };
+        let out = pricer(&curve);
+        let adj = TapeScope::gradient_from(out);
+        let deltas = vars
+            .iter()
+            .enumerate()
+            .map(|(j, v)| adj.gradient(*v) / self.market_futures[j])
+            .collect();
+        let value = out.val;
+        TapeScope::stop_recording();
+        (value, deltas)
     }
 }

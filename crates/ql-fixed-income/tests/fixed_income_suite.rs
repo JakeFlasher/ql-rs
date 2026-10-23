@@ -177,3 +177,22 @@ fn amortizing_cpi_and_agency_mbs_prepayment_oas() {
     assert!((solved - oas).abs() < 1e-11);
     assert!(zero_psa_price.is_finite());
 }
+
+#[test]
+fn cat_bond_loss_free_and_zero_intensity_limits() {
+    let spec = CatBondSpec {
+        face_amount: 100.0,
+        coupon_rate: 0.05,
+        payment_times: vec![1.0, 2.0, 3.0],
+        accrual_fractions: vec![1.0; 3],
+        discount_rate: 0.03,
+        risk: NotionalRisk::Digital { threshold: 20.0 },
+        peril: CatPerilSpec::PoissonExponential {
+            lambda: 0.0,
+            mean_severity: 10.0,
+        },
+    };
+    let valuation = spec.price_analytical();
+    assert!((valuation.price - spec.loss_free_price()).abs() < 1e-12);
+    assert!(valuation.expected_loss.abs() < 1e-12);
+}

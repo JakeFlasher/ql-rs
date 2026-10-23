@@ -92,10 +92,14 @@ impl Fd1dBlackScholesEngine {
         let mut out = vec![T::zero(); n - 1];
         let mut scratch = vec![T::zero(); n - 1];
         let mut old = vec![T::zero(); n + 1];
-        let dt = expiry.val() / m as f64;
-        let mut tau = 0.0;
+        let dt = expiry / T::from_f64(m as f64);
+        let mut tau = T::zero();
         for step in 0..=m {
-            let (h, theta) = if step < 2 { (dt * 0.5, 1.0) } else { (dt, 0.5) };
+            let (h, theta) = if step < 2 {
+                (dt * 0.5, T::one())
+            } else {
+                (dt, T::from_f64(0.5))
+            };
             old.copy_from_slice(&v);
             let sig2 = vol * vol;
             let drift = rate - dividend - T::from_f64(0.5) * sig2;
@@ -105,16 +109,16 @@ impl Fd1dBlackScholesEngine {
                 let cc =
                     T::from_f64(0.5) * sig2 / T::from_f64(dx * dx) + drift / T::from_f64(2.0 * dx);
                 let bb = -(aa + cc) - rate;
-                let th = T::from_f64(theta * h);
+                let th = theta * h;
                 lower[j - 1] = -th * aa;
                 diag[j - 1] = T::one() - th * bb;
                 upper[j - 1] = -th * cc;
-                let ex = T::from_f64((1.0 - theta) * h);
+                let ex = (T::one() - theta) * h;
                 rhs[j - 1] = old[j] + ex * (aa * old[j - 1] + bb * old[j] + cc * old[j + 1]);
             }
-            let tnew = (tau + h).min(expiry.val());
-            let callb = T::from_f64(smax) * (-dividend * T::from_f64(tnew)).exp()
-                - strike * (-rate * T::from_f64(tnew)).exp();
+            let tnew = (tau + h).min_val(expiry);
+            let callb =
+                T::from_f64(smax) * (-dividend * tnew).exp() - strike * (-rate * tnew).exp();
             // At the lower spot boundary an American put is exercised
             // immediately, hence its exact asymptotic value is K-S (not the
             // discounted European K e^{-r tau}-S e^{-q tau}).  Using the
@@ -123,7 +127,7 @@ impl Fd1dBlackScholesEngine {
             let putb = if american {
                 (strike - T::from_f64(smin)).max_val(T::zero())
             } else {
-                strike * (-rate * T::from_f64(tnew)).exp()
+                strike * (-rate * tnew).exp()
             };
             rhs[0] -= lower[0] * if kind.is_call() { T::zero() } else { putb };
             rhs[n - 2] -= upper[n - 2] * if kind.is_call() { callb } else { T::zero() };
@@ -154,7 +158,7 @@ impl Fd1dBlackScholesEngine {
                     }
                 }
             }
-            tau = (tau + h).min(expiry.val());
+            tau = (tau + h).min_val(expiry);
         }
         let x = spot.ln();
         let z = ((x.val() - xmin) / dx).clamp(1.0, n as f64 - 1.0);

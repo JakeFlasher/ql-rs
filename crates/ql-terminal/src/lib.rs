@@ -2,6 +2,7 @@
 
 #[allow(ambiguous_glob_reexports)]
 pub mod prelude {
+    pub use crate::TabId;
     pub use ql_ad::*;
     pub use ql_benches;
     pub use ql_commodities::*;
@@ -40,10 +41,14 @@ use ql_fixed_income::{ConvertibleBondSpec, price_convertible_bond_tf};
 use ql_fx::ConstNotionalXccs;
 use ql_fx::{FxSmileQuote, FxVannaVolgaSmile, garman_kohlhagen_spot_delta};
 use ql_inflation::{CalibratedInflationCurve, MultiplicativeSeasonality, ZeroCouponInflationSwap};
+use ql_instruments::BaroneAdesiWhaleyEngine;
 use ql_levy::{VarianceGamma, cos_levy_price};
 use ql_models::{HestonParams, HullWhite1F, LiftedHestonParams, lifted_heston_cos_price};
 use ql_portfolio::gaussian_expected_shortfall;
-use ql_portfolio::{MarketSnapshot, PortfolioDag, PortfolioRiskSummary, PortfolioTrade};
+use ql_portfolio::{
+    MarketSnapshot, PortfolioDag, PortfolioRiskSummary, PortfolioTrade,
+    equal_risk_contribution_weights,
+};
 use ql_rates::{
     EuropeanSwaption, G2PlusPlus, RfrCapletSpec, RfrRateType, SwaptionSettlement,
     willems_backward_sabr_caplet_price,
@@ -59,6 +64,74 @@ use std::sync::Arc;
 use std::time::Instant;
 
 const BRAILLE_DOTS: [[u32; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
+
+/// Logical workstation tabs.  The dashboard remains headless and printable,
+/// while callers can use this stable enumeration to select a domain view.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TabId {
+    Market,
+    Rates,
+    Credit,
+    Inflation,
+    Fx,
+    Equities,
+    Volatility,
+    Xva,
+    Portfolio,
+    Exotics,
+    Commodities,
+    Levy,
+    FixedIncome,
+    MonteCarlo,
+    Analytics,
+    Blotter,
+    AmericanHybrid,
+    BlRiskParity,
+}
+impl TabId {
+    pub const ALL: [Self; 18] = [
+        Self::Market,
+        Self::Rates,
+        Self::Credit,
+        Self::Inflation,
+        Self::Fx,
+        Self::Equities,
+        Self::Volatility,
+        Self::Xva,
+        Self::Portfolio,
+        Self::Exotics,
+        Self::Commodities,
+        Self::Levy,
+        Self::FixedIncome,
+        Self::MonteCarlo,
+        Self::Analytics,
+        Self::Blotter,
+        Self::AmericanHybrid,
+        Self::BlRiskParity,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Market => "01 Market",
+            Self::Rates => "02 Rates",
+            Self::Credit => "03 Credit",
+            Self::Inflation => "04 Inflation",
+            Self::Fx => "05 FX",
+            Self::Equities => "06 Equities",
+            Self::Volatility => "07 Volatility",
+            Self::Xva => "08 XVA",
+            Self::Portfolio => "09 Portfolio",
+            Self::Exotics => "10 Exotics",
+            Self::Commodities => "11 Commodities",
+            Self::Levy => "12 Levy",
+            Self::FixedIncome => "13 Fixed Income",
+            Self::MonteCarlo => "14 Monte Carlo",
+            Self::Analytics => "15 Analytics",
+            Self::Blotter => "16 Blotter",
+            Self::AmericanHybrid => "17 American / Hybrid",
+            Self::BlRiskParity => "18 BL / Risk Parity",
+        }
+    }
+}
 
 /// A 2x4 sub-pixel canvas represented by Unicode Braille cells.
 #[derive(Clone, Debug)]
@@ -1333,6 +1406,10 @@ impl DeskWorkstation {
             frame.dag_recomputed_trades, frame.dag_total_trades
         ));
         right_bottom.push(format!("Chart: {}", frame.chart_mode.label()));
+        let american = BaroneAdesiWhaleyEngine::price(100.0, 100.0, 0.03, 0.01, 0.2, 1.0, true);
+        let erc = equal_risk_contribution_weights(&[vec![0.04, 0.01], vec![0.01, 0.09]]);
+        right_bottom.push(format!("American / Hybrid: {:.4}", american));
+        right_bottom.push(format!("BL / Risk Parity ERC: {:.3}/{:.3}", erc[0], erc[1]));
         while right_bottom.len() < 20 {
             right_bottom.push(String::new());
         }

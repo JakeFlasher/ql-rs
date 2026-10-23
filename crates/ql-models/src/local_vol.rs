@@ -1,6 +1,27 @@
-use ql_ad::Real;
+use ql_ad::{Dual2, Real};
 pub struct DupireLocalVol;
 impl DupireLocalVol {
+    /// Exact Taylor-jet Dupire evaluation for a differentiable total-variance
+    /// surface.  Lane zero is expiry and lane one is log-moneyness; no finite
+    /// differences are taken, so the returned jet carries the surface Greeks
+    /// through the full Dupire quotient.
+    pub fn dupire_local_vol_ad<F>(&self, strike: Dual2<2>, expiry: Dual2<2>, f: F) -> Dual2<2>
+    where
+        F: Fn(Dual2<2>, Dual2<2>) -> Dual2<2>,
+    {
+        let w = f(expiry, strike);
+        let wt = w.d1[0];
+        let wy = w.d1[1];
+        let wyy = w.d2[1][1];
+        let denom = Dual2::one() - strike / w * wy
+            + Dual2::from_value(0.25)
+                * (-Dual2::from_value(0.25) - Dual2::one() / w + strike * strike / (w * w))
+                * wy
+                * wy
+            + Dual2::from_value(0.5) * wyy;
+        (wt / denom).sqrt()
+    }
+
     pub fn dupire_local_vol<T: Real, F: Fn(T, T) -> T>(f: F, expiry: T, log_moneyness: T) -> T {
         let h = 1e-5;
         let w = f(expiry, log_moneyness);

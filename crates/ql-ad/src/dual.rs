@@ -7,7 +7,7 @@ fn erf0(x: f64) -> f64 {
     libm::erf(x)
 }
 fn cdf0(x: f64) -> f64 {
-    0.5 * (1.0 + erf0(x * std::f64::consts::FRAC_1_SQRT_2))
+    0.5 * libm::erfc(-x * std::f64::consts::FRAC_1_SQRT_2)
 }
 fn pdf0(x: f64) -> f64 {
     (-0.5 * x * x).exp() / (2.0 * std::f64::consts::PI).sqrt()
@@ -257,7 +257,10 @@ impl<const N: usize> Real for Dual<N> {
         )
     }
     fn erfc(self) -> Self {
-        Self::one() - self.erf()
+        self.unary(
+            libm::erfc(self.val),
+            -2.0 / std::f64::consts::PI.sqrt() * (-self.val * self.val).exp(),
+        )
     }
     fn norm_cdf(self) -> Self {
         self.unary(cdf0(self.val), pdf0(self.val))
@@ -546,7 +549,12 @@ impl<const N: usize> Real for Dual2<N> {
         )
     }
     fn erfc(self) -> Self {
-        Self::one() - self.erf()
+        let e = (-self.val * self.val).exp();
+        self.unary(
+            libm::erfc(self.val),
+            -2.0 / std::f64::consts::PI.sqrt() * e,
+            4.0 * self.val / std::f64::consts::PI.sqrt() * e,
+        )
     }
     fn norm_cdf(self) -> Self {
         self.unary(cdf0(self.val), pdf0(self.val), -self.val * pdf0(self.val))

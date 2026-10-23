@@ -3,7 +3,7 @@ use ql_benches::run_all_benchmarks;
 #[test]
 fn benchmarks_verify_parity_and_sota_speedups() {
     let rows = run_all_benchmarks(2);
-    assert_eq!(rows.len(), 18);
+    assert_eq!(rows.len(), 20);
     let tolerances = [
         ("01_calendar_popcnt", 0.0),
         ("02_leg_simd_soa", 1e-6),
@@ -23,6 +23,8 @@ fn benchmarks_verify_parity_and_sota_speedups() {
         ("16_asb_cdo_tranche_recursion_dual", 1e-6),
         ("17_rfr_sabr_caplet_strip_dual4", 1e-4),
         ("18_xccs_multicurrency_ift_dv01", 1e-4),
+        ("19_american_baw_ju_ift_dual5", 1e-6),
+        ("20_risk_parity_ift_allocation_aad", 1e-8),
     ];
     for row in &rows {
         let tolerance = tolerances
