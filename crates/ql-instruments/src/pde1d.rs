@@ -67,8 +67,14 @@ impl Fd1dBlackScholesEngine {
                 })
                 .unwrap_or(0.0),
         );
-        let xmin = smin.ln();
+        let mut xmin = smin.ln();
         let dx = (smax.ln() - xmin) / n as f64;
+        // Translate the log grid so a monitored barrier is represented by an
+        // exact node rather than an O(dx) quantized level.
+        if let Some((barrier_level, _)) = barrier {
+            let j = ((barrier_level.val().ln() - xmin) / dx).round();
+            xmin = barrier_level.val().ln() - j * dx;
+        }
         let mut v = vec![T::zero(); n + 1];
         for j in 0..=n {
             let sj = T::from_f64((xmin + j as f64 * dx).exp());

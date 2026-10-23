@@ -382,7 +382,11 @@ impl Fd2dHestonEngine {
         is_call: bool,
         american: bool,
     ) -> T {
-        let g = crate::HestonGrid2D::new_centered(self.nx, self.nv, strike.val().ln(), p.v0.val());
+        let center = lower_barrier
+            .or(upper_barrier)
+            .map(f64::ln)
+            .unwrap_or_else(|| strike.val().ln());
+        let g = crate::HestonGrid2D::new_centered(self.nx, self.nv, center, p.v0.val());
         let nx = g.x.nodes.len();
         let nv = g.v.nodes.len();
         let s_min = T::from_f64(g.x.nodes[0].exp());
