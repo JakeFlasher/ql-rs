@@ -61,7 +61,10 @@ impl<T: Real> CatBondSpec<T> {
         let mu = T::one() / mean_severity.max_val(T::from_f64(1e-12));
         let (at, ex) = match self.risk {
             NotionalRisk::Digital { threshold } => (threshold, threshold),
-            NotionalRisk::Proportional { attachment, exhaustion } => (attachment, exhaustion),
+            NotionalRisk::Proportional {
+                attachment,
+                exhaustion,
+            } => (attachment, exhaustion),
         };
         let mut surv = T::zero();
         let mut ap = T::zero();
@@ -78,10 +81,10 @@ impl<T: Real> CatBondSpec<T> {
                     if n == 0 {
                         T::one()
                     } else {
-                        let ea = (T::from_f64(n as f64) / mu) * erlang_tail(at, mu, n + 1)
-                            - at * pa;
-                        let ee = (T::from_f64(n as f64) / mu) * erlang_tail(ex, mu, n + 1)
-                            - ex * pe;
+                        let ea =
+                            (T::from_f64(n as f64) / mu) * erlang_tail(at, mu, n + 1) - at * pa;
+                        let ee =
+                            (T::from_f64(n as f64) / mu) * erlang_tail(ex, mu, n + 1) - ex * pe;
                         T::one() - (ea - ee) / (ex - at).max_val(T::from_f64(1e-12))
                     }
                 }
@@ -229,8 +232,8 @@ impl<T: Real> CatBondSpec<T> {
                             (T::one()
                                 - (sev - aa).max_val(T::zero())
                                     / (ee - aa).max_val(T::from_f64(1e-12)))
-                                .max_val(T::zero())
-                                .min_val(T::one()),
+                            .max_val(T::zero())
+                            .min_val(T::one()),
                             sev.val() > aa.val(),
                             sev.val() > ee.val(),
                         )

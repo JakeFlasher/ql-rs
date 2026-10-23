@@ -155,8 +155,7 @@ impl CosHestonHullWhiteEngine {
         let t = expiry.max_val(T::zero());
         let _vbar = if p.kappa_v.val().abs() < 1e-8 {
             let kt = p.kappa_v * t;
-            p.v0 - (p.v0 - p.theta_v) * kt * 0.5
-                + (p.v0 - p.theta_v) * kt * kt / 6.0
+            p.v0 - (p.v0 - p.theta_v) * kt * 0.5 + (p.v0 - p.theta_v) * kt * kt / 6.0
         } else {
             p.theta_v + (p.v0 - p.theta_v) * (T::one() - (-p.kappa_v * t).exp()) / (p.kappa_v * t)
         };
@@ -168,9 +167,12 @@ impl CosHestonHullWhiteEngine {
             let kr = p.kappa_r;
             let int0 = (kr * t - T::one() + (-kr * t).exp()) / (kr * kr);
             let ks = kr + p.kappa_v;
-            let int1 = if ks.val().abs() < 1e-8 { t*t*0.5 }
-                       else { (ks*t-T::one()+(-ks*t).exp())/(ks*ks) };
-            p.rho_sr * p.eta_r * 2.0 * (a_go*int0+b_go*int1)
+            let int1 = if ks.val().abs() < 1e-8 {
+                t * t * 0.5
+            } else {
+                (ks * t - T::one() + (-ks * t).exp()) / (ks * ks)
+            };
+            p.rho_sr * p.eta_r * 2.0 * (a_go * int0 + b_go * int1)
         };
         let hyb = (extra + cross).max_val(T::zero());
         CosHestonEngine {

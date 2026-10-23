@@ -125,9 +125,7 @@ impl CosHestonEngine {
             strikes,
             is_call,
             p.lambda * (p.mu_j * p.mu_j + p.sigma_j * p.sigma_j) * expiry,
-            p.lambda
-                * (p.mu_j + T::one() - (p.mu_j + p.sigma_j * p.sigma_j * 0.5).exp())
-                * expiry,
+            p.lambda * (p.mu_j + T::one() - (p.mu_j + p.sigma_j * p.sigma_j * 0.5).exp()) * expiry,
         )
     }
     #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
@@ -205,15 +203,13 @@ impl CosHestonEngine {
             let jk = j(-kappa);
             let j2k = j(kappa * -2.0);
             let ek = (-kappa * t).exp();
-            let a_int = theta * 0.5 * (t - j2k - ek * (j(kappa) - jk))
-                + delta * (jk - j2k - ek * (t - jk));
+            let a_int =
+                theta * 0.5 * (t - j2k - ek * (j(kappa) - jk)) + delta * (jk - j2k - ek * (t - jk));
             let vi = sigma_v * sigma_v * 2.0 * a_int / (kappa * kappa);
-            let ci = rho * sigma_v / kappa
-                * (theta * (t - ek * j(kappa)) + delta * (jk - ek * t));
+            let ci = rho * sigma_v / kappa * (theta * (t - ek * j(kappa)) + delta * (jk - ek * t));
             (vi, ci)
         };
-        let var = (mean_var + var_i * 0.25 - cov_im + jump_variance)
-            .max_val(T::from_f64(1e-12));
+        let var = (mean_var + var_i * 0.25 - cov_im + jump_variance).max_val(T::from_f64(1e-12));
         let c1 = (rate - div) * t - mean_var * 0.5 + jump_drift;
         let w = T::from_f64(self.l_trunc) * var.sqrt();
         let a = c1 - w;

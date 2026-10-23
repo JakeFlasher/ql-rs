@@ -67,7 +67,8 @@ pub fn replicate_variance_swap_fair_strike<T: Real>(
             div_yield,
             km.val() >= cut_strike.val(),
         );
-        option_sum += (k1 - k0) * (integrands[i] + mid_price * 2.0 / (km * km) + integrands[i + 1]) * 0.25;
+        option_sum +=
+            (k1 - k0) * (integrands[i] + mid_price * 2.0 / (km * km) + integrands[i + 1]) * 0.25;
     }
     // Analytic log-contract tails under the endpoint Black volatilities.
     // These are the omitted (0,K0) put and (Kmax,infinity) call integrals.
@@ -78,8 +79,7 @@ pub fn replicate_variance_swap_fair_strike<T: Real>(
     let v0 = sig0 * sign;
     let d10 = ((forward / k0).ln() + v0 * v0 * 0.5) / v0;
     let d20 = d10 - v0;
-    let put_tail = forward / k0 * (-d10).norm_cdf()
-        - (-d20).norm_cdf()
+    let put_tail = forward / k0 * (-d10).norm_cdf() - (-d20).norm_cdf()
         + v0 * ((-d20) * (-d20).norm_cdf() + d20.norm_pdf());
     let signn = quotes[quotes.len() - 1].implied_vol * sign;
     let d1n = ((forward / kn).ln() + signn * signn * 0.5) / signn;

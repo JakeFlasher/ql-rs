@@ -91,9 +91,13 @@ fn baw_call<T: Real>(spot: T, strike: T, rate: T, div: T, vol: T, expiry: T) -> 
         + (-div * expiry).exp() * pdf / (q2 * vol * expiry.sqrt());
     let gamma_e = (-div * expiry).exp() * pdf / (x * vol * expiry.sqrt());
     let a = (-div * expiry).exp() * pdf / (vol * expiry.sqrt());
-    let d2res = -gamma_e
-        - (-a / x + a * d1 / (x * vol * expiry.sqrt())) / q2;
-    let star = ift_lift_1d(root, residual, dres.max_val(T::from_f64(1e-14)), d2res.val());
+    let d2res = -gamma_e - (-a / x + a * d1 / (x * vol * expiry.sqrt())) / q2;
+    let star = ift_lift_1d(
+        root,
+        residual,
+        dres.max_val(T::from_f64(1e-14)),
+        d2res.val(),
+    );
     let d1s = ((star / strike).ln() + (rate - div + sig2 * 0.5) * expiry) / (vol * expiry.sqrt());
     let a2 = star / q2 * (T::one() - (-div * expiry).exp() * d1s.norm_cdf());
     if spot.val() >= root {
@@ -104,11 +108,16 @@ fn baw_call<T: Real>(spot: T, strike: T, rate: T, div: T, vol: T, expiry: T) -> 
 }
 
 fn critical_put(_spot: f64, strike: f64, rate: f64, div: f64, vol: f64, expiry: f64) -> f64 {
-    if expiry <= 0.0 || vol <= 0.0 { return strike; }
+    if expiry <= 0.0 || vol <= 0.0 {
+        return strike;
+    }
     let v2 = vol * vol;
     let n = 2.0 * (rate - div) / v2;
-    let hk = if (rate * expiry).abs() < 1e-8 { 2.0 / (v2 * expiry.max(1e-12)) }
-             else { 2.0 * rate / (v2 * (1.0 - (-rate * expiry).exp())) };
+    let hk = if (rate * expiry).abs() < 1e-8 {
+        2.0 / (v2 * expiry.max(1e-12))
+    } else {
+        2.0 * rate / (v2 * (1.0 - (-rate * expiry).exp()))
+    };
     let q1 = (-(n - 1.0) - ((n - 1.0).powi(2) + 4.0 * hk).sqrt()) / 2.0;
     let dres = |x: f64| {
         let d1 = ((x / strike).ln() + (rate - div + 0.5 * v2) * expiry) / (vol * expiry.sqrt());
@@ -119,44 +128,63 @@ fn critical_put(_spot: f64, strike: f64, rate: f64, div: f64, vol: f64, expiry: 
     brent_solve(dres, 1e-10, hi, 1e-12, 200).unwrap_or_else(|_| {
         let mut x = (strike * 0.5).max(1e-10);
         for _ in 0..80 {
-            let f = dres(x); let h = (x.abs()*1e-5).max(1e-6);
-            let df = (dres(x+h)-dres(x-h))/(2.0*h);
-            if !df.is_finite() || df.abs()<1e-14 { break; }
-            x = (x-f/df).clamp(1e-10, hi);
+            let f = dres(x);
+            let h = (x.abs() * 1e-5).max(1e-6);
+            let df = (dres(x + h) - dres(x - h)) / (2.0 * h);
+            if !df.is_finite() || df.abs() < 1e-14 {
+                break;
+            }
+            x = (x - f / df).clamp(1e-10, hi);
         }
         x
     })
 }
 
 fn baw_put<T: Real>(spot: T, strike: T, rate: T, div: T, vol: T, expiry: T) -> T {
-    if expiry.val() <= 0.0 || vol.val() <= 0.0 { return (strike-spot).max_val(T::zero()); }
-    let v2 = vol*vol;
-    let n = (rate-div)*2.0/v2;
-    let hk = if (rate*expiry).val().abs()<1e-8 { T::from_f64(2.0)/(v2*expiry.max_val(T::from_f64(1e-12))) }
-             else { rate*2.0/(v2*(T::one()-(-rate*expiry).exp())) };
-    let q1 = (-(n-T::one())-((n-T::one())*(n-T::one())+hk*4.0).sqrt())/2.0;
-    let root = critical_put(spot.val(),strike.val(),rate.val(),div.val(),vol.val(),expiry.val());
-    let residual = |x:T| {
-        let d1=((x/strike).ln()+(rate-div+v2*0.5)*expiry)/(vol*expiry.sqrt());
-        strike-x-european(x,strike,rate,div,vol,expiry,false)
-            + x/q1*(T::one()-(-div*expiry).exp()*(-d1).norm_cdf())
+    if expiry.val() <= 0.0 || vol.val() <= 0.0 {
+        return (strike - spot).max_val(T::zero());
+    }
+    let v2 = vol * vol;
+    let n = (rate - div) * 2.0 / v2;
+    let hk = if (rate * expiry).val().abs() < 1e-8 {
+        T::from_f64(2.0) / (v2 * expiry.max_val(T::from_f64(1e-12)))
+    } else {
+        rate * 2.0 / (v2 * (T::one() - (-rate * expiry).exp()))
     };
-    let x=T::from_f64(root);
-    let d1=((x/strike).ln()+(rate-div+v2*0.5)*expiry)/(vol*expiry.sqrt());
-    let d= (-div*expiry).exp()*(-d1).norm_cdf();
-    let pdf=d1.norm_pdf();
-    let fx = -(-div*expiry).exp()*d1.norm_cdf()
-        + T::one()/q1*(T::one()-d)
-        + (-div*expiry).exp()*pdf/(q1*vol*expiry.sqrt());
+    let q1 = (-(n - T::one()) - ((n - T::one()) * (n - T::one()) + hk * 4.0).sqrt()) / 2.0;
+    let root = critical_put(
+        spot.val(),
+        strike.val(),
+        rate.val(),
+        div.val(),
+        vol.val(),
+        expiry.val(),
+    );
+    let residual = |x: T| {
+        let d1 = ((x / strike).ln() + (rate - div + v2 * 0.5) * expiry) / (vol * expiry.sqrt());
+        strike - x - european(x, strike, rate, div, vol, expiry, false)
+            + x / q1 * (T::one() - (-div * expiry).exp() * (-d1).norm_cdf())
+    };
+    let x = T::from_f64(root);
+    let d1 = ((x / strike).ln() + (rate - div + v2 * 0.5) * expiry) / (vol * expiry.sqrt());
+    let d = (-div * expiry).exp() * (-d1).norm_cdf();
+    let pdf = d1.norm_pdf();
+    let fx = -(-div * expiry).exp() * d1.norm_cdf()
+        + T::one() / q1 * (T::one() - d)
+        + (-div * expiry).exp() * pdf / (q1 * vol * expiry.sqrt());
     // second derivative of the residual, assembled from the BS gamma and the
     // analytic derivative of the boundary term.
-    let gamma_e=(-div*expiry).exp()*pdf/(x*vol*expiry.sqrt());
-    let aa=(-div*expiry).exp()*pdf/(vol*expiry.sqrt());
-    let fxx=-gamma_e + (-aa/x + aa*d1/(x*vol*expiry.sqrt()))/q1;
-    let star=ift_lift_1d(root,residual,fx,fxx.val());
-    let ds=((star/strike).ln()+(rate-div+v2*0.5)*expiry)/(vol*expiry.sqrt());
-    let acoef= -star/q1*(T::one()-(-div*expiry).exp()*(-ds).norm_cdf());
-    if spot.val()<=root { strike-spot } else { european(spot,strike,rate,div,vol,expiry,false)+acoef*(spot/star).pow(q1) }
+    let gamma_e = (-div * expiry).exp() * pdf / (x * vol * expiry.sqrt());
+    let aa = (-div * expiry).exp() * pdf / (vol * expiry.sqrt());
+    let fxx = -gamma_e + (-aa / x + aa * d1 / (x * vol * expiry.sqrt())) / q1;
+    let star = ift_lift_1d(root, residual, fx, fxx.val());
+    let ds = ((star / strike).ln() + (rate - div + v2 * 0.5) * expiry) / (vol * expiry.sqrt());
+    let acoef = -star / q1 * (T::one() - (-div * expiry).exp() * (-ds).norm_cdf());
+    if spot.val() <= root {
+        strike - spot
+    } else {
+        european(spot, strike, rate, div, vol, expiry, false) + acoef * (spot / star).pow(q1)
+    }
 }
 
 pub struct BaroneAdesiWhaleyEngine;
@@ -256,18 +284,7 @@ impl BjerksundStensland1993Engine {
 }
 pub struct BjerksundStensland2002Engine;
 #[allow(clippy::too_many_arguments)]
-fn bs_psi<T: Real>(
-    s: T,
-    t: T,
-    gamma: T,
-    h: T,
-    i2: T,
-    i1: T,
-    t1: T,
-    r: T,
-    b: T,
-    v: T,
-) -> T {
+fn bs_psi<T: Real>(s: T, t: T, gamma: T, h: T, i2: T, i1: T, t1: T, r: T, b: T, v: T) -> T {
     // Two-time correction from Bjerksund--Stensland (2002).  The four
     // bivariate-normal terms are retained in AD form; no finite differences or
     // primal extraction is used in the pricing graph.
@@ -288,8 +305,7 @@ fn bs_psi<T: Real>(
     let p12 = ql_math::bivariate_normal_cdf(-e2, -f2, rho);
     let p13 = ql_math::bivariate_normal_cdf(-e3, -f3, rho);
     let p14 = ql_math::bivariate_normal_cdf(-e4, -f4, rho);
-    lambda.exp() * (p11 - (i2 / s).pow(kappa) * p12
-        - (i1 / s).pow(kappa) * (p13 - p14))
+    lambda.exp() * (p11 - (i2 / s).pow(kappa) * p12 - (i1 / s).pow(kappa) * (p13 - p14))
 }
 fn bs2002_call<T: Real>(s: T, k: T, r: T, q: T, v: T, t: T) -> T {
     if t.val() <= 0.0 || v.val() <= 0.0 || q.val() <= 0.0 {
@@ -301,7 +317,11 @@ fn bs2002_call<T: Real>(s: T, k: T, r: T, q: T, v: T, t: T) -> T {
     let beta = (T::from_f64(0.5) - b / v2)
         + ((b / v2 - T::from_f64(0.5)).powf(2.0) + T::from_f64(2.0) * r / v2).sqrt();
     let binf = beta / (beta - T::one()) * k;
-    let b0 = if r.val() <= 0.0 { k } else { k.max_val(r / q.max_val(T::from_f64(1e-12)) * k) };
+    let b0 = if r.val() <= 0.0 {
+        k
+    } else {
+        k.max_val(r / q.max_val(T::from_f64(1e-12)) * k)
+    };
     let denom = (binf - b0).max_val(T::from_f64(1e-12)) * b0;
     let h1 = -(b * t1 + T::from_f64(2.0) * v * t1.sqrt()) * k * k / denom;
     let h2 = -(b * t + T::from_f64(2.0) * v * t.sqrt()) * k * k / denom;
@@ -309,10 +329,14 @@ fn bs2002_call<T: Real>(s: T, k: T, r: T, q: T, v: T, t: T) -> T {
     let i2 = b0 + (binf - b0) * (T::one() - h2.exp());
     let a1 = (i1 - k) / i1.pow(beta);
     let a2 = (i2 - k) / i2.pow(beta);
-    if s.val() >= i2.val() { return s - k; }
+    if s.val() >= i2.val() {
+        return s - k;
+    }
     let phi = |gamma: T, h: T, i: T| bs_phi(s, t1, gamma, h, i, r, b, v);
     a2 * s.pow(beta) - a2 * phi(beta, i2, i2) + phi(T::one(), i2, i2)
-        - phi(T::one(), i1, i2) - k * phi(T::zero(), i2, i2) + k * phi(T::zero(), i1, i2)
+        - phi(T::one(), i1, i2)
+        - k * phi(T::zero(), i2, i2)
+        + k * phi(T::zero(), i1, i2)
         + a1 * phi(beta, i1, i2)
         - a1 * bs_psi(s, t, beta, i2, i2, i1, t1, r, b, v)
         + bs_psi(s, t, T::one(), i2, i2, i1, t1, r, b, v)
@@ -383,7 +407,8 @@ impl JuQuadraticEngine {
             };
             let residual = |x: T| {
                 let d1 = ((x / k).ln() + (r - q + v2 * 0.5) * t) / (v * t.sqrt());
-                x - k - european(x, k, r, q, v, t, true)
+                x - k
+                    - european(x, k, r, q, v, t, true)
                     - x / q2 * (T::one() - (-q * t).exp() * d1.norm_cdf())
             };
             let star0 = root.max(k.val() * (1.0 + 1e-10));

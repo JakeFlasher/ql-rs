@@ -34,8 +34,7 @@ impl StulzRainbowEngine {
             };
         }
         // Stulz (1982) image formula for a call on the minimum.
-        let variance = (v1 * v1 + v2 * v2 - rho * v1 * v2 * 2.0)
-            .max_val(T::from_f64(1e-16));
+        let variance = (v1 * v1 + v2 * v2 - rho * v1 * v2 * 2.0).max_val(T::from_f64(1e-16));
         let sig = variance.sqrt();
         let sig_t = (variance * t).sqrt().max_val(T::from_f64(1e-8));
         let d = ((s1 / s2).ln() + (q2 - q1 + variance * 0.5) * t) / sig_t;
@@ -45,12 +44,9 @@ impl StulzRainbowEngine {
         let y2 = ((s2 / k).ln() + (r - q2 + v2 * v2 * 0.5) * t) / st2;
         let rho1 = (v1 - rho * v2) / sig;
         let rho2 = (v2 - rho * v1) / sig;
-        let cmin = s1 * (-q1 * t).exp()
-            * bivariate_normal_cdf(y1, -d, -rho1)
-            + s2 * (-q2 * t).exp()
-                * bivariate_normal_cdf(y2, d - sig_t, -rho2)
-            - k * (-r * t).exp()
-                * bivariate_normal_cdf(y1 - st1, y2 - st2, rho);
+        let cmin = s1 * (-q1 * t).exp() * bivariate_normal_cdf(y1, -d, -rho1)
+            + s2 * (-q2 * t).exp() * bivariate_normal_cdf(y2, d - sig_t, -rho2)
+            - k * (-r * t).exp() * bivariate_normal_cdf(y1 - st1, y2 - st2, rho);
         let c1 = black_scholes_price(s1, k, v1, t, r, q1, true);
         let c2 = black_scholes_price(s2, k, v2, t, r, q2, true);
         let cmax = c1 + c2 - cmin;
@@ -142,19 +138,11 @@ impl DengLiZhouSpreadBasketEngine {
         // discounted exactly once.  The spread variance has the negative
         // covariance term required by Var(S1-S2).
         let f = f1 / (f1 + f2).max_val(T::from_f64(1e-14));
-        let v = (v1 * v1 * f * f
-            + v2 * v2 * (T::one() - f) * (T::one() - f)
+        let v = (v1 * v1 * f * f + v2 * v2 * (T::one() - f) * (T::one() - f)
             - rho * v1 * v2 * f * (T::one() - f) * 2.0)
             .max_val(T::from_f64(1e-16))
             .sqrt();
-        ql_vol::black76_price(
-            f1,
-            f2 + k,
-            v,
-            t,
-            (-r * t).exp(),
-            is_call,
-        )
+        ql_vol::black76_price(f1, f2 + k, v, t, (-r * t).exp(), is_call)
     }
 }
 
@@ -190,10 +178,11 @@ impl LevyBasketEngine {
             }
         }
         let ratio = (T::one()
-            + var.max_val(T::zero())
-                / (forward * forward).max_val(T::from_f64(1e-24)))
-            .ln();
-        let vol = (ratio / expiry.max_val(T::from_f64(1e-12))).max_val(T::zero()).sqrt();
+            + var.max_val(T::zero()) / (forward * forward).max_val(T::from_f64(1e-24)))
+        .ln();
+        let vol = (ratio / expiry.max_val(T::from_f64(1e-12)))
+            .max_val(T::zero())
+            .sqrt();
         ql_vol::black76_price(
             forward,
             strike,

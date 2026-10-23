@@ -55,6 +55,50 @@ fn normal_hermite_32() -> &'static ([f64; 32], [f64; 32]) {
     &NORMAL_HERMITE_32
 }
 
+fn high_corr_normal_rule() -> (Vec<f64>, Vec<f64>) {
+    // A wider, deterministic Gauss--Legendre rule resolves the narrow
+    // conditional-loss transition that appears as rho approaches one.  It is
+    // used only in that regime; ordinary calibrations retain the cached
+    // 32-node Hermite rule.
+    let n = 192usize;
+    let mut x = vec![0.0; n];
+    let mut w = vec![0.0; n];
+    for i in 0..n.div_ceil(2) {
+        let mut z = (std::f64::consts::PI * (i as f64 + 0.75) / (n as f64 + 0.5)).cos();
+        for _ in 0..32 {
+            let mut p0 = 1.0;
+            let mut p1 = z;
+            for k in 2..=n {
+                let p2 = ((2 * k - 1) as f64 * z * p1 - (k - 1) as f64 * p0) / k as f64;
+                p0 = p1;
+                p1 = p2;
+            }
+            let dp = n as f64 * (z * p1 - p0) / (z * z - 1.0);
+            z -= p1 / dp;
+        }
+        let mut p0 = 1.0;
+        let mut p1 = z;
+        for k in 2..=n {
+            let p2 = ((2 * k - 1) as f64 * z * p1 - (k - 1) as f64 * p0) / k as f64;
+            p0 = p1;
+            p1 = p2;
+        }
+        let dp = n as f64 * (z * p1 - p0) / (z * z - 1.0);
+        let ww = 2.0 / ((1.0 - z * z) * dp * dp);
+        x[i] = -z;
+        x[n - 1 - i] = z;
+        w[i] = ww;
+        w[n - 1 - i] = ww;
+    }
+    let inv_sqrt_2pi = 1.0 / std::f64::consts::TAU.sqrt();
+    for i in 0..n {
+        let z = 8.0 * x[i];
+        x[i] = z;
+        w[i] *= 8.0 * (-0.5 * z * z).exp() * inv_sqrt_2pi;
+    }
+    (x, w)
+}
+
 /// Vasicek large-homogeneous-portfolio expected tranche loss.  The return is
 /// a loss fraction of the total portfolio notional (not divided by tranche
 /// thickness), which is the convention used by QuantLib's LHP model.
@@ -132,7 +176,13 @@ pub fn asb_recursive_expected_tranche_loss<T: Real>(
     if max_loss == 0 {
         return T::zero();
     }
-    let (nodes, weights) = normal_hermite_32();
+    let (nodes32, weights32) = normal_hermite_32();
+    let high_rule = (correlation.val() > 0.8).then(high_corr_normal_rule);
+    let (nodes, weights): (&[f64], &[f64]) = if let Some((ref n, ref w)) = high_rule {
+        (n.as_slice(), w.as_slice())
+    } else {
+        (&nodes32[..], &weights32[..])
+    };
     let q_invs: Vec<T> = default_probs.iter().map(|&q| inv_norm_cdf_ad(q)).collect();
     let rho = correlation
         .max_val(T::zero())
@@ -166,8 +216,7 @@ pub fn asb_recursive_expected_tranche_loss<T: Real>(
         }
         out += conditional * quad_w;
     }
-    out
-        .max_val(T::zero())
+    out.max_val(T::zero())
         .min_val((detachment - attachment).max_val(T::zero()))
 }
 

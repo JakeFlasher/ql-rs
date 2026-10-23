@@ -137,8 +137,7 @@ pub fn simulate_hw1f_multi_netting_set_cube<T: Real>(
             };
             x = e * x + model.sigma * var.sqrt() * z;
             let b = model.b_factor(0.0, tm);
-            let alpha = curve.instantaneous_forward(tm)
-                + model.sigma * model.sigma * b * b * 0.5;
+            let alpha = curve.instantaneous_forward(tm) + model.sigma * model.sigma * b * b * 0.5;
             let r = alpha + x;
             for (ns, set) in netting_sets.iter().enumerate() {
                 let net = set

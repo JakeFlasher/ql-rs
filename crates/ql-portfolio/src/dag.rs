@@ -1,7 +1,9 @@
 use ql_ad::Real;
-use ql_curves::{DiscountCurve, DiscountCurveId, ForwardIndexId, MarketContext, YieldTermStructure};
-use ql_models::{HestonParams, heston_cos_price};
+use ql_curves::{
+    DiscountCurve, DiscountCurveId, ForwardIndexId, MarketContext, YieldTermStructure,
+};
 use ql_instruments::{ResolvedVanillaSwap, SwapType, VanillaSwapSpec};
+use ql_models::{HestonParams, heston_cos_price};
 use ql_scripting::{BytecodeProgram, OpCode};
 use ql_time::{Date, DayCounter, Frequency};
 use rayon::prelude::*;
@@ -456,7 +458,9 @@ impl PortfolioDag {
                     );
                     let spec = VanillaSwapSpec {
                         effective_date: s.ref_date,
-                        termination_date: s.ref_date.add_months((n as i32).saturating_mul(12), false),
+                        termination_date: s
+                            .ref_date
+                            .add_months((n as i32).saturating_mul(12), false),
                         notional: *notional,
                         fixed_rate_or_coupon: *fixed_rate,
                         fixed_tenor: ql_time::Period::Years(1),

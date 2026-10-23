@@ -606,7 +606,11 @@ impl Real for TapeVar<f64> {
         }
         if self.val == 0.0 {
             let g = self.val.powf(p);
-            let w = if p > 1.0 { 0.0 } else { p * self.val.powf(p - 1.0) };
+            let w = if p > 1.0 {
+                0.0
+            } else {
+                p * self.val.powf(p - 1.0)
+            };
             return active_unary(self, g, w);
         }
         let g = self.val.powf(p);

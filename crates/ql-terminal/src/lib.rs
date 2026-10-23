@@ -55,8 +55,8 @@ use ql_rates::{
 use ql_time::Date;
 use ql_vol::implied_black_vol;
 use ql_xva::{
-    NettingSetSwap, SimmBucket, compute_isda_simm, compute_xva, expected_positive_exposure,
-    potential_future_exposure, simulate_hw1f_exposure_cube, compute_isda_simm_6_risk_classes,
+    NettingSetSwap, SimmBucket, compute_isda_simm, compute_isda_simm_6_risk_classes, compute_xva,
+    expected_positive_exposure, potential_future_exposure, simulate_hw1f_exposure_cube,
 };
 use std::fmt::Write as FmtWrite;
 use std::sync::Arc;
@@ -791,8 +791,6 @@ impl DeskWorkstation {
     pub fn step_tick(&mut self) -> WorkstationFrameData {
         self.tick += 1;
         let market = self.scenario_market();
-        let before_curve = self.last_summary.curve_recomputes;
-        let before_trades = self.last_summary.trade_recomputes;
         let start = Instant::now();
         let summary = self.dag.evaluate_portfolio(&market, &self.trades);
         let elapsed = start.elapsed().as_secs_f64() * 1e6;
@@ -1170,9 +1168,9 @@ impl DeskWorkstation {
             scenario: self.scenario,
             chart_mode: self.chart_mode,
             eval_micros: elapsed,
-            dag_recomputed_trades: summary.trade_recomputes.saturating_sub(before_trades),
+            dag_recomputed_trades: summary.last_trade_recomputes,
             dag_total_trades: self.trades.len(),
-            dag_curves_rebuilt: summary.curve_recomputes != before_curve,
+            dag_curves_rebuilt: summary.last_curve_recomputes > 0,
             total_npv: adjusted_total_npv,
             intraday_pnl: adjusted_total_npv - prev,
             eq_delta: summary.total_eq_delta,

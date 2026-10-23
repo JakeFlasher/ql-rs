@@ -172,7 +172,8 @@ impl MarketContext<f64> {
     /// is retained, so callers can record one coherent tape pass over the
     /// context rather than rebuilding ad-hoc maps.
     pub fn to_ad(&self) -> MarketContext<TapeVar<f64>> {
-        let mut out = MarketContext::<TapeVar<f64>>::default().with_reference_date(self.reference_date);
+        let mut out =
+            MarketContext::<TapeVar<f64>>::default().with_reference_date(self.reference_date);
         for (id, curve) in &self.discount_curves {
             let vars = curve
                 .discounts

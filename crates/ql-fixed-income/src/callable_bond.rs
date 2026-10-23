@@ -160,7 +160,8 @@ impl<T: Real> CallableFixedRateBond<T> {
             let mut next = vec![T::zero(); j + 1];
             let theta_j = theta_at(j);
             for i in 0..=j {
-                let short_up = short_rate + oas + theta_j + vol_step * (2.0 * (i + 1) as f64 - j as f64);
+                let short_up =
+                    short_rate + oas + theta_j + vol_step * (2.0 * (i + 1) as f64 - j as f64);
                 let short_dn = short_rate + oas + theta_j + vol_step * (2.0 * i as f64 - j as f64);
                 let disc_up = (-short_up * dt).exp();
                 let disc_dn = (-short_dn * dt).exp();

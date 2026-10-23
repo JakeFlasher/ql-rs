@@ -38,8 +38,11 @@ impl DepositInstrument {
         }
     }
     pub fn par_rate<T: Real>(&self, c: &impl YieldTermStructure<T>) -> T {
-        (c.discount_factor(curve_time(&self.day_counter, c.reference_date(), self.start))
-            / c.discount_factor(curve_time(&self.day_counter, c.reference_date(), self.end))
+        (c.discount_factor(curve_time(
+            &self.day_counter,
+            c.reference_date(),
+            self.start,
+        )) / c.discount_factor(curve_time(&self.day_counter, c.reference_date(), self.end))
             - T::one())
             / self
                 .day_counter
@@ -95,7 +98,11 @@ impl<T: Real> CalibrationHelper<T> for OisSwapInstrument {
             ann += c.discount_factor(t) * tau;
             prev = next;
         }
-        let p0 = c.discount_factor(curve_time(&self.day_counter, c.reference_date(), self.start));
+        let p0 = c.discount_factor(curve_time(
+            &self.day_counter,
+            c.reference_date(),
+            self.start,
+        ));
         let pe = c.discount_factor(curve_time(&self.day_counter, c.reference_date(), self.end));
         (p0 - pe) / ann - self.fixed_rate
     }
@@ -570,8 +577,14 @@ impl SingleCurveHelper for FraInstrument {
         self.quote
     }
     fn residual_curve(&self, c: &DiscountCurve<f64>) -> f64 {
-        let t1 = DayCounter::Act365Fixed.year_fraction(c.reference_date(), self.fixing_start, None, None);
-        let t2 = DayCounter::Act365Fixed.year_fraction(c.reference_date(), self.fixing_end, None, None);
+        let t1 = DayCounter::Act365Fixed.year_fraction(
+            c.reference_date(),
+            self.fixing_start,
+            None,
+            None,
+        );
+        let t2 =
+            DayCounter::Act365Fixed.year_fraction(c.reference_date(), self.fixing_end, None, None);
         (c.discount_factor(t1) / c.discount_factor(t2) - 1.0)
             / self
                 .day_counter
@@ -579,8 +592,14 @@ impl SingleCurveHelper for FraInstrument {
             - self.quote
     }
     fn residual_curve_dual(&self, c: &DiscountCurve<Dual<1>>) -> Dual<1> {
-        let t1 = DayCounter::Act365Fixed.year_fraction(c.reference_date(), self.fixing_start, None, None);
-        let t2 = DayCounter::Act365Fixed.year_fraction(c.reference_date(), self.fixing_end, None, None);
+        let t1 = DayCounter::Act365Fixed.year_fraction(
+            c.reference_date(),
+            self.fixing_start,
+            None,
+            None,
+        );
+        let t2 =
+            DayCounter::Act365Fixed.year_fraction(c.reference_date(), self.fixing_end, None, None);
         (c.discount_factor(t1) / c.discount_factor(t2) - Dual::one())
             / self
                 .day_counter
@@ -650,10 +669,20 @@ impl IrsSwapInstrument {
         while prev < self.end {
             let next = prev.add_period(period, false).min(self.end);
             let tau = self.day_counter.year_fraction(prev, next, None, None);
-            let t = DayCounter::Act365Fixed.year_fraction(projection.reference_date(), next, None, None);
+            let t = DayCounter::Act365Fixed.year_fraction(
+                projection.reference_date(),
+                next,
+                None,
+                None,
+            );
             let p = discount.discount_factor(t);
             fixed += p * tau;
-            let a = DayCounter::Act365Fixed.year_fraction(projection.reference_date(), prev, None, None);
+            let a = DayCounter::Act365Fixed.year_fraction(
+                projection.reference_date(),
+                prev,
+                None,
+                None,
+            );
             floating +=
                 (projection.discount_factor(a) / projection.discount_factor(t) - T::one()) * p;
             prev = next;
@@ -672,7 +701,12 @@ impl BasisSwapInstrument {
         let mut x = T::zero();
         let mut annuity = T::zero();
         for i in 1..=n {
-            let t = DayCounter::Act365Fixed.year_fraction(discount.reference_date(), self.end, None, None) - (n - i) as f64 * 0.25;
+            let t = DayCounter::Act365Fixed.year_fraction(
+                discount.reference_date(),
+                self.end,
+                None,
+                None,
+            ) - (n - i) as f64 * 0.25;
             let p = discount.discount_factor(t);
             let a = (t - 0.25).max(0.0);
             annuity += p * 0.25;
