@@ -6,10 +6,29 @@ use ql_time::{Date, DayCounter, Frequency};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Return a stable representation of an IEEE-754 value for content hashes.
+///
+/// Rust's `f64::to_bits` preserves the sign bit of zero and all NaN payloads,
+/// which is useful for bit-level work but not for cache keys: `-0.0` and
+/// `0.0` have the same numerical meaning and two NaNs should not create two
+/// independent market states.  Keep this helper as the single canonicalisation
+/// point used by every portfolio hash.
+#[inline]
+pub fn canonical_f64_bits(x: f64) -> u64 {
+    if x == 0.0 {
+        0.0_f64.to_bits()
+    } else if x.is_nan() {
+        0x7ff8_0000_0000_0000_u64
+    } else {
+        x.to_bits()
+    }
+}
+
 pub fn hash_f64_slice(v: &[f64]) -> u64 {
     let mut h = 0xcbf29ce484222325u64;
     for &x in v {
-        h ^= if x == 0. { 0 } else { x.to_bits() };
+        h ^= canonical_f64_bits(x);
         h = h.wrapping_mul(0x0100000001b3);
     }
     h
@@ -46,16 +65,18 @@ fn hash_program(program: &BytecodeProgram) -> u64 {
             OpCode::BeginStep { step_idx }
             | OpCode::LoadVar(step_idx)
             | OpCode::StoreVar(step_idx) => h = hash_word(h, *step_idx as u64),
-            OpCode::LoadConst(x) | OpCode::SmoothStep(x) => h = hash_word(h, x.to_bits()),
-            OpCode::Pay { discount_time } => h = hash_word(h, discount_time.to_bits()),
+            OpCode::LoadConst(x) | OpCode::SmoothStep(x) => {
+                h = hash_word(h, canonical_f64_bits(*x))
+            }
+            OpCode::Pay { discount_time } => h = hash_word(h, canonical_f64_bits(*discount_time)),
             OpCode::Autocall {
                 barrier,
                 half_width,
                 discount_time,
             } => {
-                h = hash_word(h, barrier.to_bits());
-                h = hash_word(h, half_width.to_bits());
-                h = hash_word(h, discount_time.to_bits());
+                h = hash_word(h, canonical_f64_bits(*barrier));
+                h = hash_word(h, canonical_f64_bits(*half_width));
+                h = hash_word(h, canonical_f64_bits(*discount_time));
             }
             OpCode::LoadSpot
             | OpCode::Add
@@ -91,7 +112,7 @@ fn trade_dependency_hash(trade: &PortfolioTrade, curve_hash: u64, equity_hash: u
         ]),
         PortfolioTrade::ScriptedNote {
             program, expiry, ..
-        } => hash_word(hash_program(program), expiry.to_bits()),
+        } => hash_word(hash_program(program), canonical_f64_bits(*expiry)),
     };
     match trade {
         PortfolioTrade::IrsSwap { .. } => hash_word(curve_hash, h),
@@ -163,6 +184,13 @@ pub struct PortfolioRiskSummary {
     pub total_eq_delta: f64,
     pub curve_recomputes: usize,
     pub trade_recomputes: usize,
+    /// Per-call counters.  The legacy fields above remain cumulative for
+    /// dashboard/backward compatibility; new telemetry should consume these
+    /// explicit last-call values (or the corresponding DAG fields).
+    pub last_curve_recomputes: usize,
+    pub last_trade_recomputes: usize,
+    pub total_curve_recomputes: usize,
+    pub total_trade_recomputes: usize,
 }
 
 /// Bootstrap the OIS and forwarding curves used by the portfolio dependency
@@ -170,6 +198,15 @@ pub struct PortfolioRiskSummary {
 /// maturities represented by the snapshot quote arrays (rather than array
 /// indices interpreted as years).
 pub fn build_curve_system(s: &MarketSnapshot) -> Arc<ql_curves::CalibratedCurveSystem> {
+    try_build_curve_system(s).expect("curve calibration")
+}
+
+/// Fallible form of [`build_curve_system`].  Portfolio services should use
+/// this form so malformed quotes are reported to the caller instead of being
+/// converted into a panic (or, worse, an unconverged valuation).
+pub fn try_build_curve_system(
+    s: &MarketSnapshot,
+) -> Result<Arc<ql_curves::CalibratedCurveSystem>, String> {
     let reference_date = s.ref_date;
     let mut ois = Vec::with_capacity(3);
     let mut fwd = Vec::with_capacity(3);
@@ -197,10 +234,9 @@ pub fn build_curve_system(s: &MarketSnapshot) -> Arc<ql_curves::CalibratedCurveS
         .iter()
         .map(|helper| helper as &dyn ql_curves::SingleCurveHelper)
         .collect();
-    Arc::new(
-        ql_curves::CalibratedCurveSystem::from_multicurve_helpers(reference_date, &ois_refs, &fwd)
-            .expect("curve calibration"),
-    )
+    ql_curves::CalibratedCurveSystem::from_multicurve_helpers(reference_date, &ois_refs, &fwd)
+        .map(Arc::new)
+        .map_err(|e| format!("curve calibration failed: {e:?}"))
 }
 
 #[derive(Default)]
@@ -209,6 +245,11 @@ pub struct PortfolioDag {
     curve_recomputes: usize,
     cache: HashMap<usize, (u64, TradeValuation)>,
     trade_recomputes: usize,
+    /// Lifetime number of curve recalibrations.  Unlike `curve_recomputes`,
+    /// this value is never reset and is suitable for service telemetry.
+    pub total_curve_recomputes: usize,
+    /// Lifetime number of dirty trade valuations.
+    pub total_trade_recomputes: usize,
 }
 impl PortfolioDag {
     pub fn new() -> Self {
@@ -219,25 +260,63 @@ impl PortfolioDag {
         s: &MarketSnapshot,
         trades: &[PortfolioTrade],
     ) -> PortfolioRiskSummary {
+        // Keep the original infallible API for callers that have already
+        // validated their market snapshot.  New services should call
+        // `try_evaluate_portfolio`, which returns a typed error instead.
+        let mut report = self
+            .try_evaluate_portfolio(trades, s)
+            .unwrap_or_else(|e| panic!("portfolio evaluation failed: {e}"));
+        // The legacy report fields were cumulative and are consumed by the
+        // terminal's delta telemetry.  Preserve that behaviour only in this
+        // infallible compatibility wrapper; the fallible API below exposes
+        // per-call values directly as required for service accounting.
+        report.curve_recomputes = self.total_curve_recomputes;
+        report.trade_recomputes = self.total_trade_recomputes;
+        report.total_curve_recomputes = self.total_curve_recomputes;
+        report.total_trade_recomputes = self.total_trade_recomputes;
+        report
+    }
+
+    /// Evaluate a portfolio and report duplicate IDs or curve calibration
+    /// failures without panicking.  The argument order follows the canonical
+    /// workflow (`trades`, then immutable market snapshot); the legacy
+    /// `evaluate_portfolio(market, trades)` wrapper remains available.
+    pub fn try_evaluate_portfolio(
+        &mut self,
+        trades: &[PortfolioTrade],
+        s: &MarketSnapshot,
+    ) -> Result<PortfolioRiskSummary, String> {
         let mut ids = std::collections::HashSet::with_capacity(trades.len());
-        assert!(
-            trades.iter().all(|trade| {
-                let id = match trade {
-                    PortfolioTrade::IrsSwap { id, .. }
-                    | PortfolioTrade::HestonEuropeanOption { id, .. }
-                    | PortfolioTrade::ScriptedNote { id, .. } => *id,
-                };
-                ids.insert(id)
-            }),
-            "portfolio trade ids must be unique"
-        );
+        for trade in trades {
+            let id = match trade {
+                PortfolioTrade::IrsSwap { id, .. }
+                | PortfolioTrade::HestonEuropeanOption { id, .. }
+                | PortfolioTrade::ScriptedNote { id, .. } => *id,
+            };
+            if !ids.insert(id) {
+                return Err(format!(
+                    "portfolio trade ids must be unique (duplicate id {id})"
+                ));
+            }
+        }
+        // Per-call counters are deliberately separate from the cumulative
+        // counters exposed above.  This makes cache hit/miss telemetry
+        // unambiguous even when a DAG is reused for thousands of ticks.
+        self.trade_recomputes = 0;
+        self.curve_recomputes = 0;
         let ch = s.curve_hash();
         if self.cached_curves.as_ref().map(|entry| entry.0) != Some(ch) {
-            let curves = build_curve_system(s);
+            let curves = try_build_curve_system(s)?;
             self.cached_curves = Some((ch, curves));
             self.curve_recomputes += 1;
+            self.total_curve_recomputes += 1;
         }
-        let curves = self.cached_curves.as_ref().expect("curve cache").1.clone();
+        let curves = self
+            .cached_curves
+            .as_ref()
+            .ok_or_else(|| "curve cache unavailable after calibration".to_string())?
+            .1
+            .clone();
         let eh = s.equity_hash();
         let dirty: Vec<_> = trades
             .iter()
@@ -251,17 +330,28 @@ impl PortfolioDag {
                 (self.cache.get(&id).map(|x| x.0) != Some(h)).then_some((t, h))
             })
             .collect();
+        self.trade_recomputes = dirty.len();
+        self.total_trade_recomputes += dirty.len();
+        // Evict removed/matured trades before inserting newly valued entries.
+        // This is essential for long-lived services where portfolios are
+        // replaced incrementally and IDs are not reused.
+        self.cache.retain(|id, _| ids.contains(id));
         let vals: Vec<_> = dirty
             .par_iter()
             .map(|(t, h)| (*h, self.value_trade(t, s, &curves)))
             .collect();
         for (h, v) in vals {
             self.cache.insert(v.id, (h, v));
-            self.trade_recomputes += 1;
         }
         let mut out = PortfolioRiskSummary {
+            // The fallible API reports per-call counters.  The compatibility
+            // wrapper above converts its legacy fields to cumulative values.
             curve_recomputes: self.curve_recomputes,
             trade_recomputes: self.trade_recomputes,
+            last_curve_recomputes: self.curve_recomputes,
+            last_trade_recomputes: self.trade_recomputes,
+            total_curve_recomputes: self.total_curve_recomputes,
+            total_trade_recomputes: self.total_trade_recomputes,
             ..Default::default()
         };
         for t in trades {
@@ -281,7 +371,27 @@ impl PortfolioDag {
                 }
             }
         }
-        out
+        Ok(out)
+    }
+
+    /// Convenience alias for integrations that mirror the legacy
+    /// `evaluate_portfolio(market, trades)` argument order.
+    pub fn try_evaluate_portfolio_market_first(
+        &mut self,
+        s: &MarketSnapshot,
+        trades: &[PortfolioTrade],
+    ) -> Result<PortfolioRiskSummary, String> {
+        self.try_evaluate_portfolio(trades, s)
+    }
+
+    /// Remove all cached trade valuations while retaining calibrated curves.
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    /// Number of currently cached (live) trade valuations.
+    pub fn cached_trade_count(&self) -> usize {
+        self.cache.len()
     }
     fn value_trade(
         &self,

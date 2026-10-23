@@ -1,4 +1,5 @@
 use std::hint::black_box;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 #[derive(Copy, Clone, Debug)]
@@ -18,6 +19,40 @@ pub struct ComparisonRow {
     pub sota_iqr_ns: f64,
     pub speedup: f64,
     pub max_abs_diff: f64,
+    /// Numerical parity status is explicit so test harnesses never infer it
+    /// from a wall-clock metric.
+    pub parity_ok: bool,
+    pub parity_tol: f64,
+    /// Coarse category (the leading suite number) for report consumers.
+    pub category: String,
+}
+
+static CONFIG_OVERRIDE: OnceLock<Mutex<Option<(usize, usize)>>> = OnceLock::new();
+
+fn config_override() -> &'static Mutex<Option<(usize, usize)>> {
+    CONFIG_OVERRIDE.get_or_init(|| Mutex::new(None))
+}
+
+/// Run a suite with a temporary warmup/sample configuration.  This keeps the
+/// default release benchmark thorough while allowing deterministic, fast
+/// parity checks during `cargo test`.
+pub fn with_config_override<R>(warmup_iters: usize, samples: usize, f: impl FnOnce() -> R) -> R {
+    let mutex = config_override();
+    let previous = {
+        let mut slot = mutex.lock().expect("benchmark config mutex poisoned");
+        slot.replace((warmup_iters, samples))
+    };
+    let result = f();
+    let mut slot = mutex.lock().expect("benchmark config mutex poisoned");
+    *slot = previous;
+    result
+}
+
+pub(crate) fn configured_counts(default_warmup: usize, default_samples: usize) -> (usize, usize) {
+    config_override()
+        .lock()
+        .expect("benchmark config mutex poisoned")
+        .unwrap_or((default_warmup, default_samples))
 }
 
 pub fn measure_ns<F: FnMut() -> f64>(cfg: BenchConfig, mut f: F) -> (f64, f64, f64) {
@@ -67,6 +102,7 @@ where
         diff <= tol,
         "benchmark {id} parity failed: baseline={base_value:.17e}, sota={sota_value:.17e}, diff={diff:.3e}, tol={tol:.3e}"
     );
+    let parity_ok = diff.is_finite() && diff <= tol;
     ComparisonRow {
         id,
         description,
@@ -76,6 +112,9 @@ where
         sota_iqr_ns: sota_iqr,
         speedup: base_median / sota_median.max(1e-9),
         max_abs_diff: diff,
+        parity_ok,
+        parity_tol: tol,
+        category: id.split('_').next().unwrap_or_default().to_string(),
     }
 }
 

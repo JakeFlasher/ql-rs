@@ -23,7 +23,6 @@ ql-portfolio.workspace = true
 ql-credit.workspace = true
 ql-inflation.workspace = true
 ql-fx.workspace = true
-ql-benches.workspace = true
 ql-rates.workspace = true
 ql-dml.workspace = true
 ql-exotics.workspace = true

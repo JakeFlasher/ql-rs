@@ -300,22 +300,21 @@ fn simm_from_swap_sensitivities(sens: &[f64]) -> f64 {
     simm_from_iter(sens.iter().copied())
 }
 
-/// Closed form of the one-bucket aggregation used by the DIM routines.  The
-/// bucket has unit diagonal and 0.5 off-diagonal correlation, so this is
-/// exactly equivalent to `compute_isda_simm` without a per-path allocation.
+/// Closed form of the one-bucket aggregation used by the DIM routines.
+///
+/// The interpolation profiles supplied here represent sensitivities to one
+/// common pillar/factor.  Net those sensitivities *before* applying the SIMM
+/// concentration multiplier and squaring; treating each trade as an
+/// independent factor would incorrectly remove portfolio netting.  Keeping
+/// this explicit one-factor aggregation also makes the convention clear to
+/// callers that build profiles from several trades.
 fn simm_from_iter<I>(sensitivities: I) -> f64
 where
     I: IntoIterator<Item = f64>,
 {
-    let mut sum_ws = 0.0;
-    let mut sum_sq = 0.0;
-    for sensitivity in sensitivities {
-        let concentration = (sensitivity.abs() / 1e6).sqrt().max(1.0);
-        let ws = sensitivity * 50.0 * concentration;
-        sum_ws += ws;
-        sum_sq += ws * ws;
-    }
-    (0.5 * (sum_sq + sum_ws * sum_ws)).sqrt()
+    let net: f64 = sensitivities.into_iter().sum();
+    let concentration = (net.abs() / 1e6).sqrt().max(1.0);
+    (net * 50.0 * concentration).abs()
 }
 fn report_from_sens(
     times: &[f64],

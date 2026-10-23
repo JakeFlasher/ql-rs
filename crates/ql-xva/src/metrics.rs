@@ -8,14 +8,34 @@ pub struct CsaSpec {
     pub mta: f64,
 }
 impl CsaSpec {
+    /// Remaining signed uncollateralized exposure for a netting set.
+    ///
+    /// Variation margin is called only when the positive/negative exposure
+    /// exceeds the threshold plus the minimum transfer amount.  Once a call
+    /// is made the residual is the threshold (not the collateral call itself).
     pub fn collateralized_exposure<T: Real>(&self, x: T) -> T {
-        if x.val() > self.threshold_cpty + self.mta {
-            x - T::from_f64(self.threshold_cpty)
-        } else if x.val() < -(self.threshold_self + self.mta) {
-            x + T::from_f64(self.threshold_self)
+        if x.val() >= 0.0 {
+            collateralized_exposure(x, self.threshold_cpty, self.mta)
         } else {
-            x
+            -collateralized_exposure(-x, self.threshold_self, self.mta)
         }
+    }
+}
+
+/// Positive remaining exposure after a one-way CSA margin call.
+///
+/// The branch is selected using the primal value while all arithmetic in the
+/// selected branch remains in `T`, preserving Dual/Dual2/TapeVar tangents.
+/// For a zero-threshold, zero-MTA CSA this is identically zero for positive
+/// mark-to-market values, as expected for continuous variation margin.
+pub fn collateralized_exposure<T: Real>(mtm: T, threshold_cpty: f64, mta: f64) -> T {
+    let e = mtm.max_val(T::zero());
+    let threshold = T::from_f64(threshold_cpty.max(0.0));
+    let excess = e - threshold;
+    if excess.val() > mta.max(0.0) {
+        e.min_val(threshold)
+    } else {
+        e
     }
 }
 #[derive(Clone, Debug)]
@@ -40,9 +60,11 @@ pub fn expected_positive_exposure<T: Real>(cube: &NpvCube<T>) -> Vec<f64> {
             for path in 0..cube.n_paths {
                 let mut value = 0.0;
                 for ns in 0..cube.n_netting_sets {
-                    value += cube.get(ns, k, path).val();
+                    // Legal netting sets may not offset one another.  Floor
+                    // each set before summing to the counterparty profile.
+                    value += cube.get(ns, k, path).val().max(0.0);
                 }
-                sum += value.max(0.0);
+                sum += value;
             }
             sum / cube.n_paths.max(1) as f64
         })
@@ -58,9 +80,9 @@ pub fn potential_future_exposure<T: Real>(cube: &NpvCube<T>, quantile: f64) -> V
             for path in 0..cube.n_paths {
                 let mut value = 0.0;
                 for ns in 0..cube.n_netting_sets {
-                    value += cube.get(ns, k, path).val();
+                    value += cube.get(ns, k, path).val().max(0.0);
                 }
-                values.push(value.max(0.0));
+                values.push(value);
             }
             values.sort_by(f64::total_cmp);
             let index = (q * values.len().saturating_sub(1) as f64).round() as usize;
@@ -89,25 +111,35 @@ pub fn compute_xva<T: Real>(
     let mut dva = T::zero();
     let mut fva = T::zero();
     for k in 0..cube.times.len() {
-        let mut vals = Vec::with_capacity(cube.n_paths);
+        // Keep positive and negative exposures separate all the way through
+        // aggregation.  Summing signed MTMs first would illegally net two
+        // distinct legal netting sets (e.g. +10 and -8 -> +2 instead of +10).
+        let mut pos_vals = Vec::with_capacity(cube.n_paths);
+        let mut neg_vals = Vec::with_capacity(cube.n_paths);
         for p in 0..cube.n_paths {
-            let mut x = T::zero();
+            let mut pos = T::zero();
+            let mut neg = T::zero();
             for ns in 0..cube.n_netting_sets {
-                x += cube.get(ns, k, p);
+                let v = cube.get(ns, k, p);
+                match csa {
+                    Some(c) => {
+                        pos += collateralized_exposure(v, c.threshold_cpty, c.mta);
+                        neg -= collateralized_exposure(-v, c.threshold_self, c.mta);
+                    }
+                    None => {
+                        pos += v.max_val(T::zero());
+                        neg += v.min_val(T::zero());
+                    }
+                }
             }
-            vals.push(csa.map(|c| c.collateralized_exposure(x)).unwrap_or(x));
+            pos_vals.push(pos);
+            neg_vals.push(neg);
         }
-        let e = vals
-            .iter()
-            .map(|x| x.max_val(T::zero()))
-            .fold(T::zero(), |a, b| a + b)
+        let e = pos_vals.iter().copied().fold(T::zero(), |a, b| a + b)
             / T::from_f64(cube.n_paths.max(1) as f64);
-        let n = vals
-            .iter()
-            .map(|x| x.min_val(T::zero()))
-            .fold(T::zero(), |a, b| a + b)
+        let n = neg_vals.iter().copied().fold(T::zero(), |a, b| a + b)
             / T::from_f64(cube.n_paths.max(1) as f64);
-        let mut raw = vals.iter().map(|x| x.val().max(0.)).collect::<Vec<_>>();
+        let mut raw = pos_vals.iter().map(|x| x.val()).collect::<Vec<_>>();
         raw.sort_by(|a, b| a.total_cmp(b));
         let idx = ((0.95 * (raw.len().saturating_sub(1) as f64)).round() as usize)
             .min(raw.len().saturating_sub(1));
@@ -125,8 +157,26 @@ pub fn compute_xva<T: Real>(
         dva -= ls * n * df * (sb0 - sb) * sc0;
         fva += fs * (e + n) * df * sc * sb * T::from_f64(t - prev);
     }
-    let epe =
-        ee.iter().copied().fold(T::zero(), |a, b| a + b) / T::from_f64(ee.len().max(1) as f64);
+    // EPE is a time integral, not an unweighted arithmetic mean.  Include
+    // EE(0)=0 and use trapezoidal integration on the supplied irregular grid.
+    let epe = if let Some(&t_last) = cube.times.last() {
+        if t_last > 0.0 && ee.len() == cube.times.len() {
+            let mut integral = T::zero();
+            let mut prev_t = 0.0;
+            let mut prev_ee = T::zero();
+            for (&t, &e_t) in cube.times.iter().zip(&ee) {
+                let dt = (t - prev_t).max(0.0);
+                integral += (prev_ee + e_t) * (0.5 * dt);
+                prev_t = t;
+                prev_ee = e_t;
+            }
+            integral / T::from_f64(t_last)
+        } else {
+            T::zero()
+        }
+    } else {
+        T::zero()
+    };
     XvaReport {
         ee,
         ene,

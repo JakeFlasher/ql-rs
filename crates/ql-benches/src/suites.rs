@@ -1,4 +1,6 @@
-use crate::harness::{BenchConfig, ComparisonRow, run_comparison};
+use crate::harness::{
+    BenchConfig, ComparisonRow, configured_counts, run_comparison, with_config_override,
+};
 use ql_ad::{Dual, Dual2, Real, TapeVar};
 use ql_commodities as _;
 use ql_credit::asb_recursive_expected_tranche_loss;
@@ -32,14 +34,22 @@ use ql_xva::{NettingSetSwap, compute_bruteforce_dim_and_mva, compute_chebyshev_d
 use std::sync::Arc;
 
 fn config(scale: usize) -> BenchConfig {
+    let (warmup_iters, samples) = configured_counts(1, 31);
     BenchConfig {
-        warmup_iters: 1,
-        samples: 31,
+        warmup_iters,
+        samples,
         // Repeat each fixed workload enough times to amortize timer and
         // scheduler jitter when the workspace's integration binaries run in
         // parallel.  `scale` changes only this repetition count; the domain
         // workload itself remains invariant across test and bench modes.
-        iters_per_sample: scale.max(1) * 8,
+        // The short parity configuration intentionally uses one iteration so
+        // the complete 20-suite test remains a fast (<2s on CI) invariant
+        // check rather than a second timing benchmark.
+        iters_per_sample: if samples <= 3 {
+            scale.max(1)
+        } else {
+            scale.max(1) * 8
+        },
     }
 }
 
@@ -1620,4 +1630,24 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
 /// Public spelling used by downstream benchmark runners.
 pub fn run_all_suites(scale: usize) -> Vec<ComparisonRow> {
     run_all_benchmarks(scale)
+}
+
+/// Fast deterministic suite runner used by integration tests.  Numerical
+/// parity and invariants are checked by every suite; hardware-sensitive
+/// speedup gates remain opt-in in the test harness.
+pub fn run_all_benchmark_suites_with_config(
+    warmup_iters: usize,
+    samples: usize,
+) -> Vec<ComparisonRow> {
+    with_config_override(warmup_iters, samples, || run_all_benchmarks(1))
+}
+
+/// Compatibility spelling retained for callers that used the Phase 10 prompt
+/// verbatim (`Config` was capitalised there).
+#[allow(non_snake_case)]
+pub fn run_all_benchmark_suites_with_Config(
+    warmup_iters: usize,
+    samples: usize,
+) -> Vec<ComparisonRow> {
+    run_all_benchmark_suites_with_config(warmup_iters, samples)
 }

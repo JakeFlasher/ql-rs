@@ -4,7 +4,6 @@
 pub mod prelude {
     pub use crate::TabId;
     pub use ql_ad::*;
-    pub use ql_benches;
     pub use ql_commodities::*;
     pub use ql_credit::*;
     pub use ql_curves::*;
@@ -896,13 +895,11 @@ impl DeskWorkstation {
             .iter()
             .enumerate()
             .map(|(i, x)| {
-                (
-                    format!(
-                        "{}Y",
-                        [1, 2, 5, 10, 20, 30].get(i).copied().unwrap_or(i + 1)
-                    ),
-                    *x * 1e-4,
-                )
+                let label = ["OIS 1Y", "OIS 2Y", "OIS 5Y", "FWD 1Y", "FWD 2Y", "FWD 5Y"]
+                    .get(i)
+                    .map(|s| (*s).to_string())
+                    .unwrap_or_else(|| format!("Pillar {}", i + 1));
+                (label, *x * 1e-4)
             })
             .collect();
         let credit_buckets: Vec<(String, f64)> = credit_raw
@@ -1392,24 +1389,31 @@ impl DeskWorkstation {
         while left_bottom.len() < 20 {
             left_bottom.push(String::new());
         }
-        let mut right_bottom: Vec<String> = frame
-            .blotter_rows
-            .iter()
-            .map(|(name, value, tag)| format!("{name:<20} {:>12.2} {tag:<10}", value))
-            .collect();
-        right_bottom.push("SOTA IFT / COS / AAD telemetry".to_string());
-        right_bottom.push("Exotics / Commodities / Burley RQMC".to_string());
-        right_bottom.push("Levy COS / Convertible TF / ASB CDO".to_string());
-        right_bottom.push(format!("ASB tranche EL: {:.6}", asb_el));
-        right_bottom.push(format!(
-            "DAG recomputed: {}/{}",
-            frame.dag_recomputed_trades, frame.dag_total_trades
-        ));
-        right_bottom.push(format!("Chart: {}", frame.chart_mode.label()));
         let american = BaroneAdesiWhaleyEngine::price(100.0, 100.0, 0.03, 0.01, 0.2, 1.0, true);
         let erc = equal_risk_contribution_weights(&[vec![0.04, 0.01], vec![0.01, 0.09]]);
-        right_bottom.push(format!("American / Hybrid: {:.4}", american));
-        right_bottom.push(format!("BL / Risk Parity ERC: {:.3}/{:.3}", erc[0], erc[1]));
+        // Reserve rows for the SOTA telemetry first.  Previously blotter rows
+        // were appended before these entries, so a busy blotter pushed Tabs 17
+        // and 18 beyond the 20 rendered rows and silently truncated them.
+        let mut right_bottom = vec![
+            "SOTA IFT / COS / AAD telemetry".to_string(),
+            "Exotics / Commodities / Burley RQMC".to_string(),
+            "Levy COS / Convertible TF / ASB CDO".to_string(),
+            format!("ASB tranche EL: {:.6}", asb_el),
+            format!(
+                "DAG recomputed: {}/{}",
+                frame.dag_recomputed_trades, frame.dag_total_trades
+            ),
+            format!("Chart: {}", frame.chart_mode.label()),
+            format!("American / Hybrid: {:.4}", american),
+            format!("BL / Risk Parity ERC: {:.3}/{:.3}", erc[0], erc[1]),
+        ];
+        right_bottom.extend(
+            frame
+                .blotter_rows
+                .iter()
+                .map(|(name, value, tag)| format!("{name:<20} {:>12.2} {tag:<10}", value)),
+        );
+        right_bottom.truncate(20);
         while right_bottom.len() < 20 {
             right_bottom.push(String::new());
         }

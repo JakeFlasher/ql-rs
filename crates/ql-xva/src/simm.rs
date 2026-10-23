@@ -1,4 +1,40 @@
 use ql_ad::Real;
+
+/// The six ISDA SIMM risk classes (in the ordering used by the v2.6
+/// cross-risk-class correlation matrix).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[repr(usize)]
+pub enum SimmRiskClass {
+    InterestRate = 0,
+    CreditQualifying = 1,
+    CreditNonQualifying = 2,
+    Equity = 3,
+    Commodity = 4,
+    Fx = 5,
+}
+
+/// Aggregate class margins using the ISDA SIMM v2.6 cross-risk-class matrix.
+/// The input ordering is `[IR, CreditQ, CreditNQ, Equity, Commodity, FX]`.
+pub fn compute_isda_simm_6_risk_classes<T: Real>(class_margins: &[T; 6]) -> T {
+    // ISDA SIMM v2.6, Table 2.2.  The matrix is symmetric with unit diagonal.
+    const PSI: [[f64; 6]; 6] = [
+        [1.00, 0.28, 0.21, 0.18, 0.26, 0.18],
+        [0.28, 1.00, 0.42, 0.20, 0.26, 0.22],
+        [0.21, 0.42, 1.00, 0.20, 0.24, 0.24],
+        [0.18, 0.20, 0.20, 1.00, 0.27, 0.32],
+        [0.26, 0.26, 0.24, 0.27, 1.00, 0.28],
+        [0.18, 0.22, 0.24, 0.32, 0.28, 1.00],
+    ];
+    let mut total = T::zero();
+    for i in 0..6 {
+        for j in 0..6 {
+            total += T::from_f64(PSI[i][j]) * class_margins[i] * class_margins[j];
+        }
+    }
+    // Numerical roundoff can make a nearly-zero portfolio marginally negative
+    // for scalar f64.  Keep AD values in-domain without stripping tangents.
+    total.max_val(T::zero()).sqrt()
+}
 #[derive(Clone, Debug)]
 pub struct SimmBucket<T: Real> {
     pub sensitivities: Vec<T>,
@@ -26,17 +62,16 @@ pub fn compute_isda_simm<T: Real>(b: &[SimmBucket<T>], corr: &[Vec<f64>]) -> T {
     let mut ks = Vec::new();
     let mut ss = Vec::new();
     for x in b {
-        let ws: Vec<T> = x
+        let concentration_ratios: Vec<T> = x
             .sensitivities
             .iter()
-            .zip(&x.risk_weights)
-            .map(|(s, w)| {
+            .map(|s| {
                 let threshold = x.concentration_threshold.max(1e-12);
                 let abs_ratio = s.abs() / threshold;
                 // Keep the concentration multiplier in the AD domain.  Using
                 // only `s.val()` here would silently drop the derivative of
                 // the ISDA concentration adjustment for large sensitivities.
-                let concentration = if abs_ratio.val() > 1.0 {
+                if abs_ratio.val() > 1.0 {
                     abs_ratio.sqrt()
                 } else if abs_ratio.val() == 1.0 {
                     // At the kink use the symmetric finite-difference
@@ -44,20 +79,41 @@ pub fn compute_isda_simm<T: Real>(b: &[SimmBucket<T>], corr: &[Vec<f64>]) -> T {
                     T::one() + (abs_ratio - T::one()) * 0.25
                 } else {
                     T::one()
-                };
-                *s * concentration * *w
+                }
             })
+            .collect();
+        let ws: Vec<T> = x
+            .sensitivities
+            .iter()
+            .zip(&x.risk_weights)
+            .zip(&concentration_ratios)
+            .map(|((s, w), concentration)| *s * *concentration * *w)
             .collect();
         let mut k2 = T::zero();
         for i in 0..ws.len() {
             for j in 0..ws.len() {
+                // SIMM v2.6 scales off-diagonal correlations by the ratio of
+                // concentration factors.  Compute this in T so AD sensitivities
+                // remain exact through the concentration adjustment.
+                let concentration_corr = if i == j {
+                    T::one()
+                } else {
+                    let lo = concentration_ratios[i].min_val(concentration_ratios[j]);
+                    let hi = concentration_ratios[i].max_val(concentration_ratios[j]);
+                    if hi.val().abs() > 1e-14 {
+                        lo / hi
+                    } else {
+                        T::one()
+                    }
+                };
                 k2 += T::from_f64(
                     x.intra_corr
                         .get(i)
                         .and_then(|r| r.get(j))
                         .copied()
                         .unwrap_or(if i == j { 1. } else { 0. }),
-                ) * ws[i]
+                ) * concentration_corr
+                    * ws[i]
                     * ws[j];
             }
         }
