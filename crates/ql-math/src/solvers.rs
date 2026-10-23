@@ -19,15 +19,15 @@ pub fn brent_solve<F: Fn(f64) -> f64>(
 ) -> Result<f64, MathError> {
     let mut fa = f(a);
     let mut fb = f(b);
+    if !fa.is_finite() || !fb.is_finite() || (fa > 0.0 && fb > 0.0) || (fa < 0.0 && fb < 0.0) {
+        return Err(MathError::NotBracketed);
+    }
     if fa == 0.0 {
         return Ok(a);
     }
     if fb == 0.0 {
         return Ok(b);
     }
-    if fa * fb > 0.0 {
-        return Err(MathError::NotBracketed);
-    };
     let mut c = b;
     let mut fc = fb;
     let mut d = b - a;

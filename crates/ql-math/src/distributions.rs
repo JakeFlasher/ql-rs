@@ -211,8 +211,5 @@ pub fn inv_norm_cdf<T: Real>(p: T) -> T {
 }
 
 fn norm_cdf_f64(x: f64) -> f64 {
-    0.5 * (1.0 + erf_f64(x * std::f64::consts::FRAC_1_SQRT_2))
-}
-fn erf_f64(x: f64) -> f64 {
-    libm::erf(x)
+    0.5 * libm::erfc(-x * std::f64::consts::FRAC_1_SQRT_2)
 }

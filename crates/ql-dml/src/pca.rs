@@ -3,6 +3,9 @@ use nalgebra::{DMatrix, SymmetricEigen};
 pub struct PcaDecomposition {
     pub eigenvalues: Vec<f64>,
     pub eigenvectors: Vec<Vec<f64>>,
+    /// Per-feature mean used to center the training states.  Non-central PCA
+    /// deliberately stores zeros so its historical behavior is unchanged.
+    pub mean: Vec<f64>,
     pub dim: usize,
 }
 fn fit(mat: &[Vec<f64>], center: bool) -> PcaDecomposition {
@@ -34,6 +37,7 @@ fn fit(mat: &[Vec<f64>], center: bool) -> PcaDecomposition {
     PcaDecomposition {
         eigenvalues: vals,
         eigenvectors: vecs,
+        mean,
         dim: d,
     }
 }
@@ -49,7 +53,11 @@ pub fn fit_differential_pca_central(z: &[Vec<f64>]) -> PcaDecomposition {
 impl PcaDecomposition {
     pub fn encode(&self, x: &[f64], p: usize) -> Vec<f64> {
         (0..p.min(self.dim))
-            .map(|j| (0..self.dim).map(|i| self.eigenvectors[i][j] * x[i]).sum())
+            .map(|j| {
+                (0..self.dim)
+                    .map(|i| self.eigenvectors[i][j] * (x[i] - self.mean[i]))
+                    .sum()
+            })
             .collect()
     }
     pub fn decode(&self, l: &[f64]) -> Vec<f64> {
@@ -58,7 +66,8 @@ impl PcaDecomposition {
                 l.iter()
                     .enumerate()
                     .map(|(j, &v)| self.eigenvectors[i][j] * v)
-                    .sum()
+                    .sum::<f64>()
+                    + self.mean[i]
             })
             .collect()
     }

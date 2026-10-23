@@ -108,7 +108,11 @@ impl Date {
         if day == 0 || day > dim {
             return Err(TimeError::InvalidDate(year, month, day));
         }
-        Ok(Self(days_from_civil(year, month as i32, day as i32)))
+        let days = days_from_civil(year, month as i32, day as i32);
+        if days < i32::MIN as i64 || days > i32::MAX as i64 {
+            return Err(TimeError::OutOfRange);
+        }
+        Ok(Self(days as i32))
     }
     pub fn ymd(self) -> (i32, u8, u8) {
         civil_from_days(self.0)
@@ -209,17 +213,20 @@ pub fn days_in_month(year: i32, month: u8) -> u8 {
 pub fn is_leap_year(year: i32) -> bool {
     Date::is_leap_year(year)
 }
-fn days_from_civil(y: i32, m: i32, d: i32) -> i32 {
-    let y = y - if m <= 2 { 1 } else { 0 };
+fn days_from_civil(y: i32, m: i32, d: i32) -> i64 {
+    // Keep every intermediate in i64.  A valid i32 year can be far outside
+    // Date's representable epoch-day range, and doing the arithmetic in i32
+    // used to wrap before the range check could run.
+    let y = y as i64 - if m <= 2 { 1 } else { 0 };
     let era = (if y >= 0 { y } else { y - 399 }).div_euclid(400);
     let yoe = y - era * 400;
-    let mp = m + if m > 2 { -3 } else { 9 };
-    let doy = (153 * mp + 2).div_euclid(5) + d - 1;
+    let mp = m as i64 + if m > 2 { -3 } else { 9 };
+    let doy = (153 * mp + 2).div_euclid(5) + d as i64 - 1;
     let doe = yoe * 365 + yoe.div_euclid(4) - yoe.div_euclid(100) + doy;
     era * 146097 + doe - 719468
 }
 fn civil_from_days(z: i32) -> (i32, u8, u8) {
-    let z = z + 719468;
+    let z = z as i64 + 719468;
     let era = (if z >= 0 { z } else { z - 146096 }).div_euclid(146097);
     let doe = z - era * 146097;
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096).div_euclid(365);
@@ -228,7 +235,7 @@ fn civil_from_days(z: i32) -> (i32, u8, u8) {
     let mp = (5 * doy + 2).div_euclid(153);
     let d = doy - (153 * mp + 2).div_euclid(5) + 1;
     let m = mp + if mp < 10 { 3 } else { -9 };
-    (y + if m <= 2 { 1 } else { 0 }, m as u8, d as u8)
+    ((y + if m <= 2 { 1 } else { 0 }) as i32, m as u8, d as u8)
 }
 
 pub fn imm_date(year: i32, month: u8) -> Result<Date, TimeError> {

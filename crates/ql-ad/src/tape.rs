@@ -2,15 +2,15 @@ use crate::scalar::Real;
 use std::cell::RefCell;
 use std::fmt;
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 pub const CONST_IDX: u32 = u32::MAX;
-static NEXT_TAPE_ID: AtomicU16 = AtomicU16::new(1);
+static NEXT_TAPE_ID: AtomicU32 = AtomicU32::new(1);
 #[derive(Copy, Clone, Debug, Default)]
 pub struct TapeVar<T: Copy = f64> {
     pub val: T,
     pub idx: u32,
-    pub tape_id: u16,
+    pub tape_id: u32,
 }
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -24,14 +24,29 @@ pub struct OpRecord<T: Copy> {
 pub struct AdjointResult {
     pub adjoints: Vec<f64>,
     pub output: u32,
+    pub tape_id: u32,
 }
 impl AdjointResult {
     pub fn gradient(&self, var: TapeVar<f64>) -> f64 {
+        assert!(
+            var.idx == CONST_IDX || var.tape_id == self.tape_id,
+            "cross-tape variable"
+        );
         if var.idx == CONST_IDX {
             0.0
         } else {
             self.adjoints.get(var.idx as usize).copied().unwrap_or(0.0)
         }
+    }
+    pub fn try_gradient(&self, var: TapeVar<f64>) -> Result<f64, &'static str> {
+        if var.idx != CONST_IDX && var.tape_id != self.tape_id {
+            return Err("cross-tape variable");
+        }
+        Ok(if var.idx == CONST_IDX {
+            0.0
+        } else {
+            self.adjoints.get(var.idx as usize).copied().unwrap_or(0.0)
+        })
     }
     pub fn get(&self, i: usize) -> f64 {
         self.adjoints.get(i).copied().unwrap_or(0.0)
@@ -43,7 +58,7 @@ pub struct ArenaTape<T: Copy = f64> {
     pub ops: Vec<OpRecord<T>>,
     pub mark: usize,
     pub active: bool,
-    pub tape_id: u16,
+    pub tape_id: u32,
 }
 impl<T> Default for ArenaTape<T>
 where
@@ -239,22 +254,59 @@ impl ArenaTape<f64> {
         }
         for (i, op) in self.ops.iter().enumerate().rev() {
             let g = a[i];
-            if op.lhs != CONST_IDX {
+            if g == 0.0 {
+                continue;
+            }
+            if op.lhs != CONST_IDX && op.w_lhs != 0.0 {
                 a[op.lhs as usize] += g * op.w_lhs;
             }
-            if op.rhs != CONST_IDX {
+            if op.rhs != CONST_IDX && op.w_rhs != 0.0 {
                 a[op.rhs as usize] += g * op.w_rhs;
             }
         }
         AdjointResult {
             adjoints: a,
             output: output.idx,
+            tape_id: self.tape_id,
         }
     }
 }
 
 thread_local! {static ACTIVE:RefCell<Option<ArenaTape<f64>>>=const{RefCell::new(None)};}
 pub struct TapeScope;
+/// A scoped active tape.  Creating a guard replaces the current active tape;
+/// dropping it restores the previous tape (or leaves recording inactive).
+/// Restoration is performed during unwinding as well, so early returns and
+/// panics cannot leak a tape into unrelated pricing work.
+pub struct TapeGuard {
+    previous: Option<ArenaTape<f64>>,
+    active: bool,
+}
+impl TapeGuard {
+    /// Finish this scope and return the tape recorded by the guard.  The
+    /// previous tape, if any, is restored before returning.
+    pub fn stop(mut self) -> Option<ArenaTape<f64>> {
+        self.active = false;
+        ACTIVE.with(|a| {
+            let mut slot = a.borrow_mut();
+            let current = slot.take();
+            *slot = self.previous.take();
+            current
+        })
+    }
+}
+impl Drop for TapeGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        ACTIVE.with(|a| {
+            let mut slot = a.borrow_mut();
+            let _current = slot.take();
+            *slot = self.previous.take();
+        });
+    }
+}
 impl TapeScope {
     pub fn start_recording() {
         ACTIVE.with(|a| *a.borrow_mut() = Some(ArenaTape::new()));
@@ -266,11 +318,27 @@ impl TapeScope {
         ACTIVE.with(|a| a.borrow_mut().take())
     }
     pub fn with_active<R, F: FnOnce(&mut ArenaTape<f64>) -> R>(f: F) -> R {
-        let had = ACTIVE.with(|a| a.borrow().is_some());
-        if !had {
-            Self::start_recording();
+        ACTIVE.with(|a| {
+            f(a.borrow_mut().as_mut().expect(
+                "no active tape; call TapeScope::start_recording or create a TapeScope::guard",
+            ))
+        })
+    }
+    pub fn guard() -> TapeGuard {
+        Self::guard_with_capacity(0)
+    }
+    pub fn guard_with_capacity(capacity: usize) -> TapeGuard {
+        let previous = ACTIVE.with(|a| a.borrow_mut().take());
+        let tape = if capacity == 0 {
+            ArenaTape::new()
+        } else {
+            ArenaTape::with_capacity(capacity)
+        };
+        ACTIVE.with(|a| *a.borrow_mut() = Some(tape));
+        TapeGuard {
+            previous,
+            active: true,
         }
-        ACTIVE.with(|a| f(a.borrow_mut().as_mut().expect("active tape")))
     }
     pub fn set_mark() {
         ACTIVE.with(|a| {
@@ -521,10 +589,22 @@ impl Real for TapeVar<f64> {
         active_unary(self, g, 1.0 - g * g)
     }
     fn powf(self, p: f64) -> Self {
+        if p == 0.0 {
+            return TapeVar::from_f64(1.0);
+        }
+        if p == 1.0 {
+            return self;
+        }
+        if p == 2.0 {
+            return self * self;
+        }
         let g = self.val.powf(p);
         active_unary(self, g, p * self.val.powf(p - 1.0))
     }
     fn pow(self, p: Self) -> Self {
+        if p.idx == CONST_IDX {
+            return self.powf(p.val);
+        }
         (p * self.ln()).exp()
     }
     fn mul_add(self, a: Self, b: Self) -> Self {

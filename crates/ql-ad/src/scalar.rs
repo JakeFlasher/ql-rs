@@ -225,33 +225,18 @@ fn simd_exp8(x: Simd<f64, 8>) -> Simd<f64, 8> {
     simd_exp(x)
 }
 
-fn simd_erf4(x: Simd<f64, 4>) -> Simd<f64, 4> {
-    let sign = x.simd_lt(Simd::splat(0.0));
-    let a = x.abs();
-    let t = Simd::splat(1.0) / (Simd::splat(1.0) + Simd::splat(0.3275911) * a);
-    let p = ((((Simd::splat(1.061405429) * t - Simd::splat(1.453152027)) * t
-        + Simd::splat(1.421413741))
-        * t
-        - Simd::splat(0.284496736))
-        * t
-        + Simd::splat(0.254829592))
-        * t;
-    let y = Simd::splat(1.0) - p * simd_exp4(-a * a);
-    sign.select(-y, y)
+// Evaluate erfc lane-wise with libm's Cody/Cephes-quality scalar kernel.  The
+// old five-term erf approximation loses all relative accuracy in the left tail
+// because it forms `1 - erf(|x|)`.  Keeping erfc as the primitive avoids that
+// cancellation while still allowing callers to process a SIMD batch in one
+// API operation (and lets LLVM vectorize the surrounding arithmetic).
+#[inline(always)]
+fn simd_erfc4(x: Simd<f64, 4>) -> Simd<f64, 4> {
+    Simd::from_array(x.to_array().map(libm::erfc))
 }
-fn simd_erf8(x: Simd<f64, 8>) -> Simd<f64, 8> {
-    let sign = x.simd_lt(Simd::splat(0.0));
-    let a = x.abs();
-    let t = Simd::splat(1.0) / (Simd::splat(1.0) + Simd::splat(0.3275911) * a);
-    let p = ((((Simd::splat(1.061405429) * t - Simd::splat(1.453152027)) * t
-        + Simd::splat(1.421413741))
-        * t
-        - Simd::splat(0.284496736))
-        * t
-        + Simd::splat(0.254829592))
-        * t;
-    let y = Simd::splat(1.0) - p * simd_exp8(-a * a);
-    sign.select(-y, y)
+#[inline(always)]
+fn simd_erfc8(x: Simd<f64, 8>) -> Simd<f64, 8> {
+    Simd::from_array(x.to_array().map(libm::erfc))
 }
 impl SimdReal for Simd<f64, 4> {
     #[inline(always)]
@@ -265,8 +250,7 @@ impl SimdReal for Simd<f64, 4> {
         StdFloat::sqrt(self)
     }
     fn norm_cdf(self) -> Self {
-        Simd::splat(0.5)
-            * (Simd::splat(1.0) + simd_erf4(self * Simd::splat(std::f64::consts::FRAC_1_SQRT_2)))
+        Simd::splat(0.5) * simd_erfc4(-self * Simd::splat(std::f64::consts::FRAC_1_SQRT_2))
     }
     fn norm_pdf(self) -> Self {
         Simd::splat((2.0 * std::f64::consts::PI).sqrt().recip())
@@ -288,8 +272,7 @@ impl SimdReal for Simd<f64, 8> {
         StdFloat::sqrt(self)
     }
     fn norm_cdf(self) -> Self {
-        Simd::splat(0.5)
-            * (Simd::splat(1.0) + simd_erf8(self * Simd::splat(std::f64::consts::FRAC_1_SQRT_2)))
+        Simd::splat(0.5) * simd_erfc8(-self * Simd::splat(std::f64::consts::FRAC_1_SQRT_2))
     }
     fn norm_pdf(self) -> Self {
         Simd::splat((2.0 * std::f64::consts::PI).sqrt().recip())

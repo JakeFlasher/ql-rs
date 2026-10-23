@@ -206,7 +206,10 @@ impl BitsetCalendar {
             | BusinessDayConvention::ModifiedFollowing
             | BusinessDayConvention::HalfMonthModifiedFollowing => {
                 let mut x = d;
-                while !self.is_business_day(x) {
+                // Date::add_days saturates at i32 bounds.  Stop before a
+                // saturated increment can repeat forever for an out-of-range
+                // weekend date.
+                while !self.is_business_day(x) && x.0 < 2_932_896 {
                     x = x.add_days(1);
                 }
                 if matches!(bdc, BusinessDayConvention::ModifiedFollowing) && x.month() != d.month()
@@ -220,7 +223,7 @@ impl BitsetCalendar {
             }
             BusinessDayConvention::Preceding | BusinessDayConvention::ModifiedPreceding => {
                 let mut x = d;
-                while !self.is_business_day(x) {
+                while !self.is_business_day(x) && x.0 > -719_468 {
                     x = x.add_days(-1);
                 }
                 if matches!(bdc, BusinessDayConvention::ModifiedPreceding) && x.month() != d.month()
