@@ -121,6 +121,13 @@ fn trade_dependency_hash(trade: &PortfolioTrade, curve_hash: u64, equity_hash: u
         }
     }
 }
+
+/// Public content hash for a trade under a market snapshot.  Keeping this
+/// helper next to the dependency hash makes it possible for callers to build
+/// external cache keys using the same canonical float treatment as the DAG.
+pub fn trade_market_hash(trade: &PortfolioTrade, market: &MarketSnapshot) -> u64 {
+    trade_dependency_hash(trade, market.curve_hash(), market.equity_hash())
+}
 #[derive(Clone, Debug)]
 pub struct MarketSnapshot {
     pub ref_date: Date,
@@ -317,7 +324,6 @@ impl PortfolioDag {
             .ok_or_else(|| "curve cache unavailable after calibration".to_string())?
             .1
             .clone();
-        let eh = s.equity_hash();
         let dirty: Vec<_> = trades
             .iter()
             .filter_map(|t| {
@@ -326,7 +332,7 @@ impl PortfolioDag {
                     | PortfolioTrade::HestonEuropeanOption { id, .. }
                     | PortfolioTrade::ScriptedNote { id, .. } => *id,
                 };
-                let h = trade_dependency_hash(t, ch, eh);
+                let h = trade_market_hash(t, s);
                 (self.cache.get(&id).map(|x| x.0) != Some(h)).then_some((t, h))
             })
             .collect();
