@@ -125,6 +125,17 @@ impl BjerksundStensland1993Engine {
     }
 }
 pub struct BjerksundStensland2002Engine;
+fn bs2002_call<T: Real>(s:T,k:T,r:T,q:T,v:T,t:T)->T {
+    if t.val()<=0.0 || v.val()<=0.0 || q.val()<=0.0 { return european(s,k,r,q,v,t,true); }
+    let sig2=v*v;
+    let beta=(T::from_f64(0.5)-q/r + ((q/r-T::from_f64(0.5))*(q/r-T::from_f64(0.5))+T::from_f64(2.0)*r/sig2).sqrt());
+    let b_inf=beta/(beta-T::one())*k;
+    let b0=k.max_val(r/(r-q)*k);
+    let h=-(q*t+T::from_f64(2.0)*v*t.sqrt())*b0/(b_inf-b0).max_val(T::from_f64(1e-12));
+    let i=b0+(b_inf-b0)*(T::one()-h.exp());
+    let alpha=(i-k)*i.pow(-beta);
+    if s.val()>=i.val() { s-k } else { alpha*s.pow(beta) }
+}
 impl BjerksundStensland2002Engine {
     pub fn price<T: Real>(
         spot: T,
@@ -135,7 +146,8 @@ impl BjerksundStensland2002Engine {
         expiry: T,
         is_call: bool,
     ) -> T {
-        BaroneAdesiWhaleyEngine::price(spot, strike, rate, div, vol, expiry, is_call)
+        if is_call { bs2002_call(spot,strike,rate,div,vol,expiry) }
+        else { BaroneAdesiWhaleyEngine::price(spot,strike,rate,div,vol,expiry,false) }
     }
 }
 pub struct JuQuadraticEngine;
