@@ -318,6 +318,11 @@ fn simd_erfc<const N: usize>(x: Simd<f64, N>) -> Simd<f64, N> {
         474.5285412069554,
         -22.440_952_446_585_82,
     ];
+    // These coefficients are the degree-11 Remez minimax fit of the
+    // fdlibm rational residual
+    // log(erfc(x)*x)+x²+9/16-R(1/x²)/S(1/x²) on x∈[1.25,2.857].
+    // They are a deterministic approximation of the published kernel's
+    // rounding residual, not market/calibration parameters.
     let corr = [
         -1.9000371979225443e-11,
         7.03768581043996e-10,
