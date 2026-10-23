@@ -73,6 +73,7 @@ pub struct BarrierOption {
     pub rate: f64,
     pub option_type: OptionType,
     pub barrier_type: BarrierType,
+    pub rebate: f64,
 }
 impl BarrierOption {
     pub fn price<T: Real>(&self) -> T {
@@ -160,6 +161,7 @@ impl BarrierOption {
             rate,
             option_type,
             barrier_type,
+            rebate: 0.0,
         }
     }
 }

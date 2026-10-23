@@ -164,7 +164,7 @@ impl Fd2dHestonEngine {
             T::from_f64(option.strike),
             lower,
             upper,
-            T::zero(),
+            T::from_f64(option.rebate),
             rate,
             div,
             expiry,
