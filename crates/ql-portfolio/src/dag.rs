@@ -163,28 +163,30 @@ impl MarketSnapshot {
     /// used by portfolio and pricing services.
     pub fn to_market_context(&self) -> MarketContext<f64> {
         let times = vec![1.0, 2.0, 5.0];
-        let ois = self
+        let fallback_ois = self
             .ois_quotes
             .iter()
             .zip(times.iter())
             .map(|(&r, &t)| (-r * t).exp())
             .collect();
-        let fwd = self
+        let fallback_fwd = self
             .fwd_quotes
             .iter()
             .zip(times.iter())
             .map(|(&r, &t)| (-r * t).exp())
             .collect();
+        let (ois_curve, fwd_curve) = if let Ok(system) = try_build_curve_system(self) {
+            (system.curves[0].clone(), system.curves[1].clone())
+        } else {
+            (
+                DiscountCurve::new(self.ref_date, times.clone(), fallback_ois),
+                DiscountCurve::new(self.ref_date, times.clone(), fallback_fwd),
+            )
+        };
         MarketContext::new()
             .with_reference_date(self.ref_date)
-            .with_discount_curve(
-                DiscountCurveId::USD_SOFR,
-                DiscountCurve::new(self.ref_date, times.clone(), ois),
-            )
-            .with_forward_curve(
-                ForwardIndexId::USD_SOFR,
-                DiscountCurve::new(self.ref_date, times, fwd),
-            )
+            .with_discount_curve(DiscountCurveId::USD_SOFR, ois_curve)
+            .with_forward_curve(ForwardIndexId::USD_SOFR, fwd_curve)
             .with_spot("EQ", self.eq_spot)
             .with_vol("EQ", self.eq_vol)
     }
@@ -251,7 +253,7 @@ pub fn try_build_curve_system(
     let mut ois = Vec::with_capacity(3);
     let mut fwd = Vec::with_capacity(3);
     for (years, quote) in [1_i32, 2, 5].into_iter().zip(s.ois_quotes) {
-        let end = reference_date.add_days(365 * years);
+        let end = reference_date.add_months(12 * years, false);
         ois.push(ql_curves::OisSwapInstrument {
             start: reference_date,
             end,
@@ -261,7 +263,7 @@ pub fn try_build_curve_system(
         });
     }
     for (years, quote) in [1_i32, 2, 5].into_iter().zip(s.fwd_quotes) {
-        let end = reference_date.add_days(365 * years);
+        let end = reference_date.add_months(12 * years, false);
         fwd.push(ql_curves::IrsSwapInstrument {
             start: reference_date,
             end,
@@ -492,7 +494,7 @@ impl PortfolioDag {
                     let ois = ql_curves::DiscountCurve::new(
                         s.ref_date,
                         curves.curves[0].times.clone(),
-                        params[..3].to_vec(),
+                        params[..curves.ois_pillars].to_vec(),
                     );
                     let r = -ois.discount_factor(*expiry).ln() / expiry.max(1e-6);
                     let hp = HestonParams {
@@ -550,7 +552,7 @@ impl PortfolioDag {
                     let ois = ql_curves::DiscountCurve::new(
                         s.ref_date,
                         curves.curves[0].times.clone(),
-                        params[..3].to_vec(),
+                        params[..curves.ois_pillars].to_vec(),
                     );
                     let r = -ois.discount_factor(*expiry).ln() / expiry.max(1e-6);
                     ql_scripting::ScriptMcEngine {

@@ -176,9 +176,15 @@ impl<T: Real> CatBondSpec<T> {
         let mut e_prob = T::zero();
         for path in 0..np {
             let mut sev = T::zero();
-            let mut te = T::zero();
+            let mut prev_surv = T::one();
             let mut step = 0u32;
             for (i, &t) in self.payment_times.iter().enumerate() {
+                let prev_t = if i == 0 {
+                    0.0
+                } else {
+                    self.payment_times[i - 1]
+                };
+                let mut te = T::from_f64(prev_t);
                 loop {
                     let (lambda, sev_kind) = match self.peril {
                         CatPerilSpec::PoissonExponential { lambda, .. } => (lambda, 0),
@@ -247,10 +253,9 @@ impl<T: Real> CatBondSpec<T> {
                     T::zero()
                 };
                 p += self.face_amount * (self.coupon_rate * accr * surv + red) * df;
-                // Principal loss is recognized once, at maturity (the
-                // current cumulative severity is not charged repeatedly).
+                l += self.face_amount * (prev_surv - surv) * df;
+                prev_surv = surv;
                 if i + 1 == self.payment_times.len() {
-                    l += self.face_amount * (T::one() - surv) * df;
                     a_prob += T::from_f64(at as u8 as f64);
                     e_prob += T::from_f64(ex as u8 as f64);
                 }
@@ -300,7 +305,22 @@ pub fn cat_bond_z_spread<T: Real>(s: &CatBondSpec<T>, market: T) -> Result<T, St
                 lambda,
                 mean_severity,
             } => s.survival_exponential(t, lambda, mean_severity).0,
-            CatPerilSpec::PoissonPareto { .. } => T::one(),
+            CatPerilSpec::PoissonPareto {
+                lambda,
+                scale_xm,
+                shape_alpha,
+            } => {
+                let exhaustion = match s.risk {
+                    NotionalRisk::Digital { threshold } => threshold,
+                    NotionalRisk::Proportional { exhaustion, .. } => exhaustion,
+                };
+                let p_ex = if exhaustion.val() > scale_xm.val() {
+                    (scale_xm / exhaustion).pow(shape_alpha)
+                } else {
+                    T::one()
+                };
+                (-lambda * p_ex * T::from_f64(t)).exp()
+            }
         };
         let cf = s.face_amount * (s.coupon_rate * a + red) * surv;
         let df = (-sx.discount_rate * T::from_f64(t)).exp();

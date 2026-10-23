@@ -93,14 +93,16 @@ impl<T: Real + 'static> MarketContext<T> {
     pub fn insert_discount_curve(&mut self, id: DiscountCurveId, c: DiscountCurve<T>) {
         let name = format!("{id:?}");
         let arc: Arc<dyn crate::curves::YieldTermStructure<T>> = Arc::new(c.clone());
-        self.curve_store.insert(name.clone(), arc.clone());
+        self.curve_store
+            .insert(format!("discount:{name}"), arc.clone());
         self.named_discount_curves.insert(name, arc);
         self.discount_curves.insert(id, c);
     }
     pub fn insert_forward_curve(&mut self, id: ForwardIndexId, c: DiscountCurve<T>) {
         let name = format!("{id:?}");
         let arc: Arc<dyn crate::curves::YieldTermStructure<T>> = Arc::new(c.clone());
-        self.curve_store.insert(name.clone(), arc.clone());
+        self.curve_store
+            .insert(format!("forward:{name}"), arc.clone());
         self.named_forward_curves.insert(name, arc);
         self.forward_curves.insert(id, c);
     }
@@ -116,7 +118,8 @@ impl<T: Real + 'static> MarketContext<T> {
         curve: Arc<dyn crate::curves::YieldTermStructure<T>>,
     ) -> Self {
         let name = name.into();
-        self.curve_store.insert(name.clone(), curve.clone());
+        self.curve_store
+            .insert(format!("discount:{name}"), curve.clone());
         self.named_discount_curves.insert(name, curve);
         self
     }
@@ -126,7 +129,8 @@ impl<T: Real + 'static> MarketContext<T> {
         curve: Arc<dyn crate::curves::YieldTermStructure<T>>,
     ) -> Self {
         let name = name.into();
-        self.curve_store.insert(name.clone(), curve.clone());
+        self.curve_store
+            .insert(format!("forward:{name}"), curve.clone());
         self.named_forward_curves.insert(name, curve);
         self
     }
@@ -139,11 +143,7 @@ impl<T: Real + 'static> MarketContext<T> {
         self
     }
     pub fn discount(&self, name: &str) -> Option<&dyn crate::curves::YieldTermStructure<T>> {
-        if let Some(c) = self
-            .curve_store
-            .get(name)
-            .or_else(|| self.named_discount_curves.get(name))
-        {
+        if let Some(c) = self.named_discount_curves.get(name) {
             return Some(c.as_ref());
         }
         let id = match name.to_ascii_uppercase().as_str() {
@@ -157,11 +157,7 @@ impl<T: Real + 'static> MarketContext<T> {
             .map(|c| c as &dyn crate::curves::YieldTermStructure<T>)
     }
     pub fn forward(&self, name: &str) -> Option<&dyn crate::curves::YieldTermStructure<T>> {
-        if let Some(c) = self
-            .curve_store
-            .get(name)
-            .or_else(|| self.named_forward_curves.get(name))
-        {
+        if let Some(c) = self.named_forward_curves.get(name) {
             return Some(c.as_ref());
         }
         let id = match name.to_ascii_uppercase().as_str() {
@@ -190,6 +186,10 @@ impl MarketContext<f64> {
     /// is retained, so callers can record one coherent tape pass over the
     /// context rather than rebuilding ad-hoc maps.
     pub fn to_ad(&self) -> MarketContext<TapeVar<f64>> {
+        let lift = |x: f64| {
+            ql_ad::TapeScope::try_with_active(|tape| tape.input(x))
+                .unwrap_or_else(|| TapeVar::from_f64(x))
+        };
         let mut out =
             MarketContext::<TapeVar<f64>>::default().with_reference_date(self.reference_date);
         for (id, curve) in &self.discount_curves {
@@ -197,7 +197,7 @@ impl MarketContext<f64> {
                 .discounts
                 .iter()
                 .copied()
-                .map(TapeVar::from_f64)
+                .map(lift)
                 .collect::<Vec<_>>();
             out.insert_discount_curve(*id, curve.to_ad_curve(&vars));
         }
@@ -206,19 +206,19 @@ impl MarketContext<f64> {
                 .discounts
                 .iter()
                 .copied()
-                .map(TapeVar::from_f64)
+                .map(lift)
                 .collect::<Vec<_>>();
             out.insert_forward_curve(*id, curve.to_ad_curve(&vars));
         }
         out.spots = self
             .spots
             .iter()
-            .map(|(k, v)| (k.clone(), TapeVar::from_f64(*v)))
+            .map(|(k, v)| (k.clone(), lift(*v)))
             .collect();
         out.vols = self
             .vols
             .iter()
-            .map(|(k, v)| (k.clone(), TapeVar::from_f64(*v)))
+            .map(|(k, v)| (k.clone(), lift(*v)))
             .collect();
         out
     }

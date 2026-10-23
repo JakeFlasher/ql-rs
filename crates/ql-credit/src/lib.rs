@@ -334,7 +334,7 @@ impl CalibratedCreditCurve {
             .clone()
             .lu()
             .solve(&(-js))
-            .unwrap_or_else(|| DMatrix::zeros(m, m));
+            .ok_or_else(|| CreditError::Solver("singular credit IFT Jacobian".into()))?;
         Ok(Self {
             curve,
             quotes: quotes.to_vec(),

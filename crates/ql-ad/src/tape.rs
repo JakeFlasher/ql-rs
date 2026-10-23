@@ -330,6 +330,9 @@ impl TapeScope {
             ))
         })
     }
+    pub fn try_with_active<R, F: FnOnce(&mut ArenaTape<f64>) -> R>(f: F) -> Option<R> {
+        ACTIVE.with(|a| a.borrow_mut().as_mut().map(f))
+    }
     pub fn guard() -> TapeGuard {
         Self::guard_with_capacity(0)
     }

@@ -93,6 +93,7 @@ pub trait SimdReal: Copy + Clone + Send + Sync + Debug {
     fn ln(self) -> Self;
     fn sqrt(self) -> Self;
     fn norm_cdf(self) -> Self;
+    fn erfc(self) -> Self;
     fn norm_pdf(self) -> Self;
     fn select_ge_zero(self, t: Self, f: Self) -> Self;
 }
@@ -342,8 +343,14 @@ fn simd_erfc<const N: usize>(x: Simd<f64, N>) -> Simd<f64, N> {
         simd_horner(inv, &rb) / simd_horner(inv, &sb),
         simd_horner(inv, &ra) / simd_horner(inv, &sa) + simd_horner(inv, &corr),
     );
-    let z = Simd::from_bits(ax.to_bits() & Simd::<u64, N>::splat(0xffff_ffff_0000_0000));
-    let tail = simd_exp(-z * z - Simd::splat(0.5625) + (z - ax) * (z + ax) + ratio) / ax;
+    let finite_ax = ax.simd_lt(Simd::splat(28.0)).select(ax, Simd::splat(28.0));
+    let z = Simd::from_bits(finite_ax.to_bits() & Simd::<u64, N>::splat(0xffff_ffff_0000_0000));
+    let tail_raw =
+        simd_exp(-z * z - Simd::splat(0.5625) + (z - finite_ax) * (z + finite_ax) + ratio)
+            / finite_ax;
+    let tail = ax
+        .simd_ge(Simd::splat(28.0))
+        .select(Simd::splat(0.0), tail_raw);
     let mid = ax.simd_lt(Simd::splat(0.84375)).select(small, bridge);
     let positive = ax.simd_lt(Simd::splat(1.25)).select(mid, tail);
     x.simd_ge(Simd::splat(0.0))
@@ -371,6 +378,9 @@ impl SimdReal for Simd<f64, 4> {
     fn norm_cdf(self) -> Self {
         Simd::splat(0.5) * simd_erfc4(-self * Simd::splat(std::f64::consts::FRAC_1_SQRT_2))
     }
+    fn erfc(self) -> Self {
+        simd_erfc4(self)
+    }
     fn norm_pdf(self) -> Self {
         Simd::splat((2.0 * std::f64::consts::PI).sqrt().recip())
             * simd_exp4(Simd::splat(-0.5) * self * self)
@@ -392,6 +402,9 @@ impl SimdReal for Simd<f64, 8> {
     }
     fn norm_cdf(self) -> Self {
         Simd::splat(0.5) * simd_erfc8(-self * Simd::splat(std::f64::consts::FRAC_1_SQRT_2))
+    }
+    fn erfc(self) -> Self {
+        simd_erfc8(self)
     }
     fn norm_pdf(self) -> Self {
         Simd::splat((2.0 * std::f64::consts::PI).sqrt().recip())

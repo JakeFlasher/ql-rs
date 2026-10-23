@@ -34,9 +34,10 @@ pub fn ift_lift_1d<T: Real, F: FnOnce(T) -> T>(x_star: f64, residual: F, f_x: T,
     // pricing graph on the active reverse tape.
     let x = T::from_f64(x_star);
     let r_eval = residual(x);
-    let d = -r_eval / f_x;
-    let d_tan = -(r_eval - T::from_f64(r_eval.val())) / f_x;
-    x + d - T::from_f64(0.5 * f_xx) * d_tan * d_tan / f_x
+    let r0 = r_eval.val();
+    let x_polished = T::from_f64(x_star - r0 / fx0);
+    let d_tan = -(r_eval - T::from_f64(r0)) / f_x;
+    x_polished + d_tan - T::from_f64(0.5 * f_xx) * d_tan * d_tan / f_x
 }
 
 /// Fallible counterpart to [`ift_lift_1d`].  Existing callers retain the

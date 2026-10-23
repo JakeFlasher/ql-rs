@@ -29,7 +29,10 @@ impl StulzRainbowEngine {
         if k.val() <= 0.0 {
             return match kind {
                 RainbowKind::CallOnMin => Self::expected_min(s1, s2, q1, q2, v1, v2, rho, t),
-                RainbowKind::CallOnMax => s1 * (-q1 * t).exp() + s2 * (-q2 * t).exp(),
+                RainbowKind::CallOnMax => {
+                    s1 * (-q1 * t).exp() + s2 * (-q2 * t).exp()
+                        - Self::expected_min(s1, s2, q1, q2, v1, v2, rho, t)
+                }
                 RainbowKind::PutOnMin | RainbowKind::PutOnMax => T::zero(),
             };
         }
@@ -64,10 +67,10 @@ impl StulzRainbowEngine {
         let var = (v1 * v1 + v2 * v2 - rho * 2.0 * v1 * v2).max_val(T::from_f64(1e-14));
         let st = var.sqrt() * t.sqrt();
         if st.val() < 1e-8 {
-            return s1.min_val(s2);
+            return (s1 * (-q1 * t).exp()).min_val(s2 * (-q2 * t).exp());
         }
         let d = ((s1 / s2).ln() + (q2 - q1 + var * 0.5) * t) / st;
-        s1 * (-q1 * t).exp() * d.norm_cdf() + s2 * (-q2 * t).exp() * (-d + st).norm_cdf()
+        s1 * (-q1 * t).exp() * (-d).norm_cdf() + s2 * (-q2 * t).exp() * (d - st).norm_cdf()
     }
 }
 
@@ -166,6 +169,10 @@ impl DengLiZhouSpreadBasketEngine {
             let f1_cond = (s1.ln() + (r - q1 - v1 * v1 * 0.5) * t + rho * v1 * st * z).exp()
                 * (var_cond * 0.5).exp();
             let strike_cond = s2_t + k;
+            if strike_cond.val() <= 0.0 {
+                call += T::from_f64(W[i] / std::f64::consts::PI.sqrt()) * (f1_cond - strike_cond);
+                continue;
+            }
             let d1 = (f1_cond / strike_cond).ln() / vol_cond + vol_cond * 0.5;
             let d2 = d1 - vol_cond;
             call += T::from_f64(W[i] / std::f64::consts::PI.sqrt())

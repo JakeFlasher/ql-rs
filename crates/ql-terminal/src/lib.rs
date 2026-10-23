@@ -48,7 +48,7 @@ use ql_fixed_income::{ConvertibleBondSpec, price_convertible_bond_tf};
 use ql_fx::ConstNotionalXccs;
 use ql_fx::{FxSmileQuote, FxVannaVolgaSmile, garman_kohlhagen_spot_delta};
 use ql_inflation::{CalibratedInflationCurve, MultiplicativeSeasonality, ZeroCouponInflationSwap};
-use ql_instruments::BaroneAdesiWhaleyEngine;
+use ql_instruments::{BaroneAdesiWhaleyEngine, SwapType, VanillaSwapSpec};
 use ql_levy::{VarianceGamma, cos_levy_price};
 use ql_models::{HestonParams, HullWhite1F, LiftedHestonParams, lifted_heston_cos_price};
 use ql_portfolio::gaussian_expected_shortfall;
@@ -60,7 +60,7 @@ use ql_rates::{
     EuropeanSwaption, G2PlusPlus, RfrCapletSpec, RfrRateType, SwaptionSettlement,
     willems_backward_sabr_caplet_price,
 };
-use ql_time::Date;
+use ql_time::{BitsetCalendar, BusinessDayConvention, Date, DayCounter, Period};
 use ql_vol::implied_black_vol;
 use ql_xva::{
     NettingSetSwap, SimmBucket, compute_isda_simm, compute_isda_simm_6_risk_classes, compute_xva,
@@ -859,7 +859,7 @@ impl DeskWorkstation {
             intra_corr: vec![vec![1.0]],
         });
         buckets.push(SimmBucket {
-            sensitivities: vec![ql_ad::TapeVar::from_f64(inflation * 1e-4)],
+            sensitivities: vec![ql_ad::TapeVar::from_f64(inflation)],
             risk_weights: vec![50.0],
             concentration_threshold: 1e6,
             intra_corr: vec![vec![1.0]],
@@ -867,8 +867,12 @@ impl DeskWorkstation {
         let class = |bucket: &SimmBucket<ql_ad::TapeVar<f64>>| {
             compute_isda_simm(std::slice::from_ref(bucket), &[vec![1.0]])
         };
+        let ir_margin = compute_isda_simm(
+            &[buckets[0].clone(), buckets[4].clone()],
+            &[vec![1.0, 0.5], vec![0.5, 1.0]],
+        );
         let class_margins = [
-            class(&buckets[0]),
+            ir_margin,
             class(&buckets[1]),
             ql_ad::TapeVar::zero(),
             class(&buckets[2]),
@@ -922,15 +926,26 @@ impl DeskWorkstation {
             .iter()
             .map(|(label, value)| (label.clone(), *value * 1e-4))
             .collect();
-        let mut irs_npv = 0.0;
-        if let (Some(ois), Some(fwd)) = (active_curves.curves.first(), active_curves.curves.get(1))
+        let irs_npv = if let (Some(ois), Some(fwd)) =
+            (active_curves.curves.first(), active_curves.curves.get(1))
         {
-            for m in 1..=5 {
-                let t = m as f64;
-                let forward = fwd.discount_factor(t - 1.0) / fwd.discount_factor(t) - 1.0;
-                irs_npv += (forward - 0.02) * ois.discount_factor(t) * 1_000_000.0;
-            }
-        }
+            let spec = VanillaSwapSpec {
+                effective_date: market.ref_date,
+                termination_date: market.ref_date.add_months(60, false),
+                notional: 1_000_000.0,
+                fixed_rate_or_coupon: 0.02,
+                fixed_tenor: Period::Years(1),
+                float_tenor: Period::Years(1),
+                calendar: Arc::new(BitsetCalendar::weekend_only()),
+                bdc: BusinessDayConvention::Unadjusted,
+                fixed_dc: DayCounter::Act365Fixed,
+                float_dc: DayCounter::Act365Fixed,
+                swap_type: SwapType::Payer,
+            };
+            spec.resolve(market.ref_date).npv(ois, fwd)
+        } else {
+            0.0
+        };
         let heston_params = HestonParams {
             v0: market.heston_params.v0,
             kappa: market.heston_params.kappa,
@@ -1402,15 +1417,9 @@ impl DeskWorkstation {
                 render_diverging_bar(*value, max_cs, 10, ansi_color)
             ));
         }
-        while left_bottom.len() < 20 {
-            left_bottom.push(String::new());
-        }
         let american = BaroneAdesiWhaleyEngine::price(100.0, 100.0, 0.03, 0.01, 0.2, 1.0, true);
         let erc = equal_risk_contribution_weights(&[vec![0.04, 0.01], vec![0.01, 0.09]]);
-        // Reserve rows for the SOTA telemetry first.  Previously blotter rows
-        // were appended before these entries, so a busy blotter pushed Tabs 17
-        // and 18 beyond the 20 rendered rows and silently truncated them.
-        let mut right_bottom = vec![
+        left_bottom.extend([
             "SOTA IFT / COS / AAD telemetry".to_string(),
             "Exotics / Commodities / Burley RQMC".to_string(),
             "Levy COS / Convertible TF / ASB CDO".to_string(),
@@ -1422,14 +1431,17 @@ impl DeskWorkstation {
             format!("Chart: {}", frame.chart_mode.label()),
             format!("American / Hybrid: {:.4}", american),
             format!("BL / Risk Parity ERC: {:.3}/{:.3}", erc[0], erc[1]),
-        ];
+        ]);
+        while left_bottom.len() < 20 {
+            left_bottom.push(String::new());
+        }
+        let mut right_bottom = vec![];
         right_bottom.extend(
             frame
                 .blotter_rows
                 .iter()
                 .map(|(name, value, tag)| format!("{name:<20} {:>12.2} {tag:<10}", value)),
         );
-        right_bottom.truncate(20);
         while right_bottom.len() < 20 {
             right_bottom.push(String::new());
         }

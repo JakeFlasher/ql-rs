@@ -180,3 +180,25 @@ Following Codex's 9-commit remediation pass (`3559aac..19aa6ad`), a full line-by
   1. `simd_erfc4` and `simd_erfc8` (`scalar.rs:234-240`) call `Simd::from_array(x.to_array().map(libm::erfc))`, completely scalarizing `SimdReal::norm_cdf` into 4 or 8 sequential scalar function calls! Replace with a branchless vectorized minimax rational approximation (`Simd::simd_lt` / `.select(...)` over central $|z| \le 4$ and tail $|z| > 4$ multiplied by `simd_exp(-z * z)`), and in `simd_exp` (`scalar.rs:211`) extract exponent bits directly via `(u.to_bits() + Simd::splat(1023_u64)) << Simd::splat(52_u64)` without `k.cast::<i64>()`.
   2. None of the hot-loop heap allocations in `RUST-09` were fixed (`mc_gbm_pathwise_tape` at `paths.rs:404`, `Fd2dHestonEngine::solve` at `adi.rs:189-500`, `AmcEngine` at `amc.rs:17-27`, `cholesky_aad` at `cholesky_aad.rs:133-144`, `ChebyshevTensor2D::eval_barycentric` at `chebyshev.rs:158-180`, `DiffPolynomialRegressor::basis` at `regression.rs:26-55`).
   3. `Date::add_months` (`date.rs:162, 170`), `Period::months` (`date.rs:84-85`), `Date::add_period` (`date.rs:186, 189`), `day_count.rs:25, 79, 131`, and `inv_norm_cdf_f64` (`distributions.rs:198-202` where `pdf == 0.0` causes `0.0 / 0.0 = NaN` for `p < 1e-300`) remain unfixed.
+
+
+---
+
+# Pass 3 Rust Systems, AD/IFT & SIMD Audit (`19aa6ad..9a72cde`)
+
+See [`PHASE10_ADVERSARIAL_REVIEW_SECOND_PASS.md`](./PHASE10_ADVERSARIAL_REVIEW_SECOND_PASS.md#pass-3-adversarial-audit-report-19aa6ad9a72cde) for the unified Pass 3 verification matrix. Key systems, AD/IFT, and SIMD findings in `19aa6ad..9a72cde`:
+
+1. **`[RUST-P3-01]` (`crates/ql-instruments/src/american.rs:287-346`)**:
+   - `bs_psi` (`lines 295, 308`) omits `* t` in `lambda.exp()`, swaps $t_1/T$ barriers, omits $H$ in $f_3, f_4$, uses $+\rho$ instead of $-\rho$ in $p_{13}, p_{14}$, and `bs2002_call` (`lines 336-343`) omits `s.pow(beta)` and `s` factors.
+2. **`[RUST-P3-02]` (`crates/ql-ad/src/ift.rs:34-39`, `crates/ql-curves/src/bootstrap.rs:385-394, 498-512`)**:
+   - `ift_lift_1d` divides unpolished `r_eval` by `f_x: T`, adding a spurious $+r_0 (\partial_\theta f_x)/f_x^2$ term when $r_0 \neq 0$ and $\partial_\theta f_x \neq 0$. Applying the primal polish in `f64` (`x_polished = x_star - r0 / f_x.val()`) and using `d_tan = -(r_eval - T::from_f64(r0)) / f_x` eliminates this contamination.
+   - `bootstrap.rs` skips `BasisSwapInstrument` in `from_multicurve_helpers` (`line 393`) and assumes `k <= 64` in `Dual2::<64>` (`line 502`).
+3. **`[RUST-P3-03]` (`crates/ql-models/src/hybrid.rs:58-70`, `crates/ql-models/src/local_vol.rs:17-19`)**:
+   - `go_sqrt_moment_params` clamps `a` with `.max_val(1e-14)`, zeroing AD tangents when Feller is violated.
+   - `dupire_local_vol_dual2_log_moneyness` wraps `w.d1[0], w.d1[1], w.d2[1][1]` in `Dual2::from_value(...)`, zeroing their `.d1` tangents $\nabla w_t, \nabla w_y$.
+4. **`[RUST-P3-04]` (`crates/ql-ad/src/scalar.rs:345-351`, `crates/ql-time/src/day_count.rs:25, 107, 118, 129, 134`)**:
+   - `simd_erfc` does not underflow to `0.0` for `ax >= 28.0` because `simd_exp` clamps at `-708.0`, and returns `NaN` for `x = ±Inf`.
+   - `DayCounter::day_count`, `thirty_*`, and `Sub for Date` still use unchecked `i32` arithmetic.
+5. **`[RUST-P3-05]` (`crates/ql-instruments/src/pde1d.rs:74-77, 126-139, 205-225`, `crates/ql-pde/src/adi.rs:174-197, 420-425`)**:
+   - `Fd1dBlackScholesEngine` strips `barrier`'s AD tangent via `.val().ln()` and uses unshifted `smin`/`smax` in `callb`/`putb`.
+   - `Fd2dHestonEngine::price_barrier` adds a Knock-Out rebate `+(out - out_no_rebate)` to Knock-In options and `HestonGrid2D::new_centered` with even `nx = 80` places `ln(B)` between nodes `39` and `40`.

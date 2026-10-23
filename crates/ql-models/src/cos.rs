@@ -187,31 +187,33 @@ impl CosHestonEngine {
         } else {
             theta * t + delta * (T::one() - (-kappa * t).exp()) / kappa
         };
-        let j = |z: T| {
-            if z.val().abs() < 1e-7 {
-                t + z * t * t * 0.5 + z * z * t * t * t / 6.0
-            } else {
-                ((z * t).exp() - T::one()) / z
-            }
-        };
-        let (var_i, cov_im) = if kappa.val().abs() < 1e-7 {
-            (
-                sigma_v * sigma_v * v0 * t * t * t / 3.0,
-                rho * sigma_v * v0 * t * t * 0.5,
-            )
+        let c2 = if kappa.val().abs() * t.val() < 1e-4 {
+            v0 * t
         } else {
-            let jk = j(-kappa);
-            let j2k = j(kappa * -2.0);
             let ek = (-kappa * t).exp();
-            let a_int =
-                theta * 0.5 * (t - j2k - ek * (j(kappa) - jk)) + delta * (jk - j2k - ek * (t - jk));
-            let vi = sigma_v * sigma_v * 2.0 * a_int / (kappa * kappa);
-            let ci = rho * sigma_v / kappa * (theta * (t - ek * j(kappa)) + delta * (jk - ek * t));
-            (vi, ci)
+            let e2k = (-kappa * t * 2.0).exp();
+            let sv2 = sigma_v * sigma_v;
+            let c2c = T::from_f64(2.0);
+            let c4c = T::from_f64(4.0);
+            let c6c = T::from_f64(6.0);
+            let c7c = T::from_f64(7.0);
+            let c8c = T::from_f64(8.0);
+            let c16c = T::from_f64(16.0);
+            let num = sigma_v * kappa * t * ek * delta * (c8c * kappa * rho - c4c * sigma_v)
+                + kappa * rho * sigma_v * (T::one() - ek) * (c16c * theta - c8c * v0)
+                + c2c
+                    * theta
+                    * kappa
+                    * t
+                    * (-c4c * kappa * rho * sigma_v + sv2 + c4c * kappa * kappa)
+                + sv2 * ((theta - c2c * v0) * e2k + theta * (c6c * ek - c7c) + c2c * v0)
+                + c8c * kappa * kappa * delta * (T::one() - ek);
+            num / (c8c * kappa * kappa * kappa)
         };
-        let var = (mean_var + var_i * 0.25 - cov_im + jump_variance).max_val(T::from_f64(1e-12));
+        let c4 = (c2 * c2 * 0.25).max_val(T::zero());
+        let var = (c2 + jump_variance).max_val(T::from_f64(1e-12));
         let c1 = (rate - div) * t - mean_var * 0.5 + jump_drift;
-        let w = T::from_f64(self.l_trunc) * var.sqrt();
+        let w = T::from_f64(self.l_trunc) * (var + c4.sqrt()).sqrt();
         let a = c1 - w;
         let b = c1 + w;
         let width = b - a;

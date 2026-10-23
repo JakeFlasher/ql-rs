@@ -81,6 +81,8 @@ pub fn price_compound_option<T: Real>(spec: &CompoundOptionSpec<T>) -> T {
             x
         }
     };
+    let h_root = (root.abs() * 1e-4).max(1e-5);
+    let fxx = (f(root + h_root) - 2.0 * f(root) + f(root - h_root)) / (h_root * h_root);
     let root_ad = ift_lift_1d(
         root,
         |x| {
@@ -95,7 +97,7 @@ pub fn price_compound_option<T: Real>(spec: &CompoundOptionSpec<T>) -> T {
             ) - k1
         },
         daughter_delta(T::from_f64(root), spec, tau12),
-        0.0,
+        fxx,
     );
     let t1 = spec.expiry_mother;
     let t2 = spec.expiry_daughter;

@@ -5,7 +5,7 @@ use ql_time::Date;
 use ql_xva::{
     ChebyshevInterpolant1D, ChebyshevTensor2D, CsaSpec, NettingSetSwap, NpvCube, SimmBucket,
     compute_bruteforce_dim_and_mva, compute_chebyshev_dim_and_mva, compute_isda_simm, compute_xva,
-    simulate_hw1f_exposure_cube,
+    simulate_hw1f_exposure_cube, simulate_hw1f_multi_netting_set_cube,
 };
 
 fn setup() -> (
@@ -36,6 +36,25 @@ fn setup() -> (
         42,
     );
     (curve, model, swap, cube)
+}
+
+#[test]
+fn multi_netting_set_cube_keeps_legal_sets_separate() {
+    let (curve, model, swap, _) = setup();
+    let other = NettingSetSwap {
+        notional: -50_000.0,
+        ..swap.clone()
+    };
+    let cube = simulate_hw1f_multi_netting_set_cube(
+        &model,
+        &curve,
+        &[vec![swap], vec![other]],
+        &[1.0, 2.0],
+        64,
+        7,
+    );
+    assert_eq!(cube.n_netting_sets, 2);
+    assert_ne!(cube.get(0, 0, 0), cube.get(1, 0, 0));
 }
 
 fn lift_cube(cube: &NpvCube<f64>) -> NpvCube<Dual<3>> {

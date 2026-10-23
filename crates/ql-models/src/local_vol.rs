@@ -14,8 +14,10 @@ impl DupireLocalVol {
         // to expiry and lane one equal to log-moneyness.  Extracting these
         // coefficients is exact and preserves any incoming parameter jets;
         // finite differences here would both lose AD lanes and amplify roundoff.
-        let wt = Dual2::from_value(w.d1[0]);
-        let wy = Dual2::from_value(w.d1[1]);
+        let mut wt = Dual2::from_value(w.d1[0]);
+        wt.d1 = [w.d2[0][0], w.d2[0][1]];
+        let mut wy = Dual2::from_value(w.d1[1]);
+        wy.d1 = [w.d2[0][1], w.d2[1][1]];
         let wyy = Dual2::from_value(w.d2[1][1]);
         let denom = Dual2::one() - strike / w * wy
             + Dual2::from_value(0.25)

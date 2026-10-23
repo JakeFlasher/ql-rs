@@ -22,7 +22,7 @@ impl DayCounter {
     pub fn day_count(&self, d1: Date, d2: Date) -> i32 {
         match self {
             Self::Business252(c) => c.business_days_between(d1, d2),
-            _ => d2.days() - d1.days(),
+            _ => d2.days().saturating_sub(d1.days()),
         }
     }
     pub fn year_fraction(
@@ -104,7 +104,11 @@ fn thirty_us(a: Date, b: Date) -> i32 {
     if (bd == 31 && ad == 30) || (b_last_feb && a_last_feb) {
         bd = 30;
     }
-    (b.year() - a.year()) * 360 + (bm as i32 - am as i32) * 30 + bd as i32 - ad as i32
+    ((i64::from(b.year()) - i64::from(a.year())) * 360
+        + (i64::from(bm) - i64::from(am)) * 30
+        + i64::from(bd)
+        - i64::from(ad))
+    .clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 fn thirty_euro(a: Date, b: Date) -> i32 {
     let (_, am, mut ad) = a.ymd();
@@ -115,7 +119,11 @@ fn thirty_euro(a: Date, b: Date) -> i32 {
     if bd == 31 {
         bd = 30;
     }
-    (b.year() - a.year()) * 360 + (bm as i32 - am as i32) * 30 + bd as i32 - ad as i32
+    ((i64::from(b.year()) - i64::from(a.year())) * 360
+        + (i64::from(bm) - i64::from(am)) * 30
+        + i64::from(bd)
+        - i64::from(ad))
+    .clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 fn thirty_isda(a: Date, b: Date) -> i32 {
     let (_, am, mut ad) = a.ymd();
@@ -126,11 +134,15 @@ fn thirty_isda(a: Date, b: Date) -> i32 {
     if bd == 31 || (bm == 2 && bd == days_in_month(b.year(), bm)) {
         bd = 30;
     }
-    (b.year() - a.year()) * 360 + (bm as i32 - am as i32) * 30 + bd as i32 - ad as i32
+    ((i64::from(b.year()) - i64::from(a.year())) * 360
+        + (i64::from(bm) - i64::from(am)) * 30
+        + i64::from(bd)
+        - i64::from(ad))
+    .clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 impl std::ops::Sub for Date {
     type Output = i32;
     fn sub(self, rhs: Self) -> i32 {
-        self.days() - rhs.days()
+        self.days().saturating_sub(rhs.days())
     }
 }

@@ -389,6 +389,8 @@ impl CalibratedCurveSystem {
                 RateInstrumentKind::Fra(x.clone())
             } else if let Some(x) = h.as_any().downcast_ref::<OisSwapInstrument>() {
                 RateInstrumentKind::OisSwap(x.clone())
+            } else if let Some(x) = h.as_any().downcast_ref::<BasisSwapInstrument>() {
+                RateInstrumentKind::BasisSwap(x.clone())
             } else {
                 continue;
             };
@@ -486,7 +488,7 @@ impl CalibratedCurveSystem {
         }
         let j = self.sensitivity.jacobian_dtheta_dq();
         let mut h_eff = h;
-        if self.instruments.len() == k {
+        if self.instruments.len() == k && k <= 64 {
             let lambda = self
                 .sensitivity
                 .lu_t
@@ -554,7 +556,8 @@ impl SingleCurveHelper for DepositInstrument {
         self
     }
     fn pillar_time(&self, reference_date: Date) -> f64 {
-        DayCounter::Act365Fixed.year_fraction(reference_date, self.end, None, None)
+        self.day_counter
+            .year_fraction(reference_date, self.end, None, None)
     }
     fn quote_value(&self) -> f64 {
         self.quote
@@ -571,20 +574,19 @@ impl SingleCurveHelper for FraInstrument {
         self
     }
     fn pillar_time(&self, reference_date: Date) -> f64 {
-        DayCounter::Act365Fixed.year_fraction(reference_date, self.fixing_end, None, None)
+        self.day_counter
+            .year_fraction(reference_date, self.fixing_end, None, None)
     }
     fn quote_value(&self) -> f64 {
         self.quote
     }
     fn residual_curve(&self, c: &DiscountCurve<f64>) -> f64 {
-        let t1 = DayCounter::Act365Fixed.year_fraction(
-            c.reference_date(),
-            self.fixing_start,
-            None,
-            None,
-        );
-        let t2 =
-            DayCounter::Act365Fixed.year_fraction(c.reference_date(), self.fixing_end, None, None);
+        let t1 = self
+            .day_counter
+            .year_fraction(c.reference_date(), self.fixing_start, None, None);
+        let t2 = self
+            .day_counter
+            .year_fraction(c.reference_date(), self.fixing_end, None, None);
         (c.discount_factor(t1) / c.discount_factor(t2) - 1.0)
             / self
                 .day_counter
@@ -592,14 +594,12 @@ impl SingleCurveHelper for FraInstrument {
             - self.quote
     }
     fn residual_curve_dual(&self, c: &DiscountCurve<Dual<1>>) -> Dual<1> {
-        let t1 = DayCounter::Act365Fixed.year_fraction(
-            c.reference_date(),
-            self.fixing_start,
-            None,
-            None,
-        );
-        let t2 =
-            DayCounter::Act365Fixed.year_fraction(c.reference_date(), self.fixing_end, None, None);
+        let t1 = self
+            .day_counter
+            .year_fraction(c.reference_date(), self.fixing_start, None, None);
+        let t2 = self
+            .day_counter
+            .year_fraction(c.reference_date(), self.fixing_end, None, None);
         (c.discount_factor(t1) / c.discount_factor(t2) - Dual::one())
             / self
                 .day_counter
@@ -612,7 +612,8 @@ impl SingleCurveHelper for BasisSwapInstrument {
         self
     }
     fn pillar_time(&self, reference_date: Date) -> f64 {
-        DayCounter::Act365Fixed.year_fraction(reference_date, self.end, None, None)
+        self.day_counter
+            .year_fraction(reference_date, self.end, None, None)
     }
     fn quote_value(&self) -> f64 {
         self.spread
@@ -669,20 +670,14 @@ impl IrsSwapInstrument {
         while prev < self.end {
             let next = prev.add_period(period, false).min(self.end);
             let tau = self.day_counter.year_fraction(prev, next, None, None);
-            let t = DayCounter::Act365Fixed.year_fraction(
-                projection.reference_date(),
-                next,
-                None,
-                None,
-            );
+            let t = self
+                .day_counter
+                .year_fraction(projection.reference_date(), next, None, None);
             let p = discount.discount_factor(t);
             fixed += p * tau;
-            let a = DayCounter::Act365Fixed.year_fraction(
-                projection.reference_date(),
-                prev,
-                None,
-                None,
-            );
+            let a = self
+                .day_counter
+                .year_fraction(projection.reference_date(), prev, None, None);
             floating +=
                 (projection.discount_factor(a) / projection.discount_factor(t) - T::one()) * p;
             prev = next;
@@ -722,7 +717,8 @@ impl SingleCurveHelper for OisSwapInstrument {
         self
     }
     fn pillar_time(&self, reference_date: Date) -> f64 {
-        DayCounter::Act365Fixed.year_fraction(reference_date, self.end, None, None)
+        self.day_counter
+            .year_fraction(reference_date, self.end, None, None)
     }
     fn quote_value(&self) -> f64 {
         self.fixed_rate

@@ -121,8 +121,13 @@ pub fn price_complex_chooser<T: Real>(s: &ComplexChooserSpec<T>) -> T {
         / (s.vol * put_tau.sqrt());
     let fx = (-s.div_yield * call_tau).exp() * d1c.norm_cdf()
         + (-s.div_yield * put_tau).exp() * (-d1p).norm_cdf();
+    let h_root = (root.abs() * 1e-4).max(1e-5);
+    let fxx = (residual(T::from_f64(root + h_root)).val()
+        - 2.0 * residual(T::from_f64(root)).val()
+        + residual(T::from_f64(root - h_root)).val())
+        / (h_root * h_root);
     let i_star = if fx.val().abs() > 1e-14 {
-        ift_lift_1d(root, residual, fx, 0.0)
+        ift_lift_1d(root, residual, fx, fxx)
     } else {
         T::from_f64(root)
     };

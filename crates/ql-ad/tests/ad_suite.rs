@@ -146,3 +146,13 @@ fn simd_normal_cdf_matches_erfc_tail() {
         assert!((a - reference).abs() < 1e-12, "{b}: {a} vs {reference}");
     }
 }
+
+#[test]
+fn simd_erfc_extreme_tails_are_finite() {
+    let x = Simd::<f64, 8>::from_array([-40.0, -30.0, -8.0, -1.0, 1.0, 8.0, 30.0, f64::INFINITY]);
+    let y = <Simd<f64, 8> as SimdReal>::erfc(x).to_array();
+    assert_eq!(y[0], 2.0);
+    assert_eq!(y[1], 2.0);
+    assert_eq!(y[6], 0.0);
+    assert_eq!(y[7], 0.0);
+}

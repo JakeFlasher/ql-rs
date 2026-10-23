@@ -157,3 +157,33 @@ Following Codex's 9-commit remediation pass (`3559aac..19aa6ad`), all 4 speciali
 4. **`crates/ql-credit/src/cdo.rs:184-191`**: `asb_expected_tranche_loss_quadrature` still multiplies nonlinear tranche losses by `total / quadrature_total` before clamping.
 5. **`crates/ql-models/src/rough.rs:18-20, 68-77`**: `lifted_heston_char_func_unit_spot` still ignores `hurst` when `n_factors == 1`, and `lifted_heston_kernel` has a discontinuous jump at `|h - 0.5| < 1e-8`.
 6. **`crates/ql-mc/src/paths.rs:303-319`**: `HestonQeSimulator::qe_step` leaves `k0 = 0.0` when `den <= 1e-12` or `beta <= a_corr + 1e-12` instead of falling back to regular QE `k0 = -rho * kappa * theta * dt / sigma_v`.
+
+
+---
+
+# Pass 3 Mathematical & SOTA Audit (`19aa6ad..9a72cde`)
+
+See [`PHASE10_ADVERSARIAL_REVIEW_SECOND_PASS.md`](./PHASE10_ADVERSARIAL_REVIEW_SECOND_PASS.md#pass-3-adversarial-audit-report-19aa6ad9a72cde) for the unified Pass 3 verification matrix. Key mathematical findings in `19aa6ad..9a72cde`:
+
+1. **`[MATH-P3-01]` (`crates/ql-instruments/src/american.rs:172-174, 287-346, 403-450`)**:
+   - `baw_put` (`line 172`): `fx` uses `-e^{-qT}N(d_1)` instead of `-(1 - e^{-qT}N(-d_1))`.
+   - `bs_psi` & `bs2002_call` (`lines 295-343`): missing `* t` in `lambda.exp()`, swapped $t_1/T$ barriers, missing $H$ in $f_3, f_4$, wrong correlation sign $+\rho$ in $p_{13}, p_{14}$, wrong $(I_1/S)^\kappa$ instead of $(I_1/I_2)^\kappa$ on $p_{14}$, and missing `s.pow(beta)` / `s` factors in `bs2002_call`.
+   - `JuQuadraticEngine::price` (`lines 403-407, 415-418, 431-450`): evaluates `d_ve_dt` at unlifted `d1s0`/`pdf` (breaking `Dual` derivatives and forcing Suite 19 `tol = 1e-5`), and zeroes out $\alpha\lambda'$ and $\alpha V_{E,h}$ as $r \to 0$ (breaking zero-dividend American puts via put-call duality on line 449).
+2. **`[MATH-P3-02]` (`crates/ql-models/src/hybrid.rs:103-122, 174-213`)**:
+   - `h1_hw_char_func_unit_spot` (`lines 120-122`) still has `iz = i*u; q = iz*iz + iz = -u^2 + i*u`, so `-q = +u^2 - i*u` ($\exp(+\frac{1}{2}\Sigma^2 u^2)$ blowup!).
+   - Grzelak–Oosterlee cross-integral `int1` (`lines 103-114, 174-185`) uses `(ksum*t - 1 + exp(-ksum*t))/ksum^2` instead of $\frac{1}{\kappa_r}\left[\frac{1 - e^{-cT}}{c} - \frac{e^{-cT} - e^{-\kappa_r T}}{\kappa_r - c}\right]$.
+   - `CosHestonHullWhiteEngine::price` (`line 187`) clamps `(extra + cross).max_val(0.0)` to zero whenever $\rho_{sr} < -0.02$ and passes `jump_drift = 0.0` (`line 210`).
+3. **`[MATH-P3-03]` (`crates/ql-rates/src/cms_spread.rs:29-40, 114-131`)**:
+   - `LognormalCmsSpreadPricer::lognormal_caplet_pv` drops the orthogonal shock $\sqrt{1-\rho^2}Z_2$ of $S_2$, violating $\mathbb{E}[S_2(T_f)] = m_2$, giving $S_2$ zero variance at $\rho = 0$, and causing OTM `floorlet_pv` to be negative.
+   - `convexity_factor` multiplies by `dt = (payment_time - fixing_time).max(0)`, zeroing out CMS convexity when `payment_time == fixing_time`.
+4. **`[MATH-P3-04]` (`crates/ql-exotics/src/basket_rainbow.rs:29-35, 63-71, 163-173`)**:
+   - `StulzRainbowEngine::expected_min` computes $\mathbb{E}[\max]$ instead of $\mathbb{E}[\min]$ (`d.norm_cdf()` and `(-d + st).norm_cdf()` instead of `(-d).norm_cdf()` and `(d - st).norm_cdf()`), inverting `PutOnMin` and `PutOnMax`.
+   - `DengLiZhouSpreadBasketEngine::price_spread` lacks a `strike_cond <= 0` guard for negative strikes $K < 0$.
+5. **`[MATH-P3-05]` (`crates/ql-fixed-income/src/cat_bond.rs:156, 179-219, 253, 303`)**:
+   - `CatBondSpec::price_mc` drops Poisson arrivals at coupon boundaries (`te > t`).
+   - `expected_loss` discounting convention differs between `price_analytical` and `price_mc`.
+   - `cat_bond_z_spread` hardcodes `surv = 1.0` for `PoissonPareto`.
+6. **`[MATH-P3-06]` (`crates/ql-models/src/cos.rs:190-217`, `crates/ql-rates/src/g2.rs:227-239`, `crates/ql-pde/src/adi.rs:174-197`)**:
+   - `CosHestonEngine::price_impl_extra` evaluates `ek * ((kappa*t).exp() - 1)/kappa` (`0 * Inf = NaN` overflow for large $\kappa t$) and miscomputes `a_int`, while omitting $\sqrt{c_4}$ in `width`.
+   - `G2PlusPlus::swaption_price` uses `Self::nonzero(self.a)` (`1e-12` clamp) in `mux`/`muy` instead of $\frac{1}{2}B(a,T)^2$ and $(B(a,T)-B(a+b,T))/b$.
+   - `Fd2dHestonEngine::price_barrier` adds a Knock-Out rebate `+(out - out_no_rebate)` to Knock-In options instead of a Knock-In rebate paid at expiry when the barrier is NOT hit.

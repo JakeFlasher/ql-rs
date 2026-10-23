@@ -179,3 +179,25 @@ Following Codex's 9-commit remediation pass (`3559aac..19aa6ad`), a full line-by
   2. `compute_isda_simm_6_risk_classes` (`crates/ql-xva/src/simm.rs:18-37`) is never called anywhere in the workspace.
   3. `DeskWorkstation::step_tick` (`crates/ql-terminal/src/lib.rs:816-862`) still passes 5 heterogeneous risk classes into a single intra-class `compute_isda_simm(&buckets, &inter_corr)` call AND passes unscaled `summary.total_par_dv01` (per `1.0` = 10,000 bps rate change, without `* 1e-4`) at `lib.rs:817-821`, overstating IR SIMM margin by $10{,}000\times$!
   4. `DeskWorkstation::xva_metrics` (`lib.rs:748-766`) hardcodes `FlatForwardCurve::new(d, 0.02)` and ignores `self.scenario`, so CVA/DVA/FVA on the terminal dashboard never respond to scenario changes.
+
+
+---
+
+# Pass 3 Architectural & Cross-Crate Audit (`19aa6ad..9a72cde`)
+
+See [`PHASE10_ADVERSARIAL_REVIEW_SECOND_PASS.md`](./PHASE10_ADVERSARIAL_REVIEW_SECOND_PASS.md#pass-3-adversarial-audit-report-19aa6ad9a72cde) for the unified Pass 3 verification matrix. Key architectural findings in `19aa6ad..9a72cde`:
+
+1. **`[ARCH-P3-01]` (`crates/ql-curves/src/market_context.rs:34, 93-106, 141-178, 192-224`, `crates/ql-portfolio/src/dag.rs:164-190`)**:
+   - `MarketContext` shares a single `curve_store: HashMap<String, ...>` between discount and forward curves (`"UsdSofr"`, `"GbpSonia"`), causing `ctx.discount("UsdSofr")` to return the **forward curve** after `insert_forward_curve`.
+   - `MarketContext::<f64>::to_ad` uses `TapeVar::from_f64` (`CONST_IDX`), producing zero AD gradients, and omits `named_discount_curves` / `named_forward_curves`.
+   - `MarketSnapshot::to_market_context` bypasses `try_build_curve_system`.
+2. **`[ARCH-P3-02]` (`crates/ql-rates/src/cms_spread.rs:29-40, 120-129`)**:
+   - `LognormalCmsSpreadPricer::lognormal_caplet_pv` omits the orthogonal normal shock $\sqrt{1-\rho^2}Z_2$ of $S_2$, violating $\mathbb{E}[S_2(T_f)] = m_2$ and making OTM `floorlet_pv` negative.
+   - `convexity_factor` multiplies by `dt = (payment_time - fixing_time).max(0)`, zeroing out CMS convexity when `payment_time == fixing_time`.
+3. **`[ARCH-P3-03]` (`crates/ql-fixed-income/src/cat_bond.rs:179-219, 303`)**:
+   - `CatBondSpec::price_mc` breaks out of the inner arrival loop when `te > t` before drawing severity and adds another inter-arrival time on the next coupon period, dropping catastrophes at coupon boundaries.
+   - `cat_bond_z_spread` sets `surv = 1.0` for `PoissonPareto`.
+4. **`[ARCH-P3-04]` (`crates/ql-terminal/src/lib.rs:861-878, 926-933, 1413-1435`, `crates/ql-portfolio/src/dag.rs:254, 264, 495, 553`, `crates/ql-credit/src/lib.rs:333-337`)**:
+   - `DeskWorkstation::step_tick` double-scales inflation by `1e-4` in `buckets[4]` and ignores `buckets[4]` in `class_margins`; `render_dashboard` truncates the last 3 blotter rows while leaving 9 blank lines in `left_bottom`.
+   - `PortfolioDag::try_build_curve_system` uses `add_days(365 * years)` while `value_trade` uses `add_months(12 * n)`, and slices `&params[..3]` instead of `&params[..curves.ois_pillars]`.
+   - `CalibratedCreditCurve::bootstrap` still swallows singular Jacobians with `DMatrix::zeros`.

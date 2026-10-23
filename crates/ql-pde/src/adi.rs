@@ -79,6 +79,35 @@ impl Fd2dHestonEngine {
             expiry,
             is_call,
             false,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn price_knockout_rebate<T: Real>(
+        &self,
+        p: &HestonParams<T>,
+        spot: T,
+        lower_barrier: Option<f64>,
+        upper_barrier: Option<f64>,
+        rebate: T,
+        rate: T,
+        div: T,
+        expiry: T,
+    ) -> T {
+        self.solve(
+            p,
+            spot,
+            T::zero(),
+            lower_barrier,
+            upper_barrier,
+            rebate,
+            rate,
+            div,
+            expiry,
+            true,
+            false,
+            Some(rebate),
         )
     }
 
@@ -105,6 +134,7 @@ impl Fd2dHestonEngine {
             expiry,
             is_call,
             true,
+            None,
         )
     }
 
@@ -134,6 +164,7 @@ impl Fd2dHestonEngine {
             expiry,
             is_call,
             false,
+            None,
         )
     }
 
@@ -172,6 +203,15 @@ impl Fd2dHestonEngine {
         );
         match option.barrier_type {
             ql_instruments::BarrierType::UpAndIn | ql_instruments::BarrierType::DownAndIn => {
+                let vanilla = self.price_european(
+                    p,
+                    spot,
+                    T::from_f64(option.strike),
+                    rate,
+                    div,
+                    expiry,
+                    option.option_type.is_call(),
+                );
                 let out_no_rebate = self.price_knockout_barrier(
                     p,
                     spot,
@@ -184,16 +224,17 @@ impl Fd2dHestonEngine {
                     expiry,
                     option.option_type.is_call(),
                 );
-                self.price_european(
+                let rebate_survival = self.price_knockout_rebate(
                     p,
                     spot,
-                    T::from_f64(option.strike),
+                    lower,
+                    upper,
+                    T::from_f64(option.rebate),
                     rate,
                     div,
                     expiry,
-                    option.option_type.is_call(),
-                ) - out_no_rebate
-                    + (out - out_no_rebate)
+                );
+                vanilla - out_no_rebate + rebate_survival
             }
             ql_instruments::BarrierType::UpAndOut | ql_instruments::BarrierType::DownAndOut => out,
         }
@@ -416,12 +457,22 @@ impl Fd2dHestonEngine {
         expiry: T,
         is_call: bool,
         american: bool,
+        terminal_rebate: Option<T>,
     ) -> T {
         let center = lower_barrier
             .or(upper_barrier)
             .map(f64::ln)
             .unwrap_or_else(|| strike.val().ln());
-        let g = crate::HestonGrid2D::new_centered(self.nx, self.nv, center, p.v0.val());
+        let nx = if lower_barrier.is_some() || upper_barrier.is_some() {
+            if self.nx % 2 == 0 {
+                self.nx + 1
+            } else {
+                self.nx
+            }
+        } else {
+            self.nx
+        };
+        let g = crate::HestonGrid2D::new_centered(nx, self.nv, center, p.v0.val());
         let nx = g.x.nodes.len();
         let nv = g.v.nodes.len();
         let s_min = T::from_f64(g.x.nodes[0].exp());
@@ -434,6 +485,8 @@ impl Fd2dHestonEngine {
             let s = T::from_f64(s_val);
             let pay = if knocked_out {
                 rebate
+            } else if let Some(constant) = terminal_rebate {
+                constant
             } else if is_call {
                 (s - strike).max_val(T::zero())
             } else {

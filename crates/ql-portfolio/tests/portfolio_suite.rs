@@ -1,3 +1,4 @@
+use ql_ad::TapeScope;
 use ql_models::HestonParams;
 use ql_portfolio::{MarketSnapshot, PortfolioDag, PortfolioTrade};
 use ql_scripting::{BytecodeProgram, ScriptedProduct};
@@ -85,4 +86,18 @@ fn incremental_cache_skips_clean_subgraphs_and_aggregates_risk() {
     let predicted = third.total_par_dv01[5] * 1e-4;
     let observed = fourth.total_npv - third.total_npv;
     assert!((observed - predicted).abs() < 1e-2);
+}
+
+#[test]
+fn market_context_typed_named_and_ad_views_share_curves() {
+    let ctx = snapshot().to_market_context();
+    let discount = ctx.discount("UsdSofr").expect("discount alias");
+    let forward = ctx.forward("UsdSofr").expect("forward alias");
+    assert!((discount.discount_factor(1.0) - forward.discount_factor(1.0)).abs() > 1e-8);
+    let guard = TapeScope::guard();
+    let ad = ctx.to_ad();
+    let out = ad.discount("UsdSofr").unwrap().discount_factor(1.0);
+    let adj = TapeScope::gradient_from(out);
+    assert!(adj.adjoints.iter().any(|x| x.abs() > 0.0));
+    let _ = guard.stop();
 }

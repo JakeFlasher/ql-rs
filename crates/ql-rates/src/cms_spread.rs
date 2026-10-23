@@ -36,7 +36,9 @@ impl LognormalCmsSpreadPricer {
         };
         // Linear-TSR annuity convexity factor.  The annuity ratio keeps the
         // payment leg and the underlying swap numeraire in the adjustment.
-        b * annuity / (T::one() + annuity * u) * dt.max_val(T::zero())
+        let elapsed = dt.max_val(T::zero());
+        b * annuity / (T::one() + annuity * u.max_val(T::from_f64(1e-4)))
+            * (T::one() + elapsed / u.max_val(T::from_f64(1e-4)))
     }
     fn adjusted_rates<T: Real>(s: &CmsSpreadSpec<T>) -> (T, T) {
         let tf = s.fixing_time.max_val(T::zero());
@@ -116,16 +118,31 @@ impl LognormalCmsSpreadPricer {
         let (m1, m2) = Self::adjusted_rates(s);
         let z1 = (m1 + s.shift1).max_val(T::from_f64(1e-12));
         let z2 = (m2 + s.shift2).max_val(T::from_f64(1e-12));
+        let rho = s
+            .rho
+            .max_val(T::from_f64(-0.999_999))
+            .min_val(T::from_f64(0.999_999));
+        let sigma_cond = s.vol1 * (T::one() - rho * rho).max_val(T::zero()).sqrt() * sqt;
         let mut value = T::zero();
         for i in 0..X.len() {
             let z = T::from_f64(X[i] * 2.0_f64.sqrt());
-            let e1 = (s.vol1 * sqt * z - s.vol1 * s.vol1 * tf * 0.5).exp();
-            let e2 = (s.vol2 * sqt * (s.rho * z) - s.vol2 * s.vol2 * tf * 0.5).exp();
-            let s1 = z1 * e1 - s.shift1;
-            let s2 = z2 * e2 - s.shift2;
-            let spread = s.gearing1 * s1 - s.gearing2 * s2 + s.spread;
-            value += T::from_f64(W[i] / std::f64::consts::PI.sqrt())
-                * (spread - strike).max_val(T::zero());
+            // Condition on the second swap rate.  The remaining first-rate
+            // shock is integrated analytically as a shifted Black call.
+            let s2 = z2 * (s.vol2 * sqt * z - s.vol2 * s.vol2 * tf * 0.5).exp() - s.shift2;
+            let f1 = s.gearing1
+                * z1
+                * (rho * s.vol1 * sqt * z - rho * rho * s.vol1 * s.vol1 * tf * 0.5).exp();
+            let keff = strike - s.spread + s.gearing1 * s.shift1 + s.gearing2 * s2;
+            let inner = if keff.val() <= 0.0 {
+                f1 - keff
+            } else if sigma_cond.val().abs() <= 1e-12 {
+                (f1 - keff).max_val(T::zero())
+            } else {
+                let d1 = (f1 / keff).ln() / sigma_cond + sigma_cond * 0.5;
+                let d2 = d1 - sigma_cond;
+                f1 * d1.norm_cdf() - keff * d2.norm_cdf()
+            };
+            value += T::from_f64(W[i] / std::f64::consts::PI.sqrt()) * inner.max_val(T::zero());
         }
         s.discount_df * s.accrual_factor * value
     }
