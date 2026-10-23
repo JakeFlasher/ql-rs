@@ -140,7 +140,6 @@ pub fn asb_recursive_expected_tranche_loss<T: Real>(
     let sr = rho.sqrt();
     let den = (T::one() - rho).sqrt();
     let mut out = T::zero();
-    let mut quadrature_total = T::zero();
     let mut dist = vec![T::zero(); max_loss + 1];
     for (&z, &quad_w) in nodes.iter().zip(weights.iter()) {
         dist.fill(T::zero());
@@ -166,27 +165,8 @@ pub fn asb_recursive_expected_tranche_loss<T: Real>(
             conditional += prob * (loss - attachment).max_val(T::zero()).min_val(width);
         }
         out += conditional * quad_w;
-        quadrature_total += dist[..=reached]
-            .iter()
-            .enumerate()
-            .map(|(l, &prob)| prob * unit_notional * l as f64)
-            .fold(T::zero(), |a, b| a + b)
-            * quad_w;
     }
-    // Correct only the deterministic quadrature moment error.  The recursion
-    // itself remains the exact ASB distribution; this moment projection keeps
-    // complementary tranches additive when a 32-node rule under-resolves a
-    // high-correlation transition.
-    let total = default_probs
-        .iter()
-        .zip(loss_units)
-        .fold(T::zero(), |a, (&q, &w)| a + q * w as f64 * unit_notional);
-    let projected = if quadrature_total.val().abs() > 1e-15 {
-        out * total / quadrature_total
-    } else {
-        out
-    };
-    projected
+    out
         .max_val(T::zero())
         .min_val((detachment - attachment).max_val(T::zero()))
 }

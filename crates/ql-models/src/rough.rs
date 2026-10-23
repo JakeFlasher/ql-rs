@@ -65,7 +65,7 @@ pub fn lifted_heston_char_func_unit_spot<T: Real>(
     // A one-factor lift is exactly the classical Heston model.  Keeping this
     // branch also avoids a loss of accuracy in the short integration for the
     // limiting kernel gamma=0.
-    if p.n_factors <= 1 {
+    if (p.hurst - 0.5).abs() < 1e-8 {
         let h = HestonParams {
             v0: p.v0,
             kappa: p.lambda,
@@ -165,6 +165,7 @@ pub fn lifted_heston_cos_price<T: Real>(
         p.theta,
         p.nu,
         p.lambda,
+        p.rho,
         spot,
         rate,
         div,

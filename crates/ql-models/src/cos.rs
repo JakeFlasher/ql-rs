@@ -91,6 +91,7 @@ impl CosHestonEngine {
             p.theta,
             p.sigma_v,
             p.kappa,
+            p.rho,
             spot,
             rate,
             div,
@@ -116,6 +117,7 @@ impl CosHestonEngine {
             p.heston.theta,
             p.heston.sigma_v,
             p.heston.kappa,
+            p.heston.rho,
             spot,
             rate,
             div,
@@ -123,6 +125,9 @@ impl CosHestonEngine {
             strikes,
             is_call,
             p.lambda * (p.mu_j * p.mu_j + p.sigma_j * p.sigma_j) * expiry,
+            p.lambda
+                * (p.mu_j + T::one() - (p.mu_j + p.sigma_j * p.sigma_j * 0.5).exp())
+                * expiry,
         )
     }
     #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
@@ -133,6 +138,7 @@ impl CosHestonEngine {
         theta: T,
         sigma_v: T,
         kappa: T,
+        rho: T,
         spot: T,
         rate: T,
         div: T,
@@ -146,12 +152,14 @@ impl CosHestonEngine {
             theta,
             sigma_v,
             kappa,
+            rho,
             spot,
             rate,
             div,
             expiry,
             strikes,
             is_call,
+            T::zero(),
             T::zero(),
         )
     }
@@ -162,8 +170,9 @@ impl CosHestonEngine {
         cf: F,
         v0: T,
         theta: T,
-        _sigma_v: T,
+        sigma_v: T,
         kappa: T,
+        rho: T,
         spot: T,
         rate: T,
         div: T,
@@ -171,15 +180,41 @@ impl CosHestonEngine {
         strikes: &[T],
         is_call: bool,
         jump_variance: T,
+        jump_drift: T,
     ) -> Vec<T> {
         let t = expiry.max_val(T::from_f64(1e-8));
-        let mean_var = if kappa.val().abs() < 1e-10 {
-            v0 * t
+        let delta = v0 - theta;
+        let mean_var = if kappa.val().abs() < 1e-8 {
+            v0 * t - delta * kappa * t * t * 0.5 + delta * kappa * kappa * t * t * t / 6.0
         } else {
-            theta * t + (v0 - theta) * (T::one() - (-kappa * t).exp()) / kappa
+            theta * t + delta * (T::one() - (-kappa * t).exp()) / kappa
         };
-        let var = (mean_var + jump_variance).max_val(T::from_f64(1e-12));
-        let c1 = (rate - div) * t - var * 0.5;
+        let j = |z: T| {
+            if z.val().abs() < 1e-7 {
+                t + z * t * t * 0.5 + z * z * t * t * t / 6.0
+            } else {
+                ((z * t).exp() - T::one()) / z
+            }
+        };
+        let (var_i, cov_im) = if kappa.val().abs() < 1e-7 {
+            (
+                sigma_v * sigma_v * v0 * t * t * t / 3.0,
+                rho * sigma_v * v0 * t * t * 0.5,
+            )
+        } else {
+            let jk = j(-kappa);
+            let j2k = j(kappa * -2.0);
+            let ek = (-kappa * t).exp();
+            let a_int = theta * 0.5 * (t - j2k - ek * (j(kappa) - jk))
+                + delta * (jk - j2k - ek * (t - jk));
+            let vi = sigma_v * sigma_v * 2.0 * a_int / (kappa * kappa);
+            let ci = rho * sigma_v / kappa
+                * (theta * (t - ek * j(kappa)) + delta * (jk - ek * t));
+            (vi, ci)
+        };
+        let var = (mean_var + var_i * 0.25 - cov_im + jump_variance)
+            .max_val(T::from_f64(1e-12));
+        let c1 = (rate - div) * t - mean_var * 0.5 + jump_drift;
         let w = T::from_f64(self.l_trunc) * var.sqrt();
         let a = c1 - w;
         let b = c1 + w;

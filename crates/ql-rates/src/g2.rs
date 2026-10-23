@@ -98,11 +98,21 @@ impl<T: Real> G2PlusPlus<T> {
             tb / (b * b)
         };
         let ab = a + b;
-        let cross = T::from_f64(t) - Self::b_fn(a, t) - Self::b_fn(b, t) + Self::b_fn(ab, t);
-        let cross_scale = if (a * b).val().abs() < 1e-12 {
-            // Continuous limit of cross/(a b) as either factor tends to zero.
+        let bprime = |z: T| {
+            if z.val().abs() < 1e-7 {
+                -T::from_f64(t * t * 0.5) + z * T::from_f64(t * t * t / 3.0)
+            } else {
+                (z * t * (-z * t).exp() - (T::one() - (-z * t).exp())) / (z * z)
+            }
+        };
+        let cross_scale = if a.val().abs() < 1e-8 && b.val().abs() < 1e-8 {
             T::from_f64(t * t * t / 3.0)
+        } else if a.val().abs() < 1e-8 {
+            (T::from_f64(t * t * 0.5) + bprime(b)) / b
+        } else if b.val().abs() < 1e-8 {
+            (T::from_f64(t * t * 0.5) + bprime(a)) / a
         } else {
+            let cross = T::from_f64(t) - Self::b_fn(a, t) - Self::b_fn(b, t) + Self::b_fn(ab, t);
             cross / (a * b)
         };
         self.sigma * self.sigma * aa
@@ -268,7 +278,7 @@ impl<T: Real> G2PlusPlus<T> {
             let lambda: Vec<T> = (0..n_payments)
                 .map(|i| a_vec[i] * c_vec[i] * (-ba_vec[i] * x).exp())
                 .collect();
-            let bound = (10.0 * sigmay.val()).max(2.0);
+            let mut bound = (10.0 * sigmay.val()).max(2.0);
             let f_scalar = |yv: f64| -> f64 {
                 let mut r = 1.0;
                 for i in 0..n_payments {
@@ -276,12 +286,15 @@ impl<T: Real> G2PlusPlus<T> {
                 }
                 r
             };
-            let Ok(y0) = ql_math::brent_solve(f_scalar, -bound, bound, 1e-10, 200) else {
-                // A failed conditional bond root has no well-defined
-                // contribution; skip this quadrature node rather than
-                // injecting an arbitrary y=0 state into the price/Greeks.
-                continue;
-            };
+            for _ in 0..32 {
+                if f_scalar(-bound) <= 0.0 && f_scalar(bound) >= 0.0 {
+                    break;
+                }
+                bound *= 2.0;
+            }
+            let y0 = ql_math::brent_solve(f_scalar, -bound, bound, 1e-10, 200)
+                .map_err(|_| ())
+                .unwrap_or(0.0);
             let mut yb = T::from_f64(y0);
             for _ in 0..2 {
                 let mut g = T::one();

@@ -187,6 +187,7 @@ impl CosHestonHullWhiteEngine {
             p.theta_v,
             p.xi_v,
             p.kappa_v,
+            p.rho_sv,
             spot,
             rate,
             div,
@@ -194,6 +195,7 @@ impl CosHestonHullWhiteEngine {
             std::slice::from_ref(&strike),
             is_call,
             hyb,
+            T::zero(),
         )[0]
     }
 
