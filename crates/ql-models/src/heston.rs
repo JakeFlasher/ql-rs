@@ -34,18 +34,24 @@ impl<T: Real> HestonParams<T> {
                 - Complex::from_real(T::from_f64(0.5) * integrated_variance) * u * u)
                 .exp();
         }
+        // Andersen--Lake cancellation-free form with the Little Heston Trap
+        // logarithm.  Rationalising xi-d avoids catastrophic cancellation for
+        // large |u| and the branch-stable y representation avoids 1-g poles.
         let xi = Complex::from_real(self.kappa) - i * self.rho * self.sigma_v * u;
-        let d =
-            (xi * xi + (Complex::from_real(self.sigma_v * self.sigma_v)) * (u * u + i * u)).sqrt();
-        let g = (xi - d) / (xi + d);
+        let sig2 = self.sigma_v * self.sigma_v;
+        let u2iu = u * u + i * u;
+        let d = (xi * xi + Complex::from_real(sig2) * u2iu).sqrt();
+        let dot = xi.re.val() * d.re.val() + xi.im.val() * d.im.val();
+        let r = if dot > 0.0 {
+            (Complex::from_real(-sig2) * u2iu) / (xi + d)
+        } else { xi - d };
         let ed = (-d * tau).exp();
-        let c = i * u * (rate - div) * tau
-            + Complex::from_real(self.kappa * self.theta / (self.sigma_v * self.sigma_v))
-                * ((xi - d) * tau
-                    - ((Complex::one() - g * ed) / (Complex::one() - g)).ln() * T::from_f64(2.0));
-        let dd = (xi - d) / (self.sigma_v * self.sigma_v) * (Complex::one() - ed)
-            / (Complex::one() - g * ed);
-        (c + dd * self.v0).exp()
+        let y = (ed - Complex::one()) / (d * T::from_f64(2.0));
+        let one_minus_ry = Complex::one() - r * y;
+        let a = Complex::from_real(self.kappa * self.theta / sig2)
+            * (r * tau - one_minus_ry.ln() * T::from_f64(2.0));
+        let b = (u2iu * y) / one_minus_ry;
+        (i * u * (rate - div) * tau + a + b * self.v0).exp()
     }
 }
 #[derive(Copy, Clone, Debug, PartialEq)]
