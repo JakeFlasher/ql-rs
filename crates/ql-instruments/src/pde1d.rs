@@ -131,6 +131,19 @@ impl Fd1dBlackScholesEngine {
             };
             rhs[0] -= lower[0] * if kind.is_call() { T::zero() } else { putb };
             rhs[n - 2] -= upper[n - 2] * if kind.is_call() { callb } else { T::zero() };
+            if let Some((barrier, bt)) = barrier {
+                for j in 1..n {
+                    let sj = (xmin + j as f64 * dx).exp();
+                    let knocked = (matches!(bt, BarrierType::UpAndOut) && sj >= barrier.val())
+                        || (matches!(bt, BarrierType::DownAndOut) && sj <= barrier.val());
+                    if knocked {
+                        lower[j - 1] = T::zero();
+                        diag[j - 1] = T::one();
+                        upper[j - 1] = T::zero();
+                        rhs[j - 1] = T::zero();
+                    }
+                }
+            }
             solve_tridiagonal(&lower, &diag, &upper, &rhs, &mut out, &mut scratch);
             v[1..n].copy_from_slice(&out);
             v[0] = if kind.is_call() { T::zero() } else { putb };

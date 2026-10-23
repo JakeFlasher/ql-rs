@@ -1,16 +1,8 @@
 use ql_ad::{Dual, Real};
-use ql_instruments::OptionType;
+pub use ql_instruments::{BarrierType, OptionType};
 use ql_vol::black_scholes_price;
 
 pub const BGK_BETA: f64 = 0.5825971579390107;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BarrierType {
-    DownIn,
-    UpIn,
-    DownOut,
-    UpOut,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MonitoringFrequency {
@@ -148,10 +140,14 @@ pub fn price_barrier_option<T: Real>(spec: &BarrierOptionSpec<T>) -> T {
         spec.barrier_type,
         BarrierType::DownIn | BarrierType::DownOut
     );
+    // Contractual breach is tested against the contractual barrier.  The BGK
+    // continuity correction only changes the analytic barrier used after the
+    // initial-state check; using it here incorrectly knocks in/out a trade
+    // that starts between the true and adjusted levels.
     let breached = if down {
-        spec.spot.val() <= adjusted.val()
+        spec.spot.val() <= spec.barrier.val()
     } else {
-        spec.spot.val() >= adjusted.val()
+        spec.spot.val() >= spec.barrier.val()
     };
     let knocked_in = matches!(spec.barrier_type, BarrierType::DownIn | BarrierType::UpIn);
     if breached {
@@ -169,6 +165,11 @@ pub fn price_barrier_option<T: Real>(spec: &BarrierOptionSpec<T>) -> T {
             spec.rebate
         };
     }
+    let adjusted = if down {
+        adjusted.min_val(spec.spot)
+    } else {
+        adjusted.max_val(spec.spot)
+    };
     price_continuous(spec, adjusted)
 }
 

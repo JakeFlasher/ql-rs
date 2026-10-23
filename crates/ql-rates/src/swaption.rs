@@ -14,7 +14,7 @@ fn normal_sabr_vol<T: Real>(f: T, k: T, expiry: f64, alpha: T, beta: f64, rho: T
     let omb = T::from_f64(1.0 - beta);
     let corr = T::one()
         + T::from_f64(expiry)
-            * (omb * omb * alpha * alpha / (fk.pow(omb) * 24.0)
+            * (-T::from_f64(beta * (2.0 - beta)) * alpha * alpha / (fk.pow(omb) * 24.0)
                 + rho * T::from_f64(beta) * nu * alpha / (fk.pow(omb * 0.5) * 4.0)
                 + (T::from_f64(2.0) - rho * rho * 3.0) * nu * nu / 24.0);
     alpha * fk.powf(beta * 0.5) * ratio * corr

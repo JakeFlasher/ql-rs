@@ -161,31 +161,34 @@ pub fn asb_recursive_expected_tranche_loss<T: Real>(
         }
         let width = (detachment - attachment).max_val(T::zero());
         let mut conditional = T::zero();
-        let mut conditional_total = T::zero();
         for (l, &prob) in dist[..=reached].iter().enumerate() {
             let loss = unit_notional * l as f64;
-            conditional_total += prob * loss;
             conditional += prob * (loss - attachment).max_val(T::zero()).min_val(width);
         }
         out += conditional * quad_w;
-        quadrature_total += conditional_total * quad_w;
+        quadrature_total += dist[..=reached]
+            .iter()
+            .enumerate()
+            .map(|(l, &prob)| prob * unit_notional * l as f64)
+            .fold(T::zero(), |a, b| a + b)
+            * quad_w;
     }
-    // The unconditional first moment is known exactly from the input PDs.
-    // Normalizing the finite Gauss--Hermite approximation by that moment
-    // preserves the ASB tranche-loss conservation identity even in the
-    // near-perfect-correlation limit where a fixed 32-node rule under-resolves
-    // the narrow transition in the conditional default probability.
-    let target_total = default_probs
+    // Correct only the deterministic quadrature moment error.  The recursion
+    // itself remains the exact ASB distribution; this moment projection keeps
+    // complementary tranches additive when a 32-node rule under-resolves a
+    // high-correlation transition.
+    let total = default_probs
         .iter()
         .zip(loss_units)
-        .fold(T::zero(), |acc, (&q, &w)| {
-            acc + q * (w as f64) * unit_notional
-        });
-    if quadrature_total.val().abs() > 1e-15 {
-        out * target_total / quadrature_total
+        .fold(T::zero(), |a, (&q, &w)| a + q * w as f64 * unit_notional);
+    let projected = if quadrature_total.val().abs() > 1e-15 {
+        out * total / quadrature_total
     } else {
         out
-    }
+    };
+    projected
+        .max_val(T::zero())
+        .min_val((detachment - attachment).max_val(T::zero()))
 }
 
 /// Backwards-compatible short spelling used by the structured-credit API.

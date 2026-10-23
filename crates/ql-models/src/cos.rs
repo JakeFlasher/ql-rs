@@ -157,7 +157,7 @@ impl CosHestonEngine {
     }
 
     #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
-    fn price_impl_extra<T: Real, F: Fn(Complex<T>) -> Complex<T>>(
+    pub(crate) fn price_impl_extra<T: Real, F: Fn(Complex<T>) -> Complex<T>>(
         &self,
         cf: F,
         v0: T,
@@ -178,12 +178,6 @@ impl CosHestonEngine {
         } else {
             theta * t + (v0 - theta) * (T::one() - (-kappa * t).exp()) / kappa
         };
-        // The log-price cumulant variance is the integrated variance in the
-        // continuous-volatility limit; the stochastic-volatility correction
-        // is bounded by the same positive quantity and is handled by the
-        // characteristic function.  Unlike the former heuristic, this
-        // expression has the correct short/long maturity scaling and keeps
-        // expiry and parameter jets in the AD domain.
         let var = (mean_var + jump_variance).max_val(T::from_f64(1e-12));
         let c1 = (rate - div) * t - var * 0.5;
         let w = T::from_f64(self.l_trunc) * var.sqrt();

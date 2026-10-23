@@ -26,7 +26,9 @@ pub fn price_convertible_bond_tf<T: Real>(s: &ConvertibleBondSpec<T>, steps: usi
         let mut previous = T::zero();
         let mut amount = T::zero();
         for &ct in &s.coupon_times {
-            if (ct - time).val().abs() <= dt.val().abs() * 0.5 + 1e-12 {
+            let step_idx = ((ct / dt).val().round() as usize).min(n);
+            let target_idx = ((time / dt).val().round() as usize).min(n);
+            if step_idx == target_idx {
                 amount = s.face_value * s.coupon_rate * (ct - previous);
                 break;
             }

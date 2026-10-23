@@ -55,7 +55,6 @@ ql-portfolio = { path = "crates/ql-portfolio" }
 ql-credit = { path = "crates/ql-credit" }
 ql-inflation = { path = "crates/ql-inflation" }
 ql-fx = { path = "crates/ql-fx" }
-ql-benches = { path = "crates/ql-benches" }
 ql-rates = { path = "crates/ql-rates" }
 ql-dml = { path = "crates/ql-dml" }
 ql-exotics = { path = "crates/ql-exotics" }

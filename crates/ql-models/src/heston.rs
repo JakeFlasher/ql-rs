@@ -44,7 +44,9 @@ impl<T: Real> HestonParams<T> {
         let dot = xi.re.val() * d.re.val() + xi.im.val() * d.im.val();
         let r = if dot > 0.0 {
             (Complex::from_real(-sig2) * u2iu) / (xi + d)
-        } else { xi - d };
+        } else {
+            xi - d
+        };
         let ed = (-d * tau).exp();
         let y = (ed - Complex::one()) / (d * T::from_f64(2.0));
         let one_minus_ry = Complex::one() - r * y;

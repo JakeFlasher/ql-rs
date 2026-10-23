@@ -12,4 +12,5 @@ ql-time.workspace = true
 ql-instruments.workspace = true
 ql-vol.workspace = true
 ql-inflation.workspace = true
+ql-mc.workspace = true
 nalgebra.workspace = true

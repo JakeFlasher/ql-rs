@@ -1,144 +1,40 @@
-# Phase 10 adversarial review — second pass and newly confirmed gaps
+# Phase 10 Multi-Pass Adversarial Audit — Convergence Ledger & Complete Problem Catalog
 
-This pass re-audits the first mathematical report against the current tree,
-searches for placeholders/semantic no-ops, and checks that Phase 10 APIs have
-real production workflows rather than only compile-time surface area.
+**Status**: Multi-agent adversarial audit loop converged across all 23 crates (`ql-ad`, `ql-time`, `ql-math`, `ql-curves`, `ql-instruments`, `ql-vol`, `ql-models`, `ql-mc`, `ql-pde`, `ql-rates`, `ql-fixed-income`, `ql-credit`, `ql-inflation`, `ql-fx`, `ql-commodities`, `ql-levy`, `ql-exotics`, `ql-dml`, `ql-scripting`, `ql-portfolio`, `ql-xva`, `ql-benches`, `ql-terminal`).
 
-## Newly confirmed critical/high findings
+---
 
-### C1 — Cat-bond Monte Carlo is a deterministic alias, not Monte Carlo
+## Complete Problem Matrix (All 45 Identified Defects & Gaps)
 
-`crates/ql-fixed-income/src/cat_bond.rs:155` implements
-`price_mc(&self, _n_paths, _seed)` as `self.price_analytical()` for every peril,
-including `PoissonPareto`. This silently returns the exponential analytical
-answer for a Pareto model and ignores path count, seed, severity sampling,
-discounting and sampling error. It directly violates the Phase 10 contract.
-
-**Required remediation:** implement compound-Poisson event simulation with a
-stateless Philox/Sobol stream, sample Poisson counts and Exponential/Pareto
-severities, apply Digital/Proportional surviving-notional payoff at each coupon,
-return standard errors in the valuation type, and test Pareto MC convergence,
-seed reproducibility and lambda→0.
-
-### C2 — Hybrid Heston–Hull–White is an averaging placeholder, not H1-HW COS
-
-`crates/ql-models/src/hybrid.rs:82-151` builds a classical Heston COS price,
-builds a BSM price from `theta_v*expiry + hwv`, then returns their arithmetic
-average when `eta_r != 0`. `h1_hw_char_func_unit_spot` merely multiplies a Heston
-CF by a scalar Gaussian factor and omits the coupled Heston/rate/correlation
-terms. This cannot match Grzelak–Oosterlee or QuantLib's analytic H1HW engine,
-and it makes `rho_sr` influence only a variance scalar rather than the true
-cross terms.
-
-**Required remediation:** implement the coupled affine H1-HW Riccati/characteristic
-function and use it in a genuine COS expansion. Add reductions `eta_r→0`,
-`xi_v→0`, correlation-sign tests, CF continuity and parameter Dual Greeks versus
-central differences/QuantLib.
-
-### C3 — Basket/rainbow Phase 10 formulas are incomplete and several APIs are
-semantic no-ops
-
-`ql-exotics/src/basket_rainbow.rs`:
-
-* `TwoAssetCorrelationEngine::price` (lines ~72–96) computes a sum of two
-  vanilla-like terms with `(k1+k2)` and returns the same value for calls and
-  puts (`let _ = is_call`). It is not Zhang's two-asset correlation option and
-  fails put-call parity.
-* `DengLiZhouSpreadBasketEngine::price_spread` uses a Kirk-like single
-  approximation, not the required Li–Deng–Zhou `J0+J1+J2` boundary expansion;
-  its `K=0` branch is an exchange approximation but is not cross-checked against
-  Margrabe under all carry conventions.
-* `StulzRainbowEngine::price` has an ad-hoc `expected_min` and only one joint
-  CDF term; it is not a full Stulz branch implementation for all min/max call
-  and put cases.
-* `AnalyticCliquetEngine` and `WriterExtensibleOptionEngine` are already
-  identified as placeholders in the first report, and this pass confirms their
-  `is_call` no-op branches.
-
-**Required remediation:** transcribe the QuantLib branches, preserve option
-orientation, use bivariate CDFs with correct transformed correlations and
-discounts, and add golden/limit/put-call/Greek tests.
-
-### H1 — American engines are not distinct BAW, BS93, BS2002 and Ju–Zhong
-engines
-
-`crates/ql-instruments/src/american.rs` routes all Bjerksund–Stensland and
-JuQuadratic calls directly to `BaroneAdesiWhaleyEngine::price`. `critical_spot`
-uses a simplified call-only approximation and puts are transformed without a
-full put symmetry/parameter check. This means the requested independent engines
-and Ju second-order correction are absent despite the API names.
-
-**Required remediation:** implement each referenced approximation separately,
-validate free-boundary conditions, add QuantLib/BAW table golden values and
-Dual/Dual2 Greek tests. Keep fallback/root failures explicit instead of
-`unwrap_or(seed)`.
-
-### H2 — Black–Litterman posterior is mathematically incomplete and f64-only
-
-`crates/ql-portfolio/src/allocation.rs:70-105` returns the prior covariance
-unchanged, computes posterior means in f64, and solves an unconstrained weight
-vector without the documented fully-invested normalization. The canonical
-posterior covariance update and AD/IFT sensitivity lifting requested by Phase 10
-are not present. `solve_f64` replaces tiny pivots with `1e-14`, hiding singular or
-indefinite covariance matrices.
-
-**Required remediation:** implement the posterior covariance convention
-explicitly, validate SPD matrices, expose errors instead of silent pivot repair,
-and add canonical He–Litterman two-asset tests plus Dual/Tape sensitivities.
-
-### H3 — Risk-budgeting AD lift does not actually lift covariance/budget jets
-
-`risk_budgeting_weights` converts covariance and budgets to f64 for CCD, then
-constructs an approximate correction using frozen primal residuals. It does not
-form the requested generic `r_T` from AD covariance/budget inputs and solve the
-multivariate IFT Hessian system for all jets. The current `Dual` behavior is
-therefore not a valid sensitivity implementation.
-
-**Required remediation:** retain the f64 root only as the primal anchor, form
-the full generic residual in `T`, apply one cached inverse Hessian to the generic
-residual vector, and test every covariance/budget lane against re-solving CCD.
-
-### M4 — Existing root-lifting and fallback patterns remain production hazards
-
-Second-pass search confirms these independent silent fallbacks remain:
-
-* `ql-rates/src/g2.rs:279` uses `unwrap_or(0.0)` when the nonlinear root solve
-  fails.
-* `ql-exotics/src/quanto_chooser.rs:87` uses the spot as a failed critical root.
-* `ql-instruments/src/american.rs:32` uses the seed when BAW root solving fails.
-* `ql-fixed-income/src/callable_bond.rs` and `ql-credit/src/cdo.rs` have solver
-  fallbacks/implicit clamps that turn numerical failure into a plausible price.
-
-These should become typed errors or explicit convergence diagnostics; tests must
-exercise extreme/ill-conditioned inputs and assert failure rather than accepting
-silent values.
-
-### M5 — Phase 10 benchmark integrity still needs an independent oracle
-
-Suites 19/20 now return 20 rows and pass parity, but Suite 20's baseline computes
-the requested 90 CCD bumps only as a side effect and returns a scalar sum that is
-not a full portfolio allocation checksum; the SOTA returns only `sum(weights)`.
-Suite 19 similarly sums heterogeneous price/Greek units and scales both by an
-arbitrary `1_000`. These checks can pass while individual risk allocations are
-wrong.
-
-**Required remediation:** define a vector checksum (all weights/Greeks), compare
-the complete vector with stable units, and independently verify each lane before
-timing. Add invariant checks (weights sum to one, RC budgets, American parity).
-
-## Second-pass engineering observations
-
-* `price_mc` placeholder and multiple `let _ = is_call` no-op branches are
-  detectable with a simple semantic lint; add a CI grep or deny-list for public
-  pricing methods whose arguments are intentionally unused.
-* APIs frequently use `unwrap_or` on numerical solvers rather than exposing a
-  convergence/error type. This is inconsistent with institutional production
-  workflows and should be standardized across crates.
-* New Phase 10 tests are mostly smoke/limit tests; the required published-table
-  golden values, high-correlation/high-volatility convergence tests, and
-  independent QuantLib comparison fixtures are still missing.
-
-
-## Final delta pass
-
-Cross-checking the math, Rust-engineering and architecture reports produced no new independent issue beyond the findings already listed. The remediation prompt consolidates all unique findings and their regression requirements.
+| ID | Category | File & Lines | Severity | Defect Summary |
+|---|---|---|---|---|
+| **ARCH-01** | Big-Picture Design | `ql-curves/src/market_context.rs:21-57`, `ql-portfolio/src/dag.rs:293-328`, `ql-fixed-income/src/nss.rs:3-36` | CRITICAL | `MarketContext<T>` is dead code; `PortfolioDag` bypasses `VanillaSwapSpec::resolve -> ResolvedVanillaSwap`; `NelsonSiegelSvensson<T>` does not implement `YieldTermStructure<T>`; `DayCounter` bypassed in `forward_rate` and `bootstrap.rs`. |
+| **ARCH-02** | Domain Unification | `ql-instruments/src/swap.rs`, `ql-curves/src/bootstrap.rs`, `ql-portfolio/src/dag.rs`, `ql-xva/src/cube.rs`, `ql-exotics/src/barrier.rs`, `ql-models/src/local_vol.rs` | HIGH | 4 duplicate IRS structs, 2 colliding `BarrierType` enums, 2 colliding `DupireLocalVol` structs, and 62 functions with `#[allow(clippy::too_many_arguments)]`. |
+| **ARCH-03** | Error Handling | Workspace-wide (`ql-ad`, `ql-curves`, `ql-portfolio`, `ql-xva`, `ql-credit`, `ql-inflation`, `ql-time`, `ql-math`, `ql-vol`, `ql-dml`, `ql-fixed-income`, `ql-scripting`) | CRITICAL | Public constructors and numerical solvers panic via `assert!`, `unwrap()`, and `expect()` on invalid market inputs instead of returning typed `Result<..., QlError>`. |
+| **ARCH-04** | Silent Fallbacks | `bond.rs:143`, `american.rs:32`, `g2.rs:279`, `quanto_chooser.rs:87`, `compound.rs:64`, `ql-credit/src/lib.rs:337` | CRITICAL | `.unwrap_or(...)` substitutes unconverged guesses (`guess`, `seed`, `0.0`, `spot`, `k2`, `DMatrix::zeros`) when solvers fail and feeds them into `ift_lift_1d`. |
+| **ARCH-05** | Portfolio DAG | `ql-portfolio/src/dag.rs:10-58, 94, 209-265`, `ql-terminal/src/lib.rs:894-907` | HIGH | Unbounded `self.cache` (no eviction of removed trade IDs); `trade_recomputes` is cumulative while `curve_recomputes` is per-call; `hash_program`/`trade_market_hash` do not canonicalize `-0.0`/`NaN`; TUI mislabels 3 OIS + 3 FWD pillars as `[1Y..30Y]`. |
+| **ARCH-06** | XVA & SIMM | `ql-xva/src/metrics.rs:11-19, 34-107`, `simm.rs:52-63`, `chebyshev.rs:306-319` | CRITICAL | `collateralized_exposure` returns `excess` (posted collateral) instead of remaining exposure `min(e, threshold_cpty)`; `compute_xva` nets across distinct netting sets before `.max(0.0)`; `epe` is unweighted mean instead of trapezoidal integral; SIMM omits $f_{kl}$ concentration correlation, 6-risk-class $\psi_{r,s}$ layer, and trade sensitivity netting in `simm_from_iter`. |
+| **ARCH-07** | Package Boundaries | `ql-terminal/Cargo.toml:26`, `ql-terminal/src/lib.rs:3-28, 1411-1438` | HIGH | `ql-terminal` glob-reexports 21 crates including `ql-benches` in production; TUI Tab 17/18 telemetry at `right_bottom[21..23]` is truncated by `0..20`. |
+| **ARCH-08** | Test & Bench Hygiene | `ql-benches/tests/benches_suite.rs:3-70`, `ql-benches/src/main.rs:10-20` | HIGH | `cargo test` runs all 20 wall-clock speedup assertions (>60s, flaky under load); benchmark runners unconditionally dirty git-tracked markdown files. |
+| **RUST-01** | Forward AD | `ql-ad/src/dual.rs:58-64, 244, 334-344, 487-539`, `tape.rs:244, 523-529` | CRITICAL | Inactive tangent lanes (`0.0 * Inf = NaN`) poison gradients/Hessians; `Dual2::powf(1.0)` at `0.0` evaluates `0.0 * 0.0.powf(-1.0) = NaN`; `Dual2::div` calls `.powf(-1.0)` 3 times. |
+| **RUST-02** | Trait Axioms | `ql-ad/src/dual.rs:17, 30-35, 280, 295-300` | HIGH | `#[derive(PartialEq)]` compares derivatives while `PartialOrd` compares only `val`, violating the `PartialOrd` contract; `impl Eq` is unsound on `f64`. |
+| **RUST-03** | Reverse Tape | `ql-ad/src/tape.rs:8, 24-35, 256-312` | CRITICAL | `NEXT_TAPE_ID: AtomicU16` wraps after 65,535 tapes (upgrade to `AtomicU32`, keeping `TapeVar` at 16 bytes); `AdjointResult::gradient` omits `var.tape_id == self.tape_id` check; `TapeScope::with_active` leaks an active tape forever when `had == false`; no RAII `TapeGuard` on panic. |
+| **RUST-04** | IFT Lifting | `ql-ad/src/ift.rs:4-11` | CRITICAL | `ift_lift_1d` fails to subtract primal residual $r_0 = \text{residual}(x^*).\text{val()}$, injecting $2(r_0 / f_x^2) \partial_\theta r$ into `Dual` first derivatives, and does not guard `|f_x| <= 1e-14`. |
+| **RUST-05** | `.val()` Stripping | `allocation.rs:42-165, 259-270`, `variance_swap.rs:21-27`, `cgmy.rs:12-19`, `complex.rs:64-68`, `hull_white.rs:12-16`, `schwartz_smith.rs:16-22`, `g2.rs:29-35`, `vg.rs:28-35` | HIGH | Generic `<T: Real>` functions strip AD derivatives via `.val()` or zero-limit constant branches. |
+| **RUST-06** | SIMD & Tails | `ql-ad/src/scalar.rs:228-293`, `ql-math/src/distributions.rs:213-215` | HIGH | `simd_norm_cdf` uses 5-term `simd_erf` (`1.5e-7` error and left-tail cancellation to `0.0` at $x = -8.5$); `norm_cdf_f64` in `distributions.rs:214` uses `1.0 + erf` instead of `erfc(-x / sqrt(2))`. |
+| **RUST-07** | Root-Finder | `ql-math/src/solvers.rs:28` | HIGH | `brent_solve` checks `fa * fb > 0.0`, which underflows to `0.0` for small residuals and passes `NaN` through. |
+| **RUST-08** | Date & Calendar | `ql-time/src/calendar.rs:209-211`, `ql-time/src/date.rs:205-228` | MEDIUM | `BitsetCalendar::adjust(Date(i32::MIN), Preceding)` loops forever; `civil_from_days` / `days_from_civil` overflow `i32` arithmetic. |
+| **RUST-09** | Allocations & PCA | `paths.rs:375`, `adi.rs:189-499`, `amc.rs:85-113`, `ql-dml/src/pca.rs:50-67` | MEDIUM | Inner-loop heap allocations in pathwise tape MC, ADI 2D PDE, and AMC VM; `PcaDecomposition` discards sample `mean` when `center = true`, breaking `encode`/`decode`/`project_vector` on non-zero-mean states. |
+| **MATH-01** | Rough Vol (`A2`) | `ql-models/src/rough.rs:28, 36-42, 81-89, 118` | CRITICAL | Double-negation sign bug `phi1(-...)` evaluates $\frac{e^{+\gamma_i t}-1}{\gamma_i t}$, overflowing to `NaN` for $n=20$; `lifted_heston_kernel` divides `0.0 / 0.0` at $H = 0.5$. |
+| **MATH-02** | Heston QE-M | `ql-mc/src/paths.rs:263-267, 288-297` | CRITICAL | `sigma_v -> 0` branch omits Brownian diffusion `+ (v_bar * dt).sqrt() * z_x`; general QE step omits Andersen's (2008) exact QE-M martingale compensator $K_0^*$. |
+| **MATH-03** | Dupire AD (`A10`) | `ql-models/src/local_vol.rs:8-23` | HIGH | `dupire_local_vol_ad` extracts `wt, wy, wyy` as `f64` constants, dropping their derivatives in the returned `Dual2<2>`. |
+| **MATH-04** | Heston CF & COS | `ql-models/src/heston.rs:37-48`, `ql-models/src/cos.rs:125, 160-192` | HIGH | `heston.rs` lacks Andersen–Lake cancellation-free `r = xi - d` and Little Heston Trap log continuity; `cos.rs` ignores $\sigma_v, \rho, c_4$ in truncation width and miscomputes Bates $c_1$ jump drift. |
+| **MATH-05** | Curve Bootstrap (`A1`) | `ql-curves/src/bootstrap.rs:146-171, 185-189, 444, 606-624` | HIGH | `bootstrap_piecewise_curve`/`bootstrap_global_multicurve` use `1/(1+qt)`; `BasisSwapInstrument::residual_two_curves` omits division by swap annuity; `RateInstrumentKind` omits `FraInstrument`/`BasisSwapInstrument`. |
+| **MATH-06** | Normal SABR | `ql-rates/src/swaption.rs:14-20` | HIGH | `normal_sabr_vol` uses Black76 $+\frac{(1-\beta)^2}{24}$ instead of Hagan's Bachelier $-\frac{\beta(2-\beta)}{24}$, failing to return $\alpha$ when $\beta = 0, \nu = 0$. |
+| **MATH-07** | Discrete Lookback & Barrier | `ql-exotics/src/lookback.rs:127-181`, `ql-exotics/src/barrier.rs:151-155` | HIGH | `price_fixed_lookback_discrete` shifts `extremum` instead of `strike` (a 100% no-op when $K > M_0$!); `price_floating_lookback_discrete` violates $m_0 \le S_0$; `barrier.rs` checks initial breach against BGK-shifted barrier instead of `spec.barrier`. |
+| **MATH-08** | Inflation & Commodity | `ql-inflation/src/lib.rs:55-69, 326-334`, `ql-commodities/src/futures_curve.rs:44-63` | HIGH | Left-extrapolation ($t < t_0$) linearly extrapolates with $[t_0, t_1]$ slope instead of flat; `price_yoy_inflation_capfloor` (`Black`) fails to shift strike by `spread` and scale by `gearing`. |
+| **MATH-09** | Bonds, PDE, CDO, VaR | `callable_bond.rs:104-179`, `convertible_bond.rs:17-82`, `adi.rs:167, 385-512`, `pde1d.rs:58-86`, `cdo.rs:173-188`, `risk_measures.rs:114` | HIGH | `black_callable_bond_price` subtracts sum of all calls instead of $\max_c \text{Call}_c$; `tree_callable_bond_price` lacks short-rate drift calibration and double-counts half-step coupons; PDE barriers solve across knocked-out nodes; ASB CDO first-moment ratio violates $D-A$; `cornish_fisher_var` has wrong sign on `skew`. |
+| **MATH-10** | American Engines | `ql-instruments/src/american.rs:1-225` | CRITICAL | `BS1993`, `BS2002`, `JuQuadratic` are 1-line aliases to `BAW`; BAW uses call symmetry for puts, fails at $r=0$, multiplies PDF in `dres` by `x`, omits `f_xx`, and uses FD in `american_implied_vol`. |
+| **MATH-11** | Hybrid H1-HW | `ql-models/src/hybrid.rs:14-147` | CRITICAL | Missing `/ 2.0` in `AnalyticBsmHullWhiteEngine::effective_variance`; `h1_hw_char_func_unit_spot` zeroes out `rho_sr` and omits Grzelak–Oosterlee $I_4(u, T)$; `CosHestonHullWhiteEngine` returns `(base + adj) * 0.5`. |
+| **MATH-12** | Basket, Rainbow, Cliquet, Extensible | `ql-exotics/src/basket_rainbow.rs:1-171`, `ql-exotics/src/cliquet_extensible.rs:1-65` | CRITICAL | Broken Stulz (1982), Zhang (1995), Li–Deng–Zhou (2008), Levy (1992) (double-compounding by $e^{rT}$!), Cliquet, and Longstaff (1990) Writer-Extensible engines. |
+| **MATH-13** | CMS Spread, Cat Bond, Allocation, Suites 19/20 | `cms_spread.rs`, `cat_bond.rs`, `allocation.rs`, `suites.rs:1569-1607` | CRITICAL | `LognormalCmsSpreadPricer` ignores 7 fields; `CatBondSpec` inverts `attachment_prob`, uses `rem = pa - 0.5*pe`, aliases `price_mc` to `price_analytical`, and miscomputes `cat_bond_z_spread`; `allocation.rs` strips AD derivatives and omits BL `* tau` & posterior covariance; Suite 20 computes `(f - f)*0.5 == 0` in `f64`. |

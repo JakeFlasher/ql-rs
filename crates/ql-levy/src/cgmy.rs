@@ -9,13 +9,39 @@ pub struct CgmyProcess<T: Real> {
     pub y: T,
 }
 impl<T: Real> CgmyProcess<T> {
+    /// Lanczos gamma approximation evaluated in the AD scalar type.  CGMY
+    /// uses Gamma(2-Y)/(Y(Y-1)); keeping the approximation in `T` preserves
+    /// curvature Greeks with respect to `Y` instead of lifting a finite
+    /// difference constant from f64.
+    fn gamma_lanczos(z: T) -> T {
+        const C: [f64; 9] = [
+            0.9999999999998099,
+            676.5203681218851,
+            -1259.1392167224028,
+            771.3234287776531,
+            -176.6150291621406,
+            12.507343278686905,
+            -0.13857109526572012,
+            9.984369578019572e-6,
+            1.5056327351493116e-7,
+        ];
+        // All production CGMY calibrations have 0 < Y < 2, hence 2-Y > 0;
+        // the reflection branch is retained for a well-defined generic API.
+        if z.val() < 0.5 {
+            let pi = T::from_f64(std::f64::consts::PI);
+            pi / ((pi * z).sin() * Self::gamma_lanczos(T::one() - z))
+        } else {
+            let zz = z - 1.0;
+            let mut x = T::from_f64(C[0]);
+            for (i, &ci) in C.iter().enumerate().skip(1) {
+                x += T::from_f64(ci) / (zz + i as f64);
+            }
+            let t = zz + 7.5;
+            T::from_f64((2.0 * std::f64::consts::PI).sqrt()) * t.pow(zz + 0.5) * (-t).exp() * x
+        }
+    }
     fn gamma_neg_y(&self) -> T {
-        let y0 = self.y.val();
-        let scalar = |y: f64| libm::tgamma(2.0 - y) / (y * (y - 1.0));
-        let base = scalar(y0);
-        let h = 1e-5_f64.max(y0.abs() * 1e-5);
-        let slope = (scalar(y0 + h) - scalar(y0 - h)) / (2.0 * h);
-        T::from_f64(base) + (self.y - y0) * slope
+        Self::gamma_lanczos(T::from_f64(2.0) - self.y) / (self.y * (self.y - 1.0))
     }
 }
 impl<T: Real> LevyModel<T> for CgmyProcess<T> {

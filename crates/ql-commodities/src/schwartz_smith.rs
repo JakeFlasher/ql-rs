@@ -14,8 +14,8 @@ pub struct SchwartzSmith2F<T: Real> {
 }
 impl<T: Real> SchwartzSmith2F<T> {
     fn b(z: T, t: T) -> T {
-        if z.val().abs() < 1e-12 {
-            t
+        if (z * t).val().abs() < 1e-6 {
+            t - z * t * t * 0.5 + z * z * t * t * t / 6.0
         } else {
             (T::one() - (-z * t).exp()) / z
         }

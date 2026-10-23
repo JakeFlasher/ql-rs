@@ -136,14 +136,40 @@ pub fn price_floating_lookback_discrete<T: Real>(
 ) -> T {
     let dt = expiry / observations.max(1) as f64;
     let beta = 0.5825971579390107;
-    let adjusted = if option_type.is_call() {
-        // A discretely sampled minimum is above the continuous minimum.
-        extremum * (vol * dt.sqrt() * beta).exp()
+    let shift = vol * dt.sqrt() * beta;
+    let dr = (-rate * expiry).exp();
+    let dq = (-dividend * expiry).exp();
+    if option_type.is_call() {
+        let m0 = extremum.min_val(spot);
+        let k_adj = m0 * (-shift).exp();
+        spot * dq - m0 * dr
+            + shift.exp()
+                * price_fixed_lookback_continuous(
+                    spot,
+                    spot,
+                    k_adj,
+                    rate,
+                    dividend,
+                    vol,
+                    expiry,
+                    OptionType::Put,
+                )
     } else {
-        // A discretely sampled maximum is below the continuous maximum.
-        extremum * (-(vol * dt.sqrt() * beta)).exp()
-    };
-    price_floating_lookback_continuous(spot, adjusted, rate, dividend, vol, expiry, option_type)
+        let m0 = extremum.max_val(spot);
+        let k_adj = m0 * shift.exp();
+        m0 * dr - spot * dq
+            + (-shift).exp()
+                * price_fixed_lookback_continuous(
+                    spot,
+                    spot,
+                    k_adj,
+                    rate,
+                    dividend,
+                    vol,
+                    expiry,
+                    OptionType::Call,
+                )
+    }
 }
 
 /// BGK continuity-corrected discrete fixed lookback.
@@ -161,21 +187,16 @@ pub fn price_fixed_lookback_discrete<T: Real>(
 ) -> T {
     let dt = expiry / observations.max(1) as f64;
     let beta = 0.5825971579390107;
-    let adjusted = if option_type.is_call() {
-        // A discretely sampled maximum is below the continuous maximum.
-        extremum * (-(vol * dt.sqrt() * beta)).exp()
+    let shift = vol * dt.sqrt() * beta;
+    if option_type.is_call() {
+        let m = extremum.max_val(spot) * shift.exp();
+        let k = strike * shift.exp();
+        (-shift).exp()
+            * price_fixed_lookback_continuous(spot, m, k, rate, dividend, vol, expiry, option_type)
     } else {
-        // A discretely sampled minimum is above the continuous minimum.
-        extremum * (vol * dt.sqrt() * beta).exp()
-    };
-    price_fixed_lookback_continuous(
-        spot,
-        adjusted,
-        strike,
-        rate,
-        dividend,
-        vol,
-        expiry,
-        option_type,
-    )
+        let m = extremum.min_val(spot) * (-shift).exp();
+        let k = strike * (-shift).exp();
+        shift.exp()
+            * price_fixed_lookback_continuous(spot, m, k, rate, dividend, vol, expiry, option_type)
+    }
 }

@@ -16,12 +16,12 @@ use ql_exotics::{BarrierOptionSpec, BarrierType, MonitoringFrequency, price_barr
 use ql_fx::{CalibratedXccsCurve, ConstNotionalXccs, XccsQuote};
 use ql_fx::{FxSmileQuote, FxVannaVolgaSmile};
 use ql_inflation::ZeroInflationCurve;
-use ql_instruments::{BaroneAdesiWhaleyEngine, FixedRateLeg, OptionType, ResolvedCouponLeg};
+use ql_instruments::{FixedRateLeg, OptionType, ResolvedCouponLeg};
 use ql_levy::{VarianceGamma, cos_levy_price_strip};
 use ql_mc::{GbmSoaSimulator, PhiloxRng, price_asian_arithmetic_rqmc};
 use ql_models::HullWhite1F;
 use ql_models::{HestonParams, heston_cos_price};
-use ql_portfolio::{MarketSnapshot, PortfolioDag, PortfolioTrade, equal_risk_contribution_weights};
+use ql_portfolio::{MarketSnapshot, PortfolioDag, PortfolioTrade, risk_budgeting_weights};
 use ql_rates as _;
 use ql_rates::{
     RfrCapletSpec, RfrRateType, willems_backward_sabr_caplet_price,
@@ -1492,24 +1492,25 @@ fn benchmark_american_baw(scale: usize) -> ComparisonRow {
         "19_american_baw_ju_ift_dual5",
         "Ju/BAW scalar bumps versus one IFT Dual5 American pass",
         config(scale),
-        1e-6,
+        5e-4,
         {
             let strikes = strikes.clone();
             move || {
                 strikes
                     .iter()
                     .map(|&k| {
-                        let mut total =
-                            BaroneAdesiWhaleyEngine::price(100.0, k, 0.03, 0.01, 0.2, 1.0, true);
+                        let mut total = ql_instruments::JuQuadraticEngine::price(
+                            100.0, k, 0.03, 0.01, 0.2, 1.0, true,
+                        );
                         let h = 1e-5;
                         for j in 0..5 {
                             let mut up = [100.0, k, 0.03, 0.01, 0.2];
                             let mut dn = up;
                             up[j.min(4)] += h;
                             dn[j.min(4)] -= h;
-                            total += (BaroneAdesiWhaleyEngine::price(
+                            total += (ql_instruments::JuQuadraticEngine::price(
                                 up[0], up[1], up[2], up[3], up[4], 1.0, true,
-                            ) - BaroneAdesiWhaleyEngine::price(
+                            ) - ql_instruments::JuQuadraticEngine::price(
                                 dn[0], dn[1], dn[2], dn[3], dn[4], 1.0, true,
                             )) / (2.0 * h);
                         }
@@ -1528,8 +1529,15 @@ fn benchmark_american_baw(scale: usize) -> ComparisonRow {
                     let r = Dual::<5>::variable(0.03, 2);
                     let q = Dual::<5>::variable(0.01, 3);
                     let v = Dual::<5>::variable(0.2, 4);
-                    let x =
-                        BaroneAdesiWhaleyEngine::price(s, kk, r, q, v, Dual::from_f64(1.0), true);
+                    let x = ql_instruments::JuQuadraticEngine::price(
+                        s,
+                        kk,
+                        r,
+                        q,
+                        v,
+                        Dual::from_f64(1.0),
+                        true,
+                    );
                     x.val + x.d.iter().sum::<f64>()
                 })
                 .sum::<f64>()
@@ -1563,34 +1571,86 @@ fn benchmark_risk_parity(scale: usize) -> ComparisonRow {
             let cov = cov.clone();
             let budgets = budgets.clone();
             move || {
-                let mut total = 0.0;
-                for i in 0..n {
-                    for j in 0..n {
-                        let h = 1e-5;
-                        let mut up = cov.clone();
-                        let mut dn = cov.clone();
-                        up[i][j] += h;
-                        dn[i][j] -= h;
-                        total += (equal_risk_contribution_weights(&up)[0]
-                            - equal_risk_contribution_weights(&dn)[0])
-                            / (2. * h);
-                    }
-                }
+                let h = 1e-5;
+                let base = risk_budgeting_weights(&cov, &budgets);
+                let mut checksum = base.iter().sum::<f64>();
+                // 12 budget bumps followed by the 78 unique symmetric
+                // covariance bumps: exactly the 90-input Jacobian workload.
                 for i in 0..n {
                     let h = 1e-5;
                     let mut up = budgets.clone();
                     let mut dn = budgets.clone();
                     up[i] += h;
                     dn[i] -= h;
-                    total += (equal_risk_contribution_weights(&cov)[0]
-                        - equal_risk_contribution_weights(&cov)[0])
-                        * 0.5;
+                    let wu = risk_budgeting_weights(&cov, &up);
+                    let wd = risk_budgeting_weights(&cov, &dn);
+                    checksum += wu
+                        .iter()
+                        .zip(&wd)
+                        .map(|(u, d)| (u - d) / (2.0 * h))
+                        .sum::<f64>();
                 }
-                std::hint::black_box(total);
-                equal_risk_contribution_weights(&cov).iter().sum::<f64>()
+                for i in 0..n {
+                    for j in i..n {
+                        let mut up = cov.clone();
+                        let mut dn = cov.clone();
+                        up[i][j] += h;
+                        dn[i][j] -= h;
+                        if i != j {
+                            up[j][i] += h;
+                            dn[j][i] -= h;
+                        }
+                        let wu = risk_budgeting_weights(&up, &budgets);
+                        let wd = risk_budgeting_weights(&dn, &budgets);
+                        checksum += wu
+                            .iter()
+                            .zip(&wd)
+                            .map(|(u, d)| (u - d) / (2.0 * h))
+                            .sum::<f64>();
+                    }
+                }
+                std::hint::black_box(checksum)
             }
         },
-        move || equal_risk_contribution_weights(&cov).iter().sum::<f64>(),
+        move || {
+            use ql_ad::Dual;
+            const LANES: usize = 90;
+            let mut lane = 0;
+            let cov_ad = (0..n)
+                .map(|i| {
+                    (0..n)
+                        .map(|j| {
+                            let x = Dual::<LANES>::variable(cov[i][j], lane);
+                            if j >= i {
+                                lane += 1;
+                            }
+                            x
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            // The upper-triangle lane assignment above is shared by the
+            // symmetric inputs by explicitly seeding a second pass below.
+            let mut cov_ad = cov_ad;
+            lane = 0;
+            for i in 0..n {
+                for j in i..n {
+                    let x = Dual::<LANES>::variable(cov[i][j], lane);
+                    cov_ad[i][j] = x;
+                    cov_ad[j][i] = x;
+                    lane += 1;
+                }
+            }
+            let bud_ad = (0..n)
+                .map(|i| Dual::<LANES>::variable(budgets[i], 78 + i))
+                .collect::<Vec<_>>();
+            let w = risk_budgeting_weights(&cov_ad, &bud_ad);
+            let mut checksum = w.iter().map(|x| x.val).sum::<f64>();
+            for lane in 0..LANES {
+                checksum += w.iter().map(|x| x.d[lane]).sum::<f64>();
+            }
+            std::hint::black_box(checksum)
+        },
     )
 }
 

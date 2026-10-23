@@ -60,13 +60,27 @@ pub fn price_compound_option<T: Real>(spec: &CompoundOptionSpec<T>) -> T {
             spec.daughter_type.is_call(),
         ) - k1.val()
     };
-    let root =
-        brent_solve(f, 1e-10, 1e5_f64.max(k2.val() * 100.0), 1e-12, 200).unwrap_or_else(|_| {
-            // Deeply out-of-the-money compound options have a critical spot
-            // outside practical brackets; retaining the intrinsic boundary is
-            // the mathematically continuous limiting root.
-            k2.val().max(1e-10)
-        });
+    let root = match brent_solve(f, 1e-10, 1e5_f64.max(k2.val() * 100.0), 1e-12, 200) {
+        Ok(x) => x,
+        Err(_) => {
+            let mut x = k2.val().max(1e-8);
+            for _ in 0..64 {
+                let fx = f(x);
+                let h = (x.abs() * 1e-5).max(1e-6);
+                let dx = (f(x + h) - f(x - h)) / (2.0 * h);
+                if !fx.is_finite() || !dx.is_finite() || dx.abs() < 1e-14 {
+                    break;
+                }
+                let xn = (x - fx / dx).max(1e-10);
+                if (xn - x).abs() < 1e-12 {
+                    x = xn;
+                    break;
+                }
+                x = xn;
+            }
+            x
+        }
+    };
     let root_ad = ift_lift_1d(
         root,
         |x| {

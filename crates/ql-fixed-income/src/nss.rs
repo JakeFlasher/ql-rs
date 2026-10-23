@@ -1,4 +1,6 @@
 use ql_ad::Real;
+use ql_curves::YieldTermStructure;
+use ql_time::{Date, DayCounter};
 #[derive(Clone, Copy, Debug)]
 pub struct NelsonSiegelSvensson<T: Real> {
     pub beta0: T,
@@ -72,5 +74,36 @@ impl<T: Real> NelsonSiegelSvensson<T> {
             tau1: T::from_f64(tau1),
             tau2: T::from_f64(tau2),
         }
+    }
+
+    pub fn with_reference_date(self, _reference_date: Date) -> Self {
+        // The original public struct intentionally remains constructible via
+        // a six-field literal.  Keep this builder for callers that carry a
+        // reference date, while the parametric curve itself is time-based.
+        self
+    }
+}
+
+impl<T: Real> YieldTermStructure<T> for NelsonSiegelSvensson<T> {
+    fn reference_date(&self) -> Date {
+        Date(0)
+    }
+    fn discount_factor(&self, t: f64) -> T {
+        NelsonSiegelSvensson::discount_factor(self, T::from_f64(t))
+    }
+    fn zero_rate(&self, t: f64) -> T {
+        NelsonSiegelSvensson::zero_rate(self, T::from_f64(t))
+    }
+    fn instantaneous_forward(&self, t: f64) -> T {
+        NelsonSiegelSvensson::forward_rate(self, T::from_f64(t))
+    }
+    fn forward_rate(&self, d1: Date, d2: Date, dc: DayCounter) -> T {
+        let t1 = dc.year_fraction(Date(0), d1, None, None);
+        let t2 = dc.year_fraction(Date(0), d2, None, None);
+        let tau = dc.year_fraction(d1, d2, None, None);
+        (<Self as YieldTermStructure<T>>::discount_factor(self, t1)
+            / <Self as YieldTermStructure<T>>::discount_factor(self, t2)
+            - T::one())
+            / tau
     }
 }

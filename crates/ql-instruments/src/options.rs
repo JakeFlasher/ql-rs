@@ -51,6 +51,18 @@ pub enum BarrierType {
     DownAndOut,
     DownAndIn,
 }
+// Historical ql-exotics names are retained as associated aliases while the
+// workspace uses this single canonical barrier type.
+impl BarrierType {
+    #[allow(non_upper_case_globals)]
+    pub const UpOut: Self = Self::UpAndOut;
+    #[allow(non_upper_case_globals)]
+    pub const UpIn: Self = Self::UpAndIn;
+    #[allow(non_upper_case_globals)]
+    pub const DownOut: Self = Self::DownAndOut;
+    #[allow(non_upper_case_globals)]
+    pub const DownIn: Self = Self::DownAndIn;
+}
 #[derive(Debug, Clone, Copy)]
 pub struct BarrierOption {
     pub underlying: f64,

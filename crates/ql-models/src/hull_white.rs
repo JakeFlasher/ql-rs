@@ -9,8 +9,9 @@ pub struct HullWhite1F<T: Real> {
 impl<T: Real> HullWhite1F<T> {
     pub fn b_factor(&self, t: f64, big_t: f64) -> T {
         let dt = big_t - t;
-        if self.a.val().abs() < 1e-12 {
-            T::from_f64(dt)
+        if (self.a * dt).val().abs() < 1e-6 {
+            let d = T::from_f64(dt);
+            d - self.a * d * d * 0.5 + self.a * self.a * d * d * d / 6.0
         } else {
             (T::one() - (-self.a * dt).exp()) / self.a
         }
@@ -20,8 +21,9 @@ impl<T: Real> HullWhite1F<T> {
         let p0t = curve.discount_factor(t);
         let p0_t = curve.discount_factor(big_t);
         let f = curve.instantaneous_forward(t);
-        let var_r = if self.a.val().abs() < 1e-10 {
-            T::from_f64(t)
+        let var_r = if (self.a * t).val().abs() < 1e-6 {
+            let tt = T::from_f64(t);
+            tt - self.a * tt * tt + self.a * self.a * tt * tt * tt * 4.0 / 3.0
         } else {
             (T::one() - (-self.a * T::from_f64(2.0 * t)).exp()) / (self.a * T::from_f64(2.0))
         };
@@ -40,8 +42,9 @@ impl<T: Real> HullWhite1F<T> {
         let pe = curve.discount_factor(expiry);
         let pm = curve.discount_factor(maturity);
         let b = self.b_factor(expiry, maturity);
-        let var_r = if self.a.val().abs() < 1e-10 {
-            T::from_f64(expiry)
+        let var_r = if (self.a * expiry).val().abs() < 1e-6 {
+            let tt = T::from_f64(expiry);
+            tt - self.a * tt * tt + self.a * self.a * tt * tt * tt * 4.0 / 3.0
         } else {
             (T::one() - (-self.a * T::from_f64(2.0 * expiry)).exp()) / (self.a * T::from_f64(2.0))
         };

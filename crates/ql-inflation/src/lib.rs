@@ -53,6 +53,15 @@ impl<T: Real> ZeroInflationCurve<T> {
         }
     }
     fn z(&self, t: f64) -> T {
+        if self.pillar_times.is_empty() {
+            return T::zero();
+        }
+        // A zero curve is flat-extrapolated before its first quoted pillar.
+        // Using the first interval's slope here creates an artificial shock
+        // for lagged CPI dates just before the base pillar.
+        if t <= self.pillar_times[0] {
+            return self.zero_rates[0];
+        }
         let i = if t <= self.pillar_times[0] {
             0
         } else if t >= *self.pillar_times.last().unwrap() {
@@ -323,14 +332,25 @@ pub fn price_yoy_inflation_capfloor<T: Real>(
     let mut prev = T::from_f64(inflation.base_cpi);
     for j in 1..=instrument.maturity_years {
         let cur = inflation.forward_cpi(j as f64, None);
-        let f = instrument.gearing * (cur / prev - T::one()) + instrument.spread;
+        let f = cur / prev - T::one();
         let df = discount.discount_factor(j as f64);
         let t = T::from_f64(j as f64);
+        // The quoted option is on the un-geared YoY rate.  Rewriting
+        // g(F-K)+s = g(F-(K-s)/g) keeps the option model and cap/floor
+        // parity consistent for non-zero gearing and spread.
+        let g = instrument.gearing;
+        let k_eff = |k: T| {
+            if g.val().abs() < 1e-14 {
+                T::zero()
+            } else {
+                (k - instrument.spread) / g
+            }
+        };
         if let Some(k) = instrument.cap_rate {
-            cap += instrument.notional * yoy_optionlet(f, k, vol, t, df, model, true);
+            cap += instrument.notional * g * yoy_optionlet(f, k_eff(k), vol, t, df, model, true);
         }
         if let Some(k) = instrument.floor_rate {
-            floor += instrument.notional * yoy_optionlet(f, k, vol, t, df, model, false);
+            floor += instrument.notional * g * yoy_optionlet(f, k_eff(k), vol, t, df, model, false);
         }
         prev = cur;
     }

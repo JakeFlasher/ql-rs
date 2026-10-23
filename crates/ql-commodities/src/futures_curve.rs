@@ -43,6 +43,9 @@ impl<T: Real> CommodityFuturesCurve<T> {
     }
     pub fn futures_price(&self, t: T) -> T {
         let n = self.times.len();
+        if t.val() <= self.times[0].val() {
+            return (self.log_base_forwards[0] + self.seasonal.factor(t)).exp();
+        }
         let i = if t.val() <= self.times[0].val() {
             0
         } else if t.val() >= self.times[n - 1].val() {

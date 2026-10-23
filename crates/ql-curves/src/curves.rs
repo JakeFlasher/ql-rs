@@ -8,8 +8,11 @@ pub trait YieldTermStructure<T: Real = f64>: Send + Sync {
     fn zero_rate(&self, t: f64) -> T;
     fn instantaneous_forward(&self, t: f64) -> T;
     fn forward_rate(&self, d1: Date, d2: Date, dc: DayCounter) -> T {
-        let t1 = (d1 - self.reference_date()) as f64 / 365.0;
-        let t2 = (d2 - self.reference_date()) as f64 / 365.0;
+        // Use the caller's day-count convention for *both* curve lookup
+        // times and the accrual denominator.  The old hard-coded `/365`
+        // silently mis-priced ACT/360 and 30/360 forwards.
+        let t1 = dc.year_fraction(self.reference_date(), d1, None, None);
+        let t2 = dc.year_fraction(self.reference_date(), d2, None, None);
         let tau = dc.year_fraction(d1, d2, None, None);
         (self.discount_factor(t1) / self.discount_factor(t2) - T::one()) / tau
     }

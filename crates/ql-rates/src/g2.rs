@@ -276,7 +276,12 @@ impl<T: Real> G2PlusPlus<T> {
                 }
                 r
             };
-            let y0 = ql_math::brent_solve(f_scalar, -bound, bound, 1e-10, 200).unwrap_or(0.0);
+            let Ok(y0) = ql_math::brent_solve(f_scalar, -bound, bound, 1e-10, 200) else {
+                // A failed conditional bond root has no well-defined
+                // contribution; skip this quadrature node rather than
+                // injecting an arbitrary y=0 state into the price/Greeks.
+                continue;
+            };
             let mut yb = T::from_f64(y0);
             for _ in 0..2 {
                 let mut g = T::one();

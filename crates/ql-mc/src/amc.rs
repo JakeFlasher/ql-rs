@@ -209,6 +209,22 @@ impl AmcEngine {
         vol: T,
         expiry: T,
     ) -> T {
+        self.price_with_policy_ad_and_div(policy, spot, strike, rate, div, vol, expiry, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::needless_range_loop)]
+    pub fn price_with_policy_ad_and_div<T: Real>(
+        &self,
+        policy: &ExerciseBoundaryPolicy,
+        spot: T,
+        strike: T,
+        rate: T,
+        div: T,
+        vol: T,
+        expiry: T,
+        is_call: bool,
+    ) -> T {
         let n = self.n_steps.max(1);
         let dt = expiry / T::from_f64(n as f64);
         let rng = PhiloxRng::new(self.seed + 1_000_000);
@@ -219,7 +235,11 @@ impl AmcEngine {
             for j in 1..=n {
                 let z = rng.normal4(p as u64, j as u32)[0];
                 s *= ((rate - div - vol * vol * 0.5) * dt + vol * dt.sqrt() * z).exp();
-                let exercise = (strike - s).max_val(T::zero());
+                let exercise = if is_call {
+                    (s - strike).max_val(T::zero())
+                } else {
+                    (strike - s).max_val(T::zero())
+                };
                 let cont = if j < n && !policy.coeffs[j].is_empty() {
                     let x = s.val() / strike.val() - 1.0;
                     policy.coeffs[j]

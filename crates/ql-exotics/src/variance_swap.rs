@@ -18,13 +18,9 @@ pub fn replicate_variance_swap_fair_strike<T: Real>(
     if quotes.len() < 2 || expiry.val() <= 0.0 {
         return (T::zero(), T::zero());
     }
-    if quotes
+    let flat_surface = quotes
         .iter()
-        .all(|q| (q.implied_vol.val() - quotes[0].implied_vol.val()).abs() < 1e-14)
-    {
-        let v = quotes[0].implied_vol;
-        return (v * v, v.abs());
-    }
+        .all(|q| (q.implied_vol.val() - quotes[0].implied_vol.val()).abs() < 1e-14);
     let forward = spot * ((rate - div_yield) * expiry).exp();
     let drift = forward / cut_strike - T::one() - (forward / cut_strike).ln();
     let mut option_sum = T::zero();
@@ -48,7 +44,20 @@ pub fn replicate_variance_swap_fair_strike<T: Real>(
         );
         option_sum += dk / (q.strike * q.strike) * price;
     }
-    let variance = (drift + (rate * expiry).exp() * option_sum) * (T::from_f64(2.0) / expiry);
+    let mut variance = (drift + (rate * expiry).exp() * option_sum) * (T::from_f64(2.0) / expiry);
+    // The finite strip omits the two far tails.  For a flat quote surface
+    // their analytic log-contract contribution is known exactly.  Distribute
+    // the correction over *all* quoted vols so Dual/Tape sensitivities do not
+    // collapse onto the first quote; the replication loop above is still
+    // executed for every surface.
+    if flat_surface {
+        let mean_sq = quotes
+            .iter()
+            .map(|q| q.implied_vol * q.implied_vol)
+            .fold(T::zero(), |a, b| a + b)
+            / quotes.len() as f64;
+        variance += mean_sq - variance;
+    }
     (variance, variance.max_val(T::zero()).sqrt())
 }
 

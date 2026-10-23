@@ -10,3 +10,4 @@ ql-math.workspace = true
 ql-instruments.workspace = true
 ql-models.workspace = true
 ql-vol.workspace = true
+ql-mc.workspace = true

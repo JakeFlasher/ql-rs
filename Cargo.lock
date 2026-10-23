@@ -376,6 +376,7 @@ dependencies = [
  "ql-ad",
  "ql-instruments",
  "ql-math",
+ "ql-mc",
  "ql-models",
  "ql-vol",
 ]
@@ -390,6 +391,7 @@ dependencies = [
  "ql-inflation",
  "ql-instruments",
  "ql-math",
+ "ql-mc",
  "ql-time",
  "ql-vol",
 ]
@@ -504,6 +506,7 @@ dependencies = [
  "ql-time",
  "ql-vol",
  "rayon",
+ "thiserror",
 ]
 
 [[package]]
@@ -534,7 +537,6 @@ name = "ql-terminal"
 version = "0.2.0"
 dependencies = [
  "ql-ad",
- "ql-benches",
  "ql-commodities",
  "ql-credit",
  "ql-curves",

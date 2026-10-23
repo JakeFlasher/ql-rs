@@ -1,4 +1,13 @@
 use ql_ad::Real;
+use thiserror::Error;
+
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+pub enum AllocationError {
+    #[error("singular covariance or view matrix")]
+    SingularCovariance,
+    #[error("invalid matrix dimensions")]
+    InvalidDimensions,
+}
 
 #[derive(Clone, Debug)]
 pub struct BlackLittermanSpec<T: Real> {
@@ -68,6 +77,47 @@ fn solve_f64(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
     }
     m.into_iter().map(|r| r[n]).collect()
 }
+/// AD-preserving Gaussian elimination with partial pivoting.  Pivot choice is
+/// primal-only, but every row operation is performed in `T`, so Dual/Dual2
+/// and TapeVar derivatives survive the solve.
+pub fn solve_linear_generic<T: Real>(a: &[Vec<T>], b: &[T]) -> Result<Vec<T>, AllocationError> {
+    let n = b.len();
+    if a.len() != n || a.iter().any(|r| r.len() != n) {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    let mut m = vec![vec![T::zero(); n + 1]; n];
+    for i in 0..n {
+        for j in 0..n {
+            m[i][j] = a[i][j];
+        }
+        m[i][n] = b[i];
+    }
+    for k in 0..n {
+        let Some(p) = (k..n).max_by(|&i, &j| m[i][k].val().abs().total_cmp(&m[j][k].val().abs()))
+        else {
+            return Err(AllocationError::SingularCovariance);
+        };
+        if !m[p][k].val().is_finite() || m[p][k].val().abs() <= 1e-14 {
+            return Err(AllocationError::SingularCovariance);
+        }
+        m.swap(k, p);
+        let pivot = m[k][k];
+        for value in m[k].iter_mut().take(n + 1).skip(k) {
+            *value /= pivot;
+        }
+        for i in 0..n {
+            if i == k {
+                continue;
+            }
+            let f = m[i][k];
+            let pivot_row = m[k].clone();
+            for j in k..=n {
+                m[i][j] -= f * pivot_row[j];
+            }
+        }
+    }
+    Ok(m.into_iter().map(|r| r[n]).collect())
+}
 pub fn implied_equilibrium_returns<T: Real>(
     cov: &[Vec<T>],
     weights: &[T],
@@ -95,57 +145,106 @@ pub fn black_litterman_posterior<T: Real>(s: &BlackLittermanSpec<T>) -> BlackLit
             weights: s.market_weights.clone(),
         };
     }
-    let cov = nalgebra::DMatrix::from_fn(n, n, |i, j| s.covariance[i][j].val());
-    let p = nalgebra::DMatrix::from_fn(k, n, |i, j| s.view_matrix[i][j].val());
-    let om = nalgebra::DMatrix::from_fn(k, k, |i, j| s.omega[i][j].val());
-    let tau = s.tau.val();
-    let middle = (p.clone() * (&cov * tau) * p.transpose() + om)
-        .try_inverse()
-        .unwrap();
-    let piv = nalgebra::DVector::from_iterator(
-        k,
-        s.view_returns.iter().enumerate().map(|(i, q)| {
-            q.val()
-                - p.row(i).dot(&nalgebra::DVector::from_iterator(
-                    n,
-                    pi.iter().map(|x| x.val()),
-                ))
-        }),
-    );
-    let mu = nalgebra::DVector::from_iterator(n, pi.iter().map(|x| x.val()))
-        + &cov * p.transpose() * middle * piv;
-    let weighted = cov.clone() * s.risk_aversion.val();
-    let weighted_vec = (0..n)
-        .map(|i| (0..n).map(|j| weighted[(i, j)]).collect::<Vec<_>>())
+    let tau_cov = s
+        .covariance
+        .iter()
+        .map(|row| row.iter().map(|x| *x * s.tau).collect::<Vec<_>>())
         .collect::<Vec<_>>();
-    let w = solve_f64(&weighted_vec, mu.as_slice());
+    let mut middle = vec![vec![T::zero(); k]; k];
+    for i in 0..k {
+        for j in 0..k {
+            middle[i][j] = s.omega[i][j]
+                + (0..n)
+                    .flat_map(|a| (0..n).map(move |b| (a, b)))
+                    .map(|(a, b)| s.view_matrix[i][a] * tau_cov[a][b] * s.view_matrix[j][b])
+                    .fold(T::zero(), |x, y| x + y);
+        }
+    }
+    let mut rhs_y = vec![vec![T::zero(); n]; k];
+    for i in 0..k {
+        for j in 0..n {
+            rhs_y[i][j] = (0..n)
+                .map(|a| s.view_matrix[i][a] * tau_cov[a][j])
+                .fold(T::zero(), |x, y| x + y);
+        }
+    }
+    let mut ymat = vec![vec![T::zero(); n]; k];
+    for j in 0..n {
+        let rhs = (0..k).map(|i| rhs_y[i][j]).collect::<Vec<_>>();
+        let sol = solve_linear_generic(&middle, &rhs).unwrap_or_else(|_| vec![T::zero(); k]);
+        for i in 0..k {
+            ymat[i][j] = sol[i];
+        }
+    }
+    let rhs_v = (0..k)
+        .map(|i| {
+            s.view_returns[i]
+                - (0..n)
+                    .map(|j| s.view_matrix[i][j] * pi[j])
+                    .fold(T::zero(), |x, y| x + y)
+        })
+        .collect::<Vec<_>>();
+    let v = solve_linear_generic(&middle, &rhs_v).unwrap_or_else(|_| vec![T::zero(); k]);
+    let mu = (0..n)
+        .map(|i| {
+            pi[i]
+                + (0..k)
+                    .map(|a| {
+                        (0..n)
+                            .map(|j| tau_cov[i][j] * s.view_matrix[a][j])
+                            .fold(T::zero(), |x, y| x + y)
+                            * v[a]
+                    })
+                    .fold(T::zero(), |x, y| x + y)
+        })
+        .collect::<Vec<_>>();
+    let mut post_cov = vec![vec![T::zero(); n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            post_cov[i][j] = s.covariance[i][j] + tau_cov[i][j]
+                - (0..k)
+                    .map(|a| {
+                        (0..n)
+                            .map(|b| tau_cov[i][b] * s.view_matrix[a][b])
+                            .fold(T::zero(), |x, y| x + y)
+                            * ymat[a][j]
+                    })
+                    .fold(T::zero(), |x, y| x + y);
+        }
+    }
+    let weighted = post_cov
+        .iter()
+        .map(|row| row.iter().map(|x| *x * s.risk_aversion).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let raw = solve_linear_generic(&weighted, &mu).unwrap_or_else(|_| s.market_weights.clone());
+    let z = raw.iter().fold(T::zero(), |a, x| a + *x);
+    let w = raw
+        .iter()
+        .map(|x| *x / z.max_val(T::from_f64(1e-14)))
+        .collect::<Vec<_>>();
     BlackLittermanPosterior {
-        expected_returns: mu.iter().map(|&x| T::from_f64(x)).collect(),
-        covariance: s.covariance.clone(),
-        weights: w.iter().map(|&x| T::from_f64(x)).collect(),
+        expected_returns: mu,
+        covariance: post_cov,
+        weights: w,
     }
 }
 pub fn markowitz_minimum_variance_weights<T: Real>(cov: &[Vec<T>]) -> Vec<T> {
     let n = cov.len();
-    let ones = vec![1.; n];
-    let x = solve_f64(
-        &cov.iter()
-            .map(|r| r.iter().map(|x| x.val()).collect())
-            .collect::<Vec<Vec<_>>>(),
-        &ones,
-    );
-    let z = x.iter().sum::<f64>().max(1e-14);
-    x.into_iter().map(|x| T::from_f64(x / z)).collect()
+    let ones = vec![T::one(); n];
+    let x = solve_linear_generic(cov, &ones).unwrap_or_else(|_| ones.clone());
+    let z = x
+        .iter()
+        .fold(T::zero(), |a, b| a + *b)
+        .max_val(T::from_f64(1e-14));
+    x.into_iter().map(|x| x / z).collect()
 }
 pub fn markowitz_tangency_weights<T: Real>(cov: &[Vec<T>], excess: &[T]) -> Vec<T> {
-    let a = cov
+    let x = solve_linear_generic(cov, excess).unwrap_or_else(|_| excess.to_vec());
+    let z = x
         .iter()
-        .map(|r| r.iter().map(|x| x.val()).collect())
-        .collect::<Vec<Vec<_>>>();
-    let b = excess.iter().map(|x| x.val()).collect::<Vec<_>>();
-    let x = solve_f64(&a, &b);
-    let z = x.iter().sum::<f64>().max(1e-14);
-    x.into_iter().map(|x| T::from_f64(x / z)).collect()
+        .fold(T::zero(), |a, b| a + *b)
+        .max_val(T::from_f64(1e-14));
+    x.into_iter().map(|x| x / z).collect()
 }
 
 fn ccd(c: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
@@ -229,10 +328,11 @@ pub fn risk_budgeting_weights<T: Real>(cov: &[Vec<T>], budgets: &[T]) -> Vec<T> 
         let d = (0..n)
             .map(|j| {
                 T::from_f64(-inv[j][i])
-                    * ((0..n)
+                    * (((0..n)
                         .map(|k| cov[j][k] * y[k])
                         .fold(T::zero(), |a, x| a + x)
                         - budgets[j] / budget_sum_t / y[j])
+                        - T::from_f64((0..n).map(|k| cf[j][k] * y[k]).sum::<f64>() - b[j] / y[j]))
             })
             .fold(T::zero(), |a, x| a + x);
         yt[i] = T::from_f64(y[i]) + d;

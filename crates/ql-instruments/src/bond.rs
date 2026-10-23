@@ -130,7 +130,7 @@ impl ResolvedFixedRateBond {
     pub fn yield_to_maturity<T: Real>(&self, dirty_price: T) -> T {
         let p = dirty_price.val();
         let guess = self.coupon_rate.max(-0.99);
-        let root = newton_solve(
+        let root = match newton_solve(
             |y| {
                 let yy = Dual2::<1>::variable(y, 0);
                 let flow = self.flows(yy);
@@ -139,8 +139,25 @@ impl ResolvedFixedRateBond {
             guess,
             1e-13,
             100,
-        )
-        .unwrap_or(guess);
+        ) {
+            Ok(x) => x,
+            Err(_) => {
+                let mut x = guess;
+                for _ in 0..64 {
+                    let yy = Dual2::<1>::variable(x, 0);
+                    let flow = self.flows(yy);
+                    if flow.d1[0].abs() < 1e-14 || !flow.d1[0].is_finite() {
+                        break;
+                    }
+                    let xn = x - (flow.val - p) / flow.d1[0];
+                    if !xn.is_finite() || (xn - x).abs() < 1e-13 {
+                        break;
+                    }
+                    x = xn;
+                }
+                x
+            }
+        };
         let root_ad = Dual2::<1>::variable(root, 0);
         let root_flow = self.flows(root_ad);
         ift_lift_1d(

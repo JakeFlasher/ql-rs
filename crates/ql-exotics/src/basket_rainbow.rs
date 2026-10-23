@@ -85,13 +85,19 @@ impl TwoAssetCorrelationEngine {
         t: T,
         is_call: bool,
     ) -> T {
-        let (d11, d21) = dvals(s1, k1, r, q1, v1, t);
-        let (d12, d22) = dvals(s2, k2, r, q2, v2, t);
-        let joint = s1 * (-q1 * t).exp() * bivariate_normal_cdf(d11, d12, rho)
-            + s2 * (-q2 * t).exp() * bivariate_normal_cdf(d12, d11, rho)
-            - (k1 + k2) * (-r * t).exp() * bivariate_normal_cdf(d21, d22, rho);
-        let _ = is_call;
-        joint.max_val(T::zero())
+        let st1 = v1 * t.sqrt();
+        let st2 = v2 * t.sqrt();
+        let y1 = ((s1 / k1).ln() + (r - q1 - v1 * v1 * 0.5) * t) / st1;
+        let y2 = ((s2 / k2).ln() + (r - q2 - v2 * v2 * 0.5) * t) / st2;
+        if is_call {
+            (s2 * (-q2 * t).exp() * bivariate_normal_cdf(y2 + st2, y1 + rho * st2, rho)
+                - k2 * (-r * t).exp() * bivariate_normal_cdf(y2, y1, rho))
+            .max_val(T::zero())
+        } else {
+            (k2 * (-r * t).exp() * bivariate_normal_cdf(-y2, -y1, rho)
+                - s2 * (-q2 * t).exp() * bivariate_normal_cdf(-y2 - st2, -y1 - rho * st2, rho))
+            .max_val(T::zero())
+        }
     }
 }
 
@@ -160,12 +166,24 @@ impl LevyBasketEngine {
         }
         for i in 0..spots.len() {
             for j in 0..spots.len() {
-                var +=
-                    weights[i] * spots[i] * weights[j] * spots[j] * vols[i] * vols[j] * corr[i][j];
+                var += weights[i]
+                    * spots[i]
+                    * ((rate - divs[i]) * expiry).exp()
+                    * weights[j]
+                    * spots[j]
+                    * ((rate - divs[j]) * expiry).exp()
+                    * ((corr[i][j] * vols[i] * vols[j] * expiry).exp() - T::one());
             }
         }
         let vol = (var.max_val(T::zero()).sqrt() / forward.abs().max_val(T::from_f64(1e-12)))
             / expiry.max_val(T::from_f64(1e-12)).sqrt();
-        black_scholes_price(forward, strike, vol, expiry, rate, T::zero(), is_call)
+        ql_vol::black76_price(
+            forward,
+            strike,
+            vol,
+            expiry,
+            (-rate * expiry).exp(),
+            is_call,
+        )
     }
 }

@@ -111,7 +111,7 @@ pub fn cornish_fisher_var<T: Real>(
     let z = T::from_f64(ql_math::inv_norm_cdf(confidence));
     let z2 = z * z;
     let z3 = z2 * z;
-    let adjusted = z + (z2 - 1.0) * skew / 6.0 + (z3 - z * 3.0) * excess_kurtosis / 24.0
+    let adjusted = z - (z2 - 1.0) * skew / 6.0 + (z3 - z * 3.0) * excess_kurtosis / 24.0
         - (z3 * 2.0 - z * 5.0) * skew * skew / 36.0;
     mean_pnl.neg() + std_pnl * adjusted
 }

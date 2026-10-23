@@ -77,14 +77,41 @@ pub fn price_complex_chooser<T: Real>(s: &ComplexChooserSpec<T>) -> T {
         black_scholes_price(x, s.strike_call, s.vol, call_tau, s.rate, s.div_yield, true)
             - black_scholes_price(x, s.strike_put, s.vol, put_tau, s.rate, s.div_yield, false)
     };
-    let root = brent_solve(
+    let root = match brent_solve(
         |x| residual(T::from_f64(x)).val(),
         1e-8,
         s.spot.val() * 20.0 + s.strike_call.val() * 10.0 + s.strike_put.val() * 10.0 + 1.0,
         1e-12,
         200,
-    )
-    .unwrap_or(s.spot.val());
+    ) {
+        Ok(x) => x,
+        Err(_) => {
+            // Safeguarded Newton fallback using the same exact analytical
+            // delta difference used by the AD lift below.
+            let mut x = s.spot.val().max(1e-8);
+            for _ in 0..64 {
+                let xt = T::from_f64(x);
+                let dc = ((xt / s.strike_call).ln()
+                    + (s.rate - s.div_yield + s.vol * s.vol * 0.5) * call_tau)
+                    / (s.vol * call_tau.sqrt());
+                let dp = ((xt / s.strike_put).ln()
+                    + (s.rate - s.div_yield + s.vol * s.vol * 0.5) * put_tau)
+                    / (s.vol * put_tau.sqrt());
+                let d = (-s.div_yield * call_tau).exp() * dc.norm_cdf()
+                    + (-s.div_yield * put_tau).exp() * (-dp).norm_cdf();
+                if d.val().abs() <= 1e-14 {
+                    break;
+                }
+                let xn = (x - residual(xt).val() / d.val()).max(1e-10);
+                if (xn - x).abs() < 1e-12 {
+                    x = xn;
+                    break;
+                }
+                x = xn;
+            }
+            x
+        }
+    };
     let root_t = T::from_f64(root);
     let d1c = ((root_t / s.strike_call).ln()
         + (s.rate - s.div_yield + s.vol * s.vol * 0.5) * call_tau)

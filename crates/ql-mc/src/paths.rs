@@ -265,9 +265,9 @@ impl HestonQeSimulator {
                 v * dt
             } else {
                 theta * dt + (v - theta) * (1.0 - e) / kappa
-            }.max(0.0);
-            let log_next = s + (self.rate - self.div - 0.5 * v_int / dt) * dt
-                + v_int.sqrt() * z_x;
+            }
+            .max(0.0);
+            let log_next = s + (self.rate - self.div - 0.5 * v_int / dt) * dt + v_int.sqrt() * z_x;
             return (log_next, m.max(0.0));
         }
         let s2 = s2.max(1e-16);
@@ -293,7 +293,8 @@ impl HestonQeSimulator {
         // Andersen QE-M martingale correction (Eqs. 38--40).  The correction
         // is evaluated from the same conditional variance law as the state
         // transition, preserving E[S_{t+dt}|F_t] = S_t exp((r-q)dt).
-        let g1 = 0.5; let g2 = 0.5;
+        let g1 = 0.5;
+        let g2 = 0.5;
         let k1 = g1 * dt * (kappa * rho / sigma_v - 0.5) - rho / sigma_v;
         let k2 = g2 * dt * (kappa * rho / sigma_v - 0.5) + rho / sigma_v;
         let k3 = g1 * dt * (1.0 - rho * rho);
@@ -307,18 +308,20 @@ impl HestonQeSimulator {
             let aa = m / (1.0 + b2);
             let den = 1.0 - 2.0 * a_corr * aa;
             if den > 1e-12 {
-                k0 = -a_corr * b * b * aa / den + 0.5 * den.ln()
-                    - (k1 + 0.5 * k3) * v;
+                k0 = -a_corr * b * b * aa / den + 0.5 * den.ln() - (k1 + 0.5 * k3) * v;
             }
         } else {
             let pp = (psi - 1.0) / (psi + 1.0);
             let beta = (1.0 - pp) / m.max(1e-16);
             if beta > a_corr + 1e-12 {
-                k0 = -(pp + beta * (1.0 - pp) / (beta - a_corr)).ln()
-                    - (k1 + 0.5 * k3) * v;
+                k0 = -(pp + beta * (1.0 - pp) / (beta - a_corr)).ln() - (k1 + 0.5 * k3) * v;
             }
         }
-        let s_next = s + (self.rate - self.div) * dt + k0 + k1 * v + k2 * vv
+        let s_next = s
+            + (self.rate - self.div) * dt
+            + k0
+            + k1 * v
+            + k2 * vv
             + ((k3 * v + k4 * vv).max(0.0)).sqrt() * z_x;
         (s_next, vv)
     }

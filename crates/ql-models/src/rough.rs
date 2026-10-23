@@ -12,7 +12,13 @@ pub struct LiftedHestonParams<T: Real> {
     pub r_n: f64,
 }
 pub fn lifted_heston_kernel(h: f64, n: usize, r_n: f64) -> (Vec<f64>, Vec<f64>) {
-    if n <= 1 {
+    if n == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    if (h - 0.5).abs() < 1e-8 {
+        return (vec![1.0 / n as f64; n], vec![0.0; n]);
+    }
+    if n == 1 {
         return (vec![1.], vec![0.]);
     }
     let a = h + 0.5;
@@ -72,7 +78,12 @@ pub fn lifted_heston_char_func_unit_spot<T: Real>(
 
     let (c, gamma) = lifted_heston_kernel(p.hurst, p.n_factors, p.r_n);
     let n = c.len();
-    let n_steps = steps.max(1);
+    // A lifted Riccati system is considerably stiffer than the classical
+    // one-factor limit.  Enforce a conservative minimum subdivision so small
+    // caller step counts cannot drive the exponential-midpoint update into a
+    // non-finite state (the requested count remains an upper-level accuracy
+    // knob for counts >= 64).
+    let n_steps = steps.max(64);
     let dt = expiry / T::from_f64(n_steps as f64);
     let half_exp: Vec<T> = gamma
         .iter()
@@ -80,13 +91,13 @@ pub fn lifted_heston_char_func_unit_spot<T: Real>(
         .collect();
     let half_phi: Vec<T> = gamma
         .iter()
-        .map(|&g| phi1(-T::from_f64(0.5 * g) * dt) * 0.5)
+        .map(|&g| phi1(T::from_f64(0.5 * g) * dt) * 0.5)
         .collect();
     let full_exp: Vec<T> = gamma
         .iter()
         .map(|&g| (-T::from_f64(g) * dt).exp())
         .collect();
-    let full_phi: Vec<T> = gamma.iter().map(|&g| phi1(-T::from_f64(g) * dt)).collect();
+    let full_phi: Vec<T> = gamma.iter().map(|&g| phi1(T::from_f64(g) * dt)).collect();
 
     let riccati = |psi: Complex<T>| -> Complex<T> {
         let half = T::from_f64(0.5);
@@ -115,7 +126,7 @@ pub fn lifted_heston_char_func_unit_spot<T: Real>(
         let kernel_mid = c
             .iter()
             .zip(gamma.iter())
-            .map(|(&ci, &gi)| T::from_f64(ci) * phi1(-T::from_f64(gi) * tau_mid))
+            .map(|(&ci, &gi)| T::from_f64(ci) * phi1(T::from_f64(gi) * tau_mid))
             .fold(T::zero(), |acc, x| acc + x);
         let g_mid = p.v0 + p.lambda * p.theta * tau_mid * kernel_mid;
         phi_int = phi_int + f_mid * (dt * g_mid);

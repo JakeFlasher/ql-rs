@@ -16,3 +16,4 @@ ql-curves.workspace = true
 ql-vol.workspace = true
 ql-models.workspace = true
 ql-scripting.workspace = true
+thiserror.workspace = true

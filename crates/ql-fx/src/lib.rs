@@ -185,15 +185,15 @@ impl<T: Real> FxVannaVolgaSmile<T> {
         let (d1p, d2p) = d12(self.k1, self.sigma2);
         let (d1c, d2c) = d12(self.k3, self.sigma2);
         let dprod = d1 * d2;
-        if dprod.val().abs() < 1e-8 {
-            first
-        } else {
-            let d2corr = l1 * d1p * d2p * (self.sigma1 - self.sigma2).powf(2.0)
-                + l3 * d1c * d2c * (self.sigma3 - self.sigma2).powf(2.0);
-            let rad = self.sigma2 * self.sigma2
-                + dprod * (self.sigma2 * (first - self.sigma2) * 2.0 + d2corr);
-            self.sigma2 + (-self.sigma2 + rad.sqrt()) / dprod
-        }
+        let d2corr = l1 * d1p * d2p * (self.sigma1 - self.sigma2).powf(2.0)
+            + l3 * d1c * d2c * (self.sigma3 - self.sigma2).powf(2.0);
+        let num = self.sigma2 * (first - self.sigma2) * 2.0 + d2corr;
+        // Rationalising the Castagna--Mercurio root removes the removable
+        // singularity at d1*d2=0 while retaining all AD lanes.
+        let rad = (self.sigma2 * self.sigma2 + dprod * num)
+            .max_val(T::from_f64(1e-16))
+            .sqrt();
+        self.sigma2 + num / (self.sigma2 + rad)
     }
     pub fn price_vanna_volga(&self, k: T, is_call: bool) -> T {
         let base = garman_kohlhagen_price(

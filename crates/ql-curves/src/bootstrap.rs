@@ -157,8 +157,29 @@ pub fn bootstrap_piecewise_curve(
         return Err(BootstrapError::InvalidInput);
     }
     let mut ds = Vec::with_capacity(times.len());
-    for (t, q) in times.iter().zip(quotes) {
-        ds.push(1.0 / (1.0 + q * t));
+    for (i, (&t, &q)) in times.iter().zip(quotes).enumerate() {
+        let d = if t <= 1.0 {
+            1.0 / (1.0 + q * t)
+        } else {
+            // Sequential par-swap bootstrap on the supplied payment grid:
+            // q * sum(delta_j P_j) + P_i = 1.  All prior discount factors
+            // are already calibrated, leaving a one-dimensional linear
+            // solve for the current pillar.
+            let mut ann_prev = 0.0;
+            let mut prev_t = 0.0;
+            for j in 0..i {
+                ann_prev += ds[j] * (times[j] - prev_t);
+                prev_t = times[j];
+            }
+            let tau = t - prev_t;
+            (1.0 - q * ann_prev) / (1.0 + q * tau)
+        };
+        if !d.is_finite() || d <= 0.0 {
+            return Err(BootstrapError::Solver(
+                "non-positive discount factor".into(),
+            ));
+        }
+        ds.push(d);
     }
     Ok(DiscountCurve::new(reference_date, times.to_vec(), ds))
 }
@@ -184,8 +205,10 @@ pub struct CalibratedCurveSystem {
 #[derive(Debug, Clone)]
 pub enum RateInstrumentKind {
     Deposit(DepositInstrument),
+    Fra(FraInstrument),
     OisSwap(OisSwapInstrument),
     IrsSwap(IrsSwapInstrument),
+    BasisSwap(BasisSwapInstrument),
 }
 
 #[derive(Debug, Clone)]
@@ -205,6 +228,7 @@ impl RateInstrumentSpec {
         );
         match &self.kind {
             RateInstrumentKind::Deposit(x) => x.residual(&ois),
+            RateInstrumentKind::Fra(x) => x.residual(&ois),
             RateInstrumentKind::OisSwap(x) => x.residual(&ois),
             RateInstrumentKind::IrsSwap(x) => {
                 let fwd = DiscountCurve::new(
@@ -214,6 +238,7 @@ impl RateInstrumentSpec {
                 );
                 x.residual_with_discount(&fwd, &ois)
             }
+            RateInstrumentKind::BasisSwap(x) => x.residual(&ois),
         }
     }
 }
@@ -265,9 +290,15 @@ impl CalibratedCurveSystem {
             .filter_map(|h| {
                 let kind = if let Some(x) = h.as_any().downcast_ref::<DepositInstrument>() {
                     RateInstrumentKind::Deposit(x.clone())
+                } else if let Some(x) = h.as_any().downcast_ref::<FraInstrument>() {
+                    RateInstrumentKind::Fra(x.clone())
                 } else {
-                    let x = h.as_any().downcast_ref::<OisSwapInstrument>()?;
-                    RateInstrumentKind::OisSwap(x.clone())
+                    if let Some(x) = h.as_any().downcast_ref::<OisSwapInstrument>() {
+                        RateInstrumentKind::OisSwap(x.clone())
+                    } else {
+                        let x = h.as_any().downcast_ref::<BasisSwapInstrument>()?;
+                        RateInstrumentKind::BasisSwap(x.clone())
+                    }
                 };
                 Some(RateInstrumentSpec {
                     kind,
@@ -342,6 +373,8 @@ impl CalibratedCurveSystem {
         for h in ois_helpers {
             let kind = if let Some(x) = h.as_any().downcast_ref::<DepositInstrument>() {
                 RateInstrumentKind::Deposit(x.clone())
+            } else if let Some(x) = h.as_any().downcast_ref::<FraInstrument>() {
+                RateInstrumentKind::Fra(x.clone())
             } else if let Some(x) = h.as_any().downcast_ref::<OisSwapInstrument>() {
                 RateInstrumentKind::OisSwap(x.clone())
             } else {
@@ -447,6 +480,9 @@ impl CalibratedCurveSystem {
                 .lu_t
                 .solve(&DVector::from_vec(g.clone()))
                 .expect("singular IFT Jacobian");
+            // A compact second-order jet keeps the calibration Hessian off the
+            // stack in ordinary strips; very wide systems should use the
+            // pairwise helper API rather than allocating an N² jet per node.
             let seeded: Vec<Dual2<64>> = self
                 .parameters
                 .iter()
@@ -547,6 +583,23 @@ impl SingleCurveHelper for FraInstrument {
             - self.quote
     }
 }
+impl SingleCurveHelper for BasisSwapInstrument {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn pillar_time(&self, reference_date: Date) -> f64 {
+        (self.end - reference_date) as f64 / 365.0
+    }
+    fn quote_value(&self) -> f64 {
+        self.spread
+    }
+    fn residual_curve(&self, c: &DiscountCurve<f64>) -> f64 {
+        self.residual(c).val()
+    }
+    fn residual_curve_dual(&self, c: &DiscountCurve<Dual<1>>) -> Dual<1> {
+        self.residual(c)
+    }
+}
 pub fn bootstrap_piecewise_curve_helpers(
     reference_date: Date,
     helpers: &[&dyn SingleCurveHelper],
@@ -612,15 +665,17 @@ impl BasisSwapInstrument {
     ) -> T {
         let n = ((self.end - self.start) as f64 / 90.0).round() as usize;
         let mut x = T::zero();
+        let mut annuity = T::zero();
         for i in 1..=n {
             let t = (self.end - discount.reference_date()) as f64 / 365.0 - (n - i) as f64 * 0.25;
             let p = discount.discount_factor(t);
             let a = (t - 0.25).max(0.0);
+            annuity += p * 0.25;
             x += (leg1.discount_factor(a) / leg1.discount_factor(t)
                 - leg2.discount_factor(a) / leg2.discount_factor(t))
                 * p;
         }
-        x - T::from_f64(self.spread)
+        x / annuity.max_val(T::from_f64(1e-14)) - T::from_f64(self.spread)
     }
 }
 impl SingleCurveHelper for OisSwapInstrument {

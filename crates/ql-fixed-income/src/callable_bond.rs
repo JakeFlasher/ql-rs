@@ -103,7 +103,9 @@ impl<T: Real> CallableFixedRateBond<T> {
     }
     pub fn black_callable_bond_price(&self, rate: T, yield_vol: T) -> T {
         let p0 = self.straight_bond_npv(rate);
-        self.schedule.iter().fold(p0, |v, c| {
+        let mut call_value = T::zero();
+        let mut put_value = T::zero();
+        for c in &self.schedule {
             let (forward, y_fwd, duration) = self.forward_bond_data(c.exercise_time, rate);
             let sigma_p = yield_vol * duration * y_fwd.abs();
             let option = black76_price(
@@ -114,8 +116,13 @@ impl<T: Real> CallableFixedRateBond<T> {
                 (-rate * c.exercise_time).exp(),
                 c.is_call,
             );
-            if c.is_call { v - option } else { v + option }
-        })
+            if c.is_call {
+                call_value = call_value.max_val(option);
+            } else {
+                put_value = put_value.max_val(option);
+            }
+        }
+        p0 - call_value + put_value
     }
     pub fn tree_callable_bond_price(&self, short_rate: T, rate_vol: T, oas: T, steps: usize) -> T {
         let n = steps.max(1);
@@ -126,20 +133,19 @@ impl<T: Real> CallableFixedRateBond<T> {
         // maturity node just like every other coupon below.
         values.fill(self.face_amount);
         for (idx, &t) in self.coupon_times.iter().enumerate() {
-            if (t - self.maturity).val().abs() < dt.val().abs() * 0.5 + 1e-12 {
+            let step_idx = ((t / dt).val().round() as usize).min(n);
+            if step_idx == n {
                 let cf = self.cashflow_at(idx) - self.face_amount;
                 values.fill(self.face_amount + cf);
             }
         }
         let exercise_at = |j: usize| -> Vec<&BondCallability<T>> {
-            let time = dt * j as f64;
             self.schedule
                 .iter()
-                .filter(|c| (c.exercise_time - time).val().abs() <= dt.val().abs() * 0.5 + 1e-12)
+                .filter(|c| ((c.exercise_time / dt).val().round() as usize).min(n) == j)
                 .collect()
         };
         for j in (0..n).rev() {
-            let time = dt * j as f64;
             let mut next = vec![T::zero(); j + 1];
             for i in 0..=j {
                 let short_up = short_rate + oas + vol_step * (2.0 * (i + 1) as f64 - j as f64);
@@ -163,7 +169,8 @@ impl<T: Real> CallableFixedRateBond<T> {
                 }
             }
             for (idx, &ct) in self.coupon_times.iter().enumerate() {
-                if (ct - time).val().abs() <= dt.val().abs() * 0.5 + 1e-12 {
+                let step_idx = ((ct / dt).val().round() as usize).min(n);
+                if step_idx == j {
                     let coupon = self.cashflow_at(idx)
                         - if idx + 1 == self.coupon_times.len() {
                             self.face_amount

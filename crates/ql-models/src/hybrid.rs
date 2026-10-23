@@ -11,7 +11,7 @@ impl AnalyticBsmHullWhiteEngine {
         let rate_var = if k.val().abs() < 1e-6 {
             eta_r * eta_r * t * t * t / 3.0
         } else {
-            eta_r * eta_r / (k * k * k)
+            eta_r * eta_r / (k * k * k * 2.0)
                 * (k * t * 2.0 + (-k * t).exp() * 4.0 - (-k * t * 2.0).exp() - 3.0)
         };
         let cross = if k.val().abs() < 1e-6 {
@@ -70,15 +70,38 @@ pub fn h1_hw_char_func_unit_spot<T: Real>(
         rho: p.rho_sv,
     };
     let z = hp.char_func_unit_spot(Complex::new(T::zero(), T::from_f64(u)), rate, div, expiry);
+    // Under the forward measure the HW factor contributes the martingale
+    // preserving Gaussian factor exp(-½Σ²(u²+iu)).  The cross covariance is
+    // evaluated with the Heston effective spot volatility.
+    let t = expiry.max_val(T::zero());
+    let vbar = if p.kappa_v.val().abs() < 1e-10 {
+        p.theta_v
+    } else {
+        p.theta_v + (p.v0 - p.theta_v) * (T::one() - (-p.kappa_v * t).exp()) / (p.kappa_v * t)
+    };
+    let sv = vbar.max_val(T::zero()).sqrt();
     let hw_var = AnalyticBsmHullWhiteEngine::effective_variance(
         T::zero(),
         p.kappa_r,
         p.eta_r,
-        p.rho_sr,
+        T::zero(),
         expiry,
     );
-    let hw = (-hw_var * T::from_f64(u * u * 0.5)).exp();
-    let out = z * Complex::from_real(hw);
+    let cross = if p.kappa_r.val().abs() < 1e-8 {
+        p.rho_sr * sv * p.eta_r * t * t
+    } else {
+        p.rho_sr * sv * p.eta_r / (p.kappa_r * p.kappa_r)
+            * (p.kappa_r * t - T::one() + (-p.kappa_r * t).exp())
+            * 2.0
+    };
+    let hyb = hw_var + cross;
+    let uu = T::from_f64(u);
+    // Construct in complex form to preserve both real and imaginary parts;
+    // the factor is exp(-½Σ²(u²+i u)).
+    let iz = Complex::new(T::zero(), uu);
+    let q = iz * iz + iz;
+    let fac = (-q * Complex::from_real(hyb * 0.5)).exp();
+    let out = z * fac;
     (out.re, out.im)
 }
 
@@ -114,36 +137,51 @@ impl CosHestonHullWhiteEngine {
             sigma_v: p.xi_v,
             rho: p.rho_sv,
         };
-        let base = CosHestonEngine {
+        let extra = AnalyticBsmHullWhiteEngine::effective_variance(
+            T::zero(),
+            p.kappa_r,
+            p.eta_r,
+            p.rho_sr,
+            expiry,
+        );
+        CosHestonEngine {
             n_terms: self.n_terms,
             l_trunc: self.l_trunc,
         }
-        .price(&h, spot, strike, rate, div, expiry, is_call);
-        if p.eta_r.val().abs() < 1e-14 {
-            base
-        } else {
-            // The HW factor contributes a Gaussian log-return variance.  The
-            // Heston COS characteristic is reused with the Gaussian factor
-            // folded into the spot diffusion through a BSM variance blend.
-            let hwv = AnalyticBsmHullWhiteEngine::effective_variance(
-                T::zero(),
-                p.kappa_r,
-                p.eta_r,
-                p.rho_sr,
-                expiry,
-            );
-            let adj = ql_vol::black_scholes_price(
-                spot,
-                strike,
-                (p.theta_v * expiry + hwv).max_val(T::zero()).sqrt()
-                    / expiry.max_val(T::from_f64(1e-12)).sqrt(),
-                expiry,
-                rate,
-                div,
-                is_call,
-            );
-            (base + adj) * 0.5
-        }
+        .price_impl_extra(
+            |u| {
+                let z = h.char_func_unit_spot(u, rate, div, expiry);
+                let t = expiry.max_val(T::zero());
+                let vbar = if p.kappa_v.val().abs() < 1e-10 {
+                    p.theta_v
+                } else {
+                    p.theta_v
+                        + (p.v0 - p.theta_v) * (T::one() - (-p.kappa_v * t).exp()) / (p.kappa_v * t)
+                };
+                let sv = vbar.max_val(T::zero()).sqrt();
+                let cross = if p.kappa_r.val().abs() < 1e-8 {
+                    p.rho_sr * sv * p.eta_r * t * t
+                } else {
+                    p.rho_sr * sv * p.eta_r / (p.kappa_r * p.kappa_r)
+                        * (p.kappa_r * t - T::one() + (-p.kappa_r * t).exp())
+                        * 2.0
+                };
+                let hyb = extra + cross;
+                let q = u * u + Complex::new(T::zero(), u.re);
+                z * (-q * Complex::from_real(hyb * 0.5)).exp()
+            },
+            p.v0,
+            p.theta_v,
+            p.xi_v,
+            p.kappa_v,
+            spot,
+            rate,
+            div,
+            expiry,
+            std::slice::from_ref(&strike),
+            is_call,
+            T::zero(),
+        )[0]
     }
 
     #[allow(clippy::too_many_arguments)]

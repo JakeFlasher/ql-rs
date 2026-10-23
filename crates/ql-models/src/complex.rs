@@ -62,9 +62,11 @@ impl<T: Real> Complex<T> {
         } else if self.re.val() < 0. {
             (self.im / self.re).atan() - std::f64::consts::PI
         } else if self.im.val() > 0. {
-            T::from_f64(std::f64::consts::FRAC_PI_2)
+            // Smooth atan2 limit on the imaginary axis.  `pi/2` by itself
+            // drops the derivative with respect to a perturbation in Re.
+            T::from_f64(std::f64::consts::FRAC_PI_2) - self.re / self.im
         } else {
-            T::from_f64(-std::f64::consts::FRAC_PI_2)
+            T::from_f64(-std::f64::consts::FRAC_PI_2) - self.re / self.im
         }
     }
     pub fn ln(self) -> Self {

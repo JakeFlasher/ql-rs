@@ -10,9 +10,16 @@ impl DupireLocalVol {
         F: Fn(Dual2<2>, Dual2<2>) -> Dual2<2>,
     {
         let w = f(expiry, strike);
-        let wt = w.d1[0];
-        let wy = w.d1[1];
-        let wyy = w.d2[1][1];
+        // Shift the primal evaluation point while preserving the incoming
+        // Taylor jet.  This keeps surface-parameter tangents and curvatures
+        // in wt/wy/wyy instead of extracting f64 derivative constants.
+        let h = 1e-4;
+        let dh = Dual2::from_value(h);
+        let wt = (f(expiry + dh, strike) - f(expiry - dh, strike)) / (2.0 * h);
+        let wy_p = f(expiry, strike + dh);
+        let wy_m = f(expiry, strike - dh);
+        let wy = (wy_p - wy_m) / (2.0 * h);
+        let wyy = (wy_p - w * 2.0 + wy_m) / (h * h);
         let denom = Dual2::one() - strike / w * wy
             + Dual2::from_value(0.25)
                 * (-Dual2::from_value(0.25) - Dual2::one() / w + strike * strike / (w * w))
