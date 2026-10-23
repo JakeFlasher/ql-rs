@@ -18,17 +18,14 @@ pub fn replicate_variance_swap_fair_strike<T: Real>(
     if quotes.len() < 2 || expiry.val() <= 0.0 {
         return (T::zero(), T::zero());
     }
-    let flat_surface = quotes
-        .iter()
-        .all(|q| (q.implied_vol.val() - quotes[0].implied_vol.val()).abs() < 1e-14);
     let forward = spot * ((rate - div_yield) * expiry).exp();
     let drift = forward / cut_strike - T::one() - (forward / cut_strike).ln();
     let mut option_sum = T::zero();
     for (i, q) in quotes.iter().enumerate() {
         let dk = if i == 0 {
-            quotes[1].strike - q.strike
+            (quotes[1].strike - q.strike) * 0.5
         } else if i + 1 == quotes.len() {
-            q.strike - quotes[i - 1].strike
+            (q.strike - quotes[i - 1].strike) * 0.5
         } else {
             (quotes[i + 1].strike - quotes[i - 1].strike) * 0.5
         };
@@ -44,20 +41,26 @@ pub fn replicate_variance_swap_fair_strike<T: Real>(
         );
         option_sum += dk / (q.strike * q.strike) * price;
     }
-    let mut variance = (drift + (rate * expiry).exp() * option_sum) * (T::from_f64(2.0) / expiry);
-    // The finite strip omits the two far tails.  For a flat quote surface
-    // their analytic log-contract contribution is known exactly.  Distribute
-    // the correction over *all* quoted vols so Dual/Tape sensitivities do not
-    // collapse onto the first quote; the replication loop above is still
-    // executed for every surface.
-    if flat_surface {
-        let mean_sq = quotes
-            .iter()
-            .map(|q| q.implied_vol * q.implied_vol)
-            .fold(T::zero(), |a, b| a + b)
-            / quotes.len() as f64;
-        variance += mean_sq - variance;
-    }
+    // Analytic log-contract tails under the endpoint Black volatilities.
+    // These are the omitted (0,K0) put and (Kmax,infinity) call integrals.
+    let k0 = quotes[0].strike;
+    let kn = quotes[quotes.len() - 1].strike;
+    let sig0 = quotes[0].implied_vol;
+    let sign = expiry.sqrt();
+    let v0 = sig0 * sign;
+    let d10 = ((forward / k0).ln() + v0 * v0 * 0.5) / v0;
+    let d20 = d10 - v0;
+    let put_tail = forward / k0 * (-d10).norm_cdf()
+        - (-d20).norm_cdf()
+        + v0 * ((-d20) * (-d20).norm_cdf() + d20.norm_pdf());
+    let signn = quotes[quotes.len() - 1].implied_vol * sign;
+    let d1n = ((forward / kn).ln() + signn * signn * 0.5) / signn;
+    let d2n = d1n - signn;
+    let call_tail = forward / kn * d1n.norm_cdf()
+        - d2n.norm_cdf()
+        - signn * (d2n * d2n.norm_cdf() + d2n.norm_pdf());
+    let variance = (drift + put_tail + call_tail + (rate * expiry).exp() * option_sum)
+        * (T::from_f64(2.0) / expiry);
     (variance, variance.max_val(T::zero()).sqrt())
 }
 

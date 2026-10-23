@@ -101,37 +101,30 @@ impl AnalyticCliquetEngine {
     /// aggregated; this path simulation preserves the global barriers.
     pub fn price_mc_global<T: Real>(s: &CliquetOptionSpec<T>, n_paths: usize, seed: u64) -> T {
         let rng = ql_mc::PhiloxRng::new(seed);
-        let mut sum = 0.0;
-        let mut sum_sq = 0.0;
+        let mut sum = T::zero();
         for p in 0..n_paths.max(1) {
-            let mut log_s = s.spot.val().ln();
-            let mut total = 0.0;
+            let mut spot = s.spot;
+            let mut total = T::zero();
             for (j, w) in s.reset_times.windows(2).enumerate() {
-                let dt = w[1] - w[0];
-                let prev = log_s;
+                let dt = T::from_f64(w[1] - w[0]);
+                if dt.val() <= 0.0 {
+                    continue;
+                }
                 let z = rng.normal4(p as u64, j as u32)[0];
-                log_s = prev
-                    + (s.rate.val() - s.div.val() - 0.5 * s.vol.val() * s.vol.val()) * dt
-                    + s.vol.val() * dt.sqrt() * z;
-                let r = (log_s - prev).exp() - 1.0;
-                let local = if s.local_cap.val() >= s.local_floor.val() {
-                    r.max(s.local_floor.val()).min(s.local_cap.val())
-                } else {
-                    r
-                };
+                let drift = (s.rate - s.div - s.vol * s.vol * 0.5) * dt;
+                let diffusion = s.vol * dt.sqrt() * T::from_f64(z);
+                let next = spot * (drift + diffusion).exp();
+                let r = next / spot - T::one();
+                let local = r.max_val(s.local_floor).min_val(s.local_cap);
+                spot = next;
                 total += local;
             }
-            let payoff = total.max(s.global_floor.val()).min(s.global_cap.val());
-            let pv = s.notional.val()
-                * (-s.rate.val() * *s.reset_times.last().unwrap_or(&0.0)).exp()
-                * payoff;
+            let payoff = total.max_val(s.global_floor).min_val(s.global_cap);
+            let maturity = T::from_f64(*s.reset_times.last().unwrap_or(&0.0));
+            let pv = s.notional * (-s.rate * maturity).exp() * payoff;
             sum += pv;
-            sum_sq += pv * pv;
         }
-        let _stderr = ((sum_sq / n_paths.max(1) as f64) - (sum / n_paths.max(1) as f64).powi(2))
-            .max(0.0)
-            .sqrt();
-        T::from_f64(sum / n_paths.max(1) as f64)
+        sum / T::from_f64(n_paths.max(1) as f64)
     }
 }
 pub struct WriterExtensibleOptionEngine;

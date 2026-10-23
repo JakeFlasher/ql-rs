@@ -10,12 +10,6 @@ pub enum RainbowKind {
     PutOnMax,
 }
 
-fn dvals<T: Real>(s: T, k: T, r: T, q: T, v: T, t: T) -> (T, T) {
-    let st = v * t.sqrt();
-    let d1 = ((s / k).ln() + (r - q + v * v * 0.5) * t) / st;
-    (d1, d1 - st)
-}
-
 pub struct StulzRainbowEngine;
 impl StulzRainbowEngine {
     #[allow(clippy::too_many_arguments)]
@@ -39,11 +33,24 @@ impl StulzRainbowEngine {
                 RainbowKind::PutOnMin | RainbowKind::PutOnMax => T::zero(),
             };
         }
-        let (a1, b1) = dvals(s1, k, r, q1, v1, t);
-        let (a2, b2) = dvals(s2, k, r, q2, v2, t);
-        let cmin = s1 * (-q1 * t).exp() * bivariate_normal_cdf(a1, a2, rho)
-            + s2 * (-q2 * t).exp() * bivariate_normal_cdf(a2, a1, rho)
-            - k * (-r * t).exp() * bivariate_normal_cdf(b1, b2, rho);
+        // Stulz (1982) image formula for a call on the minimum.
+        let variance = (v1 * v1 + v2 * v2 - rho * v1 * v2 * 2.0)
+            .max_val(T::from_f64(1e-16));
+        let sig = variance.sqrt();
+        let sig_t = (variance * t).sqrt().max_val(T::from_f64(1e-8));
+        let d = ((s1 / s2).ln() + (q2 - q1 + variance * 0.5) * t) / sig_t;
+        let st1 = v1 * t.sqrt();
+        let st2 = v2 * t.sqrt();
+        let y1 = ((s1 / k).ln() + (r - q1 + v1 * v1 * 0.5) * t) / st1;
+        let y2 = ((s2 / k).ln() + (r - q2 + v2 * v2 * 0.5) * t) / st2;
+        let rho1 = (v1 - rho * v2) / sig;
+        let rho2 = (v2 - rho * v1) / sig;
+        let cmin = s1 * (-q1 * t).exp()
+            * bivariate_normal_cdf(y1, -d, -rho1)
+            + s2 * (-q2 * t).exp()
+                * bivariate_normal_cdf(y2, d - sig_t, -rho2)
+            - k * (-r * t).exp()
+                * bivariate_normal_cdf(y1 - st1, y2 - st2, rho);
         let c1 = black_scholes_price(s1, k, v1, t, r, q1, true);
         let c2 = black_scholes_price(s2, k, v2, t, r, q2, true);
         let cmax = c1 + c2 - cmin;
@@ -131,16 +138,23 @@ impl DengLiZhouSpreadBasketEngine {
         }
         let f1 = s1 * ((r - q1) * t).exp();
         let f2 = s2 * ((r - q2) * t).exp();
+        // Kirk's first-order boundary approximation, with forward prices
+        // discounted exactly once.  The spread variance has the negative
+        // covariance term required by Var(S1-S2).
         let f = f1 / (f1 + f2).max_val(T::from_f64(1e-14));
         let v = (v1 * v1 * f * f
             + v2 * v2 * (T::one() - f) * (T::one() - f)
-            + rho * 2.0 * v1 * v2 * f * (T::one() - f))
-            .max_val(T::zero())
+            - rho * v1 * v2 * f * (T::one() - f) * 2.0)
+            .max_val(T::from_f64(1e-16))
             .sqrt();
-        let k_adj = k + f2;
-        let forward = f1;
-        let strike = k_adj;
-        black_scholes_price(forward, strike, v, t, r, T::zero(), is_call)
+        ql_vol::black76_price(
+            f1,
+            f2 + k,
+            v,
+            t,
+            (-r * t).exp(),
+            is_call,
+        )
     }
 }
 
@@ -175,8 +189,11 @@ impl LevyBasketEngine {
                     * ((corr[i][j] * vols[i] * vols[j] * expiry).exp() - T::one());
             }
         }
-        let vol = (var.max_val(T::zero()).sqrt() / forward.abs().max_val(T::from_f64(1e-12)))
-            / expiry.max_val(T::from_f64(1e-12)).sqrt();
+        let ratio = (T::one()
+            + var.max_val(T::zero())
+                / (forward * forward).max_val(T::from_f64(1e-24)))
+            .ln();
+        let vol = (ratio / expiry.max_val(T::from_f64(1e-12))).max_val(T::zero()).sqrt();
         ql_vol::black76_price(
             forward,
             strike,

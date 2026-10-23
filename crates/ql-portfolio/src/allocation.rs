@@ -47,36 +47,6 @@ impl<T: Real> BlackLittermanSpec<T> {
     }
 }
 
-#[allow(clippy::needless_range_loop)]
-fn solve_f64(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
-    let n = b.len();
-    let mut m = vec![vec![0.; n + 1]; n];
-    for i in 0..n {
-        for j in 0..n {
-            m[i][j] = a[i][j];
-        }
-        m[i][n] = b[i];
-    }
-    for k in 0..n {
-        let p = (k..n)
-            .max_by(|&i, &j| m[i][k].abs().partial_cmp(&m[j][k].abs()).unwrap())
-            .unwrap();
-        m.swap(k, p);
-        let d = m[k][k].max(1e-14);
-        for j in k..=n {
-            m[k][j] /= d;
-        }
-        for i in 0..n {
-            if i != k {
-                let x = m[i][k];
-                for j in k..=n {
-                    m[i][j] -= x * m[k][j];
-                }
-            }
-        }
-    }
-    m.into_iter().map(|r| r[n]).collect()
-}
 /// AD-preserving Gaussian elimination with partial pivoting.  Pivot choice is
 /// primal-only, but every row operation is performed in `T`, so Dual/Dual2
 /// and TapeVar derivatives survive the solve.
@@ -134,16 +104,18 @@ pub fn implied_equilibrium_returns<T: Real>(
         })
         .collect()
 }
-pub fn black_litterman_posterior<T: Real>(s: &BlackLittermanSpec<T>) -> BlackLittermanPosterior<T> {
+pub fn try_black_litterman_posterior<T: Real>(
+    s: &BlackLittermanSpec<T>,
+) -> Result<BlackLittermanPosterior<T>, AllocationError> {
     let n = s.covariance.len();
     let k = s.view_returns.len();
     let pi = implied_equilibrium_returns(&s.covariance, &s.market_weights, s.risk_aversion);
     if k == 0 {
-        return BlackLittermanPosterior {
+        return Ok(BlackLittermanPosterior {
             expected_returns: pi.clone(),
             covariance: s.covariance.clone(),
             weights: s.market_weights.clone(),
-        };
+        });
     }
     let tau_cov = s
         .covariance
@@ -171,7 +143,7 @@ pub fn black_litterman_posterior<T: Real>(s: &BlackLittermanSpec<T>) -> BlackLit
     let mut ymat = vec![vec![T::zero(); n]; k];
     for j in 0..n {
         let rhs = (0..k).map(|i| rhs_y[i][j]).collect::<Vec<_>>();
-        let sol = solve_linear_generic(&middle, &rhs).unwrap_or_else(|_| vec![T::zero(); k]);
+        let sol = solve_linear_generic(&middle, &rhs)?;
         for i in 0..k {
             ymat[i][j] = sol[i];
         }
@@ -184,7 +156,7 @@ pub fn black_litterman_posterior<T: Real>(s: &BlackLittermanSpec<T>) -> BlackLit
                     .fold(T::zero(), |x, y| x + y)
         })
         .collect::<Vec<_>>();
-    let v = solve_linear_generic(&middle, &rhs_v).unwrap_or_else(|_| vec![T::zero(); k]);
+    let v = solve_linear_generic(&middle, &rhs_v)?;
     let mu = (0..n)
         .map(|i| {
             pi[i]
@@ -212,39 +184,54 @@ pub fn black_litterman_posterior<T: Real>(s: &BlackLittermanSpec<T>) -> BlackLit
                     .fold(T::zero(), |x, y| x + y);
         }
     }
-    let weighted = post_cov
+    let weighted = s
+        .covariance
         .iter()
         .map(|row| row.iter().map(|x| *x * s.risk_aversion).collect::<Vec<_>>())
         .collect::<Vec<_>>();
-    let raw = solve_linear_generic(&weighted, &mu).unwrap_or_else(|_| s.market_weights.clone());
+    let raw = solve_linear_generic(&weighted, &mu)?;
     let z = raw.iter().fold(T::zero(), |a, x| a + *x);
     let w = raw
         .iter()
         .map(|x| *x / z.max_val(T::from_f64(1e-14)))
         .collect::<Vec<_>>();
-    BlackLittermanPosterior {
+    Ok(BlackLittermanPosterior {
         expected_returns: mu,
         covariance: post_cov,
         weights: w,
-    }
+    })
 }
-pub fn markowitz_minimum_variance_weights<T: Real>(cov: &[Vec<T>]) -> Vec<T> {
+pub fn black_litterman_posterior<T: Real>(s: &BlackLittermanSpec<T>) -> BlackLittermanPosterior<T> {
+    try_black_litterman_posterior(s).expect("valid Black-Litterman covariance/view system")
+}
+pub fn try_markowitz_minimum_variance_weights<T: Real>(
+    cov: &[Vec<T>],
+) -> Result<Vec<T>, AllocationError> {
     let n = cov.len();
     let ones = vec![T::one(); n];
-    let x = solve_linear_generic(cov, &ones).unwrap_or_else(|_| ones.clone());
+    let x = solve_linear_generic(cov, &ones)?;
     let z = x
         .iter()
         .fold(T::zero(), |a, b| a + *b)
         .max_val(T::from_f64(1e-14));
-    x.into_iter().map(|x| x / z).collect()
+    Ok(x.into_iter().map(|x| x / z).collect())
+}
+pub fn markowitz_minimum_variance_weights<T: Real>(cov: &[Vec<T>]) -> Vec<T> {
+    try_markowitz_minimum_variance_weights(cov).expect("valid covariance matrix")
+}
+pub fn try_markowitz_tangency_weights<T: Real>(
+    cov: &[Vec<T>],
+    excess: &[T],
+) -> Result<Vec<T>, AllocationError> {
+    let x = solve_linear_generic(cov, excess)?;
+    let z = x
+        .iter()
+        .fold(T::zero(), |a, b| a + *b)
+        .max_val(T::from_f64(1e-14));
+    Ok(x.into_iter().map(|x| x / z).collect())
 }
 pub fn markowitz_tangency_weights<T: Real>(cov: &[Vec<T>], excess: &[T]) -> Vec<T> {
-    let x = solve_linear_generic(cov, excess).unwrap_or_else(|_| excess.to_vec());
-    let z = x
-        .iter()
-        .fold(T::zero(), |a, b| a + *b)
-        .max_val(T::from_f64(1e-14));
-    x.into_iter().map(|x| x / z).collect()
+    try_markowitz_tangency_weights(cov, excess).expect("valid covariance matrix")
 }
 
 fn ccd(c: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
@@ -283,14 +270,17 @@ fn ccd(c: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
                     .collect()
             })
             .collect::<Vec<Vec<_>>>();
-        let d = solve_f64(&h, &f);
+        let d = solve_linear_generic::<f64>(&h, &f).expect("risk-budgeting Hessian is SPD");
         for i in 0..n {
             y[i] -= d[i];
         }
     }
     y
 }
-pub fn risk_budgeting_weights<T: Real>(cov: &[Vec<T>], budgets: &[T]) -> Vec<T> {
+pub fn try_risk_budgeting_weights<T: Real>(
+    cov: &[Vec<T>],
+    budgets: &[T],
+) -> Result<Vec<T>, AllocationError> {
     let n = cov.len();
     let sum = budgets.iter().map(|x| x.val()).sum::<f64>().max(1e-14);
     let b = budgets.iter().map(|x| x.val() / sum).collect::<Vec<_>>();
@@ -314,14 +304,14 @@ pub fn risk_budgeting_weights<T: Real>(cov: &[Vec<T>], budgets: &[T]) -> Vec<T> 
         .collect::<Vec<Vec<_>>>();
     let inv = (0..n)
         .map(|i| {
-            solve_f64(
+            solve_linear_generic::<f64>(
                 &h,
                 &(0..n)
                     .map(|j| if i == j { 1. } else { 0. })
                     .collect::<Vec<_>>(),
             )
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     let budget_sum_t = budgets.iter().fold(T::zero(), |a, x| a + *x);
     let mut yt = vec![T::zero(); n];
     for i in 0..n {
@@ -338,7 +328,10 @@ pub fn risk_budgeting_weights<T: Real>(cov: &[Vec<T>], budgets: &[T]) -> Vec<T> 
         yt[i] = T::from_f64(y[i]) + d;
     }
     let z = yt.iter().fold(T::zero(), |a, x| a + *x);
-    yt.into_iter().map(|x| x / z).collect()
+    Ok(yt.into_iter().map(|x| x / z).collect())
+}
+pub fn risk_budgeting_weights<T: Real>(cov: &[Vec<T>], budgets: &[T]) -> Vec<T> {
+    try_risk_budgeting_weights(cov, budgets).expect("valid risk-budgeting covariance and budgets")
 }
 pub fn equal_risk_contribution_weights<T: Real>(cov: &[Vec<T>]) -> Vec<T> {
     let n = cov.len();

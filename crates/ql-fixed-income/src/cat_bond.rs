@@ -57,6 +57,39 @@ fn erlang_tail<T: Real>(x: T, mu: T, n: usize) -> T {
     T::one() - erlang_cdf(x, mu, n)
 }
 impl<T: Real> CatBondSpec<T> {
+    fn survival_exponential(&self, t: f64, lambda: T, mean_severity: T) -> (T, T, T) {
+        let mu = T::one() / mean_severity.max_val(T::from_f64(1e-12));
+        let (at, ex) = match self.risk {
+            NotionalRisk::Digital { threshold } => (threshold, threshold),
+            NotionalRisk::Proportional { attachment, exhaustion } => (attachment, exhaustion),
+        };
+        let mut surv = T::zero();
+        let mut ap = T::zero();
+        let mut ep = T::zero();
+        for n in 0..=256 {
+            let w = poisson_weight(lambda, t, n);
+            let pa = erlang_tail(at, mu, n);
+            let pe = erlang_tail(ex, mu, n);
+            ap += w * pa;
+            ep += w * pe;
+            let rem = match self.risk {
+                NotionalRisk::Digital { threshold } => erlang_cdf(threshold, mu, n),
+                NotionalRisk::Proportional { .. } => {
+                    if n == 0 {
+                        T::one()
+                    } else {
+                        let ea = (T::from_f64(n as f64) / mu) * erlang_tail(at, mu, n + 1)
+                            - at * pa;
+                        let ee = (T::from_f64(n as f64) / mu) * erlang_tail(ex, mu, n + 1)
+                            - ex * pe;
+                        T::one() - (ea - ee) / (ex - at).max_val(T::from_f64(1e-12))
+                    }
+                }
+            };
+            surv += w * rem;
+        }
+        (surv, ap, ep)
+    }
     pub fn new(
         face_amount: T,
         coupon_rate: T,
@@ -102,45 +135,14 @@ impl<T: Real> CatBondSpec<T> {
             } => (lambda, mean_severity),
             _ => unreachable!(),
         };
-        let mu = T::one() / ms.max_val(T::from_f64(1e-12));
         let mut price = T::zero();
         let mut loss = T::zero();
         let mut attach = T::zero();
         let mut exhaust = T::zero();
+        let mut prev_surv = T::one();
         for (i, &t) in self.payment_times.iter().enumerate() {
             let a = T::from_f64(*self.accrual_fractions.get(i).unwrap_or(&1.0));
-            let mut surv = T::zero();
-            let mut ap = T::zero();
-            let mut ep = T::zero();
-            for n in 0..=256 {
-                let w = poisson_weight(lambda, t, n);
-                let (at, ex) = match self.risk {
-                    NotionalRisk::Digital { threshold } => (threshold, threshold),
-                    NotionalRisk::Proportional {
-                        attachment,
-                        exhaustion,
-                    } => (attachment, exhaustion),
-                };
-                let pa = erlang_tail(at, mu, n);
-                let pe = erlang_tail(ex, mu, n);
-                ap += w * pa;
-                ep += w * pe;
-                let rem = match self.risk {
-                    NotionalRisk::Digital { threshold } => erlang_cdf(threshold, mu, n),
-                    NotionalRisk::Proportional { .. } => {
-                        if n == 0 {
-                            T::one()
-                        } else {
-                            let ea =
-                                (T::from_f64(n as f64) / mu) * erlang_tail(at, mu, n + 1) - at * pa;
-                            let ee =
-                                (T::from_f64(n as f64) / mu) * erlang_tail(ex, mu, n + 1) - ex * pe;
-                            T::one() - (ea - ee) / (ex - at).max_val(T::from_f64(1e-12))
-                        }
-                    }
-                };
-                surv += w * rem;
-            }
+            let (surv, ap, ep) = self.survival_exponential(t, lambda, ms);
             let df = (-self.discount_rate * t).exp();
             let red = if i + 1 == self.payment_times.len() {
                 surv
@@ -148,42 +150,44 @@ impl<T: Real> CatBondSpec<T> {
                 T::zero()
             };
             price += self.face_amount * (self.coupon_rate * a * surv + red) * df;
-            loss += self.face_amount * (T::one() - surv) * df;
-            attach += ap;
-            exhaust += ep;
+            loss += self.face_amount * (prev_surv - surv) * df;
+            prev_surv = surv;
+            if i + 1 == self.payment_times.len() {
+                attach = ap;
+                exhaust = ep;
+            }
         }
-        let n = T::from_f64(self.payment_times.len().max(1) as f64);
         CatBondValuation {
             price,
-            attachment_prob: attach / n,
-            exhaustion_prob: exhaust / n,
+            attachment_prob: attach,
+            exhaustion_prob: exhaust,
             expected_loss: loss,
         }
     }
     pub fn price_mc(&self, n_paths: usize, seed: u64) -> CatBondValuation<T> {
         let np = n_paths.max(1);
         let rng = PhiloxRng::new(seed);
-        let mut p = 0.0;
-        let mut l = 0.0;
-        let mut a_prob = 0.0;
-        let mut e_prob = 0.0;
+        let mut p = T::zero();
+        let mut l = T::zero();
+        let mut a_prob = T::zero();
+        let mut e_prob = T::zero();
         for path in 0..np {
-            let mut sev = 0.0;
-            let mut te = 0.0;
+            let mut sev = T::zero();
+            let mut te = T::zero();
             let mut step = 0u32;
             for (i, &t) in self.payment_times.iter().enumerate() {
                 loop {
-                    let (lam, sev_kind) = match self.peril {
-                        CatPerilSpec::PoissonExponential { lambda, .. } => (lambda.val(), 0),
-                        CatPerilSpec::PoissonPareto { lambda, .. } => (lambda.val(), 1),
+                    let (lambda, sev_kind) = match self.peril {
+                        CatPerilSpec::PoissonExponential { lambda, .. } => (lambda, 0),
+                        CatPerilSpec::PoissonPareto { lambda, .. } => (lambda, 1),
                     };
-                    if lam <= 0.0 {
+                    if lambda.val() <= 0.0 {
                         break;
                     }
                     let u = rng.uniform4(path as u64, step)[0].clamp(1e-15, 1. - 1e-15);
                     step += 1;
-                    te += -u.ln() / lam;
-                    if te > t {
+                    te += T::from_f64(-u.ln()) / lambda;
+                    if te.val() > t {
                         break;
                     }
                     let u2 = rng.uniform4(path as u64, step)[1].clamp(1e-15, 1. - 1e-15);
@@ -191,9 +195,9 @@ impl<T: Real> CatBondSpec<T> {
                     sev += if sev_kind == 0 {
                         match self.peril {
                             CatPerilSpec::PoissonExponential { mean_severity, .. } => {
-                                -mean_severity.val() * u2.ln()
+                                mean_severity * T::from_f64(-u2.ln())
                             }
-                            _ => 0.,
+                            _ => T::zero(),
                         }
                     } else {
                         match self.peril {
@@ -201,50 +205,60 @@ impl<T: Real> CatBondSpec<T> {
                                 scale_xm,
                                 shape_alpha,
                                 ..
-                            } => scale_xm.val() * u2.powf(-1. / shape_alpha.val().max(1e-12)),
-                            _ => 0.,
+                            } => {
+                                scale_xm
+                                    * T::from_f64(u2)
+                                        .powf(-T::one().val() / shape_alpha.val().max(1e-12))
+                            }
+                            _ => T::zero(),
                         }
                     };
                 }
                 let (surv, at, ex) = match self.risk {
-                    NotionalRisk::Digital { threshold } => (
-                        if sev <= threshold.val() { 1. } else { 0. },
-                        sev > threshold.val(),
-                        sev > threshold.val(),
-                    ),
+                    NotionalRisk::Digital { threshold } => {
+                        let hit = sev.val() > threshold.val();
+                        (if hit { T::zero() } else { T::one() }, hit, hit)
+                    }
                     NotionalRisk::Proportional {
                         attachment,
                         exhaustion,
                     } => {
-                        let aa = attachment.val();
-                        let ee = exhaustion.val();
+                        let aa = attachment;
+                        let ee = exhaustion;
                         (
-                            (1. - (sev - aa).max(0.) / (ee - aa).max(1e-12)).clamp(0., 1.),
-                            sev > aa,
-                            sev > ee,
+                            (T::one()
+                                - (sev - aa).max_val(T::zero())
+                                    / (ee - aa).max_val(T::from_f64(1e-12)))
+                                .max_val(T::zero())
+                                .min_val(T::one()),
+                            sev.val() > aa.val(),
+                            sev.val() > ee.val(),
                         )
                     }
                 };
-                let df = (-self.discount_rate.val() * t).exp();
-                let accr = *self.accrual_fractions.get(i).unwrap_or(&1.);
+                let df = (-self.discount_rate * T::from_f64(t)).exp();
+                let accr = T::from_f64(*self.accrual_fractions.get(i).unwrap_or(&1.));
                 let red = if i + 1 == self.payment_times.len() {
                     surv
                 } else {
-                    0.
+                    T::zero()
                 };
-                p += self.face_amount.val() * (self.coupon_rate.val() * accr * surv + red) * df;
-                l += self.face_amount.val() * (1. - surv) * df;
-                a_prob += at as i32 as f64;
-                e_prob += ex as i32 as f64;
+                p += self.face_amount * (self.coupon_rate * accr * surv + red) * df;
+                // Principal loss is recognized once, at maturity (the
+                // current cumulative severity is not charged repeatedly).
+                if i + 1 == self.payment_times.len() {
+                    l += self.face_amount * (T::one() - surv) * df;
+                    a_prob += T::from_f64(at as u8 as f64);
+                    e_prob += T::from_f64(ex as u8 as f64);
+                }
             }
         }
-        let den = np as f64;
-        let denp = den * self.payment_times.len().max(1) as f64;
+        let den = T::from_f64(np as f64);
         CatBondValuation {
-            price: T::from_f64(p / den),
-            attachment_prob: T::from_f64(a_prob / denp),
-            exhaustion_prob: T::from_f64(e_prob / denp),
-            expected_loss: T::from_f64(l / den),
+            price: p / den,
+            attachment_prob: a_prob / den,
+            exhaustion_prob: e_prob / den,
+            expected_loss: l / den,
         }
     }
 }
@@ -278,7 +292,14 @@ pub fn cat_bond_z_spread<T: Real>(s: &CatBondSpec<T>, market: T) -> Result<T, St
         } else {
             T::zero()
         };
-        let cf = s.face_amount * (s.coupon_rate * a + red);
+        let surv = match s.peril {
+            CatPerilSpec::PoissonExponential {
+                lambda,
+                mean_severity,
+            } => s.survival_exponential(t, lambda, mean_severity).0,
+            CatPerilSpec::PoissonPareto { .. } => T::one(),
+        };
+        let cf = s.face_amount * (s.coupon_rate * a + red) * surv;
         let df = (-sx.discount_rate * T::from_f64(t)).exp();
         fx -= T::from_f64(t) * cf * df;
         fxx += t * t * cf.val() * df.val();
