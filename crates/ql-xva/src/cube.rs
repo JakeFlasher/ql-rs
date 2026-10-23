@@ -75,7 +75,9 @@ pub fn simulate_hw1f_exposure_cube<T: Real>(
     n_paths: usize,
     seed: u64,
 ) -> NpvCube<T> {
-    let mut c = NpvCube::new(swaps.len(), times.to_vec(), n_paths);
+    // The slice is one legal netting set.  Its trades are netted before the
+    // exposure profile is written to the cube.
+    let mut c = NpvCube::new(1, times.to_vec(), n_paths);
     let rng = ql_mc::PhiloxRng::new(seed);
     for pth in 0..n_paths {
         let mut x = T::zero();
@@ -96,8 +98,54 @@ pub fn simulate_hw1f_exposure_cube<T: Real>(
             let alpha = curve.instantaneous_forward(tm)
                 + T::from_f64(0.5) * model.sigma * model.sigma * b * b;
             let r = alpha + x;
-            for (ns, sw) in swaps.iter().enumerate() {
-                c.set(ns, k, pth, sw.npv_at(model, curve, tm, r));
+            let net = swaps
+                .iter()
+                .map(|sw| sw.npv_at(model, curve, tm, r))
+                .fold(T::zero(), |a, b| a + b);
+            c.set(0, k, pth, net);
+            prev = tm;
+        }
+    }
+    c
+}
+
+/// Simulate several legally distinct netting sets.  Each inner vector is
+/// netted independently and occupies one cube slice.
+pub fn simulate_hw1f_multi_netting_set_cube<T: Real>(
+    model: &HullWhite1F<T>,
+    curve: &impl YieldTermStructure<T>,
+    netting_sets: &[Vec<NettingSetSwap>],
+    times: &[f64],
+    n_paths: usize,
+    seed: u64,
+) -> NpvCube<T> {
+    let mut c = NpvCube::new(netting_sets.len(), times.to_vec(), n_paths);
+    let rng = ql_mc::PhiloxRng::new(seed);
+    for pth in 0..n_paths {
+        let mut x = T::zero();
+        let mut prev = 0.0;
+        let sign = if pth % 2 == 0 { 1.0 } else { -1.0 };
+        let pid = (pth / 2) as u64;
+        for (k, &tm) in times.iter().enumerate() {
+            let dt = tm - prev;
+            let z = T::from_f64(rng.normal4(pid, k as u32)[0] * sign);
+            let e = (-model.a * dt).exp();
+            let var = if model.a.val().abs() < 1e-10 {
+                T::from_f64(dt)
+            } else {
+                (T::one() - (-model.a * (2.0 * dt)).exp()) / (model.a * 2.0)
+            };
+            x = e * x + model.sigma * var.sqrt() * z;
+            let b = model.b_factor(0.0, tm);
+            let alpha = curve.instantaneous_forward(tm)
+                + model.sigma * model.sigma * b * b * 0.5;
+            let r = alpha + x;
+            for (ns, set) in netting_sets.iter().enumerate() {
+                let net = set
+                    .iter()
+                    .map(|sw| sw.npv_at(model, curve, tm, r))
+                    .fold(T::zero(), |a, b| a + b);
+                c.set(ns, k, pth, net);
             }
             prev = tm;
         }

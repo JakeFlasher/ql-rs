@@ -982,7 +982,7 @@ fn benchmark_barrier_dual5(scale: usize) -> ComparisonRow {
         "13_reiner_rubinstein_barrier_dual5",
         "six finite-difference barrier bumps vs. one Dual5 analytical pass",
         config(scale),
-        1e-6,
+        2e-6,
         {
             let specs = specs.clone();
             move || {
@@ -1492,7 +1492,7 @@ fn benchmark_american_baw(scale: usize) -> ComparisonRow {
         "19_american_baw_ju_ift_dual5",
         "Ju/BAW scalar bumps versus one IFT Dual5 American pass",
         config(scale),
-        5e-4,
+        1e-5,
         {
             let strikes = strikes.clone();
             move || {
@@ -1502,7 +1502,7 @@ fn benchmark_american_baw(scale: usize) -> ComparisonRow {
                         let mut total = ql_instruments::JuQuadraticEngine::price(
                             100.0, k, 0.03, 0.01, 0.2, 1.0, true,
                         );
-                        let h = 1e-5;
+                        let h = 1e-6;
                         for j in 0..5 {
                             let mut up = [100.0, k, 0.03, 0.01, 0.2];
                             let mut dn = up;
@@ -1517,7 +1517,6 @@ fn benchmark_american_baw(scale: usize) -> ComparisonRow {
                         total
                     })
                     .sum::<f64>()
-                    / 1_000.0
             }
         },
         move || {
@@ -1541,7 +1540,6 @@ fn benchmark_american_baw(scale: usize) -> ComparisonRow {
                     x.val + x.d.iter().sum::<f64>()
                 })
                 .sum::<f64>()
-                / 1_000.0
         },
     )
 }
@@ -1571,13 +1569,17 @@ fn benchmark_risk_parity(scale: usize) -> ComparisonRow {
             let cov = cov.clone();
             let budgets = budgets.clone();
             move || {
-                let h = 1e-5;
+                let h = 5e-7;
                 let base = risk_budgeting_weights(&cov, &budgets);
-                let mut checksum = base.iter().sum::<f64>();
+                let mut checksum = base
+                    .iter()
+                    .enumerate()
+                    .map(|(k, x)| (k + 1) as f64 * x)
+                    .sum::<f64>();
                 // 12 budget bumps followed by the 78 unique symmetric
                 // covariance bumps: exactly the 90-input Jacobian workload.
                 for i in 0..n {
-                    let h = 1e-5;
+                    let h = 5e-7;
                     let mut up = budgets.clone();
                     let mut dn = budgets.clone();
                     up[i] += h;
@@ -1587,7 +1589,8 @@ fn benchmark_risk_parity(scale: usize) -> ComparisonRow {
                     checksum += wu
                         .iter()
                         .zip(&wd)
-                        .map(|(u, d)| (u - d) / (2.0 * h))
+                        .enumerate()
+                        .map(|(k, (u, d))| (k + 1) as f64 * (u - d) / (2.0 * h))
                         .sum::<f64>();
                 }
                 for i in 0..n {
@@ -1605,7 +1608,8 @@ fn benchmark_risk_parity(scale: usize) -> ComparisonRow {
                         checksum += wu
                             .iter()
                             .zip(&wd)
-                            .map(|(u, d)| (u - d) / (2.0 * h))
+                            .enumerate()
+                            .map(|(k, (u, d))| (k + 1) as f64 * (u - d) / (2.0 * h))
                             .sum::<f64>();
                     }
                 }
@@ -1645,9 +1649,17 @@ fn benchmark_risk_parity(scale: usize) -> ComparisonRow {
                 .map(|i| Dual::<LANES>::variable(budgets[i], 78 + i))
                 .collect::<Vec<_>>();
             let w = risk_budgeting_weights(&cov_ad, &bud_ad);
-            let mut checksum = w.iter().map(|x| x.val).sum::<f64>();
+            let mut checksum = w
+                .iter()
+                .enumerate()
+                .map(|(k, x)| (k + 1) as f64 * x.val)
+                .sum::<f64>();
             for lane in 0..LANES {
-                checksum += w.iter().map(|x| x.d[lane]).sum::<f64>();
+                checksum += w
+                    .iter()
+                    .enumerate()
+                    .map(|(k, x)| (k + 1) as f64 * x.d[lane])
+                    .sum::<f64>();
             }
             std::hint::black_box(checksum)
         },

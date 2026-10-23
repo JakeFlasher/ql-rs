@@ -56,7 +56,7 @@ use ql_time::Date;
 use ql_vol::implied_black_vol;
 use ql_xva::{
     NettingSetSwap, SimmBucket, compute_isda_simm, compute_xva, expected_positive_exposure,
-    potential_future_exposure, simulate_hw1f_exposure_cube,
+    potential_future_exposure, simulate_hw1f_exposure_cube, compute_isda_simm_6_risk_classes,
 };
 use std::fmt::Write as FmtWrite;
 use std::sync::Arc;
@@ -747,21 +747,27 @@ impl DeskWorkstation {
     }
     fn xva_metrics(&self) -> (f64, f64, f64) {
         let d = self.base_market.ref_date;
-        let curve = FlatForwardCurve::new(d, 0.02);
+        let market = self.scenario_market();
+        let curve = FlatForwardCurve::new(d, market.ois_quotes[0]);
         let model = HullWhite1F {
             a: 0.05,
             sigma: 0.01,
         };
         let swap = NettingSetSwap {
             notional: 1_000_000.0,
-            fixed_rate: 0.02,
+            fixed_rate: market.ois_quotes[1],
             payment_times: (1..=5).map(|x| x as f64).collect(),
             accruals: vec![1.0; 5],
             is_payer: true,
         };
         let cube =
             simulate_hw1f_exposure_cube(&model, &curve, &[swap], &[1.0, 2.0, 3.0, 4.0], 32, 17);
-        let report = compute_xva(&cube, &curve, None, 0.02, 0.6, 0.015, 0.6, 0.005);
+        let hazard = if matches!(self.scenario, ScenarioKind::CreditWideningPlus100Bp) {
+            0.03
+        } else {
+            0.02
+        };
+        let report = compute_xva(&cube, &curve, None, hazard, 0.6, 0.015, 0.6, 0.005);
         (report.cva.val(), report.dva.val(), report.fva.val())
     }
     fn mva_metric(&self) -> f64 {
@@ -817,7 +823,7 @@ impl DeskWorkstation {
             sensitivities: summary
                 .total_par_dv01
                 .iter()
-                .map(|x| ql_ad::TapeVar::from_f64(*x))
+                .map(|x| ql_ad::TapeVar::from_f64(*x * 1e-4))
                 .collect(),
             risk_weights: vec![50.0; summary.total_par_dv01.len()],
             concentration_threshold: 1e6,
@@ -852,14 +858,18 @@ impl DeskWorkstation {
             concentration_threshold: 1e6,
             intra_corr: vec![vec![1.0]],
         });
-        let inter_corr = vec![
-            vec![1.0, 0.25, 0.2, 0.2, 0.2],
-            vec![0.25, 1.0, 0.15, 0.2, 0.15],
-            vec![0.2, 0.15, 1.0, 0.25, 0.15],
-            vec![0.2, 0.2, 0.25, 1.0, 0.15],
-            vec![0.2, 0.15, 0.15, 0.15, 1.0],
+        let class = |bucket: &SimmBucket<ql_ad::TapeVar<f64>>| {
+            compute_isda_simm(std::slice::from_ref(bucket), &[vec![1.0]])
+        };
+        let class_margins = [
+            class(&buckets[0]),
+            class(&buckets[1]),
+            ql_ad::TapeVar::zero(),
+            class(&buckets[2]),
+            ql_ad::TapeVar::zero(),
+            class(&buckets[3]),
         ];
-        let simm = compute_isda_simm(&buckets, &inter_corr).val();
+        let simm = compute_isda_simm_6_risk_classes(&class_margins).val();
         let adjusted_total_npv = summary.total_npv + cds_npv + inflation_npv;
         let prev = self
             .npv_history

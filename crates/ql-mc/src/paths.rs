@@ -300,7 +300,10 @@ impl HestonQeSimulator {
         let k3 = g1 * dt * (1.0 - rho * rho);
         let k4 = g2 * dt * (1.0 - rho * rho);
         let a_corr = k2 + 0.5 * k4;
-        let mut k0 = 0.0;
+        // Martingale correction used by the regular QE branch as well as the
+        // QE-M branch.  Keeping this initialized avoids silently switching to
+        // an uncorrected drift when a moment condition is near singular.
+        let mut k0 = -rho * kappa * theta * dt / sigma_v;
         if psi <= 1.5 {
             let inv_psi = 2.0 / psi;
             let b2 = inv_psi - 1.0 + (inv_psi * (inv_psi - 1.0)).sqrt();
@@ -377,7 +380,7 @@ pub fn mc_gbm_pathwise_tape(
     n_paths: usize,
     seed: u64,
 ) -> (f64, f64, f64, f64, usize) {
-    ql_ad::TapeScope::start_recording();
+    let guard = ql_ad::TapeScope::guard();
     let s = ql_ad::TapeScope::with_active(|t| t.input(spot));
     let v = ql_ad::TapeScope::with_active(|t| t.input(vol));
     let r = ql_ad::TapeScope::with_active(|t| t.input(rate));
@@ -391,6 +394,7 @@ pub fn mc_gbm_pathwise_tape(
     let mark = ql_ad::TapeScope::with_active(|tape| tape.mark());
     let mut mark_adj = vec![0.0; mark];
     let mut price = 0.0;
+    let mut adj_scratch: Vec<f64> = Vec::new();
     let rng = crate::PhiloxRng::new(seed);
     for p in 0..n_paths {
         let z = rng.normal4(p as u64, 0)[0];
@@ -401,11 +405,12 @@ pub fn mc_gbm_pathwise_tape(
         let pay = (pay_pos + pay_neg) * 0.5 * df;
         price += pay.val;
         ql_ad::TapeScope::with_active(|tape| {
-            let mut adj = vec![0.0; tape.len()];
-            adj[pay.idx as usize] = 1.0;
-            tape.propagate_to_mark(&mut adj);
+            adj_scratch.resize(tape.len(), 0.0);
+            adj_scratch.fill(0.0);
+            adj_scratch[pay.idx as usize] = 1.0;
+            tape.propagate_to_mark(&mut adj_scratch);
             for i in 0..mark {
-                mark_adj[i] += adj[i];
+                mark_adj[i] += adj_scratch[i];
             }
             tape.rewind_to_mark();
         });
@@ -414,7 +419,7 @@ pub fn mc_gbm_pathwise_tape(
         tape.propagate_mark_to_start(&mut mark_adj);
         tape.len()
     });
-    ql_ad::TapeScope::stop_recording();
+    let _ = guard.stop();
     let n = n_paths.max(1) as f64;
     (
         price / n,

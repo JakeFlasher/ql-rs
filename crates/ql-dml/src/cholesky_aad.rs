@@ -129,19 +129,22 @@ pub fn price_correlated_basket_call_aad(
     let mut deltas = vec![vec![0.; n]; bins];
     let mut corrbins = vec![vec![vec![0.; n]; n]; bins];
     let mut bin_counts = vec![0usize; bins];
+    let mut u = vec![0.; n];
+    let mut z = vec![0.; n];
+    let mut st = vec![0.; n];
     for p in 0..n_paths.max(1) {
-        let mut u = vec![0.; n];
+        u.fill(0.0);
         for i in 0..n {
             u[i] = rng.normal4(p as u64, i as u32)[0];
         }
-        let mut z = vec![0.; n];
+        z.fill(0.0);
         for i in 0..n {
             for j in 0..=i {
                 z[i] += l[i][j] * u[j];
             }
         }
         let mut basket = 0.;
-        let mut st = vec![0.; n];
+        st.fill(0.0);
         for i in 0..n {
             st[i] = spots[i]
                 * ((rate - 0.5 * vols[i] * vols[i]) * expiry + vols[i] * expiry.sqrt() * z[i])
