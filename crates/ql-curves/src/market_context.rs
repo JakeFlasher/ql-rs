@@ -72,7 +72,7 @@ impl<T: Real> Default for MarketContext<T> {
         }
     }
 }
-impl<T: Real> MarketContext<T> {
+impl<T: Real + 'static> MarketContext<T> {
     pub fn new() -> Self {
         Self::default()
     }
@@ -81,17 +81,21 @@ impl<T: Real> MarketContext<T> {
         self
     }
     pub fn with_discount_curve(mut self, id: DiscountCurveId, c: DiscountCurve<T>) -> Self {
-        self.discount_curves.insert(id, c);
+        self.insert_discount_curve(id, c);
         self
     }
     pub fn with_forward_curve(mut self, id: ForwardIndexId, c: DiscountCurve<T>) -> Self {
-        self.forward_curves.insert(id, c);
+        self.insert_forward_curve(id, c);
         self
     }
     pub fn insert_discount_curve(&mut self, id: DiscountCurveId, c: DiscountCurve<T>) {
+        let name = format!("{id:?}");
+        self.named_discount_curves.insert(name, Arc::new(c.clone()));
         self.discount_curves.insert(id, c);
     }
     pub fn insert_forward_curve(&mut self, id: ForwardIndexId, c: DiscountCurve<T>) {
+        let name = format!("{id:?}");
+        self.named_forward_curves.insert(name, Arc::new(c.clone()));
         self.forward_curves.insert(id, c);
     }
     pub fn discount_curve(&self, id: DiscountCurveId) -> Option<&DiscountCurve<T>> {
@@ -125,10 +129,34 @@ impl<T: Real> MarketContext<T> {
         self
     }
     pub fn discount(&self, name: &str) -> Option<&dyn crate::curves::YieldTermStructure<T>> {
-        self.named_discount_curves.get(name).map(Arc::as_ref)
+        if let Some(c) = self.named_discount_curves.get(name) {
+            return Some(c.as_ref());
+        }
+        let id = match name.to_ascii_uppercase().as_str() {
+            "USD_SOFR" | "USD-SOFR" => DiscountCurveId::UsdSofr,
+            "EUR_ESTR" | "EUR-ESTR" => DiscountCurveId::EurEstr,
+            "GBP_SONIA" | "GBP-SONIA" => DiscountCurveId::GbpSonia,
+            _ => return None,
+        };
+        self.discount_curves
+            .get(&id)
+            .map(|c| c as &dyn crate::curves::YieldTermStructure<T>)
     }
     pub fn forward(&self, name: &str) -> Option<&dyn crate::curves::YieldTermStructure<T>> {
-        self.named_forward_curves.get(name).map(Arc::as_ref)
+        if let Some(c) = self.named_forward_curves.get(name) {
+            return Some(c.as_ref());
+        }
+        let id = match name.to_ascii_uppercase().as_str() {
+            "USD_SOFR" | "USD-SOFR" => ForwardIndexId::UsdSofr,
+            "USD_IBOR_3M" | "USD-IBOR-3M" => ForwardIndexId::UsdIbor3m,
+            "EUR_EURIBOR_3M" | "EUR-EURIBOR-3M" => ForwardIndexId::EurEuribor3m,
+            "EUR_EURIBOR_6M" | "EUR-EURIBOR-6M" => ForwardIndexId::EurEuribor6m,
+            "GBP_SONIA" | "GBP-SONIA" => ForwardIndexId::GbpSonia,
+            _ => return None,
+        };
+        self.forward_curves
+            .get(&id)
+            .map(|c| c as &dyn crate::curves::YieldTermStructure<T>)
     }
     pub fn spot(&self, name: &str) -> Option<T> {
         self.spots.get(name).copied()
@@ -152,7 +180,7 @@ impl MarketContext<f64> {
                 .copied()
                 .map(TapeVar::from_f64)
                 .collect::<Vec<_>>();
-            out.discount_curves.insert(*id, curve.to_ad_curve(&vars));
+            out.insert_discount_curve(*id, curve.to_ad_curve(&vars));
         }
         for (id, curve) in &self.forward_curves {
             let vars = curve
@@ -161,7 +189,7 @@ impl MarketContext<f64> {
                 .copied()
                 .map(TapeVar::from_f64)
                 .collect::<Vec<_>>();
-            out.forward_curves.insert(*id, curve.to_ad_curve(&vars));
+            out.insert_forward_curve(*id, curve.to_ad_curve(&vars));
         }
         out.spots = self
             .spots
