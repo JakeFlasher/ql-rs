@@ -62,7 +62,7 @@ pub struct ArenaTape<T: Copy = f64> {
 }
 impl<T> Default for ArenaTape<T>
 where
-    T: Copy + Default,
+    T: Copy + Default + PartialEq,
 {
     fn default() -> Self {
         Self::new()
@@ -70,7 +70,7 @@ where
 }
 impl<T> ArenaTape<T>
 where
-    T: Copy + Default,
+    T: Copy + Default + PartialEq,
 {
     pub fn new() -> Self {
         let tape_id = loop {
@@ -183,6 +183,9 @@ where
         for (k, op) in self.ops[start..end].iter().enumerate().rev() {
             let i = start + k;
             let a = adjoints[i];
+            if a == T::default() {
+                continue;
+            }
             if op.lhs != CONST_IDX {
                 adjoints[op.lhs as usize] += a * op.w_lhs;
             }
@@ -202,6 +205,9 @@ where
                 continue;
             }
             let a = adjoints[k];
+            if a == T::default() {
+                continue;
+            }
             if op.lhs != CONST_IDX {
                 adjoints[op.lhs as usize] += a * op.w_lhs;
             }
@@ -598,11 +604,19 @@ impl Real for TapeVar<f64> {
         if p == 2.0 {
             return self * self;
         }
+        if self.val == 0.0 {
+            let g = self.val.powf(p);
+            let w = if p > 1.0 { 0.0 } else { p * self.val.powf(p - 1.0) };
+            return active_unary(self, g, w);
+        }
         let g = self.val.powf(p);
         active_unary(self, g, p * self.val.powf(p - 1.0))
     }
     fn pow(self, p: Self) -> Self {
         if p.idx == CONST_IDX {
+            return self.powf(p.val);
+        }
+        if self.val == 0.0 {
             return self.powf(p.val);
         }
         (p * self.ln()).exp()

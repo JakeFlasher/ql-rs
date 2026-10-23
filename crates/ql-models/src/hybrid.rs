@@ -69,17 +69,13 @@ pub fn h1_hw_char_func_unit_spot<T: Real>(
         sigma_v: p.xi_v,
         rho: p.rho_sv,
     };
-    let z = hp.char_func_unit_spot(Complex::new(T::zero(), T::from_f64(u)), rate, div, expiry);
+    // Heston's API receives a real Fourier frequency and inserts the
+    // imaginary unit internally.  Passing i*u here would apply i twice.
+    let z = hp.char_func_unit_spot(Complex::from_real(T::from_f64(u)), rate, div, expiry);
     // Under the forward measure the HW factor contributes the martingale
     // preserving Gaussian factor exp(-½Σ²(u²+iu)).  The cross covariance is
     // evaluated with the Heston effective spot volatility.
     let t = expiry.max_val(T::zero());
-    let vbar = if p.kappa_v.val().abs() < 1e-10 {
-        p.theta_v
-    } else {
-        p.theta_v + (p.v0 - p.theta_v) * (T::one() - (-p.kappa_v * t).exp()) / (p.kappa_v * t)
-    };
-    let sv = vbar.max_val(T::zero()).sqrt();
     let hw_var = AnalyticBsmHullWhiteEngine::effective_variance(
         T::zero(),
         p.kappa_r,
@@ -87,18 +83,30 @@ pub fn h1_hw_char_func_unit_spot<T: Real>(
         T::zero(),
         expiry,
     );
+    // Grzelak--Oosterlee moment matching: approximate E[sqrt(v_t)] by
+    // a_GO+b_GO exp(-kappa_v t), then integrate the OU covariance exactly.
+    let (a_go, b_go) = {
+        let at = p.theta_v.max_val(T::zero()).sqrt();
+        (at, p.v0.max_val(T::zero()).sqrt() - at)
+    };
     let cross = if p.kappa_r.val().abs() < 1e-8 {
-        p.rho_sr * sv * p.eta_r * t * t
+        p.rho_sr * p.eta_r * (a_go * t * t + b_go * t * t * 0.5)
     } else {
-        p.rho_sr * sv * p.eta_r / (p.kappa_r * p.kappa_r)
-            * (p.kappa_r * t - T::one() + (-p.kappa_r * t).exp())
-            * 2.0
+        let kr = p.kappa_r;
+        let int0 = (kr * t - T::one() + (-kr * t).exp()) / (kr * kr);
+        let ksum = kr + p.kappa_v;
+        let int1 = if ksum.val().abs() < 1e-8 {
+            t * t * 0.5
+        } else {
+            (ksum * t - T::one() + (-ksum * t).exp()) / (ksum * ksum)
+        };
+        p.rho_sr * p.eta_r * 2.0 * (a_go * int0 + b_go * int1)
     };
     let hyb = hw_var + cross;
     let uu = T::from_f64(u);
     // Construct in complex form to preserve both real and imaginary parts;
     // the factor is exp(-½Σ²(u²+i u)).
-    let iz = Complex::new(T::zero(), uu);
+    let iz = Complex::i() * uu;
     let q = iz * iz + iz;
     let fac = (-q * Complex::from_real(hyb * 0.5)).exp();
     let out = z * fac;
@@ -144,6 +152,27 @@ impl CosHestonHullWhiteEngine {
             p.rho_sr,
             expiry,
         );
+        let t = expiry.max_val(T::zero());
+        let _vbar = if p.kappa_v.val().abs() < 1e-8 {
+            let kt = p.kappa_v * t;
+            p.v0 - (p.v0 - p.theta_v) * kt * 0.5
+                + (p.v0 - p.theta_v) * kt * kt / 6.0
+        } else {
+            p.theta_v + (p.v0 - p.theta_v) * (T::one() - (-p.kappa_v * t).exp()) / (p.kappa_v * t)
+        };
+        let a_go = p.theta_v.max_val(T::zero()).sqrt();
+        let b_go = p.v0.max_val(T::zero()).sqrt() - a_go;
+        let cross = if p.kappa_r.val().abs() < 1e-8 {
+            p.rho_sr * p.eta_r * (a_go * t * t + b_go * t * t * 0.5)
+        } else {
+            let kr = p.kappa_r;
+            let int0 = (kr * t - T::one() + (-kr * t).exp()) / (kr * kr);
+            let ks = kr + p.kappa_v;
+            let int1 = if ks.val().abs() < 1e-8 { t*t*0.5 }
+                       else { (ks*t-T::one()+(-ks*t).exp())/(ks*ks) };
+            p.rho_sr * p.eta_r * 2.0 * (a_go*int0+b_go*int1)
+        };
+        let hyb = (extra + cross).max_val(T::zero());
         CosHestonEngine {
             n_terms: self.n_terms,
             l_trunc: self.l_trunc,
@@ -151,24 +180,8 @@ impl CosHestonHullWhiteEngine {
         .price_impl_extra(
             |u| {
                 let z = h.char_func_unit_spot(u, rate, div, expiry);
-                let t = expiry.max_val(T::zero());
-                let vbar = if p.kappa_v.val().abs() < 1e-10 {
-                    p.theta_v
-                } else {
-                    p.theta_v
-                        + (p.v0 - p.theta_v) * (T::one() - (-p.kappa_v * t).exp()) / (p.kappa_v * t)
-                };
-                let sv = vbar.max_val(T::zero()).sqrt();
-                let cross = if p.kappa_r.val().abs() < 1e-8 {
-                    p.rho_sr * sv * p.eta_r * t * t
-                } else {
-                    p.rho_sr * sv * p.eta_r / (p.kappa_r * p.kappa_r)
-                        * (p.kappa_r * t - T::one() + (-p.kappa_r * t).exp())
-                        * 2.0
-                };
-                let hyb = extra + cross;
-                let q = u * u + Complex::new(T::zero(), u.re);
-                z * (-q * Complex::from_real(hyb * 0.5)).exp()
+                let q = u * u + Complex::i() * u;
+                z * (-(q) * Complex::from_real(hyb * 0.5)).exp()
             },
             p.v0,
             p.theta_v,
@@ -180,7 +193,7 @@ impl CosHestonHullWhiteEngine {
             expiry,
             std::slice::from_ref(&strike),
             is_call,
-            T::zero(),
+            hyb,
         )[0]
     }
 
