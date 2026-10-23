@@ -286,15 +286,12 @@ impl<T: Real> G2PlusPlus<T> {
                 }
                 r
             };
-            for _ in 0..32 {
-                if f_scalar(-bound) <= 0.0 && f_scalar(bound) >= 0.0 {
-                    break;
-                }
+            while f_scalar(-bound) > 0.0 || f_scalar(bound) < 0.0 {
                 bound *= 2.0;
+                assert!(bound.is_finite(), "G2++ swaption root bracket overflow");
             }
             let y0 = ql_math::brent_solve(f_scalar, -bound, bound, 1e-10, 200)
-                .map_err(|_| ())
-                .unwrap_or(0.0);
+                .expect("G2++ swaption root should be bracketed");
             let mut yb = T::from_f64(y0);
             for _ in 0..2 {
                 let mut g = T::one();

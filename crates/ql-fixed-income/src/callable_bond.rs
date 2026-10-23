@@ -160,12 +160,10 @@ impl<T: Real> CallableFixedRateBond<T> {
             let mut next = vec![T::zero(); j + 1];
             let theta_j = theta_at(j);
             for i in 0..=j {
-                let short_up =
-                    short_rate + oas + theta_j + vol_step * (2.0 * (i + 1) as f64 - j as f64);
-                let short_dn = short_rate + oas + theta_j + vol_step * (2.0 * i as f64 - j as f64);
-                let disc_up = (-short_up * dt).exp();
-                let disc_dn = (-short_dn * dt).exp();
-                next[i] = (values[i] * disc_dn + values[i + 1] * disc_up) * 0.5;
+                let short_node =
+                    short_rate + oas + theta_j + vol_step * (2.0 * i as f64 - j as f64);
+                let disc = (-short_node * dt).exp();
+                next[i] = (values[i] + values[i + 1]) * disc * 0.5;
             }
             // Callability strikes are clean prices: a coupon paid on the
             // exercise date is received in addition to the call/put amount.

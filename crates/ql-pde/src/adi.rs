@@ -274,6 +274,9 @@ impl Fd2dHestonEngine {
         theta: T,
         bc_low: T,
         bc_high: T,
+        lower_barrier: Option<f64>,
+        upper_barrier: Option<f64>,
+        rebate: T,
     ) -> Vec<T> {
         let nx = g.x.nodes.len();
         let nv = g.v.nodes.len();
@@ -296,6 +299,14 @@ impl Fd2dHestonEngine {
             let mu = rate - div - T::from_f64(0.5) * v;
             for i in 1..nx - 1 {
                 let id = i * nv + j;
+                let s_val = g.x.nodes[i].exp();
+                if lower_barrier.is_some_and(|b| s_val <= b)
+                    || upper_barrier.is_some_and(|b| s_val >= b)
+                {
+                    di[i] = T::one();
+                    b[i] = rebate;
+                    continue;
+                }
                 let l = mu * T::from_f64(g.x.first_minus[i])
                     + T::from_f64(0.5) * v * T::from_f64(g.x.second_minus[i]);
                 let d = mu * T::from_f64(g.x.first_zero[i])
@@ -327,6 +338,9 @@ impl Fd2dHestonEngine {
         theta: T,
         bc_low: T,
         bc_high: T,
+        lower_barrier: Option<f64>,
+        upper_barrier: Option<f64>,
+        rebate: T,
     ) -> Vec<T> {
         let nx = g.x.nodes.len();
         let nv = g.v.nodes.len();
@@ -347,7 +361,15 @@ impl Fd2dHestonEngine {
             di.fill(T::one());
             up.fill(T::zero());
             b.fill(T::zero());
+            let s_val = g.x.nodes[i].exp();
+            let knocked = lower_barrier.is_some_and(|bar| s_val <= bar)
+                || upper_barrier.is_some_and(|bar| s_val >= bar);
             for j in 0..nv {
+                if knocked {
+                    di[j] = T::one();
+                    b[j] = rebate;
+                    continue;
+                }
                 let v = T::from_f64(g.v.nodes[j]);
                 if j == 0 {
                     let dv = g.v.nodes[1] - g.v.nodes[0];
@@ -459,12 +481,36 @@ impl Fd2dHestonEngine {
                 y0[k] = old[k] + h * (a0[k] + a1[k] + a2[k]);
                 rhs1[k] = y0[k] - th * h * a1[k];
             }
-            let y1 = self.sweep_x(&rhs1, &g, rate, div, h, th, bc_low, bc_high);
+            let y1 = self.sweep_x(
+                &rhs1,
+                &g,
+                rate,
+                div,
+                h,
+                th,
+                bc_low,
+                bc_high,
+                lower_barrier,
+                upper_barrier,
+                rebate,
+            );
             let mut rhs2 = vec![T::zero(); u.len()];
             for k in 0..u.len() {
                 rhs2[k] = y1[k] - th * h * a2[k];
             }
-            let y2 = self.sweep_v(&rhs2, &g, p, rate, h, th, bc_low, bc_high);
+            let y2 = self.sweep_v(
+                &rhs2,
+                &g,
+                p,
+                rate,
+                h,
+                th,
+                bc_low,
+                bc_high,
+                lower_barrier,
+                upper_barrier,
+                rebate,
+            );
 
             u = match scheme {
                 AdiScheme::Douglas => y2,
@@ -475,12 +521,36 @@ impl Fd2dHestonEngine {
                         let y0_tilde = y0[k] + h * 0.5 * (a0_y2[k] - a0[k]);
                         r1[k] = y0_tilde - th * h * a1[k];
                     }
-                    let y1_tilde = self.sweep_x(&r1, &g, rate, div, h, th, bc_low, bc_high);
+                    let y1_tilde = self.sweep_x(
+                        &r1,
+                        &g,
+                        rate,
+                        div,
+                        h,
+                        th,
+                        bc_low,
+                        bc_high,
+                        lower_barrier,
+                        upper_barrier,
+                        rebate,
+                    );
                     let mut r2 = vec![T::zero(); u.len()];
                     for k in 0..u.len() {
                         r2[k] = y1_tilde[k] - th * h * a2[k];
                     }
-                    self.sweep_v(&r2, &g, p, rate, h, th, bc_low, bc_high)
+                    self.sweep_v(
+                        &r2,
+                        &g,
+                        p,
+                        rate,
+                        h,
+                        th,
+                        bc_low,
+                        bc_high,
+                        lower_barrier,
+                        upper_barrier,
+                        rebate,
+                    )
                 }
                 AdiScheme::ModifiedCraigSneyd => {
                     let (a0_y2, a1_y2, a2_y2) = self.apply(&y2, &g, p, rate, div);
@@ -491,12 +561,36 @@ impl Fd2dHestonEngine {
                             y0[k] + th * h * (a0_y2[k] - a0[k]) + (T::from_f64(0.5) - th) * h * dl;
                         r1[k] = y0_hat - th * h * a1[k];
                     }
-                    let y1_hat = self.sweep_x(&r1, &g, rate, div, h, th, bc_low, bc_high);
+                    let y1_hat = self.sweep_x(
+                        &r1,
+                        &g,
+                        rate,
+                        div,
+                        h,
+                        th,
+                        bc_low,
+                        bc_high,
+                        lower_barrier,
+                        upper_barrier,
+                        rebate,
+                    );
                     let mut r2 = vec![T::zero(); u.len()];
                     for k in 0..u.len() {
                         r2[k] = y1_hat[k] - th * h * a2[k];
                     }
-                    self.sweep_v(&r2, &g, p, rate, h, th, bc_low, bc_high)
+                    self.sweep_v(
+                        &r2,
+                        &g,
+                        p,
+                        rate,
+                        h,
+                        th,
+                        bc_low,
+                        bc_high,
+                        lower_barrier,
+                        upper_barrier,
+                        rebate,
+                    )
                 }
                 AdiScheme::HundsdorferVerwer => {
                     let (a0_y2, a1_y2, a2_y2) = self.apply(&y2, &g, p, rate, div);
@@ -506,12 +600,36 @@ impl Fd2dHestonEngine {
                         let y0_tilde = y0[k] + h * 0.5 * dl;
                         r1[k] = y0_tilde - th * h * a1_y2[k];
                     }
-                    let y1_tilde = self.sweep_x(&r1, &g, rate, div, h, th, bc_low, bc_high);
+                    let y1_tilde = self.sweep_x(
+                        &r1,
+                        &g,
+                        rate,
+                        div,
+                        h,
+                        th,
+                        bc_low,
+                        bc_high,
+                        lower_barrier,
+                        upper_barrier,
+                        rebate,
+                    );
                     let mut r2 = vec![T::zero(); u.len()];
                     for k in 0..u.len() {
                         r2[k] = y1_tilde[k] - th * h * a2_y2[k];
                     }
-                    self.sweep_v(&r2, &g, p, rate, h, th, bc_low, bc_high)
+                    self.sweep_v(
+                        &r2,
+                        &g,
+                        p,
+                        rate,
+                        h,
+                        th,
+                        bc_low,
+                        bc_high,
+                        lower_barrier,
+                        upper_barrier,
+                        rebate,
+                    )
                 }
             };
 
