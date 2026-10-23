@@ -55,6 +55,20 @@ pub struct HestonHullWhiteParams<T: Real> {
     pub rho_sr: T,
 }
 
+fn go_sqrt_moment_params<T: Real>(p: &HestonHullWhiteParams<T>) -> (T, T, T) {
+    let theta = p.theta_v.max_val(T::from_f64(1e-14));
+    let k = p.kappa_v.max_val(T::from_f64(1e-12));
+    let stationary_var = theta * p.xi_v * p.xi_v / (k * 2.0);
+    let a = (theta - stationary_var / (theta * 8.0))
+        .max_val(T::from_f64(1e-14))
+        .sqrt();
+    let b = p.v0.max_val(T::zero()).sqrt() - a;
+    // Matching the initial and stationary square-root moments with the CIR
+    // mean-reversion scale gives the exponential moment used by
+    // Grzelak--Oosterlee in the stock/rate covariance integral.
+    (a, b, k)
+}
+
 pub fn h1_hw_char_func_unit_spot<T: Real>(
     u: f64,
     expiry: T,
@@ -85,16 +99,13 @@ pub fn h1_hw_char_func_unit_spot<T: Real>(
     );
     // Grzelak--Oosterlee moment matching: approximate E[sqrt(v_t)] by
     // a_GO+b_GO exp(-kappa_v t), then integrate the OU covariance exactly.
-    let (a_go, b_go) = {
-        let at = p.theta_v.max_val(T::zero()).sqrt();
-        (at, p.v0.max_val(T::zero()).sqrt() - at)
-    };
+    let (a_go, b_go, c_go) = go_sqrt_moment_params(p);
     let cross = if p.kappa_r.val().abs() < 1e-8 {
         p.rho_sr * p.eta_r * (a_go * t * t + b_go * t * t * 0.5)
     } else {
         let kr = p.kappa_r;
         let int0 = (kr * t - T::one() + (-kr * t).exp()) / (kr * kr);
-        let ksum = kr + p.kappa_v;
+        let ksum = kr + c_go;
         let int1 = if ksum.val().abs() < 1e-8 {
             t * t * 0.5
         } else {
@@ -159,14 +170,13 @@ impl CosHestonHullWhiteEngine {
         } else {
             p.theta_v + (p.v0 - p.theta_v) * (T::one() - (-p.kappa_v * t).exp()) / (p.kappa_v * t)
         };
-        let a_go = p.theta_v.max_val(T::zero()).sqrt();
-        let b_go = p.v0.max_val(T::zero()).sqrt() - a_go;
+        let (a_go, b_go, c_go) = go_sqrt_moment_params(p);
         let cross = if p.kappa_r.val().abs() < 1e-8 {
             p.rho_sr * p.eta_r * (a_go * t * t + b_go * t * t * 0.5)
         } else {
             let kr = p.kappa_r;
             let int0 = (kr * t - T::one() + (-kr * t).exp()) / (kr * kr);
-            let ks = kr + p.kappa_v;
+            let ks = kr + c_go;
             let int1 = if ks.val().abs() < 1e-8 {
                 t * t * 0.5
             } else {

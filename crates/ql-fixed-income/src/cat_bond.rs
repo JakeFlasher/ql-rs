@@ -211,7 +211,7 @@ impl<T: Real> CatBondSpec<T> {
                             } => {
                                 scale_xm
                                     * T::from_f64(u2)
-                                        .powf(-T::one().val() / shape_alpha.val().max(1e-12))
+                                        .pow(-T::one() / shape_alpha.max_val(T::from_f64(1e-12)))
                             }
                             _ => T::zero(),
                         }
