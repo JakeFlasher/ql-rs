@@ -110,7 +110,7 @@ impl CosHestonEngine {
         strikes: &[T],
         is_call: bool,
     ) -> Vec<T> {
-        self.price_impl(
+        self.price_impl_extra(
             |u| p.char_func_unit_spot(u, rate, div, expiry),
             p.heston.v0,
             p.heston.theta,
@@ -122,10 +122,42 @@ impl CosHestonEngine {
             expiry,
             strikes,
             is_call,
+            p.lambda * (p.mu_j * p.mu_j + p.sigma_j * p.sigma_j) * expiry,
         )
     }
     #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
     pub(crate) fn price_impl<T: Real, F: Fn(Complex<T>) -> Complex<T>>(
+        &self,
+        cf: F,
+        v0: T,
+        theta: T,
+        sigma_v: T,
+        kappa: T,
+        spot: T,
+        rate: T,
+        div: T,
+        expiry: T,
+        strikes: &[T],
+        is_call: bool,
+    ) -> Vec<T> {
+        self.price_impl_extra(
+            cf,
+            v0,
+            theta,
+            sigma_v,
+            kappa,
+            spot,
+            rate,
+            div,
+            expiry,
+            strikes,
+            is_call,
+            T::zero(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+    fn price_impl_extra<T: Real, F: Fn(Complex<T>) -> Complex<T>>(
         &self,
         cf: F,
         v0: T,
@@ -138,6 +170,7 @@ impl CosHestonEngine {
         expiry: T,
         strikes: &[T],
         is_call: bool,
+        jump_variance: T,
     ) -> Vec<T> {
         let t = expiry.max_val(T::from_f64(1e-8));
         let mean_var = if kappa.val().abs() < 1e-10 {
@@ -151,7 +184,7 @@ impl CosHestonEngine {
         // characteristic function.  Unlike the former heuristic, this
         // expression has the correct short/long maturity scaling and keeps
         // expiry and parameter jets in the AD domain.
-        let var = mean_var.max_val(T::from_f64(1e-12));
+        let var = (mean_var + jump_variance).max_val(T::from_f64(1e-12));
         let c1 = (rate - div) * t - var * 0.5;
         let w = T::from_f64(self.l_trunc) * var.sqrt();
         let a = c1 - w;
