@@ -1,6 +1,5 @@
 //! A dependency-free terminal dashboard and umbrella SDK for ql-rs.
 
-#[allow(ambiguous_glob_reexports)]
 pub mod prelude {
     pub use crate::TabId;
     pub use ql_ad::*;
@@ -13,7 +12,10 @@ pub mod prelude {
     pub use ql_fx::*;
     pub use ql_inflation::*;
     pub use ql_instruments::*;
-    pub use ql_levy::*;
+    pub use ql_levy::{
+        CgmyProcess, KouJumpDiffusion, LevyModel, MertonJumpDiffusion, VarianceGamma,
+        cos_levy_price, cos_levy_price_strip, merton_series_price,
+    };
     pub use ql_math::*;
     pub use ql_mc::*;
     pub use ql_models::*;

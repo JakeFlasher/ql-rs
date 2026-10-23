@@ -123,3 +123,59 @@
 - **Required Remediation**:
   - In `crates/ql-benches/tests/benches_suite.rs`, run fast numerical parity & invariant verification (`verify_benchmark_suites_parity()`) during `cargo test` unless `QL_RUN_TIMING_GATES=1` is set.
   - Only write `BENCHMARK_RESULTS.md` and `knowledge_base/08_BENCHMARK_RESULTS.md` when `--write-report` or `QL_WRITE_BENCH_REPORT=1` is explicitly passed.
+
+
+---
+
+# Pass 2 Post-Remediation Audit (`3559aac..19aa6ad`) — Remaining & Newly Introduced Architectural Defects
+
+Following Codex's 9-commit remediation pass (`3559aac..19aa6ad`), a full line-by-line re-audit of all 74 modified files confirmed that while `BarrierType` unification, `canonical_f64_bits` float hashing, and `ql-benches` / `ql-terminal` dependency decoupling were completed, **several core architectural items were only stubbed as unused dead code or no-ops**:
+
+## `[ARCH-P2-01]` `MarketContext<T>` / `MarketEnvironment<T>` (`crates/ql-curves/src/market_context.rs:27-140`) Remains 100% Dead Code with Split-Brain Storage
+- **Current Defect**:
+  1. `MarketContext<T>` and `MarketEnvironment<T>` have **zero call sites outside `market_context.rs`** across all 23 workspace crates.
+  2. `MarketContext<T>` now holds duplicate split-brain maps (`discount_curves: HashMap<DiscountCurveId, DiscountCurve<T>>` vs. `named_discount_curves: HashMap<String, Arc<dyn YieldTermStructure<T>>>` and `forward_curves` vs. `named_forward_curves`): curves inserted by enum `DiscountCurveId` are invisible to `discount(&str)` and vice versa.
+  3. `MarketContext<f64>` still has no `.to_ad(...)` conversion method to lift `f64` market snapshots into `Dual<N>`, `Dual2<N>`, or `TapeVar<f64>`, and `Default` (`market_context.rs:64`) still initializes `reference_date: Date(0)`.
+- **Required Fix**:
+  - Unify curve storage in `MarketContext<T>` so enum IDs (`DiscountCurveId`, `ForwardCurveId`) and string keys resolve against the same backing store, add `MarketContext<f64>::with_reference_date` / `to_ad`, and wire `MarketContext` into `PortfolioDag` / `MarketSnapshot` so it is actively used in production pricing workflows and integration tests.
+
+## `[ARCH-P2-02]` Fake No-Op `NelsonSiegelSvensson::with_reference_date` and Hardcoded `Date(0)` (`crates/ql-fixed-income/src/nss.rs:79-109`)
+- **Current Defect**:
+  ```rust
+  pub fn with_reference_date(self, _reference_date: Date) -> Self {
+      self
+  }
+  impl<T: Real> YieldTermStructure<T> for NelsonSiegelSvensson<T> {
+      fn reference_date(&self) -> Date {
+          Date(0)
+      }
+      ...
+      fn forward_rate(&self, d1: Date, d2: Date, dc: DayCounter) -> T {
+          let t1 = dc.year_fraction(Date(0), d1, None, None);
+          let t2 = dc.year_fraction(Date(0), d2, None, None);
+  ```
+  - `with_reference_date` literally discards `_reference_date` and returns `self` unchanged!
+  - `reference_date(&self)` and `forward_rate` hardcode `Date(0)` (`1970-01-01`), mispricing any date-based instrument priced on a non-epoch valuation date.
+- **Required Fix**:
+  - Store `pub reference_date: Date` as a real field on `NelsonSiegelSvensson<T>`, initialize it in `new` / `fit_ols` / `with_reference_date`, return `self.reference_date` from `YieldTermStructure::reference_date`, and use `self.reference_date` inside `forward_rate`.
+
+## `[ARCH-P2-03]` `PortfolioDag::value_trade` Still Bypasses `VanillaSwapSpec::resolve -> ResolvedVanillaSwap` & `DayCounter` Still Bypassed in `bootstrap.rs` / `swap.rs` / `bond.rs`
+- **Current Defect**:
+  1. `PortfolioDag::value_trade` (`crates/ql-portfolio/src/dag.rs:409-444`) still runs a manual `for m in 1..=n { let t = m as f64; ... }` loop with hardcoded `1.0` accrual instead of resolving `VanillaSwapSpec` into `ResolvedVanillaSwap`.
+  2. `try_build_curve_system` (`dag.rs:221, 231`) still uses `reference_date.add_days(365 * years)` instead of `reference_date.add_period(Period::Years(years), false)` and still hardcodes 3 pillars (`params[..3]` / `params[3..]` at `dag.rs:420, 425, 456, 514`) while pricing 10Y/20Y/30Y swaps via flat extrapolation off 5Y.
+  3. `crates/ql-curves/src/bootstrap.rs:36-37, 61-62, 89, 93-94, 133-134, 322, 545-686`, `crates/ql-instruments/src/swap.rs:54-56`, and `crates/ql-instruments/src/bond.rs:71` still compute curve times via `(d - ref_date) as f64 / 365.0` instead of `day_counter.year_fraction(ref_date, d, None, None)`.
+  4. `DupireLocalVol` still collides between `ql_vol::DupireLocalVol` (`crates/ql-vol/src/surface.rs:4`) and `ql_models::DupireLocalVol` (`crates/ql-models/src/local_vol.rs:2`), requiring `#[allow(ambiguous_glob_reexports)]` in `ql_terminal::prelude`.
+
+## `[ARCH-P2-04]` Swallowed Solver Errors (`.unwrap_or_else`), `G2PlusPlus` Dropped ITM Quadrature Nodes, andContradictory `PortfolioRiskSummary` Telemetry
+- **Current Defect**:
+  1. `crates/ql-portfolio/src/allocation.rs:174, 187, 219, 234, 242` swallows `AllocationError` from `solve_linear_generic` via `.unwrap_or_else(...)` (returning equal weights or zeros on singular/mismatched matrices!), and `solve_f64` (`allocation.rs:51-79`) was not deleted.
+  2. `crates/ql-credit/src/lib.rs:333-337` still silently returns `DMatrix::zeros(m, m)` when LU fails.
+  3. `crates/ql-rates/src/g2.rs:279-284` (`G2PlusPlus::swaption_price`) executes `let Ok(y0) = ql_math::brent_solve(f_scalar, -bound, bound, 1e-10, 200) else { continue; };`, which **drops deep ITM quadrature nodes (`y* < -bound`) to zero** instead of expanding `bound` until bracketed!
+  4. `PortfolioRiskSummary` (`crates/ql-portfolio/src/dag.rs:280-284` vs `355-360`) gives `curve_recomputes` and `trade_recomputes` contradictory meanings (`try_evaluate_portfolio` sets per-call counts; `evaluate_portfolio` overwrites them with cumulative lifetime counts).
+
+## `[ARCH-P2-05]` `ql-xva` Netting-Set vs. Trade Indexing Mismatch & $10{,}000\times$ Unscaled IR SIMM in `ql-terminal`
+- **Current Defect**:
+  1. `simulate_hw1f_exposure_cube` (`crates/ql-xva/src/cube.rs:70-106`) assigns each swap in `swaps: &[NettingSetSwap]` to a separate `ns` index (`n_netting_sets = swaps.len()`). Now that `metrics.rs:65, 83, 122-134` floors each `ns` at `0.0` before summing (treating each `ns` as an independent legal netting set), **offsetting swaps within the same netting set no longer net against each other** and CSA thresholds are applied per trade instead of per netting set!
+  2. `compute_isda_simm_6_risk_classes` (`crates/ql-xva/src/simm.rs:18-37`) is never called anywhere in the workspace.
+  3. `DeskWorkstation::step_tick` (`crates/ql-terminal/src/lib.rs:816-862`) still passes 5 heterogeneous risk classes into a single intra-class `compute_isda_simm(&buckets, &inter_corr)` call AND passes unscaled `summary.total_par_dv01` (per `1.0` = 10,000 bps rate change, without `* 1e-4`) at `lib.rs:817-821`, overstating IR SIMM margin by $10{,}000\times$!
+  4. `DeskWorkstation::xva_metrics` (`lib.rs:748-766`) hardcodes `FlatForwardCurve::new(d, 0.02)` and ignores `self.scenario`, so CVA/DVA/FVA on the terminal dashboard never respond to scenario changes.

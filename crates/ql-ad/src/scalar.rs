@@ -225,18 +225,118 @@ fn simd_exp8(x: Simd<f64, 8>) -> Simd<f64, 8> {
     simd_exp(x)
 }
 
-// Evaluate erfc lane-wise with libm's Cody/Cephes-quality scalar kernel.  The
-// old five-term erf approximation loses all relative accuracy in the left tail
-// because it forms `1 - erf(|x|)`.  Keeping erfc as the primitive avoids that
-// cancellation while still allowing callers to process a SIMD batch in one
-// API operation (and lets LLVM vectorize the surrounding arithmetic).
+// Vectorized fdlibm rational approximation; all range selection and polynomial
+// arithmetic stays in SIMD lanes (no scalar extraction or libm calls).
+#[inline(always)]
+fn simd_horner<const N: usize>(x: Simd<f64, N>, c: &[f64]) -> Simd<f64, N> {
+    let mut y = Simd::splat(*c.last().unwrap_or(&0.0));
+    for &a in c[..c.len().saturating_sub(1)].iter().rev() {
+        y = y * x + Simd::splat(a);
+    }
+    y
+}
+#[inline(always)]
+fn simd_erfc<const N: usize>(x: Simd<f64, N>) -> Simd<f64, N> {
+    let one = Simd::splat(1.0);
+    let ax = x.abs();
+    let z2 = ax * ax;
+    let pp = [
+        0.12837916709551256,
+        -0.3250421072470015,
+        -0.02848174957559851,
+        -0.005770270296489442,
+        -0.000023763016656650164,
+    ];
+    let qq = [
+        1.0,
+        0.39791722395915535,
+        0.065_022_249_988_767_3,
+        0.005081306281875766,
+        0.00013249473800432164,
+        -0.000003960228278775368,
+    ];
+    let small = one - (ax + ax * simd_horner(z2, &pp) / simd_horner(z2, &qq));
+    let pa = [
+        -0.0023621185607526594,
+        0.4148561188374833,
+        -0.3722078760357013,
+        0.31834661990116175,
+        -0.11089469428239668,
+        0.035478304325618236,
+        -0.002166375594868791,
+    ];
+    let qa = [
+        1.0,
+        0.10642088040084423,
+        0.540_397_917_702_171,
+        0.07182865441419627,
+        0.12617121980876164,
+        0.01363708391202905,
+        0.011984499846799107,
+    ];
+    let u = ax - one;
+    let bridge_ratio = simd_horner(u, &pa) / simd_horner(u, &qa);
+    let erx = Simd::splat(0.8450629115104675);
+    let bridge = (one - erx) - bridge_ratio;
+    let ra = [
+        -0.009864944034847148,
+        -0.6938585727071818,
+        -10.558626225323291,
+        -62.375332450326006,
+        -162.39666946257347,
+        -184.60509290671104,
+        -81.287_435_506_306_6,
+        -9.814329344169145,
+    ];
+    let sa = [
+        1.0,
+        19.651271667439257,
+        137.65775414351904,
+        434.5658774752293,
+        645.3872717332679,
+        429.00814002756783,
+        108.63505504177944,
+        6.570249770319282,
+        -0.0604244152148581,
+    ];
+    let rb = [
+        -0.0098649429247001,
+        -0.799283237680523,
+        -17.757954917754752,
+        -160.63638485582192,
+        -637.5664433683896,
+        -1025.0951316110772,
+        -483.5191916086514,
+    ];
+    let sb = [
+        1.0,
+        30.338_060_743_482_46,
+        325.7925129965739,
+        1536.729586084437,
+        3199.8582195085955,
+        2553.0504064331646,
+        474.5285412069554,
+        -22.440_952_446_585_82,
+    ];
+    let inv = one / z2;
+    let ratio = inv.simd_lt(Simd::splat(0.1225)).select(
+        simd_horner(inv, &rb) / simd_horner(inv, &sb),
+        simd_horner(inv, &ra) / simd_horner(inv, &sa),
+    );
+    let z = Simd::from_bits(ax.to_bits() & Simd::<u64, N>::splat(0xffff_ffff_0000_0000));
+    let tail = simd_exp(-z * z - Simd::splat(0.5625) + (z - ax) * (z + ax) + ratio) / ax;
+    let mid = ax.simd_lt(Simd::splat(0.84375)).select(small, bridge);
+    let positive = ax.simd_lt(Simd::splat(1.25)).select(mid, tail);
+    x.simd_ge(Simd::splat(0.0))
+        .select(positive, Simd::splat(2.0) - positive)
+}
 #[inline(always)]
 fn simd_erfc4(x: Simd<f64, 4>) -> Simd<f64, 4> {
-    Simd::from_array(x.to_array().map(libm::erfc))
+    simd_erfc(x)
 }
 #[inline(always)]
 fn simd_erfc8(x: Simd<f64, 8>) -> Simd<f64, 8> {
-    Simd::from_array(x.to_array().map(libm::erfc))
+    simd_erfc(x)
 }
 impl SimdReal for Simd<f64, 4> {
     #[inline(always)]

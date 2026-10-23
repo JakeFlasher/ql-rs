@@ -1,7 +1,10 @@
 use ql_ad::Real;
 pub use volsurf::smile::{SabrSmile, SviSmile};
 pub use volsurf::surface::{EssviSurface, SsviSurface};
-pub use volsurf::{DupireLocalVol, SmileSection, Strike, Tenor, Vol, VolSurface};
+pub use volsurf::{
+    DupireLocalVol as DupireTotalVarianceFormula, SmileSection, Strike, Tenor, Vol, VolSurface,
+};
+pub type DupireLocalVol = DupireTotalVarianceFormula;
 #[derive(Debug, Clone)]
 pub struct AdSviSmile<T: Real> {
     pub forward: T,

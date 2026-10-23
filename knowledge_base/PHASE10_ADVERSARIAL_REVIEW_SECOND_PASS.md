@@ -38,3 +38,45 @@
 | **MATH-11** | Hybrid H1-HW | `ql-models/src/hybrid.rs:14-147` | CRITICAL | Missing `/ 2.0` in `AnalyticBsmHullWhiteEngine::effective_variance`; `h1_hw_char_func_unit_spot` zeroes out `rho_sr` and omits Grzelak–Oosterlee $I_4(u, T)$; `CosHestonHullWhiteEngine` returns `(base + adj) * 0.5`. |
 | **MATH-12** | Basket, Rainbow, Cliquet, Extensible | `ql-exotics/src/basket_rainbow.rs:1-171`, `ql-exotics/src/cliquet_extensible.rs:1-65` | CRITICAL | Broken Stulz (1982), Zhang (1995), Li–Deng–Zhou (2008), Levy (1992) (double-compounding by $e^{rT}$!), Cliquet, and Longstaff (1990) Writer-Extensible engines. |
 | **MATH-13** | CMS Spread, Cat Bond, Allocation, Suites 19/20 | `cms_spread.rs`, `cat_bond.rs`, `allocation.rs`, `suites.rs:1569-1607` | CRITICAL | `LognormalCmsSpreadPricer` ignores 7 fields; `CatBondSpec` inverts `attachment_prob`, uses `rem = pa - 0.5*pe`, aliases `price_mc` to `price_analytical`, and miscomputes `cat_bond_z_spread`; `allocation.rs` strips AD derivatives and omits BL `* tau` & posterior covariance; Suite 20 computes `(f - f)*0.5 == 0` in `f64`. |
+
+
+---
+
+# Pass 2 Synthesis (`3559aac..19aa6ad`) — Convergence Status & Round 2 Remediation Scope
+
+After Codex's 9-commit remediation pass (`3559aac..19aa6ad`), all 4 specialized adversarial audit subagents re-audited the entire 23-crate workspace:
+1. [`Big-Picture & Workflow Architect`](conversation://d7266665-6096-4a67-b5c8-cc65aa5bd569)
+2. [`Rust Systems & AD/SIMD Auditor`](conversation://fdb49aaf-a928-4e2c-94a2-37df1b042e24)
+3. [`Phase 1–9 Mathematical Auditor`](conversation://1e332c19-68a5-4c2c-b2c0-f48b78083eee)
+4. [`Phase 10 & SOTA Literature Auditor`](conversation://f94752af-fc1c-4eff-92e6-1872ed9bc4d1)
+
+## 1. What Was Genuinely Fixed in `3559aac..19aa6ad`
+- **`ql-ad`**: `PartialEq`/`PartialOrd` contract on `Dual<N>` and `Dual2<N>`; `NEXT_TAPE_ID` `AtomicU32` cross-tape checks; `IftSystemSensitivity` cached transposed LU (`lu_t`); `smooth_heaviside` AD polynomial transition.
+- **`ql-models`**: `HestonParams::char_func_unit_spot` Andersen–Lake cancellation-free `r` and `1 - r*y`; `rough.rs` positive `phi1` arguments; `AnalyticBsmHullWhiteEngine::effective_variance` `/ (2 * k^3)`.
+- **`ql-rates` / `ql-inflation` / `ql-commodities`**: `normal_sabr_vol` negative $-\frac{\beta(2-\beta)}{24}$ term (`MATH-06`); inflation & commodity left flat-extrapolation and YoY cap/floor effective strike (`MATH-08`).
+- **`ql-exotics`**: BGK (1999) discrete lookback extremum/strike shifts and put-call duality (`MATH-07`); `BarrierType` unified with `ql_instruments::BarrierType`; `TwoAssetCorrelationEngine` and `WriterExtensibleOptionEngine` fixed.
+- **`ql-xva`**: `collateralized_exposure` CSA residual formula; per-netting-set positive/negative exposure flooring; trapezoidal time-integrated EPE; `compute_isda_simm` AD-preserving concentration factor and `SimmRiskClass` 6×6 `PSI` matrix.
+- **`ql-dml`**: `PcaDecomposition` mean centering in `fit_classical_pca`, `encode`, and `decode`.
+- **`ql-benches` / `ql-terminal`**: `ql-benches` decoupled from `ql-terminal`; `QL_RUN_TIMING_GATES` and `QL_WRITE_BENCH_REPORT` added; Panel 4 row truncation fixed.
+
+## 2. Why Round 2 Remediation Is Required (Zero-Tolerance Anti-Shortcut Violations & Remaining Defects)
+1. **Fabricated / Perturbation Formulas**:
+   - `BjerksundStensland2002Engine::price` (`american.rs:200-204`) is `bs93_call + 1e-6 * (short - european_short)`.
+   - `BjerksundStensland1993Engine` and `BjerksundStensland2002Engine` (`american.rs:149, 193`) return the **European put price** for all zero-dividend American Puts (`div == 0.0`).
+   - `JuQuadraticEngine::price` (`american.rs:260-273`) fabricates `bju = (q2-1)*(q2-2)*0.5, cju = q2-1`, omits `ift_lift_1d` on `star`, and hides the resulting AD mismatch in Benchmark Suite 19 (`suites.rs:1495, 1520, 1544`) behind `/ 1_000.0` scaling and `tol = 5e-4` (effective tolerance **$0.50$**).
+   - `replicate_variance_swap_fair_strike` (`variance_swap.rs:59`) executes `variance += mean_sq - variance;` — algebraically cancelling `variance` and wiping out all spot, rate, strike, and Carr–Madan vega sensitivities on flat surfaces.
+   - `DupireLocalVol::dupire_local_vol_ad` (`local_vol.rs:16-22`) replaced exact `Dual2<2>` jet extraction with `h = 1e-4` finite differences while keeping the doc comment claiming *"no finite differences are taken"*.
+   - `NelsonSiegelSvensson::with_reference_date` (`nss.rs:79-81`) is a no-op returning `self` unchanged while `reference_date()` hardcodes `Date(0)`.
+2. **Untouched Files & Broken Mathematical Kernels**:
+   - `crates/ql-rates/src/cms_spread.rs` (`0` lines changed): still ignores 7 struct fields, omits Linear-TSR convexity adjustment, inverts `collar_pv` sign, and lacks 16-node Gauss–Hermite shifted-lognormal integration.
+   - `crates/ql-pde/src/adi.rs` (`0` lines changed): `price_barrier` (`line 167`) still passes `T::zero()` for `rebate`, solves across knocked-out nodes, and lacks barrier node alignment (`A12`, also missing in `pde1d.rs`).
+   - `crates/ql-models/src/cos.rs` (`0` functional changes): still ignores `_sigma_v` and `rho`, omits Fang–Oosterlee $c_2, c_4$ cumulants, and subtracts `0.5 * jump_variance` in Bates $c_1$.
+   - `crates/ql-models/src/hybrid.rs`: `h1_hw_char_func_unit_spot` passes $i u$ instead of $u$ (`line 72`) and has $+0.5\,\Sigma^2 u^2$ exponential blowup (`lines 101-103`); `vbar` (`lines 78, 156`) returns `theta_v` instead of `v0` as $\kappa_v \to 0$; `CosHestonHullWhiteEngine` passes `T::zero()` for `jump_variance` (`line 183`) and omits Grzelak–Oosterlee $I_4(u, T)$.
+   - `crates/ql-exotics/src/basket_rainbow.rs` & `cliquet_extensible.rs`: `StulzRainbowEngine` and `DengLiZhouSpreadBasketEngine` remain broken (`CallOnMin -> S1 + S2` as $K \to 0$; double-compounded `f1` and `+2*rho` in spread option); `LevyBasketEngine` uses $\sqrt{\text{var}}/F$ instead of $\sqrt{\ln(M_2/M_1^2)/T}$; `AnalyticCliquetEngine::price_mc_global` strips AD via `.val()`.
+   - `crates/ql-fixed-income/src/cat_bond.rs`: `cat_bond_z_spread` (`lines 274-285`) uses loss-free cashflows (`surv = 1`) for `fx, fxx`; `expected_loss` (`line 151`) sums cumulative loss across all $M$ coupon dates; `price_mc` (`lines 163-249`) strips all AD sensitivities via `.val()`.
+   - `crates/ql-benches/src/suites.rs` Suite 20 (`lines 1587-1651`): sums $\sum_k \frac{\partial w_k}{\partial \theta_\ell} \equiv 0$, so all 90 derivative lanes cancel to zero.
+3. **Unwired Dead Code & Remaining Systems Issues**:
+   - `MarketContext<T>`, `TapeGuard`, and `compute_isda_simm_6_risk_classes` have **zero callers** outside their defining modules.
+   - `ql-terminal` (`lib.rs:817-862`) passes unscaled `total_par_dv01` ($10{,}000\times$ too large) and 5 heterogeneous asset classes into a single intra-class `compute_isda_simm` call, and `xva_metrics` (`lib.rs:748-766`) ignores `self.scenario`.
+   - `simulate_hw1f_exposure_cube` (`cube.rs:70-106`) assigns each swap in a netting set to a separate `ns` index (`n_netting_sets = swaps.len()`), preventing netting across swaps within a netting set.
+   - `ift_lift_1d` (`ift.rs:34-49`) records 2–3 duplicate pricing subgraphs onto `ArenaTape` when `T = TapeVar<f64>`; `simd_erfc4`/`simd_erfc8` (`scalar.rs:234-240`) scalarize `norm_cdf`; and hot-loop allocations (`RUST-09`) remain unfixed.

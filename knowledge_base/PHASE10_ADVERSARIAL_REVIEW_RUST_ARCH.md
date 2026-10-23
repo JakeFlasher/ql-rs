@@ -128,3 +128,55 @@
   - `mc_gbm_pathwise_tape` (`crates/ql-mc/src/paths.rs:375`): allocates a new `ArenaTape` with `8192` capacity on every single Monte Carlo path instead of `tape.clear()` reuse.
   - `Fd2dHestonEngine::solve` (`crates/ql-pde/src/adi.rs:189-499`): allocates 14 temporary `Vec<T>` per time step inside `for _ in 0..n_t`.
   - `AmcEngine::price_bermudan_lsm` (`crates/ql-scripting/src/amc.rs:85-113`): clones `Vec<VMValue>` and allocates `HashMap` per path per exercise date; replace string-keyed `HashMap` in `Env` with slice/indexed lookup.
+
+
+---
+
+# Pass 2 Post-Remediation Audit (`3559aac..19aa6ad`) — Remaining & Newly Introduced Rust Systems / AD / SIMD Defects
+
+Following Codex's 9-commit remediation pass (`3559aac..19aa6ad`), a full line-by-line systems audit of `ql-ad`, `ql-time`, `ql-math`, `ql-models`, `ql-exotics`, `ql-fixed-income`, `ql-portfolio`, `ql-mc`, `ql-pde`, `ql-dml`, and `ql-xva` identified the following critical regressions, shortcuts, and unfixed items:
+
+## `[RUST-P2-01]` Algebraic Self-Cancellation in `replicate_variance_swap_fair_strike` (`crates/ql-exotics/src/variance_swap.rs:53-60`)
+- **Current Defect**:
+  ```rust
+  if flat_surface {
+      let mean_sq = quotes
+          .iter()
+          .map(|q| q.implied_vol * q.implied_vol)
+          .fold(T::zero(), |a, b| a + b)
+          / quotes.len() as f64;
+      variance += mean_sq - variance;
+  }
+  ```
+  - `variance += mean_sq - variance` is algebraically `variance = mean_sq`! It cancels out 100% of the Carr–Madan strip integral `variance`, wiping out all AD derivatives with respect to `spot`, `rate`, `div_yield`, `expiry`, `cut_strike`, and `q.strike`, and replacing the true $\frac{\Delta K_i}{K_i^2}\mathcal{V}(K_i)$ vega weights with uniform $\frac{1}{N}$ weights!
+- **Required Fix**:
+  - Delete the `if flat_surface` overwrite completely.
+  - Instead, use proper trapezoidal strip weights ($\Delta K_0 = \frac{1}{2}(K_1 - K_0)$, $\Delta K_{n-1} = \frac{1}{2}(K_{n-1} - K_{n-2})$) on $[K_0, K_{n-1}]$ and add the exact analytical Black–Scholes log-contract left put tail on $(0, K_0)$ (using $\sigma_0 = \text{quotes}[0].\text{implied\_vol}$, $v_0 = \sigma_0\sqrt{T}$):
+    $$I_{\text{put}}(K_0, \sigma_0) = \frac{F}{K_0}\Phi(-d_1(K_0)) - \Phi(-d_2(K_0)) + v_0\left(-d_2(K_0)\Phi(-d_2(K_0)) + \phi(d_2(K_0))\right)$$
+    and right call tail on $(K_{n-1}, \infty)$ (using $\sigma_{n-1} = \text{quotes}[n-1].\text{implied\_vol}$, $v_m = \sigma_{n-1}\sqrt{T}$):
+    $$I_{\text{call}}(K_{n-1}, \sigma_{n-1}) = \frac{F}{K_{n-1}}\Phi(d_1(K_{n-1})) - \Phi(d_2(K_{n-1})) - v_m\left(d_2(K_{n-1})\Phi(d_2(K_{n-1})) + \phi(d_2(K_{n-1}))\right)$$
+    multiplied by $\frac{2}{T}$. This is exact for any flat surface AND preserves true Carr–Madan vega/spot/rate sensitivities across all quotes!
+
+## `[RUST-P2-02]` `DupireLocalVol::dupire_local_vol_ad` Replaced `Dual2<2>` Taylor Jet Extraction with Finite Differences (`crates/ql-models/src/local_vol.rs:8-30`)
+- **Current Defect**:
+  - `dupire_local_vol_ad` (`lines 16-22`) replaced exact `Dual2<2>` derivative extraction (`w.d1[0]`, `w.d1[1]`, `w.d2[1][1]`) with `h = 1e-4` central finite differences (`f(expiry + dh, strike)`, etc.), directly contradicting its own doc comment (*"no finite differences are taken"*) and introducing $O(h^2)$ truncation error into the primal local volatility.
+- **Required Fix**:
+  - Extract $\partial_T w = w.\text{d1}[0]$, $\partial_y w = w.\text{d1}[1]$, $\partial_{yy}^2 w = w.\text{d2}[1][1]$ from the exact `Dual2<2>` jet when `expiry` and `strike` are seeded as `(0, 1)` variables, and provide a generic `dupire_local_vol_surface_ad<T: Real, F: Fn(Dual2<2>, Dual2<2>) -> Dual2<2>>` or nested jet evaluation when differentiating wrt surface parameters.
+
+## `[RUST-P2-03]` Wrong `4.0 / 3.0` Taylor Coefficient in `HullWhite1F` (`crates/ql-models/src/hull_white.rs:26, 47`) & Wrong $\kappa_v \to 0$ Limit in `ql-models::hybrid` (`crates/ql-models/src/hybrid.rs:78, 156`)
+- **Current Defect**:
+  1. `crates/ql-models/src/hull_white.rs:26, 47`: computes `tt - self.a * tt * tt + self.a * self.a * tt * tt * tt * 4.0 / 3.0` for $\frac{1 - e^{-2at}}{2a}$, where the cubic coefficient is $\frac{(2a)^3 t^3}{6 \cdot 2a} = \frac{2}{3} a^2 t^3$, **NOT** $\frac{4}{3} a^2 t^3$!
+  2. `crates/ql-models/src/hybrid.rs:78, 156`: returns `p.theta_v` instead of `p.v0 - (p.v0 - p.theta_v) * p.kappa_v * t * 0.5` when `|kappa_v| < 1e-10`! As $\kappa_v \to 0$, $\bar{v}(t) = \theta_v + (v_0 - \theta_v)\frac{1 - e^{-\kappa_v t}}{\kappa_v t} \to v_0$, NOT $\theta_v$!
+
+## `[RUST-P2-04]` Remaining `ql-ad` Defects: `ift_lift_1d` Duplicate Tape Recording, Unused `TapeGuard`, and `0.0 * Inf = NaN` in `propagate_range` / `propagate_to_mark` / `pow`
+- **Current Defect**:
+  1. `ift_lift_1d` (`crates/ql-ad/src/ift.rs:34-49`): evaluates `residual(T::from_f64(x_star)).val()` and `residual(T::from_f64(candidate)).val()` before `residual(x)`. When `T = TapeVar<f64>`, `residual` captures active `TapeVar<f64>` parameters and records the entire pricing graph onto `ArenaTape` **2 or 3 times**! Moreover, if `x_polished != x_star`, `f_x` and `f_xx` are still evaluated at `x_star`.
+  2. `TapeScope::guard()` (`crates/ql-ad/src/tape.rs:281-342`) has **zero callers** across the workspace; all 10 production call sites still use `start_recording()` / `stop_recording()`.
+  3. `ArenaTape::propagate_range` (`tape.rs:185-191`) and `propagate_to_mark` (`tape.rs:204-210`) lack the `if a == T::default() { continue; }` and `op.w_lhs != T::default()` guards present in `gradient_from`, propagating `0.0 * Inf = NaN` during checkpointed AAD (`mc_gbm_pathwise_tape`).
+  4. `Dual::pow` (`dual.rs:301-312`), `Dual2::pow` (`dual.rs:672`), `TapeVar::pow` (`tape.rs:608`), and `TapeVar::powf` (`tape.rs:602`) still produce `NaN` at `self.val == 0.0`.
+
+## `[RUST-P2-05]` Scalarized `simd_erfc4` / `simd_erfc8` (`crates/ql-ad/src/scalar.rs:234-240`) and Unfixed Hot-Loop Allocations (`RUST-09`)
+- **Current Defect**:
+  1. `simd_erfc4` and `simd_erfc8` (`scalar.rs:234-240`) call `Simd::from_array(x.to_array().map(libm::erfc))`, completely scalarizing `SimdReal::norm_cdf` into 4 or 8 sequential scalar function calls! Replace with a branchless vectorized minimax rational approximation (`Simd::simd_lt` / `.select(...)` over central $|z| \le 4$ and tail $|z| > 4$ multiplied by `simd_exp(-z * z)`), and in `simd_exp` (`scalar.rs:211`) extract exponent bits directly via `(u.to_bits() + Simd::splat(1023_u64)) << Simd::splat(52_u64)` without `k.cast::<i64>()`.
+  2. None of the hot-loop heap allocations in `RUST-09` were fixed (`mc_gbm_pathwise_tape` at `paths.rs:404`, `Fd2dHestonEngine::solve` at `adi.rs:189-500`, `AmcEngine` at `amc.rs:17-27`, `cholesky_aad` at `cholesky_aad.rs:133-144`, `ChebyshevTensor2D::eval_barycentric` at `chebyshev.rs:158-180`, `DiffPolynomialRegressor::basis` at `regression.rs:26-55`).
+  3. `Date::add_months` (`date.rs:162, 170`), `Period::months` (`date.rs:84-85`), `Date::add_period` (`date.rs:186, 189`), `day_count.rs:25, 79, 131`, and `inv_norm_cdf_f64` (`distributions.rs:198-202` where `pdf == 0.0` causes `0.0 / 0.0 = NaN` for `p < 1e-300`) remain unfixed.
