@@ -982,11 +982,11 @@ fn benchmark_barrier_dual5(scale: usize) -> ComparisonRow {
         "13_reiner_rubinstein_barrier_dual5",
         "six finite-difference barrier bumps vs. one Dual5 analytical pass",
         config(scale),
-        2e-6,
+        1e-6,
         {
             let specs = specs.clone();
             move || {
-                let h = 1e-5;
+                let h = 7e-6;
                 let mut total = 0.0;
                 for s in &specs {
                     for j in 0..5 {
@@ -1569,48 +1569,49 @@ fn benchmark_risk_parity(scale: usize) -> ComparisonRow {
             let cov = cov.clone();
             let budgets = budgets.clone();
             move || {
-                let h = 5e-7;
+                let h = 1e-4;
+                let weighted = |w: &[f64]| {
+                    w.iter()
+                        .enumerate()
+                        .map(|(k, x)| (k + 1) as f64 * x)
+                        .sum::<f64>()
+                };
                 let base = risk_budgeting_weights(&cov, &budgets);
-                let mut checksum = base
-                    .iter()
-                    .enumerate()
-                    .map(|(k, x)| (k + 1) as f64 * x)
-                    .sum::<f64>();
+                let mut checksum = weighted(&base);
                 // 12 budget bumps followed by the 78 unique symmetric
                 // covariance bumps: exactly the 90-input Jacobian workload.
                 for i in 0..n {
-                    let h = 5e-7;
-                    let mut up = budgets.clone();
-                    let mut dn = budgets.clone();
-                    up[i] += h;
-                    dn[i] -= h;
-                    let wu = risk_budgeting_weights(&cov, &up);
-                    let wd = risk_budgeting_weights(&cov, &dn);
-                    checksum += wu
-                        .iter()
-                        .zip(&wd)
-                        .enumerate()
-                        .map(|(k, (u, d))| (k + 1) as f64 * (u - d) / (2.0 * h))
-                        .sum::<f64>();
+                    let derivative = |hh: f64| {
+                        let mut up = budgets.clone();
+                        let mut dn = budgets.clone();
+                        up[i] += hh;
+                        dn[i] -= hh;
+                        (weighted(&risk_budgeting_weights(&cov, &up))
+                            - weighted(&risk_budgeting_weights(&cov, &dn)))
+                            / (2.0 * hh)
+                    };
+                    let d1 = derivative(h);
+                    let d2 = derivative(h * 0.5);
+                    checksum += (4.0 * d2 - d1) / 3.0;
                 }
                 for i in 0..n {
                     for j in i..n {
-                        let mut up = cov.clone();
-                        let mut dn = cov.clone();
-                        up[i][j] += h;
-                        dn[i][j] -= h;
-                        if i != j {
-                            up[j][i] += h;
-                            dn[j][i] -= h;
-                        }
-                        let wu = risk_budgeting_weights(&up, &budgets);
-                        let wd = risk_budgeting_weights(&dn, &budgets);
-                        checksum += wu
-                            .iter()
-                            .zip(&wd)
-                            .enumerate()
-                            .map(|(k, (u, d))| (k + 1) as f64 * (u - d) / (2.0 * h))
-                            .sum::<f64>();
+                        let derivative = |hh: f64| {
+                            let mut up = cov.clone();
+                            let mut dn = cov.clone();
+                            up[i][j] += hh;
+                            dn[i][j] -= hh;
+                            if i != j {
+                                up[j][i] += hh;
+                                dn[j][i] -= hh;
+                            }
+                            (weighted(&risk_budgeting_weights(&up, &budgets))
+                                - weighted(&risk_budgeting_weights(&dn, &budgets)))
+                                / (2.0 * hh)
+                        };
+                        let d1 = derivative(h);
+                        let d2 = derivative(h * 0.5);
+                        checksum += (4.0 * d2 - d1) / 3.0;
                     }
                 }
                 std::hint::black_box(checksum)
