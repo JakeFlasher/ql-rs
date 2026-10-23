@@ -18,7 +18,13 @@ pub mod prelude {
     };
     pub use ql_math::*;
     pub use ql_mc::*;
-    pub use ql_models::*;
+    pub use ql_models::{
+        AnalyticBsmHullWhiteEngine, BatesParams, CalibratedHestonModel, Complex, CosHestonEngine,
+        CosHestonHullWhiteEngine, HestonHullWhiteParams, HestonMarketQuote, HestonParams,
+        HullWhite1F, LiftedHestonParams, calibrate_heston, h1_hw_char_func_unit_spot,
+        heston_cos_price, lifted_heston_char_fn, lifted_heston_char_func_unit_spot,
+        lifted_heston_cos_price, lifted_heston_kernel,
+    };
     pub use ql_pde::*;
     pub use ql_portfolio::*;
     pub use ql_rates::*;

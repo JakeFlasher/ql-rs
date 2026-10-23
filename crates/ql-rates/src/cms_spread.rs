@@ -65,38 +65,27 @@ impl LognormalCmsSpreadPricer {
         (x, s.discount_df * s.accrual_factor * x)
     }
     pub fn caplet_pv<T: Real>(s: &CmsSpreadSpec<T>, strike: T) -> T {
-        s.discount_df
-            * s.accrual_factor
-            * bachelier_price(
-                Self::forward(s),
-                strike,
-                Self::normal_vol(s),
-                T::one(),
-                T::one(),
-                true,
-            )
+        Self::lognormal_caplet_pv(s, strike)
     }
     pub fn floorlet_pv<T: Real>(s: &CmsSpreadSpec<T>, strike: T) -> T {
-        s.discount_df
-            * s.accrual_factor
-            * bachelier_price(
-                Self::forward(s),
-                strike,
-                Self::normal_vol(s),
-                T::one(),
-                T::one(),
-                false,
-            )
+        // Put-call parity is exact for the same shifted-lognormal law and
+        // avoids introducing a second, independently approximated quadrature.
+        Self::caplet_pv(s, strike) - s.discount_df * s.accrual_factor * (Self::forward(s) - strike)
     }
     pub fn collar_pv<T: Real>(s: &CmsSpreadSpec<T>, cap_strike: T, floor_strike: T) -> T {
         Self::caplet_pv(s, cap_strike) - Self::floorlet_pv(s, floor_strike)
     }
     pub fn bachelier_spread_option_pv<T: Real>(s: &CmsSpreadSpec<T>, strike: T, is_cap: bool) -> T {
-        if is_cap {
-            Self::caplet_pv(s, strike)
-        } else {
-            Self::floorlet_pv(s, strike)
-        }
+        s.discount_df
+            * s.accrual_factor
+            * bachelier_price(
+                Self::forward(s),
+                strike,
+                Self::normal_vol(s),
+                T::one(),
+                T::one(),
+                is_cap,
+            )
     }
     pub fn lognormal_caplet_pv<T: Real>(s: &CmsSpreadSpec<T>, strike: T) -> T {
         // Brigo--Mercurio conditional shifted-lognormal quadrature.  The

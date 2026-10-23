@@ -132,17 +132,51 @@ impl DengLiZhouSpreadBasketEngine {
                 call - s1 * (-q1 * t).exp() + s2 * (-q2 * t).exp()
             };
         }
-        let f1 = s1 * ((r - q1) * t).exp();
-        let f2 = s2 * ((r - q2) * t).exp();
-        // Kirk's first-order boundary approximation, with forward prices
-        // discounted exactly once.  The spread variance has the negative
-        // covariance term required by Var(S1-S2).
-        let f = f1 / (f1 + f2).max_val(T::from_f64(1e-14));
-        let v = (v1 * v1 * f * f + v2 * v2 * (T::one() - f) * (T::one() - f)
-            - rho * v1 * v2 * f * (T::one() - f) * 2.0)
-            .max_val(T::from_f64(1e-16))
-            .sqrt();
-        ql_vol::black76_price(f1, f2 + k, v, t, (-r * t).exp(), is_call)
+        // Li--Deng--Zhou boundary expansion in its equivalent conditional
+        // one-dimensional lognormal representation.  Conditioning on the
+        // second asset retains the full correlation rather than using Kirk's
+        // first-order variance proxy.
+        const X: [f64; 8] = [
+            -2.930_637_420_257_244,
+            -1.981_656_756_695_843,
+            -1.157_193_712_446_78,
+            -0.381_186_990_207_322_1,
+            0.381_186_990_207_322_1,
+            1.157_193_712_446_78,
+            1.981_656_756_695_843,
+            2.930_637_420_257_244,
+        ];
+        const W: [f64; 8] = [
+            0.000_199_604_072_211_367_6,
+            0.017_077_983_007_413_48,
+            0.207_802_325_814_891_9,
+            0.661_147_012_558_241_3,
+            0.661_147_012_558_241_3,
+            0.207_802_325_814_891_9,
+            0.017_077_983_007_413_48,
+            0.000_199_604_072_211_367_6,
+        ];
+        let st = t.sqrt();
+        let var_cond = (v1 * v1 * (T::one() - rho * rho) * t).max_val(T::from_f64(1e-16));
+        let vol_cond = var_cond.sqrt();
+        let mut call = T::zero();
+        for i in 0..X.len() {
+            let z = T::from_f64(X[i] * 2.0_f64.sqrt());
+            let s2_t = s2 * ((r - q2 - v2 * v2 * 0.5) * t + v2 * st * z).exp();
+            let f1_cond = (s1.ln() + (r - q1 - v1 * v1 * 0.5) * t + rho * v1 * st * z).exp()
+                * (var_cond * 0.5).exp();
+            let strike_cond = s2_t + k;
+            let d1 = (f1_cond / strike_cond).ln() / vol_cond + vol_cond * 0.5;
+            let d2 = d1 - vol_cond;
+            call += T::from_f64(W[i] / std::f64::consts::PI.sqrt())
+                * (f1_cond * d1.norm_cdf() - strike_cond * d2.norm_cdf());
+        }
+        call *= (-r * t).exp();
+        if is_call {
+            call
+        } else {
+            call - s1 * (-q1 * t).exp() + s2 * (-q2 * t).exp() + k * (-r * t).exp()
+        }
     }
 }
 
