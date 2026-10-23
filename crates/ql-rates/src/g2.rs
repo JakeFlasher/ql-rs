@@ -51,17 +51,6 @@ pub struct G2PlusPlus<T: Real> {
     pub rho: T,
 }
 impl<T: Real> G2PlusPlus<T> {
-    fn nonzero(z: T) -> T {
-        if z.val().abs() < 1e-12 {
-            T::from_f64(if z.val().is_sign_negative() {
-                -1e-12
-            } else {
-                1e-12
-            })
-        } else {
-            z
-        }
-    }
     fn variance_term(z: T, t: f64) -> T {
         let x = z.val() * t;
         if x.abs() < 1e-5 {
@@ -219,24 +208,19 @@ impl<T: Real> G2PlusPlus<T> {
             T::zero()
         };
         let txy = (T::one() - rhoxy * rhoxy).sqrt();
-        let exp_at = (-self.a * t_exp).exp();
-        let exp_bt = (-self.b * t_exp).exp();
-        let exp_2at = (-self.a * (2.0 * t_exp)).exp();
-        let exp_2bt = (-self.b * (2.0 * t_exp)).exp();
-        let exp_abt = (-(self.a + self.b) * t_exp).exp();
-        let a_den = Self::nonzero(self.a);
-        let b_den = Self::nonzero(self.b);
-        let ab_den = Self::nonzero(self.a + self.b);
-        let temp_x = self.sigma * self.sigma / (a_den * a_den);
-        let temp_y = self.eta * self.eta / (b_den * b_den);
-        let mux = -((temp_x + self.rho * self.sigma * self.eta / (a_den * b_den))
-            * (T::one() - exp_at)
-            - temp_x * 0.5 * (T::one() - exp_2at)
-            - self.rho * self.sigma * self.eta / (b_den * ab_den) * (T::one() - exp_abt));
-        let muy = -((temp_y + self.rho * self.sigma * self.eta / (a_den * b_den))
-            * (T::one() - exp_bt)
-            - temp_y * 0.5 * (T::one() - exp_2bt)
-            - self.rho * self.sigma * self.eta / (a_den * ab_den) * (T::one() - exp_abt));
+        let bdiff = |z: T, other: T| {
+            if other.val().abs() * t_exp < 1e-5 {
+                let tt = T::from_f64(t_exp);
+                tt * tt * 0.5 - (z * 2.0 + other) * tt * tt * tt / 6.0
+                    + (z * z * 3.0 + z * other * 3.0 + other * other) * tt.powf(4.0) / 24.0
+            } else {
+                (Self::b_fn(z, t_exp) - Self::b_fn(z + other, t_exp)) / other
+            }
+        };
+        let mux = -(self.sigma * self.sigma * Self::b_fn(self.a, t_exp).powf(2.0) * 0.5
+            + self.rho * self.sigma * self.eta * bdiff(self.a, self.b));
+        let muy = -(self.eta * self.eta * Self::b_fn(self.b, t_exp).powf(2.0) * 0.5
+            + self.rho * self.sigma * self.eta * bdiff(self.b, self.a));
         let mut a_vec = Vec::with_capacity(n_payments);
         let mut ba_vec = Vec::with_capacity(n_payments);
         let mut bb_vec = Vec::with_capacity(n_payments);

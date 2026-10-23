@@ -1492,7 +1492,7 @@ fn benchmark_american_baw(scale: usize) -> ComparisonRow {
         "19_american_baw_ju_ift_dual5",
         "Ju/BAW scalar bumps versus one IFT Dual5 American pass",
         config(scale),
-        1e-5,
+        1e-7,
         {
             let strikes = strikes.clone();
             move || {
