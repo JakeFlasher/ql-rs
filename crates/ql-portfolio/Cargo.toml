@@ -1,0 +1,17 @@
+[package]
+name = "ql-portfolio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Incremental portfolio risk DAG"
+keywords=["finance","portfolio"]
+categories=["finance"]
+[dependencies]
+rayon.workspace = true
+ql-ad.workspace = true
+ql-math.workspace = true
+ql-time.workspace = true
+ql-curves.workspace = true
+ql-vol.workspace = true
+ql-models.workspace = true
+ql-scripting.workspace = true

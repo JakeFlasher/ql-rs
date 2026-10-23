@@ -1,0 +1,11 @@
+[package]
+name = "ql-dml"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Differential PCA, polynomial surrogates, and correlation AAD"
+[dependencies]
+ql-ad.workspace = true
+ql-math.workspace = true
+ql-mc.workspace = true
+nalgebra.workspace = true

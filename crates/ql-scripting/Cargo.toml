@@ -1,0 +1,12 @@
+[package]
+name = "ql-scripting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Declarative payoff scripting VM"
+keywords=["finance","scripting"]
+categories=["finance"]
+[dependencies]
+ql-ad.workspace = true
+ql-mc.workspace = true
+ql-vol.workspace = true

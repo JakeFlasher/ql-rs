@@ -1,0 +1,15 @@
+[package]
+name = "ql-fixed-income"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Parametric curves, callable and convertible bonds"
+[dependencies]
+ql-ad.workspace = true
+ql-math.workspace = true
+ql-curves.workspace = true
+ql-time.workspace = true
+ql-instruments.workspace = true
+ql-vol.workspace = true
+ql-inflation.workspace = true
+nalgebra.workspace = true

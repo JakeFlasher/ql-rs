@@ -1,0 +1,12 @@
+[package]
+name = "ql-commodities"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Commodity futures, equilibrium models, and spread options"
+[dependencies]
+ql-ad.workspace = true
+ql-math.workspace = true
+ql-instruments.workspace = true
+ql-curves.workspace = true
+ql-vol.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "ql-math"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Interpolators, root-finders, Gaussian quadratures, and Levenberg-Marquardt optimizers"
+keywords = ["finance", "quantitative"]
+categories = ["finance", "mathematics"]
+[dependencies]
+thiserror.workspace = true
+nalgebra.workspace = true
+ql-ad.workspace = true
+libm.workspace = true

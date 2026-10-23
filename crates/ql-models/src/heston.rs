@@ -1,0 +1,68 @@
+use crate::Complex;
+use ql_ad::Real;
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct HestonParams<T: Real> {
+    pub v0: T,
+    pub kappa: T,
+    pub theta: T,
+    pub sigma_v: T,
+    pub rho: T,
+}
+impl<T: Real> HestonParams<T> {
+    pub fn feller_ratio(&self) -> T {
+        if self.sigma_v.val().abs() < 1e-14 {
+            T::from_f64(f64::INFINITY)
+        } else {
+            self.kappa * self.theta * 2. / (self.sigma_v * self.sigma_v)
+        }
+    }
+    pub fn satisfies_feller(&self) -> bool {
+        self.feller_ratio().val() >= 1.
+    }
+    pub fn char_func_unit_spot(&self, u: Complex<T>, rate: T, div: T, tau: T) -> Complex<T> {
+        let i = Complex::i();
+        if self.sigma_v.val().abs() < 1e-12 {
+            let kappa_tau = self.kappa * tau;
+            let integrated_variance = if self.kappa.val().abs() < 1e-12 {
+                self.v0 * tau
+            } else {
+                self.theta * tau
+                    + (self.v0 - self.theta) * (T::one() - (-kappa_tau).exp()) / self.kappa
+            };
+            let mean = (rate - div) * tau - T::from_f64(0.5) * integrated_variance;
+            return (i * u * mean
+                - Complex::from_real(T::from_f64(0.5) * integrated_variance) * u * u)
+                .exp();
+        }
+        let xi = Complex::from_real(self.kappa) - i * self.rho * self.sigma_v * u;
+        let d =
+            (xi * xi + (Complex::from_real(self.sigma_v * self.sigma_v)) * (u * u + i * u)).sqrt();
+        let g = (xi - d) / (xi + d);
+        let ed = (-d * tau).exp();
+        let c = i * u * (rate - div) * tau
+            + Complex::from_real(self.kappa * self.theta / (self.sigma_v * self.sigma_v))
+                * ((xi - d) * tau
+                    - ((Complex::one() - g * ed) / (Complex::one() - g)).ln() * T::from_f64(2.0));
+        let dd = (xi - d) / (self.sigma_v * self.sigma_v) * (Complex::one() - ed)
+            / (Complex::one() - g * ed);
+        (c + dd * self.v0).exp()
+    }
+}
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct BatesParams<T: Real> {
+    pub heston: HestonParams<T>,
+    pub lambda: T,
+    pub mu_j: T,
+    pub sigma_j: T,
+}
+impl<T: Real> BatesParams<T> {
+    pub fn char_func_unit_spot(&self, u: Complex<T>, rate: T, div: T, tau: T) -> Complex<T> {
+        let i = Complex::i();
+        let jump = (i * u * self.mu_j
+            - (Complex::from_real(self.sigma_j * self.sigma_j) * u * u) * T::from_f64(0.5))
+        .exp();
+        let comp = (self.mu_j + self.sigma_j * self.sigma_j * 0.5).exp() - 1.;
+        self.heston.char_func_unit_spot(u, rate, div, tau)
+            * (Complex::from_real(self.lambda * tau) * (jump - Complex::one() - i * u * comp)).exp()
+    }
+}

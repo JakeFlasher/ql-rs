@@ -1,0 +1,17 @@
+[package]
+name = "ql-mc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Structure of arrays Monte Carlo engines"
+keywords=["finance","monte-carlo"]
+categories=["finance","mathematics"]
+[dependencies]
+nalgebra.workspace = true
+rayon.workspace = true
+ql-ad.workspace = true
+ql-math.workspace = true
+ql-models.workspace = true
+ql-vol.workspace = true
+ql-pde.workspace = true
+ql-instruments.workspace = true

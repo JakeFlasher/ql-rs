@@ -1,0 +1,12 @@
+[package]
+name = "ql-time"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Packed calendar bitsets, dates, day-count conventions, and schedules"
+keywords = ["finance", "quantitative"]
+categories = ["finance", "mathematics"]
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+smallvec.workspace = true

@@ -1,0 +1,32 @@
+[package]
+name = "ql-terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure-Rust quantitative risk workstation and unified SDK"
+keywords = ["finance", "risk", "terminal"]
+categories = ["finance"]
+
+[dependencies]
+ql-time.workspace = true
+ql-ad.workspace = true
+ql-math.workspace = true
+ql-curves.workspace = true
+ql-vol.workspace = true
+ql-instruments.workspace = true
+ql-models.workspace = true
+ql-pde.workspace = true
+ql-mc.workspace = true
+ql-scripting.workspace = true
+ql-xva.workspace = true
+ql-portfolio.workspace = true
+ql-credit.workspace = true
+ql-inflation.workspace = true
+ql-fx.workspace = true
+ql-benches.workspace = true
+ql-rates.workspace = true
+ql-dml.workspace = true
+ql-exotics.workspace = true
+ql-commodities.workspace = true
+ql-levy.workspace = true
+ql-fixed-income.workspace = true

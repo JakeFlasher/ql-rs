@@ -1,0 +1,16 @@
+[package]
+name = "ql-instruments"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Structure-of-Arrays fixed-income legs, swaps, and vanilla instruments"
+keywords = ["finance", "quantitative"]
+categories = ["finance", "mathematics"]
+[dependencies]
+thiserror.workspace = true
+nalgebra.workspace = true
+ql-ad.workspace = true
+ql-time.workspace = true
+ql-math.workspace = true
+ql-curves.workspace = true
+ql-vol.workspace = true

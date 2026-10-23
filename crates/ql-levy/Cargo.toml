@@ -1,0 +1,12 @@
+[package]
+name = "ql-levy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Exponential Levy models and COS pricing"
+[dependencies]
+ql-ad.workspace = true
+ql-math.workspace = true
+ql-instruments.workspace = true
+ql-vol.workspace = true
+libm.workspace = true

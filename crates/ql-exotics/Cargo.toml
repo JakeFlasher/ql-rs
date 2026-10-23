@@ -1,0 +1,12 @@
+[package]
+name = "ql-exotics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Analytical exotic equity derivatives"
+[dependencies]
+ql-ad.workspace = true
+ql-math.workspace = true
+ql-instruments.workspace = true
+ql-models.workspace = true
+ql-vol.workspace = true

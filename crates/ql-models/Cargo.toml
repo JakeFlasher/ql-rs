@@ -1,0 +1,16 @@
+[package]
+name = "ql-models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Stochastic models and Fourier pricing engines"
+keywords=["finance","heston"]
+categories=["finance","mathematics"]
+[dependencies]
+thiserror.workspace = true
+nalgebra.workspace = true
+ql-ad.workspace = true
+ql-math.workspace = true
+ql-curves.workspace = true
+libm.workspace = true
+ql-time.workspace = true
