@@ -1963,15 +1963,51 @@ fn benchmark_slv_autocall(scale: usize) -> ComparisonRow {
             let s = spec.clone();
             move || {
                 let h = 1e-5;
-                let mut m = ql_exotics::price_worst_of_autocallable(&s, 64, 7).unwrap();
-                for i in 0..4 {
+                let p0 = ql_exotics::price_worst_of_autocallable(&s, 64, 7).unwrap();
+                let mut m = p0;
+                for i in 0..s.spots.len() {
                     let mut u = s.clone();
                     let mut d = s.clone();
                     u.spots[i] += h;
                     d.spots[i] -= h;
-                    m += (ql_exotics::price_worst_of_autocallable(&u, 64, 7).unwrap()
+                    let dv = (ql_exotics::price_worst_of_autocallable(&u, 64, 7).unwrap()
                         - ql_exotics::price_worst_of_autocallable(&d, 64, 7).unwrap())
-                        / (2. * h);
+                        / (2.0 * h);
+                    m += dv;
+                }
+                for i in 0..s.vols.len() {
+                    let mut u = s.clone();
+                    let mut d = s.clone();
+                    u.vols[i] += h;
+                    d.vols[i] -= h;
+                    let dv = (ql_exotics::price_worst_of_autocallable(&u, 64, 7).unwrap()
+                        - ql_exotics::price_worst_of_autocallable(&d, 64, 7).unwrap())
+                        / (2.0 * h);
+                    m += dv;
+                }
+                {
+                    let mut u = s.clone();
+                    let mut d = s.clone();
+                    u.rate += h;
+                    d.rate -= h;
+                    let dv = (ql_exotics::price_worst_of_autocallable(&u, 64, 7).unwrap()
+                        - ql_exotics::price_worst_of_autocallable(&d, 64, 7).unwrap())
+                        / (2.0 * h);
+                    m += dv;
+                }
+                for i in 0..4 {
+                    for j in 0..i {
+                        let mut u = s.clone();
+                        let mut d = s.clone();
+                        u.correlation[i][j] += h;
+                        u.correlation[j][i] += h;
+                        d.correlation[i][j] -= h;
+                        d.correlation[j][i] -= h;
+                        let dv = (ql_exotics::price_worst_of_autocallable(&u, 64, 7).unwrap()
+                            - ql_exotics::price_worst_of_autocallable(&d, 64, 7).unwrap())
+                            / (2.0 * h);
+                        m += dv;
+                    }
                 }
                 m
             }
@@ -1980,16 +2016,24 @@ fn benchmark_slv_autocall(scale: usize) -> ComparisonRow {
             let s = spec;
             move || {
                 let r = ql_exotics::price_worst_of_autocallable_aad(&s, 64, 4, 7).unwrap();
-                r.price + r.spot_deltas.iter().sum::<f64>()
+                r.price
+                    + r.spot_deltas.iter().sum::<f64>()
+                    + r.vegas.iter().sum::<f64>()
+                    + r.rate_rho
+                    + r.corr_cega
+                        .iter()
+                        .enumerate()
+                        .map(|(i, row)| row.iter().take(i).sum::<f64>())
+                        .sum::<f64>()
             }
         },
     )
 }
 fn benchmark_frtb_cvar_execution(scale: usize) -> ComparisonRow {
     let spec = ql_portfolio::AlmgrenChrissSpec {
-        initial_inventory: 1.0,
+        initial_inventory: 100.0,
         horizon: 1.0,
-        num_steps: 8,
+        num_steps: 16,
         volatility: 0.2,
         temporary_impact: 0.01,
         permanent_impact: 0.001,
@@ -2003,16 +2047,62 @@ fn benchmark_frtb_cvar_execution(scale: usize) -> ComparisonRow {
         {
             let s = spec.clone();
             move || {
-                let r = ql_portfolio::try_almgren_chriss_execution(&s).expect("AC");
-                r.expected_cost.val() + s.risk_aversion.val() * r.cost_variance.val()
+                let h = 1e-6;
+                let base = ql_portfolio::almgren_chriss_execution(&s).mean_variance_utility;
+                let mut v_up = s.clone();
+                let mut v_dn = s.clone();
+                v_up.volatility += h;
+                v_dn.volatility -= h;
+                let mut t_up = s.clone();
+                let mut t_dn = s.clone();
+                t_up.temporary_impact += h;
+                t_dn.temporary_impact -= h;
+                let mut p_up = s.clone();
+                let mut p_dn = s.clone();
+                p_up.permanent_impact += h;
+                p_dn.permanent_impact -= h;
+                let mut r_up = s.clone();
+                let mut r_dn = s.clone();
+                r_up.risk_aversion += h;
+                r_dn.risk_aversion -= h;
+                base + (ql_portfolio::almgren_chriss_execution(&v_up).mean_variance_utility
+                    - ql_portfolio::almgren_chriss_execution(&v_dn).mean_variance_utility
+                    + ql_portfolio::almgren_chriss_execution(&t_up).mean_variance_utility
+                    - ql_portfolio::almgren_chriss_execution(&t_dn).mean_variance_utility
+                    + ql_portfolio::almgren_chriss_execution(&p_up).mean_variance_utility
+                    - ql_portfolio::almgren_chriss_execution(&p_dn).mean_variance_utility
+                    + ql_portfolio::almgren_chriss_execution(&r_up).mean_variance_utility
+                    - ql_portfolio::almgren_chriss_execution(&r_dn).mean_variance_utility)
+                    / (2.0 * h)
             }
         },
         {
             let s = spec;
             move || {
-                ql_portfolio::almgren_chriss_execution(&s)
-                    .mean_variance_utility
-                    .val()
+                type D = Dual<4>;
+                let sd = ql_portfolio::AlmgrenChrissSpec {
+                    initial_inventory: D::from_value(s.initial_inventory),
+                    horizon: D::from_value(s.horizon),
+                    num_steps: s.num_steps,
+                    volatility: D {
+                        val: s.volatility,
+                        d: [1.0, 0.0, 0.0, 0.0],
+                    },
+                    temporary_impact: D {
+                        val: s.temporary_impact,
+                        d: [0.0, 1.0, 0.0, 0.0],
+                    },
+                    permanent_impact: D {
+                        val: s.permanent_impact,
+                        d: [0.0, 0.0, 1.0, 0.0],
+                    },
+                    risk_aversion: D {
+                        val: s.risk_aversion,
+                        d: [0.0, 0.0, 0.0, 1.0],
+                    },
+                };
+                let u = ql_portfolio::almgren_chriss_execution(&sd).mean_variance_utility;
+                u.val + u.d.iter().sum::<f64>()
             }
         },
     )

@@ -54,17 +54,19 @@ fn charge<T: Real>(b: &FrtbSensitivityBucket<T>, scale: f64) -> T {
             let c = if i == j {
                 1.
             } else {
-                b.intra_bucket_corr
+                (b.intra_bucket_corr
                     .get(i)
                     .and_then(|r| r.get(j))
                     .copied()
                     .unwrap_or(0.)
+                    * scale)
+                    .clamp(-1., 1.)
             };
             q += T::from_f64(c)
                 * b.delta_sensitivities[i]
-                * T::from_f64(b.delta_risk_weights[i] * scale)
+                * T::from_f64(b.delta_risk_weights[i])
                 * b.delta_sensitivities[j]
-                * T::from_f64(b.delta_risk_weights[j] * scale);
+                * T::from_f64(b.delta_risk_weights[j]);
         }
     }
     q.max_val(T::zero()).sqrt()
@@ -74,7 +76,7 @@ pub fn compute_frtb_sa<T: Real>(s: &FrtbSaSpec<T>) -> FrtbSaReport<T> {
     for b in &s.buckets {
         sc[0] += charge(b, 0.75);
         sc[1] += charge(b, 1.);
-        sc[2] += charge(b, 10.25);
+        sc[2] += charge(b, 1.25);
     }
     let mut drc = T::zero();
     for bucket in 0..=s

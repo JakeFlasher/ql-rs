@@ -53,11 +53,13 @@ use ql_fx::{FxSmileQuote, FxVannaVolgaSmile, garman_kohlhagen_spot_delta};
 use ql_inflation::{CalibratedInflationCurve, MultiplicativeSeasonality, ZeroCouponInflationSwap};
 use ql_instruments::{BaroneAdesiWhaleyEngine, SwapType, VanillaSwapSpec};
 use ql_levy::{VarianceGamma, cos_levy_price};
+use ql_models::rough::{RoughBergomiParams, rbergomi_hybrid_mc_price};
 use ql_models::{HestonParams, HullWhite1F, LiftedHestonParams, lifted_heston_cos_price};
 use ql_portfolio::gaussian_expected_shortfall;
 use ql_portfolio::{
-    BoxConstrainedMarkowitzSpec, MarketSnapshot, PortfolioDag, PortfolioRiskSummary,
-    PortfolioTrade, box_constrained_markowitz_weights, equal_risk_contribution_weights,
+    BoxConstrainedMarkowitzSpec, MarketSnapshot, ObizhaevaWangSpec, PortfolioDag,
+    PortfolioRiskSummary, PortfolioTrade, box_constrained_markowitz_weights,
+    equal_risk_contribution_weights, obizhaeva_wang_execution,
 };
 use ql_rates::{
     BermudanSwaption, EuropeanSwaption, G2PlusPlus, HullWhiteBermudanTreeEngine, RfrCapletSpec,
@@ -1263,6 +1265,35 @@ impl DeskWorkstation {
                 .expect("live SABR telemetry");
         let (sabr_atm, sabr_vega) = sabr_live.vol_and_quote_vega(sabr_forward);
         let sabr_metric = sabr_atm + sabr_vega.iter().sum::<f64>();
+        let rough_metric = rbergomi_hybrid_mc_price(
+            market.eq_spot,
+            100.0,
+            1.0,
+            rate,
+            0.0,
+            &RoughBergomiParams {
+                xi0: market.heston_params.v0,
+                eta: market.heston_params.sigma_v,
+                rho: market.heston_params.rho,
+                hurst: 0.1,
+            },
+            8,
+            64,
+            true,
+            self.tick as u64,
+        )
+        .val();
+        let execution_metric = obizhaeva_wang_execution(&ObizhaevaWangSpec {
+            initial_inventory: 1_000_000.0,
+            trade_times: (0..=8).map(|i| i as f64 / 8.0).collect(),
+            volatility: market.eq_vol,
+            transient_impact: 0.01,
+            resilience_speed: 0.5,
+            temporary_impact: 0.001,
+            risk_aversion: 0.1,
+        })
+        .mean_variance_utility
+        .val();
         let blotter_rows = vec![
             ("IRS 5Y PayFix".to_string(), irs_npv, "IFT".to_string()),
             ("Heston Call 1Y".to_string(), heston_npv, "COS".to_string()),
@@ -1357,8 +1388,8 @@ impl DeskWorkstation {
             jump_to_default: jtd,
             bermudan_sabr_metric: bermudan_value + sabr_metric,
             sacc_swing_qp_metric: sa_report.ead.val() + swing_value + qp_value,
-            slv_rough_worst_of_metric: (bermudan_value + sabr_metric).abs(),
-            frtb_cvar_execution_metric: (sa_report.ead.val() + swing_value + qp_value).abs(),
+            slv_rough_worst_of_metric: rough_metric,
+            frtb_cvar_execution_metric: execution_metric,
             blotter_rows,
         }
     }

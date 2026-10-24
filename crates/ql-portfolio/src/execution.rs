@@ -85,7 +85,25 @@ pub fn try_obizhaeva_wang_execution<T: Real>(
         return Err(AllocationError::InvalidDimensions);
     }
     let n = s.trade_times.len();
-    let trades = vec![s.initial_inventory / T::from_f64((n - 1) as f64); n - 1];
+    let m = (n - 1).max(1);
+    let raw: Vec<T> = (0..m)
+        .map(|i| {
+            if i == 0 || i + 1 == m {
+                T::one() + s.transient_impact * s.resilience_speed
+            } else {
+                T::one()
+            }
+        })
+        .collect();
+    let rsum = raw
+        .iter()
+        .copied()
+        .fold(T::zero(), |a, z| a + z)
+        .max_val(T::from_f64(1e-12));
+    let trades: Vec<T> = raw
+        .into_iter()
+        .map(|w| s.initial_inventory * w / rsum)
+        .collect();
     let mut inv = Vec::with_capacity(n);
     let mut left = s.initial_inventory;
     inv.push(left);

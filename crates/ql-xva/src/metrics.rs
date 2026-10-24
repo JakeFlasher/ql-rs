@@ -418,15 +418,17 @@ pub fn compute_bilateral_xva<T: Real>(
             continue;
         }
         let df = ois_dfs.get(k).copied().unwrap_or(T::one());
-        let sc0 = cpty_survival
-            .get(k.saturating_sub(1))
-            .copied()
-            .unwrap_or(T::one());
+        let sc0 = if k == 0 {
+            T::one()
+        } else {
+            cpty_survival.get(k - 1).copied().unwrap_or(T::one())
+        };
         let sc = cpty_survival.get(k).copied().unwrap_or(sc0);
-        let sb0 = own_survival
-            .get(k.saturating_sub(1))
-            .copied()
-            .unwrap_or(T::one());
+        let sb0 = if k == 0 {
+            T::one()
+        } else {
+            own_survival.get(k - 1).copied().unwrap_or(T::one())
+        };
         let sb = own_survival.get(k).copied().unwrap_or(sb0);
         let den = T::from_f64(cube.n_paths.max(1) as f64);
         let mut pos = T::zero();
@@ -465,10 +467,6 @@ pub fn compute_bilateral_xva<T: Real>(
         if matches!(spec.close_out, XvaCloseOutConvention::Replacement) {
             let next = -(cv - dv + fc - fb + co);
             iterations += 1;
-            if (next - u).val().abs() < 1e-13 {
-                u = next;
-                break;
-            }
             u = next;
         }
         cva += cv;
@@ -476,9 +474,6 @@ pub fn compute_bilateral_xva<T: Real>(
         fca += fc;
         fba += fb;
         colva += co;
-    }
-    if matches!(spec.close_out, XvaCloseOutConvention::Replacement) {
-        cva = -u;
     }
     let total = cva - dva + fca - fba + colva;
     BilateralXvaReport {

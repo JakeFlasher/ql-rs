@@ -67,7 +67,7 @@ impl<T: Real> ForwardMarketModel<T> {
             let f = f0 * (vol_t * z - vol_t * vol_t * 0.5).exp() - shift;
             sum += (f - strike).max_val(T::zero()) * tau;
         }
-        df * self.initial_df_t0 * sum / n_paths.max(1) as f64
+        df * sum / n_paths.max(1) as f64
     }
     pub fn price_tarn_mc(&self, spec: &TarnSpec<T>, n_paths: usize, seed: u64) -> T {
         let rng = PhiloxRng::new(seed);
@@ -90,7 +90,7 @@ impl<T: Real> ForwardMarketModel<T> {
                     .min_val(spec.coupon_cap);
                 let remaining = (spec.target_coupon - accrued).max_val(T::zero());
                 let paid = c.min_val(remaining);
-                pv += paid * tau * (-spec.fixed_rate * self.tenor_times[i]).exp();
+                pv += paid * tau * self.discount_factor_0(i + 1);
                 accrued += paid;
                 if accrued.val() >= spec.target_coupon.val() {
                     break;
@@ -121,10 +121,7 @@ impl<T: Real> ForwardMarketModel<T> {
                 let indicator = f.smooth_heaviside(spec.lower_bound, spec.smoothing_eps)
                     * (T::one() - f.smooth_heaviside(spec.upper_bound, spec.smoothing_eps));
                 let tau = self.tenor_times[i + 1] - self.tenor_times[i];
-                pv += spec.coupon_rate
-                    * tau
-                    * indicator
-                    * (-spec.coupon_rate * self.tenor_times[i + 1]).exp();
+                pv += spec.coupon_rate * tau * indicator * self.discount_factor_0(i + 1);
                 if spec.call_period_indices.contains(&(i + 1)) && pv.val() > 0.0 {
                     break;
                 }
@@ -133,4 +130,22 @@ impl<T: Real> ForwardMarketModel<T> {
         }
         total / n_paths.max(1) as f64
     }
+}
+
+pub fn price_tarn_lmm<T: Real>(
+    m: &ForwardMarketModel<T>,
+    s: &TarnSpec<T>,
+    np: usize,
+    seed: u64,
+) -> T {
+    m.price_tarn_mc(s, np, seed)
+}
+
+pub fn price_callable_range_accrual_lmm<T: Real>(
+    m: &ForwardMarketModel<T>,
+    s: &CallableRangeAccrualSpec<T>,
+    np: usize,
+    seed: u64,
+) -> T {
+    m.price_callable_range_accrual_mc(s, np, seed)
 }

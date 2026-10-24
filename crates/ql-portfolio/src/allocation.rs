@@ -658,7 +658,16 @@ pub fn try_mean_cvar_weights<T: Real>(
     let covariance = (0..n)
         .map(|i| {
             (0..n)
-                .map(|j| if i == j { T::one() } else { T::zero() })
+                .map(|j| {
+                    if i == j {
+                        s.scenario_returns
+                            .iter()
+                            .map(|r| (-r[i]).max_val(T::zero()) * (-r[i]).max_val(T::zero()))
+                            .fold(T::from_f64(1e-4), |a, z| a + z)
+                    } else {
+                        T::zero()
+                    }
+                })
                 .collect()
         })
         .collect();

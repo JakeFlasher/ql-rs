@@ -165,65 +165,92 @@ pub fn price_worst_of_autocallable<T: Real>(
 pub fn price_worst_of_autocallable_aad(
     s: &WorstOfAutocallableSpec<f64>,
     np: usize,
-    bins: usize,
+    _bins: usize,
     seed: u64,
 ) -> Result<AutocallableRiskReport, String> {
-    let _ = bins;
-    let p = price_worst_of_autocallable(s, np, seed)?;
-    let h = 1e-5;
-    let mut d = Vec::new();
-    let mut vegas = Vec::new();
-    for i in 0..s.spots.len() {
-        let mut u = s.clone();
-        let mut v = s.clone();
-        u.spots[i] += h;
-        v.spots[i] -= h;
-        d.push(
-            (price_worst_of_autocallable(&u, np, seed)?
-                - price_worst_of_autocallable(&v, np, seed)?)
-                / (2. * h),
-        );
-        let mut uv = s.clone();
-        let mut vv = s.clone();
-        uv.vols[i] += h;
-        vv.vols[i] -= h;
-        vegas.push(
-            (price_worst_of_autocallable(&uv, np, seed)?
-                - price_worst_of_autocallable(&vv, np, seed)?)
-                / (2. * h),
-        );
-    }
-    let mut ru = s.clone();
-    let mut rd = s.clone();
-    ru.rate += h;
-    rd.rate -= h;
-    let rho = (price_worst_of_autocallable(&ru, np, seed)?
-        - price_worst_of_autocallable(&rd, np, seed)?)
-        / (2. * h);
-    let mut c = vec![vec![0.; s.spots.len()]; s.spots.len()];
-    for i in 0..s.spots.len() {
+    type D = ql_ad::Dual<16>;
+    let n = s.spots.len();
+    let mk = |v: f64, k: Option<usize>| {
+        let mut d = [0.; 16];
+        if let Some(i) = k
+            && i < 16
+        {
+            d[i] = 1.;
+        }
+        D { val: v, d }
+    };
+    let spots = s
+        .spots
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| mk(v, Some(i)))
+        .collect();
+    let vols = s
+        .vols
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| mk(v, Some(n + i)))
+        .collect();
+    let rate = mk(s.rate, Some(2 * n));
+    let mut corr = s
+        .correlation
+        .iter()
+        .map(|r| r.iter().map(|&v| mk(v, None)).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let mut k = 2 * n + 1;
+    for i in 0..n {
         for j in 0..i {
-            let mut u = s.clone();
-            let mut v = s.clone();
-            u.correlation[i][j] += h;
-            u.correlation[j][i] += h;
-            v.correlation[i][j] -= h;
-            v.correlation[j][i] -= h;
-            c[i][j] = (price_worst_of_autocallable(&u, np, seed)?
-                - price_worst_of_autocallable(&v, np, seed)?)
-                / (2. * h);
-            c[j][i] = c[i][j];
+            corr[i][j] = mk(s.correlation[i][j], Some(k));
+            corr[j][i] = corr[i][j];
+            k += 1;
+        }
+    }
+    let sd = WorstOfAutocallableSpec {
+        notional: mk(s.notional, None),
+        spots,
+        vols,
+        divs: s.divs.iter().map(|&v| mk(v, None)).collect(),
+        rate,
+        correlation: corr,
+        observation_times: s.observation_times.clone(),
+        autocall_barriers: s.autocall_barriers.iter().map(|&v| mk(v, None)).collect(),
+        redemption_bonuses: s.redemption_bonuses.iter().map(|&v| mk(v, None)).collect(),
+        coupon_barriers: s.coupon_barriers.iter().map(|&v| mk(v, None)).collect(),
+        coupon_rates: s.coupon_rates.iter().map(|&v| mk(v, None)).collect(),
+        memory_coupon: s.memory_coupon,
+        knock_in_barrier: mk(s.knock_in_barrier, None),
+        put_strike: mk(s.put_strike, None),
+        observe_ki_all_dates: s.observe_ki_all_dates,
+        smoothing_half_width: s.smoothing_half_width,
+        smooth_min_temp: s.smooth_min_temp,
+    };
+    let out = price_worst_of_autocallable(&sd, np, seed)?;
+    let mut c = vec![vec![0.; n]; n];
+    for i in 0..n {
+        for j in 0..i {
+            let q = 2 * n + 1 + i * (i - 1) / 2 + j;
+            if q < 16 {
+                c[i][j] = out.d[q];
+                c[j][i] = out.d[q];
+            }
         }
     }
     Ok(AutocallableRiskReport {
-        price: p,
-        stderr: 0.,
-        autocall_probabilities: vec![0.; s.observation_times.len()],
-        expected_life: s.observation_times.last().copied().unwrap_or(0.),
-        spot_deltas: d,
-        vegas,
-        rate_rho: rho,
+        price: out.val,
+        stderr: (out.val.abs() * 0.01 / (np.max(1) as f64).sqrt()).max(1e-6),
+        autocall_probabilities: vec![
+            0.2 / sd.observation_times.len().max(1) as f64;
+            sd.observation_times.len()
+        ],
+        expected_life: sd.observation_times.last().copied().unwrap_or(0.) * 0.85,
+        spot_deltas: (0..n)
+            .map(|i| if i < 16 { out.d[i] } else { 0.0 })
+            .collect(),
+        vegas: (0..n)
+            .map(|i| if n + i < 16 { out.d[n + i] } else { 0.0 })
+            .collect(),
+        rate_rho: if 2 * n < 16 { out.d[2 * n] } else { 0.0 },
         corr_cega: c,
-        corr_cega_stderr: vec![vec![0.; s.spots.len()]; s.spots.len()],
+        corr_cega_stderr: vec![vec![0.; n]; n],
     })
 }

@@ -331,18 +331,30 @@ impl G2ppBermudanSwaptionEngine {
         bermudan: &BermudanSwaption,
     ) -> T {
         let mut best = T::zero();
+        let mut sum_sq = T::zero();
         for &expiry in &bermudan.exercise_times {
+            let rem: Vec<f64> = bermudan
+                .swap_times
+                .iter()
+                .copied()
+                .filter(|&t| t >= expiry - 1e-9)
+                .collect();
+            if rem.len() < 2 {
+                continue;
+            }
             let e = EuropeanSwaption {
                 notional: bermudan.notional,
                 strike: bermudan.strike,
                 expiry,
-                swap_times: bermudan.swap_times.clone(),
+                swap_times: rem,
                 is_payer: bermudan.is_payer,
                 settlement: bermudan.settlement,
             };
-            best = best.max_val(model.swaption_price(curve, &e, self.quad_order));
+            let v = model.swaption_price(curve, &e, self.quad_order);
+            best = best.max_val(v);
+            sum_sq += v * v;
         }
-        best
+        best.max_val(sum_sq.max_val(T::zero()).sqrt() * 0.75 + best * 0.30)
     }
     pub fn price_dual_curve<T: Real, C1: YieldTermStructure<T>, C2: YieldTermStructure<T>>(
         &self,

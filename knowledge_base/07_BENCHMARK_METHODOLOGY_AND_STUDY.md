@@ -44,8 +44,8 @@ Each suite has a deterministic workload, one warmup, 31 timing samples, and a co
 | 20 | $2(N + N(N+1)/2)$ perturbed Cyclical Coordinate Descent Risk-Budgeting / ERC optimizations for an $N=12$ multi-asset portfolio | One primal CCD + Newton–Cholesky solve lifted via exact IFT Hessian $H = \Sigma + \operatorname{diag}(b/y^{*2})$ into full `TapeVar` / `Dual` covariance & budget sensitivities. |
 | 21 | Fourteen central finite-difference bumps (6 OIS pillars + 6 forward pillars + 2 Hull–White $(a, \sigma)$ parameters) of a multi-exercise Bermudan swaption on a 1F Hull–White trinomial tree | Single-pass `Dual` / `TapeVar` evaluation of `HullWhiteBermudanTreeEngine` with closed-form Arrow–Debreu shifts and multi-curve IFT par-swap DV01 projection. |
 | 22 | Sixteen central finite-difference recalibrations of an 8-strike SABR/SVI volatility smile plus $2(N + N(N+1)/2)$ perturbed active-set solves of a box-constrained Markowitz QP | Cached second-order optimality IFT (`Dual2`) smile Jacobian + single reduced-KKT linear solve (`solve_linear_generic`) on the free set $\mathcal{F}$. |
-| 23 | SLV/rBergomi particle and worst-of autocallable Cega workloads | Hybrid Monte Carlo and fuzzy-AAD autocallable engine. |
-| 24 | FRTB/CVaR and optimal-execution workloads | Standardized capital, scenario CVaR and execution KKT kernels. |
+| 23 | Base worst-of autocallable plus 31 central spot/vol/rate/correlation bumps | One `Dual<16>` path valuation with spot, vega, rho and Cega extraction. |
+| 24 | Base Almgren--Chriss utility plus four central parameter bumps | One `Dual<4>` execution pass for volatility, temporary/permanent impact and risk aversion. |
 
 ## 5. Current empirical table
 
@@ -53,27 +53,27 @@ The following is generated from the release tree by `cargo run -p ql-benches --r
 
 | Benchmark ID | Architectural Comparison | Legacy Baseline (ns/op) | ql-rs SOTA (ns/op) | Speedup (x) | Parity Diff |
 |---|---|---:|---:|---:|---:|
-| 01_calendar_popcnt | day-by-day holidays vs. packed POPCNT calendar | 186460.55 (IQR 8532.65) | 2907.70 (IQR 26.05) | 64.13x | 0.000e0 |
-| 02_leg_simd_soa | boxed AoS virtual dispatch vs. contiguous SIMD SoA | 35103.82 (IQR 579.35) | 2095.55 (IQR 11.12) | 16.75x | 1.490e-7 |
-| 03_multicurve_ift_dv01 | 12 bump-and-rebootstrap valuations vs. cached IFT VJP | 235742.62 (IQR 5165.70) | 3784.70 (IQR 143.62) | 62.29x | 5.797e-5 |
-| 04_implied_vol_ift_dual2 | nine Jäckel finite-difference solves vs. one Dual2 IFT solve | 88656.68 (IQR 386.88) | 28366.33 (IQR 169.03) | 3.13x | 1.350e-5 |
-| 05_heston_cos_dual5 | ten central COS valuations vs. one Dual5 COS valuation | 1832961.25 (IQR 33856.12) | 720012.22 (IQR 1517.28) | 2.55x | 2.821e-4 |
-| 06_gbm_mc_simd8 | scalar Philox path loop vs. 8-lane antithetic GBM | 525030.45 (IQR 10976.38) | 144268.10 (IQR 793.68) | 3.64x | 7.393e-11 |
-| 07_scripted_autocall_fuzzy_aad | nine bumped scripted MC runs vs. one four-input fuzzy-AAD run | 756024.03 (IQR 5015.15) | 168476.95 (IQR 444.98) | 4.49x | 2.914e-5 |
-| 08_portfolio_dag_incremental | full bootstrap/revaluation vs. content-addressed incremental DAG | 3029996.95 (IQR 38860.85) | 268027.50 (IQR 22589.62) | 11.30x | 0.000e0 |
-| 09_credit_cds_ift_cs01 | ten bump-and-rebootstrap CDS strips vs. cached hazard IFT CS01 | 362056.97 (IQR 13153.07) | 15398.50 (IQR 192.33) | 23.51x | 1.842e-8 |
-| 10_fx_vanna_volga_dual3 | seven scalar FX smile quote bumps vs. one Dual3 smile pass | 58283.80 (IQR 193.75) | 20100.20 (IQR 903.40) | 2.90x | 5.010e-5 |
-| 11_capriotti_giles_cholesky_corr_aad | 66 correlation bumps vs. one adjoint Cholesky pass | 19205775.20 (IQR 266439.15) | 198909.67 (IQR 7409.57) | 96.56x | 8.326e-9 |
-| 12_chebyshev_dynamic_simm_mva | brute-force dynamic margin vs. Chebyshev model-space margin | 1775526.48 (IQR 41172.77) | 207194.42 (IQR 1709.90) | 8.57x | 9.006e-10 |
-| 13_reiner_rubinstein_barrier_dual5 | six finite-difference barrier bumps vs. one Dual5 analytical pass | 37078.12 (IQR 1467.95) | 11385.27 (IQR 206.67) | 3.26x | 1.854e-7 |
-| 14_burley_owen_rqmc_variance_reduction | pseudo-random Asian paths vs. Burley--Owen Sobol Brownian-bridge RQMC | 13413052.38 (IQR 79407.10) | 1177692.02 (IQR 8693.62) | 11.39x | 2.719e-3 |
-| 15_levy_cos_vg_dual5 | finite-difference VG COS strip Greeks vs. one Dual5 COS pass | 2313583.40 (IQR 24801.05) | 128065.52 (IQR 1996.05) | 18.07x | 4.346e-7 |
-| 16_asb_cdo_tranche_recursion_dual | eleven ASB loss recursions vs. one Dual5 tranche pass | 207559.77 (IQR 4052.40) | 52946.38 (IQR 2179.18) | 3.92x | 2.850e-10 |
-| 17_rfr_sabr_caplet_strip_dual4 | scalar RFR SABR strip bumps vs Dual4 effective-SABR strip | 29379.42 (IQR 360.45) | 6110.57 (IQR 71.97) | 4.81x | 8.401e-9 |
-| 18_xccs_multicurrency_ift_dv01 | XCCS bump/bootstrap versus cached IFT basis risk | 1918008.93 (IQR 40716.68) | 11083.88 (IQR 216.38) | 173.04x | 4.775e-9 |
-| 19_american_baw_ju_ift_dual5 | Ju/BAW scalar bumps versus one IFT Dual5 American pass | 519054.70 (IQR 5982.10) | 55881.35 (IQR 254.78) | 9.29x | 5.363e-8 |
-| 20_risk_parity_ift_allocation_aad | ninety covariance/budget bumps versus one IFT risk-parity solve | 13197240.80 (IQR 101073.50) | 153420.58 (IQR 1345.45) | 86.02x | 1.734e-10 |
-| 21_bermudan_hw1f_tree_ift_dv01 | Bermudan Hull--White tree quote and parameter finite differences versus AD | 753064.60 (IQR 8357.75) | 293418.88 (IQR 4900.95) | 2.57x | 5.596e-9 |
-| 22_sabr_svi_ift_and_qp_kkt_aad | SABR quote recalibration and constrained Markowitz finite differences versus IFT/KKT AD | 485636.35 (IQR 6527.57) | 7019.02 (IQR 68.78) | 69.19x | 2.947e-7 |
-| 23_slv_rbergomi_and_autocallable_cega_aad | SLV/rBergomi and worst-of autocallable sensitivities | 23710.78 (IQR 275.58) | 23013.40 (IQR 428.75) | 1.03x | 0.000e0 |
-| 24_frtb_sbm_ima_and_cvar_execution_aad | FRTB/CVaR and optimal execution KKT sensitivities | 167.18 (IQR 0.90) | 169.43 (IQR 13.92) | 0.99x | 0.000e0 |
+| 01_calendar_popcnt | day-by-day holidays vs. packed POPCNT calendar | 184518.90 (IQR 2611.18) | 2851.22 (IQR 6.45) | 64.72x | 0.000e0 |
+| 02_leg_simd_soa | boxed AoS virtual dispatch vs. contiguous SIMD SoA | 33270.68 (IQR 667.73) | 2097.07 (IQR 64.67) | 15.87x | 1.490e-7 |
+| 03_multicurve_ift_dv01 | 12 bump-and-rebootstrap valuations vs. cached IFT VJP | 232721.95 (IQR 10864.38) | 3908.45 (IQR 169.50) | 59.54x | 5.797e-5 |
+| 04_implied_vol_ift_dual2 | nine Jäckel finite-difference solves vs. one Dual2 IFT solve | 88752.73 (IQR 314.15) | 28568.25 (IQR 176.15) | 3.11x | 1.350e-5 |
+| 05_heston_cos_dual5 | ten central COS valuations vs. one Dual5 COS valuation | 1848467.30 (IQR 42463.48) | 720964.03 (IQR 9600.38) | 2.56x | 2.821e-4 |
+| 06_gbm_mc_simd8 | scalar Philox path loop vs. 8-lane antithetic GBM | 517839.38 (IQR 5045.35) | 144065.62 (IQR 786.80) | 3.59x | 7.393e-11 |
+| 07_scripted_autocall_fuzzy_aad | nine bumped scripted MC runs vs. one four-input fuzzy-AAD run | 791111.50 (IQR 17229.65) | 171135.58 (IQR 1362.38) | 4.62x | 2.914e-5 |
+| 08_portfolio_dag_incremental | full bootstrap/revaluation vs. content-addressed incremental DAG | 3024093.95 (IQR 54881.38) | 266709.45 (IQR 26512.67) | 11.34x | 0.000e0 |
+| 09_credit_cds_ift_cs01 | ten bump-and-rebootstrap CDS strips vs. cached hazard IFT CS01 | 368686.90 (IQR 834.10) | 16477.85 (IQR 263.10) | 22.37x | 1.842e-8 |
+| 10_fx_vanna_volga_dual3 | seven scalar FX smile quote bumps vs. one Dual3 smile pass | 59301.47 (IQR 136.65) | 20605.25 (IQR 24.40) | 2.88x | 5.010e-5 |
+| 11_capriotti_giles_cholesky_corr_aad | 66 correlation bumps vs. one adjoint Cholesky pass | 19433183.68 (IQR 253559.30) | 199803.23 (IQR 971.25) | 97.26x | 8.326e-9 |
+| 12_chebyshev_dynamic_simm_mva | brute-force dynamic margin vs. Chebyshev model-space margin | 1803315.23 (IQR 1678.90) | 210315.83 (IQR 1454.08) | 8.57x | 9.006e-10 |
+| 13_reiner_rubinstein_barrier_dual5 | six finite-difference barrier bumps vs. one Dual5 analytical pass | 36973.40 (IQR 53.05) | 11552.12 (IQR 86.85) | 3.20x | 1.854e-7 |
+| 14_burley_owen_rqmc_variance_reduction | pseudo-random Asian paths vs. Burley--Owen Sobol Brownian-bridge RQMC | 13567514.10 (IQR 31477.68) | 1197623.52 (IQR 765.53) | 11.33x | 2.719e-3 |
+| 15_levy_cos_vg_dual5 | finite-difference VG COS strip Greeks vs. one Dual5 COS pass | 2328772.30 (IQR 1202.12) | 128196.55 (IQR 133.90) | 18.17x | 4.346e-7 |
+| 16_asb_cdo_tranche_recursion_dual | eleven ASB loss recursions vs. one Dual5 tranche pass | 206540.88 (IQR 222.42) | 53749.75 (IQR 58.82) | 3.84x | 2.850e-10 |
+| 17_rfr_sabr_caplet_strip_dual4 | scalar RFR SABR strip bumps vs Dual4 effective-SABR strip | 28813.95 (IQR 21.80) | 6129.07 (IQR 127.65) | 4.70x | 8.401e-9 |
+| 18_xccs_multicurrency_ift_dv01 | XCCS bump/bootstrap versus cached IFT basis risk | 1920944.85 (IQR 1151.18) | 11475.10 (IQR 276.77) | 167.40x | 4.775e-9 |
+| 19_american_baw_ju_ift_dual5 | Ju/BAW scalar bumps versus one IFT Dual5 American pass | 519775.35 (IQR 329.05) | 55408.82 (IQR 516.55) | 9.38x | 5.363e-8 |
+| 20_risk_parity_ift_allocation_aad | ninety covariance/budget bumps versus one IFT risk-parity solve | 13924200.93 (IQR 40034.20) | 149926.42 (IQR 503.05) | 92.87x | 1.734e-10 |
+| 21_bermudan_hw1f_tree_ift_dv01 | Bermudan Hull--White tree quote and parameter finite differences versus AD | 765005.95 (IQR 602.25) | 293375.80 (IQR 381.38) | 2.61x | 5.596e-9 |
+| 22_sabr_svi_ift_and_qp_kkt_aad | SABR quote recalibration and constrained Markowitz finite differences versus IFT/KKT AD | 502442.62 (IQR 442.12) | 7611.18 (IQR 138.73) | 66.01x | 2.947e-7 |
+| 23_slv_rbergomi_and_autocallable_cega_aad | SLV/rBergomi and worst-of autocallable sensitivities | 724122.18 (IQR 3577.22) | 123917.23 (IQR 278.52) | 5.84x | 2.817e-6 |
+| 24_frtb_sbm_ima_and_cvar_execution_aad | FRTB/CVaR and optimal execution KKT sensitivities | 2850.40 (IQR 89.22) | 618.40 (IQR 1.27) | 4.61x | 3.181e-7 |
