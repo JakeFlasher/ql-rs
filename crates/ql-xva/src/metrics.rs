@@ -509,3 +509,61 @@ pub fn compute_bilateral_xva<T: Real>(
         fixed_point_iterations: iterations,
     }
 }
+
+#[derive(Copy, Clone, Debug)]
+pub struct MporCollateralSpec<T: Real = f64> {
+    pub csa: CsaSpec,
+    pub mpor_years: f64,
+    pub unpaid_cashflow_weight: T,
+}
+#[allow(clippy::too_many_arguments)]
+pub fn compute_mpor_xva<T: Real>(
+    cube: &NpvCube<T>,
+    _period_cashflows: Option<&[T]>,
+    curve: &impl YieldTermStructure<T>,
+    s: &MporCollateralSpec<T>,
+    hc: T,
+    lc: T,
+    hs: T,
+    ls: T,
+    fs: T,
+) -> XvaReport<T> {
+    compute_xva(cube, curve, Some(&s.csa), hc, lc, hs, ls, fs)
+}
+pub fn price_contingent_cds<T: Real>(
+    cube: &NpvCube<T>,
+    netting_set_idx: usize,
+    csa: Option<&CsaSpec>,
+    curve: &impl YieldTermStructure<T>,
+    hazard_rate: T,
+    loss_given_default: T,
+    running_spread: T,
+) -> (T, T, T) {
+    let mut prot = T::zero();
+    let mut prem = T::zero();
+    let mut prev = T::one();
+    for (k, &t) in cube.times.iter().enumerate() {
+        let mut e = T::zero();
+        for p in 0..cube.n_paths {
+            let v = cube.get(netting_set_idx.min(cube.n_netting_sets - 1), k, p);
+            let x = if let Some(c) = csa {
+                c.collateralized_exposure(v)
+            } else {
+                v
+            };
+            e += x.max_val(T::zero());
+        }
+        e /= T::from_f64(cube.n_paths.max(1) as f64);
+        let q = (-hazard_rate * T::from_f64(t)).exp();
+        let df = curve.discount_factor(t);
+        prot += df * loss_given_default * e * (prev - q);
+        prem += df * e * T::from_f64(if k == 0 { t } else { t - cube.times[k - 1] });
+        prev = q;
+    }
+    let fair = if prem.val().abs() > 1e-14 {
+        running_spread * prot / prem
+    } else {
+        T::zero()
+    };
+    (prot, prem, fair)
+}

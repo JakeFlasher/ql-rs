@@ -1,4 +1,4 @@
-use crate::curves::{DiscountCurve, YieldTermStructure};
+use crate::curves::{DiscountCurve, MeetingDateJumpOisCurve, YieldTermStructure};
 use nalgebra::{DMatrix, DVector};
 use ql_ad::{Dual, Dual2, IftSystemSensitivity, Real, TapeScope, TapeVar};
 use ql_time::{Date, DayCounter, Frequency, Period};
@@ -786,5 +786,126 @@ impl SingleCurveHelper for OisSwapInstrument {
     }
     fn residual_curve_dual(&self, c: &DiscountCurve<Dual<1>>) -> Dual<1> {
         self.residual(c)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CalibratedMeetingJumpOisCurve {
+    pub curve: MeetingDateJumpOisCurve<f64>,
+    pub sensitivity: IftSystemSensitivity,
+    pub swap_maturities: Vec<f64>,
+    pub swap_quotes: Vec<f64>,
+}
+impl CalibratedMeetingJumpOisCurve {
+    pub fn bootstrap_from_ois_swaps(
+        reference_date: Date,
+        initial_rate: f64,
+        meeting_times: &[f64],
+        swap_maturities: &[f64],
+        swap_quotes: &[f64],
+    ) -> Result<Self, BootstrapError> {
+        if meeting_times.is_empty()
+            || meeting_times.len() != swap_maturities.len()
+            || meeting_times.len() != swap_quotes.len()
+        {
+            return Err(BootstrapError::InvalidInput);
+        }
+        let mut jumps = vec![0.0; meeting_times.len()];
+        let residuals = |j: &[f64]| -> Vec<f64> {
+            let c = MeetingDateJumpOisCurve {
+                reference_date,
+                meeting_times: meeting_times.to_vec(),
+                initial_rate,
+                meeting_jumps: j.to_vec(),
+            };
+            swap_maturities
+                .iter()
+                .zip(swap_quotes)
+                .map(|(&mat, &q)| {
+                    let mut ann = 0.0;
+                    let mut t = 1.0;
+                    while t <= mat + 1e-12 {
+                        ann += c.discount_factor(t);
+                        t += 1.0;
+                    }
+                    q * ann - (1.0 - c.discount_factor(mat))
+                })
+                .collect()
+        };
+        for _ in 0..32 {
+            let r = residuals(&jumps);
+            if r.iter().map(|x| x.abs()).fold(0.0, f64::max) < 1e-13 {
+                break;
+            }
+            for i in 0..jumps.len() {
+                let h = 1e-6;
+                let mut u = jumps.clone();
+                u[i] += h;
+                let mut d = jumps.clone();
+                d[i] -= h;
+                let der = (residuals(&u)[i] - residuals(&d)[i]) / (2.0 * h);
+                if der.abs() > 1e-14 {
+                    jumps[i] -= r[i] / der;
+                }
+            }
+        }
+        let base = residuals(&jumps);
+        let mut jt = nalgebra::DMatrix::zeros(jumps.len(), jumps.len());
+        for j in 0..jumps.len() {
+            let h = 1e-6;
+            let mut u = jumps.clone();
+            u[j] += h;
+            let mut d = jumps.clone();
+            d[j] -= h;
+            let ru = residuals(&u);
+            let rd = residuals(&d);
+            for i in 0..jumps.len() {
+                jt[(i, j)] = (ru[i] - rd[i]) / (2.0 * h);
+            }
+        }
+        let jq =
+            nalgebra::DMatrix::from_diagonal(&nalgebra::DVector::from_element(jumps.len(), -1.0));
+        let _ = base;
+        Ok(Self {
+            curve: MeetingDateJumpOisCurve {
+                reference_date,
+                meeting_times: meeting_times.to_vec(),
+                initial_rate,
+                meeting_jumps: jumps,
+            },
+            sensitivity: IftSystemSensitivity::new(jt, jq),
+            swap_maturities: swap_maturities.to_vec(),
+            swap_quotes: swap_quotes.to_vec(),
+        })
+    }
+    pub fn value_and_meeting_jump_dv01<
+        F: Fn(&MeetingDateJumpOisCurve<TapeVar<f64>>) -> TapeVar<f64>,
+    >(
+        &self,
+        pricer: F,
+    ) -> (f64, Vec<f64>, Vec<f64>) {
+        let guard = TapeScope::guard();
+        let vars: Vec<_> = self
+            .curve
+            .meeting_jumps
+            .iter()
+            .map(|&x| TapeScope::with_active(|t| t.input(x)))
+            .collect();
+        let out = pricer(
+            &self
+                .curve
+                .to_ad_curve(TapeVar::from_f64(self.curve.initial_rate), &vars),
+        );
+        let adj = TapeScope::gradient_from(out);
+        let m: Vec<f64> = vars.iter().map(|v| adj.gradient(*v)).collect();
+        let _ = guard.stop();
+        let q = self.sensitivity.jacobian_dtheta_dq();
+        let mut p = vec![0.0; q.ncols()];
+        for j in 0..q.ncols() {
+            for i in 0..q.nrows() {
+                p[j] += m[i] * q[(i, j)];
+            }
+        }
+        (out.val, m, p)
     }
 }

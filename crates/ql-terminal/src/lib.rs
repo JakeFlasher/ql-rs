@@ -105,9 +105,10 @@ pub enum TabId {
     SaCcrSwingQp,
     SlvRoughWorstOf,
     FrtbCvarExecution,
+    MonotoneConvexVixParisianRobust,
 }
 impl TabId {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::Market,
         Self::Rates,
         Self::Credit,
@@ -130,6 +131,7 @@ impl TabId {
         Self::SaCcrSwingQp,
         Self::SlvRoughWorstOf,
         Self::FrtbCvarExecution,
+        Self::MonotoneConvexVixParisianRobust,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -155,6 +157,7 @@ impl TabId {
             Self::SaCcrSwingQp => "20 SA-CCR / Swing / QP",
             Self::SlvRoughWorstOf => "21 SLV / rBergomi / WoF",
             Self::FrtbCvarExecution => "22 FRTB / CVaR / Exec",
+            Self::MonotoneConvexVixParisianRobust => "23 Monotone Convex / VIX / Parisian / Robust",
         }
     }
 }
@@ -468,6 +471,7 @@ pub struct WorkstationFrameData {
     pub sacc_swing_qp_metric: f64,
     pub slv_rough_worst_of_metric: f64,
     pub frtb_cvar_execution_metric: f64,
+    pub vix_parisian_robust_metric: f64,
     pub blotter_rows: Vec<(String, f64, String)>,
 }
 
@@ -1439,6 +1443,7 @@ impl DeskWorkstation {
             sacc_swing_qp_metric: sa_report.ead.val() + swing_value + qp_value,
             slv_rough_worst_of_metric: rough_metric,
             frtb_cvar_execution_metric: execution_metric,
+            vix_parisian_robust_metric: rough_metric + execution_metric,
             blotter_rows,
         }
     }
@@ -1658,6 +1663,10 @@ impl DeskWorkstation {
                 frame.slv_rough_worst_of_metric
             ),
             format!("22 FRTB/CVaR/Exec: {:.2}", frame.frtb_cvar_execution_metric),
+            format!(
+                "23 MC/VIX/Parisian/Robust: {:.2}",
+                frame.vix_parisian_robust_metric
+            ),
             format!("ASB tranche EL: {:.6}", asb_el),
             format!(
                 "DAG recomputed: {}/{}",

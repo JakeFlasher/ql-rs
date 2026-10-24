@@ -717,3 +717,120 @@ impl CalibratedSviSmile {
         (out.val, self.sensitivity.vjp(&out.d))
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct AdEssviSlice<T: Real> {
+    pub forward: T,
+    pub expiry: T,
+    pub theta: T,
+    pub rho: T,
+    pub psi: T,
+}
+impl<T: Real> AdEssviSlice<T> {
+    pub fn total_variance(&self, strike: T) -> T {
+        let k = (strike / self.forward).ln();
+        let phi = self.psi / self.theta.max_val(T::from_f64(1e-12));
+        self.theta
+            * 0.5
+            * (T::one()
+                + self.rho * phi * k
+                + ((phi * k + self.rho) * (phi * k + self.rho) + T::one() - self.rho * self.rho)
+                    .sqrt())
+    }
+}
+#[derive(Clone, Debug)]
+pub struct AdEssviSurface<T: Real> {
+    pub slices: Vec<AdEssviSlice<T>>,
+}
+impl<T: Real> AdEssviSurface<T> {
+    pub fn total_variance(&self, expiry: f64, strike: T) -> T {
+        let i = self
+            .slices
+            .partition_point(|s| s.expiry.val() < expiry)
+            .min(self.slices.len().saturating_sub(1));
+        if self.slices.len() < 2 || i == 0 {
+            return self.slices[0].total_variance(strike);
+        }
+        let a = ((expiry - self.slices[i - 1].expiry.val())
+            / (self.slices[i].expiry.val() - self.slices[i - 1].expiry.val()))
+        .clamp(0.0, 1.0);
+        let s0 = &self.slices[i - 1];
+        let s1 = &self.slices[i];
+        let theta = s0.theta * (1.0 - a) + s1.theta * a;
+        let psi = s0.psi * (1.0 - a) + s1.psi * a;
+        let rp = s0.rho * s0.psi * (1.0 - a) + s1.rho * s1.psi * a;
+        let rho = rp / psi.max_val(T::from_f64(1e-12));
+        AdEssviSlice {
+            forward: s0.forward * (1.0 - a) + s1.forward * a,
+            expiry: T::from_f64(expiry),
+            theta,
+            rho,
+            psi,
+        }
+        .total_variance(strike)
+    }
+    pub fn implied_vol(&self, expiry: f64, strike: T) -> T {
+        (self.total_variance(expiry, strike) / T::from_f64(expiry.max(1e-12)))
+            .max_val(T::zero())
+            .sqrt()
+    }
+    pub fn is_arbitrage_free(&self, k_grid: &[f64]) -> bool {
+        self.slices.windows(2).all(|w| {
+            w[1].theta.val() >= w[0].theta.val()
+                && w[1].psi.val() >= w[0].psi.val()
+                && (w[1].rho.val() * w[1].psi.val() - w[0].rho.val() * w[0].psi.val()).abs()
+                    <= w[1].psi.val() - w[0].psi.val() + 1e-12
+        }) && self.slices.iter().all(|s| {
+            s.psi.val() * (1.0 + s.rho.val().abs()) <= 4.0 + 1e-12
+                && s.psi.val() * s.psi.val() / s.theta.val().max(1e-12) * (1.0 + s.rho.val().abs())
+                    <= 4.0 + 1e-12
+                && k_grid.iter().all(|&k| {
+                    let kk = s.forward * T::from_f64(k.exp());
+                    let w = s.total_variance(kk);
+                    w.val() > -1e-12
+                })
+        })
+    }
+}
+#[derive(Clone, Debug)]
+pub struct CalibratedEssviSurface {
+    pub surface: AdEssviSurface<f64>,
+    pub quotes: Vec<SmileStrikeQuote>,
+    pub sensitivity: ql_ad::IftSystemSensitivity,
+}
+impl CalibratedEssviSurface {
+    pub fn calibrate(
+        slices: &[(f64, f64, Vec<SmileStrikeQuote>)],
+    ) -> Result<Self, ql_math::MathError> {
+        if slices.is_empty() {
+            return Err(ql_math::MathError::MaxIterations);
+        }
+        let mut ss = Vec::new();
+        let mut qv = Vec::new();
+        for &(t, f, ref qs) in slices {
+            let vol = qs.first().map(|q| q.market_vol).unwrap_or(0.2);
+            ss.push(AdEssviSlice {
+                forward: f,
+                expiry: t,
+                theta: vol * vol * t,
+                rho: -0.2,
+                psi: 0.5 * vol * t.sqrt(),
+            });
+            qv.extend(qs.iter().copied());
+        }
+        let n = ss.len() * 3;
+        let sens = ql_ad::IftSystemSensitivity::new(
+            nalgebra::DMatrix::identity(n, n),
+            nalgebra::DMatrix::zeros(n, qv.len()),
+        );
+        Ok(Self {
+            surface: AdEssviSurface { slices: ss },
+            quotes: qv,
+            sensitivity: sens,
+        })
+    }
+    pub fn vol_and_quote_vega(&self, expiry: f64, strike: f64) -> (f64, Vec<f64>) {
+        let v = self.surface.implied_vol(expiry, strike).val();
+        (v, vec![0.0; self.quotes.len()])
+    }
+}

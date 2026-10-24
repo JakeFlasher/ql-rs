@@ -213,6 +213,226 @@ impl<T: Real> YieldTermStructure<T> for MonotoneCubicZeroCurve<T> {
         z + T::from_f64(t) * self.interpolator.derivative(T::from_f64(t))
     }
 }
+
+/// Hagan--West monotone-convex interpolation of continuously compounded zero
+/// rates.  The implementation stores the discrete forwards and nodal forwards
+/// explicitly; integrating the local polynomial therefore recovers every input
+/// discount factor exactly (up to the final exponential evaluation).
+#[derive(Debug, Clone)]
+pub struct MonotoneConvexZeroCurve<T: Real = f64> {
+    pub reference_date: Date,
+    pub times: Vec<f64>,
+    pub zero_rates: Vec<T>,
+    pub discrete_forwards: Vec<T>,
+    pub nodal_forwards: Vec<T>,
+    pub enforce_positivity: bool,
+}
+impl<T: Real> MonotoneConvexZeroCurve<T> {
+    pub fn new(reference_date: Date, times: Vec<f64>, zero_rates: Vec<T>) -> Self {
+        Self::with_positivity(reference_date, times, zero_rates, true)
+    }
+    pub fn with_positivity(
+        reference_date: Date,
+        times: Vec<f64>,
+        zero_rates: Vec<T>,
+        enforce_positivity: bool,
+    ) -> Self {
+        assert!(!times.is_empty() && times.len() == zero_rates.len());
+        assert!(times[0] > 0.0 && times.windows(2).all(|w| w[1] > w[0]));
+        let mut fd = Vec::with_capacity(times.len());
+        let mut prev_t = 0.0;
+        let mut prev_rt = T::zero();
+        for (t, r) in times.iter().copied().zip(zero_rates.iter().copied()) {
+            fd.push((r * t - prev_rt) / (t - prev_t));
+            prev_t = t;
+            prev_rt = r * t;
+        }
+        let mut f = vec![T::zero(); fd.len() + 1];
+        if fd.len() == 1 {
+            f[0] = fd[0];
+            f[1] = fd[0];
+        } else {
+            for i in 0..fd.len() - 1 {
+                let d0 = if i == 0 {
+                    times[0]
+                } else {
+                    times[i] - times[i - 1]
+                };
+                let d1 = times[i + 1] - times[i];
+                f[i + 1] = (fd[i + 1] * d0 + fd[i] * d1) / (d0 + d1);
+            }
+            f[0] = fd[0] - (f[1] - fd[0]) * 0.5;
+            let n = fd.len();
+            f[n] = fd[n - 1] - (f[n - 1] - fd[n - 1]) * 0.5;
+        }
+        if enforce_positivity {
+            for i in 1..fd.len() {
+                let cap = (fd[i - 1].min_val(fd[i]) * 2.0).max_val(T::zero());
+                f[i] = f[i].max_val(T::zero()).min_val(cap);
+            }
+            f[0] = f[0]
+                .max_val(T::zero())
+                .min_val((fd[0] * 2.0).max_val(T::zero()));
+            let n = fd.len();
+            f[n] = f[n]
+                .max_val(T::zero())
+                .min_val((fd[n - 1] * 2.0).max_val(T::zero()));
+        }
+        Self {
+            reference_date,
+            times,
+            zero_rates,
+            discrete_forwards: fd,
+            nodal_forwards: f,
+            enforce_positivity,
+        }
+    }
+    pub fn to_ad_curve<S: Real>(&self, zero_rates: &[S]) -> MonotoneConvexZeroCurve<S> {
+        MonotoneConvexZeroCurve::with_positivity(
+            self.reference_date,
+            self.times.clone(),
+            zero_rates.to_vec(),
+            self.enforce_positivity,
+        )
+    }
+    fn integrated(&self, t: f64) -> T {
+        if t <= 0.0 {
+            return T::zero();
+        }
+        let n = self.times.len();
+        if t >= self.times[n - 1] {
+            return self.zero_rates[n - 1] * self.times[n - 1]
+                + self.nodal_forwards[n] * (t - self.times[n - 1]);
+        }
+        let i = self.times.partition_point(|x| *x < t);
+        let i = i.max(1).min(n);
+        let t0 = if i == 1 { 0.0 } else { self.times[i - 2] };
+        let t1 = self.times[i - 1];
+        let dt = t1 - t0;
+        let x = ((t - t0) / dt).clamp(0.0, 1.0);
+        let g0 = self.nodal_forwards[i - 1] - self.discrete_forwards[i - 1];
+        let g1 = self.nodal_forwards[i] - self.discrete_forwards[i - 1];
+        let g = g0 * (1.0 - 4.0 * x + 3.0 * x * x) + g1 * (-2.0 * x + 3.0 * x * x);
+        let gx = g0 * x * (1.0 - x) * (1.0 - x) - g1 * x * x * (1.0 - x);
+        let base = if i == 1 {
+            T::zero()
+        } else {
+            self.zero_rates[i - 2] * t0
+        };
+        base + self.discrete_forwards[i - 1] * (t - t0)
+            + T::from_f64(dt) * gx
+            + g * T::from_f64(0.0)
+    }
+}
+impl<T: Real> YieldTermStructure<T> for MonotoneConvexZeroCurve<T> {
+    fn reference_date(&self) -> Date {
+        self.reference_date
+    }
+    fn discount_factor(&self, t: f64) -> T {
+        (-self.integrated(t)).exp()
+    }
+    fn zero_rate(&self, t: f64) -> T {
+        if t.abs() < 1e-14 {
+            T::zero()
+        } else {
+            -self.integrated(t) / t
+        }
+    }
+    fn instantaneous_forward(&self, t: f64) -> T {
+        if t <= 0.0 {
+            return self.nodal_forwards[0];
+        }
+        let i = self
+            .times
+            .partition_point(|x| *x < t)
+            .max(1)
+            .min(self.times.len());
+        let t0 = if i == 1 { 0.0 } else { self.times[i - 2] };
+        let dt = self.times[i - 1] - t0;
+        let x = ((t - t0) / dt).clamp(0.0, 1.0);
+        let g0 = self.nodal_forwards[i - 1] - self.discrete_forwards[i - 1];
+        let g1 = self.nodal_forwards[i] - self.discrete_forwards[i - 1];
+        self.discrete_forwards[i - 1]
+            + g0 * (1.0 - 4.0 * x + 3.0 * x * x)
+            + g1 * (-2.0 * x + 3.0 * x * x)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MeetingDateJumpOisCurve<T: Real = f64> {
+    pub reference_date: Date,
+    pub meeting_times: Vec<f64>,
+    pub initial_rate: T,
+    pub meeting_jumps: Vec<T>,
+}
+impl<T: Real> MeetingDateJumpOisCurve<T> {
+    pub fn overnight_rate_after_meeting(&self, idx: usize) -> T {
+        self.initial_rate
+            + self
+                .meeting_jumps
+                .iter()
+                .take(idx + 1)
+                .copied()
+                .fold(T::zero(), |a, z| a + z)
+    }
+    pub fn to_ad_curve<S: Real>(&self, initial_rate: S, jumps: &[S]) -> MeetingDateJumpOisCurve<S> {
+        MeetingDateJumpOisCurve {
+            reference_date: self.reference_date,
+            meeting_times: self.meeting_times.clone(),
+            initial_rate,
+            meeting_jumps: jumps.to_vec(),
+        }
+    }
+    fn integrated_rate(&self, t: f64) -> T {
+        let mut last = 0.0;
+        let mut rate = self.initial_rate;
+        let mut out = T::zero();
+        for (i, &meeting) in self.meeting_times.iter().enumerate() {
+            let end = t.min(meeting);
+            if end > last {
+                out += rate * (end - last);
+            }
+            if t <= meeting {
+                return out;
+            }
+            last = meeting;
+            rate += self.meeting_jumps.get(i).copied().unwrap_or(T::zero());
+        }
+        if t > last {
+            out + rate * (t - last)
+        } else {
+            out
+        }
+    }
+}
+impl<T: Real> YieldTermStructure<T> for MeetingDateJumpOisCurve<T> {
+    fn reference_date(&self) -> Date {
+        self.reference_date
+    }
+    fn discount_factor(&self, t: f64) -> T {
+        (-self.integrated_rate(t)).exp()
+    }
+    fn zero_rate(&self, t: f64) -> T {
+        if t.abs() < 1e-14 {
+            T::zero()
+        } else {
+            self.integrated_rate(t) / t
+        }
+    }
+    fn instantaneous_forward(&self, t: f64) -> T {
+        for (i, &m) in self.meeting_times.iter().enumerate() {
+            if t < m {
+                return self.overnight_rate_after_meeting(i.saturating_sub(1));
+            }
+        }
+        self.initial_rate
+            + self
+                .meeting_jumps
+                .iter()
+                .copied()
+                .fold(T::zero(), |a, z| a + z)
+    }
+}
 fn linear_slice_eval<T: Real>(xs: &[f64], ys: &[T], t: f64) -> T {
     linear_slice_value_derivative(xs, ys, t).0
 }

@@ -17,3 +17,6 @@ pub mod rough;
 pub mod slv;
 pub use rough::*;
 pub use slv::*;
+
+pub mod vix;
+pub use vix::*;

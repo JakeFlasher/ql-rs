@@ -19,3 +19,6 @@ pub use lookback::*;
 use ql_models as _;
 pub use quanto_chooser::*;
 pub use variance_swap::*;
+
+pub mod parisian;
+pub use parisian::*;

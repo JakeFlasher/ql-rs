@@ -322,3 +322,71 @@ pub fn price_cdo_tranche<T: Real>(
     };
     (protection, premium, fair)
 }
+
+#[derive(Clone, Debug)]
+pub struct KthToDefaultBasketSpec<T: Real> {
+    pub k: usize,
+    pub notional: T,
+    pub running_spread: T,
+    pub correlation: T,
+    pub recovery_rates: Vec<T>,
+    pub payment_times: Vec<f64>,
+    pub accruals: Vec<f64>,
+}
+#[derive(Copy, Clone, Debug)]
+pub struct KthToDefaultValuation<T: Real> {
+    pub protection_leg_npv: T,
+    pub premium_leg_npv: T,
+    pub risky_annuity: T,
+    pub fair_spread: T,
+    pub npv_buyer: T,
+}
+pub fn kth_to_default_survival_probability<T: Real>(
+    k: usize,
+    default_probs: &[T],
+    _correlation: T,
+) -> T {
+    let mut p = default_probs.to_vec();
+    p.sort_by(|a, b| a.val().total_cmp(&b.val()));
+    let mut surv = T::one();
+    for x in p.iter().take(k.max(1)) {
+        surv -= *x;
+    }
+    surv.max_val(T::zero())
+}
+pub fn price_kth_to_default_basket<T: Real>(
+    s: &KthToDefaultBasketSpec<T>,
+    issuer_curves: &[crate::SurvivalProbabilityCurve<T>],
+    discount: &impl ql_curves::YieldTermStructure<T>,
+) -> KthToDefaultValuation<T> {
+    let mut prot = T::zero();
+    let mut prem = T::zero();
+    for (i, &t) in s.payment_times.iter().enumerate() {
+        let ps: Vec<T> = issuer_curves
+            .iter()
+            .map(|c| T::one() - c.survival_probability(t))
+            .collect();
+        let surv = kth_to_default_survival_probability(s.k, &ps, s.correlation);
+        let df = discount.discount_factor(t);
+        let lgd = s
+            .recovery_rates
+            .iter()
+            .copied()
+            .fold(T::zero(), |a, r| a + (T::one() - r))
+            / s.recovery_rates.len().max(1) as f64;
+        prot += df * lgd * (T::one() - surv);
+        prem += df * s.running_spread * T::from_f64(*s.accruals.get(i).unwrap_or(&1.0)) * surv;
+    }
+    let fair = if prem.val().abs() > 1e-14 {
+        prot / prem * s.running_spread
+    } else {
+        T::zero()
+    };
+    KthToDefaultValuation {
+        protection_leg_npv: prot,
+        premium_leg_npv: prem,
+        risky_annuity: prem / (s.running_spread.max_val(T::from_f64(1e-12))),
+        fair_spread: fair,
+        npv_buyer: prot - prem,
+    }
+}

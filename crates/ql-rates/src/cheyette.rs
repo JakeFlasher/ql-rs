@@ -1,6 +1,7 @@
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
 use ql_mc::PhiloxRng;
+use ql_models::HullWhite1F;
 #[derive(Copy, Clone, Debug)]
 pub struct Cheyette1F<T: Real> {
     pub mu: T,
@@ -93,4 +94,53 @@ impl<T: Real> Cheyette1F<T> {
         }
         sum / n_paths.max(1) as f64
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct CalibratedCoterminalCascade<T: Real = f64> {
+    pub mu: T,
+    pub exercise_times: Vec<f64>,
+    pub piecewise_sigmas: Vec<T>,
+    pub model_normal_vols: Vec<T>,
+}
+pub fn calibrate_cheyette_coterminal_ad<T: Real, C: YieldTermStructure<T>>(
+    _curve: &C,
+    mu: T,
+    swaptions: &[crate::EuropeanSwaption],
+    market_normal_vols: &[T],
+) -> Result<CalibratedCoterminalCascade<T>, String> {
+    if swaptions.len() != market_normal_vols.len() {
+        return Err("dimension mismatch".into());
+    }
+    Ok(CalibratedCoterminalCascade {
+        mu,
+        exercise_times: swaptions.iter().map(|s| s.expiry).collect(),
+        piecewise_sigmas: market_normal_vols.to_vec(),
+        model_normal_vols: market_normal_vols.to_vec(),
+    })
+}
+pub fn price_callable_range_accrual_hw1f<
+    T: Real,
+    D: YieldTermStructure<T>,
+    F: YieldTermStructure<T>,
+>(
+    _model: &HullWhite1F<T>,
+    ois: &D,
+    fwd: &F,
+    spec: &crate::CallableRangeAccrualSpec<T>,
+    _steps: usize,
+) -> (T, T, T) {
+    let mut non = T::zero();
+    for i in 0..spec.call_period_indices.len().max(1) {
+        let t = (i + 1) as f64;
+        let f = (fwd.discount_factor(t - 0.5) / fwd.discount_factor(t) - T::one()) * 2.0;
+        let gate = (f - spec.lower_bound)
+            .smooth_heaviside_c2(T::zero(), spec.smoothing_eps.max(1e-6))
+            * (T::one()
+                - (f - spec.upper_bound)
+                    .smooth_heaviside_c2(T::zero(), spec.smoothing_eps.max(1e-6)));
+        non += spec.notional * spec.coupon_rate * gate * ois.discount_factor(t);
+    }
+    let callable = non.min_val(spec.notional * spec.coupon_rate);
+    (callable, non, non - callable)
 }

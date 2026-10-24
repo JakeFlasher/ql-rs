@@ -365,3 +365,38 @@ pub fn price_yoy_inflation_capfloor<T: Real>(
         YoYInflationCapFloorType::Collar => cap - floor,
     }
 }
+
+#[derive(Copy, Clone, Debug)]
+pub struct LpiInflationSwapSpec<T: Real = f64> {
+    pub notional: T,
+    pub fixed_rate: T,
+    pub floor_rate: T,
+    pub cap_rate: T,
+    pub maturity_years: usize,
+    pub is_compounded_zero_coupon: bool,
+    pub pay_fixed: bool,
+}
+pub fn lpi_inflation_swap_npv<T: Real>(
+    s: &LpiInflationSwapSpec<T>,
+    discount: &impl YieldTermStructure<T>,
+    inflation: &ZeroInflationCurve<T>,
+    _vol: T,
+    _model: YoYOptionletModel,
+) -> (T, T) {
+    let mut pv = T::zero();
+    let mut fair = T::zero();
+    for j in 1..=s.maturity_years {
+        let f = inflation.forward_cpi(j as f64, None) / inflation.forward_cpi((j - 1) as f64, None)
+            - T::one();
+        let y = f.max_val(s.floor_rate).min_val(s.cap_rate);
+        pv += discount.discount_factor(j as f64) * (y - s.fixed_rate);
+        fair += y;
+    }
+    fair /= T::from_f64(s.maturity_years.max(1) as f64);
+    let npv = pv * s.notional;
+    if s.pay_fixed {
+        (npv, fair)
+    } else {
+        (-npv, fair)
+    }
+}

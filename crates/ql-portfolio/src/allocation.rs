@@ -834,3 +834,155 @@ pub fn try_mean_cvar_weights<T: Real>(
 pub fn mean_cvar_weights<T: Real>(s: &MeanCvarSpec<T>) -> MeanCvarResult<T> {
     try_mean_cvar_weights(s).expect("valid mean-CVaR inputs")
 }
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ShrinkageTarget {
+    ScaledIdentity,
+    ConstantCorrelation,
+}
+#[derive(Clone, Debug)]
+pub struct LedoitWolfResult<T: Real> {
+    pub shrunk_covariance: Vec<Vec<T>>,
+    pub sample_covariance: Vec<Vec<T>>,
+    pub target_matrix: Vec<Vec<T>>,
+    pub shrinkage_intensity: T,
+}
+pub fn ledoit_wolf_shrinkage<T: Real>(
+    r: &[Vec<T>],
+    target: ShrinkageTarget,
+) -> Result<LedoitWolfResult<T>, AllocationError> {
+    let n = r.len();
+    if n < 2 || r.iter().any(|x| x.is_empty() || x.len() != r[0].len()) {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    let p = r[0].len();
+    let mean = (0..p)
+        .map(|j| r.iter().map(|x| x[j]).fold(T::zero(), |a, z| a + z) / n as f64)
+        .collect::<Vec<_>>();
+    let s = (0..p)
+        .map(|i| {
+            (0..p)
+                .map(|j| {
+                    r.iter()
+                        .map(|x| (x[i] - mean[i]) * (x[j] - mean[j]))
+                        .fold(T::zero(), |a, z| a + z)
+                        / n as f64
+                })
+                .collect()
+        })
+        .collect::<Vec<Vec<_>>>();
+    let mut f = vec![vec![T::zero(); p]; p];
+    match target {
+        ShrinkageTarget::ScaledIdentity => {
+            let m = (0..p).map(|i| s[i][i]).fold(T::zero(), |a, z| a + z) / p as f64;
+            for (i, row) in f.iter_mut().enumerate().take(p) {
+                row[i] = m;
+            }
+        }
+        ShrinkageTarget::ConstantCorrelation => {
+            let mut c = T::zero();
+            let mut cnt: f64 = 0.;
+            for i in 0..p {
+                for j in 0..i {
+                    c += s[i][j] / (s[i][i] * s[j][j]).sqrt().max_val(T::from_f64(1e-12));
+                    cnt += 1.;
+                }
+            }
+            let c = c / cnt.max(1.);
+            for i in 0..p {
+                for j in 0..p {
+                    f[i][j] = if i == j {
+                        s[i][i]
+                    } else {
+                        c * (s[i][i] * s[j][j]).sqrt()
+                    };
+                }
+            }
+        }
+    }
+    let d = (0..p)
+        .map(|i| {
+            (0..p)
+                .map(|j| (s[i][j] - f[i][j]) * (s[i][j] - f[i][j]))
+                .fold(T::zero(), |a, z| a + z)
+        })
+        .fold(T::zero(), |a, z| a + z);
+    let delta = (T::from_f64(0.1) / (d + T::from_f64(1e-12)))
+        .max_val(T::zero())
+        .min_val(T::one());
+    let shr = (0..p)
+        .map(|i| {
+            (0..p)
+                .map(|j| delta * f[i][j] + (T::one() - delta) * s[i][j])
+                .collect()
+        })
+        .collect();
+    Ok(LedoitWolfResult {
+        shrunk_covariance: shr,
+        sample_covariance: s,
+        target_matrix: f,
+        shrinkage_intensity: delta,
+    })
+}
+#[derive(Clone, Debug)]
+pub struct RobustMarkowitzSpec<T: Real> {
+    pub covariance: Vec<Vec<T>>,
+    pub return_uncertainty_cov: Vec<Vec<T>>,
+    pub expected_returns: Vec<T>,
+    pub risk_aversion: T,
+    pub uncertainty_radius: T,
+    pub lower_bounds: Vec<T>,
+    pub upper_bounds: Vec<T>,
+}
+pub fn try_robust_markowitz_weights<T: Real>(
+    s: &RobustMarkowitzSpec<T>,
+) -> Result<Vec<T>, AllocationError> {
+    let n = s.expected_returns.len();
+    if n == 0 {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    let mut cov = s.covariance.clone();
+    let mut w = try_box_constrained_markowitz_weights(&BoxConstrainedMarkowitzSpec {
+        covariance: cov.clone(),
+        expected_returns: s.expected_returns.clone(),
+        risk_aversion: s.risk_aversion,
+        lower_bounds: s.lower_bounds.clone(),
+        upper_bounds: s.upper_bounds.clone(),
+    })?;
+    for _ in 0..8 {
+        let mut ow = T::zero();
+        for i in 0..n {
+            for j in 0..n {
+                ow += w[i] * s.return_uncertainty_cov[i][j] * w[j];
+            }
+        }
+        let scale = s.uncertainty_radius / (ow + T::from_f64(1e-12)).sqrt();
+        for i in 0..n {
+            for j in 0..n {
+                cov[i][j] = s.covariance[i][j]
+                    + scale * s.return_uncertainty_cov[i][j]
+                        / s.risk_aversion.max_val(T::from_f64(1e-12));
+            }
+        }
+        let nw = try_box_constrained_markowitz_weights(&BoxConstrainedMarkowitzSpec {
+            covariance: cov.clone(),
+            expected_returns: s.expected_returns.clone(),
+            risk_aversion: s.risk_aversion,
+            lower_bounds: s.lower_bounds.clone(),
+            upper_bounds: s.upper_bounds.clone(),
+        })?;
+        if nw
+            .iter()
+            .zip(&w)
+            .all(|(a, b)| (a.val() - b.val()).abs() < 1e-12)
+        {
+            w = nw;
+            break;
+        }
+        w = nw;
+    }
+    Ok(w)
+}
+pub fn robust_markowitz_weights<T: Real>(s: &RobustMarkowitzSpec<T>) -> Vec<T> {
+    try_robust_markowitz_weights(s).expect("valid robust Markowitz inputs")
+}

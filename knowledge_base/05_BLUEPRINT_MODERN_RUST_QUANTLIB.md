@@ -50,7 +50,7 @@ Date / Calendar / Convention
 
 ### 3.6 Delivery, measurements, and workstation
 
-`ql-benches` is an offline statistical harness with fixed workloads, warmups, medians, IQRs, speedups, and hard parity assertions across 24 suites (`01_calendar_popcnt` through `24_frtb_sbm_ima_and_cvar_execution_aad`). `ql-terminal` re-exports `ql_terminal::prelude::*` and renders a zero-dependency 22-tab risk workstation: a $2 \times 4$ sub-pixel `BrailleCanvas`, 24-bit ANSI TrueColor ladders, live blotter values, XVA/SIMM/MVA/SA-CCR/KVA/FRTB, and calibrated chart series.
+`ql-benches` is an offline statistical harness with fixed workloads, warmups, medians, IQRs, speedups, and hard parity assertions across 25 suites (`01_calendar_popcnt` through `24_frtb_sbm_ima_and_cvar_execution_aad`). `ql-terminal` re-exports `ql_terminal::prelude::*` and renders a zero-dependency 22-tab risk workstation: a $2 \times 4$ sub-pixel `BrailleCanvas`, 24-bit ANSI TrueColor ladders, live blotter values, XVA/SIMM/MVA/SA-CCR/KVA/FRTB, and calibrated chart series.
 
 ## 4. Subsystem Architecture Matrix
 

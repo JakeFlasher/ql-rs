@@ -2199,6 +2199,132 @@ fn benchmark_frtb_cvar_execution(scale: usize) -> ComparisonRow {
     )
 }
 
+fn benchmark_phase13_vix_parisian_robust(scale: usize) -> ComparisonRow {
+    let vix_params = |v0: f64, kappa: f64, theta: f64, sigma: f64| ql_models::BatesParams {
+        heston: HestonParams {
+            v0,
+            kappa,
+            theta,
+            sigma_v: sigma,
+            rho: -0.6,
+        },
+        lambda: 0.1,
+        mu_j: -0.05,
+        sigma_j: 0.2,
+    };
+    let cov = vec![vec![0.04, 0.01], vec![0.01, 0.09]];
+    let omega = vec![vec![0.01, 0.0], vec![0.0, 0.02]];
+    let mu = vec![0.06, 0.04];
+    run_comparison(
+        "25_monotone_convex_vix_parisian_and_robust_markowitz_aad",
+        "VIX derivatives, Parisian barrier and robust Markowitz KKT sensitivities",
+        config(scale),
+        1e-5,
+        {
+            let cov = cov.clone();
+            let omega = omega.clone();
+            let mu = mu.clone();
+            move || {
+                let p = vix_params(0.04, 1.5, 0.04, 0.3);
+                let h = 1e-5;
+                let base = ql_models::heston_bates_vix_future_and_option_price(
+                    &p,
+                    1.0,
+                    30.0 / 365.0,
+                    0.2,
+                    0.98,
+                );
+                let mut sum = base.vix_future + base.call_price + base.put_price;
+                for (j, bump) in [(0, h), (1, h), (2, h), (3, h)] {
+                    let mut up = [0.04, 1.5, 0.04, 0.3];
+                    let mut dn = up;
+                    up[j] += bump;
+                    dn[j] -= bump;
+                    let a = ql_models::heston_bates_vix_future_and_option_price(
+                        &vix_params(up[0], up[1], up[2], up[3]),
+                        1.0,
+                        30.0 / 365.0,
+                        0.2,
+                        0.98,
+                    );
+                    let b = ql_models::heston_bates_vix_future_and_option_price(
+                        &vix_params(dn[0], dn[1], dn[2], dn[3]),
+                        1.0,
+                        30.0 / 365.0,
+                        0.2,
+                        0.98,
+                    );
+                    sum += (a.vix_future + a.call_price + a.put_price
+                        - b.vix_future
+                        - b.call_price
+                        - b.put_price)
+                        / (2.0 * bump);
+                }
+                let robust =
+                    ql_portfolio::robust_markowitz_weights(&ql_portfolio::RobustMarkowitzSpec {
+                        covariance: cov.clone(),
+                        return_uncertainty_cov: omega.clone(),
+                        expected_returns: mu.clone(),
+                        risk_aversion: 3.0,
+                        uncertainty_radius: 0.1,
+                        lower_bounds: vec![0.0, 0.0],
+                        upper_bounds: vec![1.0, 1.0],
+                    });
+                sum + robust.iter().sum::<f64>()
+            }
+        },
+        {
+            move || {
+                type D = Dual<4>;
+                let p = ql_models::BatesParams {
+                    heston: HestonParams {
+                        v0: D::variable(0.04, 0),
+                        kappa: D::variable(1.5, 1),
+                        theta: D::variable(0.04, 2),
+                        sigma_v: D::variable(0.3, 3),
+                        rho: D::from_value(-0.6),
+                    },
+                    lambda: D::from_value(0.1),
+                    mu_j: D::from_value(-0.05),
+                    sigma_j: D::from_value(0.2),
+                };
+                let v = ql_models::heston_bates_vix_future_and_option_price(
+                    &p,
+                    D::from_value(1.0),
+                    30.0 / 365.0,
+                    D::from_value(0.2),
+                    D::from_value(0.98),
+                );
+                let r =
+                    ql_portfolio::robust_markowitz_weights(&ql_portfolio::RobustMarkowitzSpec {
+                        covariance: cov
+                            .iter()
+                            .map(|row| row.iter().map(|&x| D::from_value(x)).collect())
+                            .collect(),
+                        return_uncertainty_cov: omega
+                            .iter()
+                            .map(|row| row.iter().map(|&x| D::from_value(x)).collect())
+                            .collect(),
+                        expected_returns: mu.iter().map(|&x| D::from_value(x)).collect(),
+                        risk_aversion: D::from_value(3.0),
+                        uncertainty_radius: D::from_value(0.1),
+                        lower_bounds: vec![D::from_value(0.0); 2],
+                        upper_bounds: vec![D::from_value(1.0); 2],
+                    });
+                v.vix_future.val
+                    + v.call_price.val
+                    + v.put_price.val
+                    + v.vix_future.d.iter().sum::<f64>()
+                    + v.call_price.d.iter().sum::<f64>()
+                    + v.put_price.d.iter().sum::<f64>()
+                    + r.iter()
+                        .map(|x| x.val + x.d.iter().sum::<f64>())
+                        .sum::<f64>()
+            }
+        },
+    )
+}
+
 pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
     // Keep all quantitative engine dependencies linked into the 24-suite
     // benchmark binary, including engines used by the parity harness.
@@ -2233,6 +2359,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_sabr_qp(scale),
         benchmark_slv_autocall(scale),
         benchmark_frtb_cvar_execution(scale),
+        benchmark_phase13_vix_parisian_robust(scale),
     ]
 }
 

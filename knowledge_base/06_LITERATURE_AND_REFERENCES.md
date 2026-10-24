@@ -126,6 +126,20 @@ The 59 papers below are the mathematical and systems references for ql-rs. Each 
 
 39. **`59_Tasche_2018_Capital_Allocation_FRTB_Expected_Shortfall.pdf`** — Basel III / IV Fundamental Review of the Trading Book (FRTB MAR20–MAR33) liquidity-horizon-scaled Expected Shortfall $ES = \sqrt{ES_1^2 + \sum_{j \ge 2}(ES_j\sqrt{(LH_j - LH_{j-1})/T_{\text{base}}})^2}$, Sensitivities-Based Method (SBM Delta/Vega/Curvature under Low/Medium/High correlation scenarios + DRC + RRAO), and Euler AAD capital allocation inform `ql-xva::frtb` and suite 24.
 
+40. **`60_Mingone_2022_No_Arbitrage_Global_Parametrization_eSSVI.pdf`** — Hendriks–Martini (2017) / Mingone (2022) global arbitrage-free Extended SSVI (`eSSVI`) parameterization, slice butterfly bounds $\psi_i(1 + |\rho_i|) \le \min(4, \sqrt{4\theta_i(1+|\rho_i|)})$, and cross-maturity calendar monotonicity inform `ql-vol::surface` (`AdEssviSurface`, `CalibratedEssviSurface`) and suite 25.
+
+41. **`61_Jacquier_Martini_Muguruza_2018_VIX_Futures_Rough_Bergomi.pdf`** — Forward variance strip representation of the CBOE VIX index and VIX futures under stochastic and rough volatility models inform `ql-models::vix` (`replicate_cboe_vix_index`, `heston_bates_vix_future_and_option_price`).
+
+42. **`62_Horvath_Jacquier_Tankov_2020_Volatility_Options_Rough_Vol.pdf`** — VIX call and put option pricing and martingale forward-variance bounds under affine Heston/Bates and rough volatility dynamics inform `ql-models::vix` and suite 25.
+
+43. **`63_General_Approach_Parisian_Stopping_Times_Markov_Processes_2021.pdf`** — Chesney–Jeanblanc–Yor (1997) / Dassios–Wu (2010) excursion-time and cumulative occupation-time Markov state augmentation informs `ql-exotics::parisian` (`ParisianBarrierOptionSpec`, `price_parisian_option_lattice`, `price_parisian_option_mc_ad`).
+
+44. **`64_Primal_Dual_Optimal_Stopping_Signatures_2023.pdf`** — Rogers (2002) and Andersen–Broadie (2004) Doob–Meyer martingale duality and simultaneous primal lower / dual upper bounds $[L_0, U_0]$ for Bermudan and American options inform `ql-mc::andersen_broadie` (`AndersenBroadieBounds`, `andersen_broadie_primal_dual_bounds`).
+
+45. **`65_Silotto_Scaringi_Bianchetti_2021_XVA_Model_Risk_MPoR.pdf`** — Andersen, Pykhtin & Sokol (2017) Margin Period of Risk (`MPoR`) lookback variation margin lag and unpaid contractual trade cashflow spikes inform `ql-xva::metrics` (`MporCollateralSpec`, `compute_mpor_xva`, `price_contingent_cds`).
+
+46. **`66_Ledoit_Wolf_2012_Nonlinear_Shrinkage_Covariance_Matrices.pdf`** — Ledoit & Wolf (2004, 2012) optimal finite-sample Frobenius covariance shrinkage (`ledoit_wolf_shrinkage`) and Goldfarb–Iyengar (2003) robust ellipsoidal Markowitz portfolio optimization (`try_robust_markowitz_weights`) inform `ql-portfolio::allocation` and suite 25.
+
 ## Reference repositories
 
 | Repository | Role in ql-rs design |
