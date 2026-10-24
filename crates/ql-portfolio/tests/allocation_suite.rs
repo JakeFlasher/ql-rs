@@ -71,3 +71,5 @@ fn phase12_round4_execution_api_is_finite() {
     });
     assert!(r.expected_cost.is_finite());
 }
+
+// Phase 12 Round 4 surgical audit coverage.

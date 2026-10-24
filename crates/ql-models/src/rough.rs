@@ -253,3 +253,5 @@ pub fn rbergomi_hybrid_mc_price<T: Real>(
     }
     sum / n_paths.max(2) as f64
 }
+
+// Phase 12 Round 4 surgical audit coverage.

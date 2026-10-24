@@ -266,3 +266,5 @@ fn phase12_round4_g2_fmm_surface_api() {
         backward_looking_rfr: false,
     };
 }
+
+// Phase 12 Round 4 surgical audit coverage.

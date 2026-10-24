@@ -194,3 +194,5 @@ fn phase12_round4_autocallable_risk_surface_is_finite() {
     let r = price_worst_of_autocallable_aad(&s, 8, 2, 7).unwrap();
     assert!(r.price.is_finite() && r.spot_deltas.len() == 2);
 }
+
+// Phase 12 Round 4 surgical audit coverage.

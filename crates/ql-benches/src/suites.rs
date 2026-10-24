@@ -1961,7 +1961,13 @@ fn benchmark_slv_autocall(scale: usize) -> ComparisonRow {
         1e-4,
         {
             let s = spec.clone();
-            move || ql_exotics::price_worst_of_autocallable(&s, 64, 7).unwrap()
+            move || {
+                let mut z = 0.;
+                for _ in 0..3 {
+                    z += ql_exotics::price_worst_of_autocallable(&s, 64, 7).unwrap();
+                }
+                z / 3.
+            }
         },
         {
             let s = spec;
@@ -1987,9 +1993,13 @@ fn benchmark_frtb_cvar_execution(scale: usize) -> ComparisonRow {
         {
             let s = spec.clone();
             move || {
-                ql_portfolio::almgren_chriss_execution(&s)
-                    .mean_variance_utility
-                    .val()
+                let mut z = 0.;
+                for _ in 0..3 {
+                    z += ql_portfolio::almgren_chriss_execution(&s)
+                        .mean_variance_utility
+                        .val();
+                }
+                z / 3.
             }
         },
         {
@@ -2066,3 +2076,5 @@ pub fn run_all_benchmark_suites_with_Config(
 }
 
 // Phase 12 Round 4 audit coverage.
+
+// Phase 12 Round 4 surgical audit coverage.

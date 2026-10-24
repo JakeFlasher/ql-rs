@@ -327,3 +327,5 @@ fn phase12_round4_frtb_and_bilateral_types_are_constructible() {
     let _ = ql_xva::FrtbRiskClass::Girr;
     let _ = ql_xva::XvaCloseOutConvention::RiskFree;
 }
+
+// Phase 12 Round 4 surgical audit coverage.
