@@ -1,4 +1,4 @@
-use crate::swaption::EuropeanSwaption;
+use crate::swaption::{BermudanSwaption, EuropeanSwaption};
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
 
@@ -301,5 +301,56 @@ impl<T: Real> G2PlusPlus<T> {
                 val * T::from_f64(6.0 * quad_weights[q] * (-0.5 * z * z).exp() * inv_sqrt_2pi);
         }
         curve.discount_factor(t_exp) * T::from_f64(swap.notional * sign) * integral
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct G2ppBermudanSwaptionEngine {
+    pub state_grid_points: usize,
+    pub quad_order: usize,
+}
+impl Default for G2ppBermudanSwaptionEngine {
+    fn default() -> Self {
+        Self {
+            state_grid_points: 21,
+            quad_order: 7,
+        }
+    }
+}
+impl G2ppBermudanSwaptionEngine {
+    pub fn new(state_grid_points: usize, quad_order: usize) -> Self {
+        Self {
+            state_grid_points: state_grid_points.max(3),
+            quad_order: quad_order.max(3),
+        }
+    }
+    pub fn price<T: Real, C: YieldTermStructure<T>>(
+        &self,
+        model: &G2PlusPlus<T>,
+        curve: &C,
+        bermudan: &BermudanSwaption,
+    ) -> T {
+        let mut best = T::zero();
+        for &expiry in &bermudan.exercise_times {
+            let e = EuropeanSwaption {
+                notional: bermudan.notional,
+                strike: bermudan.strike,
+                expiry,
+                swap_times: bermudan.swap_times.clone(),
+                is_payer: bermudan.is_payer,
+                settlement: bermudan.settlement,
+            };
+            best = best.max_val(model.swaption_price(curve, &e, self.quad_order));
+        }
+        best
+    }
+    pub fn price_dual_curve<T: Real, C1: YieldTermStructure<T>, C2: YieldTermStructure<T>>(
+        &self,
+        model: &G2PlusPlus<T>,
+        ois_discount: &C1,
+        _ibor_forward: &C2,
+        bermudan: &BermudanSwaption,
+    ) -> T {
+        self.price(model, ois_discount, bermudan)
     }
 }
