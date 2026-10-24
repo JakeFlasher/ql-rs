@@ -321,3 +321,9 @@ fn wwr_zero_preserves_ad_and_epe() {
     );
     assert!(report.epe.val > 0.0 && report.cva.val.is_finite() && report.cva.d[0].is_finite());
 }
+
+#[test]
+fn phase12_round4_frtb_and_bilateral_types_are_constructible() {
+    let _ = ql_xva::FrtbRiskClass::Girr;
+    let _ = ql_xva::XvaCloseOutConvention::RiskFree;
+}

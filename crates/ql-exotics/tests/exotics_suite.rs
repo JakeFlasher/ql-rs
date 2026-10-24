@@ -169,3 +169,28 @@ fn phase11_variance_and_corridor_replication() {
     .0;
     assert!((left + right - all).abs() < 1e-8);
 }
+
+#[test]
+fn phase12_round4_autocallable_risk_surface_is_finite() {
+    let s = WorstOfAutocallableSpec {
+        notional: 1.0,
+        spots: vec![100.0, 100.0],
+        vols: vec![0.2, 0.2],
+        divs: vec![0.0, 0.0],
+        rate: 0.02,
+        correlation: vec![vec![1.0, 0.2], vec![0.2, 1.0]],
+        observation_times: vec![0.5, 1.0],
+        autocall_barriers: vec![1.1, 1.05],
+        redemption_bonuses: vec![0.0, 0.0],
+        coupon_barriers: vec![0.8, 0.8],
+        coupon_rates: vec![0.01, 0.01],
+        memory_coupon: true,
+        knock_in_barrier: 0.6,
+        put_strike: 1.0,
+        observe_ki_all_dates: true,
+        smoothing_half_width: 0.02,
+        smooth_min_temp: 0.01,
+    };
+    let r = price_worst_of_autocallable_aad(&s, 8, 2, 7).unwrap();
+    assert!(r.price.is_finite() && r.spot_deltas.len() == 2);
+}

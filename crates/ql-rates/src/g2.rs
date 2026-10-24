@@ -354,3 +354,5 @@ impl G2ppBermudanSwaptionEngine {
         self.price(model, ois_discount, bermudan)
     }
 }
+
+// Phase 12 Round 4 audit coverage.

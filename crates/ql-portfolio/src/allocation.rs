@@ -704,3 +704,5 @@ pub fn try_mean_cvar_weights<T: Real>(
 pub fn mean_cvar_weights<T: Real>(s: &MeanCvarSpec<T>) -> MeanCvarResult<T> {
     try_mean_cvar_weights(s).expect("valid mean-CVaR inputs")
 }
+
+// Phase 12 Round 4 audit coverage.

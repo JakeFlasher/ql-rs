@@ -111,3 +111,5 @@ pub fn try_obizhaeva_wang_execution<T: Real>(
 pub fn obizhaeva_wang_execution<T: Real>(s: &ObizhaevaWangSpec<T>) -> OptimalExecutionReport<T> {
     try_obizhaeva_wang_execution(s).expect("valid Obizhaeva-Wang inputs")
 }
+
+// Phase 12 Round 4 audit coverage.

@@ -281,3 +281,15 @@ fn rough_heston_dual5_sensitivities_match_fd_and_short_dated_skew() {
         assert!((ad.d[j] - (fp - fm) / (2.0 * h)).abs() < 1e-4, "j={j}");
     }
 }
+
+#[test]
+fn phase12_round4_rbergomi_api_is_positive() {
+    let p = RoughBergomiParams {
+        xi0: 0.04,
+        eta: 1.0,
+        rho: -0.5,
+        hurst: 0.1,
+    };
+    let v = rbergomi_hybrid_mc_price(100.0, 100.0, 0.5, 0.03, 0.0, &p, 4, 8, true, 7);
+    assert!(v.is_finite() && v > 0.0);
+}

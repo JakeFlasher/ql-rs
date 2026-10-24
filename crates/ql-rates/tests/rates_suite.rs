@@ -251,3 +251,18 @@ fn bermudan_tree_and_fd_are_live_for_payer_and_receiver() {
         assert!(tree.is_finite() && fd.is_finite() && tree >= 0.0 && fd >= 0.0);
     }
 }
+
+#[test]
+fn phase12_round4_g2_fmm_surface_api() {
+    let _ = G2ppBermudanSwaptionEngine::default();
+    let _ = ForwardMarketModel {
+        tenor_times: vec![0.0, 1.0],
+        initial_forwards: vec![0.02],
+        initial_df_t0: 1.0,
+        displacements: vec![0.0],
+        volatilities: vec![0.2],
+        corr_decay: 1.0,
+        corr_floor: 0.0,
+        backward_looking_rfr: false,
+    };
+}

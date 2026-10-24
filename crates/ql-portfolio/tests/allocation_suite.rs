@@ -57,3 +57,17 @@ fn long_only_markowitz_wrapper_is_budgeted() {
     assert!((w.iter().sum::<f64>() - 1.0).abs() < 1e-12);
     assert!(w.iter().all(|x| *x >= -1e-12));
 }
+
+#[test]
+fn phase12_round4_execution_api_is_finite() {
+    let r = ql_portfolio::almgren_chriss_execution(&ql_portfolio::AlmgrenChrissSpec {
+        initial_inventory: 1.0,
+        horizon: 1.0,
+        num_steps: 4,
+        volatility: 0.2,
+        temporary_impact: 0.01,
+        permanent_impact: 0.001,
+        risk_aversion: 0.1,
+    });
+    assert!(r.expected_cost.is_finite());
+}

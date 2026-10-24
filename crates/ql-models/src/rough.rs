@@ -228,7 +228,10 @@ pub fn rbergomi_hybrid_mc_price<T: Real>(
         }
         let mut s_par = spot * ((rate - div) * expiry).exp();
         let mut qv = T::zero();
+        let mut v = params.xi0;
         for k in 0..n {
+            s_par *= (params.rho * v.sqrt() * dw[k] - params.rho * params.rho * v * dt * 0.5).exp();
+            qv += (T::one() - params.rho * params.rho).max_val(T::zero()) * v * dt;
             let mut conv = wh[k];
             for j in 0..k {
                 conv += T::from_f64((2. * h).sqrt())
@@ -236,7 +239,7 @@ pub fn rbergomi_hybrid_mc_price<T: Real>(
                     * dw[j];
             }
             let t = T::from_f64((k + 1) as f64) * dt;
-            let v = params.xi0
+            v = params.xi0
                 * (params.eta * conv - params.eta * params.eta * t.powf(2. * h) * 0.5).exp();
             s_par *= (params.rho * v.sqrt() * dw[k] - params.rho * params.rho * v * dt * 0.5).exp();
             qv += (T::one() - params.rho * params.rho).max_val(T::zero()) * v * dt;

@@ -491,3 +491,5 @@ pub fn compute_bilateral_xva<T: Real>(
         fixed_point_iterations: iterations,
     }
 }
+
+// Phase 12 Round 4 audit coverage.

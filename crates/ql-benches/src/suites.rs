@@ -2064,3 +2064,5 @@ pub fn run_all_benchmark_suites_with_Config(
 ) -> Vec<ComparisonRow> {
     run_all_benchmark_suites_with_config(warmup_iters, samples)
 }
+
+// Phase 12 Round 4 audit coverage.

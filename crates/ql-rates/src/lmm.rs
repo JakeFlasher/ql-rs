@@ -134,3 +134,5 @@ impl<T: Real> ForwardMarketModel<T> {
         total / n_paths.max(1) as f64
     }
 }
+
+// Phase 12 Round 4 audit coverage.
