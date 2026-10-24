@@ -10,5 +10,6 @@ categories = ["finance", "mathematics"]
 thiserror.workspace = true
 nalgebra.workspace = true
 ql-ad.workspace = true
+ql-math.workspace = true
 implied-vol.workspace = true
 volsurf.workspace = true
