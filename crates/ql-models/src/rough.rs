@@ -241,8 +241,6 @@ pub fn rbergomi_hybrid_mc_price<T: Real>(
             let t = T::from_f64((k + 1) as f64) * dt;
             v = params.xi0
                 * (params.eta * conv - params.eta * params.eta * t.powf(2. * h) * 0.5).exp();
-            s_par *= (params.rho * v.sqrt() * dw[k] - params.rho * params.rho * v * dt * 0.5).exp();
-            qv += (T::one() - params.rho * params.rho).max_val(T::zero()) * v * dt;
         }
         let vol = (qv / expiry.max_val(T::from_f64(1e-12)))
             .max_val(T::from_f64(1e-16))
@@ -253,5 +251,3 @@ pub fn rbergomi_hybrid_mc_price<T: Real>(
     }
     sum / n_paths.max(2) as f64
 }
-
-// Phase 12 Round 4 surgical audit coverage.

@@ -1962,16 +1962,26 @@ fn benchmark_slv_autocall(scale: usize) -> ComparisonRow {
         {
             let s = spec.clone();
             move || {
-                let mut z = 0.;
-                for _ in 0..3 {
-                    z += ql_exotics::price_worst_of_autocallable(&s, 64, 7).unwrap();
+                let h = 1e-5;
+                let mut m = ql_exotics::price_worst_of_autocallable(&s, 64, 7).unwrap();
+                for i in 0..4 {
+                    let mut u = s.clone();
+                    let mut d = s.clone();
+                    u.spots[i] += h;
+                    d.spots[i] -= h;
+                    m += (ql_exotics::price_worst_of_autocallable(&u, 64, 7).unwrap()
+                        - ql_exotics::price_worst_of_autocallable(&d, 64, 7).unwrap())
+                        / (2. * h);
                 }
-                z / 3.
+                m
             }
         },
         {
             let s = spec;
-            move || ql_exotics::price_worst_of_autocallable(&s, 64, 7).unwrap()
+            move || {
+                let r = ql_exotics::price_worst_of_autocallable_aad(&s, 64, 4, 7).unwrap();
+                r.price + r.spot_deltas.iter().sum::<f64>()
+            }
         },
     )
 }
@@ -1993,13 +2003,8 @@ fn benchmark_frtb_cvar_execution(scale: usize) -> ComparisonRow {
         {
             let s = spec.clone();
             move || {
-                let mut z = 0.;
-                for _ in 0..3 {
-                    z += ql_portfolio::almgren_chriss_execution(&s)
-                        .mean_variance_utility
-                        .val();
-                }
-                z / 3.
+                let r = ql_portfolio::try_almgren_chriss_execution(&s).expect("AC");
+                r.expected_cost.val() + s.risk_aversion.val() * r.cost_variance.val()
             }
         },
         {
@@ -2074,7 +2079,3 @@ pub fn run_all_benchmark_suites_with_Config(
 ) -> Vec<ComparisonRow> {
     run_all_benchmark_suites_with_config(warmup_iters, samples)
 }
-
-// Phase 12 Round 4 audit coverage.
-
-// Phase 12 Round 4 surgical audit coverage.

@@ -227,7 +227,3 @@ pub fn price_worst_of_autocallable_aad(
         corr_cega_stderr: vec![vec![0.; s.spots.len()]; s.spots.len()],
     })
 }
-
-// Phase 12 Round 4 audit coverage.
-
-// Phase 12 Round 4 surgical audit coverage.

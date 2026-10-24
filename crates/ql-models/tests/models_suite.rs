@@ -293,5 +293,3 @@ fn phase12_round4_rbergomi_api_is_positive() {
     let v = rbergomi_hybrid_mc_price(100.0, 100.0, 0.5, 0.03, 0.0, &p, 4, 8, true, 7);
     assert!(v.is_finite() && v > 0.0);
 }
-
-// Phase 12 Round 4 surgical audit coverage.
