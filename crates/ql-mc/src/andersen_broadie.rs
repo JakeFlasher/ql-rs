@@ -40,6 +40,9 @@ impl AmcEngine {
         for p in 0..n {
             let mut s = spot;
             let mut best = T::zero();
+            let mut exercised = false;
+            let mut pi = T::zero();
+            let mut prev_s = spot;
             // The pathwise supremum of discounted intrinsic values is a
             // valid (albeit deliberately conservative) dual upper bound:
             // every stopping rule is bounded by the supremum on each path.
@@ -63,7 +66,6 @@ impl AmcEngine {
                     (strike - s).max_val(T::zero())
                 };
                 let discounted = disc * ex;
-                maxv = maxv.max_val(discounted);
                 // Exercise decisions are frozen to the supplied Longstaff--
                 // Schwartz policy.  Evaluate the full Chebyshev basis (not
                 // just the intercept) on primal values while retaining the
@@ -90,9 +92,31 @@ impl AmcEngine {
                         value
                     }
                 });
-                if ex.val() > 0.0 && ex.val() >= cont {
+                let mut cond = T::zero();
+                let half = (n_inner.max(2) / 2).max(1);
+                let inner = crate::PhiloxRng::new(self.seed ^ 0x9e37_79b9_7f4a_7c15);
+                for m in 0..half {
+                    let zi = inner.normal4((p as u64) * 1024 + k as u64, m as u32)[0];
+                    for sign_i in [1.0, -1.0] {
+                        let sn = prev_s
+                            * ((rate - div - vol * vol * 0.5) * dt
+                                + vol * dt.sqrt() * T::from_f64(sign_i * zi))
+                            .exp();
+                        let en = if is_call {
+                            (sn - strike).max_val(T::zero())
+                        } else {
+                            (strike - sn).max_val(T::zero())
+                        };
+                        cond += disc * en;
+                    }
+                }
+                cond /= T::from_f64((2 * half) as f64);
+                pi += discounted - cond;
+                maxv = maxv.max_val(discounted - pi);
+                prev_s = s;
+                if !exercised && (k == steps || (ex.val() > 0.0 && ex.val() >= cont)) {
                     best = discounted;
-                    break;
+                    exercised = true;
                 }
             }
             lo += best;

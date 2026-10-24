@@ -964,7 +964,7 @@ impl CalibratedEssviSurface {
             let s = &self.surface.slices[0];
             let ad = AdEssviSlice {
                 forward: Dual::<3>::from_value(s.forward),
-                expiry: Dual::<3>::from_value(s.expiry),
+                expiry: Dual::<3>::from_value(expiry.max(1e-12)),
                 theta: Dual::<3>::variable(s.theta, 0),
                 rho: Dual::<3>::variable(s.rho, 1),
                 psi: Dual::<3>::variable(s.psi, 2),

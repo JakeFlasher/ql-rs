@@ -956,13 +956,7 @@ impl CalibratedMeetingJumpOisCurve {
         let adj = TapeScope::gradient_from(out);
         let m: Vec<f64> = vars.iter().map(|v| adj.gradient(*v)).collect();
         let _ = guard.stop();
-        let q = self.sensitivity.jacobian_dtheta_dq();
-        let mut p = vec![0.0; q.ncols()];
-        for j in 0..q.ncols() {
-            for i in 0..q.nrows() {
-                p[j] += m[i] * q[(i, j)];
-            }
-        }
+        let p = self.sensitivity.vjp(&m);
         (out.val, m, p)
     }
 }

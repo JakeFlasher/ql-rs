@@ -453,7 +453,27 @@ pub fn lpi_inflation_swap_npv<T: Real>(
             let f = inflation.forward_cpi(j as f64, None)
                 / inflation.forward_cpi((j - 1) as f64, None)
                 - T::one();
-            let y = f.max_val(s.floor_rate).min_val(s.cap_rate);
+            let floorlet = yoy_optionlet(
+                f,
+                s.floor_rate,
+                vol,
+                T::from_f64(j as f64),
+                T::one(),
+                model,
+                false,
+            );
+            let caplet = yoy_optionlet(
+                f,
+                s.cap_rate,
+                vol,
+                T::from_f64(j as f64),
+                T::one(),
+                model,
+                true,
+            );
+            let y = (f + floorlet - caplet)
+                .max_val(s.floor_rate)
+                .min_val(s.cap_rate);
             index_ratio *= T::one() + y;
         }
         let t = s.maturity_years as f64;

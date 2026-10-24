@@ -34,3 +34,32 @@
 | **P13-R1-H6** | **HIGH** | `crates/ql-portfolio/src/allocation.rs:905-1100` | `ledoit_wolf_shrinkage` omits the sample-size factor $1/n$ in $\hat{\delta}^* = \text{clamp}(\frac{\hat{\pi}-\hat{\rho}}{n\hat{\gamma}}, 0, 1)$, omits $\hat{\rho}$ for `ConstantCorrelation`, and omits `DiagonalVariance`; `try_robust_markowitz_weights` omits the rank-1 SOCP Hessian term $-\frac{\kappa}{\sigma_{\text{est}}^3}(\Omega_\mu w)(\Omega_\mu w)^\top$ from the KKT IFT system. |
 | **P13-R1-M1** | **MEDIUM** | `crates/ql-inflation/src/lib.rs:450-465` | `lpi_inflation_swap_npv` ignores `vol` and `model` when `is_compounded_zero_coupon == true`, giving zero inflation vega on compounded zero-coupon LPI swaps. |
 | **P13-R1-L1** | **LOW** | `crates/ql-terminal/src/lib.rs:21-27` & `knowledge_base/*` | `ql_terminal::prelude` omits Phase 12–13 `ql_models` modules (`vix`, `rough`, `slv`), and `knowledge_base/{05,07}*.md` have minor stale counts (`24-suite` / `22-tab` instead of `25-suite` / `23-tab`). |
+
+---
+
+## Round 2 Audit Verdict (`1cb863a..d4701b1`): **PARTIALLY REMEDIATED — NOT CONVERGED**
+
+### Verified Fixed in Commits `c394551` & `d4701b1`:
+1. **`P13-R1-C2` (`crates/ql-models/src/vix.rs:60-129`) — FIXED**:
+   - `heston_bates_vix_future_and_option_price` now uses the smooth Taylor expansion for $a_\tau$ near $\kappa \tau = 0$, the exact Bates jump compensator $\kappa_J = \exp(\mu_J + \frac{1}{2}\sigma_J^2) - 1$, the exact CIR variance $\operatorname{Var}(V_T)$, moment-matched annualized implied vol $\sigma_{\text{VIX}}$ (eliminating the double $\sqrt{T}$ multiplication), and the convexity-adjusted VIX future $F_{\text{VIX}}(0, T) = \sqrt{\mu_{\text{var}}}\,\exp(-\frac{1}{2}\sigma_{\text{VIX}}^2 T)$.
+2. **`P13-R1-H3` (Part 1 — `crates/ql-exotics/src/parisian.rs:280-284`) — FIXED**:
+   - `price_parisian_option_mc_ad` now uses `clock_hw = (s.expiry.val() / n as f64).max(smoothing_eps).max(1e-8)` in `clock.smooth_heaviside_c2`, reducing Benchmark Suite 25 (`25_monotone_convex_vix_parisian_robust_aad`) AD vs FD max abs parity diff from `3.440e-1` down to `6.822e-7` across `README.md`, `crates/ql-benches/BENCHMARK_RESULTS.md`, and `knowledge_base/08_BENCHMARK_RESULTS.md`.
+
+### Remaining Open Items Requiring Remediation in Round 3 (`CODEX_PHASE13_ROUND3_PROMPT.md`):
+- **`P13-R1-C1` (`CRITICAL`)**: `crates/ql-mc/src/andersen_broadie.rs:16-129` (still untouched in `d4701b1`).
+- **`P13-R1-C3` (`CRITICAL`)**: `crates/ql-xva/src/metrics.rs:513-532` (`compute_mpor_xva` still untouched in `d4701b1`).
+- **`P13-R1-C4` (`CRITICAL`)**: `crates/ql-rates/src/cheyette.rs:201-241` (`price_callable_range_accrual_hw1f` still untouched in `d4701b1`).
+- **`P13-R1-C5` (`CRITICAL`)**: Domain unit/integration tests for Phase 13 Pillars 1–6 (still 0 added in `d4701b1`).
+- **`P13-R1-H1` (`HIGH`)**: `crates/ql-curves/src/curves.rs:222-445` & `bootstrap.rs:893-967` (still untouched in `d4701b1`).
+- **`P13-R1-H2` (`HIGH`)**: `crates/ql-vol/src/surface.rs:857-1010` (still untouched in `d4701b1`).
+- **`P13-R1-H3b` (`HIGH`)**: `crates/ql-benches/src/suites.rs:2265, 2345, 2375, 2473` (`parity_tol` still `5e-1` and `QL_DEBUG_PHASE13` `eprintln!` blocks still present).
+- **`P13-R1-H4` (`HIGH`)**: `crates/ql-rates/src/cheyette.rs:136-193` (`calibrate_cheyette_coterminal_ad` still untouched in `d4701b1`).
+- **`P13-R1-H5` (`HIGH`)**: `crates/ql-credit/src/cdo.rs:407-437` & `crates/ql-xva/src/metrics.rs:533-575` (still untouched in `d4701b1`).
+- **`P13-R1-H6` (`HIGH`)**: `crates/ql-portfolio/src/allocation.rs:905-1100` (still untouched in `d4701b1`).
+- **`P13-R1-M1` (`MEDIUM`)**: `crates/ql-inflation/src/lib.rs:450-465` (still untouched in `d4701b1`).
+- **`P13-R1-L1` (`LOW`)**: `crates/ql-terminal/src/lib.rs:21-27` & `knowledge_base/{05,07}*.md` (still untouched in `d4701b1`).
+
+
+## Round 3 remediation (`d4701b1..working tree`)
+
+Round 3 closed the remaining critical/high findings: Andersen--Broadie martingale updates, cashflow-aware MPoR and contingent CDS, Cheyette decay/callable behavior, MonotoneConvex/meeting-jump corrections, eSSVI guards, heterogeneous kth-default annuity/recovery, robust allocation variants, LPI volatility, and Suite 25 parity/timing cleanup.

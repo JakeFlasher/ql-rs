@@ -433,7 +433,11 @@ impl<T: Real> YieldTermStructure<T> for MeetingDateJumpOisCurve<T> {
     fn instantaneous_forward(&self, t: f64) -> T {
         for (i, &m) in self.meeting_times.iter().enumerate() {
             if t < m {
-                return self.overnight_rate_after_meeting(i.saturating_sub(1));
+                return if i == 0 {
+                    self.initial_rate
+                } else {
+                    self.overnight_rate_after_meeting(i - 1)
+                };
             }
         }
         self.initial_rate

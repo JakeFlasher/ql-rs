@@ -519,7 +519,7 @@ pub struct MporCollateralSpec<T: Real = f64> {
 #[allow(clippy::too_many_arguments)]
 pub fn compute_mpor_xva<T: Real>(
     cube: &NpvCube<T>,
-    _period_cashflows: Option<&[T]>,
+    period_cashflows: Option<&[T]>,
     curve: &impl YieldTermStructure<T>,
     s: &MporCollateralSpec<T>,
     hc: T,
@@ -528,7 +528,42 @@ pub fn compute_mpor_xva<T: Real>(
     ls: T,
     fs: T,
 ) -> XvaReport<T> {
-    compute_xva(cube, curve, Some(&s.csa), hc, lc, hs, ls, fs)
+    let has_cf = period_cashflows.is_some_and(|c| c.iter().any(|x| x.val().abs() > 0.0));
+    if s.mpor_years <= 0.0 && !has_cf {
+        return compute_xva(cube, curve, Some(&s.csa), hc, lc, hs, ls, fs);
+    }
+    let mut adj = NpvCube::new(cube.n_netting_sets, cube.times.clone(), cube.n_paths);
+    for ns in 0..cube.n_netting_sets {
+        for (k, &t) in cube.times.iter().enumerate() {
+            let lag = (t - s.mpor_years.max(0.0)).max(0.0);
+            let j = cube
+                .times
+                .partition_point(|x| *x <= lag)
+                .min(cube.times.len().saturating_sub(1));
+            let alpha = if j == 0 {
+                0.0
+            } else {
+                ((lag - cube.times[j - 1]) / (cube.times[j] - cube.times[j - 1]).max(1e-12))
+                    .clamp(0.0, 1.0)
+            };
+            for p in 0..cube.n_paths {
+                let v = cube.get(ns, k, p);
+                let vl = if j == 0 {
+                    v
+                } else {
+                    cube.get(ns, j - 1, p) * (1.0 - alpha) + cube.get(ns, j, p) * alpha
+                };
+                let held = vl - s.csa.collateralized_exposure(vl);
+                let cf = period_cashflows
+                    .and_then(|c| c.get(k))
+                    .copied()
+                    .unwrap_or_else(T::zero)
+                    * s.unpaid_cashflow_weight;
+                adj.set(ns, k, p, v + cf - held);
+            }
+        }
+    }
+    compute_xva(&adj, curve, None, hc, lc, hs, ls, fs)
 }
 pub fn price_contingent_cds<T: Real>(
     cube: &NpvCube<T>,
@@ -563,13 +598,16 @@ pub fn price_contingent_cds<T: Real>(
         let q = (-hazard_rate * T::from_f64(t)).exp();
         let df = curve.discount_factor(t);
         prot += df * loss_given_default * e * (prev - q);
-        prem += df * e * T::from_f64(if k == 0 { t } else { t - cube.times[k - 1] });
+        let dt = if k == 0 { t } else { t - cube.times[k - 1] };
+        prem += df * e * (prev + q) * 0.5 * T::from_f64(dt);
         prev = q;
     }
-    let fair = if prem.val().abs() > 1e-14 {
-        running_spread * prot / prem
+    let annuity = prem;
+    let premium = annuity * running_spread;
+    let fair = if annuity.val().abs() > 1e-14 {
+        prot / annuity
     } else {
         T::zero()
     };
-    (prot, prem, fair)
+    (prot, premium, fair)
 }

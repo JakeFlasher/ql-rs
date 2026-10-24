@@ -905,6 +905,8 @@ pub fn mean_cvar_weights<T: Real>(s: &MeanCvarSpec<T>) -> MeanCvarResult<T> {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ShrinkageTarget {
     ScaledIdentity,
+    ConstantVarianceIdentity,
+    DiagonalVariance,
     ConstantCorrelation,
 }
 #[derive(Clone, Debug)]
@@ -944,10 +946,15 @@ pub fn ledoit_wolf_shrinkage<T: Real>(
         .collect::<Vec<Vec<_>>>();
     let mut f = vec![vec![T::zero(); p]; p];
     match target {
-        ShrinkageTarget::ScaledIdentity => {
+        ShrinkageTarget::ScaledIdentity | ShrinkageTarget::ConstantVarianceIdentity => {
             let m = (0..p).map(|i| s[i][i]).fold(T::zero(), |a, z| a + z) / p as f64;
             for (i, row) in f.iter_mut().enumerate().take(p) {
                 row[i] = m;
+            }
+        }
+        ShrinkageTarget::DiagonalVariance => {
+            for (i, row) in f.iter_mut().enumerate().take(p) {
+                row[i] = s[i][i];
             }
         }
         ShrinkageTarget::ConstantCorrelation => {

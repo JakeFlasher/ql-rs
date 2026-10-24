@@ -183,10 +183,12 @@ pub fn calibrate_cheyette_coterminal_ad<T: Real, C: YieldTermStructure<T>>(
         if !seg.val().is_finite() || seg.val() <= 1e-14 {
             return Err("invalid Cheyette variance interval".into());
         }
-        let sigma2 = ((target_vx - prior_vx) / seg).max_val(T::zero());
+        let decay = (-T::from_f64(2.0) * mu * dt_ad).exp();
+        let decayed_prior = prior_vx * decay;
+        let sigma2 = ((target_vx - decayed_prior) / seg).max_val(T::zero());
         let sigma = sigma2.sqrt();
         piecewise_sigmas.push(sigma);
-        prior_vx = prior_vx * (-T::from_f64(2.0) * mu * dt_ad).exp() + sigma2 * seg;
+        prior_vx = decayed_prior + sigma2 * seg;
         model_normal_vols
             .push(T::from_f64(loading) * (prior_vx / T::from_f64(t)).max_val(T::zero()).sqrt());
         prev_t = t;

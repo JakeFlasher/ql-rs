@@ -2262,7 +2262,7 @@ fn benchmark_phase13_vix_parisian_robust(scale: usize) -> ComparisonRow {
         "25_monotone_convex_vix_parisian_robust_aad",
         "monotone-convex curve plus VIX/Parisian and robust Markowitz AD",
         config(scale),
-        5e-1,
+        1e-4,
         {
             let mono_times = mono_times.clone();
             let mono_rates = mono_rates.clone();

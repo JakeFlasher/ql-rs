@@ -432,7 +432,7 @@ pub fn price_kth_to_default_basket<T: Real>(
         // Premium is paid while the basket is alive.  Midpoint default
         // accrual can be enabled by passing the usual half-period survival;
         // the endpoint survival is the conservative standard convention.
-        risky_annuity += s.notional * df * accrual * survival;
+        risky_annuity += s.notional * df * accrual * (prev_survival + survival) * 0.5;
         prev_survival = survival;
     }
     let premium = risky_annuity * s.running_spread;
