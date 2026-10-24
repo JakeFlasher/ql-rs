@@ -171,10 +171,10 @@ fn phase11_variance_and_corridor_replication() {
 }
 
 #[test]
-fn phase12_round4_autocallable_risk_surface_is_finite() {
+fn phase12_round4_autocallable_price_greeks_and_life_invariants() {
     let s = WorstOfAutocallableSpec {
         notional: 1.0,
-        spots: vec![100.0, 100.0],
+        spots: vec![100.25, 100.0],
         vols: vec![0.2, 0.2],
         divs: vec![0.0, 0.0],
         rate: 0.02,
@@ -191,6 +191,41 @@ fn phase12_round4_autocallable_risk_surface_is_finite() {
         smoothing_half_width: 0.02,
         smooth_min_temp: 0.01,
     };
-    let r = price_worst_of_autocallable_aad(&s, 8, 2, 7).unwrap();
-    assert!(r.price.is_finite() && r.spot_deltas.len() == 2);
+    let r = price_worst_of_autocallable_aad(&s, 64, 4, 7).unwrap();
+    assert!(r.price.is_finite() && r.stderr.is_finite());
+    assert_eq!(r.autocall_probabilities.len(), s.observation_times.len());
+    assert!(
+        r.autocall_probabilities
+            .iter()
+            .all(|p| *p >= 0.0 && *p <= 1.0)
+    );
+    assert!(r.autocall_probabilities.iter().sum::<f64>() <= 1.0 + 1e-12);
+    assert!(r.expected_life >= 0.0 && r.expected_life <= 1.0 + 1e-12);
+    let h = 1e-4;
+    let mut up = s.clone();
+    let mut dn = s.clone();
+    up.spots[0] += h;
+    dn.spots[0] -= h;
+    let fd_spot = (price_worst_of_autocallable(&up, 64, 7).unwrap()
+        - price_worst_of_autocallable(&dn, 64, 7).unwrap())
+        / (2.0 * h);
+    assert!((r.spot_deltas[0] - fd_spot).abs() < 1e-6);
+    up = s.clone();
+    dn = s.clone();
+    up.vols[0] += h;
+    dn.vols[0] -= h;
+    let fd_vega = (price_worst_of_autocallable(&up, 64, 7).unwrap()
+        - price_worst_of_autocallable(&dn, 64, 7).unwrap())
+        / (2.0 * h);
+    assert!((r.vegas[0] - fd_vega).abs() < 1e-5);
+    up = s.clone();
+    dn = s.clone();
+    up.correlation[0][1] += h;
+    up.correlation[1][0] += h;
+    dn.correlation[0][1] -= h;
+    dn.correlation[1][0] -= h;
+    let fd_cega = (price_worst_of_autocallable(&up, 64, 7).unwrap()
+        - price_worst_of_autocallable(&dn, 64, 7).unwrap())
+        / (2.0 * h);
+    assert!((r.corr_cega[1][0] - fd_cega).abs() < 1e-5);
 }

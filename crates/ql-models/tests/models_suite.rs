@@ -283,13 +283,47 @@ fn rough_heston_dual5_sensitivities_match_fd_and_short_dated_skew() {
 }
 
 #[test]
-fn phase12_round4_rbergomi_api_is_positive() {
-    let p = RoughBergomiParams {
+fn phase12_rbergomi_and_slv_particle_invariants() {
+    let p = ql_models::RoughBergomiParams {
         xi0: 0.04,
-        eta: 1.0,
-        rho: -0.5,
+        eta: 1.2,
+        rho: -0.7,
         hurst: 0.1,
     };
-    let v = rbergomi_hybrid_mc_price(100.0, 100.0, 0.5, 0.03, 0.0, &p, 4, 8, true, 7);
-    assert!(v.is_finite() && v > 0.0);
+    let call =
+        ql_models::rbergomi_hybrid_mc_price(100.0, 100.0, 1.0, 0.02, 0.0, &p, 16, 128, true, 42);
+    let put =
+        ql_models::rbergomi_hybrid_mc_price(100.0, 100.0, 1.0, 0.02, 0.0, &p, 16, 128, false, 42);
+    let parity = call - put - (100.0 - 100.0 * (-0.02_f64).exp());
+    assert!(call > 0.0 && put > 0.0 && parity.abs() < 1e-10);
+
+    let heston = ql_models::HestonParams {
+        v0: 0.04,
+        kappa: 2.0,
+        theta: 0.04,
+        sigma_v: 0.3,
+        rho: -0.5,
+    };
+    let slv = ql_models::calibrate_slv_particle_leverage(
+        100.0,
+        0.02,
+        0.0,
+        1.0,
+        &heston,
+        0.5,
+        |_, _| 0.2,
+        16,
+        64,
+        3,
+        7,
+    );
+    let slv_px =
+        ql_models::price_slv_european_mc(&slv, 100.0, 100.0, 0.02, 0.0, 1.0, 128, true, 11);
+    assert!(
+        slv.slices
+            .iter()
+            .flat_map(|slice| slice.leverage.iter())
+            .all(|&l| l > 0.2 && l < 5.0)
+    );
+    assert!(slv_px > 5.0 && slv_px < 20.0);
 }

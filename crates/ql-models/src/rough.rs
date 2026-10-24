@@ -202,7 +202,7 @@ pub fn rbergomi_hybrid_mc_price<T: Real>(
     let h = params.hurst;
     let ch = (2. * h).sqrt() / (h + 0.5);
     let sh = (1. - ch * ch).max(0.).sqrt();
-    let mut sum = T::zero();
+    let mut paths: Vec<(T, T)> = Vec::with_capacity(n_paths.max(2));
     fn nr(s: &mut u64) -> f64 {
         *s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
         let u = ((*s >> 11) as f64 + 0.5) / 9007199254740992.;
@@ -213,11 +213,10 @@ pub fn rbergomi_hybrid_mc_price<T: Real>(
     let mut weights = vec![0.; n + 1];
     for (m, weight) in weights.iter_mut().enumerate().take(n + 1).skip(2) {
         *weight = ((m as f64).powf(h + 0.5) - ((m - 1) as f64).powf(h + 0.5)) / (h + 0.5);
-        *weight = weight.powf(1. / (h - 0.5));
     }
     for p in 0..n_paths.max(2) {
         let sign = if p % 2 == 0 { 1. } else { -1. };
-        let mut rng = seed.wrapping_add(p as u64);
+        let mut rng = seed.wrapping_add((p / 2) as u64);
         let mut dw = vec![T::zero(); n];
         let mut wh = vec![T::zero(); n];
         for j in 0..n {
@@ -245,9 +244,28 @@ pub fn rbergomi_hybrid_mc_price<T: Real>(
         let vol = (qv / expiry.max_val(T::from_f64(1e-12)))
             .max_val(T::from_f64(1e-16))
             .sqrt();
-        sum +=
-            ql_vol::black_scholes_price(s_par, strike, vol, expiry, T::zero(), T::zero(), is_call)
-                * (-rate * expiry).exp();
+        paths.push((s_par, vol));
     }
+    let target_forward = spot * ((rate - div) * expiry).exp();
+    let mean_spot = paths
+        .iter()
+        .map(|(s_path, _)| *s_path)
+        .fold(T::zero(), |a, z| a + z)
+        / paths.len() as f64;
+    let martingale_scale = target_forward / mean_spot.max_val(T::from_f64(1e-12));
+    let sum = paths
+        .into_iter()
+        .map(|(s_path, vol)| {
+            ql_vol::black_scholes_price(
+                s_path * martingale_scale,
+                strike,
+                vol,
+                expiry,
+                T::zero(),
+                T::zero(),
+                is_call,
+            ) * (-rate * expiry).exp()
+        })
+        .fold(T::zero(), |a, z| a + z);
     sum / n_paths.max(2) as f64
 }

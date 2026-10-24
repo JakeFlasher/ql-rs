@@ -317,6 +317,15 @@ impl Default for G2ppBermudanSwaptionEngine {
         }
     }
 }
+impl<T: Real> G2PlusPlus<T> {
+    pub fn sigma_x(&self, t: f64) -> T {
+        (self.sigma * self.sigma * Self::b_fn(self.a * 2.0, t)).sqrt()
+    }
+    pub fn sigma_y(&self, t: f64) -> T {
+        (self.eta * self.eta * Self::b_fn(self.b * 2.0, t)).sqrt()
+    }
+}
+
 impl G2ppBermudanSwaptionEngine {
     pub fn new(state_grid_points: usize, quad_order: usize) -> Self {
         Self {
@@ -330,43 +339,160 @@ impl G2ppBermudanSwaptionEngine {
         curve: &C,
         bermudan: &BermudanSwaption,
     ) -> T {
-        let mut best = T::zero();
-        let mut sum_sq = T::zero();
-        for &expiry in &bermudan.exercise_times {
-            let rem: Vec<f64> = bermudan
-                .swap_times
-                .iter()
-                .copied()
-                .filter(|&t| t >= expiry - 1e-9)
-                .collect();
-            if rem.len() < 2 {
-                continue;
-            }
-            let e = EuropeanSwaption {
-                notional: bermudan.notional,
-                strike: bermudan.strike,
-                expiry,
-                swap_times: rem,
-                is_payer: bermudan.is_payer,
-                settlement: bermudan.settlement,
-            };
-            let v = model.swaption_price(curve, &e, self.quad_order);
-            best = best.max_val(v);
-            sum_sq += v * v;
-        }
-        if bermudan.exercise_times.len() <= 1 {
-            best
-        } else {
-            best.max_val(sum_sq.max_val(T::zero()).sqrt() * 0.75 + best * 0.30)
-        }
+        self.price_dual_curve(model, curve, curve, bermudan)
     }
+
     pub fn price_dual_curve<T: Real, C1: YieldTermStructure<T>, C2: YieldTermStructure<T>>(
         &self,
         model: &G2PlusPlus<T>,
         ois_discount: &C1,
-        _ibor_forward: &C2,
+        ibor_forward: &C2,
         bermudan: &BermudanSwaption,
     ) -> T {
-        self.price(model, ois_discount, bermudan)
+        let valid_ex: Vec<(f64, Vec<f64>)> = bermudan
+            .exercise_times
+            .iter()
+            .copied()
+            .filter_map(|expiry| {
+                let rem: Vec<f64> = bermudan
+                    .swap_times
+                    .iter()
+                    .copied()
+                    .filter(|&t| t >= expiry - 1e-9)
+                    .collect();
+                (rem.len() >= 2).then_some((expiry, rem))
+            })
+            .collect();
+        if valid_ex.is_empty() {
+            return T::zero();
+        }
+        let mut euro_best = T::zero();
+        for (expiry, rem) in &valid_ex {
+            let e = EuropeanSwaption {
+                notional: bermudan.notional,
+                strike: bermudan.strike,
+                expiry: *expiry,
+                swap_times: rem.clone(),
+                is_payer: bermudan.is_payer,
+                settlement: bermudan.settlement,
+            };
+            let v = model.swaption_price(ois_discount, &e, self.quad_order);
+            euro_best = euro_best.max_val(v);
+        }
+        let g = self.state_grid_points.clamp(5, 15);
+        let m_ex = valid_ex.len();
+        let sign = if bermudan.is_payer { 1.0 } else { -1.0 };
+        let q_nodes = [-1.7320508, -0.5, 0.0, 0.5, 1.7320508_f64];
+        let q_weights = [0.0833333, 0.25, 0.3333334, 0.25, 0.0833333_f64];
+        let intrinsic_at = |m_idx: usize, x: T, y: T| -> T {
+            let (t_ex, ref rem) = valid_ex[m_idx];
+            let mut flt = T::zero();
+            let mut ann = T::zero();
+            for k in 0..(rem.len() - 1) {
+                let t0 = rem[k];
+                let t1 = rem[k + 1];
+                let tau = t1 - t0;
+                let p0_ois = model.discount_bond(ois_discount, t_ex, t0, x, y);
+                let p1_ois = model.discount_bond(ois_discount, t_ex, t1, x, y);
+                let ratio = (ibor_forward.discount_factor(t0) / ibor_forward.discount_factor(t1))
+                    / (ois_discount.discount_factor(t0) / ois_discount.discount_factor(t1));
+                let fwd = (p0_ois / p1_ois * ratio - T::one()) / tau;
+                flt += fwd * p1_ois * tau;
+                ann += p1_ois * tau;
+            }
+            let payoff = (T::from_f64(sign) * (flt - ann * bermudan.strike)).max_val(T::zero());
+            let df0 = ois_discount.discount_factor(t_ex)
+                * (-(G2PlusPlus::b_fn(model.a, t_ex) * x + G2PlusPlus::b_fn(model.b, t_ex) * y))
+                    .exp();
+            df0 * payoff * bermudan.notional
+        };
+        let grid_bounds = |t: f64| -> (T, T) {
+            let sx = model.sigma_x(t).max_val(T::from_f64(1e-6)) * 3.0;
+            let sy = model.sigma_y(t).max_val(T::from_f64(1e-6)) * 3.0;
+            (sx, sy)
+        };
+        let mut vals = vec![vec![T::zero(); g]; g];
+        let (bx_last, by_last) = grid_bounds(valid_ex[m_ex - 1].0);
+        for (i, row) in vals.iter_mut().enumerate() {
+            let xi = -bx_last + bx_last * (2.0 * i as f64 / (g - 1) as f64);
+            for (j, cell) in row.iter_mut().enumerate() {
+                let yj = -by_last + by_last * (2.0 * j as f64 / (g - 1) as f64);
+                *cell = intrinsic_at(m_ex - 1, xi, yj);
+            }
+        }
+        let interp = |grid: &[Vec<T>], bx: T, by: T, x: T, y: T| -> T {
+            let ux = ((x + bx) / (bx * 2.0)).max_val(T::zero()).min_val(T::one()) * (g - 1) as f64;
+            let uy = ((y + by) / (by * 2.0)).max_val(T::zero()).min_val(T::one()) * (g - 1) as f64;
+            let i0 = (ux.val().floor() as usize).min(g - 2);
+            let j0 = (uy.val().floor() as usize).min(g - 2);
+            let tx = ux - T::from_f64(i0 as f64);
+            let ty = uy - T::from_f64(j0 as f64);
+            grid[i0][j0] * (T::one() - tx) * (T::one() - ty)
+                + grid[i0 + 1][j0] * tx * (T::one() - ty)
+                + grid[i0][j0 + 1] * (T::one() - tx) * ty
+                + grid[i0 + 1][j0 + 1] * tx * ty
+        };
+        for m_idx in (0..(m_ex - 1)).rev() {
+            let t_curr = valid_ex[m_idx].0;
+            let t_next = valid_ex[m_idx + 1].0;
+            let dt = (t_next - t_curr).max(1e-8);
+            let (bx_curr, by_curr) = grid_bounds(t_curr);
+            let (bx_next, by_next) = grid_bounds(t_next);
+            let sx = model.sigma_x(dt);
+            let sy = model.sigma_y(dt);
+            let ea = (-model.a * dt).exp();
+            let eb = (-model.b * dt).exp();
+            let rxy = model
+                .rho
+                .max_val(T::from_f64(-0.999))
+                .min_val(T::from_f64(0.999));
+            let s_orth = (T::one() - rxy * rxy).max_val(T::zero()).sqrt();
+            let mut next_vals = vec![vec![T::zero(); g]; g];
+            for (i, row) in next_vals.iter_mut().enumerate() {
+                let xi = -bx_curr + bx_curr * (2.0 * i as f64 / (g - 1) as f64);
+                for (j, cell) in row.iter_mut().enumerate() {
+                    let yj = -by_curr + by_curr * (2.0 * j as f64 / (g - 1) as f64);
+                    let mut cont = T::zero();
+                    for (qx, &zx) in q_nodes.iter().enumerate() {
+                        for (qy, &zy) in q_nodes.iter().enumerate() {
+                            let xn = xi * ea + sx * zx;
+                            let yn = yj * eb + sy * (rxy * zx + s_orth * zy);
+                            let w = q_weights[qx] * q_weights[qy];
+                            cont += interp(&vals, bx_next, by_next, xn, yn) * w;
+                        }
+                    }
+                    *cell = intrinsic_at(m_idx, xi, yj).max_val(cont);
+                }
+            }
+            vals = next_vals;
+        }
+        let t0 = valid_ex[0].0;
+        let (bx0, by0) = grid_bounds(t0);
+        let sx0 = model.sigma_x(t0);
+        let sy0 = model.sigma_y(t0);
+        let rxy = model
+            .rho
+            .max_val(T::from_f64(-0.999))
+            .min_val(T::from_f64(0.999));
+        let s_orth = (T::one() - rxy * rxy).max_val(T::zero()).sqrt();
+        let mut pv0 = T::zero();
+        for (qx, &zx) in q_nodes.iter().enumerate() {
+            for (qy, &zy) in q_nodes.iter().enumerate() {
+                let x0 = sx0 * zx;
+                let y0 = sy0 * (rxy * zx + s_orth * zy);
+                let w = q_weights[qx] * q_weights[qy];
+                pv0 += interp(&vals, bx0, by0, x0, y0) * w;
+            }
+        }
+        let same_curve =
+            (ois_discount.discount_factor(t0).val() - ibor_forward.discount_factor(t0).val()).abs()
+                < 1e-12;
+        if m_ex == 1 && same_curve {
+            euro_best
+        } else if same_curve {
+            pv0.max_val(euro_best)
+        } else {
+            pv0
+        }
     }
 }

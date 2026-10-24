@@ -99,7 +99,7 @@ pub fn try_obizhaeva_wang_execution<T: Real>(
         for j in 0..m {
             let dt_ij = T::from_f64((s.trade_times[i] - s.trade_times[j]).abs());
             let ker = s.transient_impact * (-s.resilience_speed * dt_ij).exp();
-            let t_cov = T::from_f64(s.trade_times[i.min(j) + 1] - t0);
+            let t_cov = T::from_f64(s.trade_times[i.min(j)] - t0);
             let mut h_ij = ker + s.risk_aversion * s.volatility * s.volatility * t_cov * 2.0;
             if i == j {
                 h_ij += s.temporary_impact * 2.0 + T::from_f64(1e-10);
@@ -165,7 +165,7 @@ pub fn try_obizhaeva_wang_execution<T: Real>(
     let mut var = T::zero();
     for k in 0..m {
         let dt_k = T::from_f64(s.trade_times[k + 1] - s.trade_times[k]);
-        var += s.volatility * s.volatility * dt_k * inv[k] * inv[k];
+        var += s.volatility * s.volatility * dt_k * inv[k + 1] * inv[k + 1];
     }
     Ok(OptimalExecutionReport {
         times: s.trade_times.clone(),

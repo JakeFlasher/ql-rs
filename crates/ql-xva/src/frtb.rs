@@ -92,38 +92,44 @@ fn bucket_curv<T: Real>(b: &FrtbSensitivityBucket<T>, scale: f64) -> (T, T) {
     if n == 0 {
         return (T::zero(), T::zero());
     }
-    let mut cvr = Vec::with_capacity(n);
-    let mut s_sum = T::zero();
+    let mut c_up = Vec::with_capacity(n);
+    let mut c_dn = Vec::with_capacity(n);
     for k in 0..n {
         let rw = T::from_f64(b.curvature_shock_weights[k]);
         let d = b.delta_sensitivities.get(k).copied().unwrap_or(T::zero());
-        let c_up = -b.curvature_up_pnl[k] + rw * d;
-        let c_dn = -b.curvature_down_pnl[k] - rw * d;
-        let c = c_up.max_val(c_dn);
-        s_sum += c.max_val(T::zero());
-        cvr.push(c);
+        c_up.push(-b.curvature_up_pnl[k] + rw * d);
+        c_dn.push(-b.curvature_down_pnl[k] - rw * d);
     }
-    let mut q = T::zero();
-    for i in 0..n {
-        let pos = cvr[i].max_val(T::zero());
-        q += pos * pos;
-        for j in 0..n {
-            if i != j && !(cvr[i].val() < 0.0 && cvr[j].val() < 0.0) {
-                let rho = corr_scen(
-                    b.intra_bucket_corr
-                        .get(i)
-                        .and_then(|r| r.get(j))
-                        .copied()
-                        .unwrap_or(0.0),
-                    scale,
-                );
-                q += T::from_f64(rho * rho) * cvr[i] * cvr[j];
+    let eval_dir = |cvr: &[T]| -> (T, T) {
+        let s_sum = cvr.iter().copied().fold(T::zero(), |a, z| a + z);
+        let mut q = T::zero();
+        for i in 0..n {
+            let pos = cvr[i].max_val(T::zero());
+            q += pos * pos;
+            for j in 0..n {
+                if i != j && !(cvr[i].val() < 0.0 && cvr[j].val() < 0.0) {
+                    let rho = corr_scen(
+                        b.intra_bucket_corr
+                            .get(i)
+                            .and_then(|r| r.get(j))
+                            .copied()
+                            .unwrap_or(0.0),
+                        scale,
+                    );
+                    q += T::from_f64(rho * rho) * cvr[i] * cvr[j];
+                }
             }
         }
+        (q.max_val(T::zero()).sqrt(), s_sum)
+    };
+    let (k_up, s_up) = eval_dir(&c_up);
+    let (k_dn, s_dn) = eval_dir(&c_dn);
+    if k_up.val() >= k_dn.val() {
+        (k_up, s_up)
+    } else {
+        (k_dn, s_dn)
     }
-    (q.max_val(T::zero()).sqrt(), s_sum)
 }
-
 fn sbm_scenario_charge<T: Real>(s: &FrtbSaSpec<T>, scale: f64) -> T {
     let classes = [
         FrtbRiskClass::Girr,
@@ -163,27 +169,48 @@ fn sbm_scenario_charge<T: Real>(s: &FrtbSaSpec<T>, scale: f64) -> T {
             kc.push(bucket_curv(b, scale));
         }
         for (pairs, is_curv) in [(&kd, false), (&kv, false), (&kc, true)] {
-            let mut q = T::zero();
-            for (u, &(k_u, s_u)) in pairs.iter().enumerate() {
-                q += k_u * k_u;
-                for (v, &(_, s_v)) in pairs.iter().enumerate() {
-                    if u != v {
-                        let b_u = s.buckets[idx[u]].bucket_id;
-                        let b_v = s.buckets[idx[v]].bucket_id;
-                        let g0 = s
-                            .inter_bucket_corr
-                            .iter()
-                            .find_map(|&(c_rc, id1, id2, g)| {
-                                (c_rc == rc
-                                    && ((id1 == b_u && id2 == b_v) || (id1 == b_v && id2 == b_u)))
-                                    .then_some(g)
-                            })
-                            .unwrap_or(0.0);
-                        let g = corr_scen(g0, scale);
-                        let g_eff = if is_curv { g * g } else { g };
-                        q += T::from_f64(g_eff) * s_u * s_v;
+            let eval_agg = |use_cap: bool| -> T {
+                let mut q = T::zero();
+                for (u, &(k_u, s_u0)) in pairs.iter().enumerate() {
+                    q += k_u * k_u;
+                    let s_u = if use_cap {
+                        s_u0.max_val(-k_u).min_val(k_u)
+                    } else {
+                        s_u0
+                    };
+                    for (v, &(k_v, s_v0)) in pairs.iter().enumerate() {
+                        if u != v {
+                            let s_v = if use_cap {
+                                s_v0.max_val(-k_v).min_val(k_v)
+                            } else {
+                                s_v0
+                            };
+                            if is_curv && s_u.val() < 0.0 && s_v.val() < 0.0 {
+                                continue;
+                            }
+                            let b_u = s.buckets[idx[u]].bucket_id;
+                            let b_v = s.buckets[idx[v]].bucket_id;
+                            let g0 = s
+                                .inter_bucket_corr
+                                .iter()
+                                .find_map(|&(c_rc, id1, id2, g)| {
+                                    (c_rc == rc
+                                        && ((id1 == b_u && id2 == b_v)
+                                            || (id1 == b_v && id2 == b_u)))
+                                        .then_some(g)
+                                })
+                                .unwrap_or(0.0);
+                            let g = corr_scen(g0, scale);
+                            let g_eff = if is_curv { g * g } else { g };
+                            q += T::from_f64(g_eff) * s_u * s_v;
+                        }
                     }
                 }
+                q
+            };
+            let mut q = eval_agg(false);
+            if !is_curv && q.val() < 0.0 {
+                q = eval_agg(true);
             }
             total += q.max_val(T::zero()).sqrt();
         }
@@ -276,15 +303,24 @@ pub fn compute_frtb_ima<T: Real>(s: &FrtbImaSpec<T>) -> FrtbImaReport<T> {
             })
             .collect();
         p.sort_by(|a, b| a.1.val().total_cmp(&b.1.val()));
-        let n_tail = ((1.0 - s.confidence) * p.len() as f64).ceil().max(1.0) as usize;
+        let alpha_m = ((1.0 - s.confidence) * p.len() as f64).max(1e-12);
+        let whole = (alpha_m.floor() as usize).min(p.len());
+        let rem = alpha_m - whole as f64;
         let mut es_i = T::zero();
-        for &(idx, pnl) in p.iter().take(n_tail) {
-            es_i -= pnl;
+        for &(idx, pnl) in p.iter().take(whole) {
+            es_i -= pnl / alpha_m;
             for (k, x) in scen[idx].iter().enumerate().take(k_len) {
-                h_grad[k][i] -= x.val() / n_tail as f64;
+                h_grad[k][i] -= x.val() / alpha_m;
             }
         }
-        h[i] = es_i / n_tail as f64;
+        if whole < p.len() && rem > 1e-12 {
+            let (idx, pnl) = p[whole];
+            es_i -= pnl * (rem / alpha_m);
+            for (k, x) in scen[idx].iter().enumerate().take(k_len) {
+                h_grad[k][i] -= x.val() * (rem / alpha_m);
+            }
+        }
+        h[i] = es_i;
     }
     let mut q = T::zero();
     for i in 0..5 {

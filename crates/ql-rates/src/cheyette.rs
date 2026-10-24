@@ -49,8 +49,8 @@ impl<T: Real> Cheyette1F<T> {
         dw_dk: T,
         d2w_dk2: T,
     ) -> T {
-        Self::explicit_local_variance_first_order(mu, k, w, dw_dt, dw_dk, d2w_dk2)
-            + dw_dk * dw_dk * dw_dk
+        let base = Self::explicit_local_variance_first_order(mu, k, w, dw_dt, dw_dk, d2w_dk2);
+        base + dw_dk * dw_dk * dw_dk / (w * 24.0).max_val(T::from_f64(1e-8))
     }
     pub fn simulate_short_rate_call(
         &self,
@@ -69,6 +69,7 @@ impl<T: Real> Cheyette1F<T> {
             let id = (p / 2) as u64;
             let mut x = 0.;
             let mut y = 0.;
+            let mut int_x = 0.;
             for j in 0..n_steps.max(1) {
                 let t = (j + 1) as f64 * dt;
                 let (wv, dwv, dkv, d2v) = total_var_fn(t, x);
@@ -84,10 +85,11 @@ impl<T: Real> Cheyette1F<T> {
                 .val()
                 .max(1e-10);
                 let z = rng.normal4(id, j as u32)[0] * sign;
+                int_x += x * dt;
                 x += (y - self.mu.val() * x) * dt + var.sqrt() * dt.sqrt() * z;
                 y += (var - 2. * self.mu.val() * y) * dt;
             }
-            sum += (x - strike).max(0.);
+            sum += (-int_x).exp() * (x - strike).max(0.);
         }
         sum / n_paths.max(1) as f64
     }

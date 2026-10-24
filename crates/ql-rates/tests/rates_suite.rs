@@ -253,16 +253,77 @@ fn bermudan_tree_and_fd_are_live_for_payer_and_receiver() {
 }
 
 #[test]
-fn phase12_round4_g2_fmm_surface_api() {
-    let _ = G2ppBermudanSwaptionEngine::default();
-    let _ = ForwardMarketModel {
-        tenor_times: vec![0.0, 1.0],
-        initial_forwards: vec![0.02],
+fn phase12_g2_fmm_surface_invariants() {
+    let (ois, fwd) = curve();
+    let model = G2PlusPlus {
+        a: 0.1,
+        sigma: 0.01,
+        b: 0.3,
+        eta: 0.015,
+        rho: -0.75,
+    };
+    let berm = BermudanSwaption {
+        notional: 1_000_000.0,
+        strike: 0.025,
+        exercise_times: vec![1.0, 2.0],
+        swap_times: vec![0.0, 1.0, 2.0, 3.0],
+        is_payer: true,
+        settlement: SwaptionSettlement::Physical,
+    };
+    let engine = G2ppBermudanSwaptionEngine::new(7, 5);
+    let g2 = engine.price(&model, &ois, &berm);
+    let g2_dual = engine.price_dual_curve(&model, &ois, &fwd, &berm);
+    let european = model.swaption_price(
+        &ois,
+        &EuropeanSwaption {
+            notional: berm.notional,
+            strike: berm.strike,
+            expiry: 1.0,
+            swap_times: vec![1.0, 2.0, 3.0],
+            is_payer: true,
+            settlement: SwaptionSettlement::Physical,
+        },
+        5,
+    );
+    assert!(g2.is_finite() && g2_dual.is_finite() && g2 + 1e-8 >= european);
+    let fmm = ForwardMarketModel {
+        tenor_times: vec![0.0, 0.5, 1.0, 1.5],
+        initial_forwards: vec![0.02, 0.021, 0.022],
         initial_df_t0: 1.0,
-        displacements: vec![0.0],
-        volatilities: vec![0.2],
+        displacements: vec![0.0; 3],
+        volatilities: vec![0.2; 3],
         corr_decay: 1.0,
-        corr_floor: 0.0,
+        corr_floor: 0.1,
         backward_looking_rfr: false,
     };
+    let cap = fmm.price_caplet_mc(1, 0.02, 64, 11);
+    let tarn = fmm.price_tarn_mc(
+        &TarnSpec {
+            notional: 1.0,
+            target_coupon: 0.03,
+            fixed_rate: 0.03,
+            gearing: 1.0,
+            coupon_floor: 0.0,
+            coupon_cap: 0.05,
+            smoothing_eps: 1e-3,
+        },
+        64,
+        11,
+    );
+    let base = CallableRangeAccrualSpec {
+        notional: 1.0,
+        coupon_rate: 0.03,
+        lower_bound: 0.0,
+        upper_bound: 0.05,
+        call_period_indices: vec![],
+        smoothing_eps: 1e-3,
+    };
+    let called = CallableRangeAccrualSpec {
+        call_period_indices: vec![1],
+        ..base.clone()
+    };
+    let noncall = fmm.price_callable_range_accrual_mc(&base, 64, 11);
+    let call = fmm.price_callable_range_accrual_mc(&called, 64, 11);
+    assert!(cap.is_finite() && tarn.is_finite() && noncall.is_finite() && call.is_finite());
+    assert!(call <= noncall + 1e-10);
 }

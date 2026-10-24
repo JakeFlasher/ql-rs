@@ -642,6 +642,59 @@ pub struct MeanCvarResult<T: Real> {
     pub cvar: T,
     pub expected_return: T,
 }
+fn project_capped_simplex<T: Real>(
+    v: &[T],
+    lower: &[T],
+    upper: &[T],
+) -> Result<Vec<T>, AllocationError> {
+    let n = v.len();
+    if n == 0
+        || lower.len() != n
+        || upper.len() != n
+        || lower
+            .iter()
+            .zip(upper)
+            .any(|(l, u)| l.val() > u.val() + 1e-12)
+    {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    let lo_sum = lower.iter().copied().fold(T::zero(), |a, z| a + z);
+    let hi_sum = upper.iter().copied().fold(T::zero(), |a, z| a + z);
+    if lo_sum.val() > 1.0 + 1e-12 || hi_sum.val() < 1.0 - 1e-12 {
+        return Err(AllocationError::InfeasibleBounds);
+    }
+    let mut lo = v
+        .iter()
+        .zip(upper)
+        .map(|(x, u)| x.val() - u.val())
+        .fold(f64::INFINITY, f64::min);
+    let mut hi = v
+        .iter()
+        .zip(lower)
+        .map(|(x, l)| x.val() - l.val())
+        .fold(f64::NEG_INFINITY, f64::max);
+    for _ in 0..80 {
+        let mid = 0.5 * (lo + hi);
+        let sum: f64 = v
+            .iter()
+            .zip(lower)
+            .zip(upper)
+            .map(|((x, l), u)| (x.val() - mid).max(l.val()).min(u.val()))
+            .sum();
+        if sum > 1.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let shift = T::from_f64(0.5 * (lo + hi));
+    Ok(v.iter()
+        .zip(lower)
+        .zip(upper)
+        .map(|((x, l), u)| (*x - shift).max_val(*l).min_val(*u))
+        .collect())
+}
+
 pub fn try_mean_cvar_weights<T: Real>(
     s: &MeanCvarSpec<T>,
 ) -> Result<MeanCvarResult<T>, AllocationError> {
@@ -658,28 +711,16 @@ pub fn try_mean_cvar_weights<T: Real>(
     }
     let eps = T::from_f64(s.smoothing_eps.max(1e-5));
     let tail_mass = T::from_f64(((1.0 - s.confidence) * m_scen as f64).max(1e-12));
-    let lo_sum = s.lower_bounds.iter().copied().fold(T::zero(), |a, z| a + z);
-    let span_sum = s
-        .upper_bounds
-        .iter()
-        .zip(&s.lower_bounds)
-        .map(|(u, l)| *u - *l)
-        .fold(T::zero(), |a, z| a + z)
-        .max_val(T::from_f64(1e-12));
-    let mut w: Vec<T> = (0..n)
-        .map(|i| {
-            s.lower_bounds[i]
-                + (T::one() - lo_sum) * (s.upper_bounds[i] - s.lower_bounds[i]) / span_sum
-        })
-        .collect();
     let idx = ((s.confidence * m_scen as f64).floor() as usize).min(m_scen - 1);
-    for _ in 0..4 {
+    let init_guess: Vec<T> = (0..n).map(|_| T::from_f64(1.0 / n as f64)).collect();
+    let mut w = project_capped_simplex(&init_guess, &s.lower_bounds, &s.upper_bounds)?;
+    let solve_zeta = |weights: &[T]| -> (T, Vec<T>) {
         let losses: Vec<T> = s
             .scenario_returns
             .iter()
             .map(|r| {
                 -r.iter()
-                    .zip(&w)
+                    .zip(weights)
                     .map(|(x, y)| *x * *y)
                     .fold(T::zero(), |a, z| a + z)
             })
@@ -687,7 +728,7 @@ pub fn try_mean_cvar_weights<T: Real>(
         let mut sorted = losses.clone();
         sorted.sort_by(|a, b| a.val().total_cmp(&b.val()));
         let mut zeta = sorted[idx];
-        for _ in 0..2 {
+        for _ in 0..4 {
             let mut f = -tail_mass;
             let mut df = T::zero();
             for &l in &losses {
@@ -698,62 +739,25 @@ pub fn try_mean_cvar_weights<T: Real>(
             }
             zeta += f / df.max_val(T::from_f64(1e-12));
         }
-        let pi: Vec<T> = losses
-            .iter()
-            .map(|&l| {
-                let u = l - zeta;
-                let dphi = (T::one() + u / (u * u + eps * eps).sqrt()) * 0.5;
-                dphi / tail_mass
-            })
-            .collect();
-        let mut covariance = vec![vec![T::zero(); n]; n];
-        let mut adj_returns = s.expected_returns.clone();
+        (zeta, losses)
+    };
+    for iter in 0..24 {
+        let (zeta, losses) = solve_zeta(&w);
+        let mut grad = vec![T::zero(); n];
         for i in 0..n {
-            let mut tail_drift = T::zero();
+            let mut tail_g = T::zero();
             for m in 0..m_scen {
-                tail_drift += pi[m] * s.scenario_returns[m][i];
+                let u = losses[m] - zeta;
+                let dphi = (T::one() + u / (u * u + eps * eps).sqrt()) * 0.5;
+                tail_g -= (dphi / tail_mass) * s.scenario_returns[m][i];
             }
-            adj_returns[i] += tail_drift * 0.25;
-            for j in 0..n {
-                let mut c_ij = if i == j { T::from_f64(1e-5) } else { T::zero() };
-                for m in 0..m_scen {
-                    c_ij += pi[m] * s.scenario_returns[m][i] * s.scenario_returns[m][j];
-                }
-                covariance[i][j] = c_ij;
-            }
+            grad[i] = -s.expected_returns[i] + s.risk_aversion * tail_g;
         }
-        w = try_box_constrained_markowitz_weights(&BoxConstrainedMarkowitzSpec {
-            covariance,
-            expected_returns: adj_returns,
-            risk_aversion: s.risk_aversion,
-            lower_bounds: s.lower_bounds.clone(),
-            upper_bounds: s.upper_bounds.clone(),
-        })?;
+        let step = T::from_f64(0.35 / (1.0 + 0.15 * iter as f64));
+        let trial_in: Vec<T> = (0..n).map(|i| w[i] - step * grad[i]).collect();
+        w = project_capped_simplex(&trial_in, &s.lower_bounds, &s.upper_bounds)?;
     }
-    let losses: Vec<T> = s
-        .scenario_returns
-        .iter()
-        .map(|r| {
-            -r.iter()
-                .zip(&w)
-                .map(|(x, y)| *x * *y)
-                .fold(T::zero(), |a, z| a + z)
-        })
-        .collect();
-    let mut sorted = losses.clone();
-    sorted.sort_by(|a, b| a.val().total_cmp(&b.val()));
-    let mut zeta = sorted[idx];
-    for _ in 0..2 {
-        let mut f = -tail_mass;
-        let mut df = T::zero();
-        for &l in &losses {
-            let u = l - zeta;
-            let rad = (u * u + eps * eps).sqrt();
-            f += (T::one() + u / rad) * 0.5;
-            df += eps * eps / (rad * rad * rad) * 0.5;
-        }
-        zeta += f / df.max_val(T::from_f64(1e-12));
-    }
+    let (zeta, losses) = solve_zeta(&w);
     let mut smooth_hinge_sum = T::zero();
     for &l in &losses {
         let u = l - zeta;

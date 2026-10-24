@@ -1,49 +1,37 @@
-# Phase 12 Multi-Round Adversarial Review Log (`94e755e..8261494`)
+# Whole-Project Adversarial Review Log (Phases 1–12, All 23 Crates at `e6fb004`)
 
-This document records the multi-round adversarial review of **Phase 12 (Next-Generation Institutional Quant Frontiers)** across all four specialized audit domains:
-- **Big-Picture & Workflow Architect** (`d7266665-6096-4a67-b5c8-cc65aa5bd569`) — **CONVERGED (`0 CRITICAL / 0 HIGH / 0 MEDIUM`) in `8261494`**
-- **Rust Systems & AD/SIMD Auditor** (`fdb49aaf-a928-4e2c-94a2-37df1b042e24`) — **CONVERGED (`0 CRITICAL / 0 HIGH / 0 MEDIUM`) in `8261494`**
-- **Phase 1–9 Mathematical Auditor** (`1e332c19-68a5-4c2c-b2c0-f48b78083eee`) — **CONVERGED (`0 CRITICAL / 0 HIGH / 0 MEDIUM`) in `8261494`** (1 minor `LOW` guard in `g2.rs:357`)
-- **Phase 10 & SOTA Literature Auditor** (`f94752af-fc1c-4eff-92e6-1872ed9bc4d1`) — **5 `CRITICAL` / 1 `HIGH` remaining in `ql-xva` and `ql-portfolio` (`[P12-R6-01]`..`[P12-R6-06]`)**
-
----
-
-## 1. Modules Verified 100% Clean & Converged Through Round 6 (`94e755e..8261494`)
-
-1. **Deliverable 0 (`ql-ad`, `ql-dml`, `ql-xva::simm`, `ql-commodities::swing_storage`)**:
-   - `crates/ql-ad/src/scalar.rs:90-131` (`smooth_heaviside_c2`, `smooth_min_slice`) and `crates/ql-ad/src/ift.rs:95-136` (`IftSystemSensitivity` SVD fallback) — **VERIFIED CLEAN**.
-   - `crates/ql-dml/src/cholesky_aad.rs:4-27, 108-123` (`cholesky_lower_generic<T: Real>`, `cholesky_corr_cega_adjoint`) — **VERIFIED CLEAN**.
-   - `crates/ql-xva/src/simm.rs:120, 141` & `crates/ql-commodities/src/swing_storage.rs:304-314` — **VERIFIED CLEAN**.
-2. **Deliverable 1 (`ql-models::slv` & `ql-models::rough`)**:
-   - `crates/ql-models/src/slv.rs:1-216` (`CalibratedSlvModel::leverage_at`, `calibrate_slv_particle_leverage` Nadaraya–Watson Gaussian kernel regression + `mixing_fraction` + empirical martingale projection, `price_slv_european_mc`) — **VERIFIED CLEAN**.
-   - `crates/ql-models/src/rough.rs:178-253` (`rbergomi_hybrid_mc_price` with adapted start-of-step variance `v`, power-law Volterra weights, correlated $2\times 2$ head covariance, and Romano–Touzi conditional Black–Scholes) — **VERIFIED CLEAN**.
-3. **Deliverable 2 (`ql-exotics::autocallable`)**:
-   - `crates/ql-exotics/src/autocallable.rs:65-256` (`price_worst_of_autocallable<T: Real>` and single-pass `Dual<16>` `price_worst_of_autocallable_aad`) — **VERIFIED CLEAN**.
-4. **Deliverable 3 (`ql-rates::g2` & `ql-rates::lmm`)**:
-   - `crates/ql-rates/src/g2.rs:327-367` (`G2ppBermudanSwaptionEngine::price` and `price_dual_curve`; minor `LOW` guard at line 357 for single-exercise Bermudan parity) — **VERIFIED CLEAN**.
-   - `crates/ql-rates/src/lmm.rs:44-151` (`ForwardMarketModel::price_caplet_mc`, `price_tarn_mc`, `price_callable_range_accrual_mc`, `price_tarn_lmm`, `price_callable_range_accrual_lmm`) — **VERIFIED CLEAN**.
-5. **Deliverable 6 (`ql-benches` & `ql-terminal`)**:
-   - `crates/ql-benches/src/suites.rs:1932-2109` & `crates/ql-benches/BENCHMARK_RESULTS.md:28-29`:
-     - `23_slv_rbergomi_and_autocallable_cega_aad`: **`5.84x` speedup** (`724,122 ns` vs `123,917 ns`, `2.817e-6` Parity Diff) — **VERIFIED CLEAN**.
-     - `24_frtb_sbm_ima_and_cvar_execution_aad`: **`4.61x` speedup** (`2,850.40 ns` vs `618.40 ns`, `3.181e-7` Parity Diff) — **VERIFIED CLEAN**.
-   - `crates/ql-terminal/src/lib.rs:1268-1296, 1391-1392`: `DeskWorkstation::step_tick` live Phase 12 telemetry — **VERIFIED CLEAN**.
+Following convergence of the Phase 12 Round 7 diff (`8261494..e6fb004`), the adversarial audit scope was expanded per user directive to a **comprehensive, whole-project audit across all 23 crates (`crates/*`) spanning Phases 1 through 12**:
+- **Big-Picture & Workflow Architect** (`d7266665-6096-4a67-b5c8-cc65aa5bd569`): Audited all 23 crates, 24 benchmark suites (`ql-benches`), 22 terminal workstation modes/tabs (`ql-terminal`), integration suites, and documentation (`README.md`, `knowledge_base/*`).
+- **Rust Systems & AD/SIMD Auditor** (`fdb49aaf-a928-4e2c-94a2-37df1b042e24`): Audited all 23 crates for AD (`Dual<N>`, `Dual2<N>`, `Tape`, `IftSystemSensitivity`) propagation, SIMD (`f64x4`), arena tape hygiene, and numerical guards.
+- **Mathematical & Pricing Engine Auditor** (`1e332c19-68a5-4c2c-b2c0-f48b78083eee`): Audited all 12 pricing, model, calibration, curve, volatility, Monte Carlo, PDE, fixed-income, instrument, math, time, and scripting crates (`ql-models`, `ql-exotics`, `ql-rates`, `ql-pde`, `ql-mc`, `ql-vol`, `ql-curves`, `ql-fixed-income`, `ql-instruments`, `ql-math`, `ql-time`, `ql-scripting`).
+- **Risk, Portfolio, Credit, XVA & SOTA Literature Auditor** (`f94752af-fc1c-4eff-92e6-1872ed9bc4d1`): Audited all 45 source and test files across `ql-xva`, `ql-portfolio`, `ql-commodities`, `ql-credit`, `ql-fx`, `ql-inflation`, `ql-levy`, and `ql-dml`.
 
 ---
 
-## 2. Pass 6 Adversarial Audit (`2dc3082..8261494`) — Remaining Findings in `ql-xva` & `ql-portfolio` (`[P12-R6-01]`..`[P12-R6-06]`)
+## 1. Whole-Project Crate Audit Matrix (`e6fb004`)
 
-| ID | Severity | Location | Finding & Required Remediation in Round 7 |
-| :--- | :--- | :--- | :--- |
-| **`[P12-R6-01]`** | **CRITICAL** | `crates/ql-xva/src/frtb.rs:50-106` | **Complete BCBS MAR21/22 `compute_frtb_sa` (Vega, Curvature, Low-Correlation Floor, Inter-Bucket Aggregation, and Unweighted DRC HBR)**: (1) Include `vega_sensitivities` / `vega_risk_weights` and `curvature_up_pnl` / `curvature_down_pnl` / `curvature_shock_weights` in bucket charges; (2) Use MAR21.7 low-correlation formula $\rho^{(\text{Low})} = \max(2\rho - 1, 0.75\rho)$; (3) Aggregate across buckets within each `FrtbRiskClass` using `s.inter_bucket_corr`; (4) Compute DRC `HBR = gl / (gl + gs)` from unweighted gross JTDs before applying `(wl - hbr * ws).max_val(T::zero())`. |
-| **`[P12-R6-02]`** | **CRITICAL** | `crates/ql-xva/src/frtb.rs:144-178` | **Compute Exact Subgradient / Euler Allocation in `compute_frtb_ima`**: Replace hardcoded `marginal_es: vec![0.; n]` and uniform `euler_component_es: vec![liq / n; n]` with exact tail-scenario subgradients $g_{i,k} = \partial \text{ES}_i / \partial w_k = -\frac{1}{n_i}\sum_{s \in \text{tail}_i} r_{s,k}$ chained through $\text{ES}_{\text{liq}} = \sqrt{\sum_{i=0}^4 m_i \text{ES}_i^2}$ ($m = [1, 1, 2, 2, 6]$), setting `euler_component_es[k] = w[k].val() * marginal_es[k]` so $\sum_k \text{euler\_component\_es}[k] = \text{liq.val()}$. |
-| **`[P12-R6-03]`** | **CRITICAL** | `crates/ql-xva/src/metrics.rs:413-477` | **Backward Time Induction & Per-Step Fixed-Point Iteration in `compute_bilateral_xva`**: Loop backward `for k in (0..cube.times.len()).rev()`, floor exposures per netting set `ns`, and when `Replacement` is active, run an inner fixed-point loop `for _ in 0..8` at step `k` solving $u_k = (u_{\text{cont}} + \text{step\_xva}(u_k)) / \text{df}_k$ until $|u_k^{\text{new}} - u_k| < 10^{-12}$. |
-| **`[P12-R6-04]`** | **CRITICAL** | `crates/ql-portfolio/src/allocation.rs:645-712` | **Full Tail-Scenario Co-Movement Matrix & Smooth Rockafellar–Uryasev Hinge in `try_mean_cvar_weights`**: Replace the diagonal semivariance matrix with iteratively reweighted smooth Rockafellar–Uryasev tail weights $\pi_m = \phi_\varepsilon'(L_m - \zeta) / ((1 - \alpha) M)$ across the full $n \times n$ scenario matrix (including off-diagonal $i \ne j$), and evaluate smooth CVaR $\zeta + \frac{1}{(1-\alpha)M}\sum_m \phi_\varepsilon(L_m - \zeta)$. |
-| **`[P12-R6-05]`** | **CRITICAL** | `crates/ql-portfolio/src/execution.rs:40-41, 81-128` | **Use $\tilde{\eta} = \eta - \frac{1}{2}\gamma \Delta t$ in `try_almgren_chriss_execution` & Solve Exact $m \times m$ Resilience KKT System in `try_obizhaeva_wang_execution`**: Use `eta_tilde = (s.temporary_impact - s.permanent_impact * dt * 0.5).max_val(T::from_f64(1e-12))` in `try_almgren_chriss_execution`, and in `try_obizhaeva_wang_execution` solve $H y = \mathbf{1}, \xi^* = X_0 y / (\mathbf{1}^\top y)$ where $H_{ij} = \gamma e^{-\rho|t_i - t_j|} + 2\eta_{\text{temp}}\delta_{ij} + 2\lambda \sigma^2 (t_{\min(i,j)} - t_0)$, with exact quadratic expected cost and inventory variance. |
-| **`[P12-R6-06]`** | **HIGH** | `crates/ql-xva/tests/xva_suite.rs:325-329`, `crates/ql-portfolio/tests/allocation_suite.rs:61-73` | **Replace Smoke Tests with Substantive Numerical Invariant Tests**: Verify FRTB SA/IMA Euler decomposition, Bilateral XVA `Replacement` vs `RiskFree` fixed-point convergence, smooth Mean-CVaR tail sensitivity, and Obizhaeva–Wang KKT execution invariants. |
+| Crate | Whole-Project Status | Key Findings Across Phases 1–12 |
+| :--- | :--- | :--- |
+| `ql-ad` | **VERIFIED CLEAN** | `Dual<N>`, `Dual2<N>`, `ArenaTape`, `ift_lift_1d`, `IftSystemSensitivity` (with SVD fallback), `smooth_heaviside_c2`, `smooth_min_slice`, and SIMD `f64x4` verified clean. |
+| `ql-time` | **VERIFIED CLEAN** | 64-bit civil `Date`, `BitsetCalendar` (POPCNT `business_days_between`), 9 day-count conventions, and `ScheduleBuilder` verified clean. |
+| `ql-mc` | **VERIFIED CLEAN** | Philox-4x32-10 RNG, SIMD Box–Muller, Joe–Kuo Sobol + Burley–Owen scrambling, Brownian bridge, Andersen QE-M Heston, and two-pass Chebyshev LSM AMC verified clean. |
+| `ql-scripting` | **VERIFIED CLEAN** | AST + bytecode VM with fuzzy pathwise AAD verified clean. |
+| `ql-levy` | **VERIFIED CLEAN** | VG, CGMY, Merton, Kou, and Fang–Oosterlee COS engines verified clean (minor test addition for `cos_levy_price_strip`). |
+| `ql-models` | **`[WP-01]` (`CRITICAL`)** | `rbergomi_hybrid_mc_price` (`rough.rs:216, 220`) applies an extra `.powf(1. / (h - 0.5))` that inverts the power-law Volterra decay and seeds antithetic paths with `p` instead of `p / 2`; `models_suite.rs` lacks SLV and rBergomi convergence tests. |
+| `ql-exotics` | **`[WP-02]` (`CRITICAL`)** | `price_worst_of_autocallable` (`autocallable.rs:76-86`) only rounds integer spots (`(z - z.round()).abs() < 1e-2`), zeroing out FD spot deltas at non-integer spots (e.g. `100.25`), and `price_worst_of_autocallable_aad` (`lines 240-254`) hardcodes `stderr`, `autocall_probabilities`, `expected_life`, and `corr_cega_stderr` while truncating $N \ge 5$ baskets at `Dual<16>`. |
+| `ql-rates` | **`[WP-03]` (`CRITICAL`)** | (1) `G2ppBermudanSwaptionEngine::price` (`g2.rs:327-371`) uses `0.75 * ||v||_2 + 0.30 * best` instead of 2D $(x, y)$ grid backward induction and ignores `_ibor_forward`; (2) `ForwardMarketModel` (`lmm.rs:72-132`) omits cross-rate correlation, Hunter–Jäckel–Joshi predictor–corrector drift, `displacements`, `backward_looking_rfr`, `smoothing_eps`, and LSM continuation regression; (3) `Cheyette1F` (`cheyette.rs:44-93`) omits discounting in `simulate_short_rate_call`. |
+| `ql-portfolio` | **`[WP-04]` (`HIGH`)** | `try_mean_cvar_weights` (`allocation.rs:676-732`) solves a heuristic second-moment Markowitz surrogate instead of the exact Rockafellar–Uryasev (2000) smooth objective; `try_obizhaeva_wang_execution` (`execution.rs:102, 168`) has an off-by-one post-trade inventory index (`inv[k]` vs `inv[k + 1]`). |
+| `ql-xva` | **`[WP-05]` (`MEDIUM`)** | `bucket_curv` (`frtb.rs:95-124`) mixes upward and downward curvature shocks per risk factor instead of bucket-level $\max(K_b^+, K_b^-)$, `sbm_scenario_charge` (`lines 165-189`) omits MAR21.102 $\psi(S_b, S_c)$ and MAR21.4(5)(b) fallback, and `compute_frtb_ima` (`line 279`) uses integer `.ceil()` tail count instead of fractional Acerbi–Tasche tail weights. |
+| `ql-fixed-income`, `ql-math`, `ql-commodities`, `ql-inflation`, `ql-curves`, `ql-credit`, `ql-dml` | **`[WP-06]` (`HIGH`/`MEDIUM`)** | Cross-crate AD/numerical hygiene: `cat_bond_z_spread` (`cat_bond.rs:280-339`) and `brent_solve_ad` (`solvers.rs:142`) record scalar Brent iterations onto active `ArenaTape`; `breakeven_inflation_rate` (`mbs_and_cpi.rs:108-116`) ignores real coupons; `price_swing_option` (`swing_storage.rs:19-74`) ignores `min_exercises`; `bootstrap_with_seasonality` (`ql-inflation/src/lib.rs:172-253`) passes `target_month: None`; `PiecewiseCubicZeroCurve` (`curves.rs:178`) aliases linear `ZeroCurve`; `cdo.rs:229` and `cholesky_aad.rs:233` minor AD polish. |
+| `ql-benches` & `ql-terminal` | **`[WP-07]` (`HIGH`)** | Suites 06, 15, 20 baseline parity & Suites 21–24 subsystem coverage (`suites.rs`); `ql-terminal` `TabId` / `chart_mode` header sync and full Phase 12 metric wiring (`lib.rs`, `main.rs`). |
 
-## 3. Pass 7 Remediation (`8261494..working tree`) — `[P12-R6-01]` through `[P12-R6-06]` resolved
+---
 
-- Replaced the FRTB-SA/IMA stubs with scenario-scaled Delta/Vega/Curvature SBM, low-correlation floors, inter-bucket aggregation, unweighted DRC HBR, and exact tail Euler allocations.
-- Reworked bilateral XVA into backward per-netting-set exposure induction with replacement-closeout fixed-point iteration.
-- Replaced diagonal mean-CVaR covariance with smooth Rockafellar--Uryasev tail reweighting and solved Obizhaeva--Wang execution through its full resilience KKT system; Almgren--Chriss uses effective temporary impact.
-- Added the single-exercise G2++ guard and substantive FRTB/IMA/XVA and mean-CVaR/execution invariant tests. Workspace clippy and tests pass.
+## 2. Two-Pass Whole-Project Remediation Roadmap
+
+- **Pass 1 (`CODEX_WHOLE_PROJECT_PASS1_PROMPT.md`)**: Remediates all `CRITICAL` and `HIGH` mathematical/pricing/risk findings in `ql-models`, `ql-exotics`, `ql-rates`, `ql-portfolio`, and `ql-xva` (`[WP-01]` through `[WP-05]`) along with substantive integration tests in `models_suite.rs`, `exotics_suite.rs`, and `rates_suite.rs`.
+- **Pass 2 (`CODEX_WHOLE_PROJECT_PASS2_PROMPT.md`)**: Remediates the cross-crate AD/numerical hygiene items (`[WP-06]`) and benchmark/terminal/documentation alignment (`[WP-07]`).
+
+## 3. Whole-Project Pass 1 Remediation (`e6fb004..working tree`)
+
+The five Pass 1 findings were remediated: rough Bergomi now uses decaying Volterra weights, true antithetic seeds, and a discrete martingale correction; the autocallable engine anchors decimal reference spots, reports path/bin diagnostics, and handles larger correlation baskets; G2++ Bermudan pricing uses a dual-curve two-factor grid, the LMM uses correlated predictor/corrector terminal paths with LSM callable continuation, and Cheyette paths are discounted; portfolio Mean-CVaR and transient execution use their specified smooth/KKT objectives; and FRTB curvature direction/fallback and fractional Acerbi--Tasche tails are implemented. Substantive model, exotic, and rates invariants pass with workspace clippy/tests.
