@@ -1,5 +1,5 @@
 use nalgebra::{DMatrix, DVector};
-use ql_ad::{Dual2, IftSystemSensitivity, Real};
+use ql_ad::{Dual, Dual2, IftSystemSensitivity, Real};
 use ql_math::{MathError, levenberg_marquardt};
 pub use volsurf::smile::{SabrSmile, SviSmile};
 pub use volsurf::surface::{EssviSurface, SsviSurface};
@@ -339,7 +339,7 @@ impl<T: Real> AdSviSmile<T> {
             && self.b.val() * (1.0 + self.rho.val().abs()) <= 2.0 + 1e-12
             && k_grid
                 .iter()
-                .all(|&k| svi_durrleman_g(self, T::from_f64(k)).val() >= -1e-9)
+                .all(|&k| svi_durrleman_g(self, self.forward * T::from_f64(k.exp())).val() >= -1e-9)
     }
 }
 
@@ -435,7 +435,7 @@ impl CalibratedSabrSmile {
             );
             let y = p.vol(Dual2::from_value(q.strike));
             for a in 0..3 {
-                jq[(a, i)] = -d * y.d1[a];
+                jq[(a, i)] = -d * d * y.d1[a];
                 for b in 0..3 {
                     h[(a, b)] += d * d * y.d1[a] * y.d1[b] + d * r[i] * y.d2[a][b];
                 }
@@ -458,7 +458,8 @@ impl CalibratedSabrSmile {
             self.smile.nu,
         );
         let d = sabr_quote_sensitivities(&p, strike);
-        (p.vol(strike), self.sensitivity.vjp(&d[..3]))
+        let g = [d[0], d[2], d[3]];
+        (p.vol(strike), self.sensitivity.vjp(&g))
     }
     pub fn implied_vol_ad<T: Real>(&self, strike: T, quotes: &[T]) -> T {
         let j = self.sensitivity.jacobian_dtheta_dq();
@@ -481,6 +482,21 @@ impl CalibratedSabrSmile {
             p[2],
         )
         .vol(strike)
+    }
+    pub fn value_and_quote_vega<F>(&self, pricer: F) -> (f64, Vec<f64>)
+    where
+        F: Fn(&AdSabrSmile<Dual<3>>) -> Dual<3>,
+    {
+        let p = AdSabrSmile::new(
+            Dual::from_value(self.smile.forward),
+            Dual::from_value(self.smile.expiry),
+            Dual::variable(self.smile.alpha, 0),
+            Dual::from_value(self.smile.beta),
+            Dual::variable(self.smile.rho, 1),
+            Dual::variable(self.smile.nu, 2),
+        );
+        let out = pricer(&p);
+        (out.val, self.sensitivity.vjp(&out.d))
     }
 }
 
@@ -578,7 +594,7 @@ impl CalibratedSviSmile {
             );
             let y = p.vol(Dual2::from_value(q.strike));
             for a in 0..5 {
-                jq[(a, i)] = -d * y.d1[a];
+                jq[(a, i)] = -d * d * y.d1[a];
                 for b in 0..5 {
                     h[(a, b)] += d * d * y.d1[a] * y.d1[b] + d * r[i] * y.d2[a][b];
                 }
@@ -620,5 +636,21 @@ impl CalibratedSviSmile {
             p[4],
         )
         .vol(strike)
+    }
+    pub fn value_and_quote_vega<F>(&self, pricer: F) -> (f64, Vec<f64>)
+    where
+        F: Fn(&AdSviSmile<Dual<5>>) -> Dual<5>,
+    {
+        let p = AdSviSmile::new(
+            Dual::from_value(self.smile.forward),
+            Dual::from_value(self.smile.expiry),
+            Dual::variable(self.smile.a, 0),
+            Dual::variable(self.smile.b, 1),
+            Dual::variable(self.smile.rho, 2),
+            Dual::variable(self.smile.m, 3),
+            Dual::variable(self.smile.sigma, 4),
+        );
+        let out = pricer(&p);
+        (out.val, self.sensitivity.vjp(&out.d))
     }
 }
