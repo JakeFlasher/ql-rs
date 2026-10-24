@@ -1,5 +1,4 @@
-use ql_ad::{Real, ift_lift_1d};
-use ql_math::brent_solve;
+use ql_ad::Real;
 use ql_mc::PhiloxRng;
 #[derive(Copy, Clone, Debug)]
 pub enum NotionalRisk<T: Real> {
@@ -277,64 +276,16 @@ pub fn price_mc<T: Real>(s: &CatBondSpec<T>, n: usize, seed: u64) -> CatBondValu
     s.price_mc(n, seed)
 }
 pub fn cat_bond_z_spread<T: Real>(s: &CatBondSpec<T>, market: T) -> Result<T, String> {
-    let root = brent_solve(
+    ql_math::brent_solve_ad(
         |z| {
             let mut sx = s.clone();
-            sx.discount_rate = s.discount_rate + T::from_f64(z);
-            sx.price_analytical().price.val() - market.val()
+            sx.discount_rate = s.discount_rate + z;
+            sx.price_analytical().price - market
         },
-        -1.,
-        1.,
+        -1.0,
+        1.0,
         1e-12,
         200,
     )
-    .map_err(|e| e.to_string())?;
-    let mut sx = s.clone();
-    sx.discount_rate = s.discount_rate + T::from_f64(root);
-    let mut fx = T::zero();
-    let mut fxx = 0.;
-    for (i, &t) in s.payment_times.iter().enumerate() {
-        let a = T::from_f64(*s.accrual_fractions.get(i).unwrap_or(&1.));
-        let red = if i + 1 == s.payment_times.len() {
-            T::one()
-        } else {
-            T::zero()
-        };
-        let surv = match s.peril {
-            CatPerilSpec::PoissonExponential {
-                lambda,
-                mean_severity,
-            } => s.survival_exponential(t, lambda, mean_severity).0,
-            CatPerilSpec::PoissonPareto {
-                lambda,
-                scale_xm,
-                shape_alpha,
-            } => {
-                let exhaustion = match s.risk {
-                    NotionalRisk::Digital { threshold } => threshold,
-                    NotionalRisk::Proportional { exhaustion, .. } => exhaustion,
-                };
-                let p_ex = if exhaustion.val() > scale_xm.val() {
-                    (scale_xm / exhaustion).pow(shape_alpha)
-                } else {
-                    T::one()
-                };
-                (-lambda * p_ex * T::from_f64(t)).exp()
-            }
-        };
-        let cf = s.face_amount * (s.coupon_rate * a + red) * surv;
-        let df = (-sx.discount_rate * T::from_f64(t)).exp();
-        fx -= T::from_f64(t) * cf * df;
-        fxx += t * t * cf.val() * df.val();
-    }
-    Ok(ift_lift_1d(
-        root,
-        |z| {
-            let mut q = s.clone();
-            q.discount_rate = s.discount_rate + z;
-            q.price_analytical().price - market
-        },
-        fx,
-        fxx,
-    ))
+    .map_err(|e| e.to_string())
 }

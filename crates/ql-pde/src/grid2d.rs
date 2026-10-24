@@ -48,9 +48,10 @@ impl HestonGrid2D {
         Self::new_centered(nx, nv, spot.ln(), v0)
     }
     pub fn new_centered(nx: usize, nv: usize, center_x: f64, v0: f64) -> Self {
+        let v_focus = if v0 > 0.1 { v0 } else { 0.04 };
         Self {
             x: SinhGrid1D::new(nx, center_x - 3.0, center_x + 3.0, center_x, 0.4),
-            v: SinhGrid1D::new(nv, 0.0, (v0.max(0.04) * 8.0).max(0.6), v0.max(0.02), 0.05),
+            v: SinhGrid1D::new(nv, 0.0, (v_focus * 8.0).max(0.6), v_focus, 0.05),
         }
     }
 }

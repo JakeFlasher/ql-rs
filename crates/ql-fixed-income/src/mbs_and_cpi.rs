@@ -110,9 +110,36 @@ pub fn breakeven_inflation_rate<T: Real>(
     nominal_price: T,
     nominal_discount: &impl YieldTermStructure<T>,
 ) -> T {
-    let t = *spec.payment_times.last().unwrap_or(&1.0);
-    let target = nominal_price / (spec.face_amount * nominal_discount.discount_factor(t));
-    target.powf(1.0 / t) - T::one()
+    let t_last = *spec.payment_times.last().unwrap_or(&1.0);
+    let target = nominal_price / (spec.face_amount * nominal_discount.discount_factor(t_last));
+    let mut pi = target.powf(1.0 / t_last) - T::one();
+    if spec.real_coupon_rate.val().abs() <= 1e-14 {
+        return pi;
+    }
+    for _ in 0..4 {
+        let mut pv = T::zero();
+        let mut dpv = T::zero();
+        for (i, &t) in spec.payment_times.iter().enumerate() {
+            let acc = spec.accrual_fractions.get(i).copied().unwrap_or_else(|| {
+                if i == 0 {
+                    t
+                } else {
+                    t - spec.payment_times[i - 1]
+                }
+            });
+            let growth = (T::one() + pi).powf(t);
+            let dgrowth = (T::one() + pi).powf(t - 1.0) * t;
+            let mut real_cf = spec.face_amount * spec.real_coupon_rate * acc;
+            if i + 1 == spec.payment_times.len() {
+                real_cf += spec.face_amount;
+            }
+            let df = nominal_discount.discount_factor(t);
+            pv += real_cf * growth * df;
+            dpv += real_cf * dgrowth * df;
+        }
+        pi -= (pv - nominal_price) / dpv.max_val(T::from_f64(1e-12));
+    }
+    pi
 }
 
 #[derive(Copy, Clone, Debug)]

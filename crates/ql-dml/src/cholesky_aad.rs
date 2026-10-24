@@ -230,7 +230,7 @@ pub fn price_correlated_basket_call_aad(
                 corrbins[b][i][j] *= scale;
             }
         }
-        let rb = cholesky_adjoint(corr, &corrbins[b])?;
+        let rb = cholesky_corr_cega_adjoint(corr, &corrbins[b])?;
         rb_bins[b] = rb;
     }
     let total_paths = n_paths as f64;

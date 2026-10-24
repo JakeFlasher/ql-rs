@@ -687,11 +687,37 @@ fn project_capped_simplex<T: Real>(
             hi = mid;
         }
     }
-    let shift = T::from_f64(0.5 * (lo + hi));
-    Ok(v.iter()
-        .zip(lower)
-        .zip(upper)
-        .map(|((x, l), u)| (*x - shift).max_val(*l).min_val(*u))
+    let mid = 0.5 * (lo + hi);
+    let mut free_sum = T::zero();
+    let mut clamped_sum = T::zero();
+    let mut free_cnt = 0usize;
+    for i in 0..v.len() {
+        let cand = v[i].val() - mid;
+        if cand <= lower[i].val() {
+            clamped_sum += lower[i];
+        } else if cand >= upper[i].val() {
+            clamped_sum += upper[i];
+        } else {
+            free_sum += v[i];
+            free_cnt += 1;
+        }
+    }
+    let shift = if free_cnt > 0 {
+        (free_sum + clamped_sum - T::one()) / (free_cnt as f64)
+    } else {
+        T::from_f64(mid)
+    };
+    Ok((0..v.len())
+        .map(|i| {
+            let cand = v[i].val() - mid;
+            if cand <= lower[i].val() {
+                lower[i]
+            } else if cand >= upper[i].val() {
+                upper[i]
+            } else {
+                (v[i] - shift).max_val(lower[i]).min_val(upper[i])
+            }
+        })
         .collect())
 }
 
@@ -741,9 +767,26 @@ pub fn try_mean_cvar_weights<T: Real>(
         }
         (zeta, losses)
     };
-    for iter in 0..24 {
+    let eval_obj = |weights: &[T]| -> T {
+        let (z, ls) = solve_zeta(weights);
+        let mut h_sum = T::zero();
+        for &l in &ls {
+            let u = l - z;
+            h_sum += (u + (u * u + eps * eps).sqrt()) * 0.5;
+        }
+        let cv = z + h_sum / tail_mass;
+        let mu = s
+            .expected_returns
+            .iter()
+            .zip(weights)
+            .map(|(a, b)| *a * *b)
+            .fold(T::zero(), |a, x| a + x);
+        -mu + s.risk_aversion * cv
+    };
+    for _ in 0..32 {
         let (zeta, losses) = solve_zeta(&w);
         let mut grad = vec![T::zero(); n];
+        let mut g_norm2 = 0.0;
         for i in 0..n {
             let mut tail_g = T::zero();
             for m in 0..m_scen {
@@ -752,10 +795,20 @@ pub fn try_mean_cvar_weights<T: Real>(
                 tail_g -= (dphi / tail_mass) * s.scenario_returns[m][i];
             }
             grad[i] = -s.expected_returns[i] + s.risk_aversion * tail_g;
+            g_norm2 += grad[i].val() * grad[i].val();
         }
-        let step = T::from_f64(0.35 / (1.0 + 0.15 * iter as f64));
-        let trial_in: Vec<T> = (0..n).map(|i| w[i] - step * grad[i]).collect();
-        w = project_capped_simplex(&trial_in, &s.lower_bounds, &s.upper_bounds)?;
+        let g_norm = g_norm2.sqrt().max(1e-12);
+        let base_obj = eval_obj(&w).val();
+        let mut step = 0.5 / g_norm;
+        for _ in 0..6 {
+            let trial_in: Vec<T> = (0..n).map(|i| w[i] - grad[i] * step).collect();
+            let cand = project_capped_simplex(&trial_in, &s.lower_bounds, &s.upper_bounds)?;
+            if eval_obj(&cand).val() <= base_obj + 1e-12 {
+                w = cand;
+                break;
+            }
+            step *= 0.5;
+        }
     }
     let (zeta, losses) = solve_zeta(&w);
     let mut smooth_hinge_sum = T::zero();

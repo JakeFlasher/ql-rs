@@ -201,7 +201,7 @@ fn phase12_round4_autocallable_price_greeks_and_life_invariants() {
     );
     assert!(r.autocall_probabilities.iter().sum::<f64>() <= 1.0 + 1e-12);
     assert!(r.expected_life >= 0.0 && r.expected_life <= 1.0 + 1e-12);
-    let h = 1e-4;
+    let h = 1e-5;
     let mut up = s.clone();
     let mut dn = s.clone();
     up.spots[0] += h;
@@ -228,4 +228,14 @@ fn phase12_round4_autocallable_price_greeks_and_life_invariants() {
         - price_worst_of_autocallable(&dn, 64, 7).unwrap())
         / (2.0 * h);
     assert!((r.corr_cega[1][0] - fd_cega).abs() < 1e-5);
+    let mut five = s.clone();
+    five.spots = vec![100.25; 5];
+    five.vols = vec![0.2; 5];
+    five.divs = vec![0.0; 5];
+    five.correlation = (0..5)
+        .map(|i| (0..5).map(|j| if i == j { 1.0 } else { 0.15 }).collect())
+        .collect();
+    let r5 = price_worst_of_autocallable_aad(&five, 32, 2, 9).unwrap();
+    assert!(r5.spot_deltas[0] != r5.corr_cega[1][0]);
+    assert!(r5.vegas[4].abs() > 0.0);
 }

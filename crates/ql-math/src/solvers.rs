@@ -139,7 +139,23 @@ pub fn brent_solve_ad<T: Real, F: Fn(T) -> T>(
     tol: f64,
     max_iter: usize,
 ) -> Result<T, MathError> {
-    let root = brent_solve(|x| f(T::from_f64(x)).val(), a, b, tol, max_iter)?;
+    let saved = ql_ad::TapeScope::try_with_active(|t| (t.len(), t.mark()));
+    let root = brent_solve(
+        |x| {
+            let y = f(T::from_f64(x)).val();
+            if let Some((len, mark)) = saved {
+                ql_ad::TapeScope::try_with_active(|t| {
+                    t.ops.truncate(len);
+                    t.mark = mark;
+                });
+            }
+            y
+        },
+        a,
+        b,
+        tol,
+        max_iter,
+    )?;
     let h = (1e-5_f64).max(root.abs() * 1e-5);
     let fp_ad = f(T::from_f64(root + h));
     let fm_ad = f(T::from_f64(root - h));

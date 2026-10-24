@@ -82,7 +82,12 @@ impl<T: Real> ZeroInflationCurve<T> {
                 .ln()
                 .mul_add(T::from_f64(t), T::zero())
                 .exp();
-        if let (Some(s), Some(m)) = (&self.seasonality, target_month) {
+        if let Some(s) = &self.seasonality {
+            let m = target_month.unwrap_or_else(|| {
+                self.base_date
+                    .add_months((t * 12.0).round() as i32, false)
+                    .month()
+            });
             out *= T::from_f64(s.factor_for_month(m) / s.factor_for_month(self.base_date.month()));
         }
         out

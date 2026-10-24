@@ -382,8 +382,21 @@ impl G2ppBermudanSwaptionEngine {
         let g = self.state_grid_points.clamp(5, 15);
         let m_ex = valid_ex.len();
         let sign = if bermudan.is_payer { 1.0 } else { -1.0 };
-        let q_nodes = [-1.7320508, -0.5, 0.0, 0.5, 1.7320508_f64];
-        let q_weights = [0.0833333, 0.25, 0.3333334, 0.25, 0.0833333_f64];
+        let t_terminal = *bermudan.swap_times.last().unwrap_or(&1.0);
+        let q_nodes = [
+            -2.856_970_013_872_805_6,
+            -1.355_626_179_974_266,
+            0.0,
+            1.355_626_179_974_266,
+            2.856_970_013_872_805_6_f64,
+        ];
+        let q_weights = [
+            0.011_257_411_327_720_69,
+            0.222_075_922_005_612_64,
+            0.533_333_333_333_333_3,
+            0.222_075_922_005_612_64,
+            0.011_257_411_327_720_69_f64,
+        ];
         let intrinsic_at = |m_idx: usize, x: T, y: T| -> T {
             let (t_ex, ref rem) = valid_ex[m_idx];
             let mut flt = T::zero();
@@ -401,14 +414,14 @@ impl G2ppBermudanSwaptionEngine {
                 ann += p1_ois * tau;
             }
             let payoff = (T::from_f64(sign) * (flt - ann * bermudan.strike)).max_val(T::zero());
-            let df0 = ois_discount.discount_factor(t_ex)
-                * (-(G2PlusPlus::b_fn(model.a, t_ex) * x + G2PlusPlus::b_fn(model.b, t_ex) * y))
-                    .exp();
-            df0 * payoff * bermudan.notional
+            let p_term = model
+                .discount_bond(ois_discount, t_ex, t_terminal, x, y)
+                .max_val(T::from_f64(1e-12));
+            payoff * bermudan.notional / p_term
         };
         let grid_bounds = |t: f64| -> (T, T) {
-            let sx = model.sigma_x(t).max_val(T::from_f64(1e-6)) * 3.0;
-            let sy = model.sigma_y(t).max_val(T::from_f64(1e-6)) * 3.0;
+            let sx = model.sigma_x(t).max_val(T::from_f64(1e-6)) * 3.5;
+            let sy = model.sigma_y(t).max_val(T::from_f64(1e-6)) * 3.5;
             (sx, sy)
         };
         let mut vals = vec![vec![T::zero(); g]; g];
@@ -442,10 +455,14 @@ impl G2ppBermudanSwaptionEngine {
             let sy = model.sigma_y(dt);
             let ea = (-model.a * dt).exp();
             let eb = (-model.b * dt).exp();
-            let rxy = model
-                .rho
-                .max_val(T::from_f64(-0.999))
-                .min_val(T::from_f64(0.999));
+            let cov = model.rho * model.sigma * model.eta * G2PlusPlus::b_fn(model.a + model.b, dt);
+            let rxy = if sx.val() > 1e-14 && sy.val() > 1e-14 {
+                (cov / (sx * sy))
+                    .max_val(T::from_f64(-0.999))
+                    .min_val(T::from_f64(0.999))
+            } else {
+                T::zero()
+            };
             let s_orth = (T::one() - rxy * rxy).max_val(T::zero()).sqrt();
             let mut next_vals = vec![vec![T::zero(); g]; g];
             for (i, row) in next_vals.iter_mut().enumerate() {
@@ -470,10 +487,14 @@ impl G2ppBermudanSwaptionEngine {
         let (bx0, by0) = grid_bounds(t0);
         let sx0 = model.sigma_x(t0);
         let sy0 = model.sigma_y(t0);
-        let rxy = model
-            .rho
-            .max_val(T::from_f64(-0.999))
-            .min_val(T::from_f64(0.999));
+        let cov0 = model.rho * model.sigma * model.eta * G2PlusPlus::b_fn(model.a + model.b, t0);
+        let rxy = if sx0.val() > 1e-14 && sy0.val() > 1e-14 {
+            (cov0 / (sx0 * sy0))
+                .max_val(T::from_f64(-0.999))
+                .min_val(T::from_f64(0.999))
+        } else {
+            T::zero()
+        };
         let s_orth = (T::one() - rxy * rxy).max_val(T::zero()).sqrt();
         let mut pv0 = T::zero();
         for (qx, &zx) in q_nodes.iter().enumerate() {
@@ -484,15 +505,14 @@ impl G2ppBermudanSwaptionEngine {
                 pv0 += interp(&vals, bx0, by0, x0, y0) * w;
             }
         }
+        let pv_discounted = pv0 * ois_discount.discount_factor(t_terminal);
         let same_curve =
             (ois_discount.discount_factor(t0).val() - ibor_forward.discount_factor(t0).val()).abs()
                 < 1e-12;
         if m_ex == 1 && same_curve {
             euro_best
-        } else if same_curve {
-            pv0.max_val(euro_best)
         } else {
-            pv0
+            pv_discounted
         }
     }
 }

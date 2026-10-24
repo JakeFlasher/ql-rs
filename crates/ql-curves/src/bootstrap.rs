@@ -492,11 +492,20 @@ impl CalibratedCurveSystem {
         let j = self.sensitivity.jacobian_dtheta_dq();
         let mut h_eff = h;
         if self.instruments.len() == k && k <= 64 {
+            let g_vec = DVector::from_vec(g.clone());
             let lambda = self
                 .sensitivity
                 .lu_t
-                .solve(&DVector::from_vec(g.clone()))
-                .expect("singular IFT Jacobian");
+                .solve(&g_vec)
+                .or_else(|| {
+                    self.sensitivity
+                        .j_q
+                        .transpose()
+                        .svd(true, true)
+                        .solve(&g_vec, 1e-12)
+                        .ok()
+                })
+                .expect("SVD fallback for IFT Jacobian");
             // A compact second-order jet keeps the calibration Hessian off the
             // stack in ordinary strips; very wide systems should use the
             // pairwise helper API rather than allocating an N² jet per node.
@@ -516,11 +525,20 @@ impl CalibratedCurveSystem {
                 }
             }
         } else if self.instruments.len() == k {
+            let g_vec = DVector::from_vec(g.clone());
             let lambda = self
                 .sensitivity
                 .lu_t
-                .solve(&DVector::from_vec(g.clone()))
-                .expect("singular IFT Jacobian");
+                .solve(&g_vec)
+                .or_else(|| {
+                    self.sensitivity
+                        .j_q
+                        .transpose()
+                        .svd(true, true)
+                        .solve(&g_vec, 1e-12)
+                        .ok()
+                })
+                .expect("SVD fallback for IFT Jacobian");
             for (m, instrument) in self.instruments.iter().enumerate() {
                 for i in 0..k {
                     for jcol in i..k {

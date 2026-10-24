@@ -227,7 +227,7 @@ impl<T: Real> ForwardMarketModel<T> {
                 for p in 0..np {
                     let expected_cont = y_mean + beta * (paths[p].0[i].val() - f_mean);
                     if expected_cont > call_threshold.val() {
-                        cont[p] = cont[p].min_val(call_threshold);
+                        cont[p] = call_threshold;
                     }
                 }
             }

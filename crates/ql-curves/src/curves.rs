@@ -175,7 +175,7 @@ impl<T: Real> YieldTermStructure<T> for ZeroCurve<T> {
 }
 pub type FlatYieldCurve<T = f64> = FlatForwardCurve<T>;
 pub type PiecewiseLogLinearDiscountCurve<T = f64> = DiscountCurve<T>;
-pub type PiecewiseCubicZeroCurve<T = f64> = ZeroCurve<T>;
+pub type PiecewiseCubicZeroCurve<T = f64> = MonotoneCubicZeroCurve<T>;
 #[derive(Debug, Clone)]
 pub struct MonotoneCubicZeroCurve<T: Real = f64> {
     pub reference_date: Date,
