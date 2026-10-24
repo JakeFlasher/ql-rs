@@ -390,16 +390,17 @@ impl CalibratedSabrSmile {
                 );
                 let d = q.weight.max(0.0).sqrt();
                 r[i] = d * (p.vol(q.strike) - q.market_vol);
+                let ad = AdSabrSmile::new(
+                    Dual::<3>::from_value(forward),
+                    Dual::<3>::from_value(expiry),
+                    Dual::<3>::variable(p.alpha, 0),
+                    Dual::<3>::from_value(beta),
+                    Dual::<3>::variable(p.rho, 1),
+                    Dual::<3>::variable(p.nu, 2),
+                );
+                let y = ad.vol(Dual::<3>::from_value(q.strike));
                 for k in 0..3 {
-                    let mut v = [p.alpha, p.rho, p.nu];
-                    let h = 1e-5;
-                    v[k] += h;
-                    let up =
-                        AdSabrSmile::new(forward, expiry, v[0], beta, v[1], v[2]).vol(q.strike);
-                    v[k] -= 2. * h;
-                    let dn =
-                        AdSabrSmile::new(forward, expiry, v[0], beta, v[1], v[2]).vol(q.strike);
-                    j[(i, k)] = d * (up - dn) / (2. * h);
+                    j[(i, k)] = d * y.d[k];
                 }
             }
             (r, j)
@@ -523,34 +524,18 @@ impl CalibratedSviSmile {
             for (i, q) in quotes.iter().enumerate() {
                 let d = q.weight.max(0.0).sqrt();
                 r[i] = d * (smile.vol(q.strike) - q.market_vol);
-                let h = 1e-5;
-                let base = [x[0], x[1], x[2], x[3], x[4]];
+                let ad = AdSviSmile::new(
+                    Dual::<5>::from_value(forward),
+                    Dual::<5>::from_value(expiry),
+                    Dual::<5>::variable(smile.a, 0),
+                    Dual::<5>::variable(smile.b, 1),
+                    Dual::<5>::variable(smile.rho, 2),
+                    Dual::<5>::variable(smile.m, 3),
+                    Dual::<5>::variable(smile.sigma, 4),
+                );
+                let y = ad.vol(Dual::<5>::from_value(q.strike));
                 for k in 0..5 {
-                    let mut up = base;
-                    let mut dn = base;
-                    up[k] += h;
-                    dn[k] -= h;
-                    let pu = AdSviSmile::new(
-                        forward,
-                        expiry,
-                        up[0],
-                        up[1].max(1e-8),
-                        up[2].clamp(-0.999, 0.999),
-                        up[3],
-                        up[4].abs().max(1e-8),
-                    )
-                    .vol(q.strike);
-                    let pd = AdSviSmile::new(
-                        forward,
-                        expiry,
-                        dn[0],
-                        dn[1].max(1e-8),
-                        dn[2].clamp(-0.999, 0.999),
-                        dn[3],
-                        dn[4].abs().max(1e-8),
-                    )
-                    .vol(q.strike);
-                    j[(i, k)] = d * (pu - pd) / (2. * h);
+                    j[(i, k)] = d * y.d[k];
                 }
             }
             (r, j)
