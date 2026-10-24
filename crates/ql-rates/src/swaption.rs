@@ -310,7 +310,7 @@ impl HullWhiteBermudanTreeEngine {
             let pu = (ratio * 0.5).clamp(0.0, 0.5);
             let pd = pu;
             let mut next = vec![T::zero(); values.len()];
-            for j in -(n as isize + 1)..=(n as isize + 1) {
+            for j in -(n as isize)..=(n as isize) {
                 let idx = (j + n as isize) as usize;
                 let cont = (-T::from_f64(j as f64 * dx) * dtime).exp()
                     * (values[idx.saturating_sub(1)] * pd

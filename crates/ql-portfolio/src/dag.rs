@@ -4,6 +4,7 @@ use ql_curves::{
 };
 use ql_instruments::{ResolvedVanillaSwap, SwapType, VanillaSwapSpec};
 use ql_models::{HestonParams, heston_cos_price};
+use ql_rates::{BermudanSwaption, HullWhiteBermudanTreeEngine, SwaptionSettlement};
 use ql_scripting::{BytecodeProgram, OpCode};
 use ql_time::{Date, DayCounter, Frequency};
 use rayon::prelude::*;
@@ -116,10 +117,26 @@ fn trade_dependency_hash(trade: &PortfolioTrade, curve_hash: u64, equity_hash: u
         PortfolioTrade::ScriptedNote {
             program, expiry, ..
         } => hash_word(hash_program(program), canonical_f64_bits(*expiry)),
+        PortfolioTrade::BermudanSwaption {
+            notional,
+            fixed_rate,
+            maturity_years,
+            hw_a,
+            hw_sigma,
+            ..
+        } => hash_f64_slice(&[
+            *notional,
+            *fixed_rate,
+            *maturity_years as f64,
+            *hw_a,
+            *hw_sigma,
+        ]),
     };
     match trade {
         PortfolioTrade::IrsSwap { .. } => hash_word(curve_hash, h),
-        PortfolioTrade::HestonEuropeanOption { .. } | PortfolioTrade::ScriptedNote { .. } => {
+        PortfolioTrade::HestonEuropeanOption { .. }
+        | PortfolioTrade::ScriptedNote { .. }
+        | PortfolioTrade::BermudanSwaption { .. } => {
             hash_word(curve_hash ^ equity_hash.rotate_left(13), h)
         }
     }
@@ -210,6 +227,16 @@ pub enum PortfolioTrade {
         id: usize,
         program: BytecodeProgram,
         expiry: f64,
+    },
+    BermudanSwaption {
+        id: usize,
+        notional: f64,
+        fixed_rate: f64,
+        exercise_years: Vec<usize>,
+        maturity_years: usize,
+        is_payer: bool,
+        hw_a: f64,
+        hw_sigma: f64,
     },
 }
 #[derive(Clone, Debug)]
@@ -331,7 +358,8 @@ impl PortfolioDag {
             let id = match trade {
                 PortfolioTrade::IrsSwap { id, .. }
                 | PortfolioTrade::HestonEuropeanOption { id, .. }
-                | PortfolioTrade::ScriptedNote { id, .. } => *id,
+                | PortfolioTrade::ScriptedNote { id, .. }
+                | PortfolioTrade::BermudanSwaption { id, .. } => *id,
             };
             if !ids.insert(id) {
                 return Err(format!(
@@ -363,7 +391,8 @@ impl PortfolioDag {
                 let id = match t {
                     PortfolioTrade::IrsSwap { id, .. }
                     | PortfolioTrade::HestonEuropeanOption { id, .. }
-                    | PortfolioTrade::ScriptedNote { id, .. } => *id,
+                    | PortfolioTrade::ScriptedNote { id, .. }
+                    | PortfolioTrade::BermudanSwaption { id, .. } => *id,
                 };
                 let h = trade_market_hash(t, s);
                 (self.cache.get(&id).map(|x| x.0) != Some(h)).then_some((t, h))
@@ -397,7 +426,8 @@ impl PortfolioDag {
             let id = match t {
                 PortfolioTrade::IrsSwap { id, .. }
                 | PortfolioTrade::HestonEuropeanOption { id, .. }
-                | PortfolioTrade::ScriptedNote { id, .. } => *id,
+                | PortfolioTrade::ScriptedNote { id, .. }
+                | PortfolioTrade::BermudanSwaption { id, .. } => *id,
             };
             if let Some((_, v)) = self.cache.get(&id) {
                 out.total_npv += v.npv;
@@ -481,6 +511,53 @@ impl PortfolioDag {
                     npv,
                     par_dv01: dv,
                     eq_delta: 0.,
+                }
+            }
+            PortfolioTrade::BermudanSwaption {
+                id,
+                notional,
+                fixed_rate,
+                exercise_years,
+                maturity_years,
+                is_payer,
+                hw_a,
+                hw_sigma,
+            } => {
+                let ois_n = curves.ois_pillars;
+                let (npv, dv) = curves.value_and_par_dv01(|params| {
+                    let ois = ql_curves::DiscountCurve::new(
+                        s.ref_date,
+                        curves.curves[0].times.clone(),
+                        params[..ois_n].to_vec(),
+                    );
+                    let fwd = ql_curves::DiscountCurve::new(
+                        s.ref_date,
+                        curves.curves[1].times.clone(),
+                        params[ois_n..].to_vec(),
+                    );
+                    let sw = BermudanSwaption {
+                        notional: *notional,
+                        strike: *fixed_rate,
+                        exercise_times: exercise_years.iter().map(|x| *x as f64).collect(),
+                        swap_times: (1..=*maturity_years).map(|x| x as f64).collect(),
+                        is_payer: *is_payer,
+                        settlement: SwaptionSettlement::Physical,
+                    };
+                    HullWhiteBermudanTreeEngine { steps: 60 }.price(
+                        &ql_models::HullWhite1F {
+                            a: ql_ad::TapeVar::from_f64(*hw_a),
+                            sigma: ql_ad::TapeVar::from_f64(*hw_sigma),
+                        },
+                        &ois,
+                        &fwd,
+                        &sw,
+                    )
+                });
+                TradeValuation {
+                    id: *id,
+                    npv,
+                    par_dv01: dv,
+                    eq_delta: 0.0,
                 }
             }
             PortfolioTrade::HestonEuropeanOption {

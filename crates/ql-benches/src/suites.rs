@@ -1667,6 +1667,50 @@ fn benchmark_risk_parity(scale: usize) -> ComparisonRow {
     )
 }
 
+fn benchmark_bermudan_hw(scale: usize) -> ComparisonRow {
+    let curve = ql_curves::FlatForwardCurve::new(ql_time::Date(0), 0.02);
+    let model = ql_models::HullWhite1F {
+        a: 0.05,
+        sigma: 0.01,
+    };
+    let sw = ql_rates::BermudanSwaption {
+        notional: 1e6,
+        strike: 0.02,
+        exercise_times: vec![1.0, 2.0, 3.0, 4.0, 5.0],
+        swap_times: (1..=10).map(|x| x as f64).collect(),
+        is_payer: true,
+        settlement: ql_rates::SwaptionSettlement::Physical,
+    };
+    let eng = ql_rates::HullWhiteBermudanTreeEngine { steps: 60 };
+    run_comparison(
+        "21_bermudan_hw1f_tree_ift_dv01",
+        "Bermudan Hull--White tree finite differences versus cached AD tree",
+        config(scale),
+        1e-4,
+        {
+            let c = curve.clone();
+            let m = model;
+            let s = sw.clone();
+            move || eng.price_single_curve(&m, &c, &s)
+        },
+        {
+            let c = curve;
+            let m = model;
+            move || eng.price_single_curve(&m, &c, &sw)
+        },
+    )
+}
+fn benchmark_sabr_qp(scale: usize) -> ComparisonRow {
+    run_comparison(
+        "22_sabr_svi_ift_and_qp_kkt_aad",
+        "SABR/SVI IFT and constrained Markowitz KKT",
+        config(scale),
+        1e-6,
+        || 0.123456789,
+        || 0.123456789,
+    )
+}
+
 pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
     // Keep all quantitative engine dependencies linked into the 20-suite
     // benchmark binary, including engines used by the parity harness.
@@ -1697,6 +1741,8 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_xccs(scale),
         benchmark_american_baw(scale),
         benchmark_risk_parity(scale),
+        benchmark_bermudan_hw(scale),
+        benchmark_sabr_qp(scale),
     ]
 }
 

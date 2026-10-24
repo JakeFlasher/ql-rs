@@ -1,6 +1,6 @@
 # Literature and References
 
-The 42 papers below are the mathematical and systems references for ql-rs. Each entry names the principal equation or algorithm and the implementing crate/module.
+The 51 papers below are the mathematical and systems references for ql-rs. Each entry names the principal equation or algorithm and the implementing crate/module.
 
 ## AAD, IFT, DML, and contract languages
 
@@ -91,6 +91,24 @@ The 42 papers below are the mathematical and systems references for ql-rs. Each 
 21. **`41_BaroneAdesi_Whaley_1987_Efficient_Analytic_Approximation_American_Options.pdf`** — Quadratic free-boundary early-exercise approximation and critical spot $S^*$ root-finding for American calls and puts inform `ql-instruments::american` and suite 19.
 
 22. **`42_Miemiec_2014_Pricing_CMS_Spread_Options_QuantLib.pdf`** — Shifted-lognormal Gauss–Hermite conditioning and Linear-TSR convexity adjustment for CMS spread coupons, caplets, floorlets, and collars inform `ql-rates::cms_spread`.
+
+23. **`43_Blondel_et_al_2021_Efficient_Modular_Implicit_Differentiation.pdf`** — Second-order optimality Implicit Function Theorem $\partial \theta^* / \partial q = -(\nabla^2_{\theta\theta} L)^{-1} \nabla^2_{\theta q} L$ including the residual-Hessian term $\sum_i r_i \nabla^2_{\theta\theta} \hat{y}_i(\theta^*)$ and active-set KKT differentiation inform `ql-models::calibration`, `ql-vol::surface` (`CalibratedSabrSmile`, `CalibratedSviSmile`), and `ql-portfolio::allocation` (`BoxConstrainedMarkowitzSpec`).
+
+24. **`44_Jacquier_et_al_2024_Deep_Calibration_Rough_Vol.pdf`** — Rough volatility calibration regularizers and Markovian kernel parameterizations inform `ql-models::rough`.
+
+25. **`45_Agrawal_et_al_2019_Differentiable_Convex_Optimization_Layers.pdf`** — Differentiating through constrained quadratic/convex optimization layers via active-set KKT conditions informs `ql-portfolio::allocation::try_box_constrained_markowitz_weights` and suite 22.
+
+26. **`46_Gatheral_Jacquier_2014_Arbitrage_Free_SVI_Volatility_Surfaces.pdf`** — Durrleman butterfly arbitrage condition $g(k) = (1 - \frac{k w'(k)}{2w(k)})^2 - \frac{w'(k)^2}{4}(\frac{1}{w(k)} + \frac{1}{4}) + \frac{w''(k)}{2} \ge 0$, Roger Lee wing slope bound $b(1 + |\rho|) \le 2$, and arbitrage-free SVI calibration inform `ql-vol::surface` (`svi_durrleman_g`, `CalibratedSviSmile`).
+
+27. **`47_Green_Kenyon_Dennis_2014_KVA_Capital_Valuation_Adjustment.pdf`** — Counterparty credit risk capital profiles $K_{\text{CCR}}(t)$, Basel III SA-CCR Exposure-at-Default $\text{EAD} = 1.4(\text{RC} + \text{multiplier}\times\text{AddOn}^{\text{agg}})$, and Capital Valuation Adjustment (`compute_sa_ccr_ead`, `compute_kva`) inform `ql-xva`.
+
+28. **`48_Brigo_Vrins_2018_Disentangling_Wrong_Way_Risk_CVA.pdf`** — Wrong-Way Risk CVA/DVA exposure-intensity coupling and survival-calibrated pathwise hazard rates $\lambda_c(t_k, \omega) = \exp(a_k + b_{\text{wwr}} w(t_k, \omega))$ inform `ql-xva::compute_xva_with_wwr`.
+
+29. **`49_Warin_2012_Hedging_Swing_Contract_on_Gas_Market.pdf`** — 1F mean-reverting Ornstein–Uhlenbeck log-spot trinomial tree calibrated to `CommodityFuturesCurve` and 2D backward dynamic programming ("Forest of Trees") with mandatory take-or-pay exercise constraints inform `ql-commodities` (`SwingOptionSpec`, `price_swing_option`).
+
+30. **`50_Yamakami_Takeuchi_2022_Bermudan_Swaption_Two_Factor_Hull_White.pdf`** — Single-curve and dual-curve (OIS discount / IBOR-RFR forward) Bermudan swaption backward induction and affine bond reconstruction inform `ql-rates::swaption` (`BermudanSwaption`, `HullWhiteBermudanTreeEngine`, `Fd1dHullWhiteBermudanEngine`) and suite 21.
+
+31. **`51_Baeuerle_Riess_2015_Gas_Storage_Valuation_Multinomial_Tree_LSM.pdf`** — Markov Decision Process backward induction over inventory grid $v \in [0, V_{\max}]$ with injection/withdrawal rate limits, proportional loss factors, and unit costs on a recombining spot tree informs `ql-commodities` (`GasStorageSpec`, `price_gas_storage`).
 
 ## Reference repositories
 

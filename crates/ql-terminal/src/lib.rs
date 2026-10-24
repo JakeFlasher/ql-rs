@@ -94,9 +94,11 @@ pub enum TabId {
     Blotter,
     AmericanHybrid,
     BlRiskParity,
+    BermudanVolIft,
+    SaCcrSwingQp,
 }
 impl TabId {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 20] = [
         Self::Market,
         Self::Rates,
         Self::Credit,
@@ -115,6 +117,8 @@ impl TabId {
         Self::Blotter,
         Self::AmericanHybrid,
         Self::BlRiskParity,
+        Self::BermudanVolIft,
+        Self::SaCcrSwingQp,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -136,6 +140,8 @@ impl TabId {
             Self::Blotter => "16 Blotter",
             Self::AmericanHybrid => "17 American / Hybrid",
             Self::BlRiskParity => "18 BL / Risk Parity",
+            Self::BermudanVolIft => "19 Bermudan / Vol IFT",
+            Self::SaCcrSwingQp => "20 SA-CCR / Swing / QP",
         }
     }
 }

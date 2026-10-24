@@ -17,4 +17,5 @@ ql-vol.workspace = true
 ql-models.workspace = true
 ql-scripting.workspace = true
 ql-instruments.workspace = true
+ql-rates.workspace = true
 thiserror.workspace = true

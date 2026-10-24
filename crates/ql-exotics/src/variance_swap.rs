@@ -115,3 +115,89 @@ pub fn volatility_swap_convexity_adjustment<T: Real>(fair_variance: T, var_of_va
     let root = fair_variance.max_val(T::from_f64(1e-16)).sqrt();
     root - var_of_var / (root * root * root * 8.0)
 }
+
+pub fn heston_integrated_variance_var<T: Real>(
+    v0: T,
+    kappa: T,
+    theta: T,
+    sigma_v: T,
+    expiry: T,
+) -> T {
+    if expiry.val() <= 0.0 {
+        return T::zero();
+    }
+    let u = kappa * expiry;
+    let value = if u.val().abs() < 1e-3 {
+        sigma_v
+            * sigma_v
+            * expiry
+            * ((v0 - theta)
+                * (T::from_f64(1.0 / 3.0) - u / 3.0 + u * u * 11.0 / 60.0
+                    - u * u * u * 13.0 / 180.0)
+                + theta
+                    * (T::from_f64(1.0 / 3.0) - u / 4.0 + u * u * 7.0 / 60.0 - u * u * u / 24.0))
+    } else {
+        let ek = (-u).exp();
+        let e2 = (-u * 2.0).exp();
+        sigma_v * sigma_v / (kappa * kappa * kappa * expiry * expiry)
+            * ((v0 - theta) * (T::one() - u * 2.0 * ek - e2)
+                + theta * 0.5 * (u * 2.0 - 3.0 + ek * 4.0 - e2))
+    };
+    value.max_val(T::zero())
+}
+pub fn heston_volatility_swap_fair_strike<T: Real>(
+    v0: T,
+    kappa: T,
+    theta: T,
+    sigma_v: T,
+    expiry: T,
+) -> T {
+    volatility_swap_convexity_adjustment(
+        heston_analytical_fair_variance(v0, kappa, theta, expiry),
+        heston_integrated_variance_var(v0, kappa, theta, sigma_v, expiry),
+    )
+}
+pub fn bates_analytical_fair_variance_qv<T: Real>(p: &ql_models::BatesParams<T>, expiry: T) -> T {
+    heston_analytical_fair_variance(p.heston.v0, p.heston.kappa, p.heston.theta, expiry)
+        + p.lambda * (p.mu_j * p.mu_j + p.sigma_j * p.sigma_j)
+}
+pub fn bates_analytical_fair_variance_log<T: Real>(p: &ql_models::BatesParams<T>, expiry: T) -> T {
+    heston_analytical_fair_variance(p.heston.v0, p.heston.kappa, p.heston.theta, expiry)
+        + p.lambda * 2.0 * ((p.mu_j + p.sigma_j * p.sigma_j * 0.5).exp() - 1.0 - p.mu_j)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn replicate_corridor_variance_swap_fair_strike<T: Real>(
+    spot: T,
+    rate: T,
+    div_yield: T,
+    expiry: T,
+    cut_strike: T,
+    lower_barrier: T,
+    upper_barrier: T,
+    quotes: &[VarianceSwapStrikeQuote<T>],
+) -> (T, T) {
+    if quotes.len() < 2 || expiry.val() <= 0.0 || lower_barrier.val() >= upper_barrier.val() {
+        return (T::zero(), T::zero());
+    }
+    let f = spot * ((rate - div_yield) * expiry).exp();
+    let lo = lower_barrier.max_val(T::zero());
+    let hi = upper_barrier;
+    let fc = f.max_val(lo).min_val(hi);
+    let kc = cut_strike.max_val(lo).min_val(hi);
+    let mut sum = T::zero();
+    for w in quotes.windows(2) {
+        let k0 = w[0].strike;
+        let k1 = w[1].strike;
+        let km = (k0 + k1) * 0.5;
+        if km.val() < lo.val() || km.val() > hi.val() {
+            continue;
+        }
+        let v = (w[0].implied_vol + w[1].implied_vol) * 0.5;
+        let c = black_scholes_price(spot, km, v, expiry, rate, div_yield, km.val() >= kc.val());
+        sum += (k1 - k0) * c / (km * km);
+    }
+    let drift = fc * (T::one() / fc - T::one() / kc) - (kc / fc).ln();
+    let variance = (drift + (rate * expiry).exp() * sum) * (T::from_f64(2.0) / expiry);
+    (variance, variance.max_val(T::zero()).sqrt())
+}

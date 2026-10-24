@@ -221,3 +221,10 @@ All Pass 3 mathematical defects (`P3-01a`, `P3-02` through `P3-06`, `P3-08` thro
    - In `adi.rs:479`, include `|| grid_center.is_some()` in the odd-`nx` check and move `let out = ...` (`line 196`) inside the `UpAndOut | DownAndOut` match arm.
 3. **`P5-03` (`crates/ql-fixed-income/src/convertible_bond.rs:25–82`)**:
    - In `price_convertible_bond_tf`, apply `s.call_price` and `s.put_price` to the ex-coupon (clean) continuation value `(val, bb)` before adding `coupon`, and pre-accumulate coupons per step in `1..=n` without `break`.
+
+
+---
+
+## Pass 6 Final Convergence Sign-Off (`c2bef1a..2ed957f`)
+
+All remaining mathematical items (`P5-01` in `crates/ql-instruments/src/american.rs:444–494`, `P5-02` in `crates/ql-instruments/src/pde1d.rs:62–73, 139–205`, and `P5-03` in `crates/ql-fixed-income/src/convertible_bond.rs:25–81`) are verified **RESOLVED** at commit `2ed957f`. Full mathematical convergence achieved across Phases 1–10.

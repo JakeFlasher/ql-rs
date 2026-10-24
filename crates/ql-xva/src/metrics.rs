@@ -187,3 +187,154 @@ pub fn compute_xva<T: Real>(
         fva,
     }
 }
+
+#[allow(clippy::too_many_arguments)]
+pub fn compute_kva<T: Real>(
+    cube: &NpvCube<T>,
+    curve: &impl YieldTermStructure<T>,
+    csa: Option<&CsaSpec>,
+    hc: T,
+    hs: T,
+    cpty_risk_weight: T,
+    capital_ratio: T,
+    hurdle_rate: T,
+    add_on_profile: Option<&[T]>,
+) -> T {
+    let mut kva = T::zero();
+    for k in 0..cube.times.len() {
+        let t = cube.times[k];
+        let prev = if k == 0 { 0.0 } else { cube.times[k - 1] };
+        let dt = (t - prev).max(0.0);
+        let mut ee = T::zero();
+        for p in 0..cube.n_paths {
+            let mut pos = T::zero();
+            for ns in 0..cube.n_netting_sets {
+                let x = cube.get(ns, k, p);
+                pos += if let Some(c) = csa {
+                    collateralized_exposure(x, c.threshold_cpty, c.mta)
+                } else {
+                    x.max_val(T::zero())
+                };
+            }
+            ee += pos;
+        }
+        ee /= T::from_f64(cube.n_paths.max(1) as f64);
+        let addon = add_on_profile
+            .and_then(|x| x.get(k).copied())
+            .unwrap_or(T::zero());
+        let ead = T::from_f64(1.4) * (ee + addon);
+        let capital = T::from_f64(12.5) * cpty_risk_weight * capital_ratio * ead;
+        kva += hurdle_rate * curve.discount_factor(t) * (-(hc + hs) * t).exp() * capital * dt;
+    }
+    kva
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn compute_xva_with_wwr<T: Real>(
+    cube: &NpvCube<T>,
+    curve: &impl YieldTermStructure<T>,
+    csa: Option<&CsaSpec>,
+    hc: T,
+    lc: T,
+    hs: T,
+    ls: T,
+    fs: T,
+    wwr_sensitivity: T,
+) -> XvaReport<T> {
+    if wwr_sensitivity.val().abs() <= 1e-15 {
+        return compute_xva(cube, curve, csa, hc, lc, hs, ls, fs);
+    }
+    let mut ee = Vec::new();
+    let mut ene = Vec::new();
+    let mut pfe = Vec::new();
+    let mut sc_prev = vec![T::one(); cube.n_paths];
+    let mut cva = T::zero();
+    let mut dva = T::zero();
+    let mut fva = T::zero();
+    for k in 0..cube.times.len() {
+        let t = cube.times[k];
+        let prev = if k == 0 { 0.0 } else { cube.times[k - 1] };
+        let dt = (t - prev).max(0.0);
+        let mut pos = Vec::with_capacity(cube.n_paths);
+        let mut neg = Vec::with_capacity(cube.n_paths);
+        for p in 0..cube.n_paths {
+            let mut po = T::zero();
+            let mut ne = T::zero();
+            for ns in 0..cube.n_netting_sets {
+                let x = cube.get(ns, k, p);
+                if let Some(c) = csa {
+                    po += collateralized_exposure(x, c.threshold_cpty, c.mta);
+                    ne -= collateralized_exposure(-x, c.threshold_self, c.mta);
+                } else {
+                    po += x.max_val(T::zero());
+                    ne += x.min_val(T::zero());
+                }
+            }
+            pos.push(po);
+            neg.push(ne);
+        }
+        let mean = pos.iter().copied().fold(T::zero(), |a, x| a + x)
+            / T::from_f64(cube.n_paths.max(1) as f64);
+        let mut beta = Vec::with_capacity(cube.n_paths);
+        for x in &pos {
+            let z = wwr_sensitivity * (*x - mean);
+            let zv = z.val().clamp(-20., 20.);
+            beta.push(T::from_f64(zv).exp() * dt);
+        }
+        let target = (-hc * t).exp();
+        let mean_sc = sc_prev.iter().copied().fold(T::zero(), |a, x| a + x)
+            / T::from_f64(cube.n_paths.max(1) as f64);
+        let mut u = (hc / mean_sc.max_val(T::from_f64(1e-12))).max_val(T::from_f64(1e-12));
+        for _ in 0..8 {
+            let mut g = T::zero();
+            let mut gp = T::zero();
+            for p in 0..cube.n_paths {
+                let e = (-u * beta[p]).exp();
+                g += sc_prev[p] * e;
+                gp -= sc_prev[p] * beta[p] * e;
+            }
+            g = g / T::from_f64(cube.n_paths.max(1) as f64) - target;
+            gp /= T::from_f64(cube.n_paths.max(1) as f64);
+            u = (u - g / gp).max_val(T::from_f64(1e-12));
+        }
+        let mut sc = Vec::with_capacity(cube.n_paths);
+        for p in 0..cube.n_paths {
+            sc.push(sc_prev[p] * (-u * beta[p]).exp());
+        }
+        let e = pos.iter().copied().fold(T::zero(), |a, x| a + x)
+            / T::from_f64(cube.n_paths.max(1) as f64);
+        let n = neg.iter().copied().fold(T::zero(), |a, x| a + x)
+            / T::from_f64(cube.n_paths.max(1) as f64);
+        let mut raw = pos.iter().map(|x| x.val()).collect::<Vec<_>>();
+        raw.sort_by(f64::total_cmp);
+        let idx = (0.95 * (raw.len().saturating_sub(1) as f64)).round() as usize;
+        ee.push(e);
+        ene.push(n);
+        pfe.push(raw.get(idx).copied().unwrap_or(0.));
+        let df = curve.discount_factor(t);
+        let sb0 = (-hs * prev).exp();
+        let sb = (-hs * t).exp();
+        let mut cva_step = T::zero();
+        let mut dva_step = T::zero();
+        let mut fva_step = T::zero();
+        for p in 0..cube.n_paths {
+            cva_step += pos[p] * (sc_prev[p] - sc[p]);
+            dva_step += neg[p] * (sb0 - sb) * sc_prev[p];
+            fva_step += (pos[p] + neg[p]) * sc[p];
+        }
+        let den = T::from_f64(cube.n_paths.max(1) as f64);
+        cva += lc * df * sb0 * cva_step / den;
+        dva -= ls * df * dva_step / den;
+        fva += fs * df * sb * fva_step / den * dt;
+        sc_prev = sc;
+    }
+    XvaReport {
+        ee,
+        ene,
+        pfe_95: pfe,
+        epe: T::zero(),
+        cva,
+        dva,
+        fva,
+    }
+}

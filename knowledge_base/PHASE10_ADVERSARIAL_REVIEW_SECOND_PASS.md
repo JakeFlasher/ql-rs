@@ -144,3 +144,18 @@ Following Codex's Round 4 commits (`12e94d5`, `fc0ad9e`, `5ea8b5b`, `c2bef1a`), 
 | **P4-04** | `price_complex_chooser` & `price_compound_option` (`crates/ql-exotics/src/quanto_chooser.rs`, `compound.rs`) | **RESOLVED** | Both use scalar `f64` root-finding (`residual_f64`) with zero dead `TapeVar` recordings and exact analytical Black–Scholes gamma `fxx` (`quanto_chooser.rs:76–151`, `compound.rs:84–90`). |
 | **P4-05** | `CalibratedCurveSystem` (`crates/ql-curves/src/bootstrap.rs`) & `hybrid.rs` (`crates/ql-models/src/hybrid.rs`) | **RESOLVED** | `bootstrap.rs:334` uses `h.day_counter`, `bootstrap.rs:518–555` adds the `k > 64` pairwise `Dual2<2>` fallback, and `hybrid.rs:127, 192` uses `hw_cross_integral`. |
 | **Deep Scan (`P5-03`)** | `price_convertible_bond_tf` (`crates/ql-fixed-income/src/convertible_bond.rs:25–82`) | **NEW DEEP-SCAN FINDING (`P5-03`)** | `price_convertible_bond_tf` adds `coupon` before applying `s.call_price` / `s.put_price` (`lines 58–72`), comparing dirty value to clean call/put strike and overwriting the coupon on call/put dates (unlike `callable_bond.rs:173–193` and QuantLib `discretizedconvertible.cpp:151–163`), and `coupon_at` (`lines 25–38`) uses `break` instead of accumulating coupons per step. |
+
+
+---
+
+# Pass 6 Final Verification & Convergence Sign-Off (`c2bef1a..2ed957f`)
+
+Following Codex's Round 5 commits (`7e6e941`, `2ed957f`), all 3 remaining Pass 5 items (`P5-01`, `P5-02`, `P5-03`) were verified line-by-line:
+
+| Pass 5 ID | Target Component | Pass 6 Final Verdict | Verification Notes |
+|---|---|---|---|
+| **P5-01** | `JuQuadraticEngine::ju_put_direct` (`crates/ql-instruments/src/american.rs:444–494`) | **RESOLVED** | Added `r.val() <= 0.0 && r.val() <= q.val()` early-exercise guard (`line 444`), corrected European put maturity derivative `theta` signs to `+q * star * ... - r * k * ...` (`lines 481–483`), and corrected `alpha_lambda_prime` to `+alpha_over_h * alpha_over_h / disc` (`line 485`), matching Ju (1999) and QuantLib `juquadraticengine.cpp:86–87, 163–186`. |
+| **P5-02** | `Fd1dBlackScholesEngine` (`crates/ql-instruments/src/pde1d.rs:62–73, 139–205, 286–330`) | **RESOLVED** | `putb` (`line 158`) checks `matches!(bt, BarrierType::DownAndOut) && smin_actual <= b.val()`, `highb`/`callb` (`lines 140, 175`) checks `matches!(bt, BarrierType::UpAndOut) && smax_actual >= b.val()`, and `bounds_barrier` (`line 62`) unifies `smax` and `dx` between `vanilla` and `out` via `grid_anchor: Option<(T, BarrierType)>`. |
+| **P5-03** | `price_convertible_bond_tf` (`crates/ql-fixed-income/src/convertible_bond.rs:25–81`) | **RESOLVED** | Pre-accumulates `step_coupons` across `1..=n` without `break` (`lines 25–34`) and applies `s.call_price` / `s.put_price` to the clean (ex-coupon) continuation value `(val, bb)` (`lines 53–64`) before adding `step_coupons[k]` (`lines 65–69`) and checking conversion (`lines 70–75`), matching Tsiveriotis & Fernandes (1998) and QuantLib `discretizedconvertible.cpp:151–163`. |
+
+**Final Convergence Verdict**: All substantive mathematical, numerical, AD/IFT, SIMD, and architectural findings across all 23 workspace crates (`Phases 1–10`) have been resolved and verified. `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` pass with 0 warnings and 100% test/benchmark parity across all 20 suites. The Phase 10 adversarial review loop is complete.

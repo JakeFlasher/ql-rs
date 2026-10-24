@@ -221,3 +221,10 @@ All Pass 3 systems/AD/SIMD defects in `ql-ad` (`ift_lift_1d` single residual eva
 ## Pass 5 Systems, AD/IFT & Numerical Verification (`e3a335a..c2bef1a`)
 
 `P4-04` (`quanto_chooser.rs` & `compound.rs` `TapeVar` isolation and analytical `fxx`), `P4-05` (`bootstrap.rs` `DayCounter` and `k > 64` pairwise `Dual2<2>` fallback, `hybrid.rs` `hw_cross_integral`), and `american_implied_vol` (`american.rs:547–568`) were verified as **RESOLVED** in `e3a335a..c2bef1a`. Remaining items for Round 5 are `P5-01` (`ju_put_direct` signs in `american.rs:481–490`), `P5-02` (`pde1d.rs` `UpAndOut` `putb` boundary, `smax`, and Knock-In rebate; `adi.rs` `grid_center.is_some()` odd-`nx` alignment and lazy `out` evaluation), and `P5-03` (`convertible_bond.rs` clean call/put order and step coupon accumulation).
+
+
+---
+
+## Pass 6 Final Convergence Sign-Off (`c2bef1a..2ed957f`)
+
+All remaining systems, AD/IFT, SIMD, and PDE numerical items (`P5-01`, `P5-02`, `P5-03`) are verified **RESOLVED** at commit `2ed957f`. Full systems and numerical convergence achieved across all 23 workspace crates.

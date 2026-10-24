@@ -170,3 +170,26 @@ In Antoine Savine's `Scripting` architecture ([`repos/Scripting/`](file:///home/
 3. **Compilation to Flat SIMD Register Bytecode**:
    - Instead of walking a heap-allocated `Box<Expr>` tree on every Monte Carlo path (which causes branch mispredictions and pointer chasing), the AST compiles into a contiguous `Vec<Instruction>` operating on a small register file `[T; 16]` where `T = f64x8` or `AdVar<f64x8>`.
    - This enables **runtime-defined structured products** (loaded from JSON/DSL strings in Python or web UIs) to execute at near-native compiled Rust speed with full AAD Greeks and XVA cube integration.
+
+---
+
+## 7. Second-Order Optimality IFT, Active-Set KKT Differentiation & Multi-Level Dynamic Programming
+
+### 7.1 Modular Implicit Differentiation of Nonlinear Least-Squares Calibrations (`papers/43`)
+As formalized by Blondel et al. (2021) ([`43_Blondel_et_al_2021_Efficient_Modular_Implicit_Differentiation.pdf`](file:///home/jakeshea/rust_quantlib/papers/43_Blondel_et_al_2021_Efficient_Modular_Implicit_Differentiation.pdf)):
+- When model parameters $\theta^* \in \mathbb{R}^P$ (such as Heston $(v_0, \kappa, \theta, \sigma_v, \rho)$, SABR $(\alpha, \rho, \nu)$, or arbitrage-free SVI $(a, b, \rho, m, \sigma)$) are calibrated via nonlinear least squares $\min_\theta \frac{1}{2}\sum_{i=1}^M w_i \left(\hat{\sigma}(K_i; \theta) - q_i\right)^2$, the stationary optimality condition is:
+  $$G(\theta^*, q) = \nabla_\theta \mathcal{L}(\theta^*, q) = \sum_{i=1}^M w_i r_i(\theta^*, q) \nabla_\theta \hat{\sigma}(K_i; \theta^*) = 0.$$
+- Differentiating $G(\theta^*(q), q) = 0$ with respect to market quotes $q \in \mathbb{R}^M$ yields the **exact second-order optimality IFT Jacobian**:
+  $$\frac{\partial \theta^*}{\partial q} = -\left(\nabla_{\theta\theta}^2 \mathcal{L}(\theta^*, q)\right)^{-1} \nabla_{\theta q}^2 \mathcal{L}(\theta^*, q) = \left(J^\top W J + \sum_{i=1}^M w_i r_i(\theta^*, q)\,\nabla_{\theta\theta}^2 \hat{\sigma}(K_i; \theta^*)\right)^{-1} J^\top W.$$
+- Crucially, omitting the second-order residual-Hessian term $\sum_i w_i r_i \nabla_{\theta\theta}^2 \hat{\sigma}(K_i; \theta^*)$ (the Gauss–Newton approximation) introduces $O(\|r\|)$ bias whenever market smiles cannot be fit with zero residual. Evaluating $\hat{\sigma}(K_i; \theta^*)$ with `Dual2<P>` supplies both $J$ and $\nabla_{\theta\theta}^2 \hat{\sigma}$ in a single pass, enabling exact quote Vegas/Vannas/Volgas in $O(1)$ without taping through Levenberg–Marquardt iterations.
+
+### 7.2 Active-Set KKT Implicit Differentiation for Constrained Portfolio Optimization (`papers/43`, `papers/45`)
+Following Agrawal et al. (2019) ([`45_Agrawal_et_al_2019_Differentiable_Convex_Optimization_Layers.pdf`](file:///home/jakeshea/rust_quantlib/papers/45_Agrawal_et_al_2019_Differentiable_Convex_Optimization_Layers.pdf)) and Blondel et al. (2021) ([`43_Blondel_et_al_2021_Efficient_Modular_Implicit_Differentiation.pdf`](file:///home/jakeshea/rust_quantlib/papers/43_Blondel_et_al_2021_Efficient_Modular_Implicit_Differentiation.pdf)):
+- For box-constrained Markowitz mean–variance allocation $\min_w \frac{1}{2}\gamma w^\top \Sigma w - \mu^\top w$ subject to $\mathbf{1}^\top w = 1$ and $l \le w \le u$, unrolling projected-gradient steps onto an AD tape is slow and numerically brittle.
+- Instead, solving the primal QP in `f64` identifies the exact active bound sets $\mathcal{B}_L = \{i : w_i^* = l_i\}$, $\mathcal{B}_U = \{i : w_i^* = u_i\}$, and strictly interior free set $\mathcal{F} = \{i : l_i < w_i^* < u_i\}$.
+- On $\mathcal{B}_L \cup \mathcal{B}_U$, $w_i$ equals the bound $l_i$ or $u_i$ in `T: Real` directly, while on $\mathcal{F}$, $w_{\mathcal{F}}$ solves the reduced equality KKT linear system in `T: Real`:
+  $$\begin{bmatrix} \gamma \Sigma_{\mathcal{F},\mathcal{F}} & \mathbf{1} \\ \mathbf{1}^\top & 0 \end{bmatrix} \begin{bmatrix} w_{\mathcal{F}} \\ \nu \end{bmatrix} = \begin{bmatrix} \mu_{\mathcal{F}} - \gamma \Sigma_{\mathcal{F},\mathcal{B}} w_{\mathcal{B}} \\ 1 - \mathbf{1}^\top w_{\mathcal{B}} \end{bmatrix},$$
+  preserving both first-order (`Dual<N>`, `TapeVar`) and second-order (`Dual2<N>`) derivatives with respect to $(\Sigma, \mu, \gamma, l, u)$ in a single linear solve.
+
+### 7.3 Analytical Arrow–Debreu Lattices & Multi-Level Dynamic Programming (`papers/49`, `papers/50`, `papers/51`)
+- In short-rate Bermudan swaption trees (`HullWhiteBermudanTreeEngine`) and commodity swing/storage "Forest of Trees" engines (`Warin 2012` [`49_Warin_2012_Hedging_Swing_Contract_on_Gas_Market.pdf`](file:///home/jakeshea/rust_quantlib/papers/49_Warin_2012_Hedging_Swing_Contract_on_Gas_Market.pdf), `Bäuerle & Rieß 2015` [`51_Baeuerle_Riess_2015_Gas_Storage_Valuation_Multinomial_Tree_LSM.pdf`](file:///home/jakeshea/rust_quantlib/papers/51_Baeuerle_Riess_2015_Gas_Storage_Valuation_Multinomial_Tree_LSM.pdf)), forward Arrow–Debreu state-price shifts $\alpha_m = \frac{1}{\Delta t_m}\ln\!\left(\frac{\sum_j Q_{m,j} e^{-x_j \Delta t_m}}{P(0, t_{m+1})}\right)$ and multiplicative futures normalizations $S_{m,j} = F(0, t_m)\frac{e^{x_j}}{\sum_l P_{m,l} e^{x_l}}$ are **closed-form in `T: Real`**, eliminating iterative root-finding inside the tree and propagating exact curve/surface sensitivities through backward dynamic programming.

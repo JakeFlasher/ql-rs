@@ -503,6 +503,7 @@ dependencies = [
  "ql-instruments",
  "ql-math",
  "ql-models",
+ "ql-rates",
  "ql-scripting",
  "ql-time",
  "ql-vol",
@@ -576,6 +577,7 @@ dependencies = [
  "implied-vol",
  "nalgebra",
  "ql-ad",
+ "ql-math",
  "thiserror",
  "volsurf",
 ]

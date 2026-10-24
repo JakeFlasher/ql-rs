@@ -1,6 +1,8 @@
 pub mod futures_curve;
 pub mod schwartz_smith;
 pub mod spreads;
+pub mod swing_storage;
 pub use futures_curve::*;
 pub use schwartz_smith::*;
 pub use spreads::*;
+pub use swing_storage::*;

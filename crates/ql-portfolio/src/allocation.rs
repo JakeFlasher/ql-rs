@@ -7,6 +7,108 @@ pub enum AllocationError {
     SingularCovariance,
     #[error("invalid matrix dimensions")]
     InvalidDimensions,
+    #[error("infeasible box bounds")]
+    InfeasibleBounds,
+}
+
+#[derive(Clone, Debug)]
+pub struct BoxConstrainedMarkowitzSpec<T: Real> {
+    pub covariance: Vec<Vec<T>>,
+    pub expected_returns: Vec<T>,
+    pub risk_aversion: T,
+    pub lower_bounds: Vec<T>,
+    pub upper_bounds: Vec<T>,
+}
+
+pub fn try_box_constrained_markowitz_weights<T: Real>(
+    s: &BoxConstrainedMarkowitzSpec<T>,
+) -> Result<Vec<T>, AllocationError> {
+    let n = s.expected_returns.len();
+    if n == 0
+        || s.covariance.len() != n
+        || s.covariance.iter().any(|r| r.len() != n)
+        || s.lower_bounds.len() != n
+        || s.upper_bounds.len() != n
+    {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    if s.risk_aversion.val() <= 0.0 {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    if s.lower_bounds
+        .iter()
+        .zip(&s.upper_bounds)
+        .any(|(l, u)| l.val() > u.val() + 1e-12)
+        || s.lower_bounds.iter().map(|x| x.val()).sum::<f64>() > 1.0 + 1e-12
+        || s.upper_bounds.iter().map(|x| x.val()).sum::<f64>() < 1.0 - 1e-12
+    {
+        return Err(AllocationError::InfeasibleBounds);
+    }
+    let mut active = vec![false; n];
+    let mut upper = vec![false; n];
+    let mut w = vec![T::zero(); n];
+    for _ in 0..n {
+        let free: Vec<usize> = (0..n).filter(|&i| !active[i] && !upper[i]).collect();
+        if free.is_empty() {
+            break;
+        }
+        let m = free.len() + 1;
+        let mut a = vec![vec![T::zero(); m]; m];
+        let mut b = vec![T::zero(); m];
+        for (ii, &i) in free.iter().enumerate() {
+            for (jj, &j) in free.iter().enumerate() {
+                a[ii][jj] = s.covariance[i][j] * s.risk_aversion;
+            }
+            a[ii][m - 1] = T::one();
+            a[m - 1][ii] = T::one();
+            let mut rhs = s.expected_returns[i];
+            for j in 0..n {
+                if active[j] {
+                    rhs -= s.covariance[i][j] * s.risk_aversion * s.lower_bounds[j];
+                } else if upper[j] {
+                    rhs -= s.covariance[i][j] * s.risk_aversion * s.upper_bounds[j];
+                }
+            }
+            b[ii] = rhs;
+        }
+        let fixed: T = (0..n)
+            .filter(|&i| active[i])
+            .map(|i| s.lower_bounds[i])
+            .fold(T::zero(), |a, x| a + x)
+            + (0..n)
+                .filter(|&i| upper[i])
+                .map(|i| s.upper_bounds[i])
+                .fold(T::zero(), |a, x| a + x);
+        b[m - 1] = T::one() - fixed;
+        let sol = solve_linear_generic(&a, &b)?;
+        for (ii, &i) in free.iter().enumerate() {
+            w[i] = sol[ii];
+        }
+        let mut changed = false;
+        for &i in &free {
+            if w[i].val() < s.lower_bounds[i].val() - 1e-9 {
+                active[i] = true;
+                changed = true;
+            } else if w[i].val() > s.upper_bounds[i].val() + 1e-9 {
+                upper[i] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for i in 0..n {
+        if active[i] {
+            w[i] = s.lower_bounds[i]
+        } else if upper[i] {
+            w[i] = s.upper_bounds[i]
+        }
+    }
+    Ok(w)
+}
+pub fn box_constrained_markowitz_weights<T: Real>(s: &BoxConstrainedMarkowitzSpec<T>) -> Vec<T> {
+    try_box_constrained_markowitz_weights(s).expect("feasible Markowitz bounds")
 }
 
 #[derive(Clone, Debug)]

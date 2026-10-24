@@ -42,6 +42,8 @@ Each suite has a deterministic workload, one warmup, 31 timing samples, and a co
 | 18 | Twenty XCCS bump-and-rebootstrap portfolio evaluations across 10 pillars | Cached cross-currency IFT basis Jacobian and single-pass Tape VJP on the 10-pillar XCCS book. |
 | 19 | Eleven scalar Barone–Adesi–Whaley & Ju–Zhong American option evaluations per strike for 5-Greek finite differences across 32 strikes | One `Dual<5>` IFT boundary-lifted (`ift_lift_1d`) American strip pass across 32 strikes. |
 | 20 | $2(N + N(N+1)/2)$ perturbed Cyclical Coordinate Descent Risk-Budgeting / ERC optimizations for an $N=12$ multi-asset portfolio | One primal CCD + Newton–Cholesky solve lifted via exact IFT Hessian $H = \Sigma + \operatorname{diag}(b/y^{*2})$ into full `TapeVar` / `Dual` covariance & budget sensitivities. |
+| 21 | Fourteen central finite-difference bumps (6 OIS pillars + 6 forward pillars + 2 Hull–White $(a, \sigma)$ parameters) of a multi-exercise Bermudan swaption on a 1F Hull–White trinomial tree | Single-pass `Dual` / `TapeVar` evaluation of `HullWhiteBermudanTreeEngine` with closed-form Arrow–Debreu shifts and multi-curve IFT par-swap DV01 projection. |
+| 22 | Sixteen central finite-difference recalibrations of an 8-strike SABR/SVI volatility smile plus $2(N + N(N+1)/2)$ perturbed active-set solves of a box-constrained Markowitz QP | Cached second-order optimality IFT (`Dual2`) smile Jacobian + single reduced-KKT linear solve (`solve_linear_generic`) on the free set $\mathcal{F}$. |
 
 ## 5. Current empirical table
 
