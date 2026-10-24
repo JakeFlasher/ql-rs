@@ -205,3 +205,19 @@ All Pass 3 mathematical defects (`P3-01a`, `P3-02` through `P3-06`, `P3-08` thro
 2. **`P4-02` & `P4-03` (`crates/ql-pde/src/adi.rs:87–112, 192–240, 462–527` & `crates/ql-instruments/src/pde1d.rs:64–225`)**:
    - In `Fd2dHestonEngine::price_knockout_rebate` (`adi.rs:104`), pass `T::zero()` as the 6th argument (`rebate` on the knocked-out boundary) and `constant * df_r` on the non-barrier far boundary in `solve` (`lines 512–527`), and solve the `vanilla` leg of `UpAndIn`/`DownAndIn` on the same `(nx | 1)` barrier-centered grid as `out_no_rebate`.
    - In `Fd1dBlackScholesEngine` (`pde1d.rs`), apply the shifted boundary spots `smin_actual`/`smax_actual`, European put `-smin_actual * e^{-q\tau}`, AD-preserving `xmin_t` in final Lagrange interpolation, and same-grid `vanilla` solve for Knock-In options.
+
+
+---
+
+## Pass 5 Mathematical Verification (`e3a335a..c2bef1a`)
+
+1. **`P5-01` (`crates/ql-instruments/src/american.rs:443–494`, `ju_put_direct`)**:
+   - In `ju_put_direct`:
+     - Lines 481–483: For a European put $P_E(S^*, T) = K e^{-rT} N(-d_2) - S^* e^{-qT} N(-d_1)$, $\frac{\partial P_E}{\partial T} = +q S^* e^{-qT} N(-d_1) - r K e^{-rT} N(-d_2) + S^* e^{-qT}\phi(d_1)\frac{\sigma}{2\sqrt{T}}$ (`+q` and `-r`, not `-q` and `+r`).
+     - Line 485: For the negative root $\lambda = \frac{1 - \beta - \text{disc}}{2}$, $\alpha\lambda'(h) = +\frac{(\alpha/h)^2}{\text{disc}} > 0$ (`alpha_over_h * alpha_over_h / disc`, not `-alpha_over_h * alpha_over_h / disc`).
+     - Line 444: Add the early-exercise guard `if r.val() <= 0.0 && r.val() <= q.val() { return european(s, k, r, q, v, t, false); }` (`juquadraticengine.cpp:86–87`).
+2. **`P5-02` (`crates/ql-instruments/src/pde1d.rs:62–72, 138–163, 254–288` & `crates/ql-pde/src/adi.rs:196, 479`)**:
+   - In `pde1d.rs:145–147`, check `matches!(bt, BarrierType::DownAndOut) && smin_actual <= b.val()` for `putb` (and `matches!(bt, BarrierType::UpAndOut) && smax_actual >= b.val()` for `callb`), include `grid_anchor` in `smax`, and add the survival rebate in `price_barrier_with_rebate` for `UpAndIn | DownAndIn`.
+   - In `adi.rs:479`, include `|| grid_center.is_some()` in the odd-`nx` check and move `let out = ...` (`line 196`) inside the `UpAndOut | DownAndOut` match arm.
+3. **`P5-03` (`crates/ql-fixed-income/src/convertible_bond.rs:25–82`)**:
+   - In `price_convertible_bond_tf`, apply `s.call_price` and `s.put_price` to the ex-coupon (clean) continuation value `(val, bb)` before adding `coupon`, and pre-accumulate coupons per step in `1..=n` without `break`.

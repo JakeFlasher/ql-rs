@@ -51,7 +51,7 @@ impl Fd1dBlackScholesEngine {
         dividend: T,
         kind: OptionType,
         barrier: Option<(T, BarrierType, T)>,
-        grid_anchor: Option<T>,
+        grid_anchor: Option<(T, BarrierType)>,
         american: bool,
     ) -> T {
         let n = self.grid_points.max(40);
@@ -59,9 +59,10 @@ impl Fd1dBlackScholesEngine {
         let s0 = spot.val().max(1e-8);
         let k = strike.val().max(1e-8);
         let smin = (k * 0.01).min(s0 * 0.1).max(1e-6);
+        let bounds_barrier = barrier.map(|(b, t, _)| (b, t)).or(grid_anchor);
         let smax = (4.0 * s0).max(4.0 * k).max(
-            barrier
-                .map(|(b, t, _)| {
+            bounds_barrier
+                .map(|(b, t)| {
                     if matches!(t, BarrierType::UpAndOut | BarrierType::UpAndIn) {
                         2.0 * b.val()
                     } else {
@@ -78,7 +79,7 @@ impl Fd1dBlackScholesEngine {
             let j = ((barrier_level.val().ln() - xmin) / dx).round();
             xmin = barrier_level.val().ln() - j * dx;
             barrier_level.ln() - T::from_f64(j * dx)
-        } else if let Some(anchor) = grid_anchor {
+        } else if let Some((anchor, _)) = grid_anchor {
             let j = ((anchor.val().ln() - xmin) / dx).round();
             xmin = anchor.val().ln() - j * dx;
             anchor.ln() - T::from_f64(j * dx)
@@ -135,15 +136,26 @@ impl Fd1dBlackScholesEngine {
                 rhs[j - 1] = old[j] + ex * (aa * old[j - 1] + bb * old[j] + cc * old[j + 1]);
             }
             let tnew = (tau + h).min_val(expiry);
-            let callb =
-                T::from_f64(smax_actual) * (-dividend * tnew).exp() - strike * (-rate * tnew).exp();
+            let callb = if let Some((b, bt, rb)) = barrier {
+                if matches!(bt, BarrierType::UpAndOut) && smax_actual >= b.val() {
+                    rb
+                } else {
+                    (T::from_f64(smax_actual) * (-dividend * tnew).exp()
+                        - strike * (-rate * tnew).exp())
+                    .max_val(T::zero())
+                }
+            } else {
+                (T::from_f64(smax_actual) * (-dividend * tnew).exp()
+                    - strike * (-rate * tnew).exp())
+                .max_val(T::zero())
+            };
             // At the lower spot boundary an American put is exercised
             // immediately, hence its exact asymptotic value is K-S (not the
             // discounted European K e^{-r tau}-S e^{-q tau}).  Using the
             // European boundary here suppresses early exercise near S=0 and
             // biases the American price/delta on coarse grids.
-            let putb = if let Some((b, _, rb)) = barrier {
-                if smin_actual <= b.val() {
+            let putb = if let Some((b, bt, rb)) = barrier {
+                if matches!(bt, BarrierType::DownAndOut) && smin_actual <= b.val() {
                     rb
                 } else if american {
                     (strike - T::from_f64(smin_actual)).max_val(T::zero())
@@ -159,8 +171,21 @@ impl Fd1dBlackScholesEngine {
                     - T::from_f64(smin_actual) * (-dividend * tnew).exp())
                 .max_val(T::zero())
             };
+            let highb = if let Some((b, bt, rb)) = barrier {
+                if matches!(bt, BarrierType::UpAndOut) && smax_actual >= b.val() {
+                    rb
+                } else if kind.is_call() {
+                    callb
+                } else {
+                    T::zero()
+                }
+            } else if kind.is_call() {
+                callb
+            } else {
+                T::zero()
+            };
             rhs[0] -= lower[0] * if kind.is_call() { T::zero() } else { putb };
-            rhs[n - 2] -= upper[n - 2] * if kind.is_call() { callb } else { T::zero() };
+            rhs[n - 2] -= upper[n - 2] * highb;
             if let Some((barrier, bt, rb)) = barrier {
                 for j in 1..n {
                     let sj = (xmin + j as f64 * dx).exp();
@@ -177,7 +202,7 @@ impl Fd1dBlackScholesEngine {
             solve_tridiagonal(&lower, &diag, &upper, &rhs, &mut out, &mut scratch);
             v[1..n].copy_from_slice(&out);
             v[0] = if kind.is_call() { T::zero() } else { putb };
-            v[n] = if kind.is_call() { callb } else { T::zero() };
+            v[n] = highb;
             if american {
                 for j in 1..n {
                     let sj = T::from_f64((xmin + j as f64 * dx).exp());
@@ -261,7 +286,7 @@ impl Fd1dBlackScholesEngine {
                 T::zero(),
                 kind,
                 None,
-                Some(barrier),
+                Some((barrier, bt)),
                 false,
             );
             let out = self.fd(
@@ -281,7 +306,14 @@ impl Fd1dBlackScholesEngine {
                     },
                     rebate,
                 )),
-                Some(barrier),
+                Some((
+                    barrier,
+                    if matches!(bt, BarrierType::UpAndIn) {
+                        BarrierType::UpAndOut
+                    } else {
+                        BarrierType::DownAndOut
+                    },
+                )),
                 false,
             );
             vanilla - out
@@ -295,7 +327,7 @@ impl Fd1dBlackScholesEngine {
                 T::zero(),
                 kind,
                 Some((barrier, bt, rebate)),
-                Some(barrier),
+                Some((barrier, bt)),
                 false,
             )
         }

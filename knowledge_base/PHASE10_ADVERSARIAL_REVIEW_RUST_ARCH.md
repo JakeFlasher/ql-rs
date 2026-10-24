@@ -214,3 +214,10 @@ All Pass 3 systems/AD/SIMD defects in `ql-ad` (`ift_lift_1d` single residual eva
 2. **`P4-02` & `P4-03` (`crates/ql-pde/src/adi.rs` & `crates/ql-instruments/src/pde1d.rs`)**: Fix `price_knockout_rebate` knocked-out boundary (`T::zero()`), same-grid `vanilla` leg in 1D/2D Knock-In parity, shifted `smin_actual`/`smax_actual` boundary payoffs, and `barrier_level: T` AD sensitivity in `pde1d.rs`.
 3. **`P4-04` (`crates/ql-exotics/src/quanto_chooser.rs:76–130` & `crates/ql-exotics/src/compound.rs:84–101`)**: Use a scalar `f64` closure inside `brent_solve` (`quanto_chooser.rs:81`) so root-finding does not record dead `TapeVar` subgraphs onto the active `ArenaTape`, and use exact analytical Black–Scholes gamma for `fxx` in both `quanto_chooser.rs` and `compound.rs`.
 4. **`P4-05` (`crates/ql-curves/src/bootstrap.rs:334, 491` & `crates/ql-models/src/hybrid.rs:126, 191`)**: Use `h.day_counter` for `fwd_helpers` pillar times (`bootstrap.rs:334`), add a pairwise `Dual2<2>` fallback when `k > 64` (`bootstrap.rs:491`), and call `hw_cross_integral` in the `|kappa_r| < 1e-8` branch (`hybrid.rs:126, 191`).
+
+
+---
+
+## Pass 5 Systems, AD/IFT & Numerical Verification (`e3a335a..c2bef1a`)
+
+`P4-04` (`quanto_chooser.rs` & `compound.rs` `TapeVar` isolation and analytical `fxx`), `P4-05` (`bootstrap.rs` `DayCounter` and `k > 64` pairwise `Dual2<2>` fallback, `hybrid.rs` `hw_cross_integral`), and `american_implied_vol` (`american.rs:547–568`) were verified as **RESOLVED** in `e3a335a..c2bef1a`. Remaining items for Round 5 are `P5-01` (`ju_put_direct` signs in `american.rs:481–490`), `P5-02` (`pde1d.rs` `UpAndOut` `putb` boundary, `smax`, and Knock-In rebate; `adi.rs` `grid_center.is_some()` odd-`nx` alignment and lazy `out` evaluation), and `P5-03` (`convertible_bond.rs` clean call/put order and step coupon accumulation).

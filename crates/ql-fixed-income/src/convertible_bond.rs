@@ -22,21 +22,16 @@ pub fn price_convertible_bond_tf<T: Real>(s: &ConvertibleBondSpec<T>, steps: usi
     let p = (((s.rate - s.div_yield) * dt).exp() - d) / (u - d);
     let mut v = vec![T::zero(); n + 1];
     let mut b = v.clone();
-    let coupon_at = |time: T| -> T {
-        let mut previous = T::zero();
-        let mut amount = T::zero();
-        for &ct in &s.coupon_times {
-            let step_idx = ((ct / dt).val().round() as usize).min(n);
-            let target_idx = ((time / dt).val().round() as usize).min(n);
-            if step_idx == target_idx {
-                amount = s.face_value * s.coupon_rate * (ct - previous);
-                break;
-            }
+    let mut step_coupons = vec![T::zero(); n + 1];
+    let mut previous = T::zero();
+    for &ct in &s.coupon_times {
+        if ct.val() > previous.val() {
+            let step_idx = ((ct / dt).val().round() as usize).clamp(1, n);
+            step_coupons[step_idx] += s.face_value * s.coupon_rate * (ct - previous);
             previous = ct;
         }
-        amount
-    };
-    let maturity_coupon = coupon_at(s.maturity);
+    }
+    let maturity_coupon = step_coupons[n];
     for i in 0..=n {
         let spot = s.spot * u.powf((n - i) as f64) * d.powf(i as f64);
         let conv = s.conversion_ratio * spot;
@@ -55,9 +50,6 @@ pub fn price_convertible_bond_tf<T: Real>(s: &ConvertibleBondSpec<T>, steps: usi
             let mut val =
                 (-s.rate * dt).exp() * (ev - eb) + (-(s.rate + s.credit_spread) * dt).exp() * eb;
             let mut bb = (-(s.rate + s.credit_spread) * dt).exp() * eb;
-            let coupon = coupon_at(dt * k as f64);
-            val += coupon;
-            bb += coupon;
             if let Some(c) = s.call_price
                 && val.val() > c.val()
             {
@@ -69,6 +61,11 @@ pub fn price_convertible_bond_tf<T: Real>(s: &ConvertibleBondSpec<T>, steps: usi
             {
                 val = q;
                 bb = q;
+            }
+            if k > 0 {
+                let coupon = step_coupons[k];
+                val += coupon;
+                bb += coupon;
             }
             let spot = s.spot * u.powf((k - i) as f64) * d.powf(i as f64);
             let conv = s.conversion_ratio * spot;

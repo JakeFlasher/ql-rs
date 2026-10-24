@@ -1,189 +1,125 @@
-# Phase 10 Adversarial Remediation Prompt — Round 4 (Pass 4 Verification of `9a72cde..e3a335a`)
+# Phase 10 Adversarial Remediation Prompt — Round 5 (Pass 5 Verification of `e3a335a..c2bef1a`)
 
 ## Context & Audit Reference Documents
-Read the updated Pass 4 adversarial review documents in `knowledge_base/` before starting:
-1. `knowledge_base/PHASE10_ADVERSARIAL_REVIEW_SECOND_PASS.md` — Pass 4 Executive Summary & Resolution Matrix (`P3-01`..`P3-11` -> `P4-01`..`P4-05`)
+Read the updated Pass 5 adversarial review documents in `knowledge_base/` before starting:
+1. `knowledge_base/PHASE10_ADVERSARIAL_REVIEW_SECOND_PASS.md` — Pass 5 Executive Summary & Resolution Matrix (`P4-01`..`P4-05` -> `P5-01`..`P5-03`)
 2. `knowledge_base/PHASE10_ADVERSARIAL_REVIEW_MATH.md` — Mathematical & Numerical Audit (Phases 1–10 vs. QuantLib C++ & Primary Literature)
 3. `knowledge_base/PHASE10_ADVERSARIAL_REVIEW_RUST_ARCH.md` — Rust Systems, AD/IFT, SIMD & Numerical Architecture Audit
 4. `knowledge_base/PHASE10_ADVERSARIAL_REVIEW_ARCHITECTURE.md` — Big-Picture Architecture, Pricing Engine & Workflow Audit
 
-Round 3 (`9a72cde..e3a335a`) cleanly resolved 8 of the 11 Pass 3 items (`P3-02` through `P3-06`, `P3-08`, `P3-10`, and `P3-11`), including `BjerksundStensland2002Engine`, `BaroneAdesiWhaleyEngine::baw_put`, `h1_hw_char_func_unit_spot`, `LognormalCmsSpreadPricer`, `StulzRainbowEngine`, `CatBondSpec::price_mc`, `MarketContext`, `CosHestonEngine`, `dupire_local_vol_ad`, `simd_erfc`, `DayCounter`, `DeskWorkstation`, and `PortfolioDag`.
+Round 4 (`e3a335a..c2bef1a`) resolved `JuQuadraticEngine::ju_call`, `american_implied_vol`, `price_complex_chooser`, `price_compound_option`, `CalibratedCurveSystem::from_multicurve_helpers` & `value_par_dv01_and_gamma` (`k > 64`), `hybrid.rs` small-$\kappa_r$ `hw_cross_integral`, `Fd2dHestonEngine::price_knockout_rebate`, and `Fd1dBlackScholesEngine` `xmin_t` AD sensitivity.
 
-Pass 4 identified **5 remaining / newly introduced defects (`P4-01` through `P4-05`)**. Resolve **all 5 items** below in full, add the specified regression tests, and ensure zero compiler/clippy warnings across the workspace.
-
----
-
-## Mandatory Remediation Tasks (`P4-01` through `P4-05`)
-
-### `[P4-01]` Fix `JuQuadraticEngine::price` Formula Regression (`denom_l`, `alpha_ve_h`, `alpha_over_h`, Direct Put $\phi = -1$) & `american_implied_vol` IFT Lift (`crates/ql-instruments/src/american.rs:398–450, 483–500`)
-
-1. **`JuQuadraticEngine::price` (`crates/ql-instruments/src/american.rs:388–450`)**:
-   Compare against Ju (1999, Eqs. 14–18) and QuantLib `repos/QuantLib/ql/pricingengines/vanilla/juquadraticengine.cpp:136–192`:
-   - **`alpha_over_h` at `|h| < 1e-10` (`line 399`)**:
-     Since $\alpha = \frac{2r}{\sigma^2}$ and $h = 1 - e^{-rT} = rT + O(r^2 T^2)$, the limit as $r \to 0$ ($h \to 0$) is $\frac{2}{\sigma^2 T} = \text{T::from\_f64(2.0) / (v2 * t)}$, **not** `T::from_f64(2.0) / v2`:
-     ```rust
-     let alpha_over_h = if h.val().abs() < 1e-10 {
-         T::from_f64(2.0) / (v2 * t)
-     } else {
-         alpha / h
-     };
-     ```
-   - **`alpha_ve_h` and `denom_l` (`lines 435–442`)**:
-     - Because $\alpha = \frac{2r}{\sigma^2}$ and $V_{E,h} = \frac{1}{r e^{-rT}} \frac{\partial V_E(S^*, T)}{\partial T}$, their product cancels $r$ identically for all $r$:
-       $$\alpha V_{E,h} = \frac{2}{\sigma^2 e^{-rT}} \frac{\partial V_E(S^*, T)}{\partial T} = \text{T::from\_f64(2.0) / (v2 * disc0) * d\_ve\_dt}.$$
-       Remove the spurious `+ (alpha_over_h - T::from_f64(2.0) / (v2 * t)) * euro_star / disc0` term that was added on line 436 in `1b98410`.
-     - In Ju (1999, Eqs. 17–18) and QuantLib (`juquadraticengine.cpp:183–186`), the denominator in $b$ and $c$ is $2\lambda + \beta - 1 = \phi\sqrt{(\beta - 1)^2 + 4\alpha/h} = \phi\,\text{disc}$, **not** $\lambda - 1$:
-       ```rust
-       let disc0 = (-r * t).exp();
-       let alpha_lambda_prime = -alpha_over_h * alpha_over_h / disc;
-       let alpha_ve_h = T::from_f64(2.0) / (v2 * disc0) * d_ve_dt;
-       let denom_l = phi_t * disc; // = 2.0 * lambda + beta - 1.0
-       let bju = (T::one() - h) * alpha_lambda_prime / (denom_l * 2.0);
-       let cju = -((T::one() - h) / denom_l)
-           * (alpha_ve_h / h_a + alpha_over_h + alpha_lambda_prime / denom_l);
-       ```
-   - **Direct Put Formula via $\phi = \pm 1$ (`lines 388–450`)**:
-     Unlike Bjerksund–Stensland, Ju (1999) and BAW define $h = 1 - e^{-rT}$; pricing a put via `ju_call(strike, spot, div, rate, ...)` replaces $h = 1 - e^{-rT}$ with $1 - e^{-qT}$ whenever $r \ne q$ (and hits $h = 0$ when $q = 0$). Unify `JuQuadraticEngine::price` for both calls ($\phi = +1$, `critical_call`, $\lambda = q_2 = \frac{1 - \beta + \text{disc}}{2}$, early exercise if $S \ge S^*$) and puts ($\phi = -1$, `critical_put`, $\lambda = q_1 = \frac{1 - \beta - \text{disc}}{2}$, early exercise if $S \le S^*$) directly as in `juquadraticengine.cpp:136–192`:
-     - Let `phi = if is_call { 1.0 } else { -1.0 }; let phi_t = T::from_f64(phi);`
-     - `let lambda = ((T::one() - beta) + phi_t * disc) * 0.5;`
-     - `let root = if is_call { Self::critical_call(...) } else { Self::critical_put(...) };`
-     - In `residual`: `phi_t * (x - k) - euro - h_a_x`, where `h_a_x = phi_t * (x - k) - euro` at $x = S^*$ and inside `residual(x)` use `let d1 = ((x / k).ln() + (r - q + v2 * 0.5) * t) / vt; let fx = phi_t * (T::one() - (-q * t).exp() * (phi_t * d1).norm_cdf()) - lambda / x * (phi_t * (x - k) - black_scholes_price(x, k, v, t, r, q, is_call));`.
-     - At the lifted `star`: `let h_a = phi_t * (star - k) - euro_star;`
-     - `let d_ve_dt = star * (-q * t).exp() * pdf_s * sigma / (T::from_f64(2.0) * st) - phi_t * q * star * (-q * t).exp() * (phi_t * d1s).norm_cdf() + phi_t * r * k * (-r * t).exp() * (phi_t * d2s).norm_cdf();`
-     - Early exercise check: `if phi * (s.val() - star.val()) >= 0.0 { return (phi_t * (s - k)).max_val(euro_s); }`.
-2. **`american_implied_vol` (`crates/ql-instruments/src/american.rs:483–500`)**:
-   - Line 498 currently passes `T::from_f64(jet.d1[0])` as `f_x: T` to `ift_lift_1d`, which has zero first derivatives with respect to `(spot, strike, rate, div, expiry)` and drops the 2nd-order cross-derivative term $-2 F_{\sigma\theta}\sigma^*_\theta / F_\sigma$ under `Dual2`.
-   - Compute `f_x: T` in `T` at `root` (without duplicating `TapeVar` subgraphs when `T = TapeVar<f64>`): e.g., when `T::from_f64(1.0)` is a forward jet (or via `Dual<1>` / central difference in volatility when `TapeScope::try_with_active(|_| ()).is_none()`):
-     ```rust
-     let fx = if ql_ad::TapeScope::try_with_active(|_| ()).is_some() {
-         T::from_f64(jet.d1[0])
-     } else {
-         let h = 1e-5;
-         (JuQuadraticEngine::price(spot, strike, rate, div, T::from_f64(root + h), expiry, is_call)
-             - JuQuadraticEngine::price(spot, strike, rate, div, T::from_f64(root - h), expiry, is_call))
-             / (2.0 * h)
-     };
-     let fxx = jet.d2[0][0];
-     Ok(ift_lift_1d(root, |x| price_t(x) - target_price, fx, fxx))
-     ```
+Pass 5 identified **3 remaining / newly introduced items (`P5-01`, `P5-02`, `P5-03`)**. Resolve **all 3 items** below in full, add the specified regression tests, and ensure zero compiler/clippy warnings across the workspace.
 
 ---
 
-### `[P4-02]` Fix `Fd2dHestonEngine::price_knockout_rebate` Knocked-Out Boundary & Same-Grid Knock-In Parity (`crates/ql-pde/src/adi.rs:87–112, 192–240, 462–527`)
+## Mandatory Remediation Tasks (`P5-01` through `P5-03`)
 
-1. **`price_knockout_rebate` Knocked-Out Dirichlet Value (`crates/ql-pde/src/adi.rs:87–112, 512–527`)**:
-   - In `price_knockout_rebate` (`lines 98–111`), the 6th argument to `self.solve(...)` is the Dirichlet value on the **knocked-out region**, while the 12th argument `Some(rebate)` is the terminal survival payoff on the **un-knocked-out region**. Passing `rebate` for both causes `price_knockout_rebate` to pay `rebate` whether or not the barrier is hit, double-counting the barrier-hit rebate in `price_barrier`!
-   - Pass `T::zero()` as the 6th argument (`rebate` on the knocked-out boundary) in `price_knockout_rebate` (`line 104`), keeping `Some(rebate)` as the 12th argument (`terminal_rebate`).
-   - In `solve` (`lines 512–527`), when `let Some(constant) = terminal_rebate`:
-     ```rust
-     let bc_low = if lower_barrier.is_some() {
-         rebate
-     } else if let Some(constant) = terminal_rebate {
-         constant * df_r
-     } else if is_call { ... };
-     let bc_high = if upper_barrier.is_some() {
-         rebate
-     } else if let Some(constant) = terminal_rebate {
-         constant * df_r
-     } else if is_call { ... };
-     ```
-2. **Avoid Unused 4th Solve & Align `vanilla` Grid in `price_barrier` (`crates/ql-pde/src/adi.rs:192–240, 462–475`)**:
-   - Move `let out = self.price_knockout_barrier(...)` inside the `UpAndOut | DownAndOut` match arm so `UpAndIn | DownAndIn` does not waste an unused 2D ADI PDE solve.
-   - Pass an optional `grid_center: Option<f64>` (or `align_barrier: Option<f64>`) into `solve` so that in `price_barrier` for `UpAndIn | DownAndIn`, `vanilla` is solved on the **exact same `(nx | 1)` grid centered at `option.barrier.ln()`** as `out_no_rebate`, guaranteeing exact discrete In–Out parity (`in + out == vanilla` when `rebate == 0`, and `in + out == vanilla + discounted_rebate` when `rebate > 0`).
+### `[P5-01]` Fix `JuQuadraticEngine::ju_put_direct` Sign Errors in `theta` and `alpha_lambda_prime` & Add Non-Positive Rate Guard (`crates/ql-instruments/src/american.rs:443–494`)
 
----
-
-### `[P4-03]` Fix `Fd1dBlackScholesEngine` Shifted Boundary Payoffs, `barrier: T` AD Sensitivity & Same-Grid Knock-In Parity (`crates/ql-instruments/src/pde1d.rs:64–225`)
-
-`crates/ql-instruments/src/pde1d.rs` was skipped in Round 3. Implement all three fixes in `Fd1dBlackScholesEngine`:
-1. **Use Shifted Boundary Spots & Fix European `putb` (`pde1d.rs:74–77, 126–137`)**:
-   - After shifting `xmin` so `barrier_level` lies on node `j` (`lines 74–77`), compute:
-     ```rust
-     let smin_actual = xmin.exp();
-     let smax_actual = (xmin + n as f64 * dx).exp();
-     ```
-   - Use `smax_actual` in `callb` and `smin_actual` in `putb`, and include `- T::from_f64(smin_actual) * (-dividend * tnew).exp()` in the European `putb`:
-     ```rust
-     let putb = if let Some((b, rb)) = barrier && smin_actual <= b.val() {
-         rb
-     } else if is_call {
-         T::zero()
-     } else if american {
-         (strike - T::from_f64(smin_actual)).max_val(T::zero())
-     } else {
-         (strike * (-rate * tnew).exp()
-             - T::from_f64(smin_actual) * (-dividend * tnew).exp())
-             .max_val(T::zero())
-     };
-     ```
-2. **Preserve AD Sensitivity $\partial V / \partial B$ wrt `barrier: T` (`pde1d.rs:74–77, 182–191`)**:
-   - Define `xmin_t: T`:
-     ```rust
-     let xmin_t = if let Some((barrier_level, _)) = barrier {
-         let target = barrier_level.val().ln();
-         let j = (((target - xmin) / dx).round() as usize).clamp(1, n - 1);
-         xmin = target - j as f64 * dx;
-         barrier_level.ln() - T::from_f64(j as f64 * dx)
-     } else {
-         T::from_f64(xmin)
-     };
-     ```
-   - In the final quadratic Lagrange interpolation (`lines 185–187`), use `xmin_t`:
-     ```rust
-     let xm = xmin_t + T::from_f64((i - 1) as f64 * dx);
-     let x0 = xmin_t + T::from_f64(i as f64 * dx);
-     let xp = xmin_t + T::from_f64((i + 1) as f64 * dx);
-     ```
-     Now `x - x0 = spot.ln() - barrier_level.ln() + const`, so differentiating `price_barrier` with respect to `barrier: Dual<1>` produces a non-zero barrier Greek $\partial V / \partial B$ matching central finite differences!
-3. **Same-Grid Knock-In Parity & Knock-In Rebate (`pde1d.rs:205–225`)**:
-   - For `UpAndIn | DownAndIn`, solve `vanilla` on the same barrier-shifted grid `xmin` as `out_no_rebate` (`rebate = T::zero()`), and when `rebate.val().abs() > 0.0` add the survival rebate leg (terminal payoff `rebate`, knocked-out boundary `0.0`) so `in + out == vanilla` when `rebate == 0`.
+Compare `ju_put_direct` (`crates/ql-instruments/src/american.rs:443–494`) against Ju (1999, Eqs. 14–18) and QuantLib `repos/QuantLib/ql/pricingengines/vanilla/juquadraticengine.cpp:86–87, 163–186` with $\phi = -1$:
+1. **Non-Positive Rate Early-Exercise Guard (`line 444`)**:
+   In QuantLib `juquadraticengine.cpp:86–87` (`if (riskFreeDiscount >= 1.0 && riskFreeDiscount >= dividendDiscount) return black.value();`), when $r \le 0$ and $r \le q$, an American put is never optimal to exercise early ($S^* = 0$):
+   ```rust
+   if t.val() <= 0.0 || v.val() <= 0.0 || (r.val() <= 0.0 && r.val() <= q.val()) {
+       return european(s, k, r, q, v, t, false);
+   }
+   ```
+2. **European Put Maturity Derivative `theta` ($\frac{\partial P_E}{\partial T}$ at $S^*$, `lines 481–483`)**:
+   For a European put $P_E(S^*, T) = K e^{-rT} N(-d_2) - S^* e^{-qT} N(-d_1)$, differentiating with respect to $T$ (or setting `phi = -1` in `juquadraticengine.cpp:176–181`) gives $+q$ and $-r$:
+   $$\frac{\partial P_E}{\partial T}(S^*, T) = +q S^* e^{-qT} N(-d_1(S^*)) - r K e^{-rT} N(-d_2(S^*)) + S^* e^{-qT}\phi(d_1(S^*))\frac{\sigma}{2\sqrt{T}}.$$
+   Lines 481–482 copied the call signs (`-q * star * ... + r * k * ...`) instead of the put signs (`+q * star * ... - r * k * ...`)!
+3. **Sign of `alpha_lambda_prime` for Put (`line 485`)**:
+   For the put root $\lambda = \frac{1 - \beta - \text{disc}}{2}$, $\lambda'(h) = +\frac{\alpha}{h^2\,\text{disc}} > 0$, so in QuantLib (`juquadraticengine.cpp:163–164` with `phi = -1`):
+   $$\alpha\lambda'(h) = -\phi \frac{(\alpha/h)^2}{\text{disc}} = +\frac{(\alpha/h)^2}{\text{disc}} > 0, \qquad \text{denom} = 2\lambda + \beta - 1 = -\text{disc} < 0.$$
+   Setting both `alpha_lambda_prime = -alpha_over_h * alpha_over_h / disc` and `denom = -disc` cancelled the two minus signs and made `bju > 0` instead of `bju < 0`!
+   Replace lines 481–490 with:
+   ```rust
+   let theta = q * star * (-q * t).exp() * (-d1s).norm_cdf()
+       - r * k * (-r * t).exp() * (-d1s + v * t.sqrt()).norm_cdf()
+       + star * (-q * t).exp() * pdf_s * v / (t.sqrt() * 2.0);
+   let disc0 = (-r * t).exp();
+   let alpha_lambda_prime = alpha_over_h * alpha_over_h / disc;
+   let alpha_ve_h = T::from_f64(2.0) / (v2 * disc0) * theta;
+   let denom = -disc;
+   let bju = (T::one() - h) * alpha_lambda_prime / (denom * 2.0);
+   let cju = -((T::one() - h) / denom)
+       * (alpha_ve_h / h_a + alpha_over_h + alpha_lambda_prime / denom);
+   ```
 
 ---
 
-### `[P4-04]` Eliminate Dead `TapeVar` Graph Recording in `price_complex_chooser` & Use Analytical BS Gamma `fxx` (`crates/ql-exotics/src/quanto_chooser.rs:76–130`, `crates/ql-exotics/src/compound.rs:84–101`)
+### `[P5-02]` Fix `Fd1dBlackScholesEngine` `UpAndOut` Put Boundary, `smax` & Knock-In Rebate (`crates/ql-instruments/src/pde1d.rs:62–72, 138–163, 254–302`) and `Fd2dHestonEngine` `nx` Alignment (`crates/ql-pde/src/adi.rs:196–250, 479–487`)
 
-1. **`price_complex_chooser` (`crates/ql-exotics/src/quanto_chooser.rs:76–130`)**:
-   - Currently, `brent_solve` (`line 81`) calls `residual(T::from_f64(x)).val()` on every iteration, and `fxx` (`lines 125–128`) calls `residual(T::from_f64(...)).val()` 3 more times. Because `residual` captures `s.strike_call: T, s.vol: T, ...`, when `T = TapeVar<f64>` this records dozens of dead Black–Scholes subgraphs onto the active `ArenaTape`!
-   - Define a scalar `f64` closure `residual_f64` for `brent_solve` (and the Newton fallback) using `.val()` on all parameters so zero `TapeVar` nodes are recorded during root-finding.
-   - Replace the 3-point finite difference `fxx` (`lines 124–128`) with the exact analytical Black–Scholes call minus put gamma at `root` (using `d1c` and `d1p` already computed on lines 116–121):
-     ```rust
-     let fxx = ((-s.div_yield.val() * call_tau.val()).exp() * d1c.val().norm_pdf()
-         / (root * s.vol.val() * call_tau.val().sqrt()))
-         - ((-s.div_yield.val() * put_tau.val()).exp() * d1p.val().norm_pdf()
-             / (root * s.vol.val() * put_tau.val().sqrt()));
-     ```
-2. **`price_compound_option` (`crates/ql-exotics/src/compound.rs:84–85`)**:
-   - Replace the 3-point finite difference `fxx` (`lines 84–85`) with the exact analytical daughter Black–Scholes gamma at `root`:
-     ```rust
-     let fxx = ql_vol::black_scholes_gamma(
-         root,
-         k2.val(),
-         spec.vol.val(),
-         tau12.val(),
-         spec.rate.val(),
-         spec.div_yield.val(),
-     );
-     ```
+1. **`Fd1dBlackScholesEngine::fd` Boundary Conditions (`crates/ql-instruments/src/pde1d.rs:138–163, 179–180`)**:
+   - On lines 145–147, `let putb = if let Some((b, _, rb)) = barrier { if smin_actual <= b.val() { rb } ...` ignores the barrier type `bt`! For **every `UpAndOut` put** ($S_{\min} < S_0 < B$), `smin_actual <= b.val()` is true, clobbering the lower boundary at $S = S_{\min}$ to `rb` (`0.0`) instead of $(K e^{-r\tau} - S_{\min} e^{-q\tau})^+$!
+   - Check the barrier direction on both boundaries `j = 0` (`low_bc`) and `j = n` (`high_bc`), and support an optional `terminal_rebate: Option<T>` (analogous to `Fd2dHestonEngine::solve`):
+     - At `j = 0` (`smin_actual`): if `let Some((b, BarrierType::DownAndOut, rb)) = barrier && smin_actual <= b.val()`, value is `rb`; else if `let Some(tr) = terminal_rebate`, value is `tr * (-rate * tnew).exp()`; else if `kind.is_call()`, `T::zero()`; else if `american`, `(strike - T::from_f64(smin_actual)).max_val(T::zero())`; else `(strike * (-rate * tnew).exp() - T::from_f64(smin_actual) * (-dividend * tnew).exp()).max_val(T::zero())`.
+     - At `j = n` (`smax_actual`): if `let Some((b, BarrierType::UpAndOut, rb)) = barrier && smax_actual >= b.val()`, value is `rb`; else if `let Some(tr) = terminal_rebate`, value is `tr * (-rate * tnew).exp()`; else if `kind.is_call()`, `(T::from_f64(smax_actual) * (-dividend * tnew).exp() - strike * (-rate * tnew).exp()).max_val(T::zero())`; else `T::zero()`.
+2. **`Fd1dBlackScholesEngine::fd` `smax` & `price_barrier_with_rebate` Knock-In Rebate (`crates/ql-instruments/src/pde1d.rs:62–72, 254–302`)**:
+   - In `fd` (`lines 62–72`), pass `grid_anchor: Option<(T, BarrierType)>` so when `barrier` is `None` and `grid_anchor = Some((b, bt))`, `smax` uses the exact same `2.0 * b.val()` / `4.0 * b.val()` bound as `out`, keeping `dx` identical between `vanilla` and `out`.
+   - In `price_barrier_with_rebate` (`lines 254–288`), for `UpAndIn | DownAndIn`:
+     - Compute `out_no_rebate` with `T::zero()` rebate (`Some((barrier, out_bt, T::zero()))`), not `rebate`.
+     - When `rebate.val().abs() > 0.0`, add `rebate_survival` (solved via `self.fd` with `barrier = Some((barrier, out_bt, T::zero()))` and `terminal_rebate = Some(rebate)` so terminal payoff is `rebate` on the un-knocked-out domain and `0` on the knocked-out domain), returning `vanilla - out_no_rebate + rebate_survival`.
+3. **`Fd2dHestonEngine::solve` & `price_barrier` (`crates/ql-pde/src/adi.rs:196–250, 479–487`)**:
+   - On line 479 of `crates/ql-pde/src/adi.rs`, change `let nx = if lower_barrier.is_some() || upper_barrier.is_some()` to `let nx = if lower_barrier.is_some() || upper_barrier.is_some() || grid_center.is_some()` so `vanilla` in `price_barrier` (`lines 210–224`) uses the exact same `(nx | 1)` node count (`81`) as `out_no_rebate`.
+   - Move `let out = self.price_knockout_barrier(...)` (`lines 196–207`) inside the `UpAndOut | DownAndOut` match arm (`line 249`) so `UpAndIn | DownAndIn` does not execute an unused 4th 2D ADI solve.
 
 ---
 
-### `[P4-05]` Fix `CalibratedCurveSystem::from_multicurve_helpers` DayCounter & `k > 64` Fallback (`crates/ql-curves/src/bootstrap.rs:334, 491`) and `hybrid.rs:126, 191` Small-$\kappa_r$ Cross-Integral Branch
+### `[P5-03]` Fix `price_convertible_bond_tf` Clean vs. Dirty Call/Put Strike & Step Coupon Accumulation (`crates/ql-fixed-income/src/convertible_bond.rs:25–82`)
 
-1. **`crates/ql-curves/src/bootstrap.rs:332–335, 491–515`**:
-   - On line 334, replace `DayCounter::Act365Fixed.year_fraction(reference_date, h.end, None, None)` with `h.day_counter.year_fraction(reference_date, h.end, None, None)` so `fwd_helpers` pillar times use each instrument's configured day counter (matching `IrsSwapInstrument::residual_with_discount` on lines 673, 679).
-   - On line 491 (`if self.instruments.len() == k && k <= 64`), add an `else if self.instruments.len() == k` fallback branch that evaluates pairwise `Dual2<2>` entries `(i, jcol)` so systems with `k > 64` pillars also include the exact IFT constraint Hessian.
-2. **`crates/ql-models/src/hybrid.rs:126–127, 191–192`**:
-   - In `h1_hw_char_func_unit_spot` (`line 126`) and `CosHestonHullWhiteEngine::price` (`line 191`), `hw_cross_integral(p.kappa_r, c_go, t)` (`lines 73–78`) already implements the exact $\kappa_r \to 0$ Taylor limit `(c * t - 1 + (-c * t).exp()) / (c * c)`. Update the `p.kappa_r.val().abs() < 1e-8` branch on lines 127 and 192 to `p.rho_sr * p.eta_r * (a_go * t * t + b_go * hw_cross_integral(p.kappa_r, c_go, t) * 2.0)`.
+Compare `price_convertible_bond_tf` (`crates/ql-fixed-income/src/convertible_bond.rs:25–82`) against Tsiveriotis & Fernandes (1998) and QuantLib `DiscretizedConvertible::postAdjustValuesImpl()` (`repos/QuantLib/ql/pricingengines/bond/discretizedconvertible.cpp:151–163`, and `crates/ql-fixed-income/src/callable_bond.rs:173–193`):
+1. **Clean (Ex-Coupon) Call/Put Strike Order (`lines 58–78`)**:
+   - Currently, `coupon` is added to `val` and `bb` (`lines 59–60`) **before** applying `s.call_price` (`lines 61–66`) and `s.put_price` (`lines 67–72`). This compares the dirty continuation value against a clean call/put price and wipes out the coupon when called on a coupon date!
+   - Apply `s.call_price` and `s.put_price` to the ex-coupon continuation value `(val, bb)` **first**, then add `coupon` (`val += coupon; bb += coupon;`), and finally apply the holder's conversion option (`if conv.val() > val.val() { val = conv; bb = T::zero(); }`):
+     ```rust
+     if let Some(c) = s.call_price
+         && val.val() > c.val()
+     {
+         val = c;
+         bb = c;
+     }
+     if let Some(q) = s.put_price
+         && val.val() < q.val()
+     {
+         val = q;
+         bb = q;
+     }
+     let coupon = step_coupons[k];
+     val += coupon;
+     bb += coupon;
+     let spot = s.spot * u.powf((k - i) as f64) * d.powf(i as f64);
+     let conv = s.conversion_ratio * spot;
+     if conv.val() > val.val() {
+         val = conv;
+         bb = T::zero();
+     }
+     ```
+2. **Pre-Accumulate Step Coupons Without `break` (`lines 25–39`)**:
+   - Build `let mut step_coupons = vec![T::zero(); n + 1];` before the tree loop by iterating over `&s.coupon_times`:
+     ```rust
+     let mut step_coupons = vec![T::zero(); n + 1];
+     let mut previous = T::zero();
+     for &ct in &s.coupon_times {
+         if ct.val() > previous.val() {
+             let step_idx = ((ct / dt).val().round() as usize).clamp(1, n);
+             step_coupons[step_idx] += s.face_value * s.coupon_rate * (ct - previous);
+             previous = ct;
+         }
+     }
+     let maturity_coupon = step_coupons[n];
+     ```
+     And at tree step `k` (`k in (0..n).rev()`), only add `step_coupons[k]` when `k > 0` (since coupons at $t = 0$ are ex-dividend).
 
 ---
 
 ## Verification & Test Checklist
 1. **Unit & Integration Tests**:
    - Add regression tests verifying:
-     - `JuQuadraticEngine::price` call and put values and `Dual<1>` / `Dual2<2>` sensitivities (including at $r \to 0$ and $r \neq q$), and `american_implied_vol` second-order `Dual2<1>` sensitivities against central finite differences.
-     - `Fd2dHestonEngine::price_barrier` and `Fd1dBlackScholesEngine::price_barrier` exact discrete In–Out parity (`UpAndIn + UpAndOut == vanilla` at `rebate == 0`, and Knock-In rebate behavior when `rebate > 0`), plus non-zero `Dual<1>` barrier sensitivity $\partial V / \partial B$ in `Fd1dBlackScholesEngine::price_barrier`.
-     - `price_complex_chooser` on `TapeVar<f64>` records only a single residual evaluation on `ArenaTape` and matches `Dual2<1>` second derivatives.
-     - `CalibratedCurveSystem::from_multicurve_helpers` with `Act360` / `Thirty360` `IrsSwapInstrument` helpers reprices all calibration instruments to `< 1e-12`.
+     - `JuQuadraticEngine::price` American Put prices (`is_call = false`) match high-resolution `Fd1dBlackScholesEngine` / `BaroneAdesiWhaleyEngine` across $r > q$, $r < q$, and $r = 0, q > 0$, and satisfy $P_{\text{Amer}}(r \le 0, q = 0) = P_{\text{Euro}}$.
+     - `Fd1dBlackScholesEngine::price_barrier_option` for `UpAndOut` Put matches analytical barrier pricing, satisfies exact discrete In–Out parity (`UpAndIn + UpAndOut == vanilla` at `rebate == 0` for both 1D BS and 2D Heston ADI), and increases monotonically with `rebate > 0` for Knock-In options.
+     - `price_convertible_bond_tf` with a clean `call_price` on a coupon date pays `call_price + coupon` (when not converted) rather than overwriting the coupon.
 2. **Quality Gates**:
    - `cargo clippy --workspace --all-targets -- -D warnings` must pass with **0 warnings**.
    - `cargo test --workspace` must pass 100% of unit, integration, and parity tests.

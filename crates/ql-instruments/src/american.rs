@@ -441,7 +441,7 @@ impl JuQuadraticEngine {
             european(s, k, r, q, v, t, true) + h_a * (s / star).pow(q2) / den
         }
         fn ju_put_direct<T: Real>(s: T, k: T, r: T, q: T, v: T, t: T) -> T {
-            if t.val() <= 0.0 || v.val() <= 0.0 {
+            if t.val() <= 0.0 || v.val() <= 0.0 || (r.val() <= 0.0 && r.val() <= q.val()) {
                 return european(s, k, r, q, v, t, false);
             }
             let v2 = v * v;
@@ -478,11 +478,11 @@ impl JuQuadraticEngine {
             if s.val() <= root {
                 return (k - s).max_val(european(s, k, r, q, v, t, false));
             }
-            let theta = -q * star * (-q * t).exp() * (-d1s).norm_cdf()
-                + r * k * (-r * t).exp() * (-d1s + v * t.sqrt()).norm_cdf()
+            let theta = q * star * (-q * t).exp() * (-d1s).norm_cdf()
+                - r * k * (-r * t).exp() * (-d1s + v * t.sqrt()).norm_cdf()
                 + star * (-q * t).exp() * pdf_s * v / (t.sqrt() * 2.0);
             let disc0 = (-r * t).exp();
-            let alpha_lambda_prime = -alpha_over_h * alpha_over_h / disc;
+            let alpha_lambda_prime = alpha_over_h * alpha_over_h / disc;
             let alpha_ve_h = T::from_f64(2.0) / (v2 * disc0) * theta;
             let denom = -disc;
             let bju = (T::one() - h) * alpha_lambda_prime / (denom * 2.0);

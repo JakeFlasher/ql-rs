@@ -208,3 +208,10 @@ See [`PHASE10_ADVERSARIAL_REVIEW_SECOND_PASS.md`](./PHASE10_ADVERSARIAL_REVIEW_S
 ## Pass 4 Architectural & Workflow Verification (`9a72cde..e3a335a`)
 
 All Pass 3 architectural and workflow defects in `MarketContext` (`discount`/`forward` namespace separation, `to_ad`, `MarketSnapshot::to_market_context`), `PortfolioDag` (`add_months(12 * years)` schedule alignment, `curves.ois_pillars`), `DeskWorkstation` (SIMM inflation bucket `[buckets[0], buckets[4]]`, 5Y IRS valuation, 15-row blotter layout), and `CalibratedCreditCurve::bootstrap` (fallible LU solve) were verified as **RESOLVED** in `9a72cde..e3a335a`. Only the 5 targeted items `P4-01` through `P4-05` remain for Round 4.
+
+
+---
+
+## Pass 5 Architectural & Workflow Verification (`e3a335a..c2bef1a`)
+
+All architectural and cross-crate workflow items across the 23-crate workspace have converged. Round 5 addresses the final 3 localized numerical items (`P5-01`, `P5-02`, `P5-03`).
