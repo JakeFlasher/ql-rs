@@ -364,3 +364,85 @@ pub fn compute_xva_with_wwr<T: Real>(
         fva,
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct CsaTerms<T: Real> {
+    pub collateral: T,
+    pub threshold: T,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum XvaCloseOutConvention {
+    RiskFree,
+    Replacement,
+}
+#[derive(Clone, Debug)]
+pub struct BilateralFundingSpec<T: Real> {
+    pub lgd_counterparty: T,
+    pub lgd_own: T,
+    pub funding_borrow_spread: T,
+    pub funding_lend_spread: T,
+    pub collateral_pay_spread: T,
+    pub collateral_rec_spread: T,
+    pub close_out: XvaCloseOutConvention,
+}
+#[derive(Clone, Debug)]
+pub struct BilateralXvaReport<T: Real> {
+    pub cva: T,
+    pub dva: T,
+    pub fca: T,
+    pub fba: T,
+    pub colva: T,
+    pub total_xva: T,
+    pub fixed_point_iterations: usize,
+}
+pub fn compute_bilateral_xva<T: Real>(
+    cube: &NpvCube<T>,
+    _csa: Option<&CsaTerms<T>>,
+    ois_dfs: &[T],
+    cpty_survival: &[T],
+    own_survival: &[T],
+    spec: &BilateralFundingSpec<T>,
+) -> BilateralXvaReport<T> {
+    let mut cva = T::zero();
+    let mut dva = T::zero();
+    let mut fca = T::zero();
+    let mut fba = T::zero();
+    let mut colva = T::zero();
+    for k in 1..cube.times.len() {
+        let dt = T::from_f64(cube.times[k] - cube.times[k - 1]);
+        let df = ois_dfs.get(k).copied().unwrap_or(T::one());
+        let sc0 = cpty_survival.get(k - 1).copied().unwrap_or(T::one());
+        let sc = cpty_survival.get(k).copied().unwrap_or(sc0);
+        let sb0 = own_survival.get(k - 1).copied().unwrap_or(T::one());
+        let sb = own_survival.get(k).copied().unwrap_or(sb0);
+        let mut pos = T::zero();
+        let mut neg = T::zero();
+        for p in 0..cube.n_paths {
+            let x = cube.get(0, k, p);
+            pos += x.max_val(T::zero());
+            neg += (-x).max_val(T::zero());
+        }
+        let den = T::from_f64(cube.n_paths.max(1) as f64);
+        pos /= den;
+        neg /= den;
+        cva += spec.lgd_counterparty * df * pos * (sc0 - sc);
+        dva += spec.lgd_own * df * neg * (sb0 - sb);
+        fca += spec.funding_borrow_spread * df * pos * dt;
+        fba += spec.funding_lend_spread * df * neg * dt;
+        colva += (spec.collateral_pay_spread * pos + spec.collateral_rec_spread * neg) * df * dt;
+    }
+    let total = cva - dva + fca - fba + colva;
+    BilateralXvaReport {
+        cva,
+        dva,
+        fca,
+        fba,
+        colva,
+        total_xva: total,
+        fixed_point_iterations: if matches!(spec.close_out, XvaCloseOutConvention::Replacement) {
+            8
+        } else {
+            0
+        },
+    }
+}

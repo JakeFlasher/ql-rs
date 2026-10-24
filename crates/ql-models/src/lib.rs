@@ -14,4 +14,6 @@ pub use hybrid::*;
 pub use local_vol::*;
 
 pub mod rough;
+pub mod slv;
 pub use rough::*;
+pub use slv::*;

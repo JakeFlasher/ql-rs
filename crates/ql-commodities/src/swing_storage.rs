@@ -345,7 +345,7 @@ pub fn price_gas_storage<T: Real>(
                     } else {
                         T::zero()
                     };
-                    best = best.max_val(cash + interpolate(&cont, vp, dv));
+                    best = best.max_val(cash + interpolate(cont, vp, dv));
                 }
                 next[gi][idx] = if decision[m] { best } else { cont[gi] };
             }

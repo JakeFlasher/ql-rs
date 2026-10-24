@@ -1,5 +1,6 @@
 use crate::{Complex, CosHestonEngine, HestonParams};
 use ql_ad::Real;
+use ql_vol::black_scholes_price;
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct LiftedHestonParams<T: Real> {
     pub v0: T,
@@ -173,4 +174,72 @@ pub fn lifted_heston_cos_price<T: Real>(
         std::slice::from_ref(&strike),
         is_call,
     )[0]
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoughBergomiParams<T: Real> {
+    pub xi0: T,
+    pub eta: T,
+    pub rho: T,
+    pub hurst: f64,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn rbergomi_hybrid_mc_price<T: Real>(
+    spot: T,
+    strike: T,
+    expiry: T,
+    rate: T,
+    div: T,
+    params: &RoughBergomiParams<T>,
+    n_steps: usize,
+    n_paths: usize,
+    is_call: bool,
+    seed: u64,
+) -> T {
+    assert!((0.01..0.499).contains(&params.hurst));
+    let steps = n_steps.max(2);
+    let paths = n_paths.max(2);
+    let dt = expiry / T::from_f64(steps as f64);
+    fn norm(seed: &mut u64) -> f64 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let u = ((*seed >> 11) as f64 + 0.5) / 9007199254740992.0;
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let v = ((*seed >> 11) as f64 + 0.5) / 9007199254740992.0;
+        (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+    }
+    let mut sum = T::zero();
+    for p in 0..paths {
+        let sign = if p % 2 == 0 { 1.0 } else { -1.0 };
+        let mut seed = seed.wrapping_add(p as u64);
+        let mut w = vec![T::zero(); steps + 1];
+        let mut _var_dummy = params.xi0;
+        let mut s_parallel = spot * ((rate - div) * expiry).exp();
+        let mut qv = T::zero();
+        for k in 0..steps {
+            let z = T::from_f64(norm(&mut seed) * sign);
+            let zh = T::from_f64(norm(&mut seed) * sign);
+            let t = T::from_f64((k as f64 + 1.0) * dt.val().max(0.0));
+            let wh = w[k] + T::from_f64(dt.val().powf(params.hurst)) * zh;
+            w[k + 1] = wh;
+            let var = params.xi0
+                * (params.eta * wh - params.eta * params.eta * t.powf(2.0 * params.hurst) * 0.5)
+                    .exp();
+            let sq = var.max_val(T::zero()).sqrt();
+            s_parallel *=
+                (params.rho * sq * z * dt.sqrt() - params.rho * params.rho * var * dt * 0.5).exp();
+            qv += (T::one() - params.rho * params.rho).max_val(T::zero()) * var * dt;
+        }
+        let bs = black_scholes_price(
+            s_parallel,
+            strike,
+            T::zero(),
+            qv,
+            T::zero(),
+            T::zero(),
+            is_call,
+        );
+        sum += bs * (-rate * expiry).exp();
+    }
+    sum / paths as f64
 }

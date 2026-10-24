@@ -1,6 +1,6 @@
 # Literature and References
 
-The 51 papers below are the mathematical and systems references for ql-rs. Each entry names the principal equation or algorithm and the implementing crate/module.
+The 59 papers below are the mathematical and systems references for ql-rs. Each entry names the principal equation or algorithm and the implementing crate/module.
 
 ## AAD, IFT, DML, and contract languages
 
@@ -109,6 +109,22 @@ The 51 papers below are the mathematical and systems references for ql-rs. Each 
 30. **`50_Yamakami_Takeuchi_2022_Bermudan_Swaption_Two_Factor_Hull_White.pdf`** — Single-curve and dual-curve (OIS discount / IBOR-RFR forward) Bermudan swaption backward induction and affine bond reconstruction inform `ql-rates::swaption` (`BermudanSwaption`, `HullWhiteBermudanTreeEngine`, `Fd1dHullWhiteBermudanEngine`) and suite 21.
 
 31. **`51_Baeuerle_Riess_2015_Gas_Storage_Valuation_Multinomial_Tree_LSM.pdf`** — Markov Decision Process backward induction over inventory grid $v \in [0, V_{\max}]$ with injection/withdrawal rate limits, proportional loss factors, and unit costs on a recombining spot tree informs `ql-commodities` (`GasStorageSpec`, `price_gas_storage`).
+
+32. **`52_McCrickerd_Pakkanen_2018_Turbocharging_MC_Rough_Bergomi.pdf`** — Hybrid scheme for Riemann–Liouville fractional Brownian motion $\widetilde{W}_t^H = \sqrt{2H}\int_0^t (t-s)^{H-1/2}dW_s^{(1)}$ with exact singular $2\times 2$ head covariance, optimal power-law weights $b_m$, and Romano–Touzi conditional Black–Scholes variance reduction informs `ql-models::rough` (`RoughBergomiParams`, `rbergomi_hybrid_mc_price`) and suite 23.
+
+33. **`53_Cozma_Mariapragassam_Reisinger_2018_SLV_Particle_Method.pdf`** — McKean–Vlasov kernel-smoothing particle calibration of the Gyöngy leverage surface $L(t, S) = \sigma_{\text{Dup}}(t, S)/\sqrt{\mathbb{E}[V_t \mid S_t = S]}$ in hybrid local-stochastic volatility models informs `ql-models::slv` (`calibrate_slv_particle_leverage`, `price_slv_european_mc`).
+
+34. **`54_Reisinger_Tsianni_2025_Particle_System_Heston_SLV.pdf`** — Propagation of chaos, Nadaraya–Watson quartic biweight / Gaussian kernel regularization, and martingale projection for calibrated Heston-type SLV particle systems inform `ql-models::slv`.
+
+35. **`55_Alfonsi_Fruth_Schied_2010_Optimal_Execution_Transient_Impact.pdf`** — Obizhaeva–Wang transient limit-order-book resilience $G(t-s) = \theta_0 e^{-\rho(t-s)}$, U-shaped boundary-block optimal execution schedules, and Almgren–Chriss permanent/temporary impact trajectories inform `ql-portfolio::execution` (`try_almgren_chriss_execution`, `try_obizhaeva_wang_execution`) and suite 24.
+
+36. **`56_Bichuch_Capponi_Sturm_2018_Arbitrage_Free_XVA_Funding.pdf`** — Arbitrage-free nonlinear XVA BSDEs/PDEs under asymmetric borrowing/lending funding rates ($r_f^+ \ne r_f^-$) and collateral rates ($r_c$), decomposing bilateral valuation into CVA, DVA, FCA, and FBA via fixed-point iteration, inform `ql-xva` (`BilateralFundingSpec`, `compute_bilateral_xva_fixed_point`).
+
+37. **`57_Rockafellar_Uryasev_2000_Optimization_of_CVaR.pdf`** — Auxiliary convex functional $F_\alpha(w, \zeta) = \zeta + \frac{1}{(1-\alpha)S}\sum_{s=1}^S [-R_s^\top w - \zeta]_+$ for simultaneous Value-at-Risk ($\zeta^*$) and Expected Shortfall ($\text{CVaR}_\alpha$) minimization informs `ql-portfolio::allocation` (`MeanCvarSpec`, `try_mean_cvar_weights`) and suite 24.
+
+38. **`58_LopezSalas_2024_PDEs_Generalized_Forward_Market_Model.pdf`** — Generalized Forward Market Model (FMM / BGM) for forward-looking IBOR and backward-looking compounded-in-arrears RFR rates with decaying in-accrual volatility $\gamma_i(t) = (T_{i+1}-t)/(T_{i+1}-T_i)$, Hunter–Jäckel–Joshi predictor–corrector drift, and TARN/Callable Range Accrual pricing inform `ql-rates::lmm`.
+
+39. **`59_Tasche_2018_Capital_Allocation_FRTB_Expected_Shortfall.pdf`** — Basel III / IV Fundamental Review of the Trading Book (FRTB MAR20–MAR33) liquidity-horizon-scaled Expected Shortfall $ES = \sqrt{ES_1^2 + \sum_{j \ge 2}(ES_j\sqrt{(LH_j - LH_{j-1})/T_{\text{base}}})^2}$, Sensitivities-Based Method (SBM Delta/Vega/Curvature under Low/Medium/High correlation scenarios + DRC + RRAO), and Euler AAD capital allocation inform `ql-xva::frtb` and suite 24.
 
 ## Reference repositories
 

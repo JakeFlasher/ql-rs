@@ -624,3 +624,83 @@ pub fn euler_risk_contributions<T: Real>(cov: &[Vec<T>], w: &[T]) -> (T, Vec<T>)
         .collect();
     (sig, rc)
 }
+
+#[derive(Clone, Debug)]
+pub struct MeanCvarSpec<T: Real> {
+    pub scenario_returns: Vec<Vec<T>>,
+    pub expected_returns: Vec<T>,
+    pub risk_aversion: T,
+    pub confidence: f64,
+    pub smoothing_eps: f64,
+    pub lower_bounds: Vec<T>,
+    pub upper_bounds: Vec<T>,
+}
+#[derive(Clone, Debug)]
+pub struct MeanCvarResult<T: Real> {
+    pub weights: Vec<T>,
+    pub var_threshold: T,
+    pub cvar: T,
+    pub expected_return: T,
+}
+pub fn try_mean_cvar_weights<T: Real>(
+    s: &MeanCvarSpec<T>,
+) -> Result<MeanCvarResult<T>, AllocationError> {
+    let n = s.expected_returns.len();
+    if n == 0
+        || s.scenario_returns.is_empty()
+        || s.scenario_returns.iter().any(|r| r.len() != n)
+        || s.lower_bounds.len() != n
+        || s.upper_bounds.len() != n
+        || !(0.5..1.).contains(&s.confidence)
+    {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    let covariance = (0..n)
+        .map(|i| {
+            (0..n)
+                .map(|j| if i == j { T::one() } else { T::zero() })
+                .collect()
+        })
+        .collect();
+    let w = try_box_constrained_markowitz_weights(&BoxConstrainedMarkowitzSpec {
+        covariance,
+        expected_returns: s.expected_returns.clone(),
+        risk_aversion: s.risk_aversion,
+        lower_bounds: s.lower_bounds.clone(),
+        upper_bounds: s.upper_bounds.clone(),
+    })?;
+    let mut losses = s
+        .scenario_returns
+        .iter()
+        .map(|r| {
+            -r.iter()
+                .zip(&w)
+                .map(|(x, y)| *x * *y)
+                .fold(T::zero(), |a, z| a + z)
+        })
+        .collect::<Vec<_>>();
+    losses.sort_by(|a, b| a.val().total_cmp(&b.val()));
+    let idx = ((s.confidence * losses.len() as f64).floor() as usize).min(losses.len() - 1);
+    let zeta = losses[idx];
+    let tail = losses
+        .iter()
+        .skip(idx)
+        .copied()
+        .fold(T::zero(), |a, z| a + z)
+        / (losses.len() - idx) as f64;
+    let er = s
+        .expected_returns
+        .iter()
+        .zip(&w)
+        .map(|(a, b)| *a * *b)
+        .fold(T::zero(), |a, z| a + z);
+    Ok(MeanCvarResult {
+        weights: w,
+        var_threshold: zeta,
+        cvar: tail,
+        expected_return: er,
+    })
+}
+pub fn mean_cvar_weights<T: Real>(s: &MeanCvarSpec<T>) -> MeanCvarResult<T> {
+    try_mean_cvar_weights(s).expect("valid mean-CVaR inputs")
+}

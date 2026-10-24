@@ -1,4 +1,5 @@
 pub mod asian;
+pub mod autocallable;
 pub mod barrier;
 pub mod basket_rainbow;
 pub mod cliquet_extensible;
@@ -8,6 +9,7 @@ pub mod lookback;
 pub mod quanto_chooser;
 pub mod variance_swap;
 pub use asian::*;
+pub use autocallable::*;
 pub use barrier::*;
 pub use basket_rainbow::*;
 pub use cliquet_extensible::*;

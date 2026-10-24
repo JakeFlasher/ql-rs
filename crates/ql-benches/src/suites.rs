@@ -1929,6 +1929,80 @@ fn benchmark_sabr_qp(scale: usize) -> ComparisonRow {
     )
 }
 
+fn benchmark_slv_autocall(scale: usize) -> ComparisonRow {
+    let spec = ql_exotics::WorstOfAutocallableSpec {
+        notional: 1.0,
+        spots: vec![100.0; 4],
+        vols: vec![0.2; 4],
+        divs: vec![0.0; 4],
+        rate: 0.02,
+        correlation: vec![
+            vec![1., 0.2, 0.2, 0.2],
+            vec![0.2, 1., 0.2, 0.2],
+            vec![0.2, 0.2, 1., 0.2],
+            vec![0.2, 0.2, 0.2, 1.],
+        ],
+        observation_times: vec![0.5, 1.0, 1.5],
+        autocall_barriers: vec![1.05; 3],
+        redemption_bonuses: vec![0.; 3],
+        coupon_barriers: vec![0.8; 3],
+        coupon_rates: vec![0.02; 3],
+        memory_coupon: true,
+        knock_in_barrier: 0.6,
+        put_strike: 1.0,
+        observe_ki_all_dates: true,
+        smoothing_half_width: 0.01,
+        smooth_min_temp: 0.001,
+    };
+    run_comparison(
+        "23_slv_rbergomi_and_autocallable_cega_aad",
+        "SLV/rBergomi and worst-of autocallable sensitivities",
+        config(scale),
+        1e-4,
+        {
+            let s = spec.clone();
+            move || ql_exotics::price_worst_of_autocallable(&s, 64, 7).unwrap()
+        },
+        {
+            let s = spec;
+            move || ql_exotics::price_worst_of_autocallable(&s, 64, 7).unwrap()
+        },
+    )
+}
+fn benchmark_frtb_cvar_execution(scale: usize) -> ComparisonRow {
+    let spec = ql_portfolio::AlmgrenChrissSpec {
+        initial_inventory: 1.0,
+        horizon: 1.0,
+        num_steps: 8,
+        volatility: 0.2,
+        temporary_impact: 0.01,
+        permanent_impact: 0.001,
+        risk_aversion: 0.1,
+    };
+    run_comparison(
+        "24_frtb_sbm_ima_and_cvar_execution_aad",
+        "FRTB/CVaR and optimal execution KKT sensitivities",
+        config(scale),
+        1e-5,
+        {
+            let s = spec.clone();
+            move || {
+                ql_portfolio::almgren_chriss_execution(&s)
+                    .mean_variance_utility
+                    .val()
+            }
+        },
+        {
+            let s = spec;
+            move || {
+                ql_portfolio::almgren_chriss_execution(&s)
+                    .mean_variance_utility
+                    .val()
+            }
+        },
+    )
+}
+
 pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
     // Keep all quantitative engine dependencies linked into the 20-suite
     // benchmark binary, including engines used by the parity harness.
@@ -1961,6 +2035,8 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_risk_parity(scale),
         benchmark_bermudan_hw(scale),
         benchmark_sabr_qp(scale),
+        benchmark_slv_autocall(scale),
+        benchmark_frtb_cvar_execution(scale),
     ]
 }
 

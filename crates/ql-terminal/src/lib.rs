@@ -100,9 +100,11 @@ pub enum TabId {
     BlRiskParity,
     BermudanVolIft,
     SaCcrSwingQp,
+    SlvRoughWorstOf,
+    FrtbCvarExecution,
 }
 impl TabId {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 22] = [
         Self::Market,
         Self::Rates,
         Self::Credit,
@@ -123,6 +125,8 @@ impl TabId {
         Self::BlRiskParity,
         Self::BermudanVolIft,
         Self::SaCcrSwingQp,
+        Self::SlvRoughWorstOf,
+        Self::FrtbCvarExecution,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -146,6 +150,8 @@ impl TabId {
             Self::BlRiskParity => "18 BL / Risk Parity",
             Self::BermudanVolIft => "19 Bermudan / Vol IFT",
             Self::SaCcrSwingQp => "20 SA-CCR / Swing / QP",
+            Self::SlvRoughWorstOf => "21 SLV / rBergomi / WoF",
+            Self::FrtbCvarExecution => "22 FRTB / CVaR / Exec",
         }
     }
 }
@@ -457,6 +463,8 @@ pub struct WorkstationFrameData {
     pub jump_to_default: f64,
     pub bermudan_sabr_metric: f64,
     pub sacc_swing_qp_metric: f64,
+    pub slv_rough_worst_of_metric: f64,
+    pub frtb_cvar_execution_metric: f64,
     pub blotter_rows: Vec<(String, f64, String)>,
 }
 
@@ -1349,6 +1357,8 @@ impl DeskWorkstation {
             jump_to_default: jtd,
             bermudan_sabr_metric: bermudan_value + sabr_metric,
             sacc_swing_qp_metric: sa_report.ead.val() + swing_value + qp_value,
+            slv_rough_worst_of_metric: 0.0,
+            frtb_cvar_execution_metric: 0.0,
             blotter_rows,
         }
     }
@@ -1563,7 +1573,11 @@ impl DeskWorkstation {
         left_bottom.extend([
             format!("19 Bermudan/SABR IFT: {:.2}", frame.bermudan_sabr_metric),
             format!("20 SA-CCR/Swing/QP: {:.2}", frame.sacc_swing_qp_metric),
-            "Levy COS / Convertible TF / ASB CDO".to_string(),
+            format!(
+                "21 SLV/rBergomi/WoF: {:.2}",
+                frame.slv_rough_worst_of_metric
+            ),
+            format!("22 FRTB/CVaR/Exec: {:.2}", frame.frtb_cvar_execution_metric),
             format!("ASB tranche EL: {:.6}", asb_el),
             format!(
                 "DAG recomputed: {}/{}",
