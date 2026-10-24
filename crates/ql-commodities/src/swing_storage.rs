@@ -165,16 +165,22 @@ pub fn price_swing_option<T: Real>(
     if spec.exercise_times.is_empty() {
         return T::zero();
     }
-    let times = make_times(&spec.exercise_times, steps_per_interval);
+    let mut exercise_times = spec.exercise_times.clone();
+    exercise_times.sort_by(f64::total_cmp);
+    exercise_times.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+    if exercise_times.is_empty() {
+        return T::zero();
+    }
+    let times = make_times(&exercise_times, steps_per_interval);
     let tree = build_tree(times, kappa, sigma);
     let mut ex_rank = vec![None; tree.times.len()];
-    for (r, t) in spec.exercise_times.iter().enumerate() {
+    for (r, t) in exercise_times.iter().enumerate() {
         if let Some(m) = tree.times.iter().position(|x| (*x - *t).abs() < 1e-10) {
             ex_rank[m] = Some(r);
         }
     }
     let n = tree.times.len().saturating_sub(1);
-    let umax = spec.max_exercises.min(spec.exercise_times.len());
+    let umax = spec.max_exercises.min(exercise_times.len());
     let terminal_width = (2 * tree.j_bounds[n] + 1) as usize;
     let mut values = vec![vec![T::zero(); terminal_width]; umax + 1];
     let final_spots = node_spots(&tree, curve, n);
@@ -212,7 +218,7 @@ pub fn price_swing_option<T: Real>(
             }
         }
         if let Some(rank) = ex_rank[m] {
-            let remaining = spec.exercise_times.len() - rank;
+            let remaining = exercise_times.len() - rank;
             for u in 0..=umax {
                 for j in -jb..=jb {
                     let idx = (j + jb) as usize;
