@@ -92,16 +92,22 @@ impl Fd1dBlackScholesEngine {
         let mut v = vec![T::zero(); n + 1];
         for j in 0..=n {
             let sj = T::from_f64((xmin + j as f64 * dx).exp());
-            v[j] = if kind.is_call() {
+            let knocked = barrier.is_some_and(|(b, bt, _)| {
+                let eps = 1e-12 * b.val().abs().max(1.0);
+                (matches!(bt, BarrierType::UpAndOut) && sj.val() >= b.val() - eps)
+                    || (matches!(bt, BarrierType::DownAndOut) && sj.val() <= b.val() + eps)
+            });
+            v[j] = if let Some(tr) = terminal_rebate
+                && !knocked
+            {
+                tr
+            } else if kind.is_call() {
                 (sj - strike).max_val(T::zero())
             } else {
                 (strike - sj).max_val(T::zero())
             };
-            if let Some((b, bt, rb)) = barrier
-                && matches!(bt, BarrierType::UpAndOut | BarrierType::DownAndOut)
-                && ((matches!(bt, BarrierType::UpAndOut) && sj.val() >= b.val())
-                    || (matches!(bt, BarrierType::DownAndOut) && sj.val() <= b.val()))
-            {
+            if knocked {
+                let rb = barrier.map(|(_, _, rb)| rb).unwrap_or_else(T::zero);
                 v[j] = rb;
             }
         }
@@ -228,8 +234,9 @@ impl Fd1dBlackScholesEngine {
             {
                 for j in 0..=n {
                     let sj = (xmin + j as f64 * dx).exp();
-                    if (matches!(bt, BarrierType::UpAndOut) && sj >= b.val())
-                        || (matches!(bt, BarrierType::DownAndOut) && sj <= b.val())
+                    let eps = 1e-12 * b.val().abs().max(1.0);
+                    if (matches!(bt, BarrierType::UpAndOut) && sj >= b.val() - eps)
+                        || (matches!(bt, BarrierType::DownAndOut) && sj <= b.val() + eps)
                     {
                         v[j] = rb;
                     }
@@ -285,6 +292,18 @@ impl Fd1dBlackScholesEngine {
         bt: BarrierType,
         rebate: T,
     ) -> T {
+        let eps = 1e-12 * barrier.val().abs().max(1.0);
+        let breached = match bt {
+            BarrierType::UpAndOut | BarrierType::UpAndIn => spot.val() >= barrier.val() - eps,
+            BarrierType::DownAndOut | BarrierType::DownAndIn => spot.val() <= barrier.val() + eps,
+        };
+        if breached {
+            return if matches!(bt, BarrierType::UpAndOut | BarrierType::DownAndOut) {
+                rebate
+            } else {
+                self.price(spot, strike, expiry, vol, rate, T::zero(), kind)
+            };
+        }
         let out_bt = if matches!(bt, BarrierType::UpAndIn | BarrierType::UpAndOut) {
             BarrierType::UpAndOut
         } else {

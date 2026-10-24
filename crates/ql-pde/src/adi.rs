@@ -55,6 +55,10 @@ impl Default for Fd2dHestonEngine {
     }
 }
 
+fn barrier_eps(b: f64) -> f64 {
+    1e-12 * b.abs().max(1.0)
+}
+
 impl Fd2dHestonEngine {
     #[allow(clippy::too_many_arguments)]
     pub fn price_european<T: Real>(
@@ -185,6 +189,33 @@ impl Fd2dHestonEngine {
         div: T,
         expiry: T,
     ) -> T {
+        let eps = 1e-12 * option.barrier.abs().max(1.0);
+        let breached = match option.barrier_type {
+            ql_instruments::BarrierType::UpAndOut | ql_instruments::BarrierType::UpAndIn => {
+                spot.val() >= option.barrier - eps
+            }
+            ql_instruments::BarrierType::DownAndOut | ql_instruments::BarrierType::DownAndIn => {
+                spot.val() <= option.barrier + eps
+            }
+        };
+        if breached {
+            return match option.barrier_type {
+                ql_instruments::BarrierType::UpAndOut | ql_instruments::BarrierType::DownAndOut => {
+                    T::from_f64(option.rebate)
+                }
+                ql_instruments::BarrierType::UpAndIn | ql_instruments::BarrierType::DownAndIn => {
+                    self.price_european(
+                        p,
+                        spot,
+                        T::from_f64(option.strike),
+                        rate,
+                        div,
+                        expiry,
+                        option.option_type.is_call(),
+                    )
+                }
+            };
+        }
         let (lower, upper) = match option.barrier_type {
             ql_instruments::BarrierType::UpAndOut | ql_instruments::BarrierType::UpAndIn => {
                 (None, Some(option.barrier))
@@ -355,8 +386,8 @@ impl Fd2dHestonEngine {
             for i in 1..nx - 1 {
                 let id = i * nv + j;
                 let s_val = g.x.nodes[i].exp();
-                if lower_barrier.is_some_and(|b| s_val <= b)
-                    || upper_barrier.is_some_and(|b| s_val >= b)
+                if lower_barrier.is_some_and(|b| s_val <= b + barrier_eps(b))
+                    || upper_barrier.is_some_and(|b| s_val >= b - barrier_eps(b))
                 {
                     di[i] = T::one();
                     b[i] = rebate;
@@ -417,8 +448,8 @@ impl Fd2dHestonEngine {
             up.fill(T::zero());
             b.fill(T::zero());
             let s_val = g.x.nodes[i].exp();
-            let knocked = lower_barrier.is_some_and(|bar| s_val <= bar)
-                || upper_barrier.is_some_and(|bar| s_val >= bar);
+            let knocked = lower_barrier.is_some_and(|bar| s_val <= bar + barrier_eps(bar))
+                || upper_barrier.is_some_and(|bar| s_val >= bar - barrier_eps(bar));
             for j in 0..nv {
                 if knocked {
                     di[j] = T::one();
@@ -493,8 +524,8 @@ impl Fd2dHestonEngine {
         let mut u = vec![T::zero(); nx * nv];
         for i in 0..nx {
             let s_val = g.x.nodes[i].exp();
-            let knocked_out = lower_barrier.is_some_and(|b| s_val <= b)
-                || upper_barrier.is_some_and(|b| s_val >= b);
+            let knocked_out = lower_barrier.is_some_and(|b| s_val <= b + barrier_eps(b))
+                || upper_barrier.is_some_and(|b| s_val >= b - barrier_eps(b));
             let s = T::from_f64(s_val);
             let pay = if knocked_out {
                 rebate
@@ -706,8 +737,8 @@ impl Fd2dHestonEngine {
             if lower_barrier.is_some() || upper_barrier.is_some() {
                 for i in 0..nx {
                     let s_val = g.x.nodes[i].exp();
-                    if lower_barrier.is_some_and(|b| s_val <= b)
-                        || upper_barrier.is_some_and(|b| s_val >= b)
+                    if lower_barrier.is_some_and(|b| s_val <= b + barrier_eps(b))
+                        || upper_barrier.is_some_and(|b| s_val >= b - barrier_eps(b))
                     {
                         for j in 0..nv {
                             u[i * nv + j] = rebate;
