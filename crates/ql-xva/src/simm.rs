@@ -117,7 +117,7 @@ pub fn compute_isda_simm<T: Real>(b: &[SimmBucket<T>], corr: &[Vec<f64>]) -> T {
                     * ws[j];
             }
         }
-        let k = k2.sqrt();
+        let k = k2.max_val(T::zero()).sqrt();
         ks.push(k);
         ss.push(
             ws.iter()
@@ -138,5 +138,5 @@ pub fn compute_isda_simm<T: Real>(b: &[SimmBucket<T>], corr: &[Vec<f64>]) -> T {
             }
         }
     }
-    total.sqrt()
+    total.max_val(T::zero()).sqrt()
 }

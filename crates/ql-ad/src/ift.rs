@@ -98,7 +98,13 @@ impl IftSystemSensitivity {
         // Reuse the factorization cached at construction.  Solving the
         // transposed system through a freshly-built LU both wastes work and
         // can produce different pivoting near singularity.
-        let w = self.lu_t.solve(&b).expect("singular IFT Jacobian");
+        let w = self.lu_t.solve(&b).unwrap_or_else(|| {
+            self.j_theta
+                .transpose()
+                .svd(true, true)
+                .solve(&b, 1e-12)
+                .expect("SVD IFT solve failed")
+        });
         (-self.j_q.transpose() * w).iter().copied().collect()
     }
     pub fn jvp(&self, quote_tangents: &[f64]) -> Vec<f64> {
@@ -106,13 +112,25 @@ impl IftSystemSensitivity {
         let rhs = -&self.j_q * DVector::from_column_slice(quote_tangents);
         self.lu
             .solve(&rhs)
-            .expect("singular IFT Jacobian")
+            .unwrap_or_else(|| {
+                self.j_theta
+                    .clone()
+                    .svd(true, true)
+                    .solve(&rhs, 1e-12)
+                    .expect("SVD IFT solve failed")
+            })
             .iter()
             .copied()
             .collect()
     }
     pub fn jacobian_dtheta_dq(&self) -> DMatrix<f64> {
         let rhs = -self.j_q.clone();
-        self.lu.solve(&rhs).expect("singular IFT Jacobian")
+        self.lu.solve(&rhs).unwrap_or_else(|| {
+            self.j_theta
+                .clone()
+                .svd(true, true)
+                .solve(&rhs, 1e-12)
+                .expect("SVD IFT solve failed")
+        })
     }
 }

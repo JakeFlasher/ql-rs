@@ -301,17 +301,21 @@ pub fn price_gas_storage<T: Real>(
         let jbn = tree.j_bounds[m + 1];
         let spots = node_spots(&tree, curve, m);
         let mut next = vec![vec![T::zero(); (2 * jb + 1) as usize]; g + 1];
+        let mut cont_by_j = vec![vec![T::zero(); g + 1]; (2 * jb + 1) as usize];
+        for j in -jb..=jb {
+            let (k, pd, pm, pu, dt) = transition(&tree, m, j);
+            let row = &mut cont_by_j[(j + jb) as usize];
+            for gp in 0..=g {
+                let val = |node: isize| values[gp][(node + jbn).clamp(0, 2 * jbn) as usize];
+                row[gp] = (-rate * dt).exp() * (pd * val(k - 1) + pm * val(k) + pu * val(k + 1));
+            }
+        }
         for gi in 0..=g {
             let inv = gi as f64 * dv;
             for j in -jb..=jb {
                 let idx = (j + jb) as usize;
-                let (k, pd, pm, pu, dt) = transition(&tree, m, j);
-                let mut cont = vec![T::zero(); g + 1];
-                for gp in 0..=g {
-                    let val = |node: isize| values[gp][(node + jbn).clamp(0, 2 * jbn) as usize];
-                    cont[gp] =
-                        (-rate * dt).exp() * (pd * val(k - 1) + pm * val(k) + pu * val(k + 1));
-                }
+                let (_, _, _, _, dt) = transition(&tree, m, j);
+                let cont = &cont_by_j[idx];
                 let lo = (inv - spec.max_withdrawal_rate * dt.val()).max(0.0);
                 let hi = (inv + spec.max_injection_rate * dt.val()).min(spec.max_capacity);
                 let mut best = T::from_f64(-1e100);

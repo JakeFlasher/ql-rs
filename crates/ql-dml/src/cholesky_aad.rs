@@ -1,4 +1,30 @@
+use ql_ad::Real;
 use ql_mc::PhiloxRng;
+
+pub fn cholesky_lower_generic<T: Real>(c: &[Vec<T>]) -> Result<Vec<Vec<T>>, String> {
+    let n = c.len();
+    if n == 0 || c.iter().any(|r| r.len() != n) {
+        return Err("non-square matrix".into());
+    }
+    let mut l = vec![vec![T::zero(); n]; n];
+    for i in 0..n {
+        for j in 0..=i {
+            let mut sum = c[i][j];
+            for k in 0..j {
+                sum -= l[i][k] * l[j][k];
+            }
+            if i == j {
+                if sum.val() <= 0.0 || !sum.val().is_finite() {
+                    return Err("matrix is not positive definite".into());
+                }
+                l[i][j] = sum.max_val(T::from_f64(1e-16)).sqrt();
+            } else {
+                l[i][j] = sum / l[j][j];
+            }
+        }
+    }
+    Ok(l)
+}
 pub fn cholesky_lower(c: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, String> {
     let n = c.len();
     if n == 0 || c.iter().any(|r| r.len() != n) {
@@ -75,6 +101,25 @@ pub fn cholesky_adjoint(c: &[Vec<f64>], inbar: &[Vec<f64>]) -> Result<Vec<Vec<f6
         }
     }
     Ok(rb)
+}
+
+/// Correlation CEGA sensitivities with fixed unit diagonal.  Off-diagonal
+/// entries are total derivatives for a simultaneous symmetric bump.
+pub fn cholesky_corr_cega_adjoint(
+    c: &[Vec<f64>],
+    l_bar: &[Vec<f64>],
+) -> Result<Vec<Vec<f64>>, String> {
+    let raw = cholesky_adjoint(c, l_bar)?;
+    let n = raw.len();
+    let mut out = vec![vec![0.0; n]; n];
+    for i in 0..n {
+        for j in i + 1..n {
+            let v = raw[i][j] + raw[j][i];
+            out[i][j] = v;
+            out[j][i] = v;
+        }
+    }
+    Ok(out)
 }
 #[derive(Clone, Debug)]
 pub struct BasketCorrelationRiskReport {

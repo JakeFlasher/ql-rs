@@ -86,6 +86,48 @@ pub trait Real:
             Self::from_f64(0.5) + u * 0.75 - u * u * u * 0.25
         }
     }
+    #[inline]
+    fn smooth_heaviside_c2(self, threshold: Self, half_width: f64) -> Self {
+        let hw = half_width.abs().max(1e-12);
+        let u = (self - threshold) / Self::from_f64(hw);
+        if u.val() <= -1.0 {
+            Self::zero()
+        } else if u.val() >= 1.0 {
+            Self::one()
+        } else {
+            let u2 = u * u;
+            let u3 = u2 * u;
+            let u5 = u3 * u2;
+            Self::from_f64(0.5) + Self::from_f64(15.0 / 16.0) * u - Self::from_f64(5.0 / 8.0) * u3
+                + Self::from_f64(3.0 / 16.0) * u5
+        }
+    }
+}
+
+pub fn smooth_min_slice<T: Real>(xs: &[T], temperature: f64) -> T {
+    assert!(
+        !xs.is_empty(),
+        "smooth_min_slice requires a non-empty slice"
+    );
+    if temperature <= 1e-12 || xs.len() == 1 {
+        return xs
+            .iter()
+            .copied()
+            .reduce(|a, b| a.min_val(b))
+            .expect("non-empty slice");
+    }
+    let m = xs
+        .iter()
+        .copied()
+        .reduce(|a, b| a.min_val(b))
+        .expect("non-empty slice");
+    let tau = T::from_f64(temperature);
+    let sum = xs
+        .iter()
+        .copied()
+        .map(|x| (-(x - m) / tau).exp())
+        .fold(T::zero(), |a, x| a + x);
+    m - tau * (sum / xs.len() as f64).ln()
 }
 
 pub trait SimdReal: Copy + Clone + Send + Sync + Debug {
