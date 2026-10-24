@@ -78,14 +78,28 @@ where
             .map(|i| -width + 2.0 * width * i as f64 / (ng - 1) as f64)
             .collect::<Vec<_>>();
         let mean_v = v.iter().copied().fold(T::zero(), |a, z| a + z) / np as f64;
+        let sx = x.iter().map(|z| z.val()).sum::<f64>() / np as f64;
+        let bw = (1.5 * x.iter().map(|z| (z.val() - sx).powi(2)).sum::<f64>().sqrt()
+            / (np as f64).sqrt()
+            * (np as f64).powf(-0.2))
+        .max(0.02);
         let lev = grid
             .iter()
             .map(|&z| {
+                let mut num = T::from_f64(1e-4) * mean_v;
+                let mut den = T::from_f64(1e-4);
+                for i in 0..np {
+                    let u = (x[i] - T::from_f64(z)) / T::from_f64(bw);
+                    let kw = (-u * u * 0.5).exp();
+                    num += v[i] * kw;
+                    den += kw;
+                }
+                let v_cond = (num / den).max_val(T::from_f64(1e-8));
                 let dup = dupire_local_vol(
                     t,
                     spot * ((rate - div) * T::from_f64(t)).exp() * T::from_f64(z).exp(),
                 );
-                dup / mean_v.max_val(T::from_f64(1e-8)).sqrt()
+                dup / v_cond.sqrt()
             })
             .map(|z| z.max_val(T::from_f64(0.1)).min_val(T::from_f64(5.0)))
             .collect();
@@ -108,7 +122,7 @@ where
             let vv = v[i].max_val(T::zero());
             next_v[i] = (vv
                 + heston.kappa * (heston.theta - vv) * dt
-                + heston.sigma_v * vv.sqrt() * T::from_f64(sqdt) * zv)
+                + mixing_fraction * heston.sigma_v * vv.sqrt() * T::from_f64(sqdt) * zv)
                 .max_val(T::zero());
             let l = {
                 let sl = &slices[m];
@@ -122,14 +136,13 @@ where
                         .log_moneyness_grid
                         .partition_point(|z| *z <= xx)
                         .saturating_sub(1);
-                    let w = (xx - sl.log_moneyness_grid[k])
-                        / (sl.log_moneyness_grid[k + 1] - sl.log_moneyness_grid[k]);
-                    sl.leverage[k] * (1.0 - w) + sl.leverage[k + 1] * w
+                    let w = (x[i] - T::from_f64(sl.log_moneyness_grid[k]))
+                        / T::from_f64(sl.log_moneyness_grid[k + 1] - sl.log_moneyness_grid[k]);
+                    sl.leverage[k] * (T::one() - w) + sl.leverage[k + 1] * w
                 }
             };
-            next_x[i] = x[i]
-                + (rate - div - l * l * vv * 0.5) * dt
-                + l * vv.sqrt() * T::from_f64(sqdt * z1);
+            next_x[i] = x[i] - l * l * vv * (dt * 0.5)
+                + l * vv.sqrt() * T::from_f64(sqdt) * T::from_f64(z1);
         }
         let mean_exp = next_x
             .iter()

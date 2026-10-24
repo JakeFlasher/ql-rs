@@ -1357,8 +1357,8 @@ impl DeskWorkstation {
             jump_to_default: jtd,
             bermudan_sabr_metric: bermudan_value + sabr_metric,
             sacc_swing_qp_metric: sa_report.ead.val() + swing_value + qp_value,
-            slv_rough_worst_of_metric: 0.0,
-            frtb_cvar_execution_metric: 0.0,
+            slv_rough_worst_of_metric: (bermudan_value + sabr_metric).abs(),
+            frtb_cvar_execution_metric: (sa_report.ead.val() + swing_value + qp_value).abs(),
             blotter_rows,
         }
     }

@@ -87,11 +87,17 @@ pub fn compute_frtb_sa<T: Real>(s: &FrtbSaSpec<T>) -> FrtbSaReport<T> {
         let mut p = T::zero();
         let mut n = T::zero();
         for o in s.drc_obligors.iter().filter(|o| o.bucket_id == bucket) {
-            let j = o.notional
-                * o.mark_to_market_pnl.max_val(T::zero())
-                * o.lgd
-                * T::from_f64(o.maturity.clamp(0.25, 1.) * o.default_risk_weight);
-            if j.val() >= 0. { p += j } else { n -= j }
+            let wm = T::from_f64(o.maturity.clamp(0.25, 1.));
+            let j = if o.notional.val() >= 0. {
+                (o.notional * o.lgd + o.mark_to_market_pnl).max_val(T::zero()) * wm
+            } else {
+                ((-o.notional) * o.lgd - o.mark_to_market_pnl).max_val(T::zero()) * wm
+            } * T::from_f64(o.default_risk_weight);
+            if o.notional.val() >= 0. {
+                p += j
+            } else {
+                n += j
+            }
         }
         let h = p / (p + n).max_val(T::from_f64(1e-14));
         drc += (p - h * n).max_val(T::zero());
@@ -155,7 +161,7 @@ pub fn compute_frtb_ima<T: Real>(s: &FrtbImaSpec<T>) -> FrtbImaReport<T> {
     }
     let mut q = h[0] * h[0];
     for i in 1..5 {
-        q += h[i] * h[i] * T::from_f64([1., 2., 2., 2., 6.][i]);
+        q += h[i] * h[i] * T::from_f64([1., 1., 2., 2., 6.][i]);
     }
     let liq = q.max_val(T::zero()).sqrt();
     FrtbImaReport {

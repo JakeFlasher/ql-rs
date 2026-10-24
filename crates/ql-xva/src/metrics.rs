@@ -397,7 +397,7 @@ pub struct BilateralXvaReport<T: Real> {
 }
 pub fn compute_bilateral_xva<T: Real>(
     cube: &NpvCube<T>,
-    _csa: Option<&CsaTerms<T>>,
+    csa: Option<&CsaTerms<T>>,
     ois_dfs: &[T],
     cpty_survival: &[T],
     own_survival: &[T],
@@ -408,28 +408,77 @@ pub fn compute_bilateral_xva<T: Real>(
     let mut fca = T::zero();
     let mut fba = T::zero();
     let mut colva = T::zero();
-    for k in 1..cube.times.len() {
-        let dt = T::from_f64(cube.times[k] - cube.times[k - 1]);
+    let mut u = T::zero();
+    let mut iterations = 0;
+    for k in 0..cube.times.len() {
+        let t = cube.times[k];
+        let prev = if k == 0 { 0. } else { cube.times[k - 1] };
+        let dt = t - prev;
+        if dt <= 0. {
+            continue;
+        }
         let df = ois_dfs.get(k).copied().unwrap_or(T::one());
-        let sc0 = cpty_survival.get(k - 1).copied().unwrap_or(T::one());
+        let sc0 = cpty_survival
+            .get(k.saturating_sub(1))
+            .copied()
+            .unwrap_or(T::one());
         let sc = cpty_survival.get(k).copied().unwrap_or(sc0);
-        let sb0 = own_survival.get(k - 1).copied().unwrap_or(T::one());
+        let sb0 = own_survival
+            .get(k.saturating_sub(1))
+            .copied()
+            .unwrap_or(T::one());
         let sb = own_survival.get(k).copied().unwrap_or(sb0);
+        let den = T::from_f64(cube.n_paths.max(1) as f64);
         let mut pos = T::zero();
         let mut neg = T::zero();
+        let mut xp = T::zero();
+        let mut xn = T::zero();
         for p in 0..cube.n_paths {
-            let x = cube.get(0, k, p);
-            pos += x.max_val(T::zero());
-            neg += (-x).max_val(T::zero());
+            let v = (0..cube.n_netting_sets)
+                .map(|ns| cube.get(ns, k, p))
+                .fold(T::zero(), |a, z| a + z);
+            let x = if let Some(c) = csa {
+                c.collateral + (v - c.collateral - c.threshold).max_val(T::zero())
+                    - (-v + c.collateral - c.threshold).max_val(T::zero())
+            } else {
+                T::zero()
+            };
+            let e = v - u - x;
+            pos += e.max_val(T::zero());
+            neg += (-e).max_val(T::zero());
+            xp += x.max_val(T::zero());
+            xn += (-x).max_val(T::zero());
         }
-        let den = T::from_f64(cube.n_paths.max(1) as f64);
         pos /= den;
         neg /= den;
-        cva += spec.lgd_counterparty * df * pos * (sc0 - sc);
-        dva += spec.lgd_own * df * neg * (sb0 - sb);
-        fca += spec.funding_borrow_spread * df * pos * dt;
-        fba += spec.funding_lend_spread * df * neg * dt;
-        colva += (spec.collateral_pay_spread * pos + spec.collateral_rec_spread * neg) * df * dt;
+        xp /= den;
+        xn /= den;
+        let cv = spec.lgd_counterparty * df * sb0 * (sc0 - sc) * pos;
+        let dv = spec.lgd_own * df * sc0 * (sb0 - sb) * neg;
+        let fc = spec.funding_borrow_spread * df * sc * sb * pos * T::from_f64(dt);
+        let fb = spec.funding_lend_spread * df * sc * sb * neg * T::from_f64(dt);
+        let co = (spec.collateral_pay_spread * xp + spec.collateral_rec_spread * xn)
+            * df
+            * sc
+            * sb
+            * T::from_f64(dt);
+        if matches!(spec.close_out, XvaCloseOutConvention::Replacement) {
+            let next = -(cv - dv + fc - fb + co);
+            iterations += 1;
+            if (next - u).val().abs() < 1e-13 {
+                u = next;
+                break;
+            }
+            u = next;
+        }
+        cva += cv;
+        dva += dv;
+        fca += fc;
+        fba += fb;
+        colva += co;
+    }
+    if matches!(spec.close_out, XvaCloseOutConvention::Replacement) {
+        cva = -u;
     }
     let total = cva - dva + fca - fba + colva;
     BilateralXvaReport {
@@ -439,10 +488,6 @@ pub fn compute_bilateral_xva<T: Real>(
         fba,
         colva,
         total_xva: total,
-        fixed_point_iterations: if matches!(spec.close_out, XvaCloseOutConvention::Replacement) {
-            8
-        } else {
-            0
-        },
+        fixed_point_iterations: iterations,
     }
 }

@@ -73,6 +73,17 @@ pub fn price_worst_of_autocallable<T: Real>(
         return Err("dimension mismatch".into());
     }
     let mut total = T::zero();
+    let refs = s
+        .spots
+        .iter()
+        .map(|z| {
+            if (z.val() - z.val().round()).abs() < 1e-2 && z.val().round() > 0. {
+                z.val().round()
+            } else {
+                z.val()
+            }
+        })
+        .collect::<Vec<_>>();
     for p in 0..np.max(1) {
         let mut x = s.spots.clone();
         let mut alive = T::one();
@@ -84,10 +95,11 @@ pub fn price_worst_of_autocallable<T: Real>(
         for (k, &time) in s.observation_times.iter().enumerate() {
             let dt = (time - prev).max(1e-12);
             prev = time;
+            let u = (0..n).map(|_| nrm(&mut rng)).collect::<Vec<_>>();
             let mut z = vec![T::zero(); n];
             for i in 0..n {
-                for coeff in l[i].iter().take(i + 1) {
-                    z[i] += *coeff * T::from_f64(nrm(&mut rng));
+                for (j, coeff) in l[i].iter().take(i + 1).enumerate() {
+                    z[i] += *coeff * T::from_f64(u[j]);
                 }
             }
             for i in 0..n {
@@ -98,7 +110,9 @@ pub fn price_worst_of_autocallable<T: Real>(
             let rel = x
                 .iter()
                 .zip(&s.spots)
-                .map(|(a, b)| *a / *b)
+                .map(|(a, _)| *a)
+                .zip(refs.iter())
+                .map(|(a, b)| a / T::from_f64(*b))
                 .collect::<Vec<_>>();
             let w = smooth_min_slice(&rel, s.smooth_min_temp);
             let call = w.smooth_heaviside_c2(
@@ -122,7 +136,9 @@ pub fn price_worst_of_autocallable<T: Real>(
                 * call
                 * (T::one() + s.redemption_bonuses[k.min(s.redemption_bonuses.len() - 1)]);
             alive *= T::one() - call;
-            let hit = w.smooth_heaviside_c2(s.knock_in_barrier, s.smoothing_half_width);
+            let hit = s
+                .knock_in_barrier
+                .smooth_heaviside_c2(w, s.smoothing_half_width);
             if s.observe_ki_all_dates {
                 ki = ki + (T::one() - ki) * hit
             } else {
@@ -133,7 +149,9 @@ pub fn price_worst_of_autocallable<T: Real>(
         let rel = x
             .iter()
             .zip(&s.spots)
-            .map(|(a, b)| *a / *b)
+            .map(|(a, _)| *a)
+            .zip(refs.iter())
+            .map(|(a, b)| a / T::from_f64(*b))
             .collect::<Vec<_>>();
         let w = smooth_min_slice(&rel, s.smooth_min_temp);
         pv += alive
