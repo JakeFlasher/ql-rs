@@ -1,6 +1,6 @@
 //! Closed-form approximations for early-exercise American options.
 
-use ql_ad::{Dual2, Real, ift_lift_1d};
+use ql_ad::{Dual2, Real, TapeScope, ift_lift_1d};
 use ql_math::brent_solve;
 use ql_vol::black_scholes_price;
 
@@ -440,14 +440,65 @@ impl JuQuadraticEngine {
             let den = T::one() - bju * ell * ell - cju * ell;
             european(s, k, r, q, v, t, true) + h_a * (s / star).pow(q2) / den
         }
+        fn ju_put_direct<T: Real>(s: T, k: T, r: T, q: T, v: T, t: T) -> T {
+            if t.val() <= 0.0 || v.val() <= 0.0 {
+                return european(s, k, r, q, v, t, false);
+            }
+            let v2 = v * v;
+            let beta = (r - q) * 2.0 / v2;
+            let alpha = r * 2.0 / v2;
+            let h = T::one() - (-r * t).exp();
+            let alpha_over_h = if h.val().abs() < 1e-10 {
+                T::from_f64(2.0) / (v2 * t)
+            } else {
+                alpha / h
+            };
+            let disc = ((beta - T::one()).powf(2.0) + alpha_over_h * 4.0).sqrt();
+            let lambda = (T::one() - beta - disc) * 0.5;
+            let root = critical_put(s.val(), k.val(), r.val(), q.val(), v.val(), t.val());
+            let residual = |x: T| {
+                let d1 = ((x / k).ln() + (r - q + v2 * 0.5) * t) / (v * t.sqrt());
+                let euro = european(x, k, r, q, v, t, false);
+                k - x - euro + x / lambda * (T::one() - (-q * t).exp() * (-d1).norm_cdf())
+            };
+            let x = T::from_f64(root);
+            let d1 = ((x / k).ln() + (r - q + v2 * 0.5) * t) / (v * t.sqrt());
+            let d = (-q * t).exp() * (-d1).norm_cdf();
+            let pdf = d1.norm_pdf();
+            let fx = -(T::one() - T::one() / lambda) * (T::one() - d)
+                + (-q * t).exp() * pdf / (lambda * v * t.sqrt());
+            let gamma = (-q * t).exp() * pdf / (x * v * t.sqrt());
+            let aa = (-q * t).exp() * pdf / (v * t.sqrt());
+            let fxx = -gamma + (-aa / x + aa * d1 / (x * v * t.sqrt())) / lambda;
+            let star = ift_lift_1d(root, residual, fx, fxx.val());
+            let d1s = ((star / k).ln() + (r - q + v2 * 0.5) * t) / (v * t.sqrt());
+            let pdf_s = d1s.norm_pdf();
+            let euro_star = european(star, k, r, q, v, t, false);
+            let h_a = k - star - euro_star;
+            if s.val() <= root {
+                return (k - s).max_val(european(s, k, r, q, v, t, false));
+            }
+            let theta = -q * star * (-q * t).exp() * (-d1s).norm_cdf()
+                + r * k * (-r * t).exp() * (-d1s + v * t.sqrt()).norm_cdf()
+                + star * (-q * t).exp() * pdf_s * v / (t.sqrt() * 2.0);
+            let disc0 = (-r * t).exp();
+            let alpha_lambda_prime = -alpha_over_h * alpha_over_h / disc;
+            let alpha_ve_h = T::from_f64(2.0) / (v2 * disc0) * theta;
+            let denom = -disc;
+            let bju = (T::one() - h) * alpha_lambda_prime / (denom * 2.0);
+            let cju = -((T::one() - h) / denom)
+                * (alpha_ve_h / h_a + alpha_over_h + alpha_lambda_prime / denom);
+            let ell = (s / star).ln();
+            let chi = bju * ell * ell + cju * ell;
+            european(s, k, r, q, v, t, false) + h_a * (s / star).pow(lambda) / (T::one() - chi)
+        }
         if is_call {
             ju_call(spot, strike, rate, div, vol, expiry)
         } else {
-            // The direct Ju put boundary is the negative root q1.  Reuse the
-            // same lifted negative-root construction as BAW rather than
-            // applying a call duality that changes the Ju h=1-exp(-rT)
-            // normalization when q=0.
-            baw_put(spot, strike, rate, div, vol, expiry)
+            // Direct negative-root Ju construction.  In particular this keeps
+            // h=1-exp(-rT) tied to the domestic rate instead of changing it
+            // through call duality when the stock has zero dividends.
+            ju_put_direct(spot, strike, rate, div, vol, expiry)
         }
     }
 }
@@ -493,10 +544,27 @@ pub fn american_implied_vol<T: Real>(
     );
     let residual =
         |x: T| JuQuadraticEngine::price(spot, strike, rate, div, x, expiry, is_call) - target_price;
-    Ok(ift_lift_1d(
-        root,
-        residual,
-        T::from_f64(jet.d1[0]),
-        jet.d2[0][0],
-    ))
+    let fx = if TapeScope::try_with_active(|_| ()).is_some() {
+        T::from_f64(jet.d1[0])
+    } else {
+        let h = 1e-5;
+        (JuQuadraticEngine::price(
+            spot,
+            strike,
+            rate,
+            div,
+            T::from_f64(root + h),
+            expiry,
+            is_call,
+        ) - JuQuadraticEngine::price(
+            spot,
+            strike,
+            rate,
+            div,
+            T::from_f64(root - h),
+            expiry,
+            is_call,
+        )) / (2.0 * h)
+    };
+    Ok(ift_lift_1d(root, residual, fx, jet.d2[0][0]))
 }
