@@ -987,6 +987,14 @@ pub fn ledoit_wolf_shrinkage<T: Real>(
     for row in r {
         for i in 0..p {
             for j in 0..p {
+                if i == j
+                    && matches!(
+                        target,
+                        ShrinkageTarget::DiagonalVariance | ShrinkageTarget::ConstantCorrelation
+                    )
+                {
+                    continue;
+                }
                 let outer = (row[i] - mean[i]) * (row[j] - mean[j]);
                 let err = outer - s[i][j];
                 pi += err * err;

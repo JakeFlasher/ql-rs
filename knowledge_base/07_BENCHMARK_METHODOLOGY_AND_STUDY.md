@@ -46,6 +46,7 @@ Each suite has a deterministic workload, one warmup, 31 timing samples, and a co
 | 22 | Sixteen central finite-difference recalibrations of an 8-strike SABR/SVI volatility smile plus $2(N + N(N+1)/2)$ perturbed active-set solves of a box-constrained Markowitz QP | Cached second-order optimality IFT (`Dual2`) smile Jacobian + single reduced-KKT linear solve (`solve_linear_generic`) on the free set $\mathcal{F}$. |
 | 23 | Base worst-of autocallable plus 31 central spot/vol/rate/correlation bumps | One `Dual<16>` path valuation with spot, vega, rho and Cega extraction. |
 | 24 | Base Almgren--Chriss utility plus four central parameter bumps | One `Dual<4>` execution pass for volatility, temporary/permanent impact and risk aversion. |
+| 25 | Eight central finite-difference bumps across Hagan–West Monotone Convex zero curve, Heston–Bates VIX option, smoothed Parisian option, and Goldfarb–Iyengar robust Markowitz | Single-pass `Dual` / `Dual<2>` AD evaluations across all four Phase 13 analytical/optimization kernels. |
 
 ## 5. Current empirical table
 

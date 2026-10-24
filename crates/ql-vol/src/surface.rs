@@ -901,12 +901,30 @@ impl CalibratedEssviSurface {
             } else {
                 levenberg_marquardt(x0, residual, 1e-11, 200)?
             };
+            let prev_theta = calibrated
+                .last()
+                .map_or(1e-10, |p: &AdEssviSlice<f64>| p.theta);
+            let prev_pos = calibrated
+                .last()
+                .map_or(0.0, |p: &AdEssviSlice<f64>| p.psi * (1.0 + p.rho));
+            let prev_neg = calibrated
+                .last()
+                .map_or(0.0, |p: &AdEssviSlice<f64>| p.psi * (1.0 - p.rho));
+            let theta = sol[0].max(prev_theta);
+            let rho = sol[1].clamp(-0.999, 0.999);
+            let psi_min = (prev_pos / (1.0 + rho).max(1e-6))
+                .max(prev_neg / (1.0 - rho).max(1e-6))
+                .max(1e-10);
+            let psi_max = (4.0 / (1.0 + rho.abs()))
+                .min((4.0 * theta / ((1.0 + rho.abs()) * (1.0 + rho.abs()))).sqrt())
+                * 0.999;
+            let psi = sol[2].max(psi_min).min(psi_max.max(psi_min));
             calibrated.push(AdEssviSlice {
                 forward: *f,
                 expiry: *t,
-                theta: sol[0].max(1e-10),
-                rho: sol[1].clamp(-0.999, 0.999),
-                psi: sol[2].max(1e-10),
+                theta,
+                rho,
+                psi,
             });
         }
 

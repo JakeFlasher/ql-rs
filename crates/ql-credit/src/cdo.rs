@@ -404,18 +404,10 @@ pub fn price_kth_to_default_basket<T: Real>(
             npv_buyer: T::zero(),
         };
     }
-    let lgd = if s.recovery_rates.is_empty() {
-        T::zero()
-    } else {
-        s.recovery_rates
-            .iter()
-            .copied()
-            .fold(T::zero(), |a, r| a + (T::one() - r))
-            / s.recovery_rates.len() as f64
-    };
     let mut protection = T::zero();
     let mut risky_annuity = T::zero();
     let mut prev_survival = T::one();
+    let mut prev_ps = vec![T::zero(); issuer_curves.len()];
     for (i, &t) in s.payment_times.iter().enumerate() {
         if !t.is_finite() || t < 0.0 {
             continue;
@@ -426,14 +418,45 @@ pub fn price_kth_to_default_basket<T: Real>(
             .collect();
         let survival = kth_to_default_survival_probability(s.k, &ps, s.correlation);
         let df = discount.discount_factor(t);
+        let mut w_lgd = T::zero();
+        let mut w_sum = T::zero();
+        for m in 0..ps.len() {
+            let dp = (ps[m]
+                - if m < prev_ps.len() {
+                    prev_ps[m]
+                } else {
+                    T::zero()
+                })
+            .max_val(T::zero());
+            let sub: Vec<T> = ps
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != m)
+                .map(|(_, p)| *p)
+                .collect();
+            let cav = if s.k == 1 {
+                T::one()
+            } else {
+                kth_to_default_survival_probability(s.k - 1, &sub, s.correlation)
+            };
+            let wm = dp * cav;
+            w_sum += wm;
+            w_lgd += wm * (T::one() - s.recovery_rates.get(m).copied().unwrap_or(T::from_f64(0.4)));
+        }
         let event = (prev_survival - survival).max_val(T::zero());
-        protection += s.notional * df * lgd * event;
+        let eff_lgd = if w_sum.val() > 1e-14 {
+            w_lgd / w_sum
+        } else {
+            T::from_f64(0.4)
+        };
+        protection += s.notional * df * eff_lgd * event;
         let accrual = T::from_f64(*s.accruals.get(i).unwrap_or(&1.0));
         // Premium is paid while the basket is alive.  Midpoint default
         // accrual can be enabled by passing the usual half-period survival;
         // the endpoint survival is the conservative standard convention.
         risky_annuity += s.notional * df * accrual * (prev_survival + survival) * 0.5;
         prev_survival = survival;
+        prev_ps = ps;
     }
     let premium = risky_annuity * s.running_spread;
     let fair = if risky_annuity.val().abs() > 1e-14 {

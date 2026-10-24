@@ -70,28 +70,31 @@ impl AmcEngine {
                 // Schwartz policy.  Evaluate the full Chebyshev basis (not
                 // just the intercept) on primal values while retaining the
                 // AD value of the selected payoff.
-                let cont = policy.coeffs.get(k).map_or(f64::NEG_INFINITY, |c| {
-                    if c.is_empty() {
-                        f64::NEG_INFINITY
-                    } else if strike.val().abs() <= 1e-14 {
-                        c[0]
-                    } else {
-                        let x = s.val() / strike.val() - 1.0;
-                        let mut b0 = 1.0;
-                        let mut b1 = x;
-                        let mut value = c[0] * b0;
-                        if c.len() > 1 {
-                            value += c[1] * b1;
+                let eval_cont = |sv: f64| -> f64 {
+                    policy.coeffs.get(k).map_or(f64::NEG_INFINITY, |c| {
+                        if c.is_empty() {
+                            f64::NEG_INFINITY
+                        } else if strike.val().abs() <= 1e-14 {
+                            c[0]
+                        } else {
+                            let x = sv / strike.val() - 1.0;
+                            let mut b0 = 1.0;
+                            let mut b1 = x;
+                            let mut value = c[0] * b0;
+                            if c.len() > 1 {
+                                value += c[1] * b1;
+                            }
+                            for coeff in c.iter().skip(2) {
+                                let b2 = 2.0 * x * b1 - b0;
+                                value += coeff * b2;
+                                b0 = b1;
+                                b1 = b2;
+                            }
+                            value
                         }
-                        for coeff in c.iter().skip(2) {
-                            let b2 = 2.0 * x * b1 - b0;
-                            value += coeff * b2;
-                            b0 = b1;
-                            b1 = b2;
-                        }
-                        value
-                    }
-                });
+                    })
+                };
+                let cont = eval_cont(s.val());
                 let mut cond = T::zero();
                 let half = (n_inner.max(2) / 2).max(1);
                 let inner = crate::PhiloxRng::new(self.seed ^ 0x9e37_79b9_7f4a_7c15);
@@ -107,11 +110,13 @@ impl AmcEngine {
                         } else {
                             (strike - sn).max_val(T::zero())
                         };
-                        cond += disc * en;
+                        let cn = eval_cont(sn.val());
+                        cond += disc * en.max_val(T::from_f64(cn.max(0.0)));
                     }
                 }
                 cond /= T::from_f64((2 * half) as f64);
-                pi += discounted - cond;
+                let v_outer = disc * ex.max_val(T::from_f64(cont.max(0.0)));
+                pi += v_outer - cond;
                 maxv = maxv.max_val(discounted - pi);
                 prev_s = s;
                 if !exercised && (k == steps || (ex.val() > 0.0 && ex.val() >= cont)) {

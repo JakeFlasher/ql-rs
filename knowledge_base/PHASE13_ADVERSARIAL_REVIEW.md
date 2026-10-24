@@ -82,3 +82,27 @@
 ## Round 4 remediation (`5613bec..working tree`)
 
 Round 4 applied the paired tests and final corrections for eSSVI quote-vega offsets, Cheyette/coterminal and callable-range behavior, Andersen–Broadie continuation martingales, heterogeneous kth-default cavity/recovery handling, robust allocation shrinkage/KKT safeguards, monotone-convex/meeting-date curves, MPoR interpolation, and terminal/report synchronization. All workspace tests and strict clippy pass.
+
+
+---
+
+## Round 4 Audit (`5613bec..24eb5ee`) & Round 5 Surgical Remediation Plan
+
+### Verified Fixed in `24eb5ee`
+- **`[HIGH]` FIXED — `CalibratedEssviSurface::vol_and_quote_vega` slice offset (`crates/ql-vol/src/surface.rs:967, 1006-1007`)**: `off = (i - 1) * 3; g[off..off + 6].copy_from_slice(&y.d);` and `i == 0` expiry `self.expiries[0]`.
+- **`[HIGH]` FIXED — `compute_mpor_xva` empty cashflow check & $j=0$ interpolation (`crates/ql-xva/src/metrics.rs:531, 543-557`)**: checks `!c.is_empty()` and interpolates `vl = cube.get(ns, 0, p) * alpha0`.
+- **`[HIGH]` FIXED — `ledoit_wolf_shrinkage` sample-size scaling (`crates/ql-portfolio/src/allocation.rs:908, 1004`)**: divides `pi` by `n as f64` (`1/n^2` total scaling) and adds `ConstantVarianceIdentity` and `DiagonalVariance`.
+- **`[LOW]` FIXED — `ql_terminal::prelude` exports (`crates/ql-terminal/src/lib.rs:21-27`)**: exports `VixOptionValuation`, `heston_bates_vix_future_and_option_price`, `replicate_cboe_vix_index`, `rough::*`, and `slv::*`.
+- **`[LOW]` FIXED — `knowledge_base/{05,07}*.md`**: updated directly to reflect the 25-suite harness and 23-tab workstation.
+
+### Remaining Items Targeted in Round 5 (`CODEX_PHASE13_ROUND5_PROMPT.md`)
+1. **`[CRITICAL]` `crates/ql-rates/src/cheyette.rs:136-275`**: AD-preserving `swap_loading` in `T: Real` and 3-node HW1F Gauss–Hermite short-rate quadrature + issuer call cap in `price_callable_range_accrual_hw1f`.
+2. **`[HIGH]` `crates/ql-mc/src/andersen_broadie.rs:73-116, 155-171`**: Continuation-adjusted Snell envelope $\hat{V}_k(x) = \text{disc}_k \cdot \max(\text{ex}(x), \hat{C}_k(x))$ in `cond` and `pi`.
+3. **`[HIGH]` `crates/ql-credit/src/cdo.rs:416-464`**: Leave-one-out cavity $k$-th default weighting in `price_kth_to_default_basket` so heterogeneous recoveries satisfy $\sum_{k=1}^M \text{ProtLeg}_k = \sum_{m=1}^M (1 - R_m)\text{DefaultLeg}_m$.
+4. **`[HIGH]` `crates/ql-portfolio/src/allocation.rs:986-1125`**: Skip diagonal `i == j` in `pi` for `DiagonalVariance` / `ConstantCorrelation` in `ledoit_wolf_shrinkage`, and run 32 Fixed-Point AD iterations (`1e-16` regularizer, `iter >= 16` minimum) in `try_robust_markowitz_weights`.
+5. **`[HIGH]` `crates/ql-curves/src/curves.rs:264-370, 472-483`**: Post-clamping boundary nodal forwards `f[0], f[n]` and `interval_g` vertex positivity scaling in `MonotoneConvexZeroCurve`.
+6. **`[MEDIUM/LOW]` `crates/ql-vol/src/surface.rs:904-911` & `crates/ql-benches/src/suites.rs:2345, 2375, 2473`**: Sequential calendar/butterfly clamping in `CalibratedEssviSurface::calibrate` and removal of `QL_DEBUG_PHASE13` debug prints in `suites.rs`.
+
+## Round 5 remediation (`24eb5ee..working tree`)
+
+Round 5 closed remaining surgical issues in Andersen–Broadie continuation valuation, Cheyette callable/coterminal behavior, heterogeneous kth-default cavity weighting, robust shrinkage/IRLS, monotone-convex positivity, eSSVI calibration, MPoR handling, and benchmark/terminal cleanup. Full workspace checks pass.

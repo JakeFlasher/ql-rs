@@ -2286,7 +2286,6 @@ fn benchmark_phase13_vix_parisian_robust(scale: usize) -> ComparisonRow {
                     0.98,
                 );
                 let mut sum = mono_score + base.vix_future + base.call_price + base.put_price;
-                let mut vix_fd = 0.0;
                 for (j, bump) in [(0, h), (1, h), (2, h), (3, h)] {
                     let mut up = [0.04, 1.5, 0.04, 0.3];
                     let mut dn = up;
@@ -2311,10 +2310,8 @@ fn benchmark_phase13_vix_parisian_robust(scale: usize) -> ComparisonRow {
                         - b.call_price
                         - b.put_price)
                         / (2.0 * bump);
-                    vix_fd += fd;
                     sum += fd;
                 }
-                let mut paris_fd = 0.0;
                 for j in 0..4 {
                     let mut up = parisian;
                     let mut dn = parisian;
@@ -2341,10 +2338,6 @@ fn benchmark_phase13_vix_parisian_robust(scale: usize) -> ComparisonRow {
                     let vm =
                         price_parisian_option_mc_ad(&dn, parisian_paths, parisian_steps, 0.01, 23);
                     let fd = (vp - vm).val() / (2.0 * h);
-                    paris_fd += fd;
-                    if std::env::var_os("QL_DEBUG_PHASE13").is_some() {
-                        eprintln!("phase13 pfd j={j} fd={fd}");
-                    }
                     sum += fd;
                 }
                 let p0 = price_parisian_option_mc_ad(
@@ -2371,18 +2364,7 @@ fn benchmark_phase13_vix_parisian_robust(scale: usize) -> ComparisonRow {
                     dn[j] -= h;
                     robust += (robust_eval(mu, up) - robust_eval(mu, dn)) / (2.0 * h);
                 }
-                let out = sum + robust;
-                if std::env::var_os("QL_DEBUG_PHASE13").is_some() {
-                    eprintln!(
-                        "phase13 baseline vix_total={} p0={} pfd={} robust={} total={}",
-                        base.vix_future + base.call_price + base.put_price + vix_fd,
-                        p0.val(),
-                        paris_fd,
-                        robust,
-                        out
-                    );
-                }
-                out
+                sum + robust
             }
         },
         {
@@ -2470,20 +2452,6 @@ fn benchmark_phase13_vix_parisian_robust(scale: usize) -> ComparisonRow {
                     .enumerate()
                     .map(|(i, x)| (i + 1) as f64 * (x.val + x.d.iter().sum::<f64>()))
                     .sum::<f64>();
-                if std::env::var_os("QL_DEBUG_PHASE13").is_some() {
-                    eprintln!(
-                        "phase13 sota vix_total={} pxbase={} pxd={} robust={}",
-                        v.vix_future.val
-                            + v.call_price.val
-                            + v.put_price.val
-                            + v.vix_future.d.iter().sum::<f64>()
-                            + v.call_price.d.iter().sum::<f64>()
-                            + v.put_price.d.iter().sum::<f64>(),
-                        px.val,
-                        px.d.iter().sum::<f64>(),
-                        robust
-                    );
-                }
                 mono_score
                     + v.vix_future.val
                     + v.call_price.val
