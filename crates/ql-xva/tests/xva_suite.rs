@@ -323,7 +323,92 @@ fn wwr_zero_preserves_ad_and_epe() {
 }
 
 #[test]
-fn phase12_round4_frtb_and_bilateral_types_are_constructible() {
-    let _ = ql_xva::FrtbRiskClass::Girr;
-    let _ = ql_xva::XvaCloseOutConvention::RiskFree;
+fn phase12_frtb_sa_ima_and_bilateral_xva_invariants() {
+    let sa = ql_xva::compute_frtb_sa(&ql_xva::FrtbSaSpec {
+        buckets: vec![ql_xva::FrtbSensitivityBucket {
+            risk_class: ql_xva::FrtbRiskClass::Girr,
+            bucket_id: 0,
+            delta_sensitivities: vec![100.0, -40.0],
+            delta_risk_weights: vec![0.015, 0.015],
+            vega_sensitivities: vec![25.0, 10.0],
+            vega_risk_weights: vec![0.55, 0.55],
+            curvature_up_pnl: vec![-2.5, -1.0],
+            curvature_down_pnl: vec![1.5, 0.5],
+            curvature_shock_weights: vec![0.015, 0.015],
+            intra_bucket_corr: vec![vec![1.0, 0.5], vec![0.5, 1.0]],
+        }],
+        inter_bucket_corr: vec![],
+        drc_obligors: vec![
+            ql_xva::FrtbDrcObligor {
+                bucket_id: 0,
+                notional: 1000.0,
+                mark_to_market_pnl: 0.0,
+                lgd: 0.6,
+                maturity: 1.0,
+                default_risk_weight: 0.03,
+            },
+            ql_xva::FrtbDrcObligor {
+                bucket_id: 0,
+                notional: -500.0,
+                mark_to_market_pnl: 0.0,
+                lgd: 0.6,
+                maturity: 1.0,
+                default_risk_weight: 0.06,
+            },
+        ],
+        exotic_residual_notionals: vec![200.0],
+        other_residual_notionals: vec![500.0],
+    });
+    assert!(sa.sbm_charge > 10.0 && sa.drc_charge > 0.0 && (sa.rrao_charge - 2.5).abs() < 1e-12);
+
+    let scen = vec![
+        vec![-0.05, -0.02],
+        vec![-0.04, -0.03],
+        vec![-0.01, 0.01],
+        vec![0.02, 0.03],
+    ];
+    let ima = ql_xva::compute_frtb_ima(&ql_xva::FrtbImaSpec {
+        position_weights: vec![0.6, 0.4],
+        horizon_scenario_pnls: [scen.clone(), scen.clone(), scen.clone(), scen.clone(), scen],
+        confidence: 0.5,
+        ses_addon: 0.01,
+    });
+    let euler_sum: f64 = ima.euler_component_es.iter().sum();
+    assert!((euler_sum - ima.liquidity_adjusted_es).abs() < 1e-12);
+    assert!(ima.marginal_es.iter().all(|&m| m > 0.0));
+
+    let mut cube = NpvCube::new(1, vec![1.0, 2.0], 2);
+    cube.set(0, 0, 0, 100.0);
+    cube.set(0, 0, 1, 120.0);
+    cube.set(0, 1, 0, 80.0);
+    cube.set(0, 1, 1, 110.0);
+    let spec_rf = ql_xva::BilateralFundingSpec {
+        lgd_counterparty: 0.6,
+        lgd_own: 0.6,
+        funding_borrow_spread: 0.01,
+        funding_lend_spread: 0.005,
+        collateral_pay_spread: 0.002,
+        collateral_rec_spread: 0.001,
+        close_out: ql_xva::XvaCloseOutConvention::RiskFree,
+    };
+    let mut spec_rep = spec_rf.clone();
+    spec_rep.close_out = ql_xva::XvaCloseOutConvention::Replacement;
+    let rf = ql_xva::compute_bilateral_xva(
+        &cube,
+        None,
+        &[0.98, 0.96],
+        &[0.97, 0.94],
+        &[0.98, 0.96],
+        &spec_rf,
+    );
+    let rep = ql_xva::compute_bilateral_xva(
+        &cube,
+        None,
+        &[0.98, 0.96],
+        &[0.97, 0.94],
+        &[0.98, 0.96],
+        &spec_rep,
+    );
+    assert!(rep.fixed_point_iterations >= 4);
+    assert!(rep.total_xva > 0.0 && rep.total_xva < rf.total_xva);
 }

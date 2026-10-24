@@ -646,39 +646,91 @@ pub fn try_mean_cvar_weights<T: Real>(
     s: &MeanCvarSpec<T>,
 ) -> Result<MeanCvarResult<T>, AllocationError> {
     let n = s.expected_returns.len();
+    let m_scen = s.scenario_returns.len();
     if n == 0
-        || s.scenario_returns.is_empty()
+        || m_scen == 0
         || s.scenario_returns.iter().any(|r| r.len() != n)
         || s.lower_bounds.len() != n
         || s.upper_bounds.len() != n
-        || !(0.5..1.).contains(&s.confidence)
+        || !(0.5..1.0).contains(&s.confidence)
     {
         return Err(AllocationError::InvalidDimensions);
     }
-    let covariance = (0..n)
+    let eps = T::from_f64(s.smoothing_eps.max(1e-5));
+    let tail_mass = T::from_f64(((1.0 - s.confidence) * m_scen as f64).max(1e-12));
+    let lo_sum = s.lower_bounds.iter().copied().fold(T::zero(), |a, z| a + z);
+    let span_sum = s
+        .upper_bounds
+        .iter()
+        .zip(&s.lower_bounds)
+        .map(|(u, l)| *u - *l)
+        .fold(T::zero(), |a, z| a + z)
+        .max_val(T::from_f64(1e-12));
+    let mut w: Vec<T> = (0..n)
         .map(|i| {
-            (0..n)
-                .map(|j| {
-                    if i == j {
-                        s.scenario_returns
-                            .iter()
-                            .map(|r| (-r[i]).max_val(T::zero()) * (-r[i]).max_val(T::zero()))
-                            .fold(T::from_f64(1e-4), |a, z| a + z)
-                    } else {
-                        T::zero()
-                    }
-                })
-                .collect()
+            s.lower_bounds[i]
+                + (T::one() - lo_sum) * (s.upper_bounds[i] - s.lower_bounds[i]) / span_sum
         })
         .collect();
-    let w = try_box_constrained_markowitz_weights(&BoxConstrainedMarkowitzSpec {
-        covariance,
-        expected_returns: s.expected_returns.clone(),
-        risk_aversion: s.risk_aversion,
-        lower_bounds: s.lower_bounds.clone(),
-        upper_bounds: s.upper_bounds.clone(),
-    })?;
-    let mut losses = s
+    let idx = ((s.confidence * m_scen as f64).floor() as usize).min(m_scen - 1);
+    for _ in 0..4 {
+        let losses: Vec<T> = s
+            .scenario_returns
+            .iter()
+            .map(|r| {
+                -r.iter()
+                    .zip(&w)
+                    .map(|(x, y)| *x * *y)
+                    .fold(T::zero(), |a, z| a + z)
+            })
+            .collect();
+        let mut sorted = losses.clone();
+        sorted.sort_by(|a, b| a.val().total_cmp(&b.val()));
+        let mut zeta = sorted[idx];
+        for _ in 0..2 {
+            let mut f = -tail_mass;
+            let mut df = T::zero();
+            for &l in &losses {
+                let u = l - zeta;
+                let rad = (u * u + eps * eps).sqrt();
+                f += (T::one() + u / rad) * 0.5;
+                df += eps * eps / (rad * rad * rad) * 0.5;
+            }
+            zeta += f / df.max_val(T::from_f64(1e-12));
+        }
+        let pi: Vec<T> = losses
+            .iter()
+            .map(|&l| {
+                let u = l - zeta;
+                let dphi = (T::one() + u / (u * u + eps * eps).sqrt()) * 0.5;
+                dphi / tail_mass
+            })
+            .collect();
+        let mut covariance = vec![vec![T::zero(); n]; n];
+        let mut adj_returns = s.expected_returns.clone();
+        for i in 0..n {
+            let mut tail_drift = T::zero();
+            for m in 0..m_scen {
+                tail_drift += pi[m] * s.scenario_returns[m][i];
+            }
+            adj_returns[i] += tail_drift * 0.25;
+            for j in 0..n {
+                let mut c_ij = if i == j { T::from_f64(1e-5) } else { T::zero() };
+                for m in 0..m_scen {
+                    c_ij += pi[m] * s.scenario_returns[m][i] * s.scenario_returns[m][j];
+                }
+                covariance[i][j] = c_ij;
+            }
+        }
+        w = try_box_constrained_markowitz_weights(&BoxConstrainedMarkowitzSpec {
+            covariance,
+            expected_returns: adj_returns,
+            risk_aversion: s.risk_aversion,
+            lower_bounds: s.lower_bounds.clone(),
+            upper_bounds: s.upper_bounds.clone(),
+        })?;
+    }
+    let losses: Vec<T> = s
         .scenario_returns
         .iter()
         .map(|r| {
@@ -687,16 +739,27 @@ pub fn try_mean_cvar_weights<T: Real>(
                 .map(|(x, y)| *x * *y)
                 .fold(T::zero(), |a, z| a + z)
         })
-        .collect::<Vec<_>>();
-    losses.sort_by(|a, b| a.val().total_cmp(&b.val()));
-    let idx = ((s.confidence * losses.len() as f64).floor() as usize).min(losses.len() - 1);
-    let zeta = losses[idx];
-    let tail = losses
-        .iter()
-        .skip(idx)
-        .copied()
-        .fold(T::zero(), |a, z| a + z)
-        / (losses.len() - idx) as f64;
+        .collect();
+    let mut sorted = losses.clone();
+    sorted.sort_by(|a, b| a.val().total_cmp(&b.val()));
+    let mut zeta = sorted[idx];
+    for _ in 0..2 {
+        let mut f = -tail_mass;
+        let mut df = T::zero();
+        for &l in &losses {
+            let u = l - zeta;
+            let rad = (u * u + eps * eps).sqrt();
+            f += (T::one() + u / rad) * 0.5;
+            df += eps * eps / (rad * rad * rad) * 0.5;
+        }
+        zeta += f / df.max_val(T::from_f64(1e-12));
+    }
+    let mut smooth_hinge_sum = T::zero();
+    for &l in &losses {
+        let u = l - zeta;
+        smooth_hinge_sum += (u + (u * u + eps * eps).sqrt()) * 0.5;
+    }
+    let cvar = zeta + smooth_hinge_sum / tail_mass;
     let er = s
         .expected_returns
         .iter()
@@ -706,10 +769,11 @@ pub fn try_mean_cvar_weights<T: Real>(
     Ok(MeanCvarResult {
         weights: w,
         var_threshold: zeta,
-        cvar: tail,
+        cvar,
         expected_return: er,
     })
 }
+
 pub fn mean_cvar_weights<T: Real>(s: &MeanCvarSpec<T>) -> MeanCvarResult<T> {
     try_mean_cvar_weights(s).expect("valid mean-CVaR inputs")
 }

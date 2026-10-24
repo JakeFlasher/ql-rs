@@ -59,15 +59,40 @@ fn long_only_markowitz_wrapper_is_budgeted() {
 }
 
 #[test]
-fn phase12_round4_execution_api_is_finite() {
-    let r = ql_portfolio::almgren_chriss_execution(&ql_portfolio::AlmgrenChrissSpec {
-        initial_inventory: 1.0,
-        horizon: 1.0,
-        num_steps: 4,
+fn phase12_mean_cvar_and_execution_invariants() {
+    let cvar_spec = ql_portfolio::MeanCvarSpec {
+        scenario_returns: vec![
+            vec![-0.08, -0.01],
+            vec![-0.06, -0.02],
+            vec![0.02, 0.01],
+            vec![0.05, 0.02],
+            vec![0.06, 0.03],
+        ],
+        expected_returns: vec![0.07, 0.04],
+        risk_aversion: 4.0,
+        confidence: 0.6,
+        smoothing_eps: 1e-3,
+        lower_bounds: vec![0.0, 0.0],
+        upper_bounds: vec![1.0, 1.0],
+    };
+    let res1 = ql_portfolio::mean_cvar_weights(&cvar_spec);
+    let mut cvar_spec2 = cvar_spec.clone();
+    cvar_spec2.smoothing_eps = 5e-2;
+    let res2 = ql_portfolio::mean_cvar_weights(&cvar_spec2);
+    assert!((res1.weights.iter().sum::<f64>() - 1.0).abs() < 1e-10);
+    assert!((res1.cvar - res2.cvar).abs() > 1e-4);
+
+    let ow = ql_portfolio::obizhaeva_wang_execution(&ql_portfolio::ObizhaevaWangSpec {
+        initial_inventory: 100.0,
+        trade_times: vec![0.0, 0.25, 0.5, 0.75, 1.0],
         volatility: 0.2,
-        temporary_impact: 0.01,
-        permanent_impact: 0.001,
-        risk_aversion: 0.1,
+        transient_impact: 0.02,
+        resilience_speed: 1.5,
+        temporary_impact: 0.001,
+        risk_aversion: 0.0,
     });
-    assert!(r.expected_cost.is_finite());
+    assert!((ow.trade_schedule.iter().sum::<f64>() - 100.0).abs() < 1e-10);
+    assert!(ow.inventory_schedule.last().unwrap().abs() < 1e-10);
+    assert!(ow.trade_schedule[0] > ow.trade_schedule[1]);
+    assert!(ow.trade_schedule[3] > ow.trade_schedule[1]);
 }

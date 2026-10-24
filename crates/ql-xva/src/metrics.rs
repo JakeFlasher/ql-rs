@@ -408,13 +408,15 @@ pub fn compute_bilateral_xva<T: Real>(
     let mut fca = T::zero();
     let mut fba = T::zero();
     let mut colva = T::zero();
-    let mut u = T::zero();
+    let mut u_cont = T::zero();
     let mut iterations = 0;
-    for k in 0..cube.times.len() {
+    let den = T::from_f64(cube.n_paths.max(1) as f64);
+    let ns_count = T::from_f64(cube.n_netting_sets.max(1) as f64);
+    for k in (0..cube.times.len()).rev() {
         let t = cube.times[k];
-        let prev = if k == 0 { 0. } else { cube.times[k - 1] };
+        let prev = if k == 0 { 0.0 } else { cube.times[k - 1] };
         let dt = t - prev;
-        if dt <= 0. {
+        if dt <= 0.0 {
             continue;
         }
         let df = ois_dfs.get(k).copied().unwrap_or(T::one());
@@ -430,45 +432,66 @@ pub fn compute_bilateral_xva<T: Real>(
             own_survival.get(k - 1).copied().unwrap_or(T::one())
         };
         let sb = own_survival.get(k).copied().unwrap_or(sb0);
-        let den = T::from_f64(cube.n_paths.max(1) as f64);
-        let mut pos = T::zero();
-        let mut neg = T::zero();
-        let mut xp = T::zero();
-        let mut xn = T::zero();
-        for p in 0..cube.n_paths {
-            let v = (0..cube.n_netting_sets)
-                .map(|ns| cube.get(ns, k, p))
-                .fold(T::zero(), |a, z| a + z);
-            let x = if let Some(c) = csa {
-                c.collateral + (v - c.collateral - c.threshold).max_val(T::zero())
-                    - (-v + c.collateral - c.threshold).max_val(T::zero())
-            } else {
-                T::zero()
-            };
-            let e = v - u - x;
-            pos += e.max_val(T::zero());
-            neg += (-e).max_val(T::zero());
-            xp += x.max_val(T::zero());
-            xn += (-x).max_val(T::zero());
+        let max_iter = match spec.close_out {
+            XvaCloseOutConvention::RiskFree => 1,
+            XvaCloseOutConvention::Replacement => 8,
+        };
+        let mut u_k = match spec.close_out {
+            XvaCloseOutConvention::RiskFree => T::zero(),
+            XvaCloseOutConvention::Replacement => u_cont / df.max_val(T::from_f64(1e-12)),
+        };
+        let mut cv = T::zero();
+        let mut dv = T::zero();
+        let mut fc = T::zero();
+        let mut fb = T::zero();
+        let mut co = T::zero();
+        for _ in 0..max_iter {
+            let mut pos = T::zero();
+            let mut neg = T::zero();
+            let mut xp = T::zero();
+            let mut xn = T::zero();
+            let u_ns = u_k / ns_count;
+            for p in 0..cube.n_paths {
+                for ns in 0..cube.n_netting_sets {
+                    let v = cube.get(ns, k, p);
+                    let x = if let Some(c) = csa {
+                        c.collateral + (v - c.collateral - c.threshold).max_val(T::zero())
+                            - (-v + c.collateral - c.threshold).max_val(T::zero())
+                    } else {
+                        T::zero()
+                    };
+                    let e = v - u_ns - x;
+                    pos += e.max_val(T::zero());
+                    neg += (-e).max_val(T::zero());
+                    xp += x.max_val(T::zero());
+                    xn += (-x).max_val(T::zero());
+                }
+            }
+            pos /= den;
+            neg /= den;
+            xp /= den;
+            xn /= den;
+            cv = spec.lgd_counterparty * df * sb0 * (sc0 - sc) * pos;
+            dv = spec.lgd_own * df * sc0 * (sb0 - sb) * neg;
+            fc = spec.funding_borrow_spread * df * sc * sb * pos * T::from_f64(dt);
+            fb = spec.funding_lend_spread * df * sc * sb * neg * T::from_f64(dt);
+            co = (spec.collateral_pay_spread * xp + spec.collateral_rec_spread * xn)
+                * df
+                * sc
+                * sb
+                * T::from_f64(dt);
+            if matches!(spec.close_out, XvaCloseOutConvention::Replacement) {
+                let step_xva = cv - dv + fc - fb + co;
+                let next_u = (u_cont + step_xva) / df.max_val(T::from_f64(1e-12));
+                iterations += 1;
+                if (next_u - u_k).abs().val() < 1e-12 {
+                    u_k = next_u;
+                    break;
+                }
+                u_k = next_u;
+            }
         }
-        pos /= den;
-        neg /= den;
-        xp /= den;
-        xn /= den;
-        let cv = spec.lgd_counterparty * df * sb0 * (sc0 - sc) * pos;
-        let dv = spec.lgd_own * df * sc0 * (sb0 - sb) * neg;
-        let fc = spec.funding_borrow_spread * df * sc * sb * pos * T::from_f64(dt);
-        let fb = spec.funding_lend_spread * df * sc * sb * neg * T::from_f64(dt);
-        let co = (spec.collateral_pay_spread * xp + spec.collateral_rec_spread * xn)
-            * df
-            * sc
-            * sb
-            * T::from_f64(dt);
-        if matches!(spec.close_out, XvaCloseOutConvention::Replacement) {
-            let next = -(cv - dv + fc - fb + co);
-            iterations += 1;
-            u = next;
-        }
+        u_cont += cv - dv + fc - fb + co;
         cva += cv;
         dva += dv;
         fca += fc;

@@ -354,7 +354,11 @@ impl G2ppBermudanSwaptionEngine {
             best = best.max_val(v);
             sum_sq += v * v;
         }
-        best.max_val(sum_sq.max_val(T::zero()).sqrt() * 0.75 + best * 0.30)
+        if bermudan.exercise_times.len() <= 1 {
+            best
+        } else {
+            best.max_val(sum_sq.max_val(T::zero()).sqrt() * 0.75 + best * 0.30)
+        }
     }
     pub fn price_dual_curve<T: Real, C1: YieldTermStructure<T>, C2: YieldTermStructure<T>>(
         &self,
