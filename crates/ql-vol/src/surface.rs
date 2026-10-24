@@ -659,8 +659,17 @@ impl CalibratedSviSmile {
         })
     }
     pub fn vol_and_quote_vega(&self, strike: f64) -> (f64, Vec<f64>) {
-        let d = svi_quote_sensitivities(&self.smile, strike);
-        (self.smile.vol(strike), self.sensitivity.vjp(&d))
+        let p = AdSviSmile::new(
+            Dual::<5>::from_value(self.smile.forward),
+            Dual::<5>::from_value(self.smile.expiry),
+            Dual::<5>::variable(self.smile.a, 0),
+            Dual::<5>::variable(self.smile.b, 1),
+            Dual::<5>::variable(self.smile.rho, 2),
+            Dual::<5>::variable(self.smile.m, 3),
+            Dual::<5>::variable(self.smile.sigma, 4),
+        );
+        let y = p.vol(Dual::<5>::from_value(strike));
+        (y.val, self.sensitivity.vjp(&y.d))
     }
     pub fn implied_vol_ad<T: Real>(&self, strike: T, quotes: &[T]) -> T {
         let j = self.sensitivity.jacobian_dtheta_dq();
