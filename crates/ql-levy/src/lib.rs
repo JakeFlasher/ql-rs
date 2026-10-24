@@ -6,11 +6,13 @@ pub trait LevyModel<T: Real> {
 }
 pub mod cgmy;
 pub mod cos;
+pub mod fft;
 pub mod kou;
 pub mod merton;
 pub mod vg;
 pub use cgmy::*;
 pub use cos::*;
+pub use fft::*;
 pub use kou::*;
 pub use merton::*;
 pub use vg::*;

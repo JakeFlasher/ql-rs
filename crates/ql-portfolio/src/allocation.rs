@@ -345,6 +345,113 @@ pub fn solve_linear_generic<T: Real>(a: &[Vec<T>], b: &[T]) -> Result<Vec<T>, Al
     }
     Ok(m.into_iter().map(|r| r[n]).collect())
 }
+
+#[derive(Clone, Debug)]
+pub struct HierarchicalRiskParityResult<T: Real> {
+    pub weights: Vec<T>,
+    pub seriated_order: Vec<usize>,
+}
+fn hrp_validate<T: Real>(cov: &[Vec<T>]) -> Result<(), AllocationError> {
+    let n = cov.len();
+    if n == 0
+        || cov.iter().any(|r| r.len() != n)
+        || cov.iter().flatten().any(|x| !x.val().is_finite())
+    {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    for i in 0..n {
+        if cov[i][i].val() <= 0.0 {
+            return Err(AllocationError::InvalidDimensions);
+        }
+        for j in 0..n {
+            let corr = cov[i][j].val() / (cov[i][i].val() * cov[j][j].val()).sqrt();
+            if !corr.is_finite() || corr.abs() > 1.0 + 1e-8 {
+                return Err(AllocationError::InvalidDimensions);
+            }
+        }
+    }
+    Ok(())
+}
+pub fn try_hierarchical_risk_parity<T: Real>(
+    cov: &[Vec<T>],
+) -> Result<HierarchicalRiskParityResult<T>, AllocationError> {
+    hrp_validate(cov)?;
+    let n = cov.len();
+    let mut clusters: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
+    let dist = |a: &[usize], b: &[usize]| {
+        a.iter()
+            .flat_map(|&i| {
+                b.iter().map(move |&j| {
+                    let corr = cov[i][j].val() / (cov[i][i].val() * cov[j][j].val()).sqrt();
+                    (0.5 * (1.0 - corr)).max(0.0).sqrt()
+                })
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    while clusters.len() > 1 {
+        let mut best = (0usize, 1usize, f64::INFINITY);
+        for i in 0..clusters.len() {
+            for j in i + 1..clusters.len() {
+                let d = dist(&clusters[i], &clusters[j]);
+                if d < best.2 {
+                    best = (i, j, d);
+                }
+            }
+        }
+        let right = clusters.remove(best.1);
+        let mut left = clusters.remove(best.0);
+        left.extend(right);
+        clusters.push(left);
+    }
+    let order = clusters.pop().unwrap_or_default();
+    let seriated_order = order.clone();
+    let mut weights = vec![T::one(); n];
+    let mut active = vec![order];
+    while let Some(l) = active.pop() {
+        if l.len() < 2 {
+            continue;
+        }
+        let m = l.len() / 2;
+        let (a, b) = (l[..m].to_vec(), l[m..].to_vec());
+        let variance = |c: &[usize]| {
+            let mut inv = T::zero();
+            for &i in c {
+                inv += T::one() / cov[i][i];
+            }
+            let mut v = T::zero();
+            for &i in c {
+                for &j in c {
+                    v += (T::one() / cov[i][i] / inv) * cov[i][j] * (T::one() / cov[j][j] / inv);
+                }
+            }
+            v
+        };
+        let va = variance(&a);
+        let vb = variance(&b);
+        let den = (va + vb).max_val(T::from_f64(1e-14));
+        for &i in &a {
+            weights[i] *= vb / den;
+        }
+        for &i in &b {
+            weights[i] *= va / den;
+        }
+        active.push(a);
+        active.push(b);
+    }
+    let sum = weights.iter().copied().fold(T::zero(), |x, y| x + y);
+    for w in &mut weights {
+        *w /= sum.max_val(T::from_f64(1e-14));
+    }
+    Ok(HierarchicalRiskParityResult {
+        weights,
+        seriated_order,
+    })
+}
+pub fn hierarchical_risk_parity_weights<T: Real>(cov: &[Vec<T>]) -> Vec<T> {
+    try_hierarchical_risk_parity(cov)
+        .expect("valid HRP covariance")
+        .weights
+}
 pub fn implied_equilibrium_returns<T: Real>(
     cov: &[Vec<T>],
     weights: &[T],

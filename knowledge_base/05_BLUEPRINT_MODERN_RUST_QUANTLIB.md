@@ -50,7 +50,7 @@ Date / Calendar / Convention
 
 ### 3.6 Delivery, measurements, and workstation
 
-`ql-benches` is an offline statistical harness with fixed workloads, warmups, medians, IQRs, speedups, and hard parity assertions across 25 suites (`01_calendar_popcnt` through `25_phase13_parisian_cheyette_vix_aad`). `ql-terminal` re-exports `ql_terminal::prelude::*` and renders a zero-dependency 23-tab risk workstation: a $2 \times 4$ sub-pixel `BrailleCanvas`, 24-bit ANSI TrueColor ladders, live blotter values, XVA/SIMM/MVA/SA-CCR/KVA/FRTB, and calibrated chart series.
+`ql-benches` is an offline statistical harness with fixed workloads, warmups, medians, IQRs, speedups, and hard parity assertions across 26 suites (`01_calendar_popcnt` through `26_double_heston_tarf_coco_hrp_aad`). `ql-terminal` re-exports `ql_terminal::prelude::*` and renders a zero-dependency 24-tab risk workstation: a $2 \times 4$ sub-pixel `BrailleCanvas`, 24-bit ANSI TrueColor ladders, live blotter values, XVA/SIMM/MVA/SA-CCR/KVA/FRTB, and calibrated chart series.
 
 ## 4. Subsystem Architecture Matrix
 
@@ -63,4 +63,4 @@ Date / Calendar / Convention
 | Models/PDE/MC | `ql-models`, `ql-levy`, `ql-pde`, `ql-mc` | COS, H1-HW & BSM-HW hybrids, SLV particle & rBergomi, VIX futures/options, ADI, SIMD MC, QE, AMC envelope-AAD, Andersen-Broadie dual, RQMC | 05, 06, 14, 15, 23, 25 |
 | Asset classes | `ql-credit`, `ql-inflation`, `ql-fx`, `ql-exotics`, `ql-commodities` | CDS/CDO/kth-to-default, CPI & YoY/LPI caps/swaps, FX smiles/RKF/XCCS, barriers/Parisian, compound/chooser/lookback/Asian/Rainbow/Spread/Cliquet/Extensible, Worst-Of Autocallable, Heston/Bates/corridor variance swaps, futures & Swing/Gas Storage DP | 09, 10, 13, 16, 18, 23, 25 and crate suites |
 | Risk/automation | `ql-scripting`, `ql-xva`, `ql-dml`, `ql-portfolio` | VM/AAD, XVA/WWR/MPoR/CCDS/SA-CCR/KVA/SIMM/DIM/FRTB, DML/NN/PLS, DAG, coherent ES, Black-Litterman, Ledoit-Wolf, Box/Robust-Markowitz KKT IFT, Mean-CVaR, Almgren-Chriss/Obizhaeva-Wang & IFT Risk-Parity | 07, 08, 11, 12, 20, 22, 24, 25 and risk suites |
-| Delivery | `ql-benches`, `ql-terminal` | Statistical parity, SDK, 23-tab Braille/ANSI UI | 25-suite harness and terminal suite |
+| Delivery | `ql-benches`, `ql-terminal` | Statistical parity, SDK, 24-tab Braille/ANSI UI | 26-suite harness and terminal suite |

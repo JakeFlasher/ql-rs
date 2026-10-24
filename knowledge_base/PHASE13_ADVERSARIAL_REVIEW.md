@@ -106,3 +106,41 @@ Round 4 applied the paired tests and final corrections for eSSVI quote-vega offs
 ## Round 5 remediation (`24eb5ee..working tree`)
 
 Round 5 closed remaining surgical issues in Andersen–Broadie continuation valuation, Cheyette callable/coterminal behavior, heterogeneous kth-default cavity weighting, robust shrinkage/IRLS, monotone-convex positivity, eSSVI calibration, MPoR handling, and benchmark/terminal cleanup. Full workspace checks pass.
+
+
+---
+
+## Round 5 Audit (`24eb5ee..ab6cbd4`) & Round 6 Final Remediation Plan
+
+### Verified Fixed in `ab6cbd4` (`0 CRITICAL / 0 HIGH / 0 MEDIUM` in `ql-benches`, `ql-terminal`, `knowledge_base`, `ql-vol`, `ql-mc`, `ql-xva`)
+- **`[HIGH]` FIXED — `AmcEngine::andersen_broadie_primal_dual_bounds` (`crates/ql-mc/src/andersen_broadie.rs:73-120`)**: `eval_cont` evaluates the Chebyshev continuation polynomial on both outer (`v_outer`) and inner (`cond`) paths, so $\Delta \pi_k = v_{\text{outer}} - \text{cond}$ is a true zero-mean martingale increment.
+- **`[MEDIUM]` FIXED — `CalibratedEssviSurface::calibrate` (`crates/ql-vol/src/surface.rs:904-928`)**: Enforces sequential calendar and Gatheral–Jacquier butterfly arbitrage clamping across expiries.
+- **`[HIGH]` FIXED — `ledoit_wolf_shrinkage` (`crates/ql-portfolio/src/allocation.rs:989-997`)**: Excludes diagonal `i == j` from `pi` for `DiagonalVariance` and `ConstantCorrelation`.
+- **`[LOW]` FIXED — `crates/ql-benches/src/suites.rs` & `knowledge_base/{05,07}*.md`**: All `QL_DEBUG_PHASE13` `eprintln!` blocks removed and documentation synchronized.
+
+### Remaining 4 Surgical Edits Targeted in Round 6 (`CODEX_PHASE13_ROUND6_PROMPT.md`)
+1. **`[CRITICAL]` `crates/ql-rates/src/cheyette.rs:136-275`**: Untouched in `ab6cbd4` (`0` lines modified). Evaluate `swap_loading` in `T: Real` and integrate `price_callable_range_accrual_hw1f` across 3 HW1F Gauss–Hermite short-rate nodes with issuer call cap `call_strike`.
+2. **`[HIGH]` `crates/ql-curves/src/curves.rs:264-370, 472-483`**: Untouched in `ab6cbd4` (`0` lines modified). Compute boundary nodal forwards `f[0], f[n]` after interior clamping and apply `interval_g` vertex positivity scaling.
+3. **`[HIGH]` `crates/ql-portfolio/src/allocation.rs:1079-1133`**: Untouched in `ab6cbd4`. Run `for iter in 0..32` with `1e-16` regularizer and `iter >= 16` minimum in `try_robust_markowitz_weights`, plus `Dual` vs central-FD assertions.
+4. **`[MEDIUM]` `crates/ql-credit/src/cdo.rs:431-487`**: Use midpoint `(prev_ps[j] + ps[j]) * 0.5` in `sub` and exact `P(N_{-m} = k - 1) = kth_to_default_survival_probability(s.k, &sub, s.correlation) - kth_to_default_survival_probability(s.k - 1, &sub, s.correlation)` in `cav`.
+
+
+---
+
+## Round 6 Final Multi-Agent Audit Sign-Off (`ab6cbd4..1c46202`)
+
+All 4 specialist audit subagents (`d7266665`, `fdb49aaf`, `1e332c19`, `f94752af`) audited commit `1c46202` (`9221898..1c46202`) and confirmed unconditional **`0 CRITICAL / 0 HIGH / 0 MEDIUM / 0 LOW`** convergence across all 23 crates, 25 benchmark suites, and 23 terminal workstation tabs:
+
+1. **`crates/ql-rates/src/cheyette.rs:134-308` — VERIFIED (`0` issues)**:
+   - `calibrate_cheyette_coterminal_ad`: `swap_loading` is evaluated natively in `T: Real` using `Cheyette1F { mu }.g_fn(t, u)` and `curve.discount_factor`, with a 3rd-order Taylor expansion for `seg` when `|mu0 * dt_seg| < 1e-6`.
+   - `price_callable_range_accrual_hw1f`: Integrates over a 3-node Gauss–Hermite short-rate quadrature with martingale-normalized stochastic discount factor `state_df = (-std_x * z - 0.5 * std_x * std_x).exp()` and issuer call cap `cpn.min_val(call_strike)`, verified by `cheyette_callable_has_positive_embedded_option_and_sigma_vega`.
+2. **`crates/ql-curves/src/curves.rs:261-509` — VERIFIED (`0` issues)**:
+   - `MonotoneConvexZeroCurve`: Computes boundary nodal forwards `f[0], f[n]` after interior clamping and applies `interval_g` vertex positivity scaling `scale = (3 * fd * (g0 + g1) / (g0^2 + g0*g1 + g1^2 + 1e-16)).clamp(0, 1)`, verified by `monotone_convex_nodes_and_positivity`.
+3. **`crates/ql-portfolio/src/allocation.rs:1076-1156` — VERIFIED (`0` issues)**:
+   - `try_robust_markowitz_weights`: Runs up to 32 Fixed-Point AD iterations (`1e-16` regularizer, `iter >= 16` minimum before `1e-14` break), verified by `robust_markowitz_dual_matches_fd_in_mu_and_kappa` (`< 1e-6` parity in both $\mu_0$ and $\kappa$).
+4. **`crates/ql-credit/src/cdo.rs:431-532` — VERIFIED (`0` issues)**:
+   - `price_kth_to_default_basket`: Uses midpoint leave-one-out sub-basket default probabilities and exact cavity mass `cav = (P(N_{-m} < k) - P(N_{-m} < k - 1)).max_val(0)` with `protection += s.notional * df * w_lgd`, verified by `kth_heterogeneous_recovery_partition_of_unity` (`< 1e-10` partition-of-unity conservation across $k = 1, 2, 3$ for heterogeneous recoveries `[0.10, 0.45, 0.80]`).
+5. **Workspace Verification Gate**:
+   - `cargo test --workspace --quiet` — **PASS**
+   - `cargo clippy --workspace --all-targets -- -D warnings` — **PASS (`0` warnings)**
+   - `QL_RUN_TIMING_GATES=1 cargo test --release -p ql-benches -- --nocapture` — **PASS** (all 25 suites pass; Suite 25 achieves `5.88x` speedup and `1.502e-7` AD vs FD parity diff).

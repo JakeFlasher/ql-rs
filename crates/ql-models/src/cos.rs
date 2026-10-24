@@ -1,3 +1,4 @@
+use crate::DoubleHestonParams;
 use crate::{BatesParams, Complex, HestonParams};
 use ql_ad::Real;
 #[derive(Copy, Clone, Debug)]
@@ -247,4 +248,63 @@ impl CosHestonEngine {
             })
             .collect()
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn double_heston_cos_price<T: Real>(
+    spot: T,
+    strike: T,
+    expiry: T,
+    rate: T,
+    div: T,
+    params: &DoubleHestonParams<T>,
+    n_terms: usize,
+    l_trunc: f64,
+    is_call: bool,
+) -> T {
+    double_heston_cos_strip_prices(
+        spot,
+        std::slice::from_ref(&strike),
+        expiry,
+        rate,
+        div,
+        params,
+        n_terms,
+        l_trunc,
+        is_call,
+    )[0]
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn double_heston_cos_strip_prices<T: Real>(
+    spot: T,
+    strikes: &[T],
+    expiry: T,
+    rate: T,
+    div: T,
+    params: &DoubleHestonParams<T>,
+    n_terms: usize,
+    l_trunc: f64,
+    is_call: bool,
+) -> Vec<T> {
+    let engine = CosHestonEngine { n_terms, l_trunc };
+    // The first-factor COS kernel is retained exactly in the degenerate
+    // second-factor limit.  For a genuine two-factor model, aggregate the
+    // CIR means for the truncation interval while retaining the product
+    // characteristic function.
+    let p1 = params.factor1;
+    let p2 = params.factor2;
+    if p2.v0.val().abs() < 1e-14 && p2.theta.val().abs() < 1e-14 && p2.sigma_v.val().abs() < 1e-14 {
+        return engine.price_strikes(&p1, spot, rate, div, expiry, strikes, is_call);
+    }
+    let cf = |u: Complex<T>| params.char_func_unit_spot(u, rate, div, expiry);
+    let v0 = p1.v0 + p2.v0;
+    let theta = p1.theta + p2.theta;
+    let sigma_v = (p1.sigma_v * p1.sigma_v + p2.sigma_v * p2.sigma_v).sqrt();
+    let kappa = (p1.kappa.abs() + p2.kappa.abs()).max_val(T::from_f64(1e-8));
+    let rho = (p1.rho * p1.sigma_v + p2.rho * p2.sigma_v)
+        / (p1.sigma_v.abs() + p2.sigma_v.abs()).max_val(T::from_f64(1e-12));
+    engine.price_impl(
+        cf, v0, theta, sigma_v, kappa, rho, spot, rate, div, expiry, strikes, is_call,
+    )
 }

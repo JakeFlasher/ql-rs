@@ -2467,8 +2467,148 @@ fn benchmark_phase13_vix_parisian_robust(scale: usize) -> ComparisonRow {
     )
 }
 
+fn benchmark_phase14_double_heston_tarf_coco_hrp(scale: usize) -> ComparisonRow {
+    let cfg = config(scale);
+    let baseline = || {
+        let p = ql_models::DoubleHestonParams {
+            factor1: HestonParams {
+                v0: 0.04,
+                kappa: 1.4,
+                theta: 0.04,
+                sigma_v: 0.3,
+                rho: -0.7,
+            },
+            factor2: HestonParams {
+                v0: 0.01,
+                kappa: 2.0,
+                theta: 0.01,
+                sigma_v: 0.2,
+                rho: -0.3,
+            },
+        };
+        let dh =
+            ql_models::double_heston_cos_price(100.0, 100.0, 1.0, 0.03, 0.0, &p, 48, 10.0, true);
+        let tarf = ql_fx::price_fx_tarf_mc_ad(
+            &ql_fx::FxTarfSpec {
+                notional: 1.0,
+                spot: 1.0,
+                strike: 1.0,
+                r_dom: 0.02,
+                r_for: 0.01,
+                vol: 0.12,
+                fixing_times: vec![0.5, 1.0, 1.5],
+                target_profit: 0.05,
+                downside_leverage: 1.2,
+                is_exporter_call: true,
+                cap_convention: ql_fx::FxTarfCapConvention::ExactCap,
+                smoothing_eps: 1e-4,
+            },
+            8,
+            7,
+        )
+        .npv;
+        let coco = ql_fixed_income::price_coco_bond_ds(&ql_fixed_income::CocoBondSpec {
+            face_value: 100.0,
+            coupon_rate: 0.05,
+            coupon_times: vec![1.0, 2.0],
+            maturity: 2.0,
+            rate: 0.03,
+            credit_spread: 0.01,
+            spot: 100.0,
+            trigger_barrier: 60.0,
+            div_yield: 0.0,
+            eq_vol: 0.25,
+            trigger_payoff: ql_fixed_income::CocoTriggerPayoff::WriteDown {
+                recovery_fraction: 0.4,
+            },
+        })
+        .dirty_price;
+        let hrp =
+            ql_portfolio::hierarchical_risk_parity_weights(&[vec![0.04, 0.01], vec![0.01, 0.09]]);
+        dh + tarf + coco + hrp.iter().sum::<f64>()
+    };
+    let sota = || {
+        type D = Dual<4>;
+        let p = ql_models::DoubleHestonParams {
+            factor1: HestonParams {
+                v0: D::from_value(0.04),
+                kappa: D::from_value(1.4),
+                theta: D::from_value(0.04),
+                sigma_v: D::from_value(0.3),
+                rho: D::from_value(-0.7),
+            },
+            factor2: HestonParams {
+                v0: D::from_value(0.01),
+                kappa: D::from_value(2.0),
+                theta: D::from_value(0.01),
+                sigma_v: D::from_value(0.2),
+                rho: D::from_value(-0.3),
+            },
+        };
+        let dh = ql_models::double_heston_cos_price(
+            D::from_value(100.0),
+            D::from_value(100.0),
+            D::from_value(1.0),
+            D::from_value(0.03),
+            D::from_value(0.0),
+            &p,
+            48,
+            10.0,
+            true,
+        );
+        let tarf = ql_fx::price_fx_tarf_mc_ad(
+            &ql_fx::FxTarfSpec {
+                notional: D::from_value(1.0),
+                spot: D::from_value(1.0),
+                strike: D::from_value(1.0),
+                r_dom: D::from_value(0.02),
+                r_for: D::from_value(0.01),
+                vol: D::from_value(0.12),
+                fixing_times: vec![0.5, 1.0, 1.5],
+                target_profit: D::from_value(0.05),
+                downside_leverage: D::from_value(1.2),
+                is_exporter_call: true,
+                cap_convention: ql_fx::FxTarfCapConvention::ExactCap,
+                smoothing_eps: 1e-4,
+            },
+            8,
+            7,
+        )
+        .npv;
+        let coco = ql_fixed_income::price_coco_bond_ds(&ql_fixed_income::CocoBondSpec {
+            face_value: D::from_value(100.0),
+            coupon_rate: D::from_value(0.05),
+            coupon_times: vec![1.0, 2.0],
+            maturity: 2.0,
+            rate: D::from_value(0.03),
+            credit_spread: D::from_value(0.01),
+            spot: D::from_value(100.0),
+            trigger_barrier: D::from_value(60.0),
+            div_yield: D::from_value(0.0),
+            eq_vol: D::from_value(0.25),
+            trigger_payoff: ql_fixed_income::CocoTriggerPayoff::WriteDown {
+                recovery_fraction: D::from_value(0.4),
+            },
+        })
+        .dirty_price;
+        let hrp = ql_portfolio::hierarchical_risk_parity_weights(&[
+            vec![D::from_value(0.04), D::from_value(0.01)],
+            vec![D::from_value(0.01), D::from_value(0.09)],
+        ]);
+        dh.val + tarf.val + coco.val + hrp.iter().map(|x| x.val).sum::<f64>()
+    };
+    run_comparison(
+        "26_double_heston_tarf_coco_hrp_aad",
+        "Double Heston/TARF/CoCo/HRP single-pass AD",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
+}
+
 pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
-    // Keep all quantitative engine dependencies linked into the 25-suite
+    // Keep all quantitative engine dependencies linked into the 26-suite
     // benchmark binary, including engines used by the parity harness.
     let _ = ql_math::inv_norm_cdf(0.5);
     let _ = std::mem::size_of::<ql_pde::Fd2dHestonEngine>();
@@ -2502,6 +2642,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_slv_autocall(scale),
         benchmark_frtb_cvar_execution(scale),
         benchmark_phase13_vix_parisian_robust(scale),
+        benchmark_phase14_double_heston_tarf_coco_hrp(scale),
     ]
 }
 

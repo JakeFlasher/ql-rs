@@ -179,3 +179,115 @@ pub fn try_obizhaeva_wang_execution<T: Real>(
 pub fn obizhaeva_wang_execution<T: Real>(s: &ObizhaevaWangSpec<T>) -> OptimalExecutionReport<T> {
     try_obizhaeva_wang_execution(s).expect("valid Obizhaeva-Wang inputs")
 }
+
+#[derive(Clone, Debug)]
+pub struct MultiAssetAlmgrenChrissSpec<T: Real> {
+    pub initial_inventory: Vec<T>,
+    pub horizon: T,
+    pub num_steps: usize,
+    pub covariance: Vec<Vec<T>>,
+    pub temporary_impact: Vec<Vec<T>>,
+    pub permanent_impact: Vec<Vec<T>>,
+    pub risk_aversion: T,
+}
+#[derive(Clone, Debug)]
+pub struct MultiAssetExecutionReport<T: Real> {
+    pub times: Vec<f64>,
+    pub inventory_schedule: Vec<Vec<T>>,
+    pub trade_schedule: Vec<Vec<T>>,
+    pub expected_cost: T,
+    pub cost_variance: T,
+    pub mean_variance_utility: T,
+}
+pub fn try_multi_asset_almgren_chriss_execution<T: Real>(
+    s: &MultiAssetAlmgrenChrissSpec<T>,
+) -> Result<MultiAssetExecutionReport<T>, AllocationError> {
+    let d = s.initial_inventory.len();
+    if d == 0
+        || s.num_steps == 0
+        || s.horizon.val() <= 0.0
+        || s.covariance.len() != d
+        || s.temporary_impact.len() != d
+        || s.permanent_impact.len() != d
+        || s.covariance.iter().any(|r| r.len() != d)
+        || s.temporary_impact.iter().any(|r| r.len() != d)
+        || s.permanent_impact.iter().any(|r| r.len() != d)
+        || s.risk_aversion.val() < 0.0
+    {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    let n = s.num_steps;
+    let dt = s.horizon / n as f64;
+    let mut inv = vec![vec![T::zero(); d]; n + 1];
+    inv[0] = s.initial_inventory.clone();
+    if n > 1 {
+        let m = (n - 1) * d;
+        let mut a = vec![vec![T::zero(); m]; m];
+        let mut rhs = vec![T::zero(); m];
+        for k in 0..(n - 1) {
+            for i in 0..d {
+                let row = k * d + i;
+                rhs[row] = T::zero();
+                for j in 0..d {
+                    a[row][k * d + j] += s.temporary_impact[i][j] * 2.0
+                        + s.risk_aversion * s.covariance[i][j] * dt * dt * 2.0;
+                    if k > 0 {
+                        a[row][(k - 1) * d + j] -= s.temporary_impact[i][j];
+                    }
+                    if k + 1 < n - 1 {
+                        a[row][(k + 1) * d + j] -= s.temporary_impact[i][j];
+                    }
+                    rhs[row] += if k == 0 {
+                        s.temporary_impact[i][j] * s.initial_inventory[j]
+                    } else {
+                        T::zero()
+                    };
+                }
+            }
+        }
+        if let Ok(sol) = crate::allocation::solve_linear_generic(&a, &rhs) {
+            for k in 1..n {
+                for i in 0..d {
+                    inv[k][i] = sol[(k - 1) * d + i];
+                }
+            }
+        } else {
+            for (k, row) in inv.iter_mut().enumerate().take(n).skip(1) {
+                for (i, value) in row.iter_mut().enumerate() {
+                    *value = s.initial_inventory[i] * (1.0 - k as f64 / n as f64);
+                }
+            }
+        }
+    }
+    let mut trades = vec![vec![T::zero(); d]; n];
+    let mut cost = T::zero();
+    for k in 0..n {
+        for i in 0..d {
+            trades[k][i] = inv[k][i] - inv[k + 1][i];
+            for j in 0..d {
+                cost += s.temporary_impact[i][j] * trades[k][i] * trades[k][j];
+            }
+        }
+    }
+    let mut var = T::zero();
+    for row in inv.iter().take(n) {
+        for i in 0..d {
+            for j in 0..d {
+                var += s.covariance[i][j] * row[i] * row[j] * dt;
+            }
+        }
+    }
+    Ok(MultiAssetExecutionReport {
+        times: (0..=n).map(|k| (s.horizon * k as f64).val()).collect(),
+        inventory_schedule: inv,
+        trade_schedule: trades,
+        expected_cost: cost,
+        cost_variance: var,
+        mean_variance_utility: cost + s.risk_aversion * var,
+    })
+}
+pub fn multi_asset_almgren_chriss_execution<T: Real>(
+    s: &MultiAssetAlmgrenChrissSpec<T>,
+) -> MultiAssetExecutionReport<T> {
+    try_multi_asset_almgren_chriss_execution(s).expect("valid multi-asset execution inputs")
+}

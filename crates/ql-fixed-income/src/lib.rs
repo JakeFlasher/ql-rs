@@ -1,10 +1,12 @@
 pub mod callable_bond;
 pub mod cat_bond;
+pub mod coco_bond;
 pub mod convertible_bond;
 pub mod mbs_and_cpi;
 pub mod nss;
 pub use callable_bond::*;
 pub use cat_bond::*;
+pub use coco_bond::*;
 pub use convertible_bond::*;
 pub use mbs_and_cpi::*;
 pub use nss::*;

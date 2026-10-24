@@ -85,3 +85,68 @@ pub fn spark_spread_option<T: Real>(
         option_type,
     )
 }
+
+#[derive(Clone, Debug)]
+pub struct ThreeLegSpreadOptionSpec<T: Real> {
+    pub forward1: T,
+    pub forward2: T,
+    pub forward3: T,
+    pub weight1: T,
+    pub weight2: T,
+    pub weight3: T,
+    pub strike: T,
+    pub vol1: T,
+    pub vol2: T,
+    pub vol3: T,
+    pub rho12: T,
+    pub rho13: T,
+    pub rho23: T,
+    pub rate: T,
+    pub expiry: T,
+    pub option_type: OptionType,
+}
+pub fn price_three_leg_spread_option<T: Real>(s: &ThreeLegSpreadOptionSpec<T>) -> T {
+    if s.weight3.val().abs() <= 1e-14 {
+        return kirk_spread_option(
+            s.forward1 * s.weight1,
+            s.forward2 * s.weight2,
+            s.strike,
+            s.vol1,
+            s.vol2,
+            s.rho12,
+            s.rate,
+            s.expiry,
+            s.option_type,
+        );
+    }
+    let a = s.forward1 * s.weight1 + s.forward3 * s.weight3;
+    let b = s.forward2 * s.weight2 + s.strike;
+    let va = (s.forward1 * s.weight1 / a).powf(2.0) * s.vol1 * s.vol1
+        + (s.forward3 * s.weight3 / a).powf(2.0) * s.vol3 * s.vol3
+        + T::from_f64(2.0) * s.forward1 * s.weight1 * s.forward3 * s.weight3 / (a * a)
+            * s.rho13
+            * s.vol1
+            * s.vol3;
+    let vb = s.forward2 * s.weight2 / b * s.forward2 * s.weight2 / b * s.vol2 * s.vol2;
+    let cov = (s.forward1 * s.weight1 / a)
+        * (s.forward2 * s.weight2 / b)
+        * s.rho12
+        * s.vol1
+        * s.vol2
+        + (s.forward3 * s.weight3 / a) * (s.forward2 * s.weight2 / b) * s.rho23 * s.vol3 * s.vol2;
+    let sig = (va + vb - T::from_f64(2.0) * cov).max_val(T::zero()).sqrt();
+    let st = sig * s.expiry.sqrt();
+    if st.val() <= 1e-14 {
+        return (-s.rate * s.expiry).exp()
+            * (if s.option_type.is_call() {
+                a - b
+            } else {
+                b - a
+            })
+            .max_val(T::zero());
+    }
+    let d1 = (a / b).ln() / st + st * 0.5;
+    let d2 = d1 - st;
+    let sign = T::from_f64(if s.option_type.is_call() { 1.0 } else { -1.0 });
+    (-s.rate * s.expiry).exp() * sign * (a * (sign * d1).norm_cdf() - b * (sign * d2).norm_cdf())
+}

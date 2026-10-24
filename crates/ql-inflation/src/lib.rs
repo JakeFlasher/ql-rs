@@ -519,3 +519,132 @@ pub fn lpi_inflation_swap_npv<T: Real>(
     let npv = pv * s.notional;
     (if s.pay_fixed { npv } else { -npv }, fair)
 }
+
+#[derive(Copy, Clone, Debug)]
+pub struct ZciisSwaptionSpec<T: Real = f64> {
+    pub notional: T,
+    pub strike_rate: T,
+    pub option_expiry_years: f64,
+    pub swap_maturity_years: f64,
+    pub target_month: Option<u8>,
+    pub is_payer: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct YoYInflationSwaptionSpec<T: Real = f64> {
+    pub notional: T,
+    pub strike_rate: T,
+    pub option_expiry_years: f64,
+    pub start_year: usize,
+    pub end_year: usize,
+    pub is_payer: bool,
+}
+
+pub fn price_zciis_swaption<T: Real>(
+    spec: &ZciisSwaptionSpec<T>,
+    discount: &impl YieldTermStructure<T>,
+    inflation: &ZeroInflationCurve<T>,
+    vol: T,
+    model: YoYOptionletModel,
+) -> (T, T) {
+    let te = spec.option_expiry_years;
+    let tm = spec.swap_maturity_years;
+    if te <= 0.0 || tm <= 0.0 || te > tm || !vol.val().is_finite() || vol.val() < 0.0 {
+        return (T::zero(), T::zero());
+    }
+    let ratio = inflation.forward_cpi(tm, spec.target_month) / T::from_f64(inflation.base_cpi);
+    let z = ratio.powf(1.0 / tm) - T::one();
+    let ann = spec.notional
+        * T::from_f64(tm)
+        * (T::one() + z).powf((tm - 1.0).max(0.0))
+        * discount.discount_factor(tm);
+    (
+        yoy_optionlet(
+            z,
+            spec.strike_rate,
+            vol,
+            T::from_f64(te),
+            ann,
+            model,
+            spec.is_payer,
+        ),
+        z,
+    )
+}
+
+pub fn price_yoy_inflation_swaption<T: Real>(
+    spec: &YoYInflationSwaptionSpec<T>,
+    discount: &impl YieldTermStructure<T>,
+    inflation: &ZeroInflationCurve<T>,
+    vol: T,
+    model: YoYOptionletModel,
+) -> (T, T) {
+    if spec.end_year <= spec.start_year
+        || spec.option_expiry_years <= 0.0
+        || spec.option_expiry_years > spec.start_year as f64 + 1e-12
+        || !vol.val().is_finite()
+        || vol.val() < 0.0
+    {
+        return (T::zero(), T::zero());
+    }
+    let mut ann = T::zero();
+    let mut weighted = T::zero();
+    for y in (spec.start_year + 1)..=spec.end_year {
+        let df = discount.discount_factor(y as f64);
+        let f = inflation.forward_cpi(y as f64, None) / inflation.forward_cpi((y - 1) as f64, None)
+            - T::one();
+        ann += df;
+        weighted += df * f;
+    }
+    let fwd = weighted / ann.max_val(T::from_f64(1e-14));
+    (
+        yoy_optionlet(
+            fwd,
+            spec.strike_rate,
+            vol,
+            T::from_f64(spec.option_expiry_years),
+            spec.notional * ann,
+            model,
+            spec.is_payer,
+        ),
+        fwd,
+    )
+}
+
+pub fn estimate_multiplicative_seasonality(
+    observations: &[(u8, f64)],
+) -> Result<MultiplicativeSeasonality, InflationError> {
+    if observations.len() < 13
+        || observations
+            .iter()
+            .any(|(m, x)| *m == 0 || *m > 12 || !x.is_finite() || *x <= 0.0)
+    {
+        return Err(InflationError::InvalidSeasonality);
+    }
+    let mut seen = [false; 13];
+    let mut logs = Vec::with_capacity(observations.len() - 1);
+    for w in observations.windows(2) {
+        let g = (w[1].1 / w[0].1).ln();
+        logs.push((w[1].0, g));
+        seen[w[1].0 as usize] = true;
+    }
+    if (1..=12).any(|m| !seen[m]) {
+        return Err(InflationError::InvalidSeasonality);
+    }
+    let mean = logs.iter().map(|(_, g)| *g).sum::<f64>() / logs.len() as f64;
+    let mut gamma = [0.0; 12];
+    let mut count = [0usize; 12];
+    for (m, g) in logs {
+        gamma[m as usize - 1] += g - mean;
+        count[m as usize - 1] += 1;
+    }
+    for i in 0..12 {
+        gamma[i] /= count[i].max(1) as f64;
+    }
+    let center = gamma.iter().sum::<f64>() / 12.0;
+    let mut factors = [0.0; 12];
+    for i in 0..12 {
+        factors[i] = (gamma[i] - center).exp();
+    }
+    MultiplicativeSeasonality::new(factors)
+}

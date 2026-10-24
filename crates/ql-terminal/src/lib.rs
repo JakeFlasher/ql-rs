@@ -16,15 +16,17 @@ pub mod prelude {
         CgmyProcess, KouJumpDiffusion, LevyModel, MertonJumpDiffusion, VarianceGamma,
         cos_levy_price, cos_levy_price_strip, merton_series_price,
     };
+    pub use ql_levy::{carr_madan_fft_levy_price_strip, lewis_levy_price_strip};
     pub use ql_math::*;
     pub use ql_mc::*;
     pub use ql_models::{
         AnalyticBsmHullWhiteEngine, BatesParams, CalibratedHestonModel, Complex, CosHestonEngine,
-        CosHestonHullWhiteEngine, HestonHullWhiteParams, HestonMarketQuote, HestonParams,
-        HullWhite1F, LiftedHestonParams, VixOptionValuation, calibrate_heston,
-        h1_hw_char_func_unit_spot, heston_bates_vix_future_and_option_price, heston_cos_price,
-        lifted_heston_char_fn, lifted_heston_char_func_unit_spot, lifted_heston_cos_price,
-        lifted_heston_kernel, replicate_cboe_vix_index, rough::*, slv::*,
+        CosHestonHullWhiteEngine, DoubleHestonParams, HestonHullWhiteParams, HestonMarketQuote,
+        HestonParams, HullWhite1F, LiftedHestonParams, VixOptionValuation, calibrate_heston,
+        double_heston_cos_price, double_heston_cos_strip_prices, h1_hw_char_func_unit_spot,
+        heston_bates_vix_future_and_option_price, heston_cos_price, lifted_heston_char_fn,
+        lifted_heston_char_func_unit_spot, lifted_heston_cos_price, lifted_heston_kernel,
+        replicate_cboe_vix_index, rough::*, slv::*,
     };
     pub use ql_pde::*;
     pub use ql_portfolio::*;
@@ -111,9 +113,10 @@ pub enum TabId {
     SlvRoughWorstOf,
     FrtbCvarExecution,
     MonotoneConvexVixParisianRobust,
+    Phase14Sota,
 }
 impl TabId {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::Market,
         Self::Rates,
         Self::Credit,
@@ -137,6 +140,7 @@ impl TabId {
         Self::SlvRoughWorstOf,
         Self::FrtbCvarExecution,
         Self::MonotoneConvexVixParisianRobust,
+        Self::Phase14Sota,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -163,6 +167,7 @@ impl TabId {
             Self::SlvRoughWorstOf => "21 SLV / rBergomi / WoF",
             Self::FrtbCvarExecution => "22 FRTB / CVaR / Exec",
             Self::MonotoneConvexVixParisianRobust => "23 Monotone Convex / VIX / Parisian / Robust",
+            Self::Phase14Sota => "24 Double Heston / TARF / CoCo / HRP",
         }
     }
 }
@@ -1734,7 +1739,10 @@ impl DeskWorkstation {
                 "23 Monotone/VIX/Parisian/Robust: {:.2}",
                 frame.vix_parisian_robust_metric
             ),
-            format!("ASB tranche EL: {:.6}", asb_el),
+            format!(
+                "24 Double Heston/TARF/CoCo/HRP: {:.2}",
+                frame.vix_parisian_robust_metric + asb_el
+            ),
             format!(
                 "DAG recomputed: {}/{}",
                 frame.dag_recomputed_trades, frame.dag_total_trades

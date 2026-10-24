@@ -309,6 +309,7 @@ dependencies = [
  "ql-curves",
  "ql-dml",
  "ql-exotics",
+ "ql-fixed-income",
  "ql-fx",
  "ql-inflation",
  "ql-instruments",
@@ -329,6 +330,7 @@ dependencies = [
 name = "ql-commodities"
 version = "0.2.0"
 dependencies = [
+ "nalgebra",
  "ql-ad",
  "ql-curves",
  "ql-instruments",
@@ -404,6 +406,7 @@ dependencies = [
  "ql-ad",
  "ql-curves",
  "ql-math",
+ "ql-mc",
  "ql-time",
  "thiserror",
 ]
@@ -588,6 +591,7 @@ version = "0.2.0"
 dependencies = [
  "ql-ad",
  "ql-curves",
+ "ql-math",
  "ql-mc",
  "ql-models",
  "ql-time",

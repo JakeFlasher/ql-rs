@@ -187,6 +187,313 @@ impl BermudanSwaption {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct SwaptionSabrNode<T: Real> {
+    pub expiry: f64,
+    pub swap_tenor: f64,
+    pub forward: T,
+    pub alpha: T,
+    pub beta: f64,
+    pub rho: T,
+    pub nu: T,
+}
+#[derive(Clone, Debug)]
+pub struct SwaptionSabrCube<T: Real> {
+    pub expiries: Vec<f64>,
+    pub swap_tenors: Vec<f64>,
+    pub beta: f64,
+    pub nodes: Vec<Vec<SwaptionSabrNode<T>>>,
+    pub use_normal_vol: bool,
+}
+impl<T: Real> SwaptionSabrCube<T> {
+    fn bracket(xs: &[f64], x: f64) -> (usize, usize, f64) {
+        if xs.len() <= 1 {
+            return (0, 0, 0.0);
+        }
+        if x <= xs[0] {
+            return (0, 0, 0.0);
+        }
+        if x >= xs[xs.len() - 1] {
+            let n = xs.len() - 1;
+            return (n, n, 0.0);
+        }
+        let i = xs.partition_point(|v| *v <= x).saturating_sub(1);
+        (
+            i,
+            i + 1,
+            ((x - xs[i]) / (xs[i + 1] - xs[i])).clamp(0.0, 1.0),
+        )
+    }
+    pub fn interpolate_params(&self, expiry: f64, tenor: f64) -> (T, T, T) {
+        let (i0, i1, we) = Self::bracket(&self.expiries, expiry);
+        let (j0, j1, ws) = Self::bracket(&self.swap_tenors, tenor);
+        let w = |a: usize, b: usize| {
+            T::from_f64(if a == 0 { 1.0 - we } else { we } * if b == 0 { 1.0 - ws } else { ws })
+        };
+        let alpha = self.nodes[i0][j0].alpha * w(0, 0)
+            + self.nodes[i0][j1].alpha * w(0, 1)
+            + self.nodes[i1][j0].alpha * w(1, 0)
+            + self.nodes[i1][j1].alpha * w(1, 1);
+        let rho = (self.nodes[i0][j0].rho * w(0, 0)
+            + self.nodes[i0][j1].rho * w(0, 1)
+            + self.nodes[i1][j0].rho * w(1, 0)
+            + self.nodes[i1][j1].rho * w(1, 1))
+        .max_val(T::from_f64(-0.999))
+        .min_val(T::from_f64(0.999));
+        let nu = self.nodes[i0][j0].nu * w(0, 0)
+            + self.nodes[i0][j1].nu * w(0, 1)
+            + self.nodes[i1][j0].nu * w(1, 0)
+            + self.nodes[i1][j1].nu * w(1, 1);
+        (
+            alpha.max_val(T::from_f64(1e-8)),
+            rho,
+            nu.max_val(T::from_f64(1e-8)),
+        )
+    }
+    pub fn implied_vol(&self, expiry: f64, tenor: f64, forward: T, strike: T) -> T {
+        let (a, r, n) = self.interpolate_params(expiry, tenor);
+        ql_vol::AdSabrSmile::new(
+            forward,
+            T::from_f64(expiry.max(1e-8)),
+            a,
+            T::from_f64(self.beta),
+            r,
+            n,
+        )
+        .vol(strike)
+    }
+    pub fn alpha_from_atm_vol(
+        forward: T,
+        expiry: f64,
+        atm: T,
+        beta: f64,
+        rho: T,
+        nu: T,
+        normal: bool,
+    ) -> T {
+        let mut a = if normal {
+            atm
+        } else {
+            atm * forward.powf(1.0 - beta)
+        };
+        for _ in 0..6 {
+            let sm = ql_vol::AdSabrSmile::new(
+                forward,
+                T::from_f64(expiry.max(1e-8)),
+                a,
+                T::from_f64(beta),
+                rho,
+                nu,
+            );
+            let h = 1e-5_f64.max(a.val().abs() * 1e-5);
+            let up = ql_vol::AdSabrSmile::new(
+                forward,
+                T::from_f64(expiry.max(1e-8)),
+                a + T::from_f64(h),
+                T::from_f64(beta),
+                rho,
+                nu,
+            )
+            .vol(forward);
+            let dn = ql_vol::AdSabrSmile::new(
+                forward,
+                T::from_f64(expiry.max(1e-8)),
+                a - T::from_f64(h),
+                T::from_f64(beta),
+                rho,
+                nu,
+            )
+            .vol(forward);
+            a -= (sm.vol(forward) - atm) / ((up - dn) / (2.0 * h)).max_val(T::from_f64(1e-10));
+            a = a.max_val(T::from_f64(1e-8));
+        }
+        a
+    }
+}
+#[derive(Clone, Debug)]
+pub struct CalibratedSwaptionSabrCube {
+    pub cube: SwaptionSabrCube<f64>,
+    pub node_calibrations: Vec<Vec<ql_vol::CalibratedSabrSmile>>,
+}
+impl CalibratedSwaptionSabrCube {
+    pub fn calibrate(
+        expiries: Vec<f64>,
+        tenors: Vec<f64>,
+        beta: f64,
+        initial: (f64, f64, f64),
+        quotes: &[Vec<(f64, Vec<ql_vol::SmileStrikeQuote>)>],
+    ) -> Result<Self, ql_math::MathError> {
+        let mut nodes = Vec::new();
+        let mut cal = Vec::new();
+        for (i, &e) in expiries.iter().enumerate() {
+            let mut nr = Vec::new();
+            let mut nc = Vec::new();
+            for (j, &tenor) in tenors.iter().enumerate() {
+                let (f, q) = quotes
+                    .get(i)
+                    .and_then(|r| r.get(j))
+                    .cloned()
+                    .ok_or(ql_math::MathError::NotBracketed)?;
+                let c = ql_vol::CalibratedSabrSmile::calibrate(f, e, beta, initial, &q)?;
+                nr.push(SwaptionSabrNode {
+                    expiry: e,
+                    swap_tenor: tenor,
+                    forward: f,
+                    alpha: c.smile.alpha,
+                    beta,
+                    rho: c.smile.rho,
+                    nu: c.smile.nu,
+                });
+                nc.push(c);
+            }
+            nodes.push(nr);
+            cal.push(nc);
+        }
+        Ok(Self {
+            cube: SwaptionSabrCube {
+                expiries,
+                swap_tenors: tenors,
+                beta,
+                nodes,
+                use_normal_vol: false,
+            },
+            node_calibrations: cal,
+        })
+    }
+    pub fn vol_and_quote_vega(
+        &self,
+        expiry: f64,
+        tenor: f64,
+        forward: f64,
+        strike: f64,
+    ) -> (f64, Vec<f64>) {
+        let (i0, i1, we) = SwaptionSabrCube::<f64>::bracket(&self.cube.expiries, expiry);
+        let (j0, j1, ws) = SwaptionSabrCube::<f64>::bracket(&self.cube.swap_tenors, tenor);
+        let n = self
+            .node_calibrations
+            .iter()
+            .flat_map(|r| r.iter().map(|c| c.quotes.len()))
+            .sum();
+        let mut g = vec![0.0; n];
+        let mut off = 0;
+        for (i, row) in self.node_calibrations.iter().enumerate() {
+            for (j, c) in row.iter().enumerate() {
+                let w = if i == i0 {
+                    1.0 - we
+                } else if i == i1 {
+                    we
+                } else {
+                    0.0
+                } * if j == j0 {
+                    1.0 - ws
+                } else if j == j1 {
+                    ws
+                } else {
+                    0.0
+                };
+                if w != 0.0 {
+                    let p = ql_vol::AdSabrSmile::new(
+                        ql_ad::Dual::<3>::from_value(forward),
+                        ql_ad::Dual::<3>::from_value(expiry.max(1e-8)),
+                        ql_ad::Dual::<3>::variable(c.smile.alpha, 0),
+                        ql_ad::Dual::<3>::from_value(c.smile.beta),
+                        ql_ad::Dual::<3>::variable(c.smile.rho, 1),
+                        ql_ad::Dual::<3>::variable(c.smile.nu, 2),
+                    );
+                    let d = p.vol(ql_ad::Dual::<3>::from_value(strike));
+                    let v = c.sensitivity.vjp(&[w * d.d[0], w * d.d[1], w * d.d[2]]);
+                    for k in 0..v.len() {
+                        g[off + k] += v[k];
+                    }
+                }
+                off += c.quotes.len();
+            }
+        }
+        let (aa, rr, nn) = self.cube.interpolate_params(expiry, tenor);
+        let pd = ql_vol::AdSabrSmile::new(
+            ql_ad::Dual::<3>::from_value(forward),
+            ql_ad::Dual::<3>::from_value(expiry.max(1e-8)),
+            ql_ad::Dual::from_value(aa),
+            ql_ad::Dual::from_value(self.cube.beta),
+            ql_ad::Dual::from_value(rr),
+            ql_ad::Dual::from_value(nn),
+        );
+        (pd.vol(ql_ad::Dual::<3>::from_value(strike)).val(), g)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MidCurveSwaptionSpec {
+    pub notional: f64,
+    pub strike: f64,
+    pub option_expiry: f64,
+    pub forward_swap_times: Vec<f64>,
+    pub is_payer: bool,
+}
+pub fn price_midcurve_swaption_hw1f<T: Real, D: YieldTermStructure<T>, F: YieldTermStructure<T>>(
+    model: &ql_models::HullWhite1F<T>,
+    ois: &D,
+    fwd: &F,
+    s: &MidCurveSwaptionSpec,
+) -> T {
+    if s.option_expiry <= 0.0
+        || s.forward_swap_times.len() < 2
+        || s.forward_swap_times[0] < s.option_expiry - 1e-12
+    {
+        return T::zero();
+    }
+    let vx = (model.sigma * model.sigma * hw_var(model, T::from_f64(s.option_expiry)))
+        .max_val(T::zero())
+        .sqrt();
+    let mut out = T::zero();
+    for (z, w) in [
+        (-1.7320508075688772, 1.0 / 6.0),
+        (0.0, 2.0 / 3.0),
+        (1.7320508075688772, 1.0 / 6.0),
+    ] {
+        let x = vx * z;
+        let mut ann = T::zero();
+        let mut fl = T::zero();
+        for win in s.forward_swap_times.windows(2) {
+            let tau = win[1] - win[0];
+            let p1 = conditional_bond(model, ois, s.option_expiry, win[1], x);
+            let b0 = conditional_bond(model, fwd, s.option_expiry, win[0], x);
+            let b1 = conditional_bond(model, fwd, s.option_expiry, win[1], x);
+            ann += p1 * tau;
+            fl += (b0 / b1 - T::one()) * p1;
+        }
+        let sign = T::from_f64(if s.is_payer { 1.0 } else { -1.0 });
+        out += T::from_f64(w)
+            * T::from_f64(s.notional)
+            * (sign * (fl - T::from_f64(s.strike) * ann)).max_val(T::zero());
+    }
+    out
+}
+
+pub fn price_midcurve_swaption_g2pp<T: Real, D: YieldTermStructure<T>, F: YieldTermStructure<T>>(
+    model: &crate::G2PlusPlus<T>,
+    ois: &D,
+    _fwd: &F,
+    s: &MidCurveSwaptionSpec,
+    n_quad: usize,
+) -> T {
+    if s.option_expiry <= 0.0
+        || s.forward_swap_times.len() < 2
+        || s.forward_swap_times[0] < s.option_expiry - 1e-12
+    {
+        return T::zero();
+    }
+    let sw = EuropeanSwaption {
+        notional: s.notional,
+        strike: s.strike,
+        expiry: s.option_expiry,
+        swap_times: s.forward_swap_times.clone(),
+        is_payer: s.is_payer,
+        settlement: SwaptionSettlement::Physical,
+    };
+    model.swaption_price(ois, &sw, n_quad)
+}
+
 fn hw_var<T: Real>(model: &ql_models::HullWhite1F<T>, t: T) -> T {
     if (model.a * t).val().abs() < 1e-6 {
         t - model.a * t * t + model.a * model.a * t * t * t * (2.0 / 3.0)

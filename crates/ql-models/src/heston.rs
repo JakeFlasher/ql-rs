@@ -56,6 +56,27 @@ impl<T: Real> HestonParams<T> {
         (i * u * (rate - div) * tau + a + b * self.v0).exp()
     }
 }
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct DoubleHestonParams<T: Real> {
+    pub factor1: HestonParams<T>,
+    pub factor2: HestonParams<T>,
+}
+impl<T: Real> DoubleHestonParams<T> {
+    pub fn satisfies_feller(&self) -> bool {
+        self.factor1.satisfies_feller() && self.factor2.satisfies_feller()
+    }
+    pub fn char_func_unit_spot(&self, u: Complex<T>, rate: T, div: T, tau: T) -> Complex<T> {
+        let i = Complex::i();
+        (i * u * (rate - div) * tau).exp()
+            * self
+                .factor1
+                .char_func_unit_spot(u, T::zero(), T::zero(), tau)
+            * self
+                .factor2
+                .char_func_unit_spot(u, T::zero(), T::zero(), tau)
+    }
+}
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct BatesParams<T: Real> {
     pub heston: HestonParams<T>,

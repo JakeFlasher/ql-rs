@@ -2,7 +2,9 @@ use ql_ad::Real;
 use ql_math::inv_norm_cdf;
 use thiserror::Error;
 
+pub mod tarf;
 pub mod xccs;
+pub use tarf::*;
 pub use xccs::*;
 
 #[derive(Debug, Error, Clone)]

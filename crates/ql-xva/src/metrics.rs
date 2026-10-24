@@ -189,6 +189,118 @@ pub fn compute_xva<T: Real>(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub fn compute_correlated_first_to_default_bilateral_xva<T: Real>(
+    cube: &NpvCube<T>,
+    curve: &impl YieldTermStructure<T>,
+    csa: Option<&CsaSpec>,
+    hc: T,
+    lc: T,
+    hs: T,
+    ls: T,
+    fs: T,
+    rho_cb: T,
+) -> XvaReport<T> {
+    let mut ee = Vec::new();
+    let mut ene = Vec::new();
+    let mut pfe = Vec::new();
+    let mut cva = T::zero();
+    let mut dva = T::zero();
+    let mut fva = T::zero();
+    let inv_paths = T::from_f64(1.0 / cube.n_paths.max(1) as f64);
+    let joint = |tc: T, tb: T| {
+        let ic = T::from_f64(ql_math::inv_norm_cdf(tc.val().clamp(1e-14, 1.0 - 1e-14)));
+        let ib = T::from_f64(ql_math::inv_norm_cdf(tb.val().clamp(1e-14, 1.0 - 1e-14)));
+        let mut xc = ic;
+        let mut xb = ib;
+        for _ in 0..2 {
+            xc -= (xc.norm_cdf() - tc) / xc.norm_pdf().max_val(T::from_f64(1e-14));
+            xb -= (xb.norm_cdf() - tb) / xb.norm_pdf().max_val(T::from_f64(1e-14));
+        }
+        ql_math::bivariate_normal_cdf(
+            xc,
+            xb,
+            rho_cb
+                .max_val(T::from_f64(-0.999))
+                .min_val(T::from_f64(0.999)),
+        )
+    };
+    for k in 0..cube.times.len() {
+        let t = cube.times[k];
+        let prev = if k == 0 { 0.0 } else { cube.times[k - 1] };
+        let dt = (t - prev).max(0.0);
+        let mut pos = T::zero();
+        let mut neg = T::zero();
+        let mut vals = Vec::with_capacity(cube.n_paths);
+        for p in 0..cube.n_paths {
+            let mut ep = T::zero();
+            let mut en = T::zero();
+            for ns in 0..cube.n_netting_sets {
+                let x = cube.get(ns, k, p);
+                ep += if let Some(c) = csa {
+                    collateralized_exposure(x, c.threshold_cpty, c.mta)
+                } else {
+                    x.max_val(T::zero())
+                };
+                en += if let Some(c) = csa {
+                    -collateralized_exposure(-x, c.threshold_self, c.mta)
+                } else {
+                    x.min_val(T::zero())
+                };
+            }
+            pos += ep;
+            neg += en;
+            vals.push(ep.val());
+        }
+        let ep = pos * inv_paths;
+        let en = neg * inv_paths;
+        vals.sort_by(f64::total_cmp);
+        let ix = (0.95 * vals.len().saturating_sub(1) as f64).round() as usize;
+        ee.push(ep);
+        ene.push(en);
+        pfe.push(vals.get(ix).copied().unwrap_or(0.0));
+        let sc0 = (-hc * T::from_f64(prev)).exp();
+        let sc1 = (-hc * T::from_f64(t)).exp();
+        let sb0 = (-hs * T::from_f64(prev)).exp();
+        let sb1 = (-hs * T::from_f64(t)).exp();
+        let j00 = joint(sc0, sb0);
+        let j11 = joint(sc1, sb1);
+        let total = (j00 - j11).max_val(T::zero());
+        let c_inc = (j00 - joint(sc1, sb0)).max_val(T::zero());
+        let b_inc = (total - c_inc).max_val(T::zero());
+        let df = curve.discount_factor(t);
+        cva += lc * ep * df * c_inc;
+        dva -= ls * en * df * b_inc;
+        fva += fs * (ep + en) * df * sb1 * T::from_f64(dt);
+    }
+    let epe = if let Some(&last) = cube.times.last() {
+        let mut acc = T::zero();
+        let mut pt = 0.0;
+        let mut pe = T::zero();
+        for (&t, &x) in cube.times.iter().zip(&ee) {
+            acc += (pe + x) * (t - pt).max(0.0) * 0.5;
+            pt = t;
+            pe = x;
+        }
+        if last > 0.0 {
+            acc / T::from_f64(last)
+        } else {
+            T::zero()
+        }
+    } else {
+        T::zero()
+    };
+    XvaReport {
+        ee,
+        ene,
+        pfe_95: pfe,
+        epe,
+        cva,
+        dva,
+        fva,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn compute_kva<T: Real>(
     cube: &NpvCube<T>,
     curve: &impl YieldTermStructure<T>,

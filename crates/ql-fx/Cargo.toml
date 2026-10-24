@@ -11,3 +11,4 @@ ql-ad.workspace = true
 ql-math.workspace = true
 ql-curves.workspace = true
 ql-time.workspace = true
+ql-mc.workspace = true
