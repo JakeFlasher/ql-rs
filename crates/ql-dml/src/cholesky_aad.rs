@@ -114,7 +114,7 @@ pub fn cholesky_corr_cega_adjoint(
     let mut out = vec![vec![0.0; n]; n];
     for i in 0..n {
         for j in i + 1..n {
-            let v = raw[i][j] + raw[j][i];
+            let v = raw[i][j];
             out[i][j] = v;
             out[j][i] = v;
         }

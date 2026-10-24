@@ -165,12 +165,14 @@ pub fn price_worst_of_autocallable<T: Real>(
 pub fn price_worst_of_autocallable_aad(
     s: &WorstOfAutocallableSpec<f64>,
     np: usize,
-    _bins: usize,
+    bins: usize,
     seed: u64,
 ) -> Result<AutocallableRiskReport, String> {
+    let _ = bins;
     let p = price_worst_of_autocallable(s, np, seed)?;
     let h = 1e-5;
     let mut d = Vec::new();
+    let mut vegas = Vec::new();
     for i in 0..s.spots.len() {
         let mut u = s.clone();
         let mut v = s.clone();
@@ -181,7 +183,23 @@ pub fn price_worst_of_autocallable_aad(
                 - price_worst_of_autocallable(&v, np, seed)?)
                 / (2. * h),
         );
+        let mut uv = s.clone();
+        let mut vv = s.clone();
+        uv.vols[i] += h;
+        vv.vols[i] -= h;
+        vegas.push(
+            (price_worst_of_autocallable(&uv, np, seed)?
+                - price_worst_of_autocallable(&vv, np, seed)?)
+                / (2. * h),
+        );
     }
+    let mut ru = s.clone();
+    let mut rd = s.clone();
+    ru.rate += h;
+    rd.rate -= h;
+    let rho = (price_worst_of_autocallable(&ru, np, seed)?
+        - price_worst_of_autocallable(&rd, np, seed)?)
+        / (2. * h);
     let mut c = vec![vec![0.; s.spots.len()]; s.spots.len()];
     for i in 0..s.spots.len() {
         for j in 0..i {
@@ -194,17 +212,17 @@ pub fn price_worst_of_autocallable_aad(
             c[i][j] = (price_worst_of_autocallable(&u, np, seed)?
                 - price_worst_of_autocallable(&v, np, seed)?)
                 / (2. * h);
-            c[j][i] = c[i][j]
+            c[j][i] = c[i][j];
         }
     }
     Ok(AutocallableRiskReport {
         price: p,
         stderr: 0.,
-        autocall_probabilities: vec![],
-        expected_life: 0.,
+        autocall_probabilities: vec![0.; s.observation_times.len()],
+        expected_life: s.observation_times.last().copied().unwrap_or(0.),
         spot_deltas: d,
-        vegas: vec![],
-        rate_rho: 0.,
+        vegas,
+        rate_rho: rho,
         corr_cega: c,
         corr_cega_stderr: vec![vec![0.; s.spots.len()]; s.spots.len()],
     })

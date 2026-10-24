@@ -30,9 +30,10 @@ impl<T: Real> CalibratedSlvModel<T> {
             .log_moneyness_grid
             .partition_point(|z| *z <= x)
             .saturating_sub(1);
-        let w =
-            (x - s.log_moneyness_grid[i]) / (s.log_moneyness_grid[i + 1] - s.log_moneyness_grid[i]);
-        s.leverage[i] * (1.0 - w) + s.leverage[i + 1] * w
+        let x0 = s.log_moneyness_grid[i];
+        let x1 = s.log_moneyness_grid[i + 1];
+        let w = (log_moneyness - T::from_f64(x0)) / T::from_f64((x1 - x0).max(1e-12));
+        s.leverage[i] * (T::one() - w) + s.leverage[i + 1] * w
     }
 }
 fn normal(seed: &mut u64) -> f64 {
@@ -178,18 +179,31 @@ pub fn price_slv_european_mc<T: Real>(
     let n = n_paths.max(2);
     let steps = model.slices.len().max(1);
     let dt = expiry / steps as f64;
+    let sqdt = dt.sqrt();
+    let rc = (T::one() - model.heston.rho * model.heston.rho)
+        .max_val(T::zero())
+        .sqrt();
     let mut sum = T::zero();
     for p in 0..n {
-        let sign = if p % 2 == 0 { 1.0 } else { -1.0 };
+        let sign = if p % 2 == 0 { 1. } else { -1. };
+        let mut rng = seed.wrapping_add((p / 2) as u64);
         let mut x = T::zero();
         let mut v = model.heston.v0;
-        let mut rng = seed.wrapping_add(p as u64);
         for m in 0..steps {
-            let z = normal(&mut rng) * sign;
+            let z1 = normal(&mut rng) * sign;
+            let z2 = normal(&mut rng) * sign;
+            let zv = model.heston.rho * z1 + rc * z2;
             let vv = v.max_val(T::zero());
             let l = model.leverage_at(m, x);
-            x += (rate - div - l * l * vv * 0.5) * dt + l * vv.sqrt() * T::from_f64(dt.sqrt() * z);
-            v = (vv + model.heston.kappa * (model.heston.theta - vv) * dt).max_val(T::zero());
+            x += -l * l * vv * (dt * 0.5) + l * vv.sqrt() * T::from_f64(sqdt * z1);
+            v = (vv
+                + model.heston.kappa * (model.heston.theta - vv) * dt
+                + model.mixing_fraction
+                    * model.heston.sigma_v
+                    * vv.sqrt()
+                    * T::from_f64(sqdt)
+                    * zv)
+                .max_val(T::zero());
         }
         let st = spot * ((rate - div) * T::from_f64(expiry) + x).exp();
         sum += if is_call {
