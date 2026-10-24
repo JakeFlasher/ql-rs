@@ -331,7 +331,10 @@ impl CalibratedCurveSystem {
         let ois = bootstrap_piecewise_curve_helpers(reference_date, ois_helpers)?;
         let times: Vec<f64> = fwd_helpers
             .iter()
-            .map(|h| DayCounter::Act365Fixed.year_fraction(reference_date, h.end, None, None))
+            .map(|h| {
+                h.day_counter
+                    .year_fraction(reference_date, h.end, None, None)
+            })
             .collect();
         let mut dfs = vec![1.0; times.len()];
         for k in 0..fwd_helpers.len() {
@@ -509,6 +512,43 @@ impl CalibratedCurveSystem {
                 for i in 0..k {
                     for jcol in 0..k {
                         h_eff[(i, jcol)] -= lambda[m] * residual.d2[i][jcol];
+                    }
+                }
+            }
+        } else if self.instruments.len() == k {
+            let lambda = self
+                .sensitivity
+                .lu_t
+                .solve(&DVector::from_vec(g.clone()))
+                .expect("singular IFT Jacobian");
+            for (m, instrument) in self.instruments.iter().enumerate() {
+                for i in 0..k {
+                    for jcol in i..k {
+                        let seeded: Vec<Dual2<2>> = self
+                            .parameters
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, &x)| {
+                                if idx == i {
+                                    Dual2::<2>::variable(x, 0)
+                                } else if idx == jcol {
+                                    Dual2::<2>::variable(x, if i == jcol { 0 } else { 1 })
+                                } else {
+                                    Dual2::from_value(x)
+                                }
+                            })
+                            .collect();
+                        let residual =
+                            instrument_residual_with_pillars(instrument, &seeded, self.ois_pillars);
+                        let hij = if i == jcol {
+                            residual.d2[0][0]
+                        } else {
+                            residual.d2[0][1]
+                        };
+                        h_eff[(i, jcol)] -= lambda[m] * hij;
+                        if i != jcol {
+                            h_eff[(jcol, i)] -= lambda[m] * hij;
+                        }
                     }
                 }
             }

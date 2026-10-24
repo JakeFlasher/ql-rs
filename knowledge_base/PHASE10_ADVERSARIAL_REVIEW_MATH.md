@@ -187,3 +187,21 @@ See [`PHASE10_ADVERSARIAL_REVIEW_SECOND_PASS.md`](./PHASE10_ADVERSARIAL_REVIEW_S
    - `CosHestonEngine::price_impl_extra` evaluates `ek * ((kappa*t).exp() - 1)/kappa` (`0 * Inf = NaN` overflow for large $\kappa t$) and miscomputes `a_int`, while omitting $\sqrt{c_4}$ in `width`.
    - `G2PlusPlus::swaption_price` uses `Self::nonzero(self.a)` (`1e-12` clamp) in `mux`/`muy` instead of $\frac{1}{2}B(a,T)^2$ and $(B(a,T)-B(a+b,T))/b$.
    - `Fd2dHestonEngine::price_barrier` adds a Knock-Out rebate `+(out - out_no_rebate)` to Knock-In options instead of a Knock-In rebate paid at expiry when the barrier is NOT hit.
+
+
+---
+
+## Pass 4 Mathematical Verification (`9a72cde..e3a335a`)
+
+All Pass 3 mathematical defects (`P3-01a`, `P3-02` through `P3-06`, `P3-08` through `P3-11`) were verified as **RESOLVED** in `9a72cde..e3a335a`, leaving two targeted mathematical/numerical items for Round 4:
+
+1. **`P4-01` (`crates/ql-instruments/src/american.rs:398–402, 434–450, 483–500`)**:
+   - In `JuQuadraticEngine::price`:
+     - Line 399: `let alpha_over_h = if h.val().abs() < 1e-10 { T::from_f64(2.0) / (v2 * t) } else { alpha / h };` (currently omits `* t`).
+     - Line 435–436: $\alpha V_{E,h} = \frac{2}{\sigma^2 e^{-rT}} \frac{\partial V_E}{\partial T} = \text{T::from\_f64(2.0) / (v2 * disc0) * d\_ve\_dt}$ (remove the spurious `+ (alpha_over_h - 2.0 / (v2 * t)) * euro_star / disc0` term on line 436).
+     - Lines 437–442: Restore `let denom_l = q2 * 2.0 + beta - T::one();` (`2 * lambda + beta - 1` in `juquadraticengine.cpp:183–186`) and `alpha_lambda_prime / denom_l` inside `cju`.
+     - Line 449: Price puts directly via $\phi = -1$ with `critical_put` and $q_1$ (as in `juquadraticengine.cpp:136–192` and `JuQuadraticEngine::critical_spot`) instead of Bjerksund–Stensland call duality.
+   - In `american_implied_vol` (`line 498`): compute `f_x: T` in `T` so `f_x` carries `T`'s tangents into `ift_lift_1d`.
+2. **`P4-02` & `P4-03` (`crates/ql-pde/src/adi.rs:87–112, 192–240, 462–527` & `crates/ql-instruments/src/pde1d.rs:64–225`)**:
+   - In `Fd2dHestonEngine::price_knockout_rebate` (`adi.rs:104`), pass `T::zero()` as the 6th argument (`rebate` on the knocked-out boundary) and `constant * df_r` on the non-barrier far boundary in `solve` (`lines 512–527`), and solve the `vanilla` leg of `UpAndIn`/`DownAndIn` on the same `(nx | 1)` barrier-centered grid as `out_no_rebate`.
+   - In `Fd1dBlackScholesEngine` (`pde1d.rs`), apply the shifted boundary spots `smin_actual`/`smax_actual`, European put `-smin_actual * e^{-q\tau}`, AD-preserving `xmin_t` in final Lagrange interpolation, and same-grid `vanilla` solve for Knock-In options.

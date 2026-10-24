@@ -80,6 +80,7 @@ impl Fd2dHestonEngine {
             is_call,
             false,
             None,
+            None,
         )
     }
 
@@ -101,13 +102,14 @@ impl Fd2dHestonEngine {
             T::zero(),
             lower_barrier,
             upper_barrier,
-            rebate,
+            T::zero(),
             rate,
             div,
             expiry,
             true,
             false,
             Some(rebate),
+            lower_barrier.or(upper_barrier).map(f64::ln),
         )
     }
 
@@ -134,6 +136,7 @@ impl Fd2dHestonEngine {
             expiry,
             is_call,
             true,
+            None,
             None,
         )
     }
@@ -165,6 +168,7 @@ impl Fd2dHestonEngine {
             is_call,
             false,
             None,
+            lower_barrier.or(upper_barrier).map(f64::ln),
         )
     }
 
@@ -203,14 +207,20 @@ impl Fd2dHestonEngine {
         );
         match option.barrier_type {
             ql_instruments::BarrierType::UpAndIn | ql_instruments::BarrierType::DownAndIn => {
-                let vanilla = self.price_european(
+                let vanilla = self.solve(
                     p,
                     spot,
                     T::from_f64(option.strike),
+                    None,
+                    None,
+                    T::zero(),
                     rate,
                     div,
                     expiry,
                     option.option_type.is_call(),
+                    false,
+                    None,
+                    Some(option.barrier.ln()),
                 );
                 let out_no_rebate = self.price_knockout_barrier(
                     p,
@@ -458,11 +468,14 @@ impl Fd2dHestonEngine {
         is_call: bool,
         american: bool,
         terminal_rebate: Option<T>,
+        grid_center: Option<f64>,
     ) -> T {
-        let center = lower_barrier
-            .or(upper_barrier)
-            .map(f64::ln)
-            .unwrap_or_else(|| strike.val().ln());
+        let center = grid_center.unwrap_or_else(|| {
+            lower_barrier
+                .or(upper_barrier)
+                .map(f64::ln)
+                .unwrap_or_else(|| strike.val().ln())
+        });
         let nx = if lower_barrier.is_some() || upper_barrier.is_some() {
             if self.nx % 2 == 0 {
                 self.nx + 1
@@ -511,6 +524,8 @@ impl Fd2dHestonEngine {
             let df_q = (-div * tau).exp();
             let bc_low = if lower_barrier.is_some() {
                 rebate
+            } else if let Some(constant) = terminal_rebate {
+                constant * df_r
             } else if is_call {
                 T::zero()
             } else if american {
@@ -520,6 +535,8 @@ impl Fd2dHestonEngine {
             };
             let bc_high = if upper_barrier.is_some() {
                 rebate
+            } else if let Some(constant) = terminal_rebate {
+                constant * df_r
             } else if is_call {
                 (s_max * df_q - strike * df_r).max_val(T::zero())
             } else {

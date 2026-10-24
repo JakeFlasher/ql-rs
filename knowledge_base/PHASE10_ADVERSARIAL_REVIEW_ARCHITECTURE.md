@@ -201,3 +201,10 @@ See [`PHASE10_ADVERSARIAL_REVIEW_SECOND_PASS.md`](./PHASE10_ADVERSARIAL_REVIEW_S
    - `DeskWorkstation::step_tick` double-scales inflation by `1e-4` in `buckets[4]` and ignores `buckets[4]` in `class_margins`; `render_dashboard` truncates the last 3 blotter rows while leaving 9 blank lines in `left_bottom`.
    - `PortfolioDag::try_build_curve_system` uses `add_days(365 * years)` while `value_trade` uses `add_months(12 * n)`, and slices `&params[..3]` instead of `&params[..curves.ois_pillars]`.
    - `CalibratedCreditCurve::bootstrap` still swallows singular Jacobians with `DMatrix::zeros`.
+
+
+---
+
+## Pass 4 Architectural & Workflow Verification (`9a72cde..e3a335a`)
+
+All Pass 3 architectural and workflow defects in `MarketContext` (`discount`/`forward` namespace separation, `to_ad`, `MarketSnapshot::to_market_context`), `PortfolioDag` (`add_months(12 * years)` schedule alignment, `curves.ois_pillars`), `DeskWorkstation` (SIMM inflation bucket `[buckets[0], buckets[4]]`, 5Y IRS valuation, 15-row blotter layout), and `CalibratedCreditCurve::bootstrap` (fallible LU solve) were verified as **RESOLVED** in `9a72cde..e3a335a`. Only the 5 targeted items `P4-01` through `P4-05` remain for Round 4.

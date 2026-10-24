@@ -73,12 +73,34 @@ pub fn price_complex_chooser<T: Real>(s: &ComplexChooserSpec<T>) -> T {
     let tc = s.choosing_time;
     let call_tau = (s.call_expiry - tc).max_val(T::from_f64(1e-12));
     let put_tau = (s.put_expiry - tc).max_val(T::from_f64(1e-12));
+    let residual_f64 = |x: f64| {
+        black_scholes_price(
+            x,
+            s.strike_call.val(),
+            s.vol.val(),
+            call_tau.val(),
+            s.rate.val(),
+            s.div_yield.val(),
+            true,
+        )
+        .val()
+            - black_scholes_price(
+                x,
+                s.strike_put.val(),
+                s.vol.val(),
+                put_tau.val(),
+                s.rate.val(),
+                s.div_yield.val(),
+                false,
+            )
+            .val()
+    };
     let residual = |x: T| {
         black_scholes_price(x, s.strike_call, s.vol, call_tau, s.rate, s.div_yield, true)
             - black_scholes_price(x, s.strike_put, s.vol, put_tau, s.rate, s.div_yield, false)
     };
     let root = match brent_solve(
-        |x| residual(T::from_f64(x)).val(),
+        residual_f64,
         1e-8,
         s.spot.val() * 20.0 + s.strike_call.val() * 10.0 + s.strike_put.val() * 10.0 + 1.0,
         1e-12,
@@ -102,7 +124,7 @@ pub fn price_complex_chooser<T: Real>(s: &ComplexChooserSpec<T>) -> T {
                 if d.val().abs() <= 1e-14 {
                     break;
                 }
-                let xn = (x - residual(xt).val() / d.val()).max(1e-10);
+                let xn = (x - residual_f64(x) / d.val()).max(1e-10);
                 if (xn - x).abs() < 1e-12 {
                     x = xn;
                     break;
@@ -121,11 +143,10 @@ pub fn price_complex_chooser<T: Real>(s: &ComplexChooserSpec<T>) -> T {
         / (s.vol * put_tau.sqrt());
     let fx = (-s.div_yield * call_tau).exp() * d1c.norm_cdf()
         + (-s.div_yield * put_tau).exp() * (-d1p).norm_cdf();
-    let h_root = (root.abs() * 1e-4).max(1e-5);
-    let fxx = (residual(T::from_f64(root + h_root)).val()
-        - 2.0 * residual(T::from_f64(root)).val()
-        + residual(T::from_f64(root - h_root)).val())
-        / (h_root * h_root);
+    let fxx = (-s.div_yield.val() * call_tau.val()).exp() * d1c.val().norm_pdf()
+        / (root * s.vol.val() * call_tau.val().sqrt())
+        - (-s.div_yield.val() * put_tau.val()).exp() * d1p.val().norm_pdf()
+            / (root * s.vol.val() * put_tau.val().sqrt());
     let i_star = if fx.val().abs() > 1e-14 {
         ift_lift_1d(root, residual, fx, fxx)
     } else {

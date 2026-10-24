@@ -32,7 +32,9 @@ impl Fd1dBlackScholesEngine {
         dividend: T,
         kind: OptionType,
     ) -> T {
-        self.fd(spot, strike, expiry, vol, rate, dividend, kind, None, false)
+        self.fd(
+            spot, strike, expiry, vol, rate, dividend, kind, None, None, false,
+        )
     }
     #[allow(
         clippy::too_many_arguments,
@@ -48,7 +50,8 @@ impl Fd1dBlackScholesEngine {
         rate: T,
         dividend: T,
         kind: OptionType,
-        barrier: Option<(T, BarrierType)>,
+        barrier: Option<(T, BarrierType, T)>,
+        grid_anchor: Option<T>,
         american: bool,
     ) -> T {
         let n = self.grid_points.max(40);
@@ -58,7 +61,7 @@ impl Fd1dBlackScholesEngine {
         let smin = (k * 0.01).min(s0 * 0.1).max(1e-6);
         let smax = (4.0 * s0).max(4.0 * k).max(
             barrier
-                .map(|(b, t)| {
+                .map(|(b, t, _)| {
                     if matches!(t, BarrierType::UpAndOut | BarrierType::UpAndIn) {
                         2.0 * b.val()
                     } else {
@@ -71,10 +74,19 @@ impl Fd1dBlackScholesEngine {
         let dx = (smax.ln() - xmin) / n as f64;
         // Translate the log grid so a monitored barrier is represented by an
         // exact node rather than an O(dx) quantized level.
-        if let Some((barrier_level, _)) = barrier {
+        let xmin_t = if let Some((barrier_level, _, _)) = barrier {
             let j = ((barrier_level.val().ln() - xmin) / dx).round();
             xmin = barrier_level.val().ln() - j * dx;
-        }
+            barrier_level.ln() - T::from_f64(j * dx)
+        } else if let Some(anchor) = grid_anchor {
+            let j = ((anchor.val().ln() - xmin) / dx).round();
+            xmin = anchor.val().ln() - j * dx;
+            anchor.ln() - T::from_f64(j * dx)
+        } else {
+            T::from_f64(xmin)
+        };
+        let smin_actual = xmin.exp();
+        let smax_actual = (xmin + n as f64 * dx).exp();
         let mut v = vec![T::zero(); n + 1];
         for j in 0..=n {
             let sj = T::from_f64((xmin + j as f64 * dx).exp());
@@ -83,12 +95,12 @@ impl Fd1dBlackScholesEngine {
             } else {
                 (strike - sj).max_val(T::zero())
             };
-            if let Some((b, bt)) = barrier
+            if let Some((b, bt, rb)) = barrier
                 && matches!(bt, BarrierType::UpAndOut | BarrierType::DownAndOut)
                 && ((matches!(bt, BarrierType::UpAndOut) && sj.val() >= b.val())
                     || (matches!(bt, BarrierType::DownAndOut) && sj.val() <= b.val()))
             {
-                v[j] = T::zero();
+                v[j] = rb;
             }
         }
         let mut lower = vec![T::zero(); n - 1];
@@ -124,20 +136,32 @@ impl Fd1dBlackScholesEngine {
             }
             let tnew = (tau + h).min_val(expiry);
             let callb =
-                T::from_f64(smax) * (-dividend * tnew).exp() - strike * (-rate * tnew).exp();
+                T::from_f64(smax_actual) * (-dividend * tnew).exp() - strike * (-rate * tnew).exp();
             // At the lower spot boundary an American put is exercised
             // immediately, hence its exact asymptotic value is K-S (not the
             // discounted European K e^{-r tau}-S e^{-q tau}).  Using the
             // European boundary here suppresses early exercise near S=0 and
             // biases the American price/delta on coarse grids.
-            let putb = if american {
-                (strike - T::from_f64(smin)).max_val(T::zero())
+            let putb = if let Some((b, _, rb)) = barrier {
+                if smin_actual <= b.val() {
+                    rb
+                } else if american {
+                    (strike - T::from_f64(smin_actual)).max_val(T::zero())
+                } else {
+                    (strike * (-rate * tnew).exp()
+                        - T::from_f64(smin_actual) * (-dividend * tnew).exp())
+                    .max_val(T::zero())
+                }
+            } else if american {
+                (strike - T::from_f64(smin_actual)).max_val(T::zero())
             } else {
-                strike * (-rate * tnew).exp()
+                (strike * (-rate * tnew).exp()
+                    - T::from_f64(smin_actual) * (-dividend * tnew).exp())
+                .max_val(T::zero())
             };
             rhs[0] -= lower[0] * if kind.is_call() { T::zero() } else { putb };
             rhs[n - 2] -= upper[n - 2] * if kind.is_call() { callb } else { T::zero() };
-            if let Some((barrier, bt)) = barrier {
+            if let Some((barrier, bt, rb)) = barrier {
                 for j in 1..n {
                     let sj = (xmin + j as f64 * dx).exp();
                     let knocked = (matches!(bt, BarrierType::UpAndOut) && sj >= barrier.val())
@@ -146,7 +170,7 @@ impl Fd1dBlackScholesEngine {
                         lower[j - 1] = T::zero();
                         diag[j - 1] = T::one();
                         upper[j - 1] = T::zero();
-                        rhs[j - 1] = T::zero();
+                        rhs[j - 1] = rb;
                     }
                 }
             }
@@ -165,7 +189,7 @@ impl Fd1dBlackScholesEngine {
                     v[j] = v[j].max_val(intr);
                 }
             }
-            if let Some((b, bt)) = barrier
+            if let Some((b, bt, rb)) = barrier
                 && matches!(bt, BarrierType::UpAndOut | BarrierType::DownAndOut)
             {
                 for j in 0..=n {
@@ -173,7 +197,7 @@ impl Fd1dBlackScholesEngine {
                     if (matches!(bt, BarrierType::UpAndOut) && sj >= b.val())
                         || (matches!(bt, BarrierType::DownAndOut) && sj <= b.val())
                     {
-                        v[j] = T::zero();
+                        v[j] = rb;
                     }
                 }
             }
@@ -182,9 +206,9 @@ impl Fd1dBlackScholesEngine {
         let x = spot.ln();
         let z = ((x.val() - xmin) / dx).clamp(1.0, n as f64 - 1.0);
         let i = z.floor() as usize;
-        let xm = T::from_f64(xmin + (i - 1) as f64 * dx);
-        let x0 = T::from_f64(xmin + i as f64 * dx);
-        let xp = T::from_f64(xmin + (i + 1) as f64 * dx);
+        let xm = xmin_t + T::from_f64((i - 1) as f64 * dx);
+        let x0 = xmin_t + T::from_f64(i as f64 * dx);
+        let xp = xmin_t + T::from_f64((i + 1) as f64 * dx);
         let lm = (x - x0) * (x - xp) / T::from_f64(2.0 * dx * dx);
         let l0 = -(x - xm) * (x - xp) / T::from_f64(dx * dx);
         let lp = (x - xm) * (x - x0) / T::from_f64(2.0 * dx * dx);
@@ -202,8 +226,44 @@ impl Fd1dBlackScholesEngine {
         kind: OptionType,
         bt: BarrierType,
     ) -> T {
+        self.price_barrier_with_rebate(
+            spot,
+            strike,
+            barrier,
+            expiry,
+            vol,
+            rate,
+            kind,
+            bt,
+            T::zero(),
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn price_barrier_with_rebate<T: Real>(
+        &self,
+        spot: T,
+        strike: T,
+        barrier: T,
+        expiry: T,
+        vol: T,
+        rate: T,
+        kind: OptionType,
+        bt: BarrierType,
+        rebate: T,
+    ) -> T {
         if matches!(bt, BarrierType::UpAndIn | BarrierType::DownAndIn) {
-            let vanilla = self.price(spot, strike, expiry, vol, rate, T::zero(), kind);
+            let vanilla = self.fd(
+                spot,
+                strike,
+                expiry,
+                vol,
+                rate,
+                T::zero(),
+                kind,
+                None,
+                Some(barrier),
+                false,
+            );
             let out = self.fd(
                 spot,
                 strike,
@@ -219,7 +279,9 @@ impl Fd1dBlackScholesEngine {
                     } else {
                         BarrierType::DownAndOut
                     },
+                    rebate,
                 )),
+                Some(barrier),
                 false,
             );
             vanilla - out
@@ -232,7 +294,8 @@ impl Fd1dBlackScholesEngine {
                 rate,
                 T::zero(),
                 kind,
-                Some((barrier, bt)),
+                Some((barrier, bt, rebate)),
+                Some(barrier),
                 false,
             )
         }
@@ -265,6 +328,7 @@ impl Fd1dBlackScholesEngine {
             T::zero(),
             o.option_type,
             None,
+            None,
             true,
         )
     }
@@ -277,10 +341,21 @@ impl Fd1dBlackScholesEngine {
         rate: T,
         kind: OptionType,
     ) -> T {
-        self.fd(spot, strike, expiry, vol, rate, T::zero(), kind, None, true)
+        self.fd(
+            spot,
+            strike,
+            expiry,
+            vol,
+            rate,
+            T::zero(),
+            kind,
+            None,
+            None,
+            true,
+        )
     }
     pub fn price_barrier_option<T: Real>(&self, o: &crate::options::BarrierOption) -> T {
-        self.price_barrier(
+        self.price_barrier_with_rebate(
             T::from_f64(o.underlying),
             T::from_f64(o.strike),
             T::from_f64(o.barrier),
@@ -289,6 +364,7 @@ impl Fd1dBlackScholesEngine {
             T::from_f64(o.rate),
             o.option_type,
             o.barrier_type,
+            T::from_f64(o.rebate),
         )
     }
 }

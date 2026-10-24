@@ -202,3 +202,15 @@ See [`PHASE10_ADVERSARIAL_REVIEW_SECOND_PASS.md`](./PHASE10_ADVERSARIAL_REVIEW_S
 5. **`[RUST-P3-05]` (`crates/ql-instruments/src/pde1d.rs:74-77, 126-139, 205-225`, `crates/ql-pde/src/adi.rs:174-197, 420-425`)**:
    - `Fd1dBlackScholesEngine` strips `barrier`'s AD tangent via `.val().ln()` and uses unshifted `smin`/`smax` in `callb`/`putb`.
    - `Fd2dHestonEngine::price_barrier` adds a Knock-Out rebate `+(out - out_no_rebate)` to Knock-In options and `HestonGrid2D::new_centered` with even `nx = 80` places `ln(B)` between nodes `39` and `40`.
+
+
+---
+
+## Pass 4 Systems, AD/IFT & SIMD Verification (`9a72cde..e3a335a`)
+
+All Pass 3 systems/AD/SIMD defects in `ql-ad` (`ift_lift_1d` single residual evaluation, `simd_erfc` tail masking), `ql-models` (`dupire_local_vol_ad` tangents, `cos.rs` overflow-free $c_2$), `ql-curves` (`MarketContext::to_ad` active tape registration, `Dual2<64>` IFT Hessian), and `ql-time` (`day_count.rs` `i64` arithmetic) were verified as **RESOLVED** in `9a72cde..e3a335a`. Remaining items for Round 4:
+
+1. **`P4-01` (`crates/ql-instruments/src/american.rs:398–402, 434–450, 483–500`)**: Fix `JuQuadraticEngine::price` `denom_l` (`2*q2 + beta - 1`), `alpha_ve_h`, `alpha_over_h` at `h -> 0`, direct put $\phi = -1$, and lift `f_x: T` in `american_implied_vol`.
+2. **`P4-02` & `P4-03` (`crates/ql-pde/src/adi.rs` & `crates/ql-instruments/src/pde1d.rs`)**: Fix `price_knockout_rebate` knocked-out boundary (`T::zero()`), same-grid `vanilla` leg in 1D/2D Knock-In parity, shifted `smin_actual`/`smax_actual` boundary payoffs, and `barrier_level: T` AD sensitivity in `pde1d.rs`.
+3. **`P4-04` (`crates/ql-exotics/src/quanto_chooser.rs:76–130` & `crates/ql-exotics/src/compound.rs:84–101`)**: Use a scalar `f64` closure inside `brent_solve` (`quanto_chooser.rs:81`) so root-finding does not record dead `TapeVar` subgraphs onto the active `ArenaTape`, and use exact analytical Black–Scholes gamma for `fxx` in both `quanto_chooser.rs` and `compound.rs`.
+4. **`P4-05` (`crates/ql-curves/src/bootstrap.rs:334, 491` & `crates/ql-models/src/hybrid.rs:126, 191`)**: Use `h.day_counter` for `fwd_helpers` pillar times (`bootstrap.rs:334`), add a pairwise `Dual2<2>` fallback when `k > 64` (`bootstrap.rs:491`), and call `hw_cross_integral` in the `|kappa_r| < 1e-8` branch (`hybrid.rs:126, 191`).

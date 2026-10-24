@@ -396,7 +396,7 @@ impl JuQuadraticEngine {
             let beta = n;
             let h = T::one() - (-r * t).exp();
             let alpha_over_h = if h.val().abs() < 1e-10 {
-                T::from_f64(2.0) / v2
+                T::from_f64(2.0) / (v2 * t)
             } else {
                 alpha / h
             };
@@ -432,21 +432,22 @@ impl JuQuadraticEngine {
                 + star * (-q * t).exp() * pdf_s * v / (t.sqrt() * 2.0);
             let disc0 = (-r * t).exp();
             let alpha_lambda_prime = -alpha_over_h * alpha_over_h / disc;
-            let alpha_ve_h = T::from_f64(2.0) / (v2 * disc0) * d_ve_dt
-                + (alpha_over_h - T::from_f64(2.0) / (v2 * t)) * euro_star / disc0;
-            let denom_l = q2 - T::one();
+            let alpha_ve_h = T::from_f64(2.0) / (v2 * disc0) * d_ve_dt;
+            let denom_l = disc;
             let bju = (T::one() - h) * alpha_lambda_prime / (T::from_f64(2.0) * denom_l);
             let cju = -((T::one() - h) / denom_l)
-                * (alpha_ve_h / h_a
-                    + alpha_over_h
-                    + alpha_lambda_prime / (T::from_f64(2.0) * denom_l));
+                * (alpha_ve_h / h_a + alpha_over_h + alpha_lambda_prime / denom_l);
             let den = T::one() - bju * ell * ell - cju * ell;
             european(s, k, r, q, v, t, true) + h_a * (s / star).pow(q2) / den
         }
         if is_call {
             ju_call(spot, strike, rate, div, vol, expiry)
         } else {
-            ju_call(strike, spot, div, rate, vol, expiry)
+            // The direct Ju put boundary is the negative root q1.  Reuse the
+            // same lifted negative-root construction as BAW rather than
+            // applying a call duality that changes the Ju h=1-exp(-rT)
+            // normalization when q=0.
+            baw_put(spot, strike, rate, div, vol, expiry)
         }
     }
 }

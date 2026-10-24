@@ -124,7 +124,7 @@ pub fn h1_hw_char_func_unit_spot<T: Real>(
     // a_GO+b_GO exp(-kappa_v t), then integrate the OU covariance exactly.
     let (a_go, b_go, c_go) = go_sqrt_moment_params(p);
     let cross = if p.kappa_r.val().abs() < 1e-8 {
-        p.rho_sr * p.eta_r * (a_go * t * t + b_go * t * t * 0.5)
+        p.rho_sr * p.eta_r * (a_go * t * t + b_go * hw_cross_integral(p.kappa_r, c_go, t) * 2.0)
     } else {
         let kr = p.kappa_r;
         let int0 = (kr * t - T::one() + (-kr * t).exp()) / (kr * kr);
@@ -189,7 +189,7 @@ impl CosHestonHullWhiteEngine {
         };
         let (a_go, b_go, c_go) = go_sqrt_moment_params(p);
         let cross = if p.kappa_r.val().abs() < 1e-8 {
-            p.rho_sr * p.eta_r * (a_go * t * t + b_go * t * t * 0.5)
+            p.rho_sr * p.eta_r * (a_go * t * t + b_go * hw_cross_integral(p.kappa_r, c_go, t) * 2.0)
         } else {
             let kr = p.kappa_r;
             let int0 = (kr * t - T::one() + (-kr * t).exp()) / (kr * kr);

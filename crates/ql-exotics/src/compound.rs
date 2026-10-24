@@ -81,8 +81,13 @@ pub fn price_compound_option<T: Real>(spec: &CompoundOptionSpec<T>) -> T {
             x
         }
     };
-    let h_root = (root.abs() * 1e-4).max(1e-5);
-    let fxx = (f(root + h_root) - 2.0 * f(root) + f(root - h_root)) / (h_root * h_root);
+    let d1_root = ((root / k2.val()).ln()
+        + (spec.rate.val() - spec.div_yield.val() + 0.5 * spec.vol.val() * spec.vol.val())
+            * tau12.val())
+        / (spec.vol.val() * tau12.val().sqrt());
+    let fxx = (-spec.div_yield.val() * tau12.val()).exp() * (-0.5 * d1_root * d1_root).exp()
+        / (2.0 * std::f64::consts::PI).sqrt()
+        / (root * spec.vol.val() * tau12.val().sqrt());
     let root_ad = ift_lift_1d(
         root,
         |x| {
