@@ -455,6 +455,8 @@ pub struct WorkstationFrameData {
     pub ir_dv01_buckets: Vec<(String, f64)>,
     pub credit_cs01_buckets: Vec<(String, f64)>,
     pub jump_to_default: f64,
+    pub bermudan_sabr_metric: f64,
+    pub sacc_swing_qp_metric: f64,
     pub blotter_rows: Vec<(String, f64, String)>,
 }
 
@@ -1216,12 +1218,12 @@ impl DeskWorkstation {
         .val();
         let qp = box_constrained_markowitz_weights(&BoxConstrainedMarkowitzSpec {
             covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
-            expected_returns: vec![0.05, 0.04],
+            expected_returns: vec![0.06, market.ois_quotes[2]],
             risk_aversion: 3.0,
-            lower_bounds: vec![0.0, 0.0],
-            upper_bounds: vec![1.0, 1.0],
+            lower_bounds: vec![0.15, 0.15],
+            upper_bounds: vec![0.80, 0.80],
         });
-        let qp_value = qp.iter().sum::<f64>();
+        let qp_value = qp[0];
         let storage_value = price_gas_storage(
             &GasStorageSpec {
                 decision_times: vec![1.0, 2.0],
@@ -1240,18 +1242,19 @@ impl DeskWorkstation {
             0.3,
             rate,
         );
-        let _smile = CalibratedSabrSmile::calibrate(
-            market.eq_spot / 100.0,
-            1.0,
-            0.5,
-            (0.1, -0.2, 0.4),
-            &[SmileStrikeQuote {
-                strike: market.eq_spot / 100.0,
-                market_vol: 0.2,
+        let sabr_forward = market.eq_spot / 100.0;
+        let sabr_quotes = (0..5)
+            .map(|i| SmileStrikeQuote {
+                strike: sabr_forward * (0.96 + 0.02 * i as f64),
+                market_vol: 0.20 + 0.004 * (i as f64 - 2.0).abs(),
                 weight: 1.0,
-            }],
-        )
-        .ok();
+            })
+            .collect::<Vec<_>>();
+        let sabr_live =
+            CalibratedSabrSmile::calibrate(sabr_forward, 1.0, 0.5, (0.1, -0.2, 0.4), &sabr_quotes)
+                .expect("live SABR telemetry");
+        let (sabr_atm, sabr_vega) = sabr_live.vol_and_quote_vega(sabr_forward);
+        let sabr_metric = sabr_atm + sabr_vega.iter().sum::<f64>();
         let blotter_rows = vec![
             ("IRS 5Y PayFix".to_string(), irs_npv, "IFT".to_string()),
             ("Heston Call 1Y".to_string(), heston_npv, "COS".to_string()),
@@ -1344,6 +1347,8 @@ impl DeskWorkstation {
             ir_dv01_buckets: ir_buckets,
             credit_cs01_buckets: credit_buckets,
             jump_to_default: jtd,
+            bermudan_sabr_metric: bermudan_value + sabr_metric,
+            sacc_swing_qp_metric: sa_report.ead.val() + swing_value + qp_value,
             blotter_rows,
         }
     }
@@ -1556,8 +1561,8 @@ impl DeskWorkstation {
         let american = BaroneAdesiWhaleyEngine::price(100.0, 100.0, 0.03, 0.01, 0.2, 1.0, true);
         let erc = equal_risk_contribution_weights(&[vec![0.04, 0.01], vec![0.01, 0.09]]);
         left_bottom.extend([
-            "SOTA IFT / COS / AAD telemetry".to_string(),
-            "Exotics / Commodities / Burley RQMC".to_string(),
+            format!("19 Bermudan/SABR IFT: {:.2}", frame.bermudan_sabr_metric),
+            format!("20 SA-CCR/Swing/QP: {:.2}", frame.sacc_swing_qp_metric),
             "Levy COS / Convertible TF / ASB CDO".to_string(),
             format!("ASB tranche EL: {:.6}", asb_el),
             format!(

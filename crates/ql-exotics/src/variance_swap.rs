@@ -181,14 +181,6 @@ pub fn replicate_corridor_variance_swap_fair_strike<T: Real>(
     if quotes.len() < 2 || expiry.val() <= 0.0 || lower_barrier.val() >= upper_barrier.val() {
         return (T::zero(), T::zero());
     }
-    // In the practically unbounded-corridor limit retain the exact primary
-    // replication (including its endpoint Black tails) rather than introducing
-    // a second quadrature discretisation.
-    if lower_barrier.val() <= 1.0e-4 && upper_barrier.val() >= 1.0e4 {
-        return replicate_variance_swap_fair_strike(
-            spot, rate, div_yield, expiry, cut_strike, quotes,
-        );
-    }
     let forward = spot * ((rate - div_yield) * expiry).exp();
     let lo = lower_barrier.max_val(T::from_f64(1e-14));
     let hi = upper_barrier.max_val(lo + T::from_f64(1e-14));
@@ -196,6 +188,7 @@ pub fn replicate_corridor_variance_swap_fair_strike<T: Real>(
     let kctilde = cut_strike.max_val(lo).min_val(hi);
     let drift = ftilde * (T::one() / ftilde - T::one() / kctilde) - (kctilde / ftilde).ln();
     let mut integral = T::zero();
+    let mut tail_integral = T::zero();
     let vol_at = |k: T, k0: T, k1: T, v0: T, v1: T| {
         let w = ((k - k0) / (k1 - k0)).max_val(T::zero()).min_val(T::one());
         v0 + (v1 - v0) * w
@@ -212,7 +205,7 @@ pub fn replicate_corridor_variance_swap_fair_strike<T: Real>(
             continue;
         }
         let mut cuts = vec![a, b];
-        if kc_val(cut_strike, a, b) {
+        if cut_strike.val() > a.val() && cut_strike.val() < b.val() {
             cuts.push(kctilde);
         }
         cuts.sort_by(|x, y| x.val().total_cmp(&y.val()));
@@ -224,11 +217,10 @@ pub fn replicate_corridor_variance_swap_fair_strike<T: Real>(
             let v0 = vol_at(x0, k0, k1, q[0].implied_vol, q[1].implied_vol);
             let vm = vol_at(xm, k0, k1, q[0].implied_vol, q[1].implied_vol);
             let v1 = vol_at(x1, k0, k1, q[0].implied_vol, q[1].implied_vol);
-            let is_call = xm.val() >= kctilde.val();
             integral += (x1 - x0)
-                * (integrand(x0, v0, is_call)
-                    + integrand(xm, vm, is_call) * 2.0
-                    + integrand(x1, v1, is_call))
+                * (integrand(x0, v0, x0.val() >= kctilde.val())
+                    + integrand(xm, vm, xm.val() >= kctilde.val()) * 2.0
+                    + integrand(x1, v1, x1.val() >= kctilde.val()))
                 * 0.25;
         }
     }
@@ -255,21 +247,19 @@ pub fn replicate_corridor_variance_swap_fair_strike<T: Real>(
     if lo.val() < quotes[0].strike.val() {
         let end = quotes[0].strike.min_val(hi);
         if end.val() > lo.val() {
-            integral += put_tail(end, quotes[0].implied_vol) - put_tail(lo, quotes[0].implied_vol);
+            tail_integral +=
+                put_tail(end, quotes[0].implied_vol) - put_tail(lo, quotes[0].implied_vol);
         }
     }
     let kn = quotes[quotes.len() - 1].strike;
     if hi.val() > kn.val() {
         let begin = kn.max_val(lo);
         if hi.val() > begin.val() {
-            integral += call_tail(begin, quotes[quotes.len() - 1].implied_vol)
+            tail_integral += call_tail(begin, quotes[quotes.len() - 1].implied_vol)
                 - call_tail(hi, quotes[quotes.len() - 1].implied_vol);
         }
     }
-    let variance = (drift + (rate * expiry).exp() * integral) * (T::from_f64(2.0) / expiry);
+    let variance =
+        (drift + tail_integral + (rate * expiry).exp() * integral) * (T::from_f64(2.0) / expiry);
     (variance, variance.max_val(T::zero()).sqrt())
-}
-
-fn kc_val<T: Real>(cut: T, a: T, b: T) -> bool {
-    cut.val() > a.val() && cut.val() < b.val()
 }

@@ -548,18 +548,18 @@ impl CalibratedSviSmile {
             for ngrid in 0..21 {
                 let k = -1.0 + 2.0 * ngrid as f64 / 20.0;
                 let strike = Dual::<5>::from_value(forward * k.exp());
-                let g = svi_durrleman_g(&ad, strike);
-                let floor = ad.a + ad.b * ad.sigma * (Dual::<5>::one() - ad.rho * ad.rho).sqrt();
-                let wing = ad.b * (Dual::<5>::one() + ad.rho.abs()) - 2.0;
-                for p in [
-                    g.min_val(Dual::<5>::zero()),
-                    (-floor).max_val(Dual::<5>::zero()),
-                    wing.max_val(Dual::<5>::zero()),
-                ] {
-                    let scale = 10.0;
-                    rv.push(scale * p.val);
-                    jv.push(p.d.iter().map(|x| scale * *x).collect());
-                }
+                let g = svi_durrleman_g(&ad, strike).min_val(Dual::<5>::zero());
+                rv.push(10.0 * g.val);
+                jv.push(g.d.iter().map(|x| 10.0 * *x).collect());
+            }
+            let floor = ad.a + ad.b * ad.sigma * (Dual::<5>::one() - ad.rho * ad.rho).sqrt();
+            let wing = ad.b * (Dual::<5>::one() + ad.rho.abs()) - 2.0;
+            for p in [
+                (-floor).max_val(Dual::<5>::zero()),
+                wing.max_val(Dual::<5>::zero()),
+            ] {
+                rv.push(10.0 * p.val);
+                jv.push(p.d.iter().map(|x| 10.0 * *x).collect());
             }
             let r = DVector::from_vec(rv);
             let mut j = DMatrix::zeros(r.len(), 5);
@@ -634,19 +634,23 @@ impl CalibratedSviSmile {
         for ngrid in 0..21 {
             let k = -1.0 + 2.0 * ngrid as f64 / 20.0;
             let strike = Dual2::<5>::from_value(forward * k.exp());
-            let g = svi_durrleman_g(&p2, strike);
-            let floor = p2.a + p2.b * p2.sigma * (Dual2::<5>::one() - p2.rho * p2.rho).sqrt();
-            let wing = p2.b * (Dual2::<5>::one() + p2.rho.abs()) - 2.0;
-            for p in [
-                g.min_val(Dual2::<5>::zero()),
-                (-floor).max_val(Dual2::<5>::zero()),
-                wing.max_val(Dual2::<5>::zero()),
-            ] {
-                let p = p * 10.0;
-                for a in 0..5 {
-                    for b in 0..5 {
-                        h[(a, b)] += p.d1[a] * p.d1[b] + p.val * p.d2[a][b];
-                    }
+            let p = svi_durrleman_g(&p2, strike).min_val(Dual2::<5>::zero()) * 10.0;
+            for a in 0..5 {
+                for b in 0..5 {
+                    h[(a, b)] += p.d1[a] * p.d1[b] + p.val * p.d2[a][b];
+                }
+            }
+        }
+        let floor = p2.a + p2.b * p2.sigma * (Dual2::<5>::one() - p2.rho * p2.rho).sqrt();
+        let wing = p2.b * (Dual2::<5>::one() + p2.rho.abs()) - 2.0;
+        for p in [
+            (-floor).max_val(Dual2::<5>::zero()),
+            wing.max_val(Dual2::<5>::zero()),
+        ] {
+            let p = p * 10.0;
+            for a in 0..5 {
+                for b in 0..5 {
+                    h[(a, b)] += p.d1[a] * p.d1[b] + p.val * p.d2[a][b];
                 }
             }
         }

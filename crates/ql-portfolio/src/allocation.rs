@@ -63,14 +63,27 @@ pub fn try_box_constrained_markowitz_weights<T: Real>(
     let solve_primal = |state: &[i8]| -> Result<(Vec<f64>, f64), AllocationError> {
         let free = (0..n).filter(|&i| state[i] == 0).collect::<Vec<_>>();
         if free.is_empty() {
-            return Ok((
-                state
-                    .iter()
-                    .enumerate()
-                    .map(|(i, z)| if *z < 0 { lf[i] } else { uf[i] })
-                    .collect(),
-                0.0,
-            ));
+            let w = state
+                .iter()
+                .enumerate()
+                .map(|(i, z)| if *z < 0 { lf[i] } else { uf[i] })
+                .collect::<Vec<_>>();
+            let g_fn = |i: usize| muf[i] - gam * (0..n).map(|j| cf[i][j] * w[j]).sum::<f64>();
+            let lo_lam = (0..n)
+                .filter(|&i| state[i] > 0)
+                .map(g_fn)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let hi_lam = (0..n)
+                .filter(|&i| state[i] < 0)
+                .map(g_fn)
+                .fold(f64::INFINITY, f64::min);
+            let lambda = match (lo_lam.is_finite(), hi_lam.is_finite()) {
+                (true, true) => 0.5 * (lo_lam + hi_lam),
+                (true, false) => lo_lam,
+                (false, true) => hi_lam,
+                (false, false) => 0.0,
+            };
+            return Ok((w, lambda));
         }
         let m = free.len() + 1;
         let mut a = vec![vec![0.0; m]; m];
@@ -212,6 +225,30 @@ pub fn try_box_constrained_markowitz_weights<T: Real>(
 }
 pub fn box_constrained_markowitz_weights<T: Real>(s: &BoxConstrainedMarkowitzSpec<T>) -> Vec<T> {
     try_box_constrained_markowitz_weights(s).expect("feasible Markowitz bounds")
+}
+
+pub fn try_long_only_markowitz_weights<T: Real>(
+    covariance: &[Vec<T>],
+    expected_returns: &[T],
+    risk_aversion: T,
+) -> Result<Vec<T>, AllocationError> {
+    let n = expected_returns.len();
+    try_box_constrained_markowitz_weights(&BoxConstrainedMarkowitzSpec {
+        covariance: covariance.to_vec(),
+        expected_returns: expected_returns.to_vec(),
+        risk_aversion,
+        lower_bounds: vec![T::zero(); n],
+        upper_bounds: vec![T::one(); n],
+    })
+}
+
+pub fn long_only_markowitz_weights<T: Real>(
+    covariance: &[Vec<T>],
+    expected_returns: &[T],
+    risk_aversion: T,
+) -> Vec<T> {
+    try_long_only_markowitz_weights(covariance, expected_returns, risk_aversion)
+        .expect("feasible long-only Markowitz inputs")
 }
 
 #[derive(Clone, Debug)]

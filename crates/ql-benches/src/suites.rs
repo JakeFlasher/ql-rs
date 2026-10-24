@@ -1772,9 +1772,19 @@ fn benchmark_sabr_qp(scale: usize) -> ComparisonRow {
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    let mu = vec![0.05; 8];
-    let lower = vec![0.0; 8];
-    let upper = vec![1.0; 8];
+    let mu = (0..8).map(|i| 0.02 + 0.012 * i as f64).collect::<Vec<_>>();
+    let lower = vec![0.02; 8];
+    let upper = vec![0.22; 8];
+    let base_sabr =
+        CalibratedSabrSmile::calibrate(forward, expiry, beta, (0.011, -0.2, 0.4), &quotes)
+            .expect("SABR calibration");
+    let sabr_params = (
+        base_sabr.smile.alpha,
+        base_sabr.smile.rho,
+        base_sabr.smile.nu,
+    );
+    let base_sabr_fd = base_sabr.clone();
+    let base_sabr_ad = base_sabr.clone();
     let cov_base = cov.clone();
     let mu_base = mu.clone();
     let lower_base = lower.clone();
@@ -1796,46 +1806,29 @@ fn benchmark_sabr_qp(scale: usize) -> ComparisonRow {
         1e-5,
         {
             let quotes = quotes.clone();
+            let base_sabr_fd = base_sabr_fd.clone();
             let cov = cov_ad_base.clone();
             let mu = mu_ad_base.clone();
             let lower = lower_ad_base.clone();
             let upper = upper_ad_base.clone();
             move || {
-                let base = CalibratedSabrSmile::calibrate(
-                    forward,
-                    expiry,
-                    beta,
-                    (0.011, -0.2, 0.4),
-                    &quotes,
-                )
-                .expect("SABR calibration");
-                let mut sum = base.smile.vol(quotes[3].strike);
+                let mut sum = base_sabr_fd.smile.vol(quotes[3].strike);
                 let h = 1e-5;
                 for i in 0..quotes.len() {
                     let mut up = quotes.clone();
                     let mut dn = quotes.clone();
                     up[i].market_vol += h;
                     dn[i].market_vol -= h;
-                    let vu = CalibratedSabrSmile::calibrate(
-                        forward,
-                        expiry,
-                        beta,
-                        (base.smile.alpha, base.smile.rho, base.smile.nu),
-                        &up,
-                    )
-                    .expect("SABR up")
-                    .smile
-                    .vol(quotes[3].strike);
-                    let vd = CalibratedSabrSmile::calibrate(
-                        forward,
-                        expiry,
-                        beta,
-                        (base.smile.alpha, base.smile.rho, base.smile.nu),
-                        &dn,
-                    )
-                    .expect("SABR down")
-                    .smile
-                    .vol(quotes[3].strike);
+                    let vu =
+                        CalibratedSabrSmile::calibrate(forward, expiry, beta, sabr_params, &up)
+                            .expect("SABR up")
+                            .smile
+                            .vol(quotes[3].strike);
+                    let vd =
+                        CalibratedSabrSmile::calibrate(forward, expiry, beta, sabr_params, &dn)
+                            .expect("SABR down")
+                            .smile
+                            .vol(quotes[3].strike);
                     sum += (vu - vd) / (2.0 * h);
                 }
                 let base_w = box_constrained_markowitz_weights(&BoxConstrainedMarkowitzSpec {
@@ -1869,26 +1862,35 @@ fn benchmark_sabr_qp(scale: usize) -> ComparisonRow {
                         },
                     ))) / (2.0 * h);
                 }
+                for i in 0..8 {
+                    let mut up = upper.clone();
+                    let mut dn = upper.clone();
+                    up[i] += h;
+                    dn[i] -= h;
+                    let mk = |bounds: Vec<f64>| {
+                        box_constrained_markowitz_weights(&BoxConstrainedMarkowitzSpec {
+                            covariance: cov.clone(),
+                            expected_returns: mu.clone(),
+                            risk_aversion: 3.0,
+                            lower_bounds: lower.clone(),
+                            upper_bounds: bounds,
+                        })
+                    };
+                    checksum += (weighted(&mk(up)) - weighted(&mk(dn))) / (2.0 * h);
+                }
                 checksum
             }
         },
         {
             let quotes = quotes.clone();
+            let base_sabr_ad = base_sabr_ad.clone();
             let cov = cov_base.clone();
             let mu = mu_base.clone();
             let lower = lower_base.clone();
             let upper = upper_base.clone();
             move || {
-                let base = CalibratedSabrSmile::calibrate(
-                    forward,
-                    expiry,
-                    beta,
-                    (0.011, -0.2, 0.4),
-                    &quotes,
-                )
-                .expect("SABR calibration");
-                let (_, vegas) = base.vol_and_quote_vega(quotes[3].strike);
-                let mut sum = base.smile.vol(quotes[3].strike) + vegas.iter().sum::<f64>();
+                let (_, vegas) = base_sabr_ad.vol_and_quote_vega(quotes[3].strike);
+                let mut sum = base_sabr_ad.smile.vol(quotes[3].strike) + vegas.iter().sum::<f64>();
                 let mu_ad = mu
                     .iter()
                     .enumerate()

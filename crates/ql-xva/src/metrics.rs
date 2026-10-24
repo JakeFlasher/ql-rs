@@ -241,9 +241,6 @@ pub fn compute_xva_with_wwr<T: Real>(
     fs: T,
     wwr_sensitivity: T,
 ) -> XvaReport<T> {
-    if wwr_sensitivity.val().abs() <= 1e-15 {
-        return compute_xva(cube, curve, csa, hc, lc, hs, ls, fs);
-    }
     let mut ee = Vec::new();
     let mut ene = Vec::new();
     let mut pfe = Vec::new();

@@ -159,6 +159,11 @@ impl Fd2dHestonEngine {
         expiry: T,
         is_call: bool,
     ) -> T {
+        if lower_barrier.is_some_and(|b| spot.val() <= b + barrier_eps(b))
+            || upper_barrier.is_some_and(|b| spot.val() >= b - barrier_eps(b))
+        {
+            return rebate;
+        }
         self.solve(
             p,
             spot,

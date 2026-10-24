@@ -297,3 +297,27 @@ fn sa_ccr_empty_classes_and_forward_starting_ir() {
     let r0 = compute_sa_ccr_ead(&empty);
     assert!(r0.ead.val.is_finite() && r0.ead.d.iter().all(|x| x.is_finite()));
 }
+
+#[test]
+fn wwr_zero_preserves_ad_and_epe() {
+    use ql_ad::Dual;
+    let mut cube = NpvCube::<Dual<2>>::new(1, vec![0.0, 1.0, 2.0], 2);
+    for (t, vals) in [(0, [0.0, 0.0]), (1, [1.0, 2.0]), (2, [2.0, 3.0])] {
+        for (p, v) in vals.into_iter().enumerate() {
+            cube.set(0, t, p, Dual::from_value(v));
+        }
+    }
+    let curve = FlatForwardCurve::new(Date(0), Dual::from_value(0.02));
+    let report = ql_xva::compute_xva_with_wwr(
+        &cube,
+        &curve,
+        None,
+        Dual::from_value(0.02),
+        Dual::from_value(0.6),
+        Dual::from_value(0.01),
+        Dual::from_value(0.5),
+        Dual::from_value(0.01),
+        Dual::variable(0.0, 0),
+    );
+    assert!(report.epe.val > 0.0 && report.cva.val.is_finite() && report.cva.d[0].is_finite());
+}

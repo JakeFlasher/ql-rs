@@ -115,3 +115,47 @@ fn bond_ytm_ad_and_simd_leg() {
             < 1e-9
     );
 }
+
+#[test]
+fn barrier_rebate_survival_and_breached_short_circuit() {
+    let engine = Fd1dBlackScholesEngine::new(161, 120);
+    let ki0 = BarrierOption {
+        underlying: 100.0,
+        strike: 100.0,
+        barrier: 115.0,
+        expiry: 1.0,
+        volatility: 0.2,
+        rate: 0.03,
+        option_type: OptionType::Call,
+        barrier_type: BarrierType::UpAndIn,
+        rebate: 0.0,
+    }
+    .price::<f64>();
+    let ki1 = BarrierOption {
+        underlying: 100.0,
+        strike: 100.0,
+        barrier: 115.0,
+        expiry: 1.0,
+        volatility: 0.2,
+        rate: 0.03,
+        option_type: OptionType::Call,
+        barrier_type: BarrierType::UpAndIn,
+        rebate: 2.0,
+    }
+    .price::<f64>();
+    assert!(ki1 > ki0);
+    let breached = BarrierOption {
+        underlying: 120.0,
+        strike: 100.0,
+        barrier: 115.0,
+        expiry: 1.0,
+        volatility: 0.2,
+        rate: 0.03,
+        option_type: OptionType::Call,
+        barrier_type: BarrierType::UpAndOut,
+        rebate: 2.0,
+    }
+    .price::<f64>();
+    assert!((breached - 2.0).abs() < 1e-12);
+    let _ = engine;
+}

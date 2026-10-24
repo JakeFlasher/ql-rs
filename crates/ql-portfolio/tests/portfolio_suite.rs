@@ -101,3 +101,29 @@ fn market_context_typed_named_and_ad_views_share_curves() {
     assert!(adj.adjoints.iter().any(|x| x.abs() > 0.0));
     let _ = guard.stop();
 }
+
+#[test]
+fn bermudan_swaption_is_curve_dirty_and_has_par_dv01() {
+    let m = snapshot();
+    let trade = PortfolioTrade::BermudanSwaption {
+        id: 99,
+        notional: 1_000_000.0,
+        fixed_rate: 0.02,
+        exercise_years: vec![1, 2],
+        maturity_years: 5,
+        is_payer: true,
+        hw_a: 0.05,
+        hw_sigma: 0.01,
+    };
+    let mut dag = PortfolioDag::new();
+    let first = dag.evaluate_portfolio(&m, std::slice::from_ref(&trade));
+    assert!(first.total_par_dv01.iter().any(|x| x.abs() > 0.0));
+    let mut eq = m.clone();
+    eq.eq_spot += 1.0;
+    let second = dag.evaluate_portfolio(&eq, std::slice::from_ref(&trade));
+    assert_eq!(second.last_trade_recomputes, 0);
+    let mut curve = m;
+    curve.ois_quotes[0] += 1e-4;
+    let third = dag.evaluate_portfolio(&curve, std::slice::from_ref(&trade));
+    assert!(third.last_trade_recomputes > 0);
+}

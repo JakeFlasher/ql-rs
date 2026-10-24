@@ -93,3 +93,36 @@ fn swing_forward_strip_and_storage_dp_are_tree_based() {
     let high = price_gas_storage(&storage, &curve, 1.0, 0.5, 0.02);
     assert!(low.is_finite() && high.is_finite());
 }
+
+#[test]
+fn gas_storage_terminal_decisions_have_value() {
+    let curve = CommodityFuturesCurve::from_futures_pillars(
+        vec![1.0, 2.0],
+        &[50.0, 100.0],
+        SeasonalParams {
+            a1: 0.0,
+            b1: 0.0,
+            a2: 0.0,
+            b2: 0.0,
+        },
+    );
+    let base = GasStorageSpec {
+        decision_times: vec![1.0, 2.0],
+        max_capacity: 10.0,
+        initial_inventory: 0.0,
+        max_injection_rate: 10.0,
+        max_withdrawal_rate: 10.0,
+        injection_loss: 0.0,
+        withdrawal_loss: 0.0,
+        injection_cost: 0.0,
+        withdrawal_cost: 0.0,
+        inventory_grid_points: 10,
+    };
+    assert!(price_gas_storage(&base, &curve, 1.0, 0.1, 0.02) > 0.0);
+    let one = GasStorageSpec {
+        decision_times: vec![1.0],
+        initial_inventory: 5.0,
+        ..base
+    };
+    assert!(price_gas_storage(&one, &curve, 1.0, 0.1, 0.02) > 0.0);
+}

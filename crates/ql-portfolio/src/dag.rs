@@ -142,7 +142,7 @@ fn trade_dependency_hash(trade: &PortfolioTrade, curve_hash: u64, equity_hash: u
     match trade {
         PortfolioTrade::IrsSwap { .. } => hash_word(curve_hash, h),
         PortfolioTrade::HestonEuropeanOption { .. } | PortfolioTrade::ScriptedNote { .. } => {
-            hash_word(curve_hash ^ equity_hash.rotate_left(13), h)
+            hash_word(hash_word(curve_hash, equity_hash), h)
         }
         PortfolioTrade::BermudanSwaption { .. } => hash_word(curve_hash, h),
     }

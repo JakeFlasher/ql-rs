@@ -273,12 +273,27 @@ pub fn price_gas_storage<T: Real>(
     let tree = build_tree(times, kappa, sigma);
     let g = spec.inventory_grid_points.max(2);
     let dv = spec.max_capacity / g as f64;
-    let terminal_width = (2 * tree.j_bounds[tree.times.len() - 1] + 1) as usize;
+    let n = tree.times.len().saturating_sub(1);
+    let terminal_width = (2 * tree.j_bounds[n] + 1) as usize;
     let mut values = vec![vec![T::zero(); terminal_width]; g + 1];
     let mut decision = vec![false; tree.times.len()];
     for t in &spec.decision_times {
         if let Some(m) = tree.times.iter().position(|x| (*x - *t).abs() < 1e-10) {
             decision[m] = true;
+        }
+    }
+    if n > 0 && decision[n] {
+        let dt_n = (tree.times[n] - tree.times[n - 1]).max(1e-12);
+        let final_spots = node_spots(&tree, curve, n);
+        for (gi, row) in values.iter_mut().enumerate().take(g + 1) {
+            let inv = gi as f64 * dv;
+            let max_withdraw = inv.min(spec.max_withdrawal_rate * dt_n);
+            for (idx, spot) in final_spots.iter().enumerate() {
+                let withdraw_cash = ((T::one() - spec.withdrawal_loss) * *spot
+                    - spec.withdrawal_cost)
+                    * max_withdraw;
+                row[idx] = T::zero().max_val(withdraw_cash);
+            }
         }
     }
     for m in (0..tree.times.len().saturating_sub(1)).rev() {

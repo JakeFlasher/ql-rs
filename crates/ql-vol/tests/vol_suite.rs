@@ -42,3 +42,20 @@ fn svi_and_sabr_sensitivities_match_fd() {
         / (2.0 * h);
     assert!((sg[0] - d_alpha_fd).abs() < 1e-7);
 }
+
+#[test]
+fn calibrated_smile_quote_vegas_and_svi_density_are_finite() {
+    let quotes = (0..5)
+        .map(|i| SmileStrikeQuote {
+            strike: 0.02 + i as f64 * 0.002,
+            market_vol: 0.20 + 0.01 * (i as f64 - 2.0).abs(),
+            weight: 1.0 + i as f64,
+        })
+        .collect::<Vec<_>>();
+    let sabr = CalibratedSabrSmile::calibrate(0.024, 1.0, 0.5, (0.1, -0.2, 0.4), &quotes).unwrap();
+    let (_, vega) = sabr.vol_and_quote_vega(0.024);
+    assert!(vega.iter().all(|x| x.is_finite()));
+    let svi = AdSviSmile::new(0.024, 1.0, 0.02, 0.1, -0.2, 0.0, 0.2);
+    assert!(svi_risk_neutral_density(&svi, 0.024).is_finite());
+    assert!(svi.is_butterfly_arbitrage_free(&[-1.0, 0.0, 1.0]));
+}

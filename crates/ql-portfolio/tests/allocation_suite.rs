@@ -49,3 +49,11 @@ fn box_markowitz_budget_bounds_and_errors() {
         Err(AllocationError::InfeasibleBounds)
     );
 }
+
+#[test]
+fn long_only_markowitz_wrapper_is_budgeted() {
+    let cov = vec![vec![0.04, 0.01], vec![0.01, 0.09]];
+    let w = ql_portfolio::long_only_markowitz_weights(&cov, &[0.06, 0.03], 3.0);
+    assert!((w.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    assert!(w.iter().all(|x| *x >= -1e-12));
+}
