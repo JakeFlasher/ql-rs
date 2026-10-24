@@ -344,49 +344,108 @@ pub struct KthToDefaultValuation<T: Real> {
 pub fn kth_to_default_survival_probability<T: Real>(
     k: usize,
     default_probs: &[T],
-    _correlation: T,
+    correlation: T,
 ) -> T {
-    let mut p = default_probs.to_vec();
-    p.sort_by(|a, b| a.val().total_cmp(&b.val()));
-    let mut surv = T::one();
-    for x in p.iter().take(k.max(1)) {
-        surv -= *x;
+    // The survival leg of a k-th-to-default contract is the probability that
+    // fewer than k names have defaulted.  Under the one-factor Gaussian
+    // copula, condition on the common factor and evaluate the resulting
+    // Poisson-binomial distribution with a short dynamic program.  This keeps
+    // the function differentiable in all probabilities and in correlation.
+    if k == 0 || default_probs.is_empty() || k > default_probs.len() {
+        return if k == 0 { T::zero() } else { T::one() };
     }
-    surv.max_val(T::zero())
+    let (nodes32, weights32) = normal_hermite_32();
+    let high_rule = (correlation.val() > 0.8).then(high_corr_normal_rule);
+    let (nodes, weights): (&[f64], &[f64]) = if let Some((ref n, ref w)) = high_rule {
+        (n.as_slice(), w.as_slice())
+    } else {
+        (&nodes32[..], &weights32[..])
+    };
+    let rho = correlation
+        .max_val(T::zero())
+        .min_val(T::from_f64(1.0 - 1e-14));
+    let sr = rho.sqrt();
+    let den = (T::one() - rho).sqrt();
+    let q_invs: Vec<T> = default_probs.iter().map(|&q| inv_norm_cdf_ad(q)).collect();
+    let mut out = T::zero();
+    // `dist[j]` stores the conditional probability of exactly j defaults;
+    // only j < k is needed for the survival event.
+    let mut dist = vec![T::zero(); k];
+    for (&z, &weight) in nodes.iter().zip(weights.iter()) {
+        dist.fill(T::zero());
+        dist[0] = T::one();
+        for q_inv in &q_invs {
+            let p = ((*q_inv - sr * z) / den)
+                .norm_cdf()
+                .max_val(T::zero())
+                .min_val(T::one());
+            // Reverse iteration prevents an issuer from being counted twice.
+            for j in (1..k).rev() {
+                dist[j] = dist[j] * (T::one() - p) + dist[j - 1] * p;
+            }
+            dist[0] *= T::one() - p;
+        }
+        out += dist.iter().copied().fold(T::zero(), |a, x| a + x) * weight;
+    }
+    out.max_val(T::zero()).min_val(T::one())
 }
+
 pub fn price_kth_to_default_basket<T: Real>(
     s: &KthToDefaultBasketSpec<T>,
     issuer_curves: &[crate::SurvivalProbabilityCurve<T>],
     discount: &impl ql_curves::YieldTermStructure<T>,
 ) -> KthToDefaultValuation<T> {
-    let mut prot = T::zero();
-    let mut prem = T::zero();
+    if issuer_curves.is_empty() || s.k == 0 || s.k > issuer_curves.len() {
+        return KthToDefaultValuation {
+            protection_leg_npv: T::zero(),
+            premium_leg_npv: T::zero(),
+            risky_annuity: T::zero(),
+            fair_spread: T::zero(),
+            npv_buyer: T::zero(),
+        };
+    }
+    let lgd = if s.recovery_rates.is_empty() {
+        T::zero()
+    } else {
+        s.recovery_rates
+            .iter()
+            .copied()
+            .fold(T::zero(), |a, r| a + (T::one() - r))
+            / s.recovery_rates.len() as f64
+    };
+    let mut protection = T::zero();
+    let mut risky_annuity = T::zero();
+    let mut prev_survival = T::one();
     for (i, &t) in s.payment_times.iter().enumerate() {
+        if !t.is_finite() || t < 0.0 {
+            continue;
+        }
         let ps: Vec<T> = issuer_curves
             .iter()
             .map(|c| T::one() - c.survival_probability(t))
             .collect();
-        let surv = kth_to_default_survival_probability(s.k, &ps, s.correlation);
+        let survival = kth_to_default_survival_probability(s.k, &ps, s.correlation);
         let df = discount.discount_factor(t);
-        let lgd = s
-            .recovery_rates
-            .iter()
-            .copied()
-            .fold(T::zero(), |a, r| a + (T::one() - r))
-            / s.recovery_rates.len().max(1) as f64;
-        prot += df * lgd * (T::one() - surv);
-        prem += df * s.running_spread * T::from_f64(*s.accruals.get(i).unwrap_or(&1.0)) * surv;
+        let event = (prev_survival - survival).max_val(T::zero());
+        protection += s.notional * df * lgd * event;
+        let accrual = T::from_f64(*s.accruals.get(i).unwrap_or(&1.0));
+        // Premium is paid while the basket is alive.  Midpoint default
+        // accrual can be enabled by passing the usual half-period survival;
+        // the endpoint survival is the conservative standard convention.
+        risky_annuity += s.notional * df * accrual * survival;
+        prev_survival = survival;
     }
-    let fair = if prem.val().abs() > 1e-14 {
-        prot / prem * s.running_spread
+    let premium = risky_annuity * s.running_spread;
+    let fair = if risky_annuity.val().abs() > 1e-14 {
+        protection / risky_annuity
     } else {
         T::zero()
     };
     KthToDefaultValuation {
-        protection_leg_npv: prot,
-        premium_leg_npv: prem,
-        risky_annuity: prem / (s.running_spread.max_val(T::from_f64(1e-12))),
+        protection_leg_npv: protection,
+        premium_leg_npv: premium,
+        risky_annuity,
         fair_spread: fair,
-        npv_buyer: prot - prem,
+        npv_buyer: protection - premium,
     }
 }

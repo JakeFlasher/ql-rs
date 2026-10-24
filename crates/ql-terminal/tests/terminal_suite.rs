@@ -108,7 +108,15 @@ fn phase11_tabs_and_live_telemetry_are_present() {
     assert_eq!(TabId::ALL[22], TabId::MonotoneConvexVixParisianRobust);
     let mut ws = DeskWorkstation::new();
     let frame = ws.step_tick();
+    assert!(frame.vix_parisian_robust_metric.is_finite());
     let dashboard = ws.render_dashboard(&frame, false);
     assert!(dashboard.contains("Bermudan HW") && dashboard.contains("SA-CCR EAD"));
     assert!(dashboard.contains("Commodity Swing") && dashboard.contains("Box Markowitz"));
+    assert!(dashboard.contains("23 Monotone/VIX/Parisian/Robust"));
+    ws.set_scenario(ScenarioKind::RatesPlus50Bp);
+    let stressed = ws.step_tick();
+    assert_ne!(
+        stressed.vix_parisian_robust_metric,
+        frame.vix_parisian_robust_metric
+    );
 }

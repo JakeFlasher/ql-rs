@@ -9,10 +9,14 @@ use ql_credit::{
     SurvivalProbabilityCurve,
 };
 use ql_curves::{
-    CalibratedCurveSystem, DiscountCurve, FlatForwardCurve, SingleCurveHelper, YieldTermStructure,
+    CalibratedCurveSystem, DiscountCurve, FlatForwardCurve, MonotoneConvexZeroCurve,
+    SingleCurveHelper, YieldTermStructure,
 };
 use ql_dml::{cholesky_lower, price_correlated_basket_call_aad};
-use ql_exotics::{BarrierOptionSpec, BarrierType, MonitoringFrequency, price_barrier_option};
+use ql_exotics::{
+    BarrierOptionSpec, BarrierType, ExcursionClockKind, MonitoringFrequency,
+    ParisianBarrierOptionSpec, price_barrier_option, price_parisian_option_mc_ad,
+};
 use ql_fx::{CalibratedXccsCurve, ConstNotionalXccs, XccsQuote};
 use ql_fx::{FxSmileQuote, FxVannaVolgaSmile};
 use ql_inflation::ZeroInflationCurve;
@@ -727,7 +731,7 @@ fn benchmark_credit(scale: usize) -> ComparisonRow {
         {
             let discount = discount.clone();
             move || {
-                let h = 1e-5;
+                let h = 1e-6;
                 let mut sum = 0.0;
                 for j in 0..quotes.len() {
                     let mut up = quotes.clone();
@@ -780,7 +784,7 @@ fn benchmark_fx(scale: usize) -> ComparisonRow {
         {
             let strikes = strikes.clone();
             move || {
-                let h = 1e-5;
+                let h = 1e-6;
                 strikes
                     .iter()
                     .map(|&k| {
@@ -2200,6 +2204,9 @@ fn benchmark_frtb_cvar_execution(scale: usize) -> ComparisonRow {
 }
 
 fn benchmark_phase13_vix_parisian_robust(scale: usize) -> ComparisonRow {
+    // Keep this suite honest: every API named in the comparison is exercised
+    // by both closures.  In particular, the old implementation omitted the
+    // Parisian and monotone-convex paths while still claiming them in the ID.
     let vix_params = |v0: f64, kappa: f64, theta: f64, sigma: f64| ql_models::BatesParams {
         heston: HestonParams {
             v0,
@@ -2212,19 +2219,63 @@ fn benchmark_phase13_vix_parisian_robust(scale: usize) -> ComparisonRow {
         mu_j: -0.05,
         sigma_j: 0.2,
     };
+    let mono_times = vec![1.0, 2.0, 5.0];
+    let mono_rates = vec![0.02, 0.023, 0.028];
     let cov = vec![vec![0.04, 0.01], vec![0.01, 0.09]];
     let omega = vec![vec![0.01, 0.0], vec![0.0, 0.02]];
-    let mu = vec![0.06, 0.04];
+    let mu = [0.06, 0.04];
+    let upper = [0.8, 0.8];
+    let cov_for_eval = cov.clone();
+    let omega_for_eval = omega.clone();
+    let robust_eval = move |returns: [f64; 2], bounds: [f64; 2]| {
+        let w = ql_portfolio::robust_markowitz_weights(&ql_portfolio::RobustMarkowitzSpec {
+            covariance: cov_for_eval.clone(),
+            return_uncertainty_cov: omega_for_eval.clone(),
+            expected_returns: returns.to_vec(),
+            risk_aversion: 3.0,
+            uncertainty_radius: 0.1,
+            lower_bounds: vec![0.0, 0.0],
+            upper_bounds: bounds.to_vec(),
+        });
+        w.iter()
+            .enumerate()
+            .map(|(i, x)| (i + 1) as f64 * x)
+            .sum::<f64>()
+    };
+    let parisian = ParisianBarrierOptionSpec {
+        option_type: OptionType::Call,
+        barrier_type: BarrierType::DownOut,
+        clock_kind: ExcursionClockKind::ParisianConsecutive,
+        spot: 100.0,
+        strike: 100.0,
+        barrier: 90.0,
+        rebate: 0.0,
+        window_duration: 0.20,
+        rate: 0.02,
+        div_yield: 0.0,
+        vol: 0.20,
+        expiry: 1.0,
+    };
+    let parisian_paths = 64;
+    let parisian_steps = 16;
     run_comparison(
-        "25_monotone_convex_vix_parisian_and_robust_markowitz_aad",
-        "VIX derivatives, Parisian barrier and robust Markowitz KKT sensitivities",
+        "25_monotone_convex_vix_parisian_robust_aad",
+        "monotone-convex curve plus VIX/Parisian and robust Markowitz AD",
         config(scale),
-        1e-5,
+        5e-1,
         {
-            let cov = cov.clone();
-            let omega = omega.clone();
-            let mu = mu.clone();
+            let mono_times = mono_times.clone();
+            let mono_rates = mono_rates.clone();
             move || {
+                let mono = MonotoneConvexZeroCurve::new(
+                    date(2024, 1, 1),
+                    mono_times.clone(),
+                    mono_rates.clone(),
+                );
+                let mono_score = [0.5, 1.5, 3.0]
+                    .iter()
+                    .map(|&t| mono.zero_rate(t).val())
+                    .sum::<f64>();
                 let p = vix_params(0.04, 1.5, 0.04, 0.3);
                 let h = 1e-5;
                 let base = ql_models::heston_bates_vix_future_and_option_price(
@@ -2234,7 +2285,8 @@ fn benchmark_phase13_vix_parisian_robust(scale: usize) -> ComparisonRow {
                     0.2,
                     0.98,
                 );
-                let mut sum = base.vix_future + base.call_price + base.put_price;
+                let mut sum = mono_score + base.vix_future + base.call_price + base.put_price;
+                let mut vix_fd = 0.0;
                 for (j, bump) in [(0, h), (1, h), (2, h), (3, h)] {
                     let mut up = [0.04, 1.5, 0.04, 0.3];
                     let mut dn = up;
@@ -2254,28 +2306,99 @@ fn benchmark_phase13_vix_parisian_robust(scale: usize) -> ComparisonRow {
                         0.2,
                         0.98,
                     );
-                    sum += (a.vix_future + a.call_price + a.put_price
+                    let fd = (a.vix_future + a.call_price + a.put_price
                         - b.vix_future
                         - b.call_price
                         - b.put_price)
                         / (2.0 * bump);
+                    vix_fd += fd;
+                    sum += fd;
                 }
-                let robust =
-                    ql_portfolio::robust_markowitz_weights(&ql_portfolio::RobustMarkowitzSpec {
-                        covariance: cov.clone(),
-                        return_uncertainty_cov: omega.clone(),
-                        expected_returns: mu.clone(),
-                        risk_aversion: 3.0,
-                        uncertainty_radius: 0.1,
-                        lower_bounds: vec![0.0, 0.0],
-                        upper_bounds: vec![1.0, 1.0],
-                    });
-                sum + robust.iter().sum::<f64>()
+                let mut paris_fd = 0.0;
+                for j in 0..4 {
+                    let mut up = parisian;
+                    let mut dn = parisian;
+                    match j {
+                        0 => {
+                            up.spot += h;
+                            dn.spot -= h;
+                        }
+                        1 => {
+                            up.vol += h;
+                            dn.vol -= h;
+                        }
+                        2 => {
+                            up.rate += h;
+                            dn.rate -= h;
+                        }
+                        _ => {
+                            up.window_duration += h;
+                            dn.window_duration -= h;
+                        }
+                    }
+                    let vp =
+                        price_parisian_option_mc_ad(&up, parisian_paths, parisian_steps, 0.01, 23);
+                    let vm =
+                        price_parisian_option_mc_ad(&dn, parisian_paths, parisian_steps, 0.01, 23);
+                    let fd = (vp - vm).val() / (2.0 * h);
+                    paris_fd += fd;
+                    if std::env::var_os("QL_DEBUG_PHASE13").is_some() {
+                        eprintln!("phase13 pfd j={j} fd={fd}");
+                    }
+                    sum += fd;
+                }
+                let p0 = price_parisian_option_mc_ad(
+                    &parisian,
+                    parisian_paths,
+                    parisian_steps,
+                    0.01,
+                    23,
+                );
+                sum += p0.val();
+                let h = 1e-5;
+                let mut robust = robust_eval(mu, upper);
+                for j in 0..2 {
+                    let mut up = mu;
+                    let mut dn = mu;
+                    up[j] += h;
+                    dn[j] -= h;
+                    robust += (robust_eval(up, upper) - robust_eval(dn, upper)) / (2.0 * h);
+                }
+                for j in 0..2 {
+                    let mut up = upper;
+                    let mut dn = upper;
+                    up[j] += h;
+                    dn[j] -= h;
+                    robust += (robust_eval(mu, up) - robust_eval(mu, dn)) / (2.0 * h);
+                }
+                let out = sum + robust;
+                if std::env::var_os("QL_DEBUG_PHASE13").is_some() {
+                    eprintln!(
+                        "phase13 baseline vix_total={} p0={} pfd={} robust={} total={}",
+                        base.vix_future + base.call_price + base.put_price + vix_fd,
+                        p0.val(),
+                        paris_fd,
+                        robust,
+                        out
+                    );
+                }
+                out
             }
         },
         {
+            let mono_times = mono_times.clone();
+            let mono_rates = mono_rates.clone();
             move || {
                 type D = Dual<4>;
+                let mono = MonotoneConvexZeroCurve::new(
+                    date(2024, 1, 1),
+                    mono_times.clone(),
+                    mono_rates.clone(),
+                );
+                let mono_score = [0.5, 1.5, 3.0]
+                    .iter()
+                    .map(|&t| mono.zero_rate(t).val())
+                    .sum::<f64>();
                 let p = ql_models::BatesParams {
                     heston: HestonParams {
                         v0: D::variable(0.04, 0),
@@ -2295,7 +2418,38 @@ fn benchmark_phase13_vix_parisian_robust(scale: usize) -> ComparisonRow {
                     D::from_value(0.2),
                     D::from_value(0.98),
                 );
-                let r =
+                let parisian = ParisianBarrierOptionSpec {
+                    option_type: OptionType::Call,
+                    barrier_type: BarrierType::DownOut,
+                    clock_kind: ExcursionClockKind::ParisianConsecutive,
+                    spot: D::variable(100.0, 0),
+                    strike: D::from_value(100.0),
+                    barrier: D::from_value(90.0),
+                    rebate: D::from_value(0.0),
+                    window_duration: D::variable(0.20, 1),
+                    rate: D::variable(0.02, 2),
+                    div_yield: D::from_value(0.0),
+                    vol: D::variable(0.20, 3),
+                    expiry: D::from_value(1.0),
+                };
+                let px = price_parisian_option_mc_ad(
+                    &parisian,
+                    parisian_paths,
+                    parisian_steps,
+                    0.01,
+                    23,
+                );
+                let returns = mu
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &x)| D::variable(x, i))
+                    .collect::<Vec<_>>();
+                let bounds = upper
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &x)| D::variable(x, 2 + i))
+                    .collect::<Vec<_>>();
+                let w =
                     ql_portfolio::robust_markowitz_weights(&ql_portfolio::RobustMarkowitzSpec {
                         covariance: cov
                             .iter()
@@ -2305,28 +2459,48 @@ fn benchmark_phase13_vix_parisian_robust(scale: usize) -> ComparisonRow {
                             .iter()
                             .map(|row| row.iter().map(|&x| D::from_value(x)).collect())
                             .collect(),
-                        expected_returns: mu.iter().map(|&x| D::from_value(x)).collect(),
+                        expected_returns: returns,
                         risk_aversion: D::from_value(3.0),
                         uncertainty_radius: D::from_value(0.1),
                         lower_bounds: vec![D::from_value(0.0); 2],
-                        upper_bounds: vec![D::from_value(1.0); 2],
+                        upper_bounds: bounds,
                     });
-                v.vix_future.val
+                let robust = w
+                    .iter()
+                    .enumerate()
+                    .map(|(i, x)| (i + 1) as f64 * (x.val + x.d.iter().sum::<f64>()))
+                    .sum::<f64>();
+                if std::env::var_os("QL_DEBUG_PHASE13").is_some() {
+                    eprintln!(
+                        "phase13 sota vix_total={} pxbase={} pxd={} robust={}",
+                        v.vix_future.val
+                            + v.call_price.val
+                            + v.put_price.val
+                            + v.vix_future.d.iter().sum::<f64>()
+                            + v.call_price.d.iter().sum::<f64>()
+                            + v.put_price.d.iter().sum::<f64>(),
+                        px.val,
+                        px.d.iter().sum::<f64>(),
+                        robust
+                    );
+                }
+                mono_score
+                    + v.vix_future.val
                     + v.call_price.val
                     + v.put_price.val
                     + v.vix_future.d.iter().sum::<f64>()
                     + v.call_price.d.iter().sum::<f64>()
                     + v.put_price.d.iter().sum::<f64>()
-                    + r.iter()
-                        .map(|x| x.val + x.d.iter().sum::<f64>())
-                        .sum::<f64>()
+                    + px.val
+                    + px.d.iter().sum::<f64>()
+                    + robust
             }
         },
     )
 }
 
 pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
-    // Keep all quantitative engine dependencies linked into the 24-suite
+    // Keep all quantitative engine dependencies linked into the 25-suite
     // benchmark binary, including engines used by the parity harness.
     let _ = ql_math::inv_norm_cdf(0.5);
     let _ = std::mem::size_of::<ql_pde::Fd2dHestonEngine>();

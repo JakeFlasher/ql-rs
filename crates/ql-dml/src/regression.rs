@@ -25,6 +25,7 @@ fn enumerate(d: usize, degree: usize) -> Vec<Vec<usize>> {
 impl DiffPolynomialRegressor {
     fn basis(&self, x: &[f64]) -> (Vec<f64>, Vec<Vec<f64>>) {
         let d = self.mean.len();
+        assert_eq!(x.len(), d, "regressor state dimension mismatch");
         let z: Vec<f64> = x
             .iter()
             .enumerate()
@@ -62,8 +63,23 @@ impl DiffPolynomialRegressor {
         ridge: f64,
     ) -> Self {
         let m = states.len();
-        assert!(m > 0 && payoffs.len() == m && diffs.len() == m);
+        assert!(
+            m > 0
+                && payoffs.len() == m
+                && diffs.len() == m
+                && states.iter().all(|x| x.len() == states[0].len())
+                && diffs.iter().all(|x| x.len() == states[0].len())
+                && states.iter().flatten().all(|x| x.is_finite())
+                && payoffs.iter().all(|x| x.is_finite())
+                && diffs.iter().flatten().all(|x| x.is_finite())
+                && diff_weight.is_finite()
+                && diff_weight >= 0.0
+                && ridge.is_finite()
+                && ridge >= 0.0,
+            "invalid differential-regression dimensions or parameters"
+        );
         let d = states[0].len();
+        assert!(d > 0, "regression requires at least one state variable");
         let mean = (0..d)
             .map(|j| states.iter().map(|x| x[j]).sum::<f64>() / m as f64)
             .collect::<Vec<_>>();

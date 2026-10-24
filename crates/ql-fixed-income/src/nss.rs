@@ -20,25 +20,38 @@ impl<T: Real> NelsonSiegelSvensson<T> {
         }
     }
     pub fn zero_rate(&self, t: T) -> T {
-        let x1 = t / self.tau1;
-        let x2 = t / self.tau2;
+        let tau1 = self.tau1.max_val(T::from_f64(1e-12));
+        let tau2 = self.tau2.max_val(T::from_f64(1e-12));
+        let x1 = t / tau1;
+        let x2 = t / tau2;
         let h_1 = Self::h1(x1);
         let h_2 = h_1 - (-x1).exp();
         self.beta0 + self.beta1 * h_1 + self.beta2 * h_2 + self.beta3 * (Self::h1(x2) - (-x2).exp())
     }
     pub fn forward_rate(&self, t: T) -> T {
-        let e1 = (-t / self.tau1).exp();
-        let e2 = (-t / self.tau2).exp();
-        self.beta0
-            + self.beta1 * e1
-            + self.beta2 * (t / self.tau1) * e1
-            + self.beta3 * (t / self.tau2) * e2
+        let tau1 = self.tau1.max_val(T::from_f64(1e-12));
+        let tau2 = self.tau2.max_val(T::from_f64(1e-12));
+        let e1 = (-t / tau1).exp();
+        let e2 = (-t / tau2).exp();
+        self.beta0 + self.beta1 * e1 + self.beta2 * (t / tau1) * e1 + self.beta3 * (t / tau2) * e2
     }
     pub fn discount_factor(&self, t: T) -> T {
         (-self.zero_rate(t) * t).exp()
     }
     pub fn fit_ols_for_taus(times: &[f64], rates: &[f64], tau1: f64, tau2: f64) -> Self {
         use nalgebra::{DMatrix, DVector};
+        assert_eq!(
+            times.len(),
+            rates.len(),
+            "NSS times/rates dimension mismatch"
+        );
+        assert!(!times.is_empty(), "NSS fit requires observations");
+        assert!(
+            times.iter().chain(rates.iter()).all(|x| x.is_finite()),
+            "NSS fit inputs must be finite"
+        );
+        let tau1 = tau1.max(1e-12);
+        let tau2 = tau2.max(1e-12);
         let mut a = DMatrix::zeros(times.len(), 4);
         for (i, &t) in times.iter().enumerate() {
             let x1 = t / tau1;

@@ -23,3 +23,7 @@ This document records the multi-round whole-project adversarial audit across all
 ## 7. Phase 13 implementation (`9221898..working tree`)
 
 Phase 13 delivery adds the curve, global volatility/VIX, Parisian/Andersen--Broadie, callable/range/LPI, kth-default/MPoR, and robust-allocation APIs, plus Suite 25 and workstation Tab 23. The workspace remains format-clean, clippy-clean, and all tests pass.
+
+## 8. GPT-6 Astra Max adversarial remediation loop
+
+Multiple Astra Max review passes audited the Phase 13 additions and surrounding workspace. Findings were fixed across curve interval/indexing and meeting-date calibration, eSSVI/VIX validation, Parisian clocks, Cheyette/LPI/kth-default calculations, Andersen--Broadie bounds, robust allocation/validation, DML and fixed-income edge cases, benchmark Suite 25, and terminal synchronization. A final verification pass found no additional actionable blockers; strict clippy and the complete workspace test suite pass.

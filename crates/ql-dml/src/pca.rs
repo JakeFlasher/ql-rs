@@ -10,8 +10,14 @@ pub struct PcaDecomposition {
 }
 fn fit(mat: &[Vec<f64>], center: bool) -> PcaDecomposition {
     let m = mat.len();
-    assert!(m > 0);
+    assert!(m > 0, "PCA requires at least one observation");
     let d = mat[0].len();
+    assert!(d > 0, "PCA requires at least one feature");
+    assert!(
+        mat.iter()
+            .all(|row| row.len() == d && row.iter().all(|x| x.is_finite())),
+        "PCA observations must have equal finite dimensions"
+    );
     let mean = if center {
         (0..d)
             .map(|j| mat.iter().map(|x| x[j]).sum::<f64>() / m as f64)
@@ -52,6 +58,7 @@ pub fn fit_differential_pca_central(z: &[Vec<f64>]) -> PcaDecomposition {
 }
 impl PcaDecomposition {
     pub fn encode(&self, x: &[f64], p: usize) -> Vec<f64> {
+        assert_eq!(x.len(), self.dim, "PCA vector dimension mismatch");
         (0..p.min(self.dim))
             .map(|j| {
                 (0..self.dim)
@@ -64,6 +71,7 @@ impl PcaDecomposition {
         (0..self.dim)
             .map(|i| {
                 l.iter()
+                    .take(self.dim)
                     .enumerate()
                     .map(|(j, &v)| self.eigenvectors[i][j] * v)
                     .sum::<f64>()

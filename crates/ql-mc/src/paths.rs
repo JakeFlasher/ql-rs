@@ -41,6 +41,14 @@ impl GbmSoaSimulator {
     }
 
     pub fn price_european(&self, strike: f64, is_call: bool) -> (f64, f64) {
+        if self.expiry <= 0.0 {
+            let value = if is_call {
+                (self.spot - strike).max(0.0)
+            } else {
+                (strike - self.spot).max(0.0)
+            };
+            return (value, 0.0);
+        }
         let rng = crate::PhiloxRng::new(self.seed);
         let steps = self.n_steps.max(1);
         let dt = self.expiry / steps as f64;
@@ -109,6 +117,13 @@ impl GbmSoaSimulator {
     }
 
     pub fn price_european_qmc(&self, strike: f64, is_call: bool) -> f64 {
+        if self.expiry <= 0.0 {
+            return if is_call {
+                (self.spot - strike).max(0.0)
+            } else {
+                (strike - self.spot).max(0.0)
+            };
+        }
         let steps = self.n_steps.max(1);
         let mut sob = crate::SobolGenerator::new(steps);
         let times = (1..=steps)
@@ -330,6 +345,14 @@ impl HestonQeSimulator {
     }
 
     pub fn price_european(&self, strike: f64, is_call: bool) -> (f64, f64) {
+        if self.expiry <= 0.0 {
+            let value = if is_call {
+                (self.spot - strike).max(0.0)
+            } else {
+                (strike - self.spot).max(0.0)
+            };
+            return (value, 0.0);
+        }
         let rng = crate::PhiloxRng::new(self.seed);
         let steps = self.n_steps.max(1);
         let dt = self.expiry / steps as f64;

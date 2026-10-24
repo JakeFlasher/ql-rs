@@ -737,6 +737,11 @@ impl<T: Real> AdEssviSlice<T> {
                 + ((phi * k + self.rho) * (phi * k + self.rho) + T::one() - self.rho * self.rho)
                     .sqrt())
     }
+    pub fn implied_vol(&self, strike: T) -> T {
+        (self.total_variance(strike) / self.expiry.max_val(T::from_f64(1e-12)))
+            .max_val(T::zero())
+            .sqrt()
+    }
 }
 #[derive(Clone, Debug)]
 pub struct AdEssviSurface<T: Real> {
@@ -744,6 +749,9 @@ pub struct AdEssviSurface<T: Real> {
 }
 impl<T: Real> AdEssviSurface<T> {
     pub fn total_variance(&self, expiry: f64, strike: T) -> T {
+        if self.slices.is_empty() {
+            return T::zero();
+        }
         let i = self
             .slices
             .partition_point(|s| s.expiry.val() < expiry)
@@ -770,11 +778,30 @@ impl<T: Real> AdEssviSurface<T> {
         .total_variance(strike)
     }
     pub fn implied_vol(&self, expiry: f64, strike: T) -> T {
-        (self.total_variance(expiry, strike) / T::from_f64(expiry.max(1e-12)))
+        if expiry <= 0.0 || !expiry.is_finite() {
+            return T::zero();
+        }
+        (self.total_variance(expiry, strike) / T::from_f64(expiry))
             .max_val(T::zero())
             .sqrt()
     }
     pub fn is_arbitrage_free(&self, k_grid: &[f64]) -> bool {
+        if self.slices.is_empty()
+            || self.slices.iter().any(|s| {
+                !s.forward.val().is_finite()
+                    || s.forward.val() <= 0.0
+                    || !s.expiry.val().is_finite()
+                    || s.expiry.val() <= 0.0
+                    || !s.theta.val().is_finite()
+                    || s.theta.val() <= 0.0
+                    || !s.rho.val().is_finite()
+                    || s.rho.val().abs() >= 1.0
+                    || !s.psi.val().is_finite()
+                    || s.psi.val() < 0.0
+            })
+        {
+            return false;
+        }
         self.slices.windows(2).all(|w| {
             w[1].theta.val() >= w[0].theta.val()
                 && w[1].psi.val() >= w[0].psi.val()
@@ -799,38 +826,186 @@ pub struct CalibratedEssviSurface {
     pub sensitivity: ql_ad::IftSystemSensitivity,
 }
 impl CalibratedEssviSurface {
+    /// Calibrate each eSSVI slice to its quoted smile.  The three parameters
+    /// (theta, rho, psi) are solved in volatility space; the normal-equation
+    /// Hessian and quote Jacobian retained below provide implicit quote vegas.
     pub fn calibrate(
         slices: &[(f64, f64, Vec<SmileStrikeQuote>)],
     ) -> Result<Self, ql_math::MathError> {
-        if slices.is_empty() {
+        if slices.is_empty()
+            || slices.iter().any(|(t, f, qs)| {
+                !t.is_finite()
+                    || *t <= 0.0
+                    || !f.is_finite()
+                    || *f <= 0.0
+                    || qs.iter().any(|q| {
+                        !q.strike.is_finite()
+                            || q.strike <= 0.0
+                            || !q.market_vol.is_finite()
+                            || q.market_vol <= 0.0
+                    })
+            })
+        {
             return Err(ql_math::MathError::MaxIterations);
         }
-        let mut ss = Vec::new();
-        let mut qv = Vec::new();
-        for &(t, f, ref qs) in slices {
-            let vol = qs.first().map(|q| q.market_vol).unwrap_or(0.2);
-            ss.push(AdEssviSlice {
-                forward: f,
-                expiry: t,
-                theta: vol * vol * t,
-                rho: -0.2,
-                psi: 0.5 * vol * t.sqrt(),
-            });
-            qv.extend(qs.iter().copied());
+        if slices.windows(2).any(|w| w[1].0 <= w[0].0) {
+            return Err(ql_math::MathError::MaxIterations);
         }
-        let n = ss.len() * 3;
-        let sens = ql_ad::IftSystemSensitivity::new(
-            nalgebra::DMatrix::identity(n, n),
-            nalgebra::DMatrix::zeros(n, qv.len()),
-        );
+        let mut calibrated = Vec::with_capacity(slices.len());
+        let mut quote_offsets = Vec::with_capacity(slices.len());
+        let mut qv = Vec::new();
+        for (t, f, qs) in slices {
+            quote_offsets.push(qv.len());
+            qv.extend(qs.iter().copied());
+            let atm = qs
+                .iter()
+                .map(|q| q.market_vol * q.weight.max(0.0))
+                .sum::<f64>()
+                / qs.iter().map(|q| q.weight.max(0.0)).sum::<f64>().max(1e-12);
+            let atm = if atm.is_finite() && atm > 1e-8 {
+                atm
+            } else {
+                0.2
+            };
+            let x0 = DVector::from_vec(vec![
+                (atm * atm * *t).max(1e-8),
+                -0.2,
+                (0.5 * atm * t.sqrt()).max(1e-8),
+            ]);
+            let qs_local = qs.clone();
+            let residual = move |x: &DVector<f64>| {
+                let theta = x[0].max(1e-10);
+                let rho = x[1].clamp(-0.999, 0.999);
+                let psi = x[2].max(1e-10);
+                let ad = AdEssviSlice {
+                    forward: Dual::<3>::from_value(*f),
+                    expiry: Dual::<3>::from_value(*t),
+                    theta: Dual::<3>::variable(theta, 0),
+                    rho: Dual::<3>::variable(rho, 1),
+                    psi: Dual::<3>::variable(psi, 2),
+                };
+                let mut r = DVector::zeros(qs_local.len());
+                let mut j = DMatrix::zeros(qs_local.len(), 3);
+                for (i, q) in qs_local.iter().enumerate() {
+                    let w = q.weight.max(0.0).sqrt();
+                    let y = ad.implied_vol(Dual::<3>::from_value(q.strike));
+                    r[i] = w * (y.val - q.market_vol);
+                    for a in 0..3 {
+                        j[(i, a)] = w * y.d[a];
+                    }
+                }
+                (r, j)
+            };
+            let sol = if qs.is_empty() {
+                x0
+            } else {
+                levenberg_marquardt(x0, residual, 1e-11, 200)?
+            };
+            calibrated.push(AdEssviSlice {
+                forward: *f,
+                expiry: *t,
+                theta: sol[0].max(1e-10),
+                rho: sol[1].clamp(-0.999, 0.999),
+                psi: sol[2].max(1e-10),
+            });
+        }
+
+        let n = calibrated.len() * 3;
+        let mut h = DMatrix::zeros(n, n);
+        let mut jq = DMatrix::zeros(n, qv.len());
+        for (slice_idx, ((t, f, qs), s)) in slices.iter().zip(calibrated.iter()).enumerate() {
+            let ad = AdEssviSlice {
+                forward: Dual2::<3>::from_value(*f),
+                expiry: Dual2::<3>::from_value(*t),
+                theta: Dual2::<3>::variable(s.theta, 0),
+                rho: Dual2::<3>::variable(s.rho, 1),
+                psi: Dual2::<3>::variable(s.psi, 2),
+            };
+            let off = slice_idx * 3;
+            let qoff = quote_offsets[slice_idx];
+            for (qi, q) in qs.iter().enumerate() {
+                let w = q.weight.max(0.0).sqrt();
+                let y = ad.implied_vol(Dual2::<3>::from_value(q.strike));
+                let rv = w * (y.val - q.market_vol);
+                for a in 0..3 {
+                    jq[(off + a, qoff + qi)] = -w * w * y.d1[a];
+                    for b in 0..3 {
+                        h[(off + a, off + b)] += w * w * y.d1[a] * y.d1[b] + w * rv * y.d2[a][b];
+                    }
+                }
+            }
+            // A tiny ridge makes an under-quoted slice well-conditioned while
+            // leaving quote vegas unchanged to machine precision.
+            for a in 0..3 {
+                h[(off + a, off + a)] += 1e-12;
+            }
+        }
         Ok(Self {
-            surface: AdEssviSurface { slices: ss },
+            surface: AdEssviSurface { slices: calibrated },
             quotes: qv,
-            sensitivity: sens,
+            sensitivity: ql_ad::IftSystemSensitivity::new(h, jq),
         })
     }
     pub fn vol_and_quote_vega(&self, expiry: f64, strike: f64) -> (f64, Vec<f64>) {
-        let v = self.surface.implied_vol(expiry, strike).val();
-        (v, vec![0.0; self.quotes.len()])
+        let n = self.surface.slices.len() * 3;
+        if n == 0 {
+            return (0.0, Vec::new());
+        }
+        if self.quotes.is_empty() {
+            return (self.surface.implied_vol(expiry, strike).val(), Vec::new());
+        }
+        let i = self
+            .surface
+            .slices
+            .partition_point(|s| s.expiry < expiry)
+            .min(self.surface.slices.len().saturating_sub(1));
+        let mut g = vec![0.0; n];
+        let value = if self.surface.slices.len() < 2 || i == 0 {
+            let s = &self.surface.slices[0];
+            let ad = AdEssviSlice {
+                forward: Dual::<3>::from_value(s.forward),
+                expiry: Dual::<3>::from_value(s.expiry),
+                theta: Dual::<3>::variable(s.theta, 0),
+                rho: Dual::<3>::variable(s.rho, 1),
+                psi: Dual::<3>::variable(s.psi, 2),
+            };
+            let y = ad.implied_vol(Dual::<3>::from_value(strike));
+            g[..3].copy_from_slice(&y.d);
+            y.val
+        } else {
+            let s0 = &self.surface.slices[i - 1];
+            let s1 = &self.surface.slices[i];
+            let a = ((expiry - s0.expiry) / (s1.expiry - s0.expiry)).clamp(0.0, 1.0);
+            let ad0 = AdEssviSlice {
+                forward: Dual::<6>::from_value(s0.forward),
+                expiry: Dual::<6>::from_value(expiry),
+                theta: Dual::<6>::variable(s0.theta, 0),
+                rho: Dual::<6>::variable(s0.rho, 1),
+                psi: Dual::<6>::variable(s0.psi, 2),
+            };
+            let ad1 = AdEssviSlice {
+                forward: Dual::<6>::from_value(s1.forward),
+                expiry: Dual::<6>::from_value(expiry),
+                theta: Dual::<6>::variable(s1.theta, 3),
+                rho: Dual::<6>::variable(s1.rho, 4),
+                psi: Dual::<6>::variable(s1.psi, 5),
+            };
+            let theta = ad0.theta * (1.0 - a) + ad1.theta * a;
+            let psi = ad0.psi * (1.0 - a) + ad1.psi * a;
+            let rp = ad0.rho * ad0.psi * (1.0 - a) + ad1.rho * ad1.psi * a;
+            let rho = rp / psi.max_val(Dual::<6>::from_value(1e-12));
+            let fwd = ad0.forward * (1.0 - a) + ad1.forward * a;
+            let y = AdEssviSlice {
+                forward: fwd,
+                expiry: Dual::<6>::from_value(expiry),
+                theta,
+                rho,
+                psi,
+            }
+            .implied_vol(Dual::<6>::from_value(strike));
+            g[..6].copy_from_slice(&y.d);
+            y.val
+        };
+        (value, self.sensitivity.vjp(&g))
     }
 }

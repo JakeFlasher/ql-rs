@@ -18,7 +18,9 @@ pub struct MultiplicativeSeasonality {
 }
 impl MultiplicativeSeasonality {
     pub fn new(factors: [f64; 12]) -> Result<Self, InflationError> {
-        if factors.iter().any(|x| *x <= 0.) || (factors.iter().product::<f64>() - 1.).abs() > 1e-6 {
+        if factors.iter().any(|x| !x.is_finite() || *x <= 0.)
+            || (factors.iter().product::<f64>() - 1.).abs() > 1e-6
+        {
             return Err(InflationError::InvalidSeasonality);
         }
         Ok(Self { factors })
@@ -93,6 +95,9 @@ impl<T: Real> ZeroInflationCurve<T> {
         out
     }
     pub fn interpolated_cpi(cpi_lag3: T, cpi_lag2: T, day: u8, dim: u8) -> T {
+        if dim == 0 {
+            return cpi_lag3;
+        }
         cpi_lag3 + (cpi_lag2 - cpi_lag3) * (day.saturating_sub(1) as f64 / dim as f64)
     }
     pub fn to_ad<S: Real>(&self, nodes: &[S]) -> ZeroInflationCurve<S> {
@@ -122,6 +127,9 @@ impl ZeroCouponInflationSwap {
         if self.pay_fixed { x } else { -x }
     }
     pub fn fair_rate<T: Real>(&self, i: &ZeroInflationCurve<T>) -> T {
+        if self.maturity_years <= 0.0 {
+            return T::zero();
+        }
         (i.forward_cpi(self.maturity_years, self.target_month) / T::from_f64(i.base_cpi))
             .powf(1. / self.maturity_years)
             - T::one()
@@ -319,8 +327,24 @@ fn yoy_optionlet<T: Real>(
     cap: bool,
 ) -> T {
     match model {
-        YoYOptionletModel::Black => black76_price(f, k, sigma, t, df, cap),
-        YoYOptionletModel::UnitDisplacedBlack => black76_price(f + 1.0, k + 1.0, sigma, t, df, cap),
+        YoYOptionletModel::Black => {
+            // Black is undefined for non-positive inflation forwards/strikes;
+            // use the continuous Bachelier extension in that regime.
+            if f.val() <= 0.0 || k.val() <= 0.0 {
+                bachelier_price(f, k, sigma, t, df, cap)
+            } else {
+                black76_price(f, k, sigma, t, df, cap)
+            }
+        }
+        YoYOptionletModel::UnitDisplacedBlack => {
+            let fd = f + T::one();
+            let kd = k + T::one();
+            if fd.val() <= 0.0 || kd.val() <= 0.0 {
+                bachelier_price(f, k, sigma, t, df, cap)
+            } else {
+                black76_price(fd, kd, sigma, t, df, cap)
+            }
+        }
         YoYOptionletModel::Bachelier => bachelier_price(f, k, sigma, t, df, cap),
     }
 }
@@ -332,6 +356,39 @@ pub fn price_yoy_inflation_capfloor<T: Real>(
     vol: T,
     model: YoYOptionletModel,
 ) -> T {
+    if instrument.maturity_years == 0
+        || !instrument.gearing.val().is_finite()
+        || instrument.gearing.val() < 0.0
+        || !instrument.spread.val().is_finite()
+        || !vol.val().is_finite()
+        || vol.val() < 0.0
+        || instrument
+            .cap_rate
+            .zip(instrument.floor_rate)
+            .map(|(cap, floor)| cap.val() < floor.val())
+            .unwrap_or(false)
+    {
+        return T::zero();
+    }
+    if instrument.gearing.val().abs() < 1e-14 {
+        let mut cap = T::zero();
+        let mut floor = T::zero();
+        for j in 1..=instrument.maturity_years {
+            let df = discount.discount_factor(j as f64);
+            let spread = instrument.spread;
+            if let Some(k) = instrument.cap_rate {
+                cap += instrument.notional * df * (spread - k).max_val(T::zero());
+            }
+            if let Some(k) = instrument.floor_rate {
+                floor += instrument.notional * df * (k - spread).max_val(T::zero());
+            }
+        }
+        return match instrument.cap_floor_type {
+            YoYInflationCapFloorType::Cap => cap,
+            YoYInflationCapFloorType::Floor => floor,
+            YoYInflationCapFloorType::Collar => cap - floor,
+        };
+    }
     let mut cap = T::zero();
     let mut floor = T::zero();
     let mut prev = T::from_f64(inflation.base_cpi);
@@ -380,23 +437,65 @@ pub fn lpi_inflation_swap_npv<T: Real>(
     s: &LpiInflationSwapSpec<T>,
     discount: &impl YieldTermStructure<T>,
     inflation: &ZeroInflationCurve<T>,
-    _vol: T,
-    _model: YoYOptionletModel,
+    vol: T,
+    model: YoYOptionletModel,
 ) -> (T, T) {
+    if s.maturity_years == 0
+        || s.cap_rate.val() < s.floor_rate.val()
+        || !vol.val().is_finite()
+        || vol.val() < 0.0
+    {
+        return (T::zero(), T::zero());
+    }
+    if s.is_compounded_zero_coupon {
+        let mut index_ratio = T::one();
+        for j in 1..=s.maturity_years {
+            let f = inflation.forward_cpi(j as f64, None)
+                / inflation.forward_cpi((j - 1) as f64, None)
+                - T::one();
+            let y = f.max_val(s.floor_rate).min_val(s.cap_rate);
+            index_ratio *= T::one() + y;
+        }
+        let t = s.maturity_years as f64;
+        let fixed_ratio = (T::one() + s.fixed_rate).powf(t);
+        let df = discount.discount_factor(t);
+        let npv = s.notional * df * (index_ratio - fixed_ratio);
+        let fair = index_ratio.powf(1.0 / t) - T::one();
+        return (if s.pay_fixed { npv } else { -npv }, fair);
+    }
     let mut pv = T::zero();
-    let mut fair = T::zero();
+    let mut annuity = T::zero();
+    let mut weighted = T::zero();
     for j in 1..=s.maturity_years {
         let f = inflation.forward_cpi(j as f64, None) / inflation.forward_cpi((j - 1) as f64, None)
             - T::one();
-        let y = f.max_val(s.floor_rate).min_val(s.cap_rate);
-        pv += discount.discount_factor(j as f64) * (y - s.fixed_rate);
-        fair += y;
+        let floorlet = yoy_optionlet(
+            f,
+            s.floor_rate,
+            vol,
+            T::from_f64(j as f64),
+            T::one(),
+            model,
+            false,
+        );
+        let caplet = yoy_optionlet(
+            f,
+            s.cap_rate,
+            vol,
+            T::from_f64(j as f64),
+            T::one(),
+            model,
+            true,
+        );
+        let y = (f + floorlet - caplet)
+            .max_val(s.floor_rate)
+            .min_val(s.cap_rate);
+        let df = discount.discount_factor(j as f64);
+        pv += df * (y - s.fixed_rate);
+        annuity += df;
+        weighted += df * y;
     }
-    fair /= T::from_f64(s.maturity_years.max(1) as f64);
+    let fair = weighted / annuity.max_val(T::from_f64(1e-14));
     let npv = pv * s.notional;
-    if s.pay_fixed {
-        (npv, fair)
-    } else {
-        (-npv, fair)
-    }
+    (if s.pay_fixed { npv } else { -npv }, fair)
 }

@@ -6,6 +6,22 @@ pub fn cholesky_lower_generic<T: Real>(c: &[Vec<T>]) -> Result<Vec<Vec<T>>, Stri
     if n == 0 || c.iter().any(|r| r.len() != n) {
         return Err("non-square matrix".into());
     }
+    // Cholesky is only defined for a symmetric positive-definite matrix.
+    // The generic path used to silently consume the lower triangle and thus
+    // produce plausible but incorrect sensitivities for asymmetric inputs.
+    for i in 0..n {
+        if !c[i][i].val().is_finite() {
+            return Err("matrix contains non-finite entries".into());
+        }
+        for j in (i + 1)..n {
+            if !c[i][j].val().is_finite()
+                || !c[j][i].val().is_finite()
+                || (c[i][j].val() - c[j][i].val()).abs() > 1e-12
+            {
+                return Err("matrix must be symmetric".into());
+            }
+        }
+    }
     let mut l = vec![vec![T::zero(); n]; n];
     for i in 0..n {
         for j in 0..=i {

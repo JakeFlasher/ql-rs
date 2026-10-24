@@ -29,6 +29,16 @@ pub fn try_box_constrained_markowitz_weights<T: Real>(
         || s.covariance.iter().any(|r| r.len() != n)
         || s.lower_bounds.len() != n
         || s.upper_bounds.len() != n
+        || !s.risk_aversion.val().is_finite()
+        || s.covariance
+            .iter()
+            .flat_map(|r| r.iter())
+            .any(|x| !x.val().is_finite())
+        || s.expected_returns.iter().any(|x| !x.val().is_finite())
+        || s.lower_bounds
+            .iter()
+            .chain(s.upper_bounds.iter())
+            .any(|x| !x.val().is_finite())
     {
         return Err(AllocationError::InvalidDimensions);
     }
@@ -294,7 +304,12 @@ impl<T: Real> BlackLittermanSpec<T> {
 /// and TapeVar derivatives survive the solve.
 pub fn solve_linear_generic<T: Real>(a: &[Vec<T>], b: &[T]) -> Result<Vec<T>, AllocationError> {
     let n = b.len();
-    if a.len() != n || a.iter().any(|r| r.len() != n) {
+    if n == 0
+        || a.len() != n
+        || a.iter().any(|r| r.len() != n)
+        || a.iter().flatten().any(|x| !x.val().is_finite())
+        || b.iter().any(|x| !x.val().is_finite())
+    {
         return Err(AllocationError::InvalidDimensions);
     }
     let mut m = vec![vec![T::zero(); n + 1]; n];
@@ -358,6 +373,21 @@ pub fn try_black_litterman_posterior<T: Real>(
         || s.view_matrix.iter().any(|r| r.len() != n)
         || s.omega.len() != k
         || s.omega.iter().any(|r| r.len() != k)
+        || !s.risk_aversion.val().is_finite()
+        || s.risk_aversion.val() <= 0.0
+        || !s.tau.val().is_finite()
+        || s.tau.val() < 0.0
+        || s.market_weights.iter().any(|x| !x.val().is_finite())
+        || s.covariance
+            .iter()
+            .flat_map(|r| r.iter())
+            .any(|x| !x.val().is_finite())
+        || s.view_matrix
+            .iter()
+            .flat_map(|r| r.iter())
+            .chain(s.view_returns.iter())
+            .chain(s.omega.iter().flat_map(|r| r.iter()))
+            .any(|x| !x.val().is_finite())
     {
         return Err(AllocationError::InvalidDimensions);
     }
@@ -443,10 +473,10 @@ pub fn try_black_litterman_posterior<T: Real>(
         .collect::<Vec<_>>();
     let raw = solve_linear_generic(&weighted, &mu)?;
     let z = raw.iter().fold(T::zero(), |a, x| a + *x);
-    let w = raw
-        .iter()
-        .map(|x| *x / z.max_val(T::from_f64(1e-14)))
-        .collect::<Vec<_>>();
+    if !z.val().is_finite() || z.val().abs() <= 1e-14 {
+        return Err(AllocationError::SingularCovariance);
+    }
+    let w = raw.iter().map(|x| *x / z).collect::<Vec<_>>();
     Ok(BlackLittermanPosterior {
         expected_returns: mu,
         covariance: post_cov,
@@ -465,10 +495,10 @@ pub fn try_markowitz_minimum_variance_weights<T: Real>(
     }
     let ones = vec![T::one(); n];
     let x = solve_linear_generic(cov, &ones)?;
-    let z = x
-        .iter()
-        .fold(T::zero(), |a, b| a + *b)
-        .max_val(T::from_f64(1e-14));
+    let z = x.iter().fold(T::zero(), |a, b| a + *b);
+    if !z.val().is_finite() || z.val().abs() <= 1e-14 {
+        return Err(AllocationError::SingularCovariance);
+    }
     Ok(x.into_iter().map(|x| x / z).collect())
 }
 pub fn markowitz_minimum_variance_weights<T: Real>(cov: &[Vec<T>]) -> Vec<T> {
@@ -483,10 +513,10 @@ pub fn try_markowitz_tangency_weights<T: Real>(
         return Err(AllocationError::InvalidDimensions);
     }
     let x = solve_linear_generic(cov, excess)?;
-    let z = x
-        .iter()
-        .fold(T::zero(), |a, b| a + *b)
-        .max_val(T::from_f64(1e-14));
+    let z = x.iter().fold(T::zero(), |a, b| a + *b);
+    if !z.val().is_finite() || z.val().abs() <= 1e-14 {
+        return Err(AllocationError::SingularCovariance);
+    }
     Ok(x.into_iter().map(|x| x / z).collect())
 }
 pub fn markowitz_tangency_weights<T: Real>(cov: &[Vec<T>], excess: &[T]) -> Vec<T> {
@@ -544,9 +574,29 @@ pub fn try_risk_budgeting_weights<T: Real>(
     if n == 0
         || budgets.len() != n
         || cov.iter().any(|r| r.len() != n)
-        || budgets.iter().any(|x| x.val() <= 0.0)
+        || budgets
+            .iter()
+            .any(|x| !x.val().is_finite() || x.val() <= 0.0)
+        || cov
+            .iter()
+            .flat_map(|r| r.iter())
+            .any(|x| !x.val().is_finite())
     {
         return Err(AllocationError::InvalidDimensions);
+    }
+    // Risk budgeting is defined for a symmetric positive-definite covariance
+    // matrix.  Without this guard the coordinate descent below can generate
+    // NaNs (negative diagonal or an asymmetric input) and those NaNs used to
+    // leak out as apparently valid weights.
+    for i in 0..n {
+        if cov[i][i].val() <= 0.0 {
+            return Err(AllocationError::SingularCovariance);
+        }
+        for j in (i + 1)..n {
+            if (cov[i][j].val() - cov[j][i].val()).abs() > 1e-10 {
+                return Err(AllocationError::InvalidDimensions);
+            }
+        }
     }
     let sum = budgets.iter().map(|x| x.val()).sum::<f64>().max(1e-14);
     let b = budgets.iter().map(|x| x.val() / sum).collect::<Vec<_>>();
@@ -555,6 +605,9 @@ pub fn try_risk_budgeting_weights<T: Real>(
         .map(|r| r.iter().map(|x| x.val()).collect())
         .collect::<Vec<Vec<_>>>();
     let y = ccd(&cf, &b);
+    if y.iter().any(|x| !x.is_finite() || *x <= 0.0) {
+        return Err(AllocationError::SingularCovariance);
+    }
     let h = (0..n)
         .map(|i| {
             (0..n)
@@ -594,6 +647,9 @@ pub fn try_risk_budgeting_weights<T: Real>(
         yt[i] = T::from_f64(y[i]) + d;
     }
     let z = yt.iter().fold(T::zero(), |a, x| a + *x);
+    if !z.val().is_finite() || z.val().abs() <= 1e-14 {
+        return Err(AllocationError::SingularCovariance);
+    }
     Ok(yt.into_iter().map(|x| x / z).collect())
 }
 pub fn risk_budgeting_weights<T: Real>(cov: &[Vec<T>], budgets: &[T]) -> Vec<T> {
@@ -732,6 +788,17 @@ pub fn try_mean_cvar_weights<T: Real>(
         || s.lower_bounds.len() != n
         || s.upper_bounds.len() != n
         || !(0.5..1.0).contains(&s.confidence)
+        || !s.risk_aversion.val().is_finite()
+        || s.risk_aversion.val() < 0.0
+        || !s.smoothing_eps.is_finite()
+        || s.smoothing_eps < 0.0
+        || s.scenario_returns
+            .iter()
+            .flat_map(|r| r.iter())
+            .chain(s.expected_returns.iter())
+            .chain(s.lower_bounds.iter())
+            .chain(s.upper_bounds.iter())
+            .any(|x| !x.val().is_finite())
     {
         return Err(AllocationError::InvalidDimensions);
     }
@@ -852,7 +919,11 @@ pub fn ledoit_wolf_shrinkage<T: Real>(
     target: ShrinkageTarget,
 ) -> Result<LedoitWolfResult<T>, AllocationError> {
     let n = r.len();
-    if n < 2 || r.iter().any(|x| x.is_empty() || x.len() != r[0].len()) {
+    if n < 2
+        || r.iter().any(|x| {
+            x.is_empty() || x.len() != r[0].len() || x.iter().any(|v| !v.val().is_finite())
+        })
+    {
         return Err(AllocationError::InvalidDimensions);
     }
     let p = r[0].len();
@@ -900,6 +971,22 @@ pub fn ledoit_wolf_shrinkage<T: Real>(
             }
         }
     }
+    // Ledoit--Wolf intensity: estimate the variance of the sample
+    // covariance elementwise (pi-hat) and divide by the squared distance to
+    // the target (gamma).  The former fixed `0.1/gamma` heuristic was not a
+    // shrinkage estimator and could materially over/under-shrink depending
+    // only on units.
+    let mut pi = T::zero();
+    for row in r {
+        for i in 0..p {
+            for j in 0..p {
+                let outer = (row[i] - mean[i]) * (row[j] - mean[j]);
+                let err = outer - s[i][j];
+                pi += err * err;
+            }
+        }
+    }
+    pi = pi / n as f64;
     let d = (0..p)
         .map(|i| {
             (0..p)
@@ -907,7 +994,7 @@ pub fn ledoit_wolf_shrinkage<T: Real>(
                 .fold(T::zero(), |a, z| a + z)
         })
         .fold(T::zero(), |a, z| a + z);
-    let delta = (T::from_f64(0.1) / (d + T::from_f64(1e-12)))
+    let delta = (pi / (d + T::from_f64(1e-12)))
         .max_val(T::zero())
         .min_val(T::one());
     let shr = (0..p)
@@ -938,7 +1025,32 @@ pub fn try_robust_markowitz_weights<T: Real>(
     s: &RobustMarkowitzSpec<T>,
 ) -> Result<Vec<T>, AllocationError> {
     let n = s.expected_returns.len();
-    if n == 0 {
+    // Validate every matrix/vector before the fixed-point loop.  The old
+    // implementation only checked `n`, so malformed uncertainty matrices
+    // could panic while indexing (and negative radii produced a nonsensical
+    // adversarial covariance adjustment).
+    if n == 0
+        || s.covariance.len() != n
+        || s.covariance.iter().any(|r| r.len() != n)
+        || s.return_uncertainty_cov.len() != n
+        || s.return_uncertainty_cov.iter().any(|r| r.len() != n)
+        || s.lower_bounds.len() != n
+        || s.upper_bounds.len() != n
+        || !s.risk_aversion.val().is_finite()
+        || s.risk_aversion.val() <= 0.0
+        || !s.uncertainty_radius.val().is_finite()
+        || s.uncertainty_radius.val() < 0.0
+        || s.expected_returns
+            .iter()
+            .chain(s.lower_bounds.iter())
+            .chain(s.upper_bounds.iter())
+            .any(|x| !x.val().is_finite())
+        || s.covariance
+            .iter()
+            .chain(s.return_uncertainty_cov.iter())
+            .flat_map(|r| r.iter())
+            .any(|x| !x.val().is_finite())
+    {
         return Err(AllocationError::InvalidDimensions);
     }
     let mut cov = s.covariance.clone();

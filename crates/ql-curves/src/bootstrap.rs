@@ -807,10 +807,29 @@ impl CalibratedMeetingJumpOisCurve {
         if meeting_times.is_empty()
             || meeting_times.len() != swap_maturities.len()
             || meeting_times.len() != swap_quotes.len()
+            || !initial_rate.is_finite()
+            || meeting_times.iter().any(|t| !t.is_finite() || *t <= 0.0)
+            || swap_maturities.iter().any(|t| !t.is_finite() || *t <= 0.0)
+            || swap_quotes.iter().any(|q| !q.is_finite())
+            || meeting_times.windows(2).any(|w| w[1] <= w[0])
+            || swap_maturities.windows(2).any(|w| w[1] <= w[0])
+            || meeting_times
+                .iter()
+                .zip(swap_maturities)
+                .any(|(m, t)| m > t)
+            // Sequential scalar solves below rely on each newly introduced
+            // meeting jump appearing first in its matching quote residual.
+            // If meeting i occurs no later than maturity i-1 it also enters a
+            // previously solved equation, so the system is not triangular.
+            || meeting_times
+                .iter()
+                .skip(1)
+                .zip(swap_maturities.iter().take(swap_maturities.len().saturating_sub(1)))
+                .any(|(m, prev_mat)| *m <= *prev_mat)
         {
             return Err(BootstrapError::InvalidInput);
         }
-        let mut jumps = vec![0.0; meeting_times.len()];
+        let n = meeting_times.len();
         let residuals = |j: &[f64]| -> Vec<f64> {
             let c = MeetingDateJumpOisCurve {
                 reference_date,
@@ -823,49 +842,87 @@ impl CalibratedMeetingJumpOisCurve {
                 .zip(swap_quotes)
                 .map(|(&mat, &q)| {
                     let mut ann = 0.0;
-                    let mut t = 1.0;
-                    while t <= mat + 1e-12 {
-                        ann += c.discount_factor(t);
-                        t += 1.0;
+                    let mut prev = 0.0;
+                    while prev < mat - 1e-14 {
+                        let next = (prev + 1.0).min(mat);
+                        ann += c.discount_factor(next) * (next - prev);
+                        prev = next;
                     }
                     q * ann - (1.0 - c.discount_factor(mat))
                 })
                 .collect()
         };
-        for _ in 0..32 {
-            let r = residuals(&jumps);
-            if r.iter().map(|x| x.abs()).fold(0.0, f64::max) < 1e-13 {
-                break;
-            }
-            for i in 0..jumps.len() {
-                let h = 1e-6;
-                let mut u = jumps.clone();
-                u[i] += h;
-                let mut d = jumps.clone();
-                d[i] -= h;
-                let der = (residuals(&u)[i] - residuals(&d)[i]) / (2.0 * h);
-                if der.abs() > 1e-14 {
-                    jumps[i] -= r[i] / der;
+        // The system is triangular when meeting dates and swap maturities are
+        // sorted: jump i first enters the i-th maturity.  Solving each scalar
+        // equation by Brent is more stable than the old unguarded coordinate
+        // Newton iteration and guarantees repricing to the requested tolerance.
+        let mut jumps = vec![0.0; n];
+        for i in 0..n {
+            let f = |x: f64| {
+                let mut trial = jumps.clone();
+                trial[i] = x;
+                residuals(&trial)[i]
+            };
+            let mut lo = -2.0;
+            let mut hi = 2.0;
+            let mut flo = f(lo);
+            let mut fhi = f(hi);
+            for _ in 0..12 {
+                if flo.is_finite() && fhi.is_finite() && flo.signum() != fhi.signum() {
+                    break;
                 }
+                lo *= 2.0;
+                hi *= 2.0;
+                flo = f(lo);
+                fhi = f(hi);
             }
+            if !flo.is_finite() || !fhi.is_finite() || flo.signum() == fhi.signum() {
+                return Err(BootstrapError::Solver(
+                    "meeting jump root not bracketed".into(),
+                ));
+            }
+            jumps[i] = ql_math::brent_solve(f, lo, hi, 1e-14, 200)
+                .map_err(|e| BootstrapError::Solver(e.to_string()))?;
         }
         let base = residuals(&jumps);
-        let mut jt = nalgebra::DMatrix::zeros(jumps.len(), jumps.len());
-        for j in 0..jumps.len() {
-            let h = 1e-6;
+        if base.iter().any(|r| !r.is_finite() || r.abs() > 1e-10) {
+            return Err(BootstrapError::Solver(
+                "meeting jump calibration failed".into(),
+            ));
+        }
+        let mut jt = nalgebra::DMatrix::zeros(n, n);
+        for j in 0..n {
+            let h = 1e-6_f64.max(jumps[j].abs() * 1e-5);
             let mut u = jumps.clone();
-            u[j] += h;
             let mut d = jumps.clone();
+            u[j] += h;
             d[j] -= h;
             let ru = residuals(&u);
             let rd = residuals(&d);
-            for i in 0..jumps.len() {
+            for i in 0..n {
                 jt[(i, j)] = (ru[i] - rd[i]) / (2.0 * h);
             }
         }
-        let jq =
-            nalgebra::DMatrix::from_diagonal(&nalgebra::DVector::from_element(jumps.len(), -1.0));
-        let _ = base;
+        // Quote derivatives are the payment annuities, not -I: F_i = q_i A_i
+        // - (1-P_i), hence dF_i/dq_i = A_i.
+        let mut jq = nalgebra::DMatrix::zeros(n, n);
+        for i in 0..n {
+            let mut ann = 0.0;
+            let mut prev = 0.0;
+            while prev < swap_maturities[i] - 1e-14 {
+                let next = (prev + 1.0).min(swap_maturities[i]);
+                ann += MeetingDateJumpOisCurve {
+                    reference_date,
+                    meeting_times: meeting_times.to_vec(),
+                    initial_rate,
+                    meeting_jumps: jumps.clone(),
+                }
+                .discount_factor(next)
+                    * (next - prev);
+                prev = next;
+            }
+            jq[(i, i)] = ann;
+        }
         Ok(Self {
             curve: MeetingDateJumpOisCurve {
                 reference_date,

@@ -104,7 +104,7 @@ pub struct CalibratedCoterminalCascade<T: Real = f64> {
     pub model_normal_vols: Vec<T>,
 }
 pub fn calibrate_cheyette_coterminal_ad<T: Real, C: YieldTermStructure<T>>(
-    _curve: &C,
+    curve: &C,
     mu: T,
     swaptions: &[crate::EuropeanSwaption],
     market_normal_vols: &[T],
@@ -112,11 +112,90 @@ pub fn calibrate_cheyette_coterminal_ad<T: Real, C: YieldTermStructure<T>>(
     if swaptions.len() != market_normal_vols.len() {
         return Err("dimension mismatch".into());
     }
+    if swaptions.windows(2).any(|w| w[1].expiry <= w[0].expiry)
+        || swaptions.iter().any(|s| {
+            !s.expiry.is_finite()
+                || s.expiry <= 0.0
+                || s.swap_times.len() < 2
+                || s.swap_times.windows(2).any(|w| w[1] <= w[0])
+        })
+        || market_normal_vols
+            .iter()
+            .any(|v| !v.val().is_finite() || v.val() < 0.0)
+    {
+        return Err("invalid coterminal inputs".into());
+    }
+    let m = swaptions.len();
+    let mu0 = mu.val();
+    let mut piecewise_sigmas = Vec::with_capacity(m);
+    let mut model_normal_vols = Vec::with_capacity(m);
+    let mut prior_vx = T::zero();
+    let mut prev_t = 0.0;
+    // Bond loading and swap-rate loading at x=0.  This is the first-order
+    // Cheyette normal-volatility map used by coterminal cascade calibration.
+    let swap_loading = |s: &crate::EuropeanSwaption| {
+        let t = s.expiry;
+        let bond = |u: f64, x: f64| {
+            if u <= t {
+                1.0
+            } else {
+                let g = if mu0.abs() * (u - t) < 1e-8 {
+                    u - t
+                } else {
+                    (1.0 - (-mu0 * (u - t)).exp()) / mu0
+                };
+                curve.discount_factor(u).val() / curve.discount_factor(t).val() * (-g * x).exp()
+            }
+        };
+        let swap_rate = |x: f64| {
+            let mut ann = 0.0;
+            let mut floating = 0.0;
+            for w in s.swap_times.windows(2) {
+                let tau = w[1] - w[0];
+                let p0 = bond(w[0], x);
+                let p1 = bond(w[1], x);
+                ann += tau * p1;
+                floating += (p0 / p1 - 1.0) * p1;
+            }
+            if ann.abs() > 1e-14 {
+                floating / ann
+            } else {
+                0.0
+            }
+        };
+        let h = 1e-5;
+        (swap_rate(h) - swap_rate(-h)) / (2.0 * h)
+    };
+    for (s, market) in swaptions.iter().zip(market_normal_vols.iter()) {
+        let t = s.expiry;
+        let loading = swap_loading(s).abs();
+        if !loading.is_finite() || loading <= 1e-12 {
+            return Err("singular swap-rate loading".into());
+        }
+        let target_vx = *market * *market * T::from_f64(t / (loading * loading));
+        let dt_seg = t - prev_t;
+        let dt_ad = T::from_f64(dt_seg);
+        let seg = if mu0.abs() < 1e-8 {
+            dt_ad
+        } else {
+            (T::one() - (-T::from_f64(2.0) * mu * dt_ad).exp()) / (T::from_f64(2.0) * mu)
+        };
+        if !seg.val().is_finite() || seg.val() <= 1e-14 {
+            return Err("invalid Cheyette variance interval".into());
+        }
+        let sigma2 = ((target_vx - prior_vx) / seg).max_val(T::zero());
+        let sigma = sigma2.sqrt();
+        piecewise_sigmas.push(sigma);
+        prior_vx = prior_vx * (-T::from_f64(2.0) * mu * dt_ad).exp() + sigma2 * seg;
+        model_normal_vols
+            .push(T::from_f64(loading) * (prior_vx / T::from_f64(t)).max_val(T::zero()).sqrt());
+        prev_t = t;
+    }
     Ok(CalibratedCoterminalCascade {
         mu,
         exercise_times: swaptions.iter().map(|s| s.expiry).collect(),
-        piecewise_sigmas: market_normal_vols.to_vec(),
-        model_normal_vols: market_normal_vols.to_vec(),
+        piecewise_sigmas,
+        model_normal_vols,
     })
 }
 pub fn price_callable_range_accrual_hw1f<
@@ -128,19 +207,35 @@ pub fn price_callable_range_accrual_hw1f<
     ois: &D,
     fwd: &F,
     spec: &crate::CallableRangeAccrualSpec<T>,
-    _steps: usize,
+    steps: usize,
 ) -> (T, T, T) {
-    let mut non = T::zero();
-    for i in 0..spec.call_period_indices.len().max(1) {
-        let t = (i + 1) as f64;
-        let f = (fwd.discount_factor(t - 0.5) / fwd.discount_factor(t) - T::one()) * 2.0;
-        let gate = (f - spec.lower_bound)
-            .smooth_heaviside_c2(T::zero(), spec.smoothing_eps.max(1e-6))
-            * (T::one()
-                - (f - spec.upper_bound)
-                    .smooth_heaviside_c2(T::zero(), spec.smoothing_eps.max(1e-6)));
-        non += spec.notional * spec.coupon_rate * gate * ois.discount_factor(t);
+    if spec.call_period_indices.is_empty() {
+        return (T::zero(), T::zero(), T::zero());
     }
-    let callable = non.min_val(spec.notional * spec.coupon_rate);
+    // The schedule stores actual period indices; using the loop ordinal here
+    // silently shifted all callable dates whenever indices were sparse.  A
+    // modest sub-grid average makes the corridor indicator less sensitive to
+    // the arbitrary midpoint chosen for a long period while retaining AD.
+    let sub = steps.max(1);
+    let mut non = T::zero();
+    for &period_idx in &spec.call_period_indices {
+        let start = period_idx as f64;
+        let end = start + 1.0;
+        let mut accrual_gate = T::zero();
+        for q in 0..sub {
+            let t = start + (q as f64 + 0.5) / sub as f64;
+            let dt = 1.0 / sub as f64;
+            let f = (fwd.discount_factor(t - 0.5) / fwd.discount_factor(t) - T::one()) * 2.0;
+            let gate = (f - spec.lower_bound)
+                .smooth_heaviside_c2(T::zero(), spec.smoothing_eps.max(1e-6))
+                * (T::one()
+                    - (f - spec.upper_bound)
+                        .smooth_heaviside_c2(T::zero(), spec.smoothing_eps.max(1e-6)));
+            accrual_gate += gate * dt;
+        }
+        non += spec.notional * spec.coupon_rate * accrual_gate * ois.discount_factor(end);
+    }
+    let max_coupon = spec.notional * spec.coupon_rate * spec.call_period_indices.len() as f64;
+    let callable = non.min_val(max_coupon.max_val(T::zero()));
     (callable, non, non - callable)
 }

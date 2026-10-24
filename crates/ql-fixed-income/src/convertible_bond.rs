@@ -17,9 +17,22 @@ pub struct ConvertibleBondSpec<T: Real> {
 pub fn price_convertible_bond_tf<T: Real>(s: &ConvertibleBondSpec<T>, steps: usize) -> (T, T) {
     let n = steps.max(1);
     let dt = s.maturity / n as f64;
-    let u = (s.vol * dt.sqrt()).exp();
-    let d = T::one() / u;
-    let p = (((s.rate - s.div_yield) * dt).exp() - d) / (u - d);
+    // In the zero-volatility limit the CRR up/down factors coincide and the
+    // usual risk-neutral probability is 0/0.  Collapse to a deterministic
+    // forward growth factor instead; using `p=0.5` keeps both branches equal
+    // while preserving the correct drift.
+    let deterministic = s.vol.val().abs() < 1e-14;
+    let u = if deterministic {
+        ((s.rate - s.div_yield) * dt).exp()
+    } else {
+        (s.vol * dt.sqrt()).exp()
+    };
+    let d = if deterministic { u } else { T::one() / u };
+    let p = if deterministic {
+        T::from_f64(0.5)
+    } else {
+        (((s.rate - s.div_yield) * dt).exp() - d) / (u - d)
+    };
     let mut v = vec![T::zero(); n + 1];
     let mut b = v.clone();
     let mut step_coupons = vec![T::zero(); n + 1];

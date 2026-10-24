@@ -539,6 +539,12 @@ pub fn price_contingent_cds<T: Real>(
     loss_given_default: T,
     running_spread: T,
 ) -> (T, T, T) {
+    // Empty cubes/netting sets are valid for report pipelines that build a
+    // portfolio incrementally.  Avoid the `n_netting_sets - 1` underflow
+    // that previously panicked before returning a well-defined zero quote.
+    if cube.n_netting_sets == 0 || cube.n_paths == 0 || cube.times.is_empty() {
+        return (T::zero(), T::zero(), T::zero());
+    }
     let mut prot = T::zero();
     let mut prem = T::zero();
     let mut prev = T::one();

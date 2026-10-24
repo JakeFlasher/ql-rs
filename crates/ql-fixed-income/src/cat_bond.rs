@@ -134,7 +134,7 @@ impl<T: Real> CatBondSpec<T> {
             CatPerilSpec::PoissonExponential {
                 lambda,
                 mean_severity,
-            } => (lambda, mean_severity),
+            } => (lambda.max_val(T::zero()), mean_severity),
             _ => unreachable!(),
         };
         let mut price = T::zero();

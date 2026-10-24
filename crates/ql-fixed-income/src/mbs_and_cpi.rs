@@ -81,9 +81,19 @@ pub fn price_cpi_bond<T: Real>(
 ) -> T {
     let mut pv = T::zero();
     for (i, &t) in spec.payment_times.iter().enumerate() {
-        let idx = (t * 12.0).round() as u8;
+        // Keep month arithmetic in a wide integer domain.  Casting directly
+        // to `u8` wrapped for maturities beyond ~21 years (e.g. month 256
+        // became month 0), selecting the wrong seasonal factor.  The
+        // inflation helper expects the lagged month `(index - 1) mod 12`;
+        // month zero is retained as January for a zero-time payment.
+        let idx = (t * 12.0).round();
+        let month = if idx <= 0.0 {
+            1u8
+        } else {
+            (((idx - 1.0).rem_euclid(12.0)) as u8) + 1
+        };
         let ratio =
-            inflation_curve.forward_cpi(t, Some((idx.saturating_sub(1) % 12) + 1)) / spec.base_cpi;
+            inflation_curve.forward_cpi(t, Some(month)) / spec.base_cpi.max_val(T::from_f64(1e-12));
         let accrual = spec.accrual_fractions.get(i).copied().unwrap_or_else(|| {
             if i == 0 {
                 t
@@ -111,7 +121,11 @@ pub fn breakeven_inflation_rate<T: Real>(
     nominal_discount: &impl YieldTermStructure<T>,
 ) -> T {
     let t_last = *spec.payment_times.last().unwrap_or(&1.0);
-    let target = nominal_price / (spec.face_amount * nominal_discount.discount_factor(t_last));
+    if !t_last.is_finite() || t_last <= 0.0 || spec.face_amount.val().abs() <= 1e-14 {
+        return T::zero();
+    }
+    let target = nominal_price
+        / (spec.face_amount * nominal_discount.discount_factor(t_last)).max_val(T::from_f64(1e-12));
     let mut pi = target.powf(1.0 / t_last) - T::one();
     if spec.real_coupon_rate.val().abs() <= 1e-14 {
         return pi;
@@ -164,7 +178,9 @@ fn smm<T: Real>(model: PrepaymentModel<T>, age: usize) -> T {
         PrepaymentModel::Psa { psa_multiplier } => {
             psa_multiplier * 0.06 * (age as f64 / 30.0).min(1.0)
         }
-    };
+    }
+    .max_val(T::zero())
+    .min_val(T::one());
     T::one() - (T::one() - cpr).powf(1.0 / 12.0)
 }
 
@@ -173,6 +189,12 @@ pub fn price_agency_mbs<T: Real>(
     curve: &impl YieldTermStructure<T>,
     oas: T,
 ) -> (T, T) {
+    if !spec.original_balance.val().is_finite()
+        || spec.original_balance.val() <= 1e-14
+        || spec.term_months == 0
+    {
+        return (T::zero(), T::zero());
+    }
     let mut balance = spec.original_balance;
     let mut pv = T::zero();
     let mut wal = T::zero();

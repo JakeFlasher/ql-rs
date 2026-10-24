@@ -43,10 +43,11 @@ use ql_credit::{
     CalibratedCreditCurve, CdsQuote, CreditDefaultSwap, IsdaCdsEngine, ProtectionSide,
     asb_recursive_expected_tranche_loss,
 };
-use ql_curves::{DiscountCurve, FlatForwardCurve, YieldTermStructure};
+use ql_curves::{DiscountCurve, FlatForwardCurve, MonotoneConvexZeroCurve, YieldTermStructure};
 use ql_exotics::{
-    BarrierOptionSpec, BarrierType as ExoticBarrierType, MonitoringFrequency,
-    WorstOfAutocallableSpec, price_barrier_option, price_worst_of_autocallable,
+    BarrierOptionSpec, BarrierType as ExoticBarrierType, ExcursionClockKind, MonitoringFrequency,
+    ParisianBarrierOptionSpec, WorstOfAutocallableSpec, price_barrier_option,
+    price_parisian_option_mc_ad, price_worst_of_autocallable,
 };
 use ql_fixed_income::{ConvertibleBondSpec, price_convertible_bond_tf};
 use ql_fx::ConstNotionalXccs;
@@ -55,12 +56,15 @@ use ql_inflation::{CalibratedInflationCurve, MultiplicativeSeasonality, ZeroCoup
 use ql_instruments::{BaroneAdesiWhaleyEngine, SwapType, VanillaSwapSpec};
 use ql_levy::{VarianceGamma, cos_levy_price};
 use ql_models::rough::{RoughBergomiParams, rbergomi_hybrid_mc_price};
-use ql_models::{HestonParams, HullWhite1F, LiftedHestonParams, lifted_heston_cos_price};
+use ql_models::{
+    BatesParams, HestonParams, HullWhite1F, LiftedHestonParams,
+    heston_bates_vix_future_and_option_price, lifted_heston_cos_price,
+};
 use ql_portfolio::gaussian_expected_shortfall;
 use ql_portfolio::{
     BoxConstrainedMarkowitzSpec, MarketSnapshot, ObizhaevaWangSpec, PortfolioDag,
-    PortfolioRiskSummary, PortfolioTrade, box_constrained_markowitz_weights,
-    equal_risk_contribution_weights, obizhaeva_wang_execution,
+    PortfolioRiskSummary, PortfolioTrade, RobustMarkowitzSpec, box_constrained_markowitz_weights,
+    equal_risk_contribution_weights, obizhaeva_wang_execution, robust_markowitz_weights,
 };
 use ql_rates::{
     BermudanSwaption, EuropeanSwaption, G2PlusPlus, HullWhiteBermudanTreeEngine, RfrCapletSpec,
@@ -1347,6 +1351,68 @@ impl DeskWorkstation {
             .val()
                 * 1e-3
             + sabr_metric * 1e-3;
+        // Phase 13 Tab 23 telemetry must be sourced from the four engines named
+        // by the tab, rather than reusing the SLV/FRTB aggregates above.  Keep
+        // each contribution tied to the active scenario so a stress tick is
+        // observable in the workstation frame and in the rendered dashboard.
+        let monotone_curve = MonotoneConvexZeroCurve::new(
+            market.ref_date,
+            vec![1.0, 2.0, 5.0],
+            market.ois_quotes.to_vec(),
+        );
+        let monotone_metric = [0.5, 1.5, 3.0]
+            .iter()
+            .map(|&t| monotone_curve.zero_rate(t).val())
+            .sum::<f64>();
+        let vix_params = BatesParams {
+            heston: HestonParams {
+                v0: market.heston_params.v0,
+                kappa: market.heston_params.kappa,
+                theta: market.heston_params.theta,
+                sigma_v: market.heston_params.sigma_v,
+                rho: market.heston_params.rho,
+            },
+            lambda: 0.1,
+            mu_j: -0.05,
+            sigma_j: 0.2,
+        };
+        let vix =
+            heston_bates_vix_future_and_option_price(&vix_params, 1.0, 30.0 / 365.0, 0.2, 0.98);
+        let parisian = ParisianBarrierOptionSpec {
+            option_type: ql_instruments::OptionType::Call,
+            barrier_type: ExoticBarrierType::DownOut,
+            clock_kind: ExcursionClockKind::ParisianConsecutive,
+            spot: market.eq_spot,
+            strike: 100.0,
+            barrier: 90.0,
+            rebate: 0.0,
+            window_duration: 0.20,
+            rate,
+            div_yield: 0.0,
+            vol: market.eq_vol,
+            expiry: 1.0,
+        };
+        let parisian_metric = price_parisian_option_mc_ad(&parisian, 64, 16, 0.01, 23).val();
+        let robust_weights = robust_markowitz_weights(&RobustMarkowitzSpec {
+            covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
+            return_uncertainty_cov: vec![vec![0.01, 0.0], vec![0.0, 0.02]],
+            expected_returns: vec![0.06, market.ois_quotes[2]],
+            risk_aversion: 3.0,
+            uncertainty_radius: 0.1,
+            lower_bounds: vec![0.0, 0.0],
+            upper_bounds: vec![0.8, 0.8],
+        });
+        let robust_metric = robust_weights
+            .iter()
+            .enumerate()
+            .map(|(i, weight)| (i + 1) as f64 * weight)
+            .sum::<f64>();
+        let vix_parisian_robust_metric = monotone_metric
+            + vix.vix_future
+            + vix.call_price
+            + vix.put_price
+            + parisian_metric
+            + robust_metric;
         let blotter_rows = vec![
             ("IRS 5Y PayFix".to_string(), irs_npv, "IFT".to_string()),
             ("Heston Call 1Y".to_string(), heston_npv, "COS".to_string()),
@@ -1443,7 +1509,7 @@ impl DeskWorkstation {
             sacc_swing_qp_metric: sa_report.ead.val() + swing_value + qp_value,
             slv_rough_worst_of_metric: rough_metric,
             frtb_cvar_execution_metric: execution_metric,
-            vix_parisian_robust_metric: rough_metric + execution_metric,
+            vix_parisian_robust_metric,
             blotter_rows,
         }
     }
@@ -1664,7 +1730,7 @@ impl DeskWorkstation {
             ),
             format!("22 FRTB/CVaR/Exec: {:.2}", frame.frtb_cvar_execution_metric),
             format!(
-                "23 MC/VIX/Parisian/Robust: {:.2}",
+                "23 Monotone/VIX/Parisian/Robust: {:.2}",
                 frame.vix_parisian_robust_metric
             ),
             format!("ASB tranche EL: {:.6}", asb_el),
@@ -1676,7 +1742,11 @@ impl DeskWorkstation {
             format!("American / Hybrid: {:.4}", american),
             format!("BL / Risk Parity ERC: {:.3}/{:.3}", erc[0], erc[1]),
         ]);
-        while left_bottom.len() < 20 {
+        // There are six IR buckets, five credit buckets and ten telemetry
+        // lines (including Tab 23).  Render all 21 rows instead of silently
+        // dropping the final BL/Risk-Parity line.
+        const BOTTOM_ROWS: usize = 21;
+        while left_bottom.len() < BOTTOM_ROWS {
             left_bottom.push(String::new());
         }
         let mut right_bottom = vec![];
@@ -1686,7 +1756,7 @@ impl DeskWorkstation {
                 .iter()
                 .map(|(name, value, tag)| format!("{name:<20} {:>12.2} {tag:<10}", value)),
         );
-        while right_bottom.len() < 20 {
+        while right_bottom.len() < BOTTOM_ROWS {
             right_bottom.push(String::new());
         }
 
@@ -1711,7 +1781,7 @@ impl DeskWorkstation {
             pad_visible(" 3. IFT BUCKETED DV01 & CREDIT CS01 LADDERS", LEFT),
             pad_visible(" 4. CROSS-ASSET LIVE BLOTTER & SOTA TELEMETRY", RIGHT)
         );
-        for i in 0..20 {
+        for i in 0..BOTTOM_ROWS {
             let _ = writeln!(
                 out,
                 "│{}│{}│",

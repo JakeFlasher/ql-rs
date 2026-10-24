@@ -304,24 +304,34 @@ impl<T: Real> MonotoneConvexZeroCurve<T> {
             return self.zero_rates[n - 1] * self.times[n - 1]
                 + self.nodal_forwards[n] * (t - self.times[n - 1]);
         }
-        let i = self.times.partition_point(|x| *x < t);
-        let i = i.max(1).min(n);
+        // Include a knot in the interval ending at that knot so that the
+        // integrated curve reproduces every input discount exactly.
+        // `i` denotes the right-hand knot of the active interval.  The
+        // partition point counts knots strictly below `t`; advance once so a
+        // point immediately after knot j uses the (j,j+1) interval rather
+        // than clamping to the interval that ended at j.
+        let i = self
+            .times
+            .partition_point(|x| *x < t)
+            .saturating_add(1)
+            .min(n)
+            .max(1);
         let t0 = if i == 1 { 0.0 } else { self.times[i - 2] };
         let t1 = self.times[i - 1];
         let dt = t1 - t0;
         let x = ((t - t0) / dt).clamp(0.0, 1.0);
         let g0 = self.nodal_forwards[i - 1] - self.discrete_forwards[i - 1];
         let g1 = self.nodal_forwards[i] - self.discrete_forwards[i - 1];
-        let g = g0 * (1.0 - 4.0 * x + 3.0 * x * x) + g1 * (-2.0 * x + 3.0 * x * x);
+        // Integrating the Hagan--West correction from 0 to x gives
+        // g0*x*(1-x)^2 - g1*x^2*(1-x).  The correction integrates to zero
+        // at x=1, so every input discount factor is reproduced exactly.
         let gx = g0 * x * (1.0 - x) * (1.0 - x) - g1 * x * x * (1.0 - x);
         let base = if i == 1 {
             T::zero()
         } else {
             self.zero_rates[i - 2] * t0
         };
-        base + self.discrete_forwards[i - 1] * (t - t0)
-            + T::from_f64(dt) * gx
-            + g * T::from_f64(0.0)
+        base + self.discrete_forwards[i - 1] * (t - t0) + T::from_f64(dt) * gx
     }
 }
 impl<T: Real> YieldTermStructure<T> for MonotoneConvexZeroCurve<T> {
@@ -335,7 +345,7 @@ impl<T: Real> YieldTermStructure<T> for MonotoneConvexZeroCurve<T> {
         if t.abs() < 1e-14 {
             T::zero()
         } else {
-            -self.integrated(t) / t
+            self.integrated(t) / t
         }
     }
     fn instantaneous_forward(&self, t: f64) -> T {
@@ -345,8 +355,9 @@ impl<T: Real> YieldTermStructure<T> for MonotoneConvexZeroCurve<T> {
         let i = self
             .times
             .partition_point(|x| *x < t)
-            .max(1)
-            .min(self.times.len());
+            .saturating_add(1)
+            .min(self.times.len())
+            .max(1);
         let t0 = if i == 1 { 0.0 } else { self.times[i - 2] };
         let dt = self.times[i - 1] - t0;
         let x = ((t - t0) / dt).clamp(0.0, 1.0);
