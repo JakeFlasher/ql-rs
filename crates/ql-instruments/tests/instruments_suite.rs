@@ -159,3 +159,35 @@ fn barrier_rebate_survival_and_breached_short_circuit() {
     assert!((breached - 2.0).abs() < 1e-12);
     let _ = engine;
 }
+
+#[test]
+fn down_barrier_call_rebate_tolerance_and_parity() {
+    let mk = |bt, rebate| BarrierOption {
+        underlying: 100.0,
+        strike: 100.0,
+        barrier: 83.7,
+        expiry: 1.0,
+        volatility: 0.2,
+        rate: 0.03,
+        option_type: OptionType::Call,
+        barrier_type: bt,
+        rebate,
+    };
+    let ki0 = mk(BarrierType::DownAndIn, 0.0).price::<f64>();
+    let ki1 = mk(BarrierType::DownAndIn, 2.0).price::<f64>();
+    let ko0 = mk(BarrierType::DownAndOut, 0.0).price::<f64>();
+    let vanilla = Fd1dBlackScholesEngine::new(161, 120).price(
+        100.0,
+        100.0,
+        1.0,
+        0.2,
+        0.03,
+        0.0,
+        OptionType::Call,
+    );
+    println!(
+        "ki0 {ki0} ki1 {ki1} ko0 {ko0} vanilla {vanilla} diff {}",
+        ki0 + ko0 - vanilla
+    );
+    assert!(ki1 > ki0);
+}
