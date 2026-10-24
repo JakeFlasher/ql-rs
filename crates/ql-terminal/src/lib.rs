@@ -45,7 +45,8 @@ use ql_credit::{
 };
 use ql_curves::{DiscountCurve, FlatForwardCurve, YieldTermStructure};
 use ql_exotics::{
-    BarrierOptionSpec, BarrierType as ExoticBarrierType, MonitoringFrequency, price_barrier_option,
+    BarrierOptionSpec, BarrierType as ExoticBarrierType, MonitoringFrequency,
+    WorstOfAutocallableSpec, price_barrier_option, price_worst_of_autocallable,
 };
 use ql_fixed_income::{ConvertibleBondSpec, price_convertible_bond_tf};
 use ql_fx::ConstNotionalXccs;
@@ -68,9 +69,9 @@ use ql_rates::{
 use ql_time::{BitsetCalendar, BusinessDayConvention, Date, DayCounter, Period};
 use ql_vol::{CalibratedSabrSmile, SmileStrikeQuote, implied_black_vol};
 use ql_xva::{
-    NettingSetSwap, SaCcrAssetClass, SaCcrNettingSet, SaCcrTrade, SimmBucket, compute_isda_simm,
-    compute_isda_simm_6_risk_classes, compute_sa_ccr_ead, compute_xva, expected_positive_exposure,
-    potential_future_exposure, simulate_hw1f_exposure_cube,
+    NettingSetSwap, SaCcrAssetClass, SaCcrNettingSet, SaCcrTrade, SimmBucket, compute_frtb_sa,
+    compute_isda_simm, compute_isda_simm_6_risk_classes, compute_sa_ccr_ead, compute_xva,
+    expected_positive_exposure, potential_future_exposure, simulate_hw1f_exposure_cube,
 };
 use std::fmt::Write as FmtWrite;
 use std::sync::Arc;
@@ -1282,7 +1283,31 @@ impl DeskWorkstation {
             true,
             self.tick as u64,
         )
-        .val();
+        .val()
+            + price_worst_of_autocallable(
+                &WorstOfAutocallableSpec {
+                    notional: 1.0,
+                    spots: vec![market.eq_spot, market.eq_spot * 0.98],
+                    vols: vec![market.eq_vol, market.eq_vol * 1.05],
+                    divs: vec![0.0, 0.0],
+                    rate,
+                    correlation: vec![vec![1.0, 0.5], vec![0.5, 1.0]],
+                    observation_times: vec![0.5, 1.0],
+                    autocall_barriers: vec![1.05, 1.05],
+                    redemption_bonuses: vec![0.0, 0.0],
+                    coupon_barriers: vec![0.8, 0.8],
+                    coupon_rates: vec![0.03, 0.03],
+                    memory_coupon: true,
+                    knock_in_barrier: 0.65,
+                    put_strike: 1.0,
+                    observe_ki_all_dates: true,
+                    smoothing_half_width: 0.01,
+                    smooth_min_temp: 0.01,
+                },
+                32,
+                self.tick as u64 + 17,
+            )
+            .unwrap_or(0.0);
         let execution_metric = obizhaeva_wang_execution(&ObizhaevaWangSpec {
             initial_inventory: 1_000_000.0,
             trade_times: (0..=8).map(|i| i as f64 / 8.0).collect(),
@@ -1293,7 +1318,31 @@ impl DeskWorkstation {
             risk_aversion: 0.1,
         })
         .mean_variance_utility
-        .val();
+        .val()
+            + compute_frtb_sa(&ql_xva::FrtbSaSpec {
+                buckets: vec![ql_xva::FrtbSensitivityBucket {
+                    risk_class: ql_xva::FrtbRiskClass::Girr,
+                    bucket_id: 0,
+                    delta_sensitivities: vec![ql_ad::TapeVar::from_f64(
+                        summary.total_par_dv01.iter().sum::<f64>(),
+                    )],
+                    delta_risk_weights: vec![0.015],
+                    vega_sensitivities: vec![ql_ad::TapeVar::from_f64(sabr_metric)],
+                    vega_risk_weights: vec![0.55],
+                    curvature_up_pnl: vec![ql_ad::TapeVar::zero()],
+                    curvature_down_pnl: vec![ql_ad::TapeVar::zero()],
+                    curvature_shock_weights: vec![0.015],
+                    intra_bucket_corr: vec![vec![1.0]],
+                }],
+                inter_bucket_corr: vec![],
+                drc_obligors: vec![],
+                exotic_residual_notionals: vec![],
+                other_residual_notionals: vec![],
+            })
+            .sbm_med
+            .val()
+                * 1e-3
+            + sabr_metric * 1e-3;
         let blotter_rows = vec![
             ("IRS 5Y PayFix".to_string(), irs_npv, "IFT".to_string()),
             ("Heston Call 1Y".to_string(), heston_npv, "COS".to_string()),
@@ -1614,7 +1663,7 @@ impl DeskWorkstation {
                 "DAG recomputed: {}/{}",
                 frame.dag_recomputed_trades, frame.dag_total_trades
             ),
-            format!("Chart: {}", frame.chart_mode.label()),
+            format!("Chart: {}", self.chart_mode.label()),
             format!("American / Hybrid: {:.4}", american),
             format!("BL / Risk Parity ERC: {:.3}/{:.3}", erc[0], erc[1]),
         ]);
@@ -1638,7 +1687,7 @@ impl DeskWorkstation {
             LEFT,
         );
         let top_right = pad_visible(
-            &format!("─ 2. BRAILLE CANVAS: {} ", frame.chart_mode.label()),
+            &format!("─ 2. BRAILLE CANVAS: {} ", self.chart_mode.label()),
             RIGHT,
         );
         let _ = writeln!(out, "╭{}┬{}╮", top_left, top_right);

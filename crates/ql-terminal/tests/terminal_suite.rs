@@ -76,6 +76,7 @@ fn dashboard_renders_all_quadrants_and_chart_modes() {
     ] {
         ws.set_chart_mode(mode);
         let plain = ws.render_dashboard(&frame, false);
+        assert!(plain.contains(mode.label()));
         assert!(plain.contains("1. BOOK SUMMARY"));
         assert!(plain.contains("2. BRAILLE CANVAS"));
         assert!(plain.contains("3. IFT BUCKETED"));

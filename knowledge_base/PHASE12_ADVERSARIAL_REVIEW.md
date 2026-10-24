@@ -1,4 +1,4 @@
-# Whole-Project Adversarial Review Log (Phases 1–12, All 23 Crates at `f1e93e5`)
+# Whole-Project Adversarial Review Log (Phases 1–12, All 23 Crates at `f1340fe`)
 
 This document records the multi-round whole-project adversarial audit across all 23 crates (`crates/*`, Phases 1 through 12):
 - **Big-Picture & Workflow Architect** (`d7266665-6096-4a67-b5c8-cc65aa5bd569`)
@@ -8,26 +8,28 @@ This document records the multi-round whole-project adversarial audit across all
 
 ---
 
-## 1. Whole-Project Pass 1 Verification (`e6fb004..f1e93e5`)
+## 1. Whole-Project Pass 1 (`e6fb004..f1e93e5`) & Pass 2 (`f1e93e5..f1340fe`) Verification
 
-- **`[WP-01]` (`ql-models` `rough.rs` & `models_suite.rs`)**: **100% RESOLVED** — Decaying power-law Volterra weights, paired antithetic RNG seeds, empirical martingale control (`< 1e-10` put–call parity), and SLV particle leverage tests verified by all 4 auditors.
-- **`[WP-05]` (`ql-xva` `frtb.rs`)**: **100% RESOLVED** — Separate bucket-level upward/downward curvature (`max(k_up, k_dn)`), MAR21.102 $\psi(S_u, S_v)$ indicator, MAR21.4(5)(b) capped-$\hat{S}_b$ fallback, and coherent Acerbi–Tasche fractional tail ES verified by all 4 auditors.
-- **`[WP-04]` (`ql-portfolio` `execution.rs` & `allocation.rs`)**: `execution.rs` is **100% RESOLVED**; `allocation.rs` (`project_capped_simplex` and `try_mean_cvar_weights`) has a 2-item active-set KKT / normalized-step polish queued in Pass 2.
-- **`[WP-02]` (`ql-exotics` `autocallable.rs`) & `[WP-03]` (`ql-rates` `g2.rs`, `lmm.rs`, `cheyette.rs`)**: `cheyette.rs` is **100% RESOLVED**; `autocallable.rs` (`Dual<64>` to eliminate $N \ge 5$ lane collision + 4-decimal `ref_spot`), `g2.rs` (exact 5-point Gauss–Hermite normal weights + $\mathbb{Q}^{T_N}$ terminal bond deflation), and `lmm.rs:230` (`cont[p] = call_threshold;`) are queued in Pass 2 alongside `[WP-06]`.
+All **21 core quantitative library crates (`ql-ad` through `ql-xva`)** have reached **`0 CRITICAL / 0 HIGH / 0 MEDIUM` convergence** across all 4 specialist audit domains:
+- **`Mathematical & Pricing Engine Auditor` (`1e332c19`)**: **CONVERGED (`0 CRITICAL / 0 HIGH / 0 MEDIUM`)** across `ql-models`, `ql-rates`, `ql-exotics`, `ql-vol`, `ql-curves`, `ql-fixed-income`, `ql-mc`, `ql-pde`, `ql-instruments`, `ql-math`, `ql-time`, and `ql-scripting`.
+- **`Risk, Portfolio, Credit, XVA & SOTA Literature Auditor` (`f94752af`)**: **CONVERGED (`0 CRITICAL / 0 HIGH / 0 MEDIUM`)** across `ql-portfolio`, `ql-xva`, `ql-credit`, `ql-commodities`, `ql-fx`, `ql-inflation`, `ql-levy`, and `ql-dml`.
+- **`Rust Systems & AD/SIMD Auditor` (`fdb49aaf`)**: **CONVERGED (`0 CRITICAL / 0 HIGH / 0 MEDIUM`)** across all 23 crates (`ql-ad` through `ql-terminal`).
+- **`Big-Picture & Workflow Architect` (`d7266665`)**: Confirmed **`[WP-01]` through `[WP-06]` are 100% RESOLVED & CONVERGED**, leaving only the final **`[WP-07]` (`ql-benches`, `ql-terminal`, `README.md`)** benchmark/workstation/documentation synchronization in **Whole-Project Pass 3**.
 
 ---
 
-## 2. Whole-Project Pass 2 Remediation Scope (`CODEX_WHOLE_PROJECT_PASS2_PROMPT.md`)
+## 2. Whole-Project Pass 3 Final Polish Scope (`CODEX_WHOLE_PROJECT_PASS3_PROMPT.md`)
 
-| ID | Severity | Location | Remediation in Pass 2 |
+| ID | Severity | Location | Remediation in Pass 3 |
 | :--- | :--- | :--- | :--- |
-| **`[WP-02a/b]`** | **HIGH** | `crates/ql-exotics/src/autocallable.rs:65-72, 170-225, 358-364`, `exotics_suite.rs` | Use `Dual<64>` in `price_worst_of_autocallable_aad` (eliminating the `corr_only` lane collision for $N \ge 5$ baskets while keeping 1-pass evaluation up to $N = 9$), round `ref_spot` to `1e-4`, and add a 5-asset test in `exotics_suite.rs`. |
-| **`[WP-03a/b]`** | **HIGH** | `crates/ql-rates/src/g2.rs:385-496`, `crates/ql-rates/src/lmm.rs:230` | Use exact 5-point Gauss–Hermite normal nodes/weights and $\mathbb{Q}^{T_N}$ terminal bond deflation in `G2ppBermudanSwaptionEngine::price_dual_curve`; replace `cont[p].min_val(call_threshold)` with `call_threshold` in `lmm.rs:230`. |
-| **`[WP-04a/b]`** | **MEDIUM** | `crates/ql-portfolio/src/allocation.rs:680-765` | Compute `shift` in `T: Real` over the free set in `project_capped_simplex` and normalize gradient steps with backtracking line search on the smooth Rockafellar–Uryasev objective in `try_mean_cvar_weights`. |
-| **`[WP-06a]`** | **HIGH** | `crates/ql-math/src/solvers.rs:135-150`, `crates/ql-fixed-income/src/cat_bond.rs:279-340` | Rewind temporary `ArenaTape` operations after each scalar `brent_solve` iteration in `brent_solve_ad`, and delegate `cat_bond_z_spread` to `brent_solve_ad` so both `PoissonExponential` and `PoissonPareto` have exact IFT derivatives and zero tape bloat. |
-| **`[WP-06b]`** | **MEDIUM** | `crates/ql-fixed-income/src/mbs_and_cpi.rs:108-116`, `crates/ql-inflation/src/lib.rs:85-88` | Solve coupon-bearing `breakeven_inflation_rate` via 4 Newton steps in `T: Real`; infer calendar target month from `base_date` when `target_month` is `None` in `ZeroInflationCurve::forward_cpi`. |
-| **`[WP-06c]`** | **MEDIUM** | `crates/ql-curves/src/curves.rs:178`, `crates/ql-curves/src/bootstrap.rs:495-523`, `crates/ql-dml/src/cholesky_aad.rs:233`, `crates/ql-pde/src/grid2d.rs:53` | Alias `PiecewiseCubicZeroCurve` to `MonotoneCubicZeroCurve`; use `self.sensitivity.vjp(&g)` in `value_par_dv01_and_gamma`; use `cholesky_corr_cega_adjoint` in `price_correlated_basket_call_aad`; stabilize `HestonGrid2D::new_centered` variance focus at `0.04` for $v_0 \le 0.1$. |
+| **`[WP-07a]`** | **MEDIUM** | `crates/ql-benches/src/suites.rs:497-513, 1123-1174, 1573-1654, 1932-2109` | **1. Suite 06 (`scalar_gbm_price`)**: Accumulate log-returns across steps and call `libm::exp` once at maturity (matching `GbmSoaSimulator::price_european`).<br>**2. Suite 15 (`benchmark_levy_cos`)**: Use `cos_levy_price_strip` in the baseline closure (matching the SOTA closure).<br>**3. Suite 20 (`benchmark_risk_parity`)**: Use 2-point central FD (`h = 1e-6`, `tol = 1e-5`) instead of 4-solve Richardson extrapolation in the baseline closure, and remove the duplicate `cov_ad` pass in the SOTA closure.<br>**4. Suites 23 & 24 (`benchmark_slv_autocall` & `benchmark_frtb_cvar_execution`)**: Include `rbergomi_hybrid_mc_price` (`Dual<3>`) alongside `price_worst_of_autocallable_aad` in Suite 23, and include `compute_frtb_sa` (`Dual<4>`) alongside `almgren_chriss_execution` (`Dual<4>`) in Suite 24 so their workloads match their suite IDs/labels. |
+| **`[WP-07b]`** | **MEDIUM** | `crates/ql-terminal/src/lib.rs:1268-1296, 1617, 1641`, `crates/ql-terminal/src/main.rs:35-41`, `crates/ql-terminal/tests/terminal_suite.rs:78` | **1. `render_dashboard`**: Use `self.chart_mode.label()` at lines 1617 & 1641 so `set_chart_mode` updates both the Braille canvas and the header/footer labels.<br>**2. `step_tick`**: Include `price_worst_of_autocallable` in `rough_metric` (`slv_rough_worst_of_metric`) and `compute_frtb_sa` in `execution_metric` (`frtb_cvar_execution_metric`).<br>**3. `main.rs`**: Include `ScenarioKind::StagflationPlus150Bp` in the `--snapshot` loop. |
+| **`[WP-07c]`** | **LOW** | `README.md:38, 53-75`, `crates/ql-benches/BENCHMARK_RESULTS.md`, `knowledge_base/08_BENCHMARK_RESULTS.md` | Update `README.md:38` (`20-suite` -> `24-suite`) and sync the 24-row benchmark table across `BENCHMARK_RESULTS.md`, `knowledge_base/08_BENCHMARK_RESULTS.md`, and `README.md`. |
 
-## 4. Whole-Project Pass 2 Remediation (`f1e93e5..working tree`)
+## 5. Whole-Project Pass 3 Polish (`f1340fe..working tree`)
 
-Pass 2 completed the remaining refinement set: chunked 16-lane autocallable AAD with four-decimal spot anchoring, terminal-measure G2++ Gauss--Hermite deflation and LMM callable exercise assignment, active-set Mean-CVaR projection/line search, and cross-crate AD hygiene for Brent roots, CAT-bond z-spreads, CPI breakeven coupons, seasonal CPI months, cubic zero curves, bootstrap SVD fallbacks, Cholesky CEGA diagonals, and Heston variance grids.
+Final WP-07 polish aligned scalar GBM, Lévy COS, risk-parity, SLV/rBergomi/autocallable, and FRTB/execution benchmark workloads; synchronized live terminal chart/scenario/metric wiring; and refreshed the 24-suite benchmark tables in the reports and README.
+
+## 6. Whole-Project Pass 3 Polish (`f1340fe..working tree`)
+
+WP-07 benchmark workload parity, terminal chart/scenario/metric synchronization, and README/report consistency are complete. Release regeneration now records all 24 suites, including aligned SLV/rBergomi/autocallable and FRTB/execution workloads.

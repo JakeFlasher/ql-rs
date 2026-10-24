@@ -37,6 +37,7 @@ fn main() {
             ScenarioKind::RatesPlus50Bp,
             ScenarioKind::EquityCrashMinus15Pct,
             ScenarioKind::CreditWideningPlus100Bp,
+            ScenarioKind::StagflationPlus150Bp,
         ] {
             ws.set_scenario(scenario);
             let frame = ws.step_tick();

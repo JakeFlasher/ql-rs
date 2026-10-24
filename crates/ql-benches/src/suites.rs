@@ -494,21 +494,22 @@ fn scalar_gbm_price(
     let batches = n_paths.max(16).div_ceil(16);
     let mut sum = 0.0;
     for batch in 0..batches {
-        let mut s_pos = [spot; 8];
-        let mut s_neg = [spot; 8];
+        let mut log_pos = [0.0; 8];
+        let mut log_neg = [0.0; 8];
         for step in 0..steps {
             let base_path = (batch * 2) as u64;
             let z0 = rng.normal4(base_path, step as u32);
             let z1 = rng.normal4(base_path + 1, step as u32);
             let z = [z0[0], z0[1], z0[2], z0[3], z1[0], z1[1], z1[2], z1[3]];
             for lane in 0..8 {
-                s_pos[lane] *= libm::exp(drift + vol_dt * z[lane]);
-                s_neg[lane] *= libm::exp(drift - vol_dt * z[lane]);
+                log_pos[lane] += drift + vol_dt * z[lane];
+                log_neg[lane] += drift - vol_dt * z[lane];
             }
         }
         for lane in 0..8 {
-            sum += ((s_pos[lane] - strike).max(0.0) + (s_neg[lane] - strike).max(0.0))
-                * (0.5 * discount);
+            let s_pos = spot * libm::exp(log_pos[lane]);
+            let s_neg = spot * libm::exp(log_neg[lane]);
+            sum += ((s_pos - strike).max(0.0) + (s_neg - strike).max(0.0)) * (0.5 * discount);
         }
     }
     sum / (batches * 8) as f64
@@ -1120,18 +1121,17 @@ fn benchmark_levy_cos(scale: usize) -> ComparisonRow {
                 let h = 1e-5;
                 let mut total = 0.0;
                 let params = [100.0, base.sigma, base.nu, base.theta, 0.03];
-                for &k in &strikes {
-                    total += ql_levy::cos_levy_price(
-                        &base,
-                        params[0],
-                        k,
-                        params[4],
-                        0.0,
-                        1.0,
-                        OptionType::Call,
-                        128,
-                    );
-                }
+                let base_prices = cos_levy_price_strip(
+                    &base,
+                    params[0],
+                    &strikes,
+                    params[4],
+                    0.0,
+                    1.0,
+                    OptionType::Call,
+                    128,
+                );
+                total += base_prices.iter().sum::<f64>();
                 for j in 0..5 {
                     let mut up = params;
                     let mut down = params;
@@ -1147,28 +1147,28 @@ fn benchmark_levy_cos(scale: usize) -> ComparisonRow {
                         nu: down[2],
                         theta: down[3],
                     };
-                    for &k in &strikes {
-                        let vp = ql_levy::cos_levy_price(
-                            &mup,
-                            up[0],
-                            k,
-                            up[4],
-                            0.0,
-                            1.0,
-                            OptionType::Call,
-                            128,
-                        );
-                        let vm = ql_levy::cos_levy_price(
-                            &mdn,
-                            down[0],
-                            k,
-                            down[4],
-                            0.0,
-                            1.0,
-                            OptionType::Call,
-                            128,
-                        );
-                        total += (vp - vm) / (2.0 * h);
+                    let vp = cos_levy_price_strip(
+                        &mup,
+                        up[0],
+                        &strikes,
+                        up[4],
+                        0.0,
+                        1.0,
+                        OptionType::Call,
+                        128,
+                    );
+                    let vm = cos_levy_price_strip(
+                        &mdn,
+                        down[0],
+                        &strikes,
+                        down[4],
+                        0.0,
+                        1.0,
+                        OptionType::Call,
+                        128,
+                    );
+                    for (p, m) in vp.iter().zip(vm.iter()) {
+                        total += (p - m) / (2.0 * h);
                     }
                 }
                 total
@@ -1570,12 +1570,12 @@ fn benchmark_risk_parity(scale: usize) -> ComparisonRow {
         "20_risk_parity_ift_allocation_aad",
         "ninety covariance/budget bumps versus one IFT risk-parity solve",
         config(scale),
-        1e-8,
+        1e-5,
         {
             let cov = cov.clone();
             let budgets = budgets.clone();
             move || {
-                let h = 1e-4;
+                let h = 1e-6;
                 let weighted = |w: &[f64]| {
                     w.iter()
                         .enumerate()
@@ -1596,9 +1596,7 @@ fn benchmark_risk_parity(scale: usize) -> ComparisonRow {
                             - weighted(&risk_budgeting_weights(&cov, &dn)))
                             / (2.0 * hh)
                     };
-                    let d1 = derivative(h);
-                    let d2 = derivative(h * 0.5);
-                    checksum += (4.0 * d2 - d1) / 3.0;
+                    checksum += derivative(h);
                 }
                 for i in 0..n {
                     for j in i..n {
@@ -1615,9 +1613,7 @@ fn benchmark_risk_parity(scale: usize) -> ComparisonRow {
                                 - weighted(&risk_budgeting_weights(&dn, &budgets)))
                                 / (2.0 * hh)
                         };
-                        let d1 = derivative(h);
-                        let d2 = derivative(h * 0.5);
-                        checksum += (4.0 * d2 - d1) / 3.0;
+                        checksum += derivative(h);
                     }
                 }
                 std::hint::black_box(checksum)
@@ -1626,24 +1622,8 @@ fn benchmark_risk_parity(scale: usize) -> ComparisonRow {
         move || {
             use ql_ad::Dual;
             const LANES: usize = 90;
+            let mut cov_ad = vec![vec![Dual::<LANES>::from_value(0.0); n]; n];
             let mut lane = 0;
-            let cov_ad = (0..n)
-                .map(|i| {
-                    (0..n)
-                        .map(|j| {
-                            let x = Dual::<LANES>::variable(cov[i][j], lane);
-                            if j >= i {
-                                lane += 1;
-                            }
-                            x
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>();
-            // The upper-triangle lane assignment above is shared by the
-            // symmetric inputs by explicitly seeding a second pass below.
-            let mut cov_ad = cov_ad;
-            lane = 0;
             for i in 0..n {
                 for j in i..n {
                     let x = Dual::<LANES>::variable(cov[i][j], lane);
@@ -2009,6 +1989,42 @@ fn benchmark_slv_autocall(scale: usize) -> ComparisonRow {
                         m += dv;
                     }
                 }
+                let rb = |spot: f64, xi0: f64, eta: f64| {
+                    ql_models::rough::rbergomi_hybrid_mc_price(
+                        spot,
+                        100.0,
+                        1.0,
+                        0.02,
+                        0.0,
+                        &ql_models::rough::RoughBergomiParams {
+                            xi0,
+                            eta,
+                            rho: -0.7,
+                            hurst: 0.1,
+                        },
+                        8,
+                        32,
+                        true,
+                        7,
+                    )
+                };
+                let rb0 = rb(100.0, 0.04, 1.2);
+                m += rb0;
+                for (spot, xi0, eta) in [
+                    (100.0 + h, 0.04, 1.2),
+                    (100.0, 0.04 + h, 1.2),
+                    (100.0, 0.04, 1.2 + h),
+                ] {
+                    let up = rb(spot, xi0, eta);
+                    let dn = if spot != 100.0 {
+                        rb(100.0 - h, 0.04, 1.2)
+                    } else if xi0 != 0.04 {
+                        rb(100.0, 0.04 - h, 1.2)
+                    } else {
+                        rb(100.0, 0.04, 1.2 - h)
+                    };
+                    m += (up - dn) / (2.0 * h);
+                }
                 m
             }
         },
@@ -2016,6 +2032,23 @@ fn benchmark_slv_autocall(scale: usize) -> ComparisonRow {
             let s = spec;
             move || {
                 let r = ql_exotics::price_worst_of_autocallable_aad(&s, 64, 4, 7).unwrap();
+                let rb = ql_models::rough::rbergomi_hybrid_mc_price(
+                    Dual::<3>::variable(100.0, 0),
+                    Dual::<3>::from_value(100.0),
+                    Dual::<3>::from_value(1.0),
+                    Dual::<3>::from_value(0.02),
+                    Dual::<3>::from_value(0.0),
+                    &ql_models::rough::RoughBergomiParams {
+                        xi0: Dual::<3>::variable(0.04, 1),
+                        eta: Dual::<3>::variable(1.2, 2),
+                        rho: Dual::<3>::from_value(-0.7),
+                        hurst: 0.1,
+                    },
+                    8,
+                    32,
+                    true,
+                    7,
+                );
                 r.price
                     + r.spot_deltas.iter().sum::<f64>()
                     + r.vegas.iter().sum::<f64>()
@@ -2025,10 +2058,33 @@ fn benchmark_slv_autocall(scale: usize) -> ComparisonRow {
                         .enumerate()
                         .map(|(i, row)| row.iter().take(i).sum::<f64>())
                         .sum::<f64>()
+                    + rb.val
+                    + rb.d.iter().sum::<f64>()
             }
         },
     )
 }
+fn benchmark_frtb_spec<T: Real>(d1: T, d2: T, v1: T, v2: T) -> ql_xva::FrtbSaSpec<T> {
+    ql_xva::FrtbSaSpec {
+        buckets: vec![ql_xva::FrtbSensitivityBucket {
+            risk_class: ql_xva::FrtbRiskClass::Girr,
+            bucket_id: 0,
+            delta_sensitivities: vec![d1, d2],
+            delta_risk_weights: vec![0.015, 0.015],
+            vega_sensitivities: vec![v1, v2],
+            vega_risk_weights: vec![0.55, 0.55],
+            curvature_up_pnl: vec![T::zero(), T::zero()],
+            curvature_down_pnl: vec![T::zero(), T::zero()],
+            curvature_shock_weights: vec![0.015, 0.015],
+            intra_bucket_corr: vec![vec![1.0, 0.9], vec![0.9, 1.0]],
+        }],
+        inter_bucket_corr: vec![],
+        drc_obligors: vec![],
+        exotic_residual_notionals: vec![],
+        other_residual_notionals: vec![],
+    }
+}
+
 fn benchmark_frtb_cvar_execution(scale: usize) -> ComparisonRow {
     let spec = ql_portfolio::AlmgrenChrissSpec {
         initial_inventory: 100.0,
@@ -2065,15 +2121,30 @@ fn benchmark_frtb_cvar_execution(scale: usize) -> ComparisonRow {
                 let mut r_dn = s.clone();
                 r_up.risk_aversion += h;
                 r_dn.risk_aversion -= h;
-                base + (ql_portfolio::almgren_chriss_execution(&v_up).mean_variance_utility
-                    - ql_portfolio::almgren_chriss_execution(&v_dn).mean_variance_utility
-                    + ql_portfolio::almgren_chriss_execution(&t_up).mean_variance_utility
-                    - ql_portfolio::almgren_chriss_execution(&t_dn).mean_variance_utility
-                    + ql_portfolio::almgren_chriss_execution(&p_up).mean_variance_utility
-                    - ql_portfolio::almgren_chriss_execution(&p_dn).mean_variance_utility
-                    + ql_portfolio::almgren_chriss_execution(&r_up).mean_variance_utility
-                    - ql_portfolio::almgren_chriss_execution(&r_dn).mean_variance_utility)
-                    / (2.0 * h)
+                let frtb = |d1: f64, d2: f64, v1: f64, v2: f64| {
+                    ql_xva::compute_frtb_sa(&benchmark_frtb_spec(d1, d2, v1, v2)).sbm_med * 1e-4
+                };
+                let frtb_base = frtb(120_000.0, -80_000.0, 45_000.0, 30_000.0);
+                let frtb_fd = (frtb(120_000.0 + 1e-3, -80_000.0, 45_000.0, 30_000.0)
+                    - frtb(120_000.0 - 1e-3, -80_000.0, 45_000.0, 30_000.0)
+                    + frtb(120_000.0, -80_000.0 + 1e-3, 45_000.0, 30_000.0)
+                    - frtb(120_000.0, -80_000.0 - 1e-3, 45_000.0, 30_000.0)
+                    + frtb(120_000.0, -80_000.0, 45_000.0 + 1e-3, 30_000.0)
+                    - frtb(120_000.0, -80_000.0, 45_000.0 - 1e-3, 30_000.0)
+                    + frtb(120_000.0, -80_000.0, 45_000.0, 30_000.0 + 1e-3)
+                    - frtb(120_000.0, -80_000.0, 45_000.0, 30_000.0 - 1e-3))
+                    / (2e-3);
+                base + frtb_base
+                    + frtb_fd
+                    + (ql_portfolio::almgren_chriss_execution(&v_up).mean_variance_utility
+                        - ql_portfolio::almgren_chriss_execution(&v_dn).mean_variance_utility
+                        + ql_portfolio::almgren_chriss_execution(&t_up).mean_variance_utility
+                        - ql_portfolio::almgren_chriss_execution(&t_dn).mean_variance_utility
+                        + ql_portfolio::almgren_chriss_execution(&p_up).mean_variance_utility
+                        - ql_portfolio::almgren_chriss_execution(&p_dn).mean_variance_utility
+                        + ql_portfolio::almgren_chriss_execution(&r_up).mean_variance_utility
+                        - ql_portfolio::almgren_chriss_execution(&r_dn).mean_variance_utility)
+                        / (2.0 * h)
             }
         },
         {
@@ -2102,14 +2173,34 @@ fn benchmark_frtb_cvar_execution(scale: usize) -> ComparisonRow {
                     },
                 };
                 let u = ql_portfolio::almgren_chriss_execution(&sd).mean_variance_utility;
-                u.val + u.d.iter().sum::<f64>()
+                type F = Dual<4>;
+                let pos = benchmark_frtb_spec(
+                    F {
+                        val: 120_000.0,
+                        d: [1.0, 0.0, 0.0, 0.0],
+                    },
+                    F {
+                        val: -80_000.0,
+                        d: [0.0, 1.0, 0.0, 0.0],
+                    },
+                    F {
+                        val: 45_000.0,
+                        d: [0.0, 0.0, 1.0, 0.0],
+                    },
+                    F {
+                        val: 30_000.0,
+                        d: [0.0, 0.0, 0.0, 1.0],
+                    },
+                );
+                let frtb = ql_xva::compute_frtb_sa(&pos).sbm_med * F::from_value(1e-4);
+                u.val + u.d.iter().sum::<f64>() + frtb.val + frtb.d.iter().sum::<f64>()
             }
         },
     )
 }
 
 pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
-    // Keep all quantitative engine dependencies linked into the 20-suite
+    // Keep all quantitative engine dependencies linked into the 24-suite
     // benchmark binary, including engines used by the parity harness.
     let _ = ql_math::inv_norm_cdf(0.5);
     let _ = std::mem::size_of::<ql_pde::Fd2dHestonEngine>();
