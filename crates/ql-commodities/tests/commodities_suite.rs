@@ -51,3 +51,45 @@ fn schwartz_and_spread_parity() {
     let k = kirk_spread_option(100., 90., 0., 0.2, 0.25, 0.2, 0.03, 1., OptionType::Call);
     assert!((m - k).abs() < 1e-12);
 }
+
+#[test]
+fn swing_forward_strip_and_storage_dp_are_tree_based() {
+    let curve = CommodityFuturesCurve::from_futures_pillars(
+        vec![1.0, 2.0, 3.0],
+        &[80.0, 81.0, 82.0],
+        SeasonalParams {
+            a1: 0.0,
+            b1: 0.0,
+            a2: 0.0,
+            b2: 0.0,
+        },
+    );
+    let swing = SwingOptionSpec {
+        exercise_times: vec![1.0, 2.0, 3.0],
+        strike: 79.0,
+        unit_volume: 1.0,
+        min_exercises: 3,
+        max_exercises: 3,
+        is_call: true,
+    };
+    let value = price_swing_option(&swing, &curve, 1.0, 0.3, 0.02, 3);
+    let strip = (1..=3)
+        .map(|i| (-0.02 * i as f64).exp() * (curve.futures_price(i as f64) - 79.0))
+        .sum::<f64>();
+    assert!((value - strip).abs() < 1e-10);
+    let storage = GasStorageSpec {
+        decision_times: vec![1.0, 2.0, 3.0],
+        max_capacity: 10.0,
+        initial_inventory: 5.0,
+        max_injection_rate: 5.0,
+        max_withdrawal_rate: 5.0,
+        injection_loss: 0.0,
+        withdrawal_loss: 0.0,
+        injection_cost: 0.0,
+        withdrawal_cost: 0.0,
+        inventory_grid_points: 10,
+    };
+    let low = price_gas_storage(&storage, &curve, 1.0, 0.1, 0.02);
+    let high = price_gas_storage(&storage, &curve, 1.0, 0.5, 0.02);
+    assert!(low.is_finite() && high.is_finite());
+}

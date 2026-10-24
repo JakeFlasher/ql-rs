@@ -21,7 +21,10 @@ use ql_levy::{VarianceGamma, cos_levy_price_strip};
 use ql_mc::{GbmSoaSimulator, PhiloxRng, price_asian_arithmetic_rqmc};
 use ql_models::HullWhite1F;
 use ql_models::{HestonParams, heston_cos_price};
-use ql_portfolio::{MarketSnapshot, PortfolioDag, PortfolioTrade, risk_budgeting_weights};
+use ql_portfolio::{
+    BoxConstrainedMarkowitzSpec, MarketSnapshot, PortfolioDag, PortfolioTrade,
+    box_constrained_markowitz_weights, risk_budgeting_weights,
+};
 use ql_rates as _;
 use ql_rates::{
     RfrCapletSpec, RfrRateType, willems_backward_sabr_caplet_price,
@@ -29,7 +32,10 @@ use ql_rates::{
 };
 use ql_scripting::{BytecodeProgram, ScriptMcEngine, ScriptedProduct};
 use ql_time::{BitsetCalendar, Date, DayCounter, Frequency};
-use ql_vol::{black76_undiscounted, implied_black_vol, implied_black_vol_dual2};
+use ql_vol::{
+    AdSabrSmile, CalibratedSabrSmile, SmileStrikeQuote, black76_undiscounted, implied_black_vol,
+    implied_black_vol_dual2,
+};
 use ql_xva::{NettingSetSwap, compute_bruteforce_dim_and_mva, compute_chebyshev_dim_and_mva};
 use std::sync::Arc;
 
@@ -1677,37 +1683,247 @@ fn benchmark_bermudan_hw(scale: usize) -> ComparisonRow {
         notional: 1e6,
         strike: 0.02,
         exercise_times: vec![1.0, 2.0, 3.0, 4.0, 5.0],
-        swap_times: (1..=10).map(|x| x as f64).collect(),
+        swap_times: (0..=10).map(|x| x as f64).collect(),
         is_payer: true,
         settlement: ql_rates::SwaptionSettlement::Physical,
     };
-    let eng = ql_rates::HullWhiteBermudanTreeEngine { steps: 60 };
+    let eng = ql_rates::HullWhiteBermudanTreeEngine { steps: 40 };
     run_comparison(
         "21_bermudan_hw1f_tree_ift_dv01",
-        "Bermudan Hull--White tree finite differences versus cached AD tree",
+        "Bermudan Hull--White tree quote and parameter finite differences versus AD",
         config(scale),
-        1e-4,
+        1e-3,
         {
-            let c = curve.clone();
-            let m = model;
             let s = sw.clone();
-            move || eng.price_single_curve(&m, &c, &s)
+            move || {
+                let h = 1e-5;
+                let base = eng.price_single_curve(&model, &curve, &s) / s.notional;
+                let dr = {
+                    let up = ql_curves::FlatForwardCurve::new(ql_time::Date(0), 0.02 + h);
+                    let dn = ql_curves::FlatForwardCurve::new(ql_time::Date(0), 0.02 - h);
+                    (eng.price_single_curve(&model, &up, &s)
+                        - eng.price_single_curve(&model, &dn, &s))
+                        / (2.0 * h * s.notional)
+                };
+                let da = {
+                    let up = ql_models::HullWhite1F {
+                        a: model.a + h,
+                        sigma: model.sigma,
+                    };
+                    let dn = ql_models::HullWhite1F {
+                        a: model.a - h,
+                        sigma: model.sigma,
+                    };
+                    (eng.price_single_curve(&up, &curve, &s)
+                        - eng.price_single_curve(&dn, &curve, &s))
+                        / (2.0 * h * s.notional)
+                };
+                let ds = {
+                    let up = ql_models::HullWhite1F {
+                        a: model.a,
+                        sigma: model.sigma + h,
+                    };
+                    let dn = ql_models::HullWhite1F {
+                        a: model.a,
+                        sigma: model.sigma - h,
+                    };
+                    (eng.price_single_curve(&up, &curve, &s)
+                        - eng.price_single_curve(&dn, &curve, &s))
+                        / (2.0 * h * s.notional)
+                };
+                base + dr + da + ds
+            }
         },
         {
-            let c = curve;
-            let m = model;
-            move || eng.price_single_curve(&m, &c, &sw)
+            let s = sw.clone();
+            move || {
+                let rate = Dual::<3>::variable(0.02, 0);
+                let c = ql_curves::FlatForwardCurve::new(ql_time::Date(0), rate);
+                let m = ql_models::HullWhite1F {
+                    a: Dual::<3>::variable(model.a, 1),
+                    sigma: Dual::<3>::variable(model.sigma, 2),
+                };
+                let x = eng.price_single_curve(&m, &c, &s) / s.notional;
+                x.val + x.d.iter().sum::<f64>()
+            }
         },
     )
 }
+
 fn benchmark_sabr_qp(scale: usize) -> ComparisonRow {
+    let forward = 0.03;
+    let expiry = 2.0;
+    let beta = 0.5;
+    let true_smile = AdSabrSmile::new(forward, expiry, 0.012, beta, -0.25, 0.45);
+    let quotes = (0..7)
+        .map(|i| {
+            let k = 0.022 + i as f64 * 0.0025;
+            SmileStrikeQuote {
+                strike: k,
+                market_vol: true_smile.vol(k),
+                weight: 0.5 + i as f64 * 0.25,
+            }
+        })
+        .collect::<Vec<_>>();
+    let cov = (0..8)
+        .map(|i| {
+            (0..8)
+                .map(|j| if i == j { 0.04 } else { 0.002 })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let mu = vec![0.05; 8];
+    let lower = vec![0.0; 8];
+    let upper = vec![1.0; 8];
+    let cov_base = cov.clone();
+    let mu_base = mu.clone();
+    let lower_base = lower.clone();
+    let upper_base = upper.clone();
+    let cov_ad_base = cov.clone();
+    let mu_ad_base = mu.clone();
+    let lower_ad_base = lower.clone();
+    let upper_ad_base = upper.clone();
+    let weighted = |w: &[f64]| {
+        w.iter()
+            .enumerate()
+            .map(|(i, x)| (i + 1) as f64 * x)
+            .sum::<f64>()
+    };
     run_comparison(
         "22_sabr_svi_ift_and_qp_kkt_aad",
-        "SABR/SVI IFT and constrained Markowitz KKT",
+        "SABR quote recalibration and constrained Markowitz finite differences versus IFT/KKT AD",
         config(scale),
-        1e-6,
-        || 0.123456789,
-        || 0.123456789,
+        1e-5,
+        {
+            let quotes = quotes.clone();
+            let cov = cov_ad_base.clone();
+            let mu = mu_ad_base.clone();
+            let lower = lower_ad_base.clone();
+            let upper = upper_ad_base.clone();
+            move || {
+                let base = CalibratedSabrSmile::calibrate(
+                    forward,
+                    expiry,
+                    beta,
+                    (0.011, -0.2, 0.4),
+                    &quotes,
+                )
+                .expect("SABR calibration");
+                let mut sum = base.smile.vol(quotes[3].strike);
+                let h = 1e-5;
+                for i in 0..quotes.len() {
+                    let mut up = quotes.clone();
+                    let mut dn = quotes.clone();
+                    up[i].market_vol += h;
+                    dn[i].market_vol -= h;
+                    let vu = CalibratedSabrSmile::calibrate(
+                        forward,
+                        expiry,
+                        beta,
+                        (base.smile.alpha, base.smile.rho, base.smile.nu),
+                        &up,
+                    )
+                    .expect("SABR up")
+                    .smile
+                    .vol(quotes[3].strike);
+                    let vd = CalibratedSabrSmile::calibrate(
+                        forward,
+                        expiry,
+                        beta,
+                        (base.smile.alpha, base.smile.rho, base.smile.nu),
+                        &dn,
+                    )
+                    .expect("SABR down")
+                    .smile
+                    .vol(quotes[3].strike);
+                    sum += (vu - vd) / (2.0 * h);
+                }
+                let base_w = box_constrained_markowitz_weights(&BoxConstrainedMarkowitzSpec {
+                    covariance: cov.clone(),
+                    expected_returns: mu.clone(),
+                    risk_aversion: 3.0,
+                    lower_bounds: lower.clone(),
+                    upper_bounds: upper.clone(),
+                });
+                let mut checksum = sum + weighted(&base_w);
+                for i in 0..8 {
+                    let mut up = mu.clone();
+                    let mut dn = mu.clone();
+                    up[i] += h;
+                    dn[i] -= h;
+                    checksum += (weighted(&box_constrained_markowitz_weights(
+                        &BoxConstrainedMarkowitzSpec {
+                            covariance: cov.clone(),
+                            expected_returns: up,
+                            risk_aversion: 3.0,
+                            lower_bounds: lower.clone(),
+                            upper_bounds: upper.clone(),
+                        },
+                    )) - weighted(&box_constrained_markowitz_weights(
+                        &BoxConstrainedMarkowitzSpec {
+                            covariance: cov.clone(),
+                            expected_returns: dn,
+                            risk_aversion: 3.0,
+                            lower_bounds: lower.clone(),
+                            upper_bounds: upper.clone(),
+                        },
+                    ))) / (2.0 * h);
+                }
+                checksum
+            }
+        },
+        {
+            let quotes = quotes.clone();
+            let cov = cov_base.clone();
+            let mu = mu_base.clone();
+            let lower = lower_base.clone();
+            let upper = upper_base.clone();
+            move || {
+                let base = CalibratedSabrSmile::calibrate(
+                    forward,
+                    expiry,
+                    beta,
+                    (0.011, -0.2, 0.4),
+                    &quotes,
+                )
+                .expect("SABR calibration");
+                let (_, vegas) = base.vol_and_quote_vega(quotes[3].strike);
+                let mut sum = base.smile.vol(quotes[3].strike) + vegas.iter().sum::<f64>();
+                let mu_ad = mu
+                    .iter()
+                    .enumerate()
+                    .map(|(i, x)| Dual::<16>::variable(*x, i))
+                    .collect::<Vec<_>>();
+                let up_ad = upper
+                    .iter()
+                    .enumerate()
+                    .map(|(i, x)| Dual::<16>::variable(*x, 8 + i))
+                    .collect::<Vec<_>>();
+                let w = box_constrained_markowitz_weights(&BoxConstrainedMarkowitzSpec {
+                    covariance: cov
+                        .iter()
+                        .map(|r| r.iter().map(|x| Dual::<16>::from_value(*x)).collect())
+                        .collect(),
+                    expected_returns: mu_ad,
+                    risk_aversion: Dual::from_value(3.0),
+                    lower_bounds: lower.iter().map(|x| Dual::from_value(*x)).collect(),
+                    upper_bounds: up_ad,
+                });
+                sum += w
+                    .iter()
+                    .enumerate()
+                    .map(|(i, x)| (i + 1) as f64 * x.val)
+                    .sum::<f64>();
+                for lane in 0..16 {
+                    sum += w
+                        .iter()
+                        .enumerate()
+                        .map(|(i, x)| (i + 1) as f64 * x.d[lane])
+                        .sum::<f64>();
+                }
+                sum
+            }
+        },
     )
 }
 

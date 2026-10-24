@@ -519,11 +519,10 @@ impl CalibratedSviSmile {
                 x[3],
                 x[4].abs().max(1e-8),
             );
-            let mut r = DVector::zeros(quotes.len());
-            let mut j = DMatrix::zeros(quotes.len(), 5);
-            for (i, q) in quotes.iter().enumerate() {
+            let mut rv = Vec::with_capacity(quotes.len() + 63);
+            let mut jv: Vec<Vec<f64>> = Vec::with_capacity(quotes.len() + 63);
+            for q in quotes {
                 let d = q.weight.max(0.0).sqrt();
-                r[i] = d * (smile.vol(q.strike) - q.market_vol);
                 let ad = AdSviSmile::new(
                     Dual::<5>::from_value(forward),
                     Dual::<5>::from_value(expiry),
@@ -534,8 +533,39 @@ impl CalibratedSviSmile {
                     Dual::<5>::variable(smile.sigma, 4),
                 );
                 let y = ad.vol(Dual::<5>::from_value(q.strike));
-                for k in 0..5 {
-                    j[(i, k)] = d * y.d[k];
+                rv.push(d * (y.val - q.market_vol));
+                jv.push(y.d.iter().map(|x| d * *x).collect());
+            }
+            let ad = AdSviSmile::new(
+                Dual::<5>::from_value(forward),
+                Dual::<5>::from_value(expiry),
+                Dual::<5>::variable(smile.a, 0),
+                Dual::<5>::variable(smile.b, 1),
+                Dual::<5>::variable(smile.rho, 2),
+                Dual::<5>::variable(smile.m, 3),
+                Dual::<5>::variable(smile.sigma, 4),
+            );
+            for ngrid in 0..21 {
+                let k = -1.0 + 2.0 * ngrid as f64 / 20.0;
+                let strike = Dual::<5>::from_value(forward * k.exp());
+                let g = svi_durrleman_g(&ad, strike);
+                let floor = ad.a + ad.b * ad.sigma * (Dual::<5>::one() - ad.rho * ad.rho).sqrt();
+                let wing = ad.b * (Dual::<5>::one() + ad.rho.abs()) - 2.0;
+                for p in [
+                    g.min_val(Dual::<5>::zero()),
+                    (-floor).max_val(Dual::<5>::zero()),
+                    wing.max_val(Dual::<5>::zero()),
+                ] {
+                    let scale = 10.0;
+                    rv.push(scale * p.val);
+                    jv.push(p.d.iter().map(|x| scale * *x).collect());
+                }
+            }
+            let r = DVector::from_vec(rv);
+            let mut j = DMatrix::zeros(r.len(), 5);
+            for (i, row) in jv.iter().enumerate() {
+                for a in 0..5 {
+                    j[(i, a)] = row[a];
                 }
             }
             (r, j)
@@ -551,11 +581,18 @@ impl CalibratedSviSmile {
             sol[4].abs().max(1e-8),
         );
         let (r, _) = residual(&sol);
-        let rmse = (r.norm_squared() / quotes.len().max(1) as f64).sqrt();
-        let grid: Vec<f64> = quotes.iter().map(|q| (q.strike / forward).ln()).collect();
+        let rmse = quotes
+            .iter()
+            .map(|q| (smile.vol(q.strike) - q.market_vol).powi(2) * q.weight.max(0.0))
+            .sum::<f64>()
+            / quotes.len().max(1) as f64;
+        let rmse = rmse.sqrt();
+        let grid = (0..21)
+            .map(|i| -1.0 + 2.0 * i as f64 / 20.0)
+            .collect::<Vec<_>>();
         let min_g = grid
             .iter()
-            .map(|&k| svi_durrleman_g(&smile, forward * k.exp()))
+            .map(|&k| svi_durrleman_g(&smile, forward * k.exp()).val())
             .fold(f64::INFINITY, f64::min);
         let mut h = DMatrix::zeros(5, 5);
         let mut jq = DMatrix::zeros(5, quotes.len());
@@ -582,6 +619,34 @@ impl CalibratedSviSmile {
                 jq[(a, i)] = -d * d * y.d1[a];
                 for b in 0..5 {
                     h[(a, b)] += d * d * y.d1[a] * y.d1[b] + d * r[i] * y.d2[a][b];
+                }
+            }
+        }
+        let p2 = AdSviSmile::new(
+            Dual2::<5>::from_value(forward),
+            Dual2::<5>::from_value(expiry),
+            Dual2::<5>::variable(smile.a, 0),
+            Dual2::<5>::variable(smile.b, 1),
+            Dual2::<5>::variable(smile.rho, 2),
+            Dual2::<5>::variable(smile.m, 3),
+            Dual2::<5>::variable(smile.sigma, 4),
+        );
+        for ngrid in 0..21 {
+            let k = -1.0 + 2.0 * ngrid as f64 / 20.0;
+            let strike = Dual2::<5>::from_value(forward * k.exp());
+            let g = svi_durrleman_g(&p2, strike);
+            let floor = p2.a + p2.b * p2.sigma * (Dual2::<5>::one() - p2.rho * p2.rho).sqrt();
+            let wing = p2.b * (Dual2::<5>::one() + p2.rho.abs()) - 2.0;
+            for p in [
+                g.min_val(Dual2::<5>::zero()),
+                (-floor).max_val(Dual2::<5>::zero()),
+                wing.max_val(Dual2::<5>::zero()),
+            ] {
+                let p = p * 10.0;
+                for a in 0..5 {
+                    for b in 0..5 {
+                        h[(a, b)] += p.d1[a] * p.d1[b] + p.val * p.d2[a][b];
+                    }
                 }
             }
         }

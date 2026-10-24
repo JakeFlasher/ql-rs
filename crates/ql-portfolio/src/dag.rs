@@ -120,25 +120,31 @@ fn trade_dependency_hash(trade: &PortfolioTrade, curve_hash: u64, equity_hash: u
         PortfolioTrade::BermudanSwaption {
             notional,
             fixed_rate,
+            exercise_years,
             maturity_years,
+            is_payer,
             hw_a,
             hw_sigma,
             ..
-        } => hash_f64_slice(&[
-            *notional,
-            *fixed_rate,
-            *maturity_years as f64,
-            *hw_a,
-            *hw_sigma,
-        ]),
+        } => {
+            let mut x = vec![
+                *notional,
+                *fixed_rate,
+                *maturity_years as f64,
+                if *is_payer { 1.0 } else { 0.0 },
+                *hw_a,
+                *hw_sigma,
+            ];
+            x.extend(exercise_years.iter().map(|v| *v as f64));
+            hash_f64_slice(&x)
+        }
     };
     match trade {
         PortfolioTrade::IrsSwap { .. } => hash_word(curve_hash, h),
-        PortfolioTrade::HestonEuropeanOption { .. }
-        | PortfolioTrade::ScriptedNote { .. }
-        | PortfolioTrade::BermudanSwaption { .. } => {
+        PortfolioTrade::HestonEuropeanOption { .. } | PortfolioTrade::ScriptedNote { .. } => {
             hash_word(curve_hash ^ equity_hash.rotate_left(13), h)
         }
+        PortfolioTrade::BermudanSwaption { .. } => hash_word(curve_hash, h),
     }
 }
 
@@ -539,7 +545,7 @@ impl PortfolioDag {
                         notional: *notional,
                         strike: *fixed_rate,
                         exercise_times: exercise_years.iter().map(|x| *x as f64).collect(),
-                        swap_times: (1..=*maturity_years).map(|x| x as f64).collect(),
+                        swap_times: (0..=*maturity_years).map(|x| x as f64).collect(),
                         is_payer: *is_payer,
                         settlement: SwaptionSettlement::Physical,
                     };

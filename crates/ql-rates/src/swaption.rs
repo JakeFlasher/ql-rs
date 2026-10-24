@@ -1,5 +1,6 @@
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
+use ql_math::solve_tridiagonal;
 
 fn normal_sabr_vol<T: Real>(f: T, k: T, expiry: f64, alpha: T, beta: f64, rho: T, nu: T) -> T {
     let fk = f * k;
@@ -201,15 +202,17 @@ fn conditional_bond<T: Real, C: YieldTermStructure<T>>(
     x: T,
 ) -> T {
     if big_t <= t {
-        return T::one();
+        T::one()
+    } else {
+        let b = model.b_factor(t, big_t);
+        let p0t = curve.discount_factor(t);
+        let p0t_big = curve.discount_factor(big_t);
+        let bt0 = model.b_factor(0.0, t);
+        let vr = hw_var(model, T::from_f64(t));
+        p0t_big / p0t
+            * (-T::from_f64(0.5) * model.sigma * model.sigma * b * (b * vr + bt0 * bt0) - b * x)
+                .exp()
     }
-    let b = model.b_factor(t, big_t);
-    let p0t = curve.discount_factor(t);
-    let p0t_big = curve.discount_factor(big_t);
-    let bt0 = model.b_factor(0.0, t);
-    let vr = hw_var(model, T::from_f64(t));
-    p0t_big / p0t
-        * (-T::from_f64(0.5) * model.sigma * model.sigma * b * (b * vr + bt0 * bt0) - b * x).exp()
 }
 fn bermudan_payoff<T: Real, D: YieldTermStructure<T>, F: YieldTermStructure<T>>(
     model: &ql_models::HullWhite1F<T>,
@@ -226,27 +229,33 @@ fn bermudan_payoff<T: Real, D: YieldTermStructure<T>, F: YieldTermStructure<T>>(
     if start + 1 >= s.swap_times.len() {
         return T::zero();
     }
+    let p_start = conditional_bond(model, ois, t, s.swap_times[start], x);
     let mut ann = T::zero();
     let mut float = T::zero();
     for w in s.swap_times[start..].windows(2) {
-        let a = conditional_bond(model, ois, t, w[0], x);
-        let b = conditional_bond(model, ois, t, w[1], x);
+        let p_end = conditional_bond(model, ois, t, w[1], x);
         let af = conditional_bond(model, fwd, t, w[0], x);
         let bf = conditional_bond(model, fwd, t, w[1], x);
-        let tau = w[1] - w[0];
-        ann += T::from_f64(tau) * b;
-        float += (af / bf - T::one()) * b;
-        let _ = a;
+        let tau = T::from_f64(w[1] - w[0]);
+        ann += tau * p_end;
+        float += (af / bf - T::one()) * p_end;
     }
-    let sign = if s.is_payer { 1.0 } else { -1.0 };
-    let value = match s.settlement {
+    let sign = T::from_f64(if s.is_payer { 1.0 } else { -1.0 });
+    let intrinsic = match s.settlement {
         SwaptionSettlement::Physical => float - T::from_f64(s.strike) * ann,
         SwaptionSettlement::CashParYield => {
             let rate = float / ann.max_val(T::from_f64(1e-14));
-            T::from_f64(sign) * ann * (rate - s.strike)
+            let mut cash_ann = T::zero();
+            let mut df_par = T::one();
+            for w in s.swap_times[start..].windows(2) {
+                let tau = T::from_f64(w[1] - w[0]);
+                df_par /= (T::one() + tau * rate).max_val(T::from_f64(1e-12));
+                cash_ann += p_start * tau * df_par;
+            }
+            cash_ann * (rate - T::from_f64(s.strike))
         }
     };
-    T::from_f64(s.notional) * T::from_f64(sign) * value.max_val(T::zero())
+    T::from_f64(s.notional) * (sign * intrinsic).max_val(T::zero())
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -278,64 +287,110 @@ impl HullWhiteBermudanTreeEngine {
         if ex.is_empty() {
             return T::zero();
         }
-        let n = self.steps.max(1);
+        let nbase = self.steps.max(1);
         let max_t = *ex.last().unwrap();
-        let dt = max_t / n as f64;
+        let h = max_t / nbase as f64;
         let mut times = vec![0.0];
-        for i in 1..=n {
-            times.push(i as f64 * dt);
+        for i in 1..=nbase {
+            times.push(i as f64 * h);
         }
-        for &e in &ex {
-            if !times.iter().any(|x| (*x - e).abs() < 1e-10) {
-                times.push(e);
-            }
-        }
+        times.extend(ex.iter().copied());
         times.sort_by(f64::total_cmp);
         times.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
-        let max_dt = times.windows(2).map(|w| w[1] - w[0]).fold(0.0, f64::max);
-        let dx = (3.0 * model.sigma.val() * model.sigma.val() * max_dt)
+        let msteps = times.len() - 1;
+        let max_dt = times
+            .windows(2)
+            .map(|w| w[1] - w[0])
+            .fold(0.0, f64::max)
+            .max(1e-12);
+        let v_max = model.sigma * model.sigma * hw_var(model, T::from_f64(max_dt));
+        let dx = (v_max * 3.0)
+            .max_val(T::from_f64(1e-16))
             .sqrt()
-            .max(1e-8);
-        let mut values = vec![T::zero(); 2 * n + 3];
-        let last = *times.last().unwrap();
-        for j in -(n as isize)..=(n as isize) {
-            values[(j + n as isize) as usize] =
-                bermudan_payoff(model, ois, fwd, s, last, T::from_f64(j as f64 * dx));
-        }
-        for m in (0..times.len() - 1).rev() {
-            let dtime = times[m + 1] - times[m];
-            let var = model.sigma * model.sigma * hw_var(model, T::from_f64(dtime));
-            let ratio = (var.val() / dx.powi(2)).max(0.0);
-            let pm = (1.0 - ratio).clamp(0.0, 1.0);
-            let pu = (ratio * 0.5).clamp(0.0, 0.5);
-            let pd = pu;
-            let mut next = vec![T::zero(); values.len()];
-            for j in -(n as isize)..=(n as isize) {
-                let idx = (j + n as isize) as usize;
-                let cont = (-T::from_f64(j as f64 * dx) * dtime).exp()
-                    * (values[idx.saturating_sub(1)] * pd
-                        + values[idx] * pm
-                        + values[(idx + 1).min(values.len() - 1)] * pu);
-                next[idx] = cont;
+            .max_val(T::from_f64(1e-8));
+        let jmax = if model.a.val() * max_dt > 1e-4 {
+            (0.184 / (model.a.val() * max_dt)).ceil() as isize
+        } else {
+            msteps as isize
+        };
+        let jb = |m: usize| (m as isize).min(jmax);
+        let mut q = times
+            .iter()
+            .enumerate()
+            .map(|(m, _)| vec![T::zero(); (2 * jb(m) + 1) as usize])
+            .collect::<Vec<_>>();
+        q[0][0] = T::one();
+        let mut alpha = vec![T::zero(); msteps];
+        let trans = |m: usize, j: isize, qj: T, target: &mut Vec<T>, alpha_m: T| {
+            let dt = T::from_f64((times[m + 1] - times[m]).max(1e-12));
+            let var = model.sigma * model.sigma * hw_var(model, dt);
+            let mu = dx * T::from_f64(j as f64) * (-model.a * dt).exp();
+            let next_b = jb(m + 1);
+            let k = ((mu / dx).val().round() as isize).clamp(-next_b + 1, next_b - 1);
+            let e = mu - dx * T::from_f64(k as f64);
+            let dx2 = dx * dx;
+            let pd = (var + e * e - e * dx) / (dx2 * 2.0);
+            let pm = T::one() - (var + e * e) / dx2;
+            let pu = (var + e * e + e * dx) / (dx2 * 2.0);
+            let disc = (-(alpha_m + dx * T::from_f64(j as f64)) * dt).exp() * qj;
+            for (node, p) in [(k - 1, pd), (k, pm), (k + 1, pu)] {
+                let idx = (node + next_b).clamp(0, 2 * next_b) as usize;
+                target[idx] += disc * p;
             }
-            for &e in &ex {
-                if (times[m] - e).abs() < 1e-10 {
-                    for j in -(n as isize)..=(n as isize) {
-                        let idx = (j + n as isize) as usize;
-                        next[idx] = next[idx].max_val(bermudan_payoff(
-                            model,
-                            ois,
-                            fwd,
-                            s,
-                            times[m],
-                            T::from_f64(j as f64 * dx),
-                        ));
-                    }
+        };
+        for m in 0..msteps {
+            let dt = T::from_f64((times[m + 1] - times[m]).max(1e-12));
+            let sum = q[m].iter().enumerate().fold(T::zero(), |acc, (idx, qj)| {
+                let j = idx as isize - jb(m);
+                acc + *qj * (-dx * T::from_f64(j as f64) * dt).exp()
+            });
+            alpha[m] = (sum / ois.discount_factor(times[m + 1])).ln() / dt;
+            for idx in 0..q[m].len() {
+                let j = idx as isize - jb(m);
+                trans(m, j, q[m][idx], &mut q[m + 1], alpha[m]);
+            }
+        }
+        let mut values = times
+            .iter()
+            .enumerate()
+            .map(|(m, _)| vec![T::zero(); (2 * jb(m) + 1) as usize])
+            .collect::<Vec<_>>();
+        let last = msteps;
+        for idx in 0..values[last].len() {
+            let j = idx as isize - jb(last);
+            values[last][idx] =
+                bermudan_payoff(model, ois, fwd, s, times[last], dx * T::from_f64(j as f64));
+        }
+        for m in (0..msteps).rev() {
+            let dt = T::from_f64((times[m + 1] - times[m]).max(1e-12));
+            let mut next = vec![T::zero(); values[m].len()];
+            for (idx, value) in next.iter_mut().enumerate() {
+                let j = idx as isize - jb(m);
+                let var = model.sigma * model.sigma * hw_var(model, dt);
+                let mu = dx * T::from_f64(j as f64) * (-model.a * dt).exp();
+                let next_b = jb(m + 1);
+                let k = ((mu / dx).val().round() as isize).clamp(-next_b + 1, next_b - 1);
+                let e = mu - dx * T::from_f64(k as f64);
+                let dx2 = dx * dx;
+                let pd = (var + e * e - e * dx) / (dx2 * 2.0);
+                let pm = T::one() - (var + e * e) / dx2;
+                let pu = (var + e * e + e * dx) / (dx2 * 2.0);
+                let get =
+                    |node: isize| values[m + 1][(node + next_b).clamp(0, 2 * next_b) as usize];
+                *value = (-(alpha[m] + dx * T::from_f64(j as f64)) * dt).exp()
+                    * (pd * get(k - 1) + pm * get(k) + pu * get(k + 1));
+            }
+            if ex.iter().any(|e| (times[m] - *e).abs() < 1e-10) {
+                for (idx, value) in next.iter_mut().enumerate() {
+                    let j = idx as isize - jb(m);
+                    let p =
+                        bermudan_payoff(model, ois, fwd, s, times[m], dx * T::from_f64(j as f64));
+                    *value = (*value).max_val(p);
                 }
             }
-            values = next;
+            values[m] = next;
         }
-        values[n]
+        values[0][0]
     }
     pub fn price_single_curve<T: Real, C: YieldTermStructure<T>>(
         &self,
@@ -359,15 +414,117 @@ impl HullWhiteBermudanTreeEngine {
 impl Fd1dHullWhiteBermudanEngine {
     pub fn price<T: Real, D: YieldTermStructure<T>, F: YieldTermStructure<T>>(
         &self,
-        m: &ql_models::HullWhite1F<T>,
+        model: &ql_models::HullWhite1F<T>,
         ois: &D,
         fwd: &F,
         s: &BermudanSwaption,
     ) -> T {
-        HullWhiteBermudanTreeEngine {
-            steps: self.time_steps.max(1),
+        let mut ex = s
+            .exercise_times
+            .iter()
+            .copied()
+            .filter(|x| *x > 0.0)
+            .collect::<Vec<_>>();
+        ex.sort_by(f64::total_cmp);
+        ex.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+        if ex.is_empty() {
+            return T::zero();
         }
-        .price(m, ois, fwd, s)
+        let nbase = self.time_steps.max(2);
+        let last_t = *ex.last().unwrap();
+        let h = last_t / nbase as f64;
+        let mut times = vec![0.0];
+        for i in 1..=nbase {
+            times.push(i as f64 * h);
+        }
+        times.extend(ex.iter().copied());
+        times.sort_by(f64::total_cmp);
+        times.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+        let nx = self.state_points.max(51) | 1;
+        let xmax = (model.sigma * hw_var(model, T::from_f64(last_t)).sqrt() * 5.5)
+            .max_val(T::from_f64(1e-4));
+        let dx = xmax * 2.0 / T::from_f64((nx - 1) as f64);
+        let xgrid = (0..nx)
+            .map(|i| -xmax + dx * T::from_f64(i as f64))
+            .collect::<Vec<_>>();
+        let msteps = times.len() - 1;
+        let mut values = vec![T::zero(); nx];
+        for (i, x) in xgrid.iter().enumerate() {
+            values[i] = bermudan_payoff(model, ois, fwd, s, last_t, *x);
+        }
+        let nint = nx - 2;
+        let mut lower = vec![T::zero(); nint.saturating_sub(1)];
+        let mut diag = vec![T::zero(); nint];
+        let mut upper = vec![T::zero(); nint.saturating_sub(1)];
+        let mut rhs = vec![T::zero(); nint];
+        let mut out = vec![T::zero(); nint];
+        let mut scratch = vec![T::zero(); nint];
+        for m in (0..msteps).rev() {
+            let dt_f = (times[m + 1] - times[m]).max(1e-12);
+            let dt = T::from_f64(dt_f);
+            let theta = if msteps - m <= 2 {
+                T::one()
+            } else {
+                T::from_f64(0.5)
+            };
+            let phi = -((ois.discount_factor(times[m + 1]) / ois.discount_factor(times[m])).ln())
+                / dt
+                + model.sigma
+                    * model.sigma
+                    * (model.b_factor(0.0, times[m]).powf(2.0)
+                        + model.b_factor(0.0, times[m + 1]).powf(2.0))
+                    * 0.25;
+            let dx2 = dx * dx;
+            let sig2 = model.sigma * model.sigma;
+            let mut new_values = vec![T::zero(); nx];
+            let bc_low = bermudan_payoff(model, ois, fwd, s, times[m], xgrid[0]);
+            let bc_high = bermudan_payoff(model, ois, fwd, s, times[m], xgrid[nx - 1]);
+            let bc_low_next = bermudan_payoff(model, ois, fwd, s, times[m + 1], xgrid[0]);
+            let bc_high_next = bermudan_payoff(model, ois, fwd, s, times[m + 1], xgrid[nx - 1]);
+            new_values[0] = bc_low;
+            new_values[nx - 1] = bc_high;
+            for i in 1..nx - 1 {
+                let ell = sig2 / (dx2 * 2.0) + model.a * xgrid[i] / (dx * 2.0);
+                let upp = sig2 / (dx2 * 2.0) - model.a * xgrid[i] / (dx * 2.0);
+                let c = -sig2 / dx2 - (xgrid[i] + phi);
+                let ii = i - 1;
+                let a_left = -theta * dt * ell;
+                let a_right = -theta * dt * upp;
+                diag[ii] = T::one() - theta * dt * c;
+                if ii > 0 {
+                    lower[ii - 1] = a_left;
+                }
+                if ii + 1 < nint {
+                    upper[ii] = a_right;
+                }
+                rhs[ii] = values[i]
+                    + (T::one() - theta)
+                        * dt
+                        * (ell * values[i - 1] + c * values[i] + upp * values[i + 1]);
+                if ii == 0 {
+                    rhs[ii] -= a_left * bc_low;
+                }
+                if ii + 1 == nint {
+                    rhs[ii] -= a_right * bc_high;
+                }
+            }
+            solve_tridiagonal(&lower, &diag, &upper, &rhs, &mut out, &mut scratch);
+            new_values[1..nx - 1].copy_from_slice(&out);
+            if ex.iter().any(|e| (times[m] - *e).abs() < 1e-10) {
+                for i in 1..nx - 1 {
+                    new_values[i] = new_values[i]
+                        .max_val(bermudan_payoff(model, ois, fwd, s, times[m], xgrid[i]));
+                }
+            }
+            // The unused next boundary values are deliberately evaluated in
+            // T so their AD dependence is retained when the grid is refined.
+            let _ = (bc_low_next, bc_high_next);
+            values = new_values;
+            if values.iter().any(|z| !z.val().is_finite()) {
+                return T::zero();
+            }
+        }
+        values[nx / 2]
     }
     pub fn price_single_curve<T: Real, C: YieldTermStructure<T>>(
         &self,

@@ -193,18 +193,6 @@ impl Fd2dHestonEngine {
                 (Some(option.barrier), None)
             }
         };
-        let out = self.price_knockout_barrier(
-            p,
-            spot,
-            T::from_f64(option.strike),
-            lower,
-            upper,
-            T::from_f64(option.rebate),
-            rate,
-            div,
-            expiry,
-            option.option_type.is_call(),
-        );
         match option.barrier_type {
             ql_instruments::BarrierType::UpAndIn | ql_instruments::BarrierType::DownAndIn => {
                 let vanilla = self.solve(
@@ -234,19 +222,35 @@ impl Fd2dHestonEngine {
                     expiry,
                     option.option_type.is_call(),
                 );
-                let rebate_survival = self.price_knockout_rebate(
+                let rebate_survival = if option.rebate.abs() > 0.0 {
+                    self.price_knockout_rebate(
+                        p,
+                        spot,
+                        lower,
+                        upper,
+                        T::from_f64(option.rebate),
+                        rate,
+                        div,
+                        expiry,
+                    )
+                } else {
+                    T::zero()
+                };
+                vanilla - out_no_rebate + rebate_survival
+            }
+            ql_instruments::BarrierType::UpAndOut | ql_instruments::BarrierType::DownAndOut => self
+                .price_knockout_barrier(
                     p,
                     spot,
+                    T::from_f64(option.strike),
                     lower,
                     upper,
                     T::from_f64(option.rebate),
                     rate,
                     div,
                     expiry,
-                );
-                vanilla - out_no_rebate + rebate_survival
-            }
-            ql_instruments::BarrierType::UpAndOut | ql_instruments::BarrierType::DownAndOut => out,
+                    option.option_type.is_call(),
+                ),
         }
     }
 
@@ -476,12 +480,8 @@ impl Fd2dHestonEngine {
                 .map(f64::ln)
                 .unwrap_or_else(|| strike.val().ln())
         });
-        let nx = if lower_barrier.is_some() || upper_barrier.is_some() {
-            if self.nx % 2 == 0 {
-                self.nx + 1
-            } else {
-                self.nx
-            }
+        let nx = if lower_barrier.is_some() || upper_barrier.is_some() || grid_center.is_some() {
+            self.nx | 1
         } else {
             self.nx
         };

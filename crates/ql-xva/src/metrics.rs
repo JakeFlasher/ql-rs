@@ -277,29 +277,41 @@ pub fn compute_xva_with_wwr<T: Real>(
             / T::from_f64(cube.n_paths.max(1) as f64);
         let mut beta = Vec::with_capacity(cube.n_paths);
         for x in &pos {
-            let z = wwr_sensitivity * (*x - mean);
-            let zv = z.val().clamp(-20., 20.);
-            beta.push(T::from_f64(zv).exp() * dt);
+            let z = (wwr_sensitivity * (*x - mean))
+                .max_val(T::from_f64(-20.0))
+                .min_val(T::from_f64(20.0));
+            beta.push(z.exp() * dt);
         }
-        let target = (-hc * t).exp();
-        let mean_sc = sc_prev.iter().copied().fold(T::zero(), |a, x| a + x)
-            / T::from_f64(cube.n_paths.max(1) as f64);
-        let mut u = (hc / mean_sc.max_val(T::from_f64(1e-12))).max_val(T::from_f64(1e-12));
-        for _ in 0..8 {
-            let mut g = T::zero();
-            let mut gp = T::zero();
-            for p in 0..cube.n_paths {
-                let e = (-u * beta[p]).exp();
-                g += sc_prev[p] * e;
-                gp -= sc_prev[p] * beta[p] * e;
-            }
-            g = g / T::from_f64(cube.n_paths.max(1) as f64) - target;
-            gp /= T::from_f64(cube.n_paths.max(1) as f64);
-            u = (u - g / gp).max_val(T::from_f64(1e-12));
-        }
+        let den = T::from_f64(cube.n_paths.max(1) as f64);
         let mut sc = Vec::with_capacity(cube.n_paths);
-        for p in 0..cube.n_paths {
-            sc.push(sc_prev[p] * (-u * beta[p]).exp());
+        if dt <= 0.0 {
+            sc.extend_from_slice(&sc_prev);
+        } else {
+            let target = (-hc * t).exp();
+            let mean_sc = sc_prev
+                .iter()
+                .zip(&beta)
+                .fold(T::zero(), |a, (s, b)| a + *s * (*b / T::from_f64(dt)))
+                / den;
+            let mut u = (hc * (-hc * prev).exp() / mean_sc.max_val(T::from_f64(1e-12)))
+                .max_val(T::from_f64(1e-12));
+            for _ in 0..8 {
+                let mut g = T::zero();
+                let mut gp = T::zero();
+                for p in 0..cube.n_paths {
+                    let e = (-u * beta[p]).exp();
+                    g += sc_prev[p] * e;
+                    gp -= sc_prev[p] * beta[p] * e;
+                }
+                g = g / den - target;
+                gp /= den;
+                if gp.val().abs() > 1e-14 {
+                    u = (u - g / gp).max_val(T::from_f64(1e-12));
+                }
+            }
+            for p in 0..cube.n_paths {
+                sc.push(sc_prev[p] * (-u * beta[p]).exp());
+            }
         }
         let e = pos.iter().copied().fold(T::zero(), |a, x| a + x)
             / T::from_f64(cube.n_paths.max(1) as f64);
@@ -322,17 +334,34 @@ pub fn compute_xva_with_wwr<T: Real>(
             dva_step += neg[p] * (sb0 - sb) * sc_prev[p];
             fva_step += (pos[p] + neg[p]) * sc[p];
         }
-        let den = T::from_f64(cube.n_paths.max(1) as f64);
         cva += lc * df * sb0 * cva_step / den;
         dva -= ls * df * dva_step / den;
         fva += fs * df * sb * fva_step / den * dt;
         sc_prev = sc;
     }
+    let epe = if let Some(&last) = cube.times.last() {
+        if last > 0.0 {
+            let mut integral = T::zero();
+            let mut prev_t = 0.0;
+            let mut prev_e = T::zero();
+            for (t, e_t) in cube.times.iter().copied().zip(ee.iter().copied()) {
+                let dt_t = (t - prev_t).max(0.0);
+                integral += (prev_e + e_t) * T::from_f64(0.5 * dt_t);
+                prev_t = t;
+                prev_e = e_t;
+            }
+            integral / T::from_f64(last)
+        } else {
+            T::zero()
+        }
+    } else {
+        T::zero()
+    };
     XvaReport {
         ee,
         ene,
         pfe_95: pfe,
-        epe: T::zero(),
+        epe,
         cva,
         dva,
         fva,

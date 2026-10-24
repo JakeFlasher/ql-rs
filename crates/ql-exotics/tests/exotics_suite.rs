@@ -139,3 +139,33 @@ fn bgk_monitoring_and_variance_swap() {
     assert!((vol - 0.2).abs() < 5e-4);
     assert!(volatility_swap_convexity_adjustment(0.04, 0.0001) < 0.2);
 }
+
+#[test]
+fn phase11_variance_and_corridor_replication() {
+    let quotes = (0..21)
+        .map(|i| VarianceSwapStrikeQuote {
+            strike: 60.0 + i as f64 * 4.0,
+            implied_vol: 0.2,
+        })
+        .collect::<Vec<_>>();
+    let base = replicate_variance_swap_fair_strike(100.0, 0.02, 0.0, 1.0, 100.0, &quotes);
+    let wide = replicate_corridor_variance_swap_fair_strike(
+        100.0, 0.02, 0.0, 1.0, 100.0, 1e-4, 1e4, &quotes,
+    );
+    assert!((base.0 - wide.0).abs() < 1e-10);
+    let small = heston_integrated_variance_var(0.04, 1e-8, 0.04, 0.3, 1.0);
+    assert!(small.is_finite() && small >= 0.0);
+    let left = replicate_corridor_variance_swap_fair_strike(
+        100.0, 0.02, 0.0, 1.0, 100.0, 70.0, 100.0, &quotes,
+    )
+    .0;
+    let right = replicate_corridor_variance_swap_fair_strike(
+        100.0, 0.02, 0.0, 1.0, 100.0, 100.0, 140.0, &quotes,
+    )
+    .0;
+    let all = replicate_corridor_variance_swap_fair_strike(
+        100.0, 0.02, 0.0, 1.0, 100.0, 70.0, 140.0, &quotes,
+    )
+    .0;
+    assert!((left + right - all).abs() < 1e-8);
+}

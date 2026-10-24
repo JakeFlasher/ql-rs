@@ -35,7 +35,10 @@ pub mod prelude {
 }
 
 use ql_ad::Real;
-use ql_commodities::{SchwartzSmith2F, kirk_spread_option};
+use ql_commodities::{
+    CommodityFuturesCurve, GasStorageSpec, SchwartzSmith2F, SwingOptionSpec, kirk_spread_option,
+    price_gas_storage, price_swing_option,
+};
 use ql_credit::{
     CalibratedCreditCurve, CdsQuote, CreditDefaultSwap, IsdaCdsEngine, ProtectionSide,
     asb_recursive_expected_tranche_loss,
@@ -53,18 +56,19 @@ use ql_levy::{VarianceGamma, cos_levy_price};
 use ql_models::{HestonParams, HullWhite1F, LiftedHestonParams, lifted_heston_cos_price};
 use ql_portfolio::gaussian_expected_shortfall;
 use ql_portfolio::{
-    MarketSnapshot, PortfolioDag, PortfolioRiskSummary, PortfolioTrade,
-    equal_risk_contribution_weights,
+    BoxConstrainedMarkowitzSpec, MarketSnapshot, PortfolioDag, PortfolioRiskSummary,
+    PortfolioTrade, box_constrained_markowitz_weights, equal_risk_contribution_weights,
 };
 use ql_rates::{
-    EuropeanSwaption, G2PlusPlus, RfrCapletSpec, RfrRateType, SwaptionSettlement,
-    willems_backward_sabr_caplet_price,
+    BermudanSwaption, EuropeanSwaption, G2PlusPlus, HullWhiteBermudanTreeEngine, RfrCapletSpec,
+    RfrRateType, SwaptionSettlement, willems_backward_sabr_caplet_price,
 };
 use ql_time::{BitsetCalendar, BusinessDayConvention, Date, DayCounter, Period};
-use ql_vol::implied_black_vol;
+use ql_vol::{CalibratedSabrSmile, SmileStrikeQuote, implied_black_vol};
 use ql_xva::{
-    NettingSetSwap, SimmBucket, compute_isda_simm, compute_isda_simm_6_risk_classes, compute_xva,
-    expected_positive_exposure, potential_future_exposure, simulate_hw1f_exposure_cube,
+    NettingSetSwap, SaCcrAssetClass, SaCcrNettingSet, SaCcrTrade, SimmBucket, compute_isda_simm,
+    compute_isda_simm_6_risk_classes, compute_sa_ccr_ead, compute_xva, expected_positive_exposure,
+    potential_future_exposure, simulate_hw1f_exposure_cube,
 };
 use std::fmt::Write as FmtWrite;
 use std::sync::Arc;
@@ -1143,6 +1147,111 @@ impl DeskWorkstation {
             ql_instruments::OptionType::Call,
         )
         .val();
+        // Live Phase 11 telemetry for the final two workstation tabs.  These
+        // are deliberately computed from the active scenario curves rather
+        // than being display-only constants.
+        let bermudan = BermudanSwaption {
+            notional: 1_000_000.0,
+            strike: 0.02,
+            exercise_times: vec![1.0, 2.0, 3.0],
+            swap_times: (0..=5).map(|x| x as f64).collect(),
+            is_payer: true,
+            settlement: SwaptionSettlement::Physical,
+        };
+        let bermudan_value = HullWhiteBermudanTreeEngine { steps: 30 }
+            .price_single_curve(
+                &HullWhite1F {
+                    a: 0.05,
+                    sigma: 0.01,
+                },
+                &active_curves.curves[0],
+                &bermudan,
+            )
+            .val();
+        let sa_report = compute_sa_ccr_ead(&SaCcrNettingSet {
+            trades: vec![SaCcrTrade {
+                mtm: ql_ad::TapeVar::from_f64(irs_npv),
+                notional: ql_ad::TapeVar::from_f64(1_000_000.0),
+                maturity: 5.0,
+                asset_class: SaCcrAssetClass::InterestRate {
+                    ccy: "USD".to_string(),
+                    start_time: 0.0,
+                    end_time: 5.0,
+                },
+                is_long_primary: true,
+                option_spec: None,
+            }],
+            collateral: ql_ad::TapeVar::zero(),
+            is_margined: false,
+            threshold: ql_ad::TapeVar::zero(),
+            mta: ql_ad::TapeVar::zero(),
+            nica: ql_ad::TapeVar::zero(),
+            mpor_years: 0.5,
+        });
+        let commodity_curve = CommodityFuturesCurve::from_futures_pillars(
+            vec![1.0, 2.0, 3.0],
+            &[80.0, 81.0, 82.0],
+            ql_commodities::SeasonalParams {
+                a1: 0.0,
+                b1: 0.0,
+                a2: 0.0,
+                b2: 0.0,
+            },
+        );
+        let swing_value = price_swing_option(
+            &SwingOptionSpec {
+                exercise_times: vec![1.0, 2.0, 3.0],
+                strike: 80.0,
+                unit_volume: 1.0,
+                min_exercises: 0,
+                max_exercises: 2,
+                is_call: true,
+            },
+            &commodity_curve,
+            1.0,
+            0.3,
+            rate,
+            2,
+        )
+        .val();
+        let qp = box_constrained_markowitz_weights(&BoxConstrainedMarkowitzSpec {
+            covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
+            expected_returns: vec![0.05, 0.04],
+            risk_aversion: 3.0,
+            lower_bounds: vec![0.0, 0.0],
+            upper_bounds: vec![1.0, 1.0],
+        });
+        let qp_value = qp.iter().sum::<f64>();
+        let storage_value = price_gas_storage(
+            &GasStorageSpec {
+                decision_times: vec![1.0, 2.0],
+                max_capacity: 10.0,
+                initial_inventory: 5.0,
+                max_injection_rate: 5.0,
+                max_withdrawal_rate: 5.0,
+                injection_loss: 0.0,
+                withdrawal_loss: 0.0,
+                injection_cost: 0.0,
+                withdrawal_cost: 0.0,
+                inventory_grid_points: 10,
+            },
+            &commodity_curve,
+            1.0,
+            0.3,
+            rate,
+        );
+        let _smile = CalibratedSabrSmile::calibrate(
+            market.eq_spot / 100.0,
+            1.0,
+            0.5,
+            (0.1, -0.2, 0.4),
+            &[SmileStrikeQuote {
+                strike: market.eq_spot / 100.0,
+                market_vol: 0.2,
+                weight: 1.0,
+            }],
+        )
+        .ok();
         let blotter_rows = vec![
             ("IRS 5Y PayFix".to_string(), irs_npv, "IFT".to_string()),
             ("Heston Call 1Y".to_string(), heston_npv, "COS".to_string()),
@@ -1191,6 +1300,27 @@ impl DeskWorkstation {
                 "IFT Basis".to_string(),
             ),
             ("Portfolio ES 97.5%".to_string(), es, "Acerbi".to_string()),
+            (
+                "Bermudan HW 3Y".to_string(),
+                bermudan_value,
+                "Tree IFT".to_string(),
+            ),
+            (
+                "SA-CCR EAD".to_string(),
+                sa_report.ead.val(),
+                "BCBS279".to_string(),
+            ),
+            (
+                "Commodity Swing".to_string(),
+                swing_value,
+                "OU DP".to_string(),
+            ),
+            ("Box Markowitz".to_string(), qp_value, "KKT IFT".to_string()),
+            (
+                "Gas Storage DP".to_string(),
+                storage_value,
+                "OU DP".to_string(),
+            ),
         ];
         WorkstationFrameData {
             tick: self.tick,

@@ -1,6 +1,8 @@
 use ql_ad::{Dual, Real};
-use ql_curves::{DiscountCurve, YieldTermStructure};
+use ql_curves::{DiscountCurve, FlatForwardCurve, YieldTermStructure};
+use ql_models::HullWhite1F;
 use ql_rates::*;
+use ql_time::Date;
 
 fn curve() -> (DiscountCurve<f64>, DiscountCurve<f64>) {
     let d = ql_time::Date::from_ymd(2024, 1, 1).unwrap();
@@ -221,5 +223,31 @@ fn g2_swaption_dual_parameters_are_live() {
             "j={j} ad={} fd={fd}",
             ad.d[j]
         );
+    }
+}
+
+#[test]
+fn bermudan_tree_and_fd_are_live_for_payer_and_receiver() {
+    let curve = FlatForwardCurve::new(Date(0), 0.02);
+    let model = HullWhite1F {
+        a: 0.05,
+        sigma: 0.01,
+    };
+    for is_payer in [true, false] {
+        let s = BermudanSwaption {
+            notional: 1.0,
+            strike: 0.02,
+            exercise_times: vec![1.0, 2.0],
+            swap_times: (0..=5).map(|x| x as f64).collect(),
+            is_payer,
+            settlement: SwaptionSettlement::Physical,
+        };
+        let tree = HullWhiteBermudanTreeEngine { steps: 60 }.price_single_curve(&model, &curve, &s);
+        let fd = Fd1dHullWhiteBermudanEngine {
+            time_steps: 60,
+            state_points: 101,
+        }
+        .price_single_curve(&model, &curve, &s);
+        assert!(tree.is_finite() && fd.is_finite() && tree >= 0.0 && fd >= 0.0);
     }
 }

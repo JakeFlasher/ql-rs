@@ -44,66 +44,169 @@ pub fn try_box_constrained_markowitz_weights<T: Real>(
     {
         return Err(AllocationError::InfeasibleBounds);
     }
-    let mut active = vec![false; n];
-    let mut upper = vec![false; n];
-    let mut w = vec![T::zero(); n];
-    for _ in 0..n {
-        let free: Vec<usize> = (0..n).filter(|&i| !active[i] && !upper[i]).collect();
+    // Determine the active set on primal f64 data.  No iterative solve is
+    // recorded on an AD tape; the reduced KKT system is lifted once below.
+    let mut state = vec![0i8; n]; // -1 lower, +1 upper, 0 free
+    let cf = s
+        .covariance
+        .iter()
+        .map(|r| r.iter().map(|x| x.val()).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let muf = s
+        .expected_returns
+        .iter()
+        .map(|x| x.val())
+        .collect::<Vec<_>>();
+    let lf = s.lower_bounds.iter().map(|x| x.val()).collect::<Vec<_>>();
+    let uf = s.upper_bounds.iter().map(|x| x.val()).collect::<Vec<_>>();
+    let gam = s.risk_aversion.val();
+    let solve_primal = |state: &[i8]| -> Result<(Vec<f64>, f64), AllocationError> {
+        let free = (0..n).filter(|&i| state[i] == 0).collect::<Vec<_>>();
         if free.is_empty() {
-            break;
+            return Ok((
+                state
+                    .iter()
+                    .enumerate()
+                    .map(|(i, z)| if *z < 0 { lf[i] } else { uf[i] })
+                    .collect(),
+                0.0,
+            ));
         }
         let m = free.len() + 1;
-        let mut a = vec![vec![T::zero(); m]; m];
-        let mut b = vec![T::zero(); m];
+        let mut a = vec![vec![0.0; m]; m];
+        let mut b = vec![0.0; m];
+        let fixed_sum = (0..n)
+            .filter(|&i| state[i] != 0)
+            .map(|i| if state[i] < 0 { lf[i] } else { uf[i] })
+            .sum::<f64>();
         for (ii, &i) in free.iter().enumerate() {
             for (jj, &j) in free.iter().enumerate() {
-                a[ii][jj] = s.covariance[i][j] * s.risk_aversion;
+                a[ii][jj] = gam * cf[i][j];
             }
-            a[ii][m - 1] = T::one();
-            a[m - 1][ii] = T::one();
-            let mut rhs = s.expected_returns[i];
-            for j in 0..n {
-                if active[j] {
-                    rhs -= s.covariance[i][j] * s.risk_aversion * s.lower_bounds[j];
-                } else if upper[j] {
-                    rhs -= s.covariance[i][j] * s.risk_aversion * s.upper_bounds[j];
-                }
-            }
-            b[ii] = rhs;
+            a[ii][m - 1] = 1.0;
+            a[m - 1][ii] = 1.0;
+            b[ii] = muf[i]
+                - (0..n)
+                    .filter(|&j| state[j] != 0)
+                    .map(|j| gam * cf[i][j] * if state[j] < 0 { lf[j] } else { uf[j] })
+                    .sum::<f64>();
         }
-        let fixed: T = (0..n)
-            .filter(|&i| active[i])
-            .map(|i| s.lower_bounds[i])
-            .fold(T::zero(), |a, x| a + x)
-            + (0..n)
-                .filter(|&i| upper[i])
-                .map(|i| s.upper_bounds[i])
-                .fold(T::zero(), |a, x| a + x);
-        b[m - 1] = T::one() - fixed;
-        let sol = solve_linear_generic(&a, &b)?;
+        b[m - 1] = 1.0 - fixed_sum;
+        let sol = solve_linear_generic::<f64>(&a, &b)?;
+        let mut w = vec![0.0; n];
+        for i in 0..n {
+            w[i] = if state[i] < 0 {
+                lf[i]
+            } else if state[i] > 0 {
+                uf[i]
+            } else {
+                0.0
+            };
+        }
         for (ii, &i) in free.iter().enumerate() {
             w[i] = sol[ii];
         }
-        let mut changed = false;
-        for &i in &free {
-            if w[i].val() < s.lower_bounds[i].val() - 1e-9 {
-                active[i] = true;
-                changed = true;
-            } else if w[i].val() > s.upper_bounds[i].val() + 1e-9 {
-                upper[i] = true;
-                changed = true;
+        Ok((w, sol[m - 1]))
+    };
+    for _ in 0..(4 * n + 16) {
+        let (w, lambda) = solve_primal(&state)?;
+        let fixed_sum = (0..n).filter(|&i| state[i] != 0).map(|i| w[i]).sum::<f64>();
+        if state.iter().all(|z| *z != 0) && (fixed_sum - 1.0).abs() > 1e-10 {
+            // An all-active partition can only be feasible when the bounds
+            // themselves sum to one.  Release one bound and re-solve the
+            // equality KKT system instead of returning an infeasible budget.
+            let want_upper = fixed_sum > 1.0;
+            if let Some(i) =
+                (0..n).find(|&i| (want_upper && state[i] > 0) || (!want_upper && state[i] < 0))
+            {
+                state[i] = 0;
+                continue;
             }
         }
-        if !changed {
-            break;
+        let mut worst: Option<(usize, f64)> = None;
+        for i in 0..n {
+            if state[i] == 0 {
+                let v = if w[i] < lf[i] - 1e-11 {
+                    lf[i] - w[i]
+                } else if w[i] > uf[i] + 1e-11 {
+                    w[i] - uf[i]
+                } else {
+                    0.0
+                };
+                if v > 0.0 && worst.as_ref().is_none_or(|(_, x)| v > *x) {
+                    worst = Some((i, v));
+                }
+            }
+        }
+        if let Some((i, _)) = worst {
+            state[i] = if w[i] < lf[i] { -1 } else { 1 };
+            continue;
+        }
+        // Release an incorrectly active bound using the KKT multiplier.
+        let mut release: Option<(usize, f64)> = None;
+        for i in 0..n {
+            if state[i] == 0 {
+                continue;
+            }
+            let grad = gam * (0..n).map(|j| cf[i][j] * w[j]).sum::<f64>() - muf[i] + lambda;
+            let violation = if state[i] < 0 {
+                (-grad).max(0.0)
+            } else {
+                grad.max(0.0)
+            };
+            if violation > 1e-10 && release.is_none_or(|(_, x)| violation > x) {
+                release = Some((i, violation));
+            }
+        }
+        if let Some((i, _)) = release {
+            state[i] = 0;
+            continue;
+        }
+        break;
+    }
+    let _ = solve_primal(&state)?;
+    let free = (0..n).filter(|&i| state[i] == 0).collect::<Vec<_>>();
+    let mut w = vec![T::zero(); n];
+    let fixed = (0..n).filter(|&i| state[i] != 0).fold(T::zero(), |a, i| {
+        a + if state[i] < 0 {
+            s.lower_bounds[i]
+        } else {
+            s.upper_bounds[i]
+        }
+    });
+    for i in 0..n {
+        if state[i] < 0 {
+            w[i] = s.lower_bounds[i];
+        } else if state[i] > 0 {
+            w[i] = s.upper_bounds[i];
         }
     }
-    for i in 0..n {
-        if active[i] {
-            w[i] = s.lower_bounds[i]
-        } else if upper[i] {
-            w[i] = s.upper_bounds[i]
+    if free.is_empty() {
+        return Ok(w);
+    }
+    if free.len() == 1 {
+        w[free[0]] = T::one() - fixed;
+        return Ok(w);
+    }
+    let m = free.len() + 1;
+    let mut a = vec![vec![T::zero(); m]; m];
+    let mut b = vec![T::zero(); m];
+    for (ii, &i) in free.iter().enumerate() {
+        for (jj, &j) in free.iter().enumerate() {
+            a[ii][jj] = s.risk_aversion * s.covariance[i][j];
         }
+        a[ii][m - 1] = T::one();
+        a[m - 1][ii] = T::one();
+        b[ii] = s.expected_returns[i]
+            - (0..n)
+                .filter(|&j| state[j] != 0)
+                .map(|j| s.risk_aversion * s.covariance[i][j] * w[j])
+                .fold(T::zero(), |x, y| x + y);
+    }
+    b[m - 1] = T::one() - fixed;
+    let sol = solve_linear_generic(&a, &b)?;
+    for (ii, &i) in free.iter().enumerate() {
+        w[i] = sol[ii];
     }
     Ok(w)
 }
@@ -211,6 +314,16 @@ pub fn try_black_litterman_posterior<T: Real>(
 ) -> Result<BlackLittermanPosterior<T>, AllocationError> {
     let n = s.covariance.len();
     let k = s.view_returns.len();
+    if n == 0
+        || s.market_weights.len() != n
+        || s.covariance.iter().any(|r| r.len() != n)
+        || s.view_matrix.len() != k
+        || s.view_matrix.iter().any(|r| r.len() != n)
+        || s.omega.len() != k
+        || s.omega.iter().any(|r| r.len() != k)
+    {
+        return Err(AllocationError::InvalidDimensions);
+    }
     let pi = implied_equilibrium_returns(&s.covariance, &s.market_weights, s.risk_aversion);
     if k == 0 {
         return Ok(BlackLittermanPosterior {
@@ -310,6 +423,9 @@ pub fn try_markowitz_minimum_variance_weights<T: Real>(
     cov: &[Vec<T>],
 ) -> Result<Vec<T>, AllocationError> {
     let n = cov.len();
+    if n == 0 || cov.iter().any(|r| r.len() != n) {
+        return Err(AllocationError::InvalidDimensions);
+    }
     let ones = vec![T::one(); n];
     let x = solve_linear_generic(cov, &ones)?;
     let z = x
@@ -325,6 +441,10 @@ pub fn try_markowitz_tangency_weights<T: Real>(
     cov: &[Vec<T>],
     excess: &[T],
 ) -> Result<Vec<T>, AllocationError> {
+    let n = cov.len();
+    if n == 0 || excess.len() != n || cov.iter().any(|r| r.len() != n) {
+        return Err(AllocationError::InvalidDimensions);
+    }
     let x = solve_linear_generic(cov, excess)?;
     let z = x
         .iter()
@@ -384,6 +504,13 @@ pub fn try_risk_budgeting_weights<T: Real>(
     budgets: &[T],
 ) -> Result<Vec<T>, AllocationError> {
     let n = cov.len();
+    if n == 0
+        || budgets.len() != n
+        || cov.iter().any(|r| r.len() != n)
+        || budgets.iter().any(|x| x.val() <= 0.0)
+    {
+        return Err(AllocationError::InvalidDimensions);
+    }
     let sum = budgets.iter().map(|x| x.val()).sum::<f64>().max(1e-14);
     let b = budgets.iter().map(|x| x.val() / sum).collect::<Vec<_>>();
     let cf = cov
@@ -437,6 +564,9 @@ pub fn risk_budgeting_weights<T: Real>(cov: &[Vec<T>], budgets: &[T]) -> Vec<T> 
 }
 pub fn equal_risk_contribution_weights<T: Real>(cov: &[Vec<T>]) -> Vec<T> {
     let n = cov.len();
+    if n == 0 {
+        return Vec::new();
+    }
     risk_budgeting_weights(cov, &vec![T::one() / n as f64; n])
 }
 pub fn euler_risk_contributions<T: Real>(cov: &[Vec<T>], w: &[T]) -> (T, Vec<T>) {

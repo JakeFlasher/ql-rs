@@ -33,7 +33,7 @@ impl Fd1dBlackScholesEngine {
         kind: OptionType,
     ) -> T {
         self.fd(
-            spot, strike, expiry, vol, rate, dividend, kind, None, None, false,
+            spot, strike, expiry, vol, rate, dividend, kind, None, None, false, None,
         )
     }
     #[allow(
@@ -53,6 +53,7 @@ impl Fd1dBlackScholesEngine {
         barrier: Option<(T, BarrierType, T)>,
         grid_anchor: Option<(T, BarrierType)>,
         american: bool,
+        terminal_rebate: Option<T>,
     ) -> T {
         let n = self.grid_points.max(40);
         let m = self.time_steps.max(2);
@@ -144,6 +145,8 @@ impl Fd1dBlackScholesEngine {
                         - strike * (-rate * tnew).exp())
                     .max_val(T::zero())
                 }
+            } else if let Some(tr) = terminal_rebate {
+                tr * (-rate * tnew).exp()
             } else {
                 (T::from_f64(smax_actual) * (-dividend * tnew).exp()
                     - strike * (-rate * tnew).exp())
@@ -164,6 +167,8 @@ impl Fd1dBlackScholesEngine {
                         - T::from_f64(smin_actual) * (-dividend * tnew).exp())
                     .max_val(T::zero())
                 }
+            } else if let Some(tr) = terminal_rebate {
+                tr * (-rate * tnew).exp()
             } else if american {
                 (strike - T::from_f64(smin_actual)).max_val(T::zero())
             } else {
@@ -174,11 +179,15 @@ impl Fd1dBlackScholesEngine {
             let highb = if let Some((b, bt, rb)) = barrier {
                 if matches!(bt, BarrierType::UpAndOut) && smax_actual >= b.val() {
                     rb
+                } else if let Some(tr) = terminal_rebate {
+                    tr * (-rate * tnew).exp()
                 } else if kind.is_call() {
                     callb
                 } else {
                     T::zero()
                 }
+            } else if let Some(tr) = terminal_rebate {
+                tr * (-rate * tnew).exp()
             } else if kind.is_call() {
                 callb
             } else {
@@ -276,6 +285,11 @@ impl Fd1dBlackScholesEngine {
         bt: BarrierType,
         rebate: T,
     ) -> T {
+        let out_bt = if matches!(bt, BarrierType::UpAndIn | BarrierType::UpAndOut) {
+            BarrierType::UpAndOut
+        } else {
+            BarrierType::DownAndOut
+        };
         if matches!(bt, BarrierType::UpAndIn | BarrierType::DownAndIn) {
             let vanilla = self.fd(
                 spot,
@@ -288,8 +302,9 @@ impl Fd1dBlackScholesEngine {
                 None,
                 Some((barrier, bt)),
                 false,
+                None,
             );
-            let out = self.fd(
+            let out_no_rebate = self.fd(
                 spot,
                 strike,
                 expiry,
@@ -297,26 +312,29 @@ impl Fd1dBlackScholesEngine {
                 rate,
                 T::zero(),
                 kind,
-                Some((
-                    barrier,
-                    if matches!(bt, BarrierType::UpAndIn) {
-                        BarrierType::UpAndOut
-                    } else {
-                        BarrierType::DownAndOut
-                    },
-                    rebate,
-                )),
-                Some((
-                    barrier,
-                    if matches!(bt, BarrierType::UpAndIn) {
-                        BarrierType::UpAndOut
-                    } else {
-                        BarrierType::DownAndOut
-                    },
-                )),
+                Some((barrier, out_bt, T::zero())),
+                Some((barrier, out_bt)),
                 false,
+                None,
             );
-            vanilla - out
+            let rebate_survival = if rebate.val().abs() > 0.0 {
+                self.fd(
+                    spot,
+                    strike,
+                    expiry,
+                    vol,
+                    rate,
+                    T::zero(),
+                    kind,
+                    Some((barrier, out_bt, T::zero())),
+                    Some((barrier, out_bt)),
+                    false,
+                    Some(rebate),
+                )
+            } else {
+                T::zero()
+            };
+            vanilla - out_no_rebate + rebate_survival
         } else {
             self.fd(
                 spot,
@@ -329,6 +347,7 @@ impl Fd1dBlackScholesEngine {
                 Some((barrier, bt, rebate)),
                 Some((barrier, bt)),
                 false,
+                None,
             )
         }
     }
@@ -362,6 +381,7 @@ impl Fd1dBlackScholesEngine {
             None,
             None,
             true,
+            None,
         )
     }
     pub fn price_american_ad<T: Real>(
@@ -384,6 +404,7 @@ impl Fd1dBlackScholesEngine {
             None,
             None,
             true,
+            None,
         )
     }
     pub fn price_barrier_option<T: Real>(&self, o: &crate::options::BarrierOption) -> T {

@@ -263,3 +263,37 @@ fn chebyshev_interpolation_and_dim_parity() {
     assert!(brute.mva > 0.0 && fast.mva > 0.0);
     assert!((brute.mva - fast.mva).abs() / brute.mva < 1e-4);
 }
+
+#[test]
+fn sa_ccr_empty_classes_and_forward_starting_ir() {
+    use ql_ad::Dual;
+    use ql_xva::{SaCcrAssetClass, SaCcrNettingSet, SaCcrTrade, compute_sa_ccr_ead};
+    let ns = SaCcrNettingSet {
+        trades: vec![SaCcrTrade {
+            mtm: Dual::<2>::variable(10.0, 0),
+            notional: Dual::from_value(1_000_000.0),
+            maturity: 5.0,
+            asset_class: SaCcrAssetClass::InterestRate {
+                ccy: "USD".into(),
+                start_time: 2.0,
+                end_time: 7.0,
+            },
+            is_long_primary: true,
+            option_spec: None,
+        }],
+        collateral: Dual::from_value(0.0),
+        is_margined: false,
+        threshold: Dual::from_value(0.0),
+        mta: Dual::from_value(0.0),
+        nica: Dual::from_value(0.0),
+        mpor_years: 0.5,
+    };
+    let report = compute_sa_ccr_ead(&ns);
+    assert!(report.ead.val.is_finite() && report.ead.d.iter().all(|x| x.is_finite()));
+    let empty = SaCcrNettingSet {
+        trades: Vec::new(),
+        ..ns
+    };
+    let r0 = compute_sa_ccr_ead(&empty);
+    assert!(r0.ead.val.is_finite() && r0.ead.d.iter().all(|x| x.is_finite()));
+}

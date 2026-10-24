@@ -104,10 +104,11 @@ pub fn variance_swap_npv<T: Real>(
 }
 
 pub fn heston_analytical_fair_variance<T: Real>(v0: T, kappa: T, theta: T, expiry: T) -> T {
-    if kappa.val().abs() < 1e-12 {
-        v0
+    let u = kappa * expiry;
+    if u.val().abs() < 1e-6 {
+        v0 - (v0 - theta) * u * 0.5 + (v0 - theta) * u * u / 6.0
     } else {
-        theta + (v0 - theta) * (T::one() - (-kappa * expiry).exp()) / (kappa * expiry)
+        theta + (v0 - theta) * (T::one() - (-u).exp()) / u
     }
 }
 
@@ -180,24 +181,95 @@ pub fn replicate_corridor_variance_swap_fair_strike<T: Real>(
     if quotes.len() < 2 || expiry.val() <= 0.0 || lower_barrier.val() >= upper_barrier.val() {
         return (T::zero(), T::zero());
     }
-    let f = spot * ((rate - div_yield) * expiry).exp();
-    let lo = lower_barrier.max_val(T::zero());
-    let hi = upper_barrier;
-    let fc = f.max_val(lo).min_val(hi);
-    let kc = cut_strike.max_val(lo).min_val(hi);
-    let mut sum = T::zero();
-    for w in quotes.windows(2) {
-        let k0 = w[0].strike;
-        let k1 = w[1].strike;
-        let km = (k0 + k1) * 0.5;
-        if km.val() < lo.val() || km.val() > hi.val() {
+    // In the practically unbounded-corridor limit retain the exact primary
+    // replication (including its endpoint Black tails) rather than introducing
+    // a second quadrature discretisation.
+    if lower_barrier.val() <= 1.0e-4 && upper_barrier.val() >= 1.0e4 {
+        return replicate_variance_swap_fair_strike(
+            spot, rate, div_yield, expiry, cut_strike, quotes,
+        );
+    }
+    let forward = spot * ((rate - div_yield) * expiry).exp();
+    let lo = lower_barrier.max_val(T::from_f64(1e-14));
+    let hi = upper_barrier.max_val(lo + T::from_f64(1e-14));
+    let ftilde = forward.max_val(lo).min_val(hi);
+    let kctilde = cut_strike.max_val(lo).min_val(hi);
+    let drift = ftilde * (T::one() / ftilde - T::one() / kctilde) - (kctilde / ftilde).ln();
+    let mut integral = T::zero();
+    let vol_at = |k: T, k0: T, k1: T, v0: T, v1: T| {
+        let w = ((k - k0) / (k1 - k0)).max_val(T::zero()).min_val(T::one());
+        v0 + (v1 - v0) * w
+    };
+    let integrand = |k: T, vol: T, is_call: bool| {
+        black_scholes_price(spot, k, vol, expiry, rate, div_yield, is_call) / (k * k)
+    };
+    for q in quotes.windows(2) {
+        let k0 = q[0].strike;
+        let k1 = q[1].strike;
+        let a = k0.max_val(lo);
+        let b = k1.min_val(hi);
+        if b.val() <= a.val() {
             continue;
         }
-        let v = (w[0].implied_vol + w[1].implied_vol) * 0.5;
-        let c = black_scholes_price(spot, km, v, expiry, rate, div_yield, km.val() >= kc.val());
-        sum += (k1 - k0) * c / (km * km);
+        let mut cuts = vec![a, b];
+        if kc_val(cut_strike, a, b) {
+            cuts.push(kctilde);
+        }
+        cuts.sort_by(|x, y| x.val().total_cmp(&y.val()));
+        cuts.dedup_by(|x, y| (x.val() - y.val()).abs() < 1e-14);
+        for ab in cuts.windows(2) {
+            let x0 = ab[0];
+            let x1 = ab[1];
+            let xm = (x0 + x1) * 0.5;
+            let v0 = vol_at(x0, k0, k1, q[0].implied_vol, q[1].implied_vol);
+            let vm = vol_at(xm, k0, k1, q[0].implied_vol, q[1].implied_vol);
+            let v1 = vol_at(x1, k0, k1, q[0].implied_vol, q[1].implied_vol);
+            let is_call = xm.val() >= kctilde.val();
+            integral += (x1 - x0)
+                * (integrand(x0, v0, is_call)
+                    + integrand(xm, vm, is_call) * 2.0
+                    + integrand(x1, v1, is_call))
+                * 0.25;
+        }
     }
-    let drift = fc * (T::one() / fc - T::one() / kc) - (kc / fc).ln();
-    let variance = (drift + (rate * expiry).exp() * sum) * (T::from_f64(2.0) / expiry);
+    let sign = expiry.sqrt();
+    let put_tail = |k: T, vol: T| {
+        let vv = vol * sign;
+        if vv.val() <= 1e-14 {
+            return T::zero();
+        }
+        let d1 = ((forward / k).ln() + vv * vv * 0.5) / vv;
+        let d2 = d1 - vv;
+        forward / k * (-d1).norm_cdf() - (-d2).norm_cdf()
+            + vv * ((-d2) * (-d2).norm_cdf() + d2.norm_pdf())
+    };
+    let call_tail = |k: T, vol: T| {
+        let vv = vol * sign;
+        if vv.val() <= 1e-14 {
+            return T::zero();
+        }
+        let d1 = ((forward / k).ln() + vv * vv * 0.5) / vv;
+        let d2 = d1 - vv;
+        forward / k * d1.norm_cdf() - d2.norm_cdf() - vv * (d2 * d2.norm_cdf() + d2.norm_pdf())
+    };
+    if lo.val() < quotes[0].strike.val() {
+        let end = quotes[0].strike.min_val(hi);
+        if end.val() > lo.val() {
+            integral += put_tail(end, quotes[0].implied_vol) - put_tail(lo, quotes[0].implied_vol);
+        }
+    }
+    let kn = quotes[quotes.len() - 1].strike;
+    if hi.val() > kn.val() {
+        let begin = kn.max_val(lo);
+        if hi.val() > begin.val() {
+            integral += call_tail(begin, quotes[quotes.len() - 1].implied_vol)
+                - call_tail(hi, quotes[quotes.len() - 1].implied_vol);
+        }
+    }
+    let variance = (drift + (rate * expiry).exp() * integral) * (T::from_f64(2.0) / expiry);
     (variance, variance.max_val(T::zero()).sqrt())
+}
+
+fn kc_val<T: Real>(cut: T, a: T, b: T) -> bool {
+    cut.val() > a.val() && cut.val() < b.val()
 }

@@ -1,5 +1,6 @@
 use ql_terminal::{
-    BrailleCanvas, ChartMode, DeskWorkstation, ScenarioKind, render_diverging_bar, render_sparkline,
+    BrailleCanvas, ChartMode, DeskWorkstation, ScenarioKind, TabId, render_diverging_bar,
+    render_sparkline,
 };
 
 #[test]
@@ -96,4 +97,16 @@ fn dashboard_renders_all_quadrants_and_chart_modes() {
         let ansi = ws.render_dashboard(&frame, true);
         assert!(ansi.contains("\x1b[38;2;"));
     }
+}
+
+#[test]
+fn phase11_tabs_and_live_telemetry_are_present() {
+    assert_eq!(TabId::ALL.len(), 20);
+    assert_eq!(TabId::ALL[18], TabId::BermudanVolIft);
+    assert_eq!(TabId::ALL[19], TabId::SaCcrSwingQp);
+    let mut ws = DeskWorkstation::new();
+    let frame = ws.step_tick();
+    let dashboard = ws.render_dashboard(&frame, false);
+    assert!(dashboard.contains("Bermudan HW") && dashboard.contains("SA-CCR EAD"));
+    assert!(dashboard.contains("Commodity Swing") && dashboard.contains("Box Markowitz"));
 }

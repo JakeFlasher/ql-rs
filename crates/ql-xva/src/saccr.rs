@@ -108,7 +108,8 @@ fn one_factor<T: Real>(items: Vec<(T, f64, f64)>) -> T {
         common += a * rho;
         idio += a * a * (1.0 - rho * rho);
     }
-    (common * common + idio).max_val(T::zero()).sqrt()
+    let q = common * common + idio;
+    if q.val() <= 0.0 { T::zero() } else { q.sqrt() }
 }
 
 pub fn compute_sa_ccr_ead<T: Real>(ns: &SaCcrNettingSet<T>) -> SaCcrReport<T> {
@@ -129,7 +130,11 @@ pub fn compute_sa_ccr_ead<T: Real>(ns: &SaCcrNettingSet<T>) -> SaCcrReport<T> {
     for tr in &ns.trades {
         let d = signed_delta(tr) * tr.notional * mf(tr, ns);
         match &tr.asset_class {
-            SaCcrAssetClass::InterestRate { ccy, end_time, .. } => {
+            SaCcrAssetClass::InterestRate {
+                ccy,
+                start_time,
+                end_time,
+            } => {
                 let bucket = if *end_time < 1.0 {
                     0
                 } else if *end_time <= 5.0 {
@@ -137,7 +142,8 @@ pub fn compute_sa_ccr_ead<T: Real>(ns: &SaCcrNettingSet<T>) -> SaCcrReport<T> {
                 } else {
                     2
                 };
-                ir.entry(ccy.clone()).or_insert([T::zero(); 3])[bucket] += d * sd(0.0, *end_time);
+                ir.entry(ccy.clone()).or_insert([T::zero(); 3])[bucket] +=
+                    d * sd(*start_time, *end_time);
             }
             SaCcrAssetClass::Fx { pair } => *fx.entry(pair.clone()).or_insert(T::zero()) += d,
             SaCcrAssetClass::Credit {
@@ -147,8 +153,8 @@ pub fn compute_sa_ccr_ead<T: Real>(ns: &SaCcrNettingSet<T>) -> SaCcrReport<T> {
             } => {
                 let rho = if *is_index { 0.8 } else { 0.5 };
                 cr.entry(entity.clone())
-                    .and_modify(|x| x.0 += d)
-                    .or_insert((d, *supervisory_factor, rho));
+                    .and_modify(|x| x.0 += d * sd(0.0, tr.maturity))
+                    .or_insert((d * sd(0.0, tr.maturity), *supervisory_factor, rho));
             }
             SaCcrAssetClass::Equity { entity, is_index } => {
                 let (sf, rho) = if *is_index { (0.20, 0.8) } else { (0.32, 0.5) };
@@ -168,15 +174,15 @@ pub fn compute_sa_ccr_ead<T: Real>(ns: &SaCcrNettingSet<T>) -> SaCcrReport<T> {
     }
     let mut add_ir = T::zero();
     for b in ir.values() {
-        add_ir += (b[0] * b[0]
+        let q = b[0] * b[0]
             + b[1] * b[1]
             + b[2] * b[2]
             + T::from_f64(1.4) * b[0] * b[1]
             + T::from_f64(1.4) * b[1] * b[2]
-            + T::from_f64(0.6) * b[0] * b[2])
-            .max_val(T::zero())
-            .sqrt()
-            * 0.005;
+            + T::from_f64(0.6) * b[0] * b[2];
+        if q.val() > 0.0 {
+            add_ir += q.sqrt() * 0.005;
+        }
     }
     let add_fx = fx.values().fold(T::zero(), |a, x| a + x.abs() * 0.04);
     let add_cr = one_factor(cr.values().map(|(x, s, r)| (*x, *s, *r)).collect());
@@ -189,11 +195,11 @@ pub fn compute_sa_ccr_ead<T: Real>(ns: &SaCcrNettingSet<T>) -> SaCcrReport<T> {
         .values()
         .map(|xs| {
             let sum = xs.iter().copied().fold(T::zero(), |a, x| a + x);
-            (sum * 0.4 * sum * 0.4
+            let q = sum * 0.4 * sum * 0.4
                 + xs.iter()
                     .map(|x| *x * *x * 0.84)
-                    .fold(T::zero(), |a, x| a + x))
-            .sqrt()
+                    .fold(T::zero(), |a, x| a + x);
+            if q.val() > 0.0 { q.sqrt() } else { T::zero() }
         })
         .fold(T::zero(), |a, x| a + x);
     let agg = add_ir + add_fx + add_cr + add_eq + add_com;
