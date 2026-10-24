@@ -554,10 +554,14 @@ pub fn price_zciis_swaption<T: Real>(
     }
     let ratio = inflation.forward_cpi(tm, spec.target_month) / T::from_f64(inflation.base_cpi);
     let z = ratio.powf(1.0 / tm) - T::one();
-    let ann = spec.notional
-        * T::from_f64(tm)
-        * (T::one() + z).powf((tm - 1.0).max(0.0))
-        * discount.discount_factor(tm);
+    let dz = z - spec.strike_rate;
+    let comp_factor = if dz.val().abs() > 1e-7 {
+        ((T::one() + z).powf(tm) - (T::one() + spec.strike_rate).powf(tm)) / dz
+    } else {
+        T::from_f64(tm) * (T::one() + z).powf(tm - 1.0)
+            - T::from_f64(0.5 * tm * (tm - 1.0)) * (T::one() + z).powf(tm - 2.0) * dz
+    };
+    let ann = spec.notional * comp_factor * discount.discount_factor(tm);
     (
         yoy_optionlet(
             z,
@@ -647,4 +651,38 @@ pub fn estimate_multiplicative_seasonality(
         factors[i] = (gamma[i] - center).exp();
     }
     MultiplicativeSeasonality::new(factors)
+}
+
+#[cfg(test)]
+mod phase14_tests {
+    use super::*;
+    use ql_curves::FlatForwardCurve;
+    use ql_time::Date;
+    #[test]
+    fn phase14_inflation_swaption_and_seasonality() {
+        let d = Date::from_ymd(2024, 1, 1).unwrap();
+        let disc = FlatForwardCurve::new(d, 0.02);
+        let inf = ZeroInflationCurve::new(
+            d,
+            100.0,
+            vec![1.0, 2.0, 5.0],
+            vec![0.02, 0.021, 0.023],
+            None,
+        );
+        let z = ZciisSwaptionSpec {
+            notional: 1.0,
+            strike_rate: 0.02,
+            option_expiry_years: 1.0,
+            swap_maturity_years: 3.0,
+            target_month: None,
+            is_payer: true,
+        };
+        let (v, f) = price_zciis_swaption(&z, &disc, &inf, 0.01, YoYOptionletModel::Bachelier);
+        assert!(v.is_finite() && f.is_finite());
+        let obs: Vec<(u8, f64)> = (0..=12)
+            .map(|i| ((i % 12 + 1) as u8, 100.0 + i as f64))
+            .collect();
+        let s = estimate_multiplicative_seasonality(&obs).unwrap();
+        assert!((s.factors.iter().product::<f64>() - 1.0).abs() < 1e-10);
+    }
 }

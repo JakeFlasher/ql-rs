@@ -199,12 +199,14 @@ pub struct MultiAssetExecutionReport<T: Real> {
     pub cost_variance: T,
     pub mean_variance_utility: T,
 }
+
 pub fn try_multi_asset_almgren_chriss_execution<T: Real>(
     s: &MultiAssetAlmgrenChrissSpec<T>,
 ) -> Result<MultiAssetExecutionReport<T>, AllocationError> {
     let d = s.initial_inventory.len();
     if d == 0
         || s.num_steps == 0
+        || !s.horizon.val().is_finite()
         || s.horizon.val() <= 0.0
         || s.covariance.len() != d
         || s.temporary_impact.len() != d
@@ -212,12 +214,24 @@ pub fn try_multi_asset_almgren_chriss_execution<T: Real>(
         || s.covariance.iter().any(|r| r.len() != d)
         || s.temporary_impact.iter().any(|r| r.len() != d)
         || s.permanent_impact.iter().any(|r| r.len() != d)
+        || !s.risk_aversion.val().is_finite()
         || s.risk_aversion.val() < 0.0
     {
         return Err(AllocationError::InvalidDimensions);
     }
     let n = s.num_steps;
     let dt = s.horizon / n as f64;
+    let mut h_tilde = vec![vec![T::zero(); d]; d];
+    for i in 0..d {
+        for j in 0..d {
+            let hs = (s.temporary_impact[i][j] + s.temporary_impact[j][i]) * 0.5;
+            let gs = (s.permanent_impact[i][j] + s.permanent_impact[j][i]) * 0.5;
+            h_tilde[i][j] = hs - gs * dt * 0.5;
+        }
+        if h_tilde[i][i].val() <= 0.0 || s.covariance[i][i].val() < 0.0 {
+            return Err(AllocationError::InvalidDimensions);
+        }
+    }
     let mut inv = vec![vec![T::zero(); d]; n + 1];
     inv[0] = s.initial_inventory.clone();
     if n > 1 {
@@ -227,50 +241,48 @@ pub fn try_multi_asset_almgren_chriss_execution<T: Real>(
         for k in 0..(n - 1) {
             for i in 0..d {
                 let row = k * d + i;
-                rhs[row] = T::zero();
                 for j in 0..d {
-                    a[row][k * d + j] += s.temporary_impact[i][j] * 2.0
-                        + s.risk_aversion * s.covariance[i][j] * dt * dt * 2.0;
+                    let cov_s = (s.covariance[i][j] + s.covariance[j][i]) * 0.5;
+                    a[row][k * d + j] += h_tilde[i][j] * 2.0 + s.risk_aversion * cov_s * dt * dt;
                     if k > 0 {
-                        a[row][(k - 1) * d + j] -= s.temporary_impact[i][j];
+                        a[row][(k - 1) * d + j] -= h_tilde[i][j];
                     }
                     if k + 1 < n - 1 {
-                        a[row][(k + 1) * d + j] -= s.temporary_impact[i][j];
+                        a[row][(k + 1) * d + j] -= h_tilde[i][j];
                     }
-                    rhs[row] += if k == 0 {
-                        s.temporary_impact[i][j] * s.initial_inventory[j]
-                    } else {
-                        T::zero()
-                    };
+                    if k == 0 {
+                        rhs[row] += h_tilde[i][j] * s.initial_inventory[j];
+                    }
                 }
             }
         }
-        if let Ok(sol) = crate::allocation::solve_linear_generic(&a, &rhs) {
-            for k in 1..n {
-                for i in 0..d {
-                    inv[k][i] = sol[(k - 1) * d + i];
-                }
-            }
-        } else {
-            for (k, row) in inv.iter_mut().enumerate().take(n).skip(1) {
-                for (i, value) in row.iter_mut().enumerate() {
-                    *value = s.initial_inventory[i] * (1.0 - k as f64 / n as f64);
-                }
+        let sol = crate::allocation::solve_linear_generic(&a, &rhs)?;
+        for k in 1..n {
+            for i in 0..d {
+                inv[k][i] = sol[(k - 1) * d + i];
             }
         }
     }
     let mut trades = vec![vec![T::zero(); d]; n];
     let mut cost = T::zero();
+    for i in 0..d {
+        for j in 0..d {
+            cost +=
+                s.permanent_impact[i][j] * s.initial_inventory[i] * s.initial_inventory[j] * 0.5;
+        }
+    }
     for k in 0..n {
         for i in 0..d {
             trades[k][i] = inv[k][i] - inv[k + 1][i];
+        }
+        for i in 0..d {
             for j in 0..d {
-                cost += s.temporary_impact[i][j] * trades[k][i] * trades[k][j];
+                cost += h_tilde[i][j] * trades[k][i] * trades[k][j] / dt;
             }
         }
     }
     let mut var = T::zero();
-    for row in inv.iter().take(n) {
+    for row in inv.iter().take(n).skip(1) {
         for i in 0..d {
             for j in 0..d {
                 var += s.covariance[i][j] * row[i] * row[j] * dt;
@@ -278,7 +290,9 @@ pub fn try_multi_asset_almgren_chriss_execution<T: Real>(
         }
     }
     Ok(MultiAssetExecutionReport {
-        times: (0..=n).map(|k| (s.horizon * k as f64).val()).collect(),
+        times: (0..=n)
+            .map(|k| (dt * T::from_f64(k as f64)).val())
+            .collect(),
         inventory_schedule: inv,
         trade_schedule: trades,
         expected_cost: cost,
@@ -286,8 +300,35 @@ pub fn try_multi_asset_almgren_chriss_execution<T: Real>(
         mean_variance_utility: cost + s.risk_aversion * var,
     })
 }
+
 pub fn multi_asset_almgren_chriss_execution<T: Real>(
     s: &MultiAssetAlmgrenChrissSpec<T>,
 ) -> MultiAssetExecutionReport<T> {
     try_multi_asset_almgren_chriss_execution(s).expect("valid multi-asset execution inputs")
+}
+
+#[cfg(test)]
+mod phase14_tests {
+    use super::*;
+    #[test]
+    fn phase14_multi_asset_liquidates_inventory() {
+        let s = MultiAssetAlmgrenChrissSpec {
+            initial_inventory: vec![100.0, 50.0],
+            horizon: 1.0,
+            num_steps: 4,
+            covariance: vec![vec![0.04, 0.0], vec![0.0, 0.09]],
+            temporary_impact: vec![vec![1e-3, 0.0], vec![0.0, 1e-3]],
+            permanent_impact: vec![vec![1e-4, 0.0], vec![0.0, 1e-4]],
+            risk_aversion: 0.0,
+        };
+        let r = multi_asset_almgren_chriss_execution(&s);
+        assert!(
+            r.inventory_schedule
+                .last()
+                .unwrap()
+                .iter()
+                .all(|x| x.val().abs() < 1e-10)
+        );
+        assert!((r.times.last().copied().unwrap() - 1.0).abs() < 1e-12);
+    }
 }

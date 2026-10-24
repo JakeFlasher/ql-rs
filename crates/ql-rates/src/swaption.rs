@@ -205,17 +205,17 @@ pub struct SwaptionSabrCube<T: Real> {
     pub nodes: Vec<Vec<SwaptionSabrNode<T>>>,
     pub use_normal_vol: bool,
 }
+
 impl<T: Real> SwaptionSabrCube<T> {
     fn bracket(xs: &[f64], x: f64) -> (usize, usize, f64) {
         if xs.len() <= 1 {
             return (0, 0, 0.0);
         }
         if x <= xs[0] {
-            return (0, 0, 0.0);
+            return (0, 1, 0.0);
         }
         if x >= xs[xs.len() - 1] {
-            let n = xs.len() - 1;
-            return (n, n, 0.0);
+            return (xs.len() - 2, xs.len() - 1, 1.0);
         }
         let i = xs.partition_point(|v| *v <= x).saturating_sub(1);
         (
@@ -250,17 +250,37 @@ impl<T: Real> SwaptionSabrCube<T> {
             nu.max_val(T::from_f64(1e-8)),
         )
     }
+    #[allow(clippy::too_many_arguments)]
+    fn eval_sabr(
+        forward: T,
+        strike: T,
+        expiry: f64,
+        alpha: T,
+        beta: f64,
+        rho: T,
+        nu: T,
+        normal: bool,
+    ) -> T {
+        let t = T::from_f64(expiry.max(1e-8));
+        let b = T::from_f64(beta);
+        if normal {
+            ql_vol::sabr::normal_sabr_vol(forward, strike, t, alpha, b, rho, nu)
+        } else {
+            ql_vol::AdSabrSmile::new(forward, t, alpha, b, rho, nu).vol(strike)
+        }
+    }
     pub fn implied_vol(&self, expiry: f64, tenor: f64, forward: T, strike: T) -> T {
         let (a, r, n) = self.interpolate_params(expiry, tenor);
-        ql_vol::AdSabrSmile::new(
+        Self::eval_sabr(
             forward,
-            T::from_f64(expiry.max(1e-8)),
+            strike,
+            expiry,
             a,
-            T::from_f64(self.beta),
+            self.beta,
             r,
             n,
+            self.use_normal_vol,
         )
-        .vol(strike)
     }
     pub fn alpha_from_atm_vol(
         forward: T,
@@ -272,40 +292,36 @@ impl<T: Real> SwaptionSabrCube<T> {
         normal: bool,
     ) -> T {
         let mut a = if normal {
-            atm
+            atm * forward.max_val(T::from_f64(1e-6)).powf(-beta)
         } else {
-            atm * forward.powf(1.0 - beta)
-        };
-        for _ in 0..6 {
-            let sm = ql_vol::AdSabrSmile::new(
+            atm * forward.max_val(T::from_f64(1e-6)).powf(1.0 - beta)
+        }
+        .max_val(T::from_f64(1e-8));
+        for _ in 0..8 {
+            let v0 = Self::eval_sabr(forward, forward, expiry, a, beta, rho, nu, normal);
+            let h = 1e-6_f64.max(a.val().abs() * 1e-5);
+            let up = Self::eval_sabr(
                 forward,
-                T::from_f64(expiry.max(1e-8)),
-                a,
-                T::from_f64(beta),
-                rho,
-                nu,
-            );
-            let h = 1e-5_f64.max(a.val().abs() * 1e-5);
-            let up = ql_vol::AdSabrSmile::new(
                 forward,
-                T::from_f64(expiry.max(1e-8)),
+                expiry,
                 a + T::from_f64(h),
-                T::from_f64(beta),
+                beta,
                 rho,
                 nu,
-            )
-            .vol(forward);
-            let dn = ql_vol::AdSabrSmile::new(
+                normal,
+            );
+            let dn = Self::eval_sabr(
                 forward,
-                T::from_f64(expiry.max(1e-8)),
-                a - T::from_f64(h),
-                T::from_f64(beta),
+                forward,
+                expiry,
+                (a - T::from_f64(h)).max_val(T::from_f64(1e-10)),
+                beta,
                 rho,
                 nu,
-            )
-            .vol(forward);
-            a -= (sm.vol(forward) - atm) / ((up - dn) / (2.0 * h)).max_val(T::from_f64(1e-10));
-            a = a.max_val(T::from_f64(1e-8));
+                normal,
+            );
+            let dv = ((up - dn) / (2.0 * h)).max_val(T::from_f64(1e-10));
+            a = (a - (v0 - atm) / dv).max_val(T::from_f64(1e-8));
         }
         a
     }
@@ -369,6 +385,27 @@ impl CalibratedSwaptionSabrCube {
     ) -> (f64, Vec<f64>) {
         let (i0, i1, we) = SwaptionSabrCube::<f64>::bracket(&self.cube.expiries, expiry);
         let (j0, j1, ws) = SwaptionSabrCube::<f64>::bracket(&self.cube.swap_tenors, tenor);
+        let (aa, rr, nn) = self.cube.interpolate_params(expiry, tenor);
+        let d = SwaptionSabrCube::<ql_ad::Dual<3>>::eval_sabr(
+            ql_ad::Dual::<3>::from_value(forward),
+            ql_ad::Dual::<3>::from_value(strike),
+            expiry,
+            ql_ad::Dual::<3>::variable(aa, 0),
+            self.cube.beta,
+            ql_ad::Dual::<3>::variable(rr, 1),
+            ql_ad::Dual::<3>::variable(nn, 2),
+            self.cube.use_normal_vol,
+        );
+        let n_rows = self.node_calibrations.len();
+        let n_cols = self.node_calibrations.first().map_or(0, Vec::len);
+        let mut weights = vec![vec![0.0; n_cols]; n_rows];
+        for (ri, r_w) in [(i0, 1.0 - we), (i1, we)] {
+            for (cj, c_w) in [(j0, 1.0 - ws), (j1, ws)] {
+                if ri < n_rows && cj < n_cols {
+                    weights[ri][cj] += r_w * c_w;
+                }
+            }
+        }
         let n = self
             .node_calibrations
             .iter()
@@ -378,29 +415,8 @@ impl CalibratedSwaptionSabrCube {
         let mut off = 0;
         for (i, row) in self.node_calibrations.iter().enumerate() {
             for (j, c) in row.iter().enumerate() {
-                let w = if i == i0 {
-                    1.0 - we
-                } else if i == i1 {
-                    we
-                } else {
-                    0.0
-                } * if j == j0 {
-                    1.0 - ws
-                } else if j == j1 {
-                    ws
-                } else {
-                    0.0
-                };
+                let w = weights[i][j];
                 if w != 0.0 {
-                    let p = ql_vol::AdSabrSmile::new(
-                        ql_ad::Dual::<3>::from_value(forward),
-                        ql_ad::Dual::<3>::from_value(expiry.max(1e-8)),
-                        ql_ad::Dual::<3>::variable(c.smile.alpha, 0),
-                        ql_ad::Dual::<3>::from_value(c.smile.beta),
-                        ql_ad::Dual::<3>::variable(c.smile.rho, 1),
-                        ql_ad::Dual::<3>::variable(c.smile.nu, 2),
-                    );
-                    let d = p.vol(ql_ad::Dual::<3>::from_value(strike));
                     let v = c.sensitivity.vjp(&[w * d.d[0], w * d.d[1], w * d.d[2]]);
                     for k in 0..v.len() {
                         g[off + k] += v[k];
@@ -409,16 +425,7 @@ impl CalibratedSwaptionSabrCube {
                 off += c.quotes.len();
             }
         }
-        let (aa, rr, nn) = self.cube.interpolate_params(expiry, tenor);
-        let pd = ql_vol::AdSabrSmile::new(
-            ql_ad::Dual::<3>::from_value(forward),
-            ql_ad::Dual::<3>::from_value(expiry.max(1e-8)),
-            ql_ad::Dual::from_value(aa),
-            ql_ad::Dual::from_value(self.cube.beta),
-            ql_ad::Dual::from_value(rr),
-            ql_ad::Dual::from_value(nn),
-        );
-        (pd.vol(ql_ad::Dual::<3>::from_value(strike)).val(), g)
+        (d.val, g)
     }
 }
 
@@ -442,38 +449,89 @@ pub fn price_midcurve_swaption_hw1f<T: Real, D: YieldTermStructure<T>, F: YieldT
     {
         return T::zero();
     }
-    let vx = (model.sigma * model.sigma * hw_var(model, T::from_f64(s.option_expiry)))
-        .max_val(T::zero())
-        .sqrt();
-    let mut out = T::zero();
-    for (z, w) in [
-        (-1.7320508075688772, 1.0 / 6.0),
-        (0.0, 2.0 / 3.0),
-        (1.7320508075688772, 1.0 / 6.0),
-    ] {
-        let x = vx * z;
-        let mut ann = T::zero();
-        let mut fl = T::zero();
-        for win in s.forward_swap_times.windows(2) {
-            let tau = win[1] - win[0];
-            let p1 = conditional_bond(model, ois, s.option_expiry, win[1], x);
-            let b0 = conditional_bond(model, fwd, s.option_expiry, win[0], x);
-            let b1 = conditional_bond(model, fwd, s.option_expiry, win[1], x);
-            ann += p1 * tau;
-            fl += (b0 / b1 - T::one()) * p1;
-        }
-        let sign = T::from_f64(if s.is_payer { 1.0 } else { -1.0 });
-        out += T::from_f64(w)
-            * T::from_f64(s.notional)
-            * (sign * (fl - T::from_f64(s.strike) * ann)).max_val(T::zero());
+    let te = s.option_expiry;
+    let t0 = s.forward_swap_times[0];
+    let m = s.forward_swap_times.len() - 1;
+    let vx = model.sigma.abs() * hw_var(model, T::from_f64(te)).max_val(T::zero()).sqrt();
+    let sig_t0 = model.b_factor(te, t0) * vx;
+    let p_ois_t0 = ois.discount_factor(t0);
+    let mut betas = Vec::with_capacity(m);
+    for j in 0..m {
+        let ta = s.forward_swap_times[j];
+        let tb = s.forward_swap_times[j + 1];
+        let f_ratio = fwd.discount_factor(ta) / fwd.discount_factor(tb);
+        let d_ratio = ois.discount_factor(ta) / ois.discount_factor(tb);
+        betas.push(f_ratio / d_ratio);
     }
-    out
+    let mut coeffs = Vec::with_capacity(m);
+    let mut p_ois = Vec::with_capacity(m);
+    let mut sig_tj = Vec::with_capacity(m);
+    for j in 0..m {
+        let tj = s.forward_swap_times[j + 1];
+        let tau = tj - s.forward_swap_times[j];
+        let c = if j + 1 < m {
+            T::one() + T::from_f64(s.strike * tau) - betas[j + 1]
+        } else {
+            T::one() + T::from_f64(s.strike * tau)
+        };
+        coeffs.push(c);
+        p_ois.push(ois.discount_factor(tj));
+        sig_tj.push(model.b_factor(te, tj) * vx);
+    }
+    let omega = T::from_f64(if s.is_payer { 1.0 } else { -1.0 });
+    if vx.val() <= 1e-12 {
+        let mut pv = betas[0] * p_ois_t0;
+        for j in 0..m {
+            pv -= coeffs[j] * p_ois[j];
+        }
+        return T::from_f64(s.notional) * (omega * pv).max_val(T::zero());
+    }
+    let eval_g = |z: T| -> (T, T) {
+        let mut g = betas[0];
+        let mut dg = T::zero();
+        for j in 0..m {
+            let dsig = sig_tj[j] - sig_t0;
+            let dvar = sig_tj[j] * sig_tj[j] - sig_t0 * sig_t0;
+            let term = coeffs[j] * (p_ois[j] / p_ois_t0) * (-dsig * z - dvar * 0.5).exp();
+            g -= term;
+            dg += term * dsig;
+        }
+        (g, dg)
+    };
+    let mut lo = -15.0_f64;
+    let mut hi = 15.0_f64;
+    while eval_g(T::from_f64(lo)).0.val() < 0.0 && lo > -120.0 {
+        lo *= 2.0;
+    }
+    while eval_g(T::from_f64(hi)).0.val() > 0.0 && hi < 120.0 {
+        hi *= 2.0;
+    }
+    for _ in 0..60 {
+        let mid = 0.5 * (lo + hi);
+        if eval_g(T::from_f64(mid)).0.val() > 0.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let mut z_star = T::from_f64(0.5 * (lo + hi));
+    for _ in 0..3 {
+        let (g, dg) = eval_g(z_star);
+        if dg.val().abs() > 1e-14 {
+            z_star -= g / dg;
+        }
+    }
+    let mut price = betas[0] * p_ois_t0 * (-omega * (z_star + sig_t0)).norm_cdf();
+    for j in 0..m {
+        price -= coeffs[j] * p_ois[j] * (-omega * (z_star + sig_tj[j])).norm_cdf();
+    }
+    T::from_f64(s.notional) * omega * price
 }
 
 pub fn price_midcurve_swaption_g2pp<T: Real, D: YieldTermStructure<T>, F: YieldTermStructure<T>>(
     model: &crate::G2PlusPlus<T>,
     ois: &D,
-    _fwd: &F,
+    fwd: &F,
     s: &MidCurveSwaptionSpec,
     n_quad: usize,
 ) -> T {
@@ -483,15 +541,170 @@ pub fn price_midcurve_swaption_g2pp<T: Real, D: YieldTermStructure<T>, F: YieldT
     {
         return T::zero();
     }
-    let sw = EuropeanSwaption {
-        notional: s.notional,
-        strike: s.strike,
-        expiry: s.option_expiry,
-        swap_times: s.forward_swap_times.clone(),
-        is_payer: s.is_payer,
-        settlement: SwaptionSettlement::Physical,
+    let te = s.option_expiry;
+    let t0 = s.forward_swap_times[0];
+    let m = s.forward_swap_times.len() - 1;
+    let mut betas = Vec::with_capacity(m);
+    for j in 0..m {
+        let ta = s.forward_swap_times[j];
+        let tb = s.forward_swap_times[j + 1];
+        betas.push(
+            (fwd.discount_factor(ta) / fwd.discount_factor(tb))
+                / (ois.discount_factor(ta) / ois.discount_factor(tb)),
+        );
+    }
+    let mut coeffs = Vec::with_capacity(m);
+    for j in 0..m {
+        let tau = s.forward_swap_times[j + 1] - s.forward_swap_times[j];
+        let c = if j + 1 < m {
+            T::one() + T::from_f64(s.strike * tau) - betas[j + 1]
+        } else {
+            T::one() + T::from_f64(s.strike * tau)
+        };
+        coeffs.push(c);
+    }
+    let var_x = model.sigma * model.sigma * crate::G2PlusPlus::b_fn(model.a * 2.0, te);
+    let var_y = model.eta * model.eta * crate::G2PlusPlus::b_fn(model.b * 2.0, te);
+    let sigmax = var_x.max_val(T::zero()).sqrt();
+    let sigmay = var_y.max_val(T::zero()).sqrt();
+    let sign = if s.is_payer { 1.0 } else { -1.0 };
+    if sigmax.val().abs() <= 1e-14 && sigmay.val().abs() <= 1e-14 {
+        let mut pv = betas[0] * ois.discount_factor(t0);
+        for j in 0..m {
+            pv -= coeffs[j] * ois.discount_factor(s.forward_swap_times[j + 1]);
+        }
+        return T::from_f64(s.notional) * (T::from_f64(sign) * pv).max_val(T::zero());
+    }
+    let cov_xy =
+        model.rho * model.sigma * model.eta * crate::G2PlusPlus::b_fn(model.a + model.b, te);
+    let rhoxy = if sigmax.val().abs() > 1e-14 && sigmay.val().abs() > 1e-14 {
+        (cov_xy / (sigmax * sigmay))
+            .max_val(T::from_f64(-0.999_999))
+            .min_val(T::from_f64(0.999_999))
+    } else {
+        T::zero()
     };
-    model.swaption_price(ois, &sw, n_quad)
+    let txy = (T::one() - rhoxy * rhoxy)
+        .max_val(T::from_f64(1e-12))
+        .sqrt();
+    let bdiff = |z: T, other: T| {
+        if other.val().abs() * te < 1e-5 {
+            let tt = T::from_f64(te);
+            tt * tt * 0.5 - (z * 2.0 + other) * tt * tt * tt / 6.0
+                + (z * z * 3.0 + z * other * 3.0 + other * other) * tt.powf(4.0) / 24.0
+        } else {
+            (crate::G2PlusPlus::b_fn(z, te) - crate::G2PlusPlus::b_fn(z + other, te)) / other
+        }
+    };
+    let mux = -(model.sigma * model.sigma * crate::G2PlusPlus::b_fn(model.a, te).powf(2.0) * 0.5
+        + model.rho * model.sigma * model.eta * bdiff(model.a, model.b));
+    let muy = -(model.eta * model.eta * crate::G2PlusPlus::b_fn(model.b, te).powf(2.0) * 0.5
+        + model.rho * model.sigma * model.eta * bdiff(model.b, model.a));
+    let a0 = model.a_factor(ois, te, t0);
+    let ba0 = crate::G2PlusPlus::b_fn(model.a, t0 - te);
+    let bb0 = crate::G2PlusPlus::b_fn(model.b, t0 - te);
+    let mut a_vec = Vec::with_capacity(m);
+    let mut ba_vec = Vec::with_capacity(m);
+    let mut bb_vec = Vec::with_capacity(m);
+    for j in 0..m {
+        let tj = s.forward_swap_times[j + 1];
+        a_vec.push(model.a_factor(ois, te, tj));
+        ba_vec.push(crate::G2PlusPlus::b_fn(model.a, tj - te));
+        bb_vec.push(crate::G2PlusPlus::b_fn(model.b, tj - te));
+    }
+    let n = n_quad.max(8);
+    let mut nodes = vec![0.0; n];
+    let mut weights = vec![0.0; n];
+    let half = n.div_ceil(2);
+    for i in 0..half {
+        let mut z = (std::f64::consts::PI * (i as f64 + 0.75) / (n as f64 + 0.5)).cos();
+        for _ in 0..32 {
+            let mut p0 = 1.0;
+            let mut p1 = z;
+            for k in 2..=n {
+                let p2 = ((2 * k - 1) as f64 * z * p1 - (k - 1) as f64 * p0) / k as f64;
+                p0 = p1;
+                p1 = p2;
+            }
+            let dp = n as f64 * (z * p1 - p0) / (z * z - 1.0);
+            let dz = p1 / dp;
+            z -= dz;
+            if dz.abs() < 1e-15 {
+                break;
+            }
+        }
+        let mut p0 = 1.0;
+        let mut p1 = z;
+        for k in 2..=n {
+            let p2 = ((2 * k - 1) as f64 * z * p1 - (k - 1) as f64 * p0) / k as f64;
+            p0 = p1;
+            p1 = p2;
+        }
+        let dp = n as f64 * (z * p1 - p0) / (z * z - 1.0);
+        let w = 2.0 / ((1.0 - z * z) * dp * dp);
+        nodes[i] = -z;
+        nodes[n - 1 - i] = z;
+        weights[i] = w;
+        weights[n - 1 - i] = w;
+    }
+    let inv_sqrt_2pi = 1.0 / std::f64::consts::TAU.sqrt();
+    let mut integral = T::zero();
+    for q in 0..n {
+        let z = 6.0 * nodes[q];
+        let x = mux + sigmax * z;
+        let lam0 = betas[0] * a0 * (-ba0 * x).exp();
+        let lambda: Vec<T> = (0..m)
+            .map(|j| coeffs[j] * a_vec[j] * (-ba_vec[j] * x).exp())
+            .collect();
+        let f_scalar = |yv: f64| -> f64 {
+            let mut r = lam0.val() * (-bb0.val() * yv).exp();
+            for j in 0..m {
+                r -= lambda[j].val() * (-bb_vec[j].val() * yv).exp();
+            }
+            r
+        };
+        let mut lo = -10.0 * sigmay.val().max(0.2);
+        let mut hi = 10.0 * sigmay.val().max(0.2);
+        while f_scalar(lo) < 0.0 && lo > -100.0 {
+            lo *= 2.0;
+        }
+        while f_scalar(hi) > 0.0 && hi < 100.0 {
+            hi *= 2.0;
+        }
+        for _ in 0..60 {
+            let mid = 0.5 * (lo + hi);
+            if f_scalar(mid) > 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let mut yb = T::from_f64(0.5 * (lo + hi));
+        for _ in 0..3 {
+            let mut g = lam0 * (-bb0 * yb).exp();
+            let mut dg = -lam0 * bb0 * (-bb0 * yb).exp();
+            for j in 0..m {
+                let term = lambda[j] * (-bb_vec[j] * yb).exp();
+                g -= term;
+                dg += term * bb_vec[j];
+            }
+            if dg.val().abs() > 1e-14 {
+                yb -= g / dg;
+            }
+        }
+        let h1 = (yb - muy) / (sigmay * txy) - rhoxy * z / txy;
+        let h0 = h1 + bb0 * sigmay * txy;
+        let kap0 = -bb0 * (muy - txy * txy * sigmay * sigmay * bb0 * 0.5 + rhoxy * sigmay * z);
+        let mut val = lam0 * kap0.exp() * (-h0 * sign).norm_cdf();
+        for j in 0..m {
+            let h2 = h1 + bb_vec[j] * sigmay * txy;
+            let kap = -bb_vec[j]
+                * (muy - txy * txy * sigmay * sigmay * bb_vec[j] * 0.5 + rhoxy * sigmay * z);
+            val -= lambda[j] * kap.exp() * (-h2 * sign).norm_cdf();
+        }
+        integral += val * T::from_f64(6.0 * weights[q] * (-0.5 * z * z).exp() * inv_sqrt_2pi);
+    }
+    ois.discount_factor(te) * T::from_f64(s.notional * sign) * integral
 }
 
 fn hw_var<T: Real>(model: &ql_models::HullWhite1F<T>, t: T) -> T {
@@ -514,13 +727,11 @@ fn conditional_bond<T: Real, C: YieldTermStructure<T>>(
         let b = model.b_factor(t, big_t);
         let p0t = curve.discount_factor(t);
         let p0t_big = curve.discount_factor(big_t);
-        let bt0 = model.b_factor(0.0, t);
         let vr = hw_var(model, T::from_f64(t));
-        p0t_big / p0t
-            * (-T::from_f64(0.5) * model.sigma * model.sigma * b * (b * vr + bt0 * bt0) - b * x)
-                .exp()
+        p0t_big / p0t * (-T::from_f64(0.5) * model.sigma * model.sigma * b * b * vr - b * x).exp()
     }
 }
+
 fn bermudan_payoff<T: Real, D: YieldTermStructure<T>, F: YieldTermStructure<T>>(
     model: &ql_models::HullWhite1F<T>,
     ois: &D,
@@ -850,5 +1061,49 @@ impl Fd1dHullWhiteBermudanEngine {
         s: &BermudanSwaption,
     ) -> Option<T> {
         Some(self.price(m, ctx.discount_curve(d)?, ctx.forward_curve(f)?, s))
+    }
+}
+
+#[cfg(test)]
+mod phase14_tests {
+    use super::*;
+    use ql_curves::FlatForwardCurve;
+    use ql_models::HullWhite1F;
+    use ql_time::Date;
+    #[test]
+    fn phase14_midcurve_and_cube_are_live() {
+        let d = Date::from_ymd(2024, 1, 1).unwrap();
+        let c = FlatForwardCurve::new(d, 0.03);
+        let model = HullWhite1F {
+            a: 0.05,
+            sigma: 0.01,
+        };
+        let mut s = MidCurveSwaptionSpec {
+            notional: 1.0,
+            strike: 0.03,
+            option_expiry: 1.0,
+            forward_swap_times: vec![1.0, 2.0, 3.0],
+            is_payer: true,
+        };
+        let p = price_midcurve_swaption_hw1f(&model, &c, &c, &s);
+        s.is_payer = false;
+        let r = price_midcurve_swaption_hw1f(&model, &c, &c, &s);
+        assert!(p.val().is_finite() && r.val().is_finite());
+        let cube = SwaptionSabrCube {
+            expiries: vec![1.0],
+            swap_tenors: vec![5.0],
+            beta: 0.5,
+            nodes: vec![vec![SwaptionSabrNode {
+                expiry: 1.0,
+                swap_tenor: 5.0,
+                forward: 0.03,
+                alpha: 0.02,
+                beta: 0.5,
+                rho: -0.2,
+                nu: 0.3,
+            }]],
+            use_normal_vol: false,
+        };
+        assert!(cube.implied_vol(1.0, 5.0, 0.03, 0.03).val().is_finite());
     }
 }

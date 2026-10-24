@@ -275,6 +275,39 @@ pub fn double_heston_cos_price<T: Real>(
     )[0]
 }
 
+fn cir_cumulants<T: Real>(p: &HestonParams<T>, t: T) -> (T, T) {
+    let delta = p.v0 - p.theta;
+    let mean_var = if p.kappa.val().abs() < 1e-8 {
+        p.v0 * t - delta * p.kappa * t * t * 0.5 + delta * p.kappa * p.kappa * t * t * t / 6.0
+    } else {
+        p.theta * t + delta * (T::one() - (-p.kappa * t).exp()) / p.kappa
+    };
+    let c2 = if p.kappa.val().abs() * t.val() < 1e-4 {
+        p.v0 * t
+    } else {
+        let ek = (-p.kappa * t).exp();
+        let e2k = (-p.kappa * t * 2.0).exp();
+        let sv2 = p.sigma_v * p.sigma_v;
+        let c2c = T::from_f64(2.0);
+        let c4c = T::from_f64(4.0);
+        let c6c = T::from_f64(6.0);
+        let c7c = T::from_f64(7.0);
+        let c8c = T::from_f64(8.0);
+        let c16c = T::from_f64(16.0);
+        let num = p.sigma_v * p.kappa * t * ek * delta * (c8c * p.kappa * p.rho - c4c * p.sigma_v)
+            + p.kappa * p.rho * p.sigma_v * (T::one() - ek) * (c16c * p.theta - c8c * p.v0)
+            + c2c
+                * p.theta
+                * p.kappa
+                * t
+                * (-c4c * p.kappa * p.rho * p.sigma_v + sv2 + c4c * p.kappa * p.kappa)
+            + sv2 * ((p.theta - c2c * p.v0) * e2k + p.theta * (c6c * ek - c7c) + c2c * p.v0)
+            + c8c * p.kappa * p.kappa * delta * (T::one() - ek);
+        num / (c8c * p.kappa * p.kappa * p.kappa)
+    };
+    (mean_var, c2)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn double_heston_cos_strip_prices<T: Real>(
     spot: T,
@@ -287,24 +320,76 @@ pub fn double_heston_cos_strip_prices<T: Real>(
     l_trunc: f64,
     is_call: bool,
 ) -> Vec<T> {
-    let engine = CosHestonEngine { n_terms, l_trunc };
-    // The first-factor COS kernel is retained exactly in the degenerate
-    // second-factor limit.  For a genuine two-factor model, aggregate the
-    // CIR means for the truncation interval while retaining the product
-    // characteristic function.
-    let p1 = params.factor1;
-    let p2 = params.factor2;
-    if p2.v0.val().abs() < 1e-14 && p2.theta.val().abs() < 1e-14 && p2.sigma_v.val().abs() < 1e-14 {
-        return engine.price_strikes(&p1, spot, rate, div, expiry, strikes, is_call);
+    let t = expiry.max_val(T::from_f64(1e-8));
+    let (mv1, c2_1) = cir_cumulants(&params.factor1, t);
+    let (mv2, c2_2) = cir_cumulants(&params.factor2, t);
+    let mean_var = mv1 + mv2;
+    let c2 = c2_1 + c2_2;
+    let c4 = (c2 * c2 * 0.25).max_val(T::zero());
+    let var = c2.max_val(T::from_f64(1e-12));
+    let c1 = (rate - div) * t - mean_var * 0.5;
+    let w = T::from_f64(l_trunc) * (var + c4.sqrt()).sqrt();
+    let a = c1 - w;
+    let b = c1 + w;
+    let width = b - a;
+    let mut ph = Vec::with_capacity(n_terms);
+    for k in 0..n_terms {
+        ph.push(params.char_func_unit_spot(
+            Complex::from_real(T::from_f64(k as f64 * std::f64::consts::PI) / width),
+            rate,
+            div,
+            expiry,
+        ));
     }
-    let cf = |u: Complex<T>| params.char_func_unit_spot(u, rate, div, expiry);
-    let v0 = p1.v0 + p2.v0;
-    let theta = p1.theta + p2.theta;
-    let sigma_v = (p1.sigma_v * p1.sigma_v + p2.sigma_v * p2.sigma_v).sqrt();
-    let kappa = (p1.kappa.abs() + p2.kappa.abs()).max_val(T::from_f64(1e-8));
-    let rho = (p1.rho * p1.sigma_v + p2.rho * p2.sigma_v)
-        / (p1.sigma_v.abs() + p2.sigma_v.abs()).max_val(T::from_f64(1e-12));
-    engine.price_impl(
-        cf, v0, theta, sigma_v, kappa, rho, spot, rate, div, expiry, strikes, is_call,
-    )
+    strikes
+        .iter()
+        .map(|&k| {
+            let x0 = (spot / k).ln();
+            let mut put = T::zero();
+            for (n, ph_n) in ph.iter().enumerate().take(n_terms) {
+                let om = T::from_f64(n as f64 * std::f64::consts::PI) / width;
+                let psi = if n == 0 { -a } else { (-om * a).sin() / om };
+                let chi = ((-om * a).cos() - a.exp() + om * (-om * a).sin()) / (T::one() + om * om);
+                let vk = T::from_f64(2.0) / width * (-chi + psi);
+                let phase = Complex::new(T::zero(), om * (x0 - a)).exp();
+                let term = (*ph_n * phase).re * vk;
+                put += if n == 0 { term * 0.5 } else { term };
+            }
+            let put = k * (-rate * expiry).exp() * put;
+            if is_call {
+                put + spot * (-div * expiry).exp() - k * (-rate * expiry).exp()
+            } else {
+                put
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod phase14_tests {
+    use super::*;
+    use crate::HestonParams;
+    #[test]
+    fn phase14_double_heston_degenerate_and_parity() {
+        let p = DoubleHestonParams {
+            factor1: HestonParams {
+                v0: 0.04,
+                kappa: 1.2,
+                theta: 0.04,
+                sigma_v: 0.3,
+                rho: -0.7,
+            },
+            factor2: HestonParams {
+                v0: 0.0,
+                kappa: 2.0,
+                theta: 0.0,
+                sigma_v: 0.0,
+                rho: 0.0,
+            },
+        };
+        let c = double_heston_cos_price(100.0, 100.0, 1.0, 0.03, 0.0, &p, 96, 10.0, true);
+        let put = double_heston_cos_price(100.0, 100.0, 1.0, 0.03, 0.0, &p, 96, 10.0, false);
+        assert!(c.is_finite() && put.is_finite());
+        assert!((c - put - (100.0 - 100.0 * (-0.03f64).exp())).abs() < 1.0);
+    }
 }

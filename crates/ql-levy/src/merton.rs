@@ -22,6 +22,15 @@ impl<T: Real> LevyModel<T> for MertonJumpDiffusion<T> {
         let im = self.lambda_j * e * ang.sin();
         (re, im)
     }
+    fn char_exponent_shifted(&self, u: T, beta: T) -> (T, T) {
+        let q = self.delta_j * self.delta_j;
+        let b2_u2 = beta * beta - u * u;
+        let e = (beta * self.mu_j + q * b2_u2 * 0.5).exp();
+        let ang = u * (self.mu_j + q * beta);
+        let re = self.sigma * self.sigma * b2_u2 * 0.5 + self.lambda_j * (e * ang.cos() - 1.0);
+        let im = self.sigma * self.sigma * u * beta + self.lambda_j * e * ang.sin();
+        (re, im)
+    }
     fn cumulants(&self, r: T, q: T, t: T) -> (T, T, T) {
         let om = self.martingale_compensator();
         let c1 = (r - q + om + self.lambda_j * self.mu_j) * t;

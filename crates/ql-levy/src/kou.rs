@@ -28,6 +28,23 @@ impl<T: Real> LevyModel<T> for KouJumpDiffusion<T> {
                 - (T::one() - self.p_up) * self.eta2 / (self.eta2 * self.eta2 + u2));
         (re, im)
     }
+    fn char_exponent_shifted(&self, u: T, beta: T) -> (T, T) {
+        let u2 = u * u;
+        let e1 = self.eta1 - beta;
+        let e2 = self.eta2 + beta;
+        let d1 = e1 * e1 + u2;
+        let d2 = e2 * e2 + u2;
+        let b2_u2 = beta * beta - u2;
+        let re = self.sigma * self.sigma * b2_u2 * 0.5
+            + self.lambda_j
+                * (self.p_up * self.eta1 * e1 / d1 + (T::one() - self.p_up) * self.eta2 * e2 / d2
+                    - 1.0);
+        let im = self.sigma * self.sigma * u * beta
+            + self.lambda_j
+                * u
+                * (self.p_up * self.eta1 / d1 - (T::one() - self.p_up) * self.eta2 / d2);
+        (re, im)
+    }
     fn cumulants(&self, r: T, q: T, t: T) -> (T, T, T) {
         let om = self.martingale_compensator();
         let c1 = (r - q

@@ -361,9 +361,12 @@ fn hrp_validate<T: Real>(cov: &[Vec<T>]) -> Result<(), AllocationError> {
     }
     for i in 0..n {
         if cov[i][i].val() <= 0.0 {
-            return Err(AllocationError::InvalidDimensions);
+            return Err(AllocationError::SingularCovariance);
         }
         for j in 0..n {
+            if (cov[i][j].val() - cov[j][i].val()).abs() > 1e-10 {
+                return Err(AllocationError::InvalidDimensions);
+            }
             let corr = cov[i][j].val() / (cov[i][i].val() * cov[j][j].val()).sqrt();
             if !corr.is_finite() || corr.abs() > 1.0 + 1e-8 {
                 return Err(AllocationError::InvalidDimensions);
@@ -377,16 +380,37 @@ pub fn try_hierarchical_risk_parity<T: Real>(
 ) -> Result<HierarchicalRiskParityResult<T>, AllocationError> {
     hrp_validate(cov)?;
     let n = cov.len();
+    let mut raw_d = vec![vec![0.0_f64; n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            let corr =
+                (cov[i][j].val() / (cov[i][i].val() * cov[j][j].val()).sqrt()).clamp(-1.0, 1.0);
+            raw_d[i][j] = (0.5 * (1.0 - corr)).max(0.0).sqrt();
+        }
+    }
+    let mut euclid_d = vec![vec![0.0_f64; n]; n];
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let d = (0..n)
+                .map(|k| {
+                    let x = raw_d[i][k] - raw_d[j][k];
+                    x * x
+                })
+                .sum::<f64>()
+                .sqrt();
+            euclid_d[i][j] = d;
+            euclid_d[j][i] = d;
+        }
+    }
     let mut clusters: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
     let dist = |a: &[usize], b: &[usize]| {
-        a.iter()
-            .flat_map(|&i| {
-                b.iter().map(move |&j| {
-                    let corr = cov[i][j].val() / (cov[i][i].val() * cov[j][j].val()).sqrt();
-                    (0.5 * (1.0 - corr)).max(0.0).sqrt()
-                })
-            })
-            .fold(f64::INFINITY, f64::min)
+        let mut out = f64::INFINITY;
+        for &i in a {
+            for &j in b {
+                out = out.min(euclid_d[i][j]);
+            }
+        }
+        out
     };
     while clusters.len() > 1 {
         let mut best = (0usize, 1usize, f64::INFINITY);
@@ -451,6 +475,18 @@ pub fn hierarchical_risk_parity_weights<T: Real>(cov: &[Vec<T>]) -> Vec<T> {
     try_hierarchical_risk_parity(cov)
         .expect("valid HRP covariance")
         .weights
+}
+
+#[cfg(test)]
+mod phase14_tests {
+    use super::*;
+    #[test]
+    fn phase14_hrp_diagonal_inverse_variance() {
+        let c = vec![vec![0.04, 0.0], vec![0.0, 0.09]];
+        let w = hierarchical_risk_parity_weights(&c);
+        assert!((w[0] - 0.09 / 0.13).abs() < 1e-12);
+        assert!((w[1] - 0.04 / 0.13).abs() < 1e-12);
+    }
 }
 pub fn implied_equilibrium_returns<T: Real>(
     cov: &[Vec<T>],

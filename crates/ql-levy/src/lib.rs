@@ -2,6 +2,7 @@ use ql_ad::Real;
 pub trait LevyModel<T: Real> {
     fn martingale_compensator(&self) -> T;
     fn char_exponent(&self, u: T) -> (T, T);
+    fn char_exponent_shifted(&self, u: T, beta: T) -> (T, T);
     fn cumulants(&self, rate: T, div_yield: T, expiry: T) -> (T, T, T);
 }
 pub mod cgmy;

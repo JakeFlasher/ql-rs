@@ -68,6 +68,26 @@ impl<T: Real> LevyModel<T> for CgmyProcess<T> {
         let im = self.c * self.gamma_neg_y() * (-mm * sm + gg * sg);
         (re, im)
     }
+    fn char_exponent_shifted(&self, u: T, beta: T) -> (T, T) {
+        let mb = self.m - beta;
+        let gb = self.g + beta;
+        let rm = (mb * mb + u * u).sqrt();
+        let rg = (gb * gb + u * u).sqrt();
+        let am = (self.y * (u / mb).atan()).cos();
+        let sm = (self.y * (u / mb).atan()).sin();
+        let ag = (self.y * (u / gb).atan()).cos();
+        let sg = (self.y * (u / gb).atan()).sin();
+        let mm = rm.pow(self.y);
+        let gg = rg.pow(self.y);
+        let b2_u2 = beta * beta - u * u;
+        let re = self.sigma * self.sigma * b2_u2 * 0.5
+            + self.c
+                * self.gamma_neg_y()
+                * (mm * am - self.m.pow(self.y) + gg * ag - self.g.pow(self.y));
+        let im =
+            self.sigma * self.sigma * u * beta + self.c * self.gamma_neg_y() * (-mm * sm + gg * sg);
+        (re, im)
+    }
     fn cumulants(&self, r: T, q: T, t: T) -> (T, T, T) {
         let om = self.martingale_compensator();
         let jump_mean = -self.c

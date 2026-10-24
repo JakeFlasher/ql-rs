@@ -105,48 +105,103 @@ pub struct ThreeLegSpreadOptionSpec<T: Real> {
     pub expiry: T,
     pub option_type: OptionType,
 }
+
 pub fn price_three_leg_spread_option<T: Real>(s: &ThreeLegSpreadOptionSpec<T>) -> T {
-    if s.weight3.val().abs() <= 1e-14 {
-        return kirk_spread_option(
-            s.forward1 * s.weight1,
-            s.forward2 * s.weight2,
-            s.strike,
-            s.vol1,
-            s.vol2,
-            s.rho12,
-            s.rate,
-            s.expiry,
-            s.option_type,
-        );
+    let legs = [
+        (s.forward1 * s.weight1, s.vol1),
+        (s.forward2 * s.weight2, s.vol2),
+        (s.forward3 * s.weight3, s.vol3),
+    ];
+    let rhos = [
+        [T::one(), s.rho12, s.rho13],
+        [s.rho12, T::one(), s.rho23],
+        [s.rho13, s.rho23, T::one()],
+    ];
+    let mut a = if s.strike.val() < 0.0 {
+        -s.strike
+    } else {
+        T::zero()
+    };
+    let mut b = if s.strike.val() >= 0.0 {
+        s.strike
+    } else {
+        T::zero()
+    };
+    for &(x, _) in &legs {
+        if x.val() >= 0.0 {
+            a += x;
+        } else {
+            b -= x;
+        }
     }
-    let a = s.forward1 * s.weight1 + s.forward3 * s.weight3;
-    let b = s.forward2 * s.weight2 + s.strike;
-    let va = (s.forward1 * s.weight1 / a).powf(2.0) * s.vol1 * s.vol1
-        + (s.forward3 * s.weight3 / a).powf(2.0) * s.vol3 * s.vol3
-        + T::from_f64(2.0) * s.forward1 * s.weight1 * s.forward3 * s.weight3 / (a * a)
-            * s.rho13
-            * s.vol1
-            * s.vol3;
-    let vb = s.forward2 * s.weight2 / b * s.forward2 * s.weight2 / b * s.vol2 * s.vol2;
-    let cov = (s.forward1 * s.weight1 / a)
-        * (s.forward2 * s.weight2 / b)
-        * s.rho12
-        * s.vol1
-        * s.vol2
-        + (s.forward3 * s.weight3 / a) * (s.forward2 * s.weight2 / b) * s.rho23 * s.vol3 * s.vol2;
-    let sig = (va + vb - T::from_f64(2.0) * cov).max_val(T::zero()).sqrt();
+    let df = (-s.rate * s.expiry).exp();
+    if a.val() <= 1e-14 || b.val() <= 1e-14 || s.expiry.val() <= 0.0 {
+        let intrinsic = if s.option_type.is_call() {
+            a - b
+        } else {
+            b - a
+        };
+        return df * intrinsic.max_val(T::zero());
+    }
+    let mut va = T::zero();
+    let mut vb = T::zero();
+    let mut cov = T::zero();
+    for i in 0..3 {
+        let (xi, vi) = legs[i];
+        let wi_a = if xi.val() >= 0.0 { xi / a } else { T::zero() };
+        let wi_b = if xi.val() < 0.0 { -xi / b } else { T::zero() };
+        for j in 0..3 {
+            let (xj, vj) = legs[j];
+            let wj_a = if xj.val() >= 0.0 { xj / a } else { T::zero() };
+            let wj_b = if xj.val() < 0.0 { -xj / b } else { T::zero() };
+            let c_ij = rhos[i][j] * vi * vj;
+            va += wi_a * wj_a * c_ij;
+            vb += wi_b * wj_b * c_ij;
+            cov += wi_a * wj_b * c_ij;
+        }
+    }
+    let sig = (va + vb - cov * 2.0).max_val(T::zero()).sqrt();
     let st = sig * s.expiry.sqrt();
     if st.val() <= 1e-14 {
-        return (-s.rate * s.expiry).exp()
-            * (if s.option_type.is_call() {
-                a - b
-            } else {
-                b - a
-            })
-            .max_val(T::zero());
+        let intrinsic = if s.option_type.is_call() {
+            a - b
+        } else {
+            b - a
+        };
+        return df * intrinsic.max_val(T::zero());
     }
     let d1 = (a / b).ln() / st + st * 0.5;
     let d2 = d1 - st;
     let sign = T::from_f64(if s.option_type.is_call() { 1.0 } else { -1.0 });
-    (-s.rate * s.expiry).exp() * sign * (a * (sign * d1).norm_cdf() - b * (sign * d2).norm_cdf())
+    df * sign * (a * (sign * d1).norm_cdf() - b * (sign * d2).norm_cdf())
+}
+
+#[cfg(test)]
+mod phase14_tests {
+    use super::*;
+    use ql_ad::Dual;
+    type D = Dual<1>;
+    #[test]
+    fn phase14_three_leg_weight3_ad() {
+        let s = ThreeLegSpreadOptionSpec {
+            forward1: D::from_value(100.0),
+            forward2: D::from_value(95.0),
+            forward3: D::from_value(10.0),
+            weight1: D::from_value(1.0),
+            weight2: D::from_value(-1.0),
+            weight3: D::variable(0.0, 0),
+            strike: D::from_value(2.0),
+            vol1: D::from_value(0.2),
+            vol2: D::from_value(0.2),
+            vol3: D::from_value(0.3),
+            rho12: D::from_value(0.2),
+            rho13: D::from_value(0.1),
+            rho23: D::from_value(0.1),
+            rate: D::from_value(0.02),
+            expiry: D::from_value(1.0),
+            option_type: OptionType::Call,
+        };
+        let v = price_three_leg_spread_option(&s);
+        assert!(v.val.is_finite() && v.d[0].is_finite());
+    }
 }

@@ -39,6 +39,22 @@ impl<T: Real> LevyModel<T> for VarianceGamma<T> {
         let ph = (b / a).atan();
         (-rr.ln() / self.nu, -ph / self.nu)
     }
+    fn char_exponent_shifted(&self, u: T, beta: T) -> (T, T) {
+        let sig2 = self.sigma * self.sigma;
+        let u2_b2 = u * u - beta * beta;
+        if self.nu.val().abs() < 1e-10 {
+            let cr = -self.theta * beta + sig2 * u2_b2 * 0.5;
+            let ci = -u * (self.theta + sig2 * beta);
+            let c2r = cr * cr - ci * ci;
+            let c2i = cr * ci * 2.0;
+            return (-cr + self.nu * c2r * 0.5, -ci + self.nu * c2i * 0.5);
+        }
+        let a = T::one() - self.theta * self.nu * beta + sig2 * self.nu * u2_b2 * 0.5;
+        let b = -u * self.nu * (self.theta + sig2 * beta);
+        let rr = (a * a + b * b).sqrt();
+        let ph = (b / a).atan();
+        (-rr.ln() / self.nu, -ph / self.nu)
+    }
     fn cumulants(&self, r: T, q: T, t: T) -> (T, T, T) {
         let om = self.martingale_compensator();
         (

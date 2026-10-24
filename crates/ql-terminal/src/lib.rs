@@ -44,7 +44,6 @@ use ql_commodities::{
 };
 use ql_credit::{
     CalibratedCreditCurve, CdsQuote, CreditDefaultSwap, IsdaCdsEngine, ProtectionSide,
-    asb_recursive_expected_tranche_loss,
 };
 use ql_curves::{DiscountCurve, FlatForwardCurve, MonotoneConvexZeroCurve, YieldTermStructure};
 use ql_exotics::{
@@ -52,22 +51,29 @@ use ql_exotics::{
     ParisianBarrierOptionSpec, WorstOfAutocallableSpec, price_barrier_option,
     price_parisian_option_mc_ad, price_worst_of_autocallable,
 };
-use ql_fixed_income::{ConvertibleBondSpec, price_convertible_bond_tf};
+use ql_fixed_income::{
+    CocoBondSpec, CocoTriggerPayoff, ConvertibleBondSpec, price_coco_bond_ds,
+    price_convertible_bond_tf,
+};
 use ql_fx::ConstNotionalXccs;
-use ql_fx::{FxSmileQuote, FxVannaVolgaSmile, garman_kohlhagen_spot_delta};
+use ql_fx::{
+    FxSmileQuote, FxTarfCapConvention, FxTarfSpec, FxVannaVolgaSmile, garman_kohlhagen_spot_delta,
+    price_fx_tarf_mc_ad,
+};
 use ql_inflation::{CalibratedInflationCurve, MultiplicativeSeasonality, ZeroCouponInflationSwap};
 use ql_instruments::{BaroneAdesiWhaleyEngine, SwapType, VanillaSwapSpec};
 use ql_levy::{VarianceGamma, cos_levy_price};
 use ql_models::rough::{RoughBergomiParams, rbergomi_hybrid_mc_price};
 use ql_models::{
-    BatesParams, HestonParams, HullWhite1F, LiftedHestonParams,
-    heston_bates_vix_future_and_option_price, lifted_heston_cos_price,
+    BatesParams, DoubleHestonParams, HestonParams, HullWhite1F, LiftedHestonParams,
+    double_heston_cos_price, heston_bates_vix_future_and_option_price, lifted_heston_cos_price,
 };
 use ql_portfolio::gaussian_expected_shortfall;
 use ql_portfolio::{
     BoxConstrainedMarkowitzSpec, MarketSnapshot, ObizhaevaWangSpec, PortfolioDag,
     PortfolioRiskSummary, PortfolioTrade, RobustMarkowitzSpec, box_constrained_markowitz_weights,
-    equal_risk_contribution_weights, obizhaeva_wang_execution, robust_markowitz_weights,
+    equal_risk_contribution_weights, hierarchical_risk_parity_weights, obizhaeva_wang_execution,
+    robust_markowitz_weights,
 };
 use ql_rates::{
     BermudanSwaption, EuropeanSwaption, G2PlusPlus, HullWhiteBermudanTreeEngine, RfrCapletSpec,
@@ -482,6 +488,7 @@ pub struct WorkstationFrameData {
     pub slv_rough_worst_of_metric: f64,
     pub frtb_cvar_execution_metric: f64,
     pub vix_parisian_robust_metric: f64,
+    pub double_heston_tarf_coco_hrp_metric: f64,
     pub blotter_rows: Vec<(String, f64, String)>,
 }
 
@@ -1419,6 +1426,65 @@ impl DeskWorkstation {
             + vix.put_price
             + parisian_metric
             + robust_metric;
+        let dh_metric = double_heston_cos_price(
+            market.eq_spot,
+            100.0,
+            1.0,
+            rate,
+            0.0,
+            &DoubleHestonParams {
+                factor1: heston_params,
+                factor2: HestonParams {
+                    v0: 0.01,
+                    kappa: 2.0,
+                    theta: 0.01,
+                    sigma_v: 0.2,
+                    rho: -0.3,
+                },
+            },
+            48,
+            10.0,
+            true,
+        )
+        .val();
+        let tarf_metric = price_fx_tarf_mc_ad(
+            &FxTarfSpec {
+                notional: 100.0,
+                spot: 1.05,
+                strike: 1.0,
+                r_dom: rate,
+                r_for: 0.01,
+                vol: 0.12,
+                fixing_times: vec![0.25, 0.5, 0.75, 1.0],
+                target_profit: 0.15,
+                downside_leverage: 1.5,
+                is_exporter_call: true,
+                cap_convention: FxTarfCapConvention::ExactCap,
+                smoothing_eps: 1e-3,
+            },
+            32,
+            7,
+        )
+        .npv;
+        let coco_metric = price_coco_bond_ds(&CocoBondSpec {
+            face_value: 100.0,
+            coupon_rate: 0.05,
+            coupon_times: vec![1.0, 2.0],
+            maturity: 2.0,
+            rate,
+            credit_spread: 0.015,
+            spot: market.eq_spot,
+            trigger_barrier: 60.0,
+            div_yield: 0.0,
+            eq_vol: market.eq_vol,
+            trigger_payoff: CocoTriggerPayoff::WriteDown {
+                recovery_fraction: 0.4,
+            },
+        })
+        .dirty_price;
+        let hrp_w = hierarchical_risk_parity_weights(&[vec![0.04, 0.01], vec![0.01, 0.09]]);
+        let double_heston_tarf_coco_hrp_metric =
+            dh_metric + tarf_metric + coco_metric + hrp_w[0] + 2.0 * hrp_w[1];
         let blotter_rows = vec![
             ("IRS 5Y PayFix".to_string(), irs_npv, "IFT".to_string()),
             ("Heston Call 1Y".to_string(), heston_npv, "COS".to_string()),
@@ -1516,6 +1582,7 @@ impl DeskWorkstation {
             slv_rough_worst_of_metric: rough_metric,
             frtb_cvar_execution_metric: execution_metric,
             vix_parisian_robust_metric,
+            double_heston_tarf_coco_hrp_metric,
             blotter_rows,
         }
     }
@@ -1654,14 +1721,6 @@ impl DeskWorkstation {
         const LEFT: usize = 57;
         const RIGHT: usize = 58;
         let chart_lines = self.chart(frame).render_lines(ansi_color);
-        let asb_el = asb_recursive_expected_tranche_loss(
-            &[0.02_f64; 20],
-            &[1_usize; 20],
-            1.0 / 20.0,
-            0.2,
-            0.03,
-            0.07,
-        );
         let mut left_top = Vec::with_capacity(10);
         left_top.push("1. BOOK SUMMARY, XVA & ISDA SIMM".to_string());
         left_top.push(format!(
@@ -1741,7 +1800,7 @@ impl DeskWorkstation {
             ),
             format!(
                 "24 Double Heston/TARF/CoCo/HRP: {:.2}",
-                frame.vix_parisian_robust_metric + asb_el
+                frame.double_heston_tarf_coco_hrp_metric
             ),
             format!(
                 "DAG recomputed: {}/{}",
@@ -1754,7 +1813,7 @@ impl DeskWorkstation {
         // There are six IR buckets, five credit buckets and ten telemetry
         // lines (including Tab 23).  Render all 21 rows instead of silently
         // dropping the final BL/Risk-Parity line.
-        const BOTTOM_ROWS: usize = 21;
+        const BOTTOM_ROWS: usize = 22;
         while left_bottom.len() < BOTTOM_ROWS {
             left_bottom.push(String::new());
         }
@@ -1805,5 +1864,15 @@ impl DeskWorkstation {
 impl Default for DeskWorkstation {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod phase14_tests {
+    use super::*;
+    #[test]
+    fn phase14_tab_is_registered() {
+        assert_eq!(TabId::ALL.len(), 24);
+        assert!(TabId::ALL.contains(&TabId::Phase14Sota));
     }
 }

@@ -29,10 +29,13 @@ pub struct CocoBondValuation<T: Real> {
     pub trigger_probability: T,
 }
 fn hit_probability<T: Real>(s: &CocoBondSpec<T>, t: f64, stock_weight: bool) -> T {
-    if t <= 0.0 || s.spot.val() <= s.trigger_barrier.val() {
+    if s.trigger_barrier.val() <= 0.0 {
+        return T::zero();
+    }
+    if s.spot.val() <= s.trigger_barrier.val() {
         return T::one();
     }
-    if s.eq_vol.val() <= 1e-14 {
+    if t <= 0.0 || s.eq_vol.val() <= 1e-14 {
         return T::zero();
     }
     let sig = s.eq_vol * T::from_f64(t.sqrt());
@@ -44,8 +47,10 @@ fn hit_probability<T: Real>(s: &CocoBondSpec<T>, t: f64, stock_weight: bool) -> 
     };
     let ell = (s.trigger_barrier / s.spot).ln();
     let a = ((ell - drift * t) / sig).norm_cdf();
-    let b = (T::from_f64(2.0) * drift * ell / (s.eq_vol * s.eq_vol)).exp()
-        * ((ell + drift * t) / sig).norm_cdf();
+    let exp_arg = (T::from_f64(2.0) * drift * ell / (s.eq_vol * s.eq_vol))
+        .max_val(T::from_f64(-80.0))
+        .min_val(T::from_f64(80.0));
+    let b = exp_arg.exp() * ((ell + drift * t) / sig).norm_cdf();
     (a + b).max_val(T::zero()).min_val(T::one())
 }
 pub fn price_coco_bond_ds<T: Real>(s: &CocoBondSpec<T>) -> CocoBondValuation<T> {
@@ -92,5 +97,47 @@ pub fn price_coco_bond_ds<T: Real>(s: &CocoBondSpec<T>) -> CocoBondValuation<T> 
         principal_loss_pv: principal_loss,
         conversion_or_recovery_pv: conversion,
         trigger_probability: ph,
+    }
+}
+
+#[cfg(test)]
+mod phase14_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn phase14_coco_barrier_and_spot_delta() {
+        let s = CocoBondSpec {
+            face_value: 100.0,
+            coupon_rate: 0.05,
+            coupon_times: vec![1.0, 2.0],
+            maturity: 2.0,
+            rate: 0.03,
+            credit_spread: 0.01,
+            spot: 100.0,
+            trigger_barrier: 1e-6,
+            div_yield: 0.0,
+            eq_vol: 0.25,
+            trigger_payoff: CocoTriggerPayoff::WriteDown {
+                recovery_fraction: 0.4,
+            },
+        };
+        let v = price_coco_bond_ds(&s);
+        assert!((v.dirty_price - v.straight_bond_floor).abs() < 1e-2);
+        let sd = CocoBondSpec {
+            spot: Dual::<1>::variable(100.0, 0),
+            face_value: Dual::from_value(100.0),
+            coupon_rate: Dual::from_value(0.05),
+            coupon_times: vec![1.0, 2.0],
+            maturity: 2.0,
+            rate: Dual::from_value(0.03),
+            credit_spread: Dual::from_value(0.01),
+            trigger_barrier: Dual::from_value(60.0),
+            div_yield: Dual::from_value(0.0),
+            eq_vol: Dual::from_value(0.25),
+            trigger_payoff: CocoTriggerPayoff::WriteDown {
+                recovery_fraction: Dual::from_value(0.4),
+            },
+        };
+        assert!(price_coco_bond_ds(&sd).dirty_price.d[0] > 0.0);
     }
 }

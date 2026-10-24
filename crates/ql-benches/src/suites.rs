@@ -2469,79 +2469,143 @@ fn benchmark_phase13_vix_parisian_robust(scale: usize) -> ComparisonRow {
 
 fn benchmark_phase14_double_heston_tarf_coco_hrp(scale: usize) -> ComparisonRow {
     let cfg = config(scale);
-    let baseline = || {
+    let h = 1e-5;
+    let tarf_paths = 64;
+    let eval_dh = |x: [f64; 4]| {
         let p = ql_models::DoubleHestonParams {
             factor1: HestonParams {
-                v0: 0.04,
+                v0: x[0],
                 kappa: 1.4,
-                theta: 0.04,
+                theta: x[1],
                 sigma_v: 0.3,
                 rho: -0.7,
             },
             factor2: HestonParams {
-                v0: 0.01,
+                v0: x[2],
                 kappa: 2.0,
                 theta: 0.01,
-                sigma_v: 0.2,
+                sigma_v: x[3],
                 rho: -0.3,
             },
         };
-        let dh =
-            ql_models::double_heston_cos_price(100.0, 100.0, 1.0, 0.03, 0.0, &p, 48, 10.0, true);
-        let tarf = ql_fx::price_fx_tarf_mc_ad(
+        ql_models::double_heston_cos_price(100.0, 100.0, 1.0, 0.03, 0.0, &p, 64, 10.0, true)
+    };
+    let eval_tarf = |x: [f64; 4]| {
+        ql_fx::price_fx_tarf_mc_ad(
             &ql_fx::FxTarfSpec {
                 notional: 1.0,
-                spot: 1.0,
+                spot: x[0],
                 strike: 1.0,
-                r_dom: 0.02,
+                r_dom: x[1],
                 r_for: 0.01,
-                vol: 0.12,
-                fixing_times: vec![0.5, 1.0, 1.5],
-                target_profit: 0.05,
-                downside_leverage: 1.2,
+                vol: x[2],
+                fixing_times: vec![0.25, 0.5, 0.75, 1.0, 1.25, 1.5],
+                target_profit: x[3],
+                downside_leverage: 1.5,
                 is_exporter_call: true,
                 cap_convention: ql_fx::FxTarfCapConvention::ExactCap,
-                smoothing_eps: 1e-4,
+                smoothing_eps: 1e-3,
             },
-            8,
+            tarf_paths,
             7,
         )
-        .npv;
-        let coco = ql_fixed_income::price_coco_bond_ds(&ql_fixed_income::CocoBondSpec {
+        .npv
+    };
+    let eval_coco = |x: [f64; 4]| {
+        ql_fixed_income::price_coco_bond_ds(&ql_fixed_income::CocoBondSpec {
             face_value: 100.0,
             coupon_rate: 0.05,
-            coupon_times: vec![1.0, 2.0],
+            coupon_times: vec![0.5, 1.0, 1.5, 2.0],
             maturity: 2.0,
-            rate: 0.03,
-            credit_spread: 0.01,
-            spot: 100.0,
+            rate: x[0],
+            credit_spread: x[1],
+            spot: x[2],
             trigger_barrier: 60.0,
-            div_yield: 0.0,
-            eq_vol: 0.25,
+            div_yield: 0.01,
+            eq_vol: x[3],
             trigger_payoff: ql_fixed_income::CocoTriggerPayoff::WriteDown {
                 recovery_fraction: 0.4,
             },
         })
-        .dirty_price;
-        let hrp =
-            ql_portfolio::hierarchical_risk_parity_weights(&[vec![0.04, 0.01], vec![0.01, 0.09]]);
-        dh + tarf + coco + hrp.iter().sum::<f64>()
+        .dirty_price
+    };
+    let eval_port = |x: [f64; 4]| {
+        let cov = vec![vec![x[0], x[1]], vec![x[1], x[2]]];
+        let w = ql_portfolio::hierarchical_risk_parity_weights(&cov);
+        let exec = ql_portfolio::multi_asset_almgren_chriss_execution(
+            &ql_portfolio::MultiAssetAlmgrenChrissSpec {
+                initial_inventory: vec![1000.0, 600.0],
+                horizon: 1.0,
+                num_steps: 6,
+                covariance: cov,
+                temporary_impact: vec![vec![1e-4, 2e-5], vec![2e-5, 1.5e-4]],
+                permanent_impact: vec![vec![5e-5, 0.0], vec![0.0, 5e-5]],
+                risk_aversion: x[3],
+            },
+        );
+        w[0] + 2.0 * w[1] + 1e-4 * exec.mean_variance_utility
+    };
+    let dh0 = [0.04, 0.04, 0.01, 0.20];
+    let tarf0 = [1.05, 0.02, 0.12, 0.15];
+    let coco0 = [0.03, 0.015, 100.0, 0.25];
+    let port0 = [0.04, 0.01, 0.09, 1e-5];
+    let baseline = || {
+        let bdh0 = eval_dh(dh0);
+        let bt0 = eval_tarf(tarf0);
+        let bc0 = eval_coco(coco0);
+        let bp0 = eval_port(port0);
+        let mut total = bdh0 + bt0 + bc0 + bp0;
+        let mut dsum = [0.0; 4];
+        for i in 0..4 {
+            let mut up = dh0;
+            let mut dn = dh0;
+            up[i] += h;
+            dn[i] -= h;
+            let ddh = (eval_dh(up) - eval_dh(dn)) / (2.0 * h);
+            total += ddh;
+            dsum[i] += ddh;
+
+            let mut up = tarf0;
+            let mut dn = tarf0;
+            up[i] += h;
+            dn[i] -= h;
+            let dt = (eval_tarf(up) - eval_tarf(dn)) / (2.0 * h);
+            total += dt;
+            dsum[i] += dt;
+
+            let mut up = coco0;
+            let mut dn = coco0;
+            up[i] += h;
+            dn[i] -= h;
+            let dc = (eval_coco(up) - eval_coco(dn)) / (2.0 * h);
+            total += dc;
+            dsum[i] += dc;
+
+            let mut up = port0;
+            let mut dn = port0;
+            up[i] += h;
+            dn[i] -= h;
+            let dp = (eval_port(up) - eval_port(dn)) / (2.0 * h);
+            total += dp;
+            dsum[i] += dp;
+        }
+        total
     };
     let sota = || {
         type D = Dual<4>;
         let p = ql_models::DoubleHestonParams {
             factor1: HestonParams {
-                v0: D::from_value(0.04),
+                v0: D::variable(dh0[0], 0),
                 kappa: D::from_value(1.4),
-                theta: D::from_value(0.04),
+                theta: D::variable(dh0[1], 1),
                 sigma_v: D::from_value(0.3),
                 rho: D::from_value(-0.7),
             },
             factor2: HestonParams {
-                v0: D::from_value(0.01),
+                v0: D::variable(dh0[2], 2),
                 kappa: D::from_value(2.0),
                 theta: D::from_value(0.01),
-                sigma_v: D::from_value(0.2),
+                sigma_v: D::variable(dh0[3], 3),
                 rho: D::from_value(-0.3),
             },
         };
@@ -2552,61 +2616,83 @@ fn benchmark_phase14_double_heston_tarf_coco_hrp(scale: usize) -> ComparisonRow 
             D::from_value(0.03),
             D::from_value(0.0),
             &p,
-            48,
+            64,
             10.0,
             true,
         );
         let tarf = ql_fx::price_fx_tarf_mc_ad(
             &ql_fx::FxTarfSpec {
                 notional: D::from_value(1.0),
-                spot: D::from_value(1.0),
+                spot: D::variable(tarf0[0], 0),
                 strike: D::from_value(1.0),
-                r_dom: D::from_value(0.02),
+                r_dom: D::variable(tarf0[1], 1),
                 r_for: D::from_value(0.01),
-                vol: D::from_value(0.12),
-                fixing_times: vec![0.5, 1.0, 1.5],
-                target_profit: D::from_value(0.05),
-                downside_leverage: D::from_value(1.2),
+                vol: D::variable(tarf0[2], 2),
+                fixing_times: vec![0.25, 0.5, 0.75, 1.0, 1.25, 1.5],
+                target_profit: D::variable(tarf0[3], 3),
+                downside_leverage: D::from_value(1.5),
                 is_exporter_call: true,
                 cap_convention: ql_fx::FxTarfCapConvention::ExactCap,
-                smoothing_eps: 1e-4,
+                smoothing_eps: 1e-3,
             },
-            8,
+            tarf_paths,
             7,
         )
         .npv;
         let coco = ql_fixed_income::price_coco_bond_ds(&ql_fixed_income::CocoBondSpec {
             face_value: D::from_value(100.0),
             coupon_rate: D::from_value(0.05),
-            coupon_times: vec![1.0, 2.0],
+            coupon_times: vec![0.5, 1.0, 1.5, 2.0],
             maturity: 2.0,
-            rate: D::from_value(0.03),
-            credit_spread: D::from_value(0.01),
-            spot: D::from_value(100.0),
+            rate: D::variable(coco0[0], 0),
+            credit_spread: D::variable(coco0[1], 1),
+            spot: D::variable(coco0[2], 2),
             trigger_barrier: D::from_value(60.0),
-            div_yield: D::from_value(0.0),
-            eq_vol: D::from_value(0.25),
+            div_yield: D::from_value(0.01),
+            eq_vol: D::variable(coco0[3], 3),
             trigger_payoff: ql_fixed_income::CocoTriggerPayoff::WriteDown {
                 recovery_fraction: D::from_value(0.4),
             },
         })
         .dirty_price;
-        let hrp = ql_portfolio::hierarchical_risk_parity_weights(&[
-            vec![D::from_value(0.04), D::from_value(0.01)],
-            vec![D::from_value(0.01), D::from_value(0.09)],
-        ]);
-        dh.val + tarf.val + coco.val + hrp.iter().map(|x| x.val).sum::<f64>()
+        let cov = vec![
+            vec![D::variable(port0[0], 0), D::variable(port0[1], 1)],
+            vec![D::variable(port0[1], 1), D::variable(port0[2], 2)],
+        ];
+        let w = ql_portfolio::hierarchical_risk_parity_weights(&cov);
+        let exec = ql_portfolio::multi_asset_almgren_chriss_execution(
+            &ql_portfolio::MultiAssetAlmgrenChrissSpec {
+                initial_inventory: vec![D::from_value(1000.0), D::from_value(600.0)],
+                horizon: D::from_value(1.0),
+                num_steps: 6,
+                covariance: cov,
+                temporary_impact: vec![
+                    vec![D::from_value(1e-4), D::from_value(2e-5)],
+                    vec![D::from_value(2e-5), D::from_value(1.5e-4)],
+                ],
+                permanent_impact: vec![
+                    vec![D::from_value(5e-5), D::from_value(0.0)],
+                    vec![D::from_value(0.0), D::from_value(5e-5)],
+                ],
+                risk_aversion: D::variable(port0[3], 3),
+            },
+        );
+        let port = w[0] + w[1] * 2.0 + exec.mean_variance_utility * 1e-4;
+        let sdh = dh.val + dh.d.iter().sum::<f64>();
+        let st = tarf.val + tarf.d.iter().sum::<f64>();
+        let sc = coco.val + coco.d.iter().sum::<f64>();
+        let sp = port.val + port.d.iter().sum::<f64>();
+        sdh + st + sc + sp
     };
     run_comparison(
         "26_double_heston_tarf_coco_hrp_aad",
         "Double Heston/TARF/CoCo/HRP single-pass AD",
         cfg,
-        1e-4,
+        2e-3,
         baseline,
         sota,
     )
 }
-
 pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
     // Keep all quantitative engine dependencies linked into the 26-suite
     // benchmark binary, including engines used by the parity harness.

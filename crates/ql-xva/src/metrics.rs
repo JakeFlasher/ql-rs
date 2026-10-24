@@ -208,6 +208,15 @@ pub fn compute_correlated_first_to_default_bilateral_xva<T: Real>(
     let mut fva = T::zero();
     let inv_paths = T::from_f64(1.0 / cube.n_paths.max(1) as f64);
     let joint = |tc: T, tb: T| {
+        if tc.val() <= 0.0 || tb.val() <= 0.0 {
+            return T::zero();
+        }
+        if tc.val() >= 1.0 - 1e-14 {
+            return tb;
+        }
+        if tb.val() >= 1.0 - 1e-14 {
+            return tc;
+        }
         let ic = T::from_f64(ql_math::inv_norm_cdf(tc.val().clamp(1e-14, 1.0 - 1e-14)));
         let ib = T::from_f64(ql_math::inv_norm_cdf(tb.val().clamp(1e-14, 1.0 - 1e-14)));
         let mut xc = ic;
@@ -263,14 +272,15 @@ pub fn compute_correlated_first_to_default_bilateral_xva<T: Real>(
         let sb0 = (-hs * T::from_f64(prev)).exp();
         let sb1 = (-hs * T::from_f64(t)).exp();
         let j00 = joint(sc0, sb0);
+        let j10 = joint(sc1, sb0);
+        let j01 = joint(sc0, sb1);
         let j11 = joint(sc1, sb1);
-        let total = (j00 - j11).max_val(T::zero());
-        let c_inc = (j00 - joint(sc1, sb0)).max_val(T::zero());
-        let b_inc = (total - c_inc).max_val(T::zero());
+        let c_inc = ((j00 - j10) + (j01 - j11)).max_val(T::zero()) * 0.5;
+        let b_inc = ((j00 - j01) + (j10 - j11)).max_val(T::zero()) * 0.5;
         let df = curve.discount_factor(t);
         cva += lc * ep * df * c_inc;
         dva -= ls * en * df * b_inc;
-        fva += fs * (ep + en) * df * sb1 * T::from_f64(dt);
+        fva += fs * (ep + en) * df * j11 * T::from_f64(dt);
     }
     let epe = if let Some(&last) = cube.times.last() {
         let mut acc = T::zero();
@@ -297,6 +307,28 @@ pub fn compute_correlated_first_to_default_bilateral_xva<T: Real>(
         cva,
         dva,
         fva,
+    }
+}
+
+#[cfg(test)]
+mod phase14_tests {
+    use super::*;
+    use crate::NpvCube;
+    use ql_curves::FlatForwardCurve;
+    use ql_time::Date;
+    #[test]
+    fn phase14_correlated_ftd_is_finite() {
+        let d = Date::from_ymd(2024, 1, 1).unwrap();
+        let curve = FlatForwardCurve::new(d, 0.02);
+        let mut cube = NpvCube::new(1, vec![0.5, 1.0], 2);
+        cube.set(0, 0, 0, 10.0);
+        cube.set(0, 0, 1, 12.0);
+        cube.set(0, 1, 0, 11.0);
+        cube.set(0, 1, 1, 13.0);
+        let r = compute_correlated_first_to_default_bilateral_xva(
+            &cube, &curve, None, 0.02, 0.6, 0.03, 0.6, 0.01, 0.0,
+        );
+        assert!(r.cva.is_finite() && r.dva.is_finite() && r.fva.is_finite());
     }
 }
 
