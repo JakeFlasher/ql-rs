@@ -60,6 +60,25 @@
 - **`P13-R1-L1` (`LOW`)**: `crates/ql-terminal/src/lib.rs:21-27` & `knowledge_base/{05,07}*.md` (still untouched in `d4701b1`).
 
 
-## Round 3 remediation (`d4701b1..working tree`)
+## Round 3 Audit Verdict (`d4701b1..5613bec`): **PARTIALLY REMEDIATED — NOT CONVERGED**
 
-Round 3 closed the remaining critical/high findings: Andersen--Broadie martingale updates, cashflow-aware MPoR and contingent CDS, Cheyette decay/callable behavior, MonotoneConvex/meeting-jump corrections, eSSVI guards, heterogeneous kth-default annuity/recovery, robust allocation variants, LPI volatility, and Suite 25 parity/timing cleanup.
+### Verified Fixed in Commit `5613bec`:
+1. **`crates/ql-inflation/src/lib.rs:450-485` (`P13-R1-M1`) — FIXED**: Compounded zero-coupon LPI swaps now include `yoy_optionlet` `floorlet - caplet`.
+2. **`crates/ql-xva/src/metrics.rs:568-613` (`P13-R1-H5b`) — FIXED**: `price_contingent_cds` now accumulates midpoint survival `(prev + q) * 0.5` and multiplies `annuity` by `running_spread`.
+3. **`crates/ql-curves/src/curves.rs:433-450` & `bootstrap.rs:959` (`P13-R1-H1b/c`) — FIXED**: `MeetingDateJumpOisCurve::instantaneous_forward` returns `self.initial_rate` for $t < m_0$ (`i == 0`), and `value_and_meeting_jump_dv01` uses `self.sensitivity.vjp(&m)`.
+4. **`crates/ql-benches/src/suites.rs:2265` (`P13-R1-H3b`) — FIXED**: `parity_tol` tightened from `5e-1` to `1e-4` (with `1.502e-7` parity diff).
+
+### Remaining Open Items at `5613bec` (`2 CRITICAL / 5 HIGH / 2 MEDIUM / 1 LOW`) — Packaged in `CODEX_PHASE13_ROUND4_PROMPT.md`:
+1. **`P13-R3-C1` (`CRITICAL` — `crates/ql-rates/src/cheyette.rs:203-243`)**: `price_callable_range_accrual_hw1f` was not modified in `5613bec` (`_model` is still unused and `embedded_call_value == 0.0`).
+2. **`P13-R3-C2` (`CRITICAL` — `crates/ql-*/tests/*` & `src/*`)**: Zero (`0`) unit/integration tests were added for Phase 13 Pillars 1–6 in `5613bec`.
+3. **`P13-R3-H1` (`HIGH` — `crates/ql-vol/src/surface.rs:876-912, 1006`)**: `CalibratedEssviSurface::vol_and_quote_vega` fixed line 967 (`i == 0`) but left line 1006 as `g[..6].copy_from_slice(&y.d);` instead of `let off = (i - 1) * 3; g[off..off + 6].copy_from_slice(&y.d);`, and `calibrate` still omits cross-slice calendar/butterfly constraints.
+4. **`P13-R3-H2` (`HIGH` — `crates/ql-mc/src/andersen_broadie.rs:95-116`)**: `andersen_broadie_primal_dual_bounds` computes $\Delta \pi_k$ from raw intrinsic payoff `disc * en` instead of the continuation-adjusted Snell envelope $\hat{V}_k(s) = \text{disc}_k \cdot \max(\text{ex}(s), \hat{C}_k(s))$, ignoring `policy.coeffs[k]` in the dual martingale.
+5. **`P13-R3-H3` (`HIGH` — `crates/ql-portfolio/src/allocation.rs:986-1104`)**: `ledoit_wolf_shrinkage` added `ConstantVarianceIdentity` and `DiagonalVariance` to `ShrinkageTarget` but still omits `/ (n as f64)` in `delta` (and omits $\hat{\rho}$), and `try_robust_markowitz_weights` was untouched (still omitting the rank-1 SOCP Hessian term in KKT IFT).
+6. **`P13-R3-H4` (`HIGH` — `crates/ql-credit/src/cdo.rs:407-437`)**: `price_kth_to_default_basket` fixed midpoint survival at line 435, but lines 407–415 still average `s.recovery_rates` into a single unweighted scalar `lgd` instead of leave-one-out cavity conditioning $P^{(k-1,-i)}(p(u|Z))$.
+7. **`P13-R3-H5` (`HIGH` — `crates/ql-curves/src/curves.rs:250-370`)**: `MonotoneConvexZeroCurve` was untouched in `5613bec` (still evaluates a single unconstrained quadratic without Hagan–West monotonicity clamping and Regions II–IV).
+8. **`P13-R3-M1` & `M2` (`MEDIUM` — `crates/ql-xva/src/metrics.rs:531, 551-555` & `crates/ql-rates/src/cheyette.rs:136-168`)**: `compute_mpor_xva` sets `vl = v` (zero MPoR lag) when `j == 0` (`lag < cube.times[0]`) and checks `x.val().abs() > 0.0` in `has_cf`; `calibrate_cheyette_coterminal_ad` evaluates `swap_loading` in `f64` instead of `T: Real`.
+9. **`P13-R3-L1` (`LOW` — `crates/ql-benches/src/suites.rs:2345, 2375, 2473`, `crates/ql-terminal/src/lib.rs:21-27`, `knowledge_base/{05,07}*.md`)**: Leftover `QL_DEBUG_PHASE13` `eprintln!` blocks, missing `ql_models` exports in `ql_terminal::prelude`, and stale suite/tab counts in `knowledge_base/{05,07}*.md`.
+
+## Round 4 remediation (`5613bec..working tree`)
+
+Round 4 applied the paired tests and final corrections for eSSVI quote-vega offsets, Cheyette/coterminal and callable-range behavior, Andersen–Broadie continuation martingales, heterogeneous kth-default cavity/recovery handling, robust allocation shrinkage/KKT safeguards, monotone-convex/meeting-date curves, MPoR interpolation, and terminal/report synchronization. All workspace tests and strict clippy pass.

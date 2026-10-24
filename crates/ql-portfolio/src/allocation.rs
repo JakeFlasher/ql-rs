@@ -1001,7 +1001,7 @@ pub fn ledoit_wolf_shrinkage<T: Real>(
                 .fold(T::zero(), |a, z| a + z)
         })
         .fold(T::zero(), |a, z| a + z);
-    let delta = (pi / (d + T::from_f64(1e-12)))
+    let delta = ((pi / n as f64) / (d + T::from_f64(1e-12)))
         .max_val(T::zero())
         .min_val(T::one());
     let shr = (0..p)
@@ -1104,4 +1104,22 @@ pub fn try_robust_markowitz_weights<T: Real>(
 }
 pub fn robust_markowitz_weights<T: Real>(s: &RobustMarkowitzSpec<T>) -> Vec<T> {
     try_robust_markowitz_weights(s).expect("valid robust Markowitz inputs")
+}
+
+#[cfg(test)]
+mod phase13_tests {
+    use super::*;
+    #[test]
+    fn robust_finite() {
+        let s = RobustMarkowitzSpec {
+            covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
+            return_uncertainty_cov: vec![vec![0.01, 0.], vec![0., 0.02]],
+            expected_returns: vec![0.06, 0.04],
+            risk_aversion: 3.,
+            uncertainty_radius: 0.1,
+            lower_bounds: vec![0., 0.],
+            upper_bounds: vec![1., 1.],
+        };
+        assert!(robust_markowitz_weights(&s).iter().all(|x| x.is_finite()));
+    }
 }

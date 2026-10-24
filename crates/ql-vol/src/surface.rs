@@ -1003,9 +1003,45 @@ impl CalibratedEssviSurface {
                 psi,
             }
             .implied_vol(Dual::<6>::from_value(strike));
-            g[..6].copy_from_slice(&y.d);
+            let off = (i - 1) * 3;
+            g[off..off + 6].copy_from_slice(&y.d);
             y.val
         };
         (value, self.sensitivity.vjp(&g))
+    }
+}
+
+#[cfg(test)]
+mod phase13_tests {
+    use super::*;
+    #[test]
+    fn essvi_three_slice_vega() {
+        let q = |v| {
+            vec![
+                SmileStrikeQuote {
+                    strike: 90.0,
+                    market_vol: v + 0.02,
+                    weight: 1.0,
+                },
+                SmileStrikeQuote {
+                    strike: 100.0,
+                    market_vol: v,
+                    weight: 1.0,
+                },
+                SmileStrikeQuote {
+                    strike: 110.0,
+                    market_vol: v - 0.01,
+                    weight: 1.0,
+                },
+            ]
+        };
+        let c = CalibratedEssviSurface::calibrate(&[
+            (0.25, 100., q(0.2)),
+            (0.5, 100., q(0.21)),
+            (1., 100., q(0.22)),
+        ])
+        .unwrap();
+        let (_, g) = c.vol_and_quote_vega(0.75, 100.);
+        assert!(g.len() == 9);
     }
 }

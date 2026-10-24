@@ -528,7 +528,7 @@ pub fn compute_mpor_xva<T: Real>(
     ls: T,
     fs: T,
 ) -> XvaReport<T> {
-    let has_cf = period_cashflows.is_some_and(|c| c.iter().any(|x| x.val().abs() > 0.0));
+    let has_cf = period_cashflows.is_some_and(|c| !c.is_empty());
     if s.mpor_years <= 0.0 && !has_cf {
         return compute_xva(cube, curve, Some(&s.csa), hc, lc, hs, ls, fs);
     }
@@ -540,6 +540,11 @@ pub fn compute_mpor_xva<T: Real>(
                 .times
                 .partition_point(|x| *x <= lag)
                 .min(cube.times.len().saturating_sub(1));
+            let alpha0 = if cube.times[0] > 1e-12 {
+                (lag / cube.times[0]).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
             let alpha = if j == 0 {
                 0.0
             } else {
@@ -549,7 +554,7 @@ pub fn compute_mpor_xva<T: Real>(
             for p in 0..cube.n_paths {
                 let v = cube.get(ns, k, p);
                 let vl = if j == 0 {
-                    v
+                    cube.get(ns, 0, p) * alpha0
                 } else {
                     cube.get(ns, j - 1, p) * (1.0 - alpha) + cube.get(ns, j, p) * alpha
                 };
@@ -610,4 +615,23 @@ pub fn price_contingent_cds<T: Real>(
         T::zero()
     };
     (prot, premium, fair)
+}
+
+#[cfg(test)]
+mod phase13_tests {
+    use super::*;
+    #[test]
+    fn contingent_empty_safe() {
+        let c = NpvCube::<f64>::new(0, vec![], 0);
+        let d = crate::price_contingent_cds(
+            &c,
+            0,
+            None,
+            &ql_curves::FlatForwardCurve::new(ql_time::Date(0), 0.02),
+            0.01,
+            1.,
+            0.01,
+        );
+        assert_eq!(d.0, 0.);
+    }
 }

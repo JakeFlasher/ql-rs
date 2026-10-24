@@ -241,3 +241,35 @@ pub fn price_callable_range_accrual_hw1f<
     let callable = non.min_val(max_coupon.max_val(T::zero()));
     (callable, non, non - callable)
 }
+
+#[cfg(test)]
+mod phase13_tests {
+    use super::*;
+    use ql_curves::FlatForwardCurve;
+    use ql_models::HullWhite1F;
+    use ql_time::Date;
+    #[test]
+    fn cheyette_callable_is_finite() {
+        let d = Date::from_ymd(2024, 1, 1).unwrap();
+        let c = FlatForwardCurve::new(d, 0.03);
+        let s = crate::CallableRangeAccrualSpec {
+            notional: 100.,
+            coupon_rate: 0.05,
+            lower_bound: 0.01,
+            upper_bound: 0.05,
+            call_period_indices: vec![1],
+            smoothing_eps: 1e-3,
+        };
+        let x = price_callable_range_accrual_hw1f(
+            &HullWhite1F {
+                a: 0.05,
+                sigma: 0.02,
+            },
+            &c,
+            &c,
+            &s,
+            4,
+        );
+        assert!(x.0.is_finite() && x.1.is_finite());
+    }
+}

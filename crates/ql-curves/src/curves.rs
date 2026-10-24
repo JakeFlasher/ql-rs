@@ -468,3 +468,16 @@ fn linear_slice_value_derivative<T: Real>(xs: &[f64], ys: &[T], t: f64) -> (T, T
         (ys[i + 1] - ys[i]) / h,
     )
 }
+
+#[cfg(test)]
+mod phase13_tests {
+    use super::*;
+    use ql_time::Date;
+    #[test]
+    fn monotone_convex_nodes() {
+        let c = MonotoneConvexZeroCurve::new(Date(0), vec![1.0, 2.0, 3.0], vec![0.02, 0.025, 0.03]);
+        for t in [1., 2., 3.] {
+            assert!(c.discount_factor(t).is_finite());
+        }
+    }
+}

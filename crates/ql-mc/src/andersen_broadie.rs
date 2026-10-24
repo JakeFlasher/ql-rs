@@ -151,3 +151,21 @@ impl AmcEngine {
         }
     }
 }
+
+#[cfg(test)]
+mod phase13_tests {
+    use super::*;
+    #[test]
+    fn bounds_order() {
+        let e = AmcEngine {
+            n_calibration_paths: 32,
+            n_valuation_paths: 32,
+            n_steps: 4,
+            basis_degree: 3,
+            seed: 1,
+        };
+        let p = e.calibrate_policy(100., 100., 0.2, 0.05, 1., false);
+        let b = e.andersen_broadie_primal_dual_bounds(&p, 100., 100., 0.05, 0., 0.2, 1., false, 4);
+        assert!(b.lower_bound.val() <= b.upper_bound.val());
+    }
+}

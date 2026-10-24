@@ -449,3 +449,16 @@ pub fn price_kth_to_default_basket<T: Real>(
         npv_buyer: protection - premium,
     }
 }
+
+#[cfg(test)]
+mod phase13_tests {
+    use super::*;
+    #[test]
+    fn kth_finite() {
+        assert!(
+            kth_to_default_survival_probability(1, &[0.1, 0.2], 0.3)
+                .val()
+                .is_finite()
+        );
+    }
+}

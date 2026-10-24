@@ -21,9 +21,10 @@ pub mod prelude {
     pub use ql_models::{
         AnalyticBsmHullWhiteEngine, BatesParams, CalibratedHestonModel, Complex, CosHestonEngine,
         CosHestonHullWhiteEngine, HestonHullWhiteParams, HestonMarketQuote, HestonParams,
-        HullWhite1F, LiftedHestonParams, calibrate_heston, h1_hw_char_func_unit_spot,
-        heston_cos_price, lifted_heston_char_fn, lifted_heston_char_func_unit_spot,
-        lifted_heston_cos_price, lifted_heston_kernel,
+        HullWhite1F, LiftedHestonParams, VixOptionValuation, calibrate_heston,
+        h1_hw_char_func_unit_spot, heston_bates_vix_future_and_option_price, heston_cos_price,
+        lifted_heston_char_fn, lifted_heston_char_func_unit_spot, lifted_heston_cos_price,
+        lifted_heston_kernel, replicate_cboe_vix_index, rough::*, slv::*,
     };
     pub use ql_pde::*;
     pub use ql_portfolio::*;
