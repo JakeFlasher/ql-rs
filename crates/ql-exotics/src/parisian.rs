@@ -277,10 +277,10 @@ pub fn price_parisian_option_mc_ad<T: Real>(
                 // an erroneous 0.5 weight to paths that never breach.
                 knocked = knocked.max_val(breach);
             } else {
-                let gate = clock.smooth_heaviside_c2(
-                    s.window_duration,
-                    s.window_duration.val().abs().max(1e-8),
-                );
+                let clock_hw = (s.expiry.val() / n as f64).max(smoothing_eps).max(1e-8);
+                let gate = clock
+                    .smooth_heaviside_c2(s.window_duration, clock_hw)
+                    .max_val(T::zero());
                 knocked = knocked.max_val(gate);
             }
         }

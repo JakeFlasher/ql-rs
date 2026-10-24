@@ -80,16 +80,36 @@ pub fn heston_bates_vix_future_and_option_price<T: Real>(
         };
     }
     let k = p.heston.kappa;
-    let a = if k.val().abs() < 1e-8 {
-        T::one()
+    let kw = k * T::from_f64(vix_window);
+    let a = if kw.val().abs() < 1e-6 {
+        T::one() - kw * 0.5 + kw * kw / 6.0
     } else {
-        (T::one() - (-k * T::from_f64(vix_window)).exp()) / (k * T::from_f64(vix_window))
+        (T::one() - (-kw).exp()) / kw
     };
-    let jump = p.lambda * (p.mu_j.exp() - T::one() - p.mu_j + p.sigma_j * p.sigma_j * 0.5);
+    let kappa_j = (p.mu_j + p.sigma_j * p.sigma_j * 0.5).exp() - T::one();
+    let jump = p.lambda * (kappa_j - p.mu_j);
     let b = p.heston.theta * (T::one() - a) + T::from_f64(2.0) * jump;
     let mean =
         p.heston.v0 * (-k * expiry).exp() + p.heston.theta * (T::one() - (-k * expiry).exp());
-    let f = (a * mean + b).max_val(T::zero()).sqrt();
+    let mu_var = (a * mean + b).max_val(T::from_f64(1e-12));
+    let t_exp = expiry.max_val(T::from_f64(1e-8));
+    let e_k = (-k * t_exp).exp();
+    let kt = k * t_exp;
+    let var_v = if kt.val().abs() < 1e-6 {
+        p.heston.sigma_v
+            * p.heston.sigma_v
+            * t_exp
+            * (p.heston.v0 + (p.heston.theta * 0.5 - p.heston.v0) * kt).max_val(T::zero())
+    } else {
+        let s2_k = p.heston.sigma_v * p.heston.sigma_v / k;
+        (p.heston.v0 * s2_k * (e_k - e_k * e_k)
+            + p.heston.theta * s2_k * 0.5 * (T::one() - e_k) * (T::one() - e_k))
+            .max_val(T::zero())
+    };
+    let rel_var = (a * a * var_v) / (mu_var * mu_var);
+    let total_vix_var = (T::one() + rel_var).ln() * 0.25;
+    let vvol = (total_vix_var / t_exp).max_val(T::from_f64(1e-12)).sqrt();
+    let f = mu_var.sqrt() * (-total_vix_var * 0.5).exp();
     if expiry.val() <= 0.0 {
         return VixOptionValuation {
             vix_future: f,
@@ -97,10 +117,9 @@ pub fn heston_bates_vix_future_and_option_price<T: Real>(
             put_price: (strike - f).max_val(T::zero()) * discount_factor,
         };
     }
-    let vvol = (p.heston.sigma_v.abs() * expiry.sqrt() * 0.5).max_val(T::from_f64(1e-6));
-    let c = ql_vol::black_scholes_price(f, strike, vvol, expiry, T::zero(), T::zero(), true)
+    let c = ql_vol::black_scholes_price(f, strike, vvol, t_exp, T::zero(), T::zero(), true)
         * discount_factor;
-    let put = ql_vol::black_scholes_price(f, strike, vvol, expiry, T::zero(), T::zero(), false)
+    let put = ql_vol::black_scholes_price(f, strike, vvol, t_exp, T::zero(), T::zero(), false)
         * discount_factor;
     VixOptionValuation {
         vix_future: f,
