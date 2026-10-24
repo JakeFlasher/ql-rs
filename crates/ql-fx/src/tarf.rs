@@ -41,8 +41,8 @@ pub fn price_fx_tarf_mc_ad<T: Real>(
         };
     }
     let rng = PhiloxRng::new(seed);
-    let eps_s = spec.smoothing_eps.max(1e-6) * spec.strike.val().abs().max(1.0);
-    let eps_t = spec.smoothing_eps.max(1e-6) * spec.target_profit.val().abs().clamp(1e-4, 1.0);
+    let eps_s = spec.smoothing_eps.max(1e-6);
+    let eps_t = spec.smoothing_eps.max(1e-6);
     let eta = T::from_f64(if spec.is_exporter_call { 1.0 } else { -1.0 });
     let mut pv = T::zero();
     let mut kt = T::zero();
@@ -76,10 +76,7 @@ pub fn price_fx_tarf_mc_ad<T: Real>(
             let capped = match spec.cap_convention {
                 FxTarfCapConvention::ExactCap => {
                     let d = positive_room - gain;
-                    let excess = (d + (d * d + T::from_f64(eps_t * eps_t)).sqrt()
-                        - T::from_f64(eps_t))
-                    .max_val(T::zero())
-                        * 0.5;
+                    let excess = (d + (d * d + T::from_f64(eps_t * eps_t)).sqrt()) * 0.5;
                     alive * (positive_room - excess).max_val(T::zero())
                 }
                 FxTarfCapConvention::FullCouponAtKnockOut => alive * gain,
@@ -108,37 +105,45 @@ mod phase14_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
-    fn phase14_tarf_cap_and_delta() {
-        let s = FxTarfSpec {
-            notional: 1.0,
-            spot: 1.05,
-            strike: 1.0,
-            r_dom: 0.02,
-            r_for: 0.01,
-            vol: 0.1,
-            fixing_times: vec![0.25, 0.5, 0.75, 1.0],
-            target_profit: 1e6,
-            downside_leverage: 1.0,
-            is_exporter_call: true,
-            cap_convention: FxTarfCapConvention::ExactCap,
-            smoothing_eps: 1e-3,
+    fn phase14_tarf_cap_and_delta_match_fd() {
+        let eval = |spot: f64, target: f64| {
+            let s = FxTarfSpec {
+                notional: 1.0,
+                spot,
+                strike: 1.0,
+                r_dom: 0.02,
+                r_for: 0.01,
+                vol: 0.12,
+                fixing_times: vec![0.25, 0.5, 0.75, 1.0],
+                target_profit: target,
+                downside_leverage: 1.5,
+                is_exporter_call: true,
+                cap_convention: FxTarfCapConvention::ExactCap,
+                smoothing_eps: 1e-3,
+            };
+            price_fx_tarf_mc_ad(&s, 64, 9)
         };
-        let v = price_fx_tarf_mc_ad(&s, 64, 9);
-        assert!(v.npv.is_finite() && v.expected_accumulated_profit.val() <= 1e6 + 1e-3);
+        let v_cap = eval(1.05, 0.10);
+        assert!(v_cap.expected_accumulated_profit <= 0.10 + 1e-3);
+        let h = 1e-5;
+        let fd_spot = (eval(1.05 + h, 0.15).npv - eval(1.05 - h, 0.15).npv) / (2.0 * h);
+        let fd_target = (eval(1.05, 0.15 + h).npv - eval(1.05, 0.15 - h).npv) / (2.0 * h);
         let sd = FxTarfSpec {
-            spot: Dual::<1>::variable(1.05, 0),
-            notional: Dual::from_value(1.0),
-            strike: Dual::from_value(1.0),
-            r_dom: Dual::from_value(0.02),
-            r_for: Dual::from_value(0.01),
-            vol: Dual::from_value(0.1),
-            fixing_times: s.fixing_times,
-            target_profit: Dual::from_value(0.15),
-            downside_leverage: Dual::from_value(1.0),
+            notional: Dual::<2>::from_value(1.0),
+            spot: Dual::<2>::variable(1.05, 0),
+            strike: Dual::<2>::from_value(1.0),
+            r_dom: Dual::<2>::from_value(0.02),
+            r_for: Dual::<2>::from_value(0.01),
+            vol: Dual::<2>::from_value(0.12),
+            fixing_times: vec![0.25, 0.5, 0.75, 1.0],
+            target_profit: Dual::<2>::variable(0.15, 1),
+            downside_leverage: Dual::<2>::from_value(1.5),
             is_exporter_call: true,
             cap_convention: FxTarfCapConvention::ExactCap,
             smoothing_eps: 1e-3,
         };
-        assert!(price_fx_tarf_mc_ad(&sd, 32, 9).npv.d[0].is_finite());
+        let ad = price_fx_tarf_mc_ad(&sd, 64, 9).npv;
+        assert!((ad.d[0] - fd_spot).abs() < 1e-6);
+        assert!((ad.d[1] - fd_target).abs() < 1e-6);
     }
 }

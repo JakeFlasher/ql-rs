@@ -1874,5 +1874,12 @@ mod phase14_tests {
     fn phase14_tab_is_registered() {
         assert_eq!(TabId::ALL.len(), 24);
         assert!(TabId::ALL.contains(&TabId::Phase14Sota));
+        let mut ws = DeskWorkstation::new();
+        let frame = ws.step_tick();
+        assert!(frame.double_heston_tarf_coco_hrp_metric > 100.0);
+        assert!(
+            ws.render_dashboard(&frame, false)
+                .contains("24 Double Heston/TARF/CoCo/HRP")
+        );
     }
 }

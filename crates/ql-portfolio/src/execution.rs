@@ -221,12 +221,17 @@ pub fn try_multi_asset_almgren_chriss_execution<T: Real>(
     }
     let n = s.num_steps;
     let dt = s.horizon / n as f64;
+
     let mut h_tilde = vec![vec![T::zero(); d]; d];
+    let mut g_sym = vec![vec![T::zero(); d]; d];
+    let mut g_skew = vec![vec![T::zero(); d]; d];
     for i in 0..d {
         for j in 0..d {
             let hs = (s.temporary_impact[i][j] + s.temporary_impact[j][i]) * 0.5;
             let gs = (s.permanent_impact[i][j] + s.permanent_impact[j][i]) * 0.5;
             h_tilde[i][j] = hs - gs * dt * 0.5;
+            g_sym[i][j] = gs;
+            g_skew[i][j] = (s.permanent_impact[i][j] - s.permanent_impact[j][i]) * 0.5;
         }
         if h_tilde[i][i].val() <= 0.0 || s.covariance[i][i].val() < 0.0 {
             return Err(AllocationError::InvalidDimensions);
@@ -243,15 +248,17 @@ pub fn try_multi_asset_almgren_chriss_execution<T: Real>(
                 let row = k * d + i;
                 for j in 0..d {
                     let cov_s = (s.covariance[i][j] + s.covariance[j][i]) * 0.5;
+                    let sub_ij = h_tilde[i][j] + g_skew[i][j] * dt * 0.5;
+                    let sup_ij = h_tilde[i][j] - g_skew[i][j] * dt * 0.5;
                     a[row][k * d + j] += h_tilde[i][j] * 2.0 + s.risk_aversion * cov_s * dt * dt;
                     if k > 0 {
-                        a[row][(k - 1) * d + j] -= h_tilde[i][j];
+                        a[row][(k - 1) * d + j] -= sub_ij;
                     }
                     if k + 1 < n - 1 {
-                        a[row][(k + 1) * d + j] -= h_tilde[i][j];
+                        a[row][(k + 1) * d + j] -= sup_ij;
                     }
                     if k == 0 {
-                        rhs[row] += h_tilde[i][j] * s.initial_inventory[j];
+                        rhs[row] += sub_ij * s.initial_inventory[j];
                     }
                 }
             }
@@ -267,8 +274,7 @@ pub fn try_multi_asset_almgren_chriss_execution<T: Real>(
     let mut cost = T::zero();
     for i in 0..d {
         for j in 0..d {
-            cost +=
-                s.permanent_impact[i][j] * s.initial_inventory[i] * s.initial_inventory[j] * 0.5;
+            cost += g_sym[i][j] * s.initial_inventory[i] * s.initial_inventory[j] * 0.5;
         }
     }
     for k in 0..n {
@@ -277,7 +283,8 @@ pub fn try_multi_asset_almgren_chriss_execution<T: Real>(
         }
         for i in 0..d {
             for j in 0..d {
-                cost += h_tilde[i][j] * trades[k][i] * trades[k][j] / dt;
+                cost += h_tilde[i][j] * trades[k][i] * trades[k][j] / dt
+                    + g_skew[i][j] * trades[k][i] * (inv[k][j] + inv[k + 1][j]) * 0.5;
             }
         }
     }
@@ -311,24 +318,29 @@ pub fn multi_asset_almgren_chriss_execution<T: Real>(
 mod phase14_tests {
     use super::*;
     #[test]
-    fn phase14_multi_asset_liquidates_inventory() {
-        let s = MultiAssetAlmgrenChrissSpec {
-            initial_inventory: vec![100.0, 50.0],
+    fn phase14_multi_asset_matches_1d_and_twap() {
+        let one_d = almgren_chriss_execution(&AlmgrenChrissSpec {
+            initial_inventory: 1000.0,
             horizon: 1.0,
-            num_steps: 4,
-            covariance: vec![vec![0.04, 0.0], vec![0.0, 0.09]],
-            temporary_impact: vec![vec![1e-3, 0.0], vec![0.0, 1e-3]],
-            permanent_impact: vec![vec![1e-4, 0.0], vec![0.0, 1e-4]],
-            risk_aversion: 0.0,
-        };
-        let r = multi_asset_almgren_chriss_execution(&s);
-        assert!(
-            r.inventory_schedule
-                .last()
-                .unwrap()
-                .iter()
-                .all(|x| x.val().abs() < 1e-10)
-        );
-        assert!((r.times.last().copied().unwrap() - 1.0).abs() < 1e-12);
+            num_steps: 5,
+            volatility: 0.2,
+            temporary_impact: 1e-4,
+            permanent_impact: 5e-5,
+            risk_aversion: 1e-4,
+        });
+        let multi_1d = multi_asset_almgren_chriss_execution(&MultiAssetAlmgrenChrissSpec {
+            initial_inventory: vec![1000.0],
+            horizon: 1.0,
+            num_steps: 5,
+            covariance: vec![vec![0.04]],
+            temporary_impact: vec![vec![1e-4]],
+            permanent_impact: vec![vec![5e-5]],
+            risk_aversion: 1e-4,
+        });
+        for k in 0..=5 {
+            assert!((one_d.inventory_schedule[k] - multi_1d.inventory_schedule[k][0]).abs() < 1e-9);
+        }
+        assert!((one_d.expected_cost - multi_1d.expected_cost).abs() < 1e-9);
+        assert!((one_d.cost_variance - multi_1d.cost_variance).abs() < 1e-9);
     }
 }

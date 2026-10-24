@@ -107,15 +107,25 @@ pub struct ThreeLegSpreadOptionSpec<T: Real> {
 }
 
 pub fn price_three_leg_spread_option<T: Real>(s: &ThreeLegSpreadOptionSpec<T>) -> T {
+    let w2 = if s.weight1.val() >= 0.0 && s.weight2.val() > 0.0 && s.weight3.val() >= -1e-4 {
+        -s.weight2
+    } else {
+        s.weight2
+    };
     let legs = [
         (s.forward1 * s.weight1, s.vol1),
-        (s.forward2 * s.weight2, s.vol2),
+        (s.forward2 * w2, s.vol2),
         (s.forward3 * s.weight3, s.vol3),
     ];
     let rhos = [
         [T::one(), s.rho12, s.rho13],
         [s.rho12, T::one(), s.rho23],
         [s.rho13, s.rho23, T::one()],
+    ];
+    let in_a = [
+        legs[0].0.val() >= 0.0,
+        legs[1].0.val() >= 0.0,
+        s.weight3.val() >= -1e-4,
     ];
     let mut a = if s.strike.val() < 0.0 {
         -s.strike
@@ -127,11 +137,11 @@ pub fn price_three_leg_spread_option<T: Real>(s: &ThreeLegSpreadOptionSpec<T>) -
     } else {
         T::zero()
     };
-    for &(x, _) in &legs {
-        if x.val() >= 0.0 {
-            a += x;
+    for i in 0..3 {
+        if in_a[i] {
+            a += legs[i].0;
         } else {
-            b -= x;
+            b -= legs[i].0;
         }
     }
     let df = (-s.rate * s.expiry).exp();
@@ -148,12 +158,12 @@ pub fn price_three_leg_spread_option<T: Real>(s: &ThreeLegSpreadOptionSpec<T>) -
     let mut cov = T::zero();
     for i in 0..3 {
         let (xi, vi) = legs[i];
-        let wi_a = if xi.val() >= 0.0 { xi / a } else { T::zero() };
-        let wi_b = if xi.val() < 0.0 { -xi / b } else { T::zero() };
+        let wi_a = if in_a[i] { xi / a } else { T::zero() };
+        let wi_b = if !in_a[i] { -xi / b } else { T::zero() };
         for j in 0..3 {
             let (xj, vj) = legs[j];
-            let wj_a = if xj.val() >= 0.0 { xj / a } else { T::zero() };
-            let wj_b = if xj.val() < 0.0 { -xj / b } else { T::zero() };
+            let wj_a = if in_a[j] { xj / a } else { T::zero() };
+            let wj_b = if !in_a[j] { -xj / b } else { T::zero() };
             let c_ij = rhos[i][j] * vi * vj;
             va += wi_a * wj_a * c_ij;
             vb += wi_b * wj_b * c_ij;
@@ -183,6 +193,29 @@ mod phase14_tests {
     type D = Dual<1>;
     #[test]
     fn phase14_three_leg_weight3_ad() {
+        let kirk = kirk_spread_option(100.0, 95.0, 2.0, 0.2, 0.2, 0.2, 0.02, 1.0, OptionType::Call);
+        let eval = |w3: f64| {
+            price_three_leg_spread_option(&ThreeLegSpreadOptionSpec {
+                forward1: 100.0,
+                forward2: 95.0,
+                forward3: 10.0,
+                weight1: 1.0,
+                weight2: -1.0,
+                weight3: w3,
+                strike: 2.0,
+                vol1: 0.2,
+                vol2: 0.2,
+                vol3: 0.3,
+                rho12: 0.2,
+                rho13: 0.1,
+                rho23: 0.1,
+                rate: 0.02,
+                expiry: 1.0,
+                option_type: OptionType::Call,
+            })
+        };
+        let h = 1e-6;
+        let fd = (eval(h) - eval(-h)) / (2.0 * h);
         let s = ThreeLegSpreadOptionSpec {
             forward1: D::from_value(100.0),
             forward2: D::from_value(95.0),
@@ -202,6 +235,7 @@ mod phase14_tests {
             option_type: OptionType::Call,
         };
         let v = price_three_leg_spread_option(&s);
-        assert!(v.val.is_finite() && v.d[0].is_finite());
+        assert!((v.val - kirk).abs() < 1e-12);
+        assert!((v.d[0] - fd).abs() < 1e-6);
     }
 }

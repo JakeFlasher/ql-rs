@@ -241,20 +241,26 @@ mod phase14_tests {
             sigma_xi: 0.2,
             rho: -0.3,
         };
-        let ts = vec![0.5, 1.0, 2.0];
-        let fs = ts
-            .iter()
-            .map(|&t| m.futures_price(t).val())
-            .collect::<Vec<_>>();
-        let ot = vec![0.5, 1.0];
-        let om = vec![1.0, 2.0];
+        let ts = vec![0.25, 0.5, 1.0, 2.0];
+        let fs = ts.iter().map(|&t| m.futures_price(t)).collect::<Vec<_>>();
+        let ot = vec![0.25, 0.5, 1.0];
+        let om = vec![0.5, 1.0, 2.0];
         let ov = ot
             .iter()
             .zip(&om)
-            .map(|(&a, &b)| m.log_futures_variance(a, b).val())
+            .map(|(&a, &b)| m.log_futures_variance(a, b))
             .collect::<Vec<_>>();
         let c = CalibratedSchwartzSmith2F::calibrate(&ts, &fs, &ot, &om, &ov, m).unwrap();
-        assert!((c.futures_price(1.0).val() - fs[1]).abs() < 1e-4);
-        assert!(c.sensitivity.j_theta[(0, 0)].is_finite());
+        let (f1, delta) = c.futures_price_and_quote_delta(1.5);
+        assert!((f1 - m.futures_price(1.5)).abs() < 1e-6);
+        let h = 1e-5;
+        let mut fs_up = fs.clone();
+        let mut fs_dn = fs.clone();
+        fs_up[1] += h;
+        fs_dn[1] -= h;
+        let c_up = CalibratedSchwartzSmith2F::calibrate(&ts, &fs_up, &ot, &om, &ov, m).unwrap();
+        let c_dn = CalibratedSchwartzSmith2F::calibrate(&ts, &fs_dn, &ot, &om, &ov, m).unwrap();
+        let fd = (c_up.futures_price(1.5) - c_dn.futures_price(1.5)) / (2.0 * h);
+        assert!((delta[1] - fd).abs() < 1e-4);
     }
 }

@@ -2688,7 +2688,7 @@ fn benchmark_phase14_double_heston_tarf_coco_hrp(scale: usize) -> ComparisonRow 
         "26_double_heston_tarf_coco_hrp_aad",
         "Double Heston/TARF/CoCo/HRP single-pass AD",
         cfg,
-        2e-3,
+        1e-4,
         baseline,
         sota,
     )

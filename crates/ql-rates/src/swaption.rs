@@ -568,6 +568,28 @@ pub fn price_midcurve_swaption_g2pp<T: Real, D: YieldTermStructure<T>, F: YieldT
     let sigmax = var_x.max_val(T::zero()).sqrt();
     let sigmay = var_y.max_val(T::zero()).sqrt();
     let sign = if s.is_payer { 1.0 } else { -1.0 };
+    if sigmay.val().abs() <= 1e-14 {
+        return price_midcurve_swaption_hw1f(
+            &ql_models::HullWhite1F {
+                a: model.a,
+                sigma: model.sigma,
+            },
+            ois,
+            fwd,
+            s,
+        );
+    }
+    if sigmax.val().abs() <= 1e-14 {
+        return price_midcurve_swaption_hw1f(
+            &ql_models::HullWhite1F {
+                a: model.b,
+                sigma: model.eta,
+            },
+            ois,
+            fwd,
+            s,
+        );
+    }
     if sigmax.val().abs() <= 1e-14 && sigmay.val().abs() <= 1e-14 {
         let mut pv = betas[0] * ois.discount_factor(t0);
         for j in 0..m {
@@ -1067,43 +1089,78 @@ impl Fd1dHullWhiteBermudanEngine {
 #[cfg(test)]
 mod phase14_tests {
     use super::*;
+    use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;
     use ql_models::HullWhite1F;
     use ql_time::Date;
     #[test]
     fn phase14_midcurve_and_cube_are_live() {
         let d = Date::from_ymd(2024, 1, 1).unwrap();
-        let c = FlatForwardCurve::new(d, 0.03);
+        let ois = FlatForwardCurve::new(d, 0.03);
+        let fwd = FlatForwardCurve::new(d, 0.035);
         let model = HullWhite1F {
             a: 0.05,
             sigma: 0.01,
         };
         let mut s = MidCurveSwaptionSpec {
-            notional: 1.0,
-            strike: 0.03,
+            notional: 100.0,
+            strike: 0.034,
             option_expiry: 1.0,
-            forward_swap_times: vec![1.0, 2.0, 3.0],
+            forward_swap_times: vec![2.0, 3.0, 4.0],
             is_payer: true,
         };
-        let p = price_midcurve_swaption_hw1f(&model, &c, &c, &s);
+        let p = price_midcurve_swaption_hw1f(&model, &ois, &fwd, &s);
         s.is_payer = false;
-        let r = price_midcurve_swaption_hw1f(&model, &c, &c, &s);
-        assert!(p.val().is_finite() && r.val().is_finite());
-        let cube = SwaptionSabrCube {
-            expiries: vec![1.0],
-            swap_tenors: vec![5.0],
-            beta: 0.5,
-            nodes: vec![vec![SwaptionSabrNode {
-                expiry: 1.0,
-                swap_tenor: 5.0,
-                forward: 0.03,
-                alpha: 0.02,
-                beta: 0.5,
-                rho: -0.2,
-                nu: 0.3,
-            }]],
-            use_normal_vol: false,
-        };
-        assert!(cube.implied_vol(1.0, 5.0, 0.03, 0.03).val().is_finite());
+        let r = price_midcurve_swaption_hw1f(&model, &ois, &fwd, &s);
+        let mut swap_pv = 0.0;
+        for w in s.forward_swap_times.windows(2) {
+            let tau = w[1] - w[0];
+            let f_rate = (fwd.discount_factor(w[0]) / fwd.discount_factor(w[1]) - 1.0) / tau;
+            swap_pv += s.notional * tau * ois.discount_factor(w[1]) * (f_rate - s.strike);
+        }
+        assert!((p - r - swap_pv).abs() < 1e-9);
+
+        let h = 1e-5;
+        let p_up = price_midcurve_swaption_hw1f(
+            &HullWhite1F {
+                a: 0.05,
+                sigma: 0.01 + h,
+            },
+            &ois,
+            &fwd,
+            &MidCurveSwaptionSpec {
+                is_payer: true,
+                ..s.clone()
+            },
+        );
+        let p_dn = price_midcurve_swaption_hw1f(
+            &HullWhite1F {
+                a: 0.05,
+                sigma: 0.01 - h,
+            },
+            &ois,
+            &fwd,
+            &MidCurveSwaptionSpec {
+                is_payer: true,
+                ..s.clone()
+            },
+        );
+        let fd_vega = (p_up - p_dn) / (2.0 * h);
+        type D = Dual<1>;
+        let ois_d = FlatForwardCurve::new(d, D::from_value(0.03));
+        let fwd_d = FlatForwardCurve::new(d, D::from_value(0.035));
+        let ad_p = price_midcurve_swaption_hw1f(
+            &HullWhite1F {
+                a: D::from_value(0.05),
+                sigma: D::variable(0.01, 0),
+            },
+            &ois_d,
+            &fwd_d,
+            &MidCurveSwaptionSpec {
+                is_payer: true,
+                ..s
+            },
+        );
+        assert!((ad_p.d[0] - fd_vega).abs() < 1e-6);
     }
 }
