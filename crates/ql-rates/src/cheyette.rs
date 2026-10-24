@@ -131,52 +131,53 @@ pub fn calibrate_cheyette_coterminal_ad<T: Real, C: YieldTermStructure<T>>(
     let mut model_normal_vols = Vec::with_capacity(m);
     let mut prior_vx = T::zero();
     let mut prev_t = 0.0;
-    // Bond loading and swap-rate loading at x=0.  This is the first-order
-    // Cheyette normal-volatility map used by coterminal cascade calibration.
-    let swap_loading = |s: &crate::EuropeanSwaption| {
+    // Bond and swap-rate loading at x=0.  Keep the whole finite-difference
+    // stencil in `T`: the curve may itself be a Dual/Tape curve and detaching
+    // its discount factors here would silently erase quote sensitivities.
+    let swap_loading = |s: &crate::EuropeanSwaption| -> T {
         let t = s.expiry;
-        let bond = |u: f64, x: f64| {
+        let model = Cheyette1F { mu };
+        let bond = |u: f64, x: T| -> T {
             if u <= t {
-                1.0
+                T::one()
             } else {
-                let g = if mu0.abs() * (u - t) < 1e-8 {
-                    u - t
-                } else {
-                    (1.0 - (-mu0 * (u - t)).exp()) / mu0
-                };
-                curve.discount_factor(u).val() / curve.discount_factor(t).val() * (-g * x).exp()
+                let g = model.g_fn(t, u);
+                curve.discount_factor(u) / curve.discount_factor(t) * (-g * x).exp()
             }
         };
-        let swap_rate = |x: f64| {
-            let mut ann = 0.0;
-            let mut floating = 0.0;
+        let swap_rate = |x: T| -> T {
+            let mut ann = T::zero();
+            let mut floating = T::zero();
             for w in s.swap_times.windows(2) {
                 let tau = w[1] - w[0];
                 let p0 = bond(w[0], x);
                 let p1 = bond(w[1], x);
-                ann += tau * p1;
-                floating += (p0 / p1 - 1.0) * p1;
+                ann += p1 * tau;
+                floating += p0 - p1;
             }
-            if ann.abs() > 1e-14 {
+            if ann.val().abs() > 1e-14 {
                 floating / ann
             } else {
-                0.0
+                T::zero()
             }
         };
         let h = 1e-5;
-        (swap_rate(h) - swap_rate(-h)) / (2.0 * h)
+        let hv = T::from_f64(h);
+        (swap_rate(hv) - swap_rate(-hv)) / (2.0 * h)
     };
     for (s, market) in swaptions.iter().zip(market_normal_vols.iter()) {
         let t = s.expiry;
         let loading = swap_loading(s).abs();
-        if !loading.is_finite() || loading <= 1e-12 {
+        if !loading.val().is_finite() || loading.val() <= 1e-12 {
             return Err("singular swap-rate loading".into());
         }
-        let target_vx = *market * *market * T::from_f64(t / (loading * loading));
+        let target_vx = *market * *market * T::from_f64(t) / (loading * loading);
         let dt_seg = t - prev_t;
         let dt_ad = T::from_f64(dt_seg);
-        let seg = if mu0.abs() < 1e-8 {
-            dt_ad
+        let seg = if (mu0 * dt_seg).abs() < 1e-6 {
+            // (1-exp(-2 mu dt))/(2 mu) = dt-mu dt²+2/3 mu²dt³+...
+            dt_ad * (T::one() - mu * dt_ad)
+                + T::from_f64(2.0 / 3.0) * mu * mu * dt_ad * dt_ad * dt_ad
         } else {
             (T::one() - (-T::from_f64(2.0) * mu * dt_ad).exp()) / (T::from_f64(2.0) * mu)
         };
@@ -189,8 +190,7 @@ pub fn calibrate_cheyette_coterminal_ad<T: Real, C: YieldTermStructure<T>>(
         let sigma = sigma2.sqrt();
         piecewise_sigmas.push(sigma);
         prior_vx = decayed_prior + sigma2 * seg;
-        model_normal_vols
-            .push(T::from_f64(loading) * (prior_vx / T::from_f64(t)).max_val(T::zero()).sqrt());
+        model_normal_vols.push(loading * (prior_vx / T::from_f64(t)).max_val(T::zero()).sqrt());
         prev_t = t;
     }
     Ok(CalibratedCoterminalCascade {
@@ -205,7 +205,7 @@ pub fn price_callable_range_accrual_hw1f<
     D: YieldTermStructure<T>,
     F: YieldTermStructure<T>,
 >(
-    _model: &HullWhite1F<T>,
+    model: &HullWhite1F<T>,
     ois: &D,
     fwd: &F,
     spec: &crate::CallableRangeAccrualSpec<T>,
@@ -214,62 +214,88 @@ pub fn price_callable_range_accrual_hw1f<
     if spec.call_period_indices.is_empty() {
         return (T::zero(), T::zero(), T::zero());
     }
-    // The schedule stores actual period indices; using the loop ordinal here
-    // silently shifted all callable dates whenever indices were sparse.  A
-    // modest sub-grid average makes the corridor indicator less sensitive to
-    // the arbitrary midpoint chosen for a long period while retaining AD.
     let sub = steps.max(1);
+    let a = model.a.abs().max_val(T::from_f64(1e-6));
     let mut non = T::zero();
+    let mut callable = T::zero();
     for &period_idx in &spec.call_period_indices {
         let start = period_idx as f64;
         let end = start + 1.0;
-        let mut accrual_gate = T::zero();
-        for q in 0..sub {
-            let t = start + (q as f64 + 0.5) / sub as f64;
-            let dt = 1.0 / sub as f64;
-            let f = (fwd.discount_factor(t - 0.5) / fwd.discount_factor(t) - T::one()) * 2.0;
-            let gate = (f - spec.lower_bound)
-                .smooth_heaviside_c2(T::zero(), spec.smoothing_eps.max(1e-6))
-                * (T::one()
-                    - (f - spec.upper_bound)
-                        .smooth_heaviside_c2(T::zero(), spec.smoothing_eps.max(1e-6)));
-            accrual_gate += gate * dt;
+        let std_x = model.sigma.abs()
+            * ((T::one() - (-a * (start + 0.5) * 2.0).exp()) / (a * 2.0))
+                .max_val(T::zero())
+                .sqrt();
+        let df_end = ois.discount_factor(end);
+        let call_strike = spec.notional * spec.coupon_rate * df_end * 0.5;
+        let mut node_non = T::zero();
+        let mut node_callable = T::zero();
+        for (z, w) in [
+            (-1.224744871391589, 1.0 / 6.0),
+            (0.0, 4.0 / 6.0),
+            (1.224744871391589, 1.0 / 6.0),
+        ] {
+            let mut accrual_gate = T::zero();
+            for q in 0..sub {
+                let t = start + (q as f64 + 0.5) / sub as f64;
+                let dt = 1.0 / sub as f64;
+                let fwd_rate =
+                    (fwd.discount_factor(t - 0.5) / fwd.discount_factor(t) - T::one()) * 2.0;
+                let f = fwd_rate + std_x * z;
+                let gate = (f - spec.lower_bound)
+                    .smooth_heaviside_c2(T::zero(), spec.smoothing_eps.max(1e-6))
+                    * (T::one()
+                        - (f - spec.upper_bound)
+                            .smooth_heaviside_c2(T::zero(), spec.smoothing_eps.max(1e-6)));
+                accrual_gate += gate * dt;
+            }
+            // Normalize the conditional Gaussian bond factor so its
+            // expectation remains the deterministic OIS discount factor.
+            // This is the exponential-martingale convexity term and keeps
+            // the short-rate vega live at the central quadrature node.
+            let state_df = (-std_x * z - T::from_f64(0.5) * std_x * std_x).exp();
+            let cpn = spec.notional * spec.coupon_rate * accrual_gate * df_end * state_df;
+            node_non += cpn * w;
+            node_callable += cpn.min_val(call_strike) * w;
         }
-        non += spec.notional * spec.coupon_rate * accrual_gate * ois.discount_factor(end);
+        non += node_non;
+        callable += node_callable;
     }
-    let max_coupon = spec.notional * spec.coupon_rate * spec.call_period_indices.len() as f64;
-    let callable = non.min_val(max_coupon.max_val(T::zero()));
-    (callable, non, non - callable)
+    let embedded = (non - callable).max_val(T::zero());
+    (callable, non, embedded)
 }
 
 #[cfg(test)]
 mod phase13_tests {
     use super::*;
+    use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;
     use ql_models::HullWhite1F;
     use ql_time::Date;
     #[test]
-    fn cheyette_callable_is_finite() {
+    fn cheyette_callable_has_positive_embedded_option_and_sigma_vega() {
         let d = Date::from_ymd(2024, 1, 1).unwrap();
-        let c = FlatForwardCurve::new(d, 0.03);
+        let c = FlatForwardCurve::new(d, Dual::<1>::from_value(0.03));
         let s = crate::CallableRangeAccrualSpec {
-            notional: 100.,
-            coupon_rate: 0.05,
-            lower_bound: 0.01,
-            upper_bound: 0.05,
-            call_period_indices: vec![1],
+            notional: Dual::<1>::from_value(100.),
+            coupon_rate: Dual::<1>::from_value(0.05),
+            lower_bound: Dual::<1>::from_value(0.01),
+            upper_bound: Dual::<1>::from_value(0.05),
+            call_period_indices: vec![1, 2],
             smoothing_eps: 1e-3,
         };
         let x = price_callable_range_accrual_hw1f(
             &HullWhite1F {
-                a: 0.05,
-                sigma: 0.02,
+                a: Dual::<1>::from_value(0.05),
+                sigma: Dual::<1>::variable(0.015, 0),
             },
             &c,
             &c,
             &s,
             4,
         );
-        assert!(x.0.is_finite() && x.1.is_finite());
+        assert!(x.0.val().is_finite() && x.1.val().is_finite());
+        assert!(x.0.val() < x.1.val());
+        assert!(x.2.val() > 1e-2);
+        assert!(x.2.d[0].abs() > 1e-4);
     }
 }

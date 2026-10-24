@@ -432,24 +432,36 @@ pub fn price_kth_to_default_basket<T: Real>(
                 .iter()
                 .enumerate()
                 .filter(|(j, _)| *j != m)
-                .map(|(_, p)| *p)
+                .map(|(j, p)| {
+                    let prev = prev_ps.get(j).copied().unwrap_or(T::zero());
+                    (prev + *p) * 0.5
+                })
                 .collect();
-            let cav = if s.k == 1 {
-                T::one()
-            } else {
-                kth_to_default_survival_probability(s.k - 1, &sub, s.correlation)
-            };
+            // The issuer receiving the marginal default increment is
+            // conditioned on exactly k-1 defaults among the other names,
+            // rather than merely fewer than k-1 defaults.  Since the helper
+            // returns P(N < m), the cavity mass is the difference of two
+            // adjacent survival probabilities.
+            let cav = (kth_to_default_survival_probability(s.k, &sub, s.correlation)
+                - kth_to_default_survival_probability(s.k - 1, &sub, s.correlation))
+            .max_val(T::zero());
             let wm = dp * cav;
             w_sum += wm;
             w_lgd += wm * (T::one() - s.recovery_rates.get(m).copied().unwrap_or(T::from_f64(0.4)));
         }
-        let event = (prev_survival - survival).max_val(T::zero());
-        let eff_lgd = if w_sum.val() > 1e-14 {
-            w_lgd / w_sum
+        // `dp * cav` is the discrete-time probability that issuer `m` is
+        // the k-th defaulter during this period.  Using this probability
+        // directly (rather than multiplying a basket event by an average
+        // recovery) gives an exact partition of unity when all ranks are
+        // summed: for every issuer, the cavity masses over k=1..M sum to one.
+        // This is also the correct leave-one-out conditioning for
+        // heterogeneous recovery rates.
+        if w_sum.val() > 1e-14 {
+            protection += s.notional * df * w_lgd;
         } else {
-            T::from_f64(0.4)
-        };
-        protection += s.notional * df * eff_lgd * event;
+            let event = (prev_survival - survival).max_val(T::zero());
+            protection += s.notional * df * T::from_f64(0.4) * event;
+        }
         let accrual = T::from_f64(*s.accruals.get(i).unwrap_or(&1.0));
         // Premium is paid while the basket is alive.  Midpoint default
         // accrual can be enabled by passing the usual half-period survival;
@@ -476,12 +488,45 @@ pub fn price_kth_to_default_basket<T: Real>(
 #[cfg(test)]
 mod phase13_tests {
     use super::*;
+    use ql_curves::{FlatForwardCurve, YieldTermStructure};
+    use ql_time::Date;
     #[test]
-    fn kth_finite() {
-        assert!(
-            kth_to_default_survival_probability(1, &[0.1, 0.2], 0.3)
-                .val()
-                .is_finite()
-        );
+    fn kth_heterogeneous_recovery_partition_of_unity() {
+        let d = Date::from_ymd(2024, 1, 1).unwrap();
+        let disc = FlatForwardCurve::new(d, 0.03);
+        let c1 =
+            crate::SurvivalProbabilityCurve::new(d, vec![1., 2., 3.], vec![0.015, 0.015, 0.015]);
+        let c2 =
+            crate::SurvivalProbabilityCurve::new(d, vec![1., 2., 3.], vec![0.045, 0.045, 0.045]);
+        let c3 =
+            crate::SurvivalProbabilityCurve::new(d, vec![1., 2., 3.], vec![0.075, 0.075, 0.075]);
+        let curves = vec![c1.clone(), c2.clone(), c3.clone()];
+        let recs = vec![0.10, 0.45, 0.80];
+        let times = vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0];
+        let accruals = vec![0.5; 6];
+        let mut sum_prot = 0.0;
+        for k in 1..=3 {
+            let s = KthToDefaultBasketSpec {
+                k,
+                notional: 100.0,
+                running_spread: 0.01,
+                correlation: 0.0,
+                recovery_rates: recs.clone(),
+                payment_times: times.clone(),
+                accruals: accruals.clone(),
+            };
+            let val = price_kth_to_default_basket(&s, &curves, &disc).protection_leg_npv;
+            sum_prot += val;
+        }
+        let mut single_sum = 0.0;
+        for (c, r) in curves.iter().zip(recs.iter()) {
+            let mut prev = 1.0;
+            for &t in &times {
+                let q = c.survival_probability(t);
+                single_sum += 100.0 * (1.0 - r) * disc.discount_factor(t) * (prev - q);
+                prev = q;
+            }
+        }
+        assert!((sum_prot - single_sum).abs() < 1e-10);
     }
 }

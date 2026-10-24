@@ -1076,14 +1076,14 @@ pub fn try_robust_markowitz_weights<T: Real>(
         lower_bounds: s.lower_bounds.clone(),
         upper_bounds: s.upper_bounds.clone(),
     })?;
-    for _ in 0..8 {
+    for iter in 0..32 {
         let mut ow = T::zero();
         for i in 0..n {
             for j in 0..n {
                 ow += w[i] * s.return_uncertainty_cov[i][j] * w[j];
             }
         }
-        let scale = s.uncertainty_radius / (ow + T::from_f64(1e-12)).sqrt();
+        let scale = s.uncertainty_radius / (ow + T::from_f64(1e-16)).sqrt();
         for i in 0..n {
             for j in 0..n {
                 cov[i][j] = s.covariance[i][j]
@@ -1098,10 +1098,11 @@ pub fn try_robust_markowitz_weights<T: Real>(
             lower_bounds: s.lower_bounds.clone(),
             upper_bounds: s.upper_bounds.clone(),
         })?;
-        if nw
-            .iter()
-            .zip(&w)
-            .all(|(a, b)| (a.val() - b.val()).abs() < 1e-12)
+        if iter >= 16
+            && nw
+                .iter()
+                .zip(&w)
+                .all(|(a, b)| (a.val() - b.val()).abs() < 1e-14)
         {
             w = nw;
             break;
@@ -1117,17 +1118,39 @@ pub fn robust_markowitz_weights<T: Real>(s: &RobustMarkowitzSpec<T>) -> Vec<T> {
 #[cfg(test)]
 mod phase13_tests {
     use super::*;
+    use ql_ad::Dual;
     #[test]
-    fn robust_finite() {
-        let s = RobustMarkowitzSpec {
-            covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
-            return_uncertainty_cov: vec![vec![0.01, 0.], vec![0., 0.02]],
-            expected_returns: vec![0.06, 0.04],
-            risk_aversion: 3.,
-            uncertainty_radius: 0.1,
-            lower_bounds: vec![0., 0.],
-            upper_bounds: vec![1., 1.],
+    fn robust_markowitz_dual_matches_fd_in_mu_and_kappa() {
+        let eval_f64 = |mu0: f64, kappa: f64| {
+            robust_markowitz_weights(&RobustMarkowitzSpec {
+                covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
+                return_uncertainty_cov: vec![vec![0.02, 0.005], vec![0.005, 0.03]],
+                expected_returns: vec![mu0, 0.04],
+                risk_aversion: 2.5,
+                uncertainty_radius: kappa,
+                lower_bounds: vec![0.0, 0.0],
+                upper_bounds: vec![1.0, 1.0],
+            })[0]
         };
-        assert!(robust_markowitz_weights(&s).iter().all(|x| x.is_finite()));
+        let w_ad = robust_markowitz_weights(&RobustMarkowitzSpec {
+            covariance: vec![
+                vec![Dual::<2>::from_value(0.04), Dual::<2>::from_value(0.01)],
+                vec![Dual::<2>::from_value(0.01), Dual::<2>::from_value(0.09)],
+            ],
+            return_uncertainty_cov: vec![
+                vec![Dual::<2>::from_value(0.02), Dual::<2>::from_value(0.005)],
+                vec![Dual::<2>::from_value(0.005), Dual::<2>::from_value(0.03)],
+            ],
+            expected_returns: vec![Dual::<2>::variable(0.07, 0), Dual::<2>::from_value(0.04)],
+            risk_aversion: Dual::<2>::from_value(2.5),
+            uncertainty_radius: Dual::<2>::variable(0.15, 1),
+            lower_bounds: vec![Dual::<2>::from_value(0.0), Dual::<2>::from_value(0.0)],
+            upper_bounds: vec![Dual::<2>::from_value(1.0), Dual::<2>::from_value(1.0)],
+        })[0];
+        let h = 1e-6;
+        let fd_mu0 = (eval_f64(0.07 + h, 0.15) - eval_f64(0.07 - h, 0.15)) / (2.0 * h);
+        let fd_kap = (eval_f64(0.07, 0.15 + h) - eval_f64(0.07, 0.15 - h)) / (2.0 * h);
+        assert!((w_ad.d[0] - fd_mu0).abs() < 1e-6);
+        assert!((w_ad.d[1] - fd_kap).abs() < 1e-6);
     }
 }

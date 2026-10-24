@@ -261,15 +261,25 @@ impl<T: Real> MonotoneConvexZeroCurve<T> {
                 let d1 = times[i + 1] - times[i];
                 f[i + 1] = (fd[i + 1] * d0 + fd[i] * d1) / (d0 + d1);
             }
-            f[0] = fd[0] - (f[1] - fd[0]) * 0.5;
-            let n = fd.len();
-            f[n] = fd[n - 1] - (f[n - 1] - fd[n - 1]) * 0.5;
         }
         if enforce_positivity {
             for i in 1..fd.len() {
                 let cap = (fd[i - 1].min_val(fd[i]) * 2.0).max_val(T::zero());
                 f[i] = f[i].max_val(T::zero()).min_val(cap);
             }
+        }
+        // Compute the boundary nodes only after the interior values have
+        // been clamped.  Otherwise a positivity clamp can change f[1] or
+        // f[n-1] without updating the one-sided Hagan--West extrapolation.
+        if fd.len() == 1 {
+            f[0] = fd[0];
+            f[1] = fd[0];
+        } else {
+            f[0] = fd[0] - (f[1] - fd[0]) * 0.5;
+            let n = fd.len();
+            f[n] = fd[n - 1] - (f[n - 1] - fd[n - 1]) * 0.5;
+        }
+        if enforce_positivity {
             f[0] = f[0]
                 .max_val(T::zero())
                 .min_val((fd[0] * 2.0).max_val(T::zero()));
@@ -294,6 +304,22 @@ impl<T: Real> MonotoneConvexZeroCurve<T> {
             zero_rates.to_vec(),
             self.enforce_positivity,
         )
+    }
+    fn interval_g(&self, i: usize) -> (T, T) {
+        let fd = self.discrete_forwards[i - 1];
+        let g0 = self.nodal_forwards[i - 1] - fd;
+        let g1 = self.nodal_forwards[i] - fd;
+        // Scale the two endpoint corrections when their quadratic vertex
+        // could drive the forward below zero.  The scale is one in the
+        // unconstrained case and is continuous at the positivity boundary.
+        if self.enforce_positivity && (g0 + g1).val() > 1e-14 {
+            let num = T::from_f64(3.0) * fd.max_val(T::zero()) * (g0 + g1);
+            let den = g0 * g0 + g0 * g1 + g1 * g1 + T::from_f64(1e-16);
+            let scale = (num / den).min_val(T::one()).max_val(T::zero());
+            (g0 * scale, g1 * scale)
+        } else {
+            (g0, g1)
+        }
     }
     fn integrated(&self, t: f64) -> T {
         if t <= 0.0 {
@@ -320,8 +346,7 @@ impl<T: Real> MonotoneConvexZeroCurve<T> {
         let t1 = self.times[i - 1];
         let dt = t1 - t0;
         let x = ((t - t0) / dt).clamp(0.0, 1.0);
-        let g0 = self.nodal_forwards[i - 1] - self.discrete_forwards[i - 1];
-        let g1 = self.nodal_forwards[i] - self.discrete_forwards[i - 1];
+        let (g0, g1) = self.interval_g(i);
         // Integrating the Hagan--West correction from 0 to x gives
         // g0*x*(1-x)^2 - g1*x^2*(1-x).  The correction integrates to zero
         // at x=1, so every input discount factor is reproduced exactly.
@@ -361,8 +386,7 @@ impl<T: Real> YieldTermStructure<T> for MonotoneConvexZeroCurve<T> {
         let t0 = if i == 1 { 0.0 } else { self.times[i - 2] };
         let dt = self.times[i - 1] - t0;
         let x = ((t - t0) / dt).clamp(0.0, 1.0);
-        let g0 = self.nodal_forwards[i - 1] - self.discrete_forwards[i - 1];
-        let g1 = self.nodal_forwards[i] - self.discrete_forwards[i - 1];
+        let (g0, g1) = self.interval_g(i);
         self.discrete_forwards[i - 1]
             + g0 * (1.0 - 4.0 * x + 3.0 * x * x)
             + g1 * (-2.0 * x + 3.0 * x * x)
@@ -474,10 +498,14 @@ mod phase13_tests {
     use super::*;
     use ql_time::Date;
     #[test]
-    fn monotone_convex_nodes() {
-        let c = MonotoneConvexZeroCurve::new(Date(0), vec![1.0, 2.0, 3.0], vec![0.02, 0.025, 0.03]);
-        for t in [1., 2., 3.] {
-            assert!(c.discount_factor(t).is_finite());
+    fn monotone_convex_nodes_and_positivity() {
+        let c = MonotoneConvexZeroCurve::new(Date(0), vec![1.0, 2.0, 3.0], vec![0.01, 0.05, 0.034]);
+        for (t, r) in [(1.0, 0.01), (2.0, 0.05), (3.0, 0.034)] {
+            assert!((c.zero_rate(t) - r).abs() < 1e-12);
+        }
+        for k in 0..=60 {
+            let t = k as f64 * 0.05;
+            assert!(c.instantaneous_forward(t) >= -1e-12);
         }
     }
 }
