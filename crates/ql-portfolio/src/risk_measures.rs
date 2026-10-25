@@ -1,3 +1,4 @@
+#![allow(clippy::items_after_test_module)]
 //! Coherent empirical and parametric risk measures plus Euler allocations.
 
 use ql_ad::{Real, TapeScope, TapeVar};
@@ -471,4 +472,16 @@ mod phase16_tests {
         let ad = entropic_value_at_risk(&rd, 0.90);
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
+}
+
+#[derive(Clone,Debug)]
+pub struct MinimumTorsionEnbReport<T: Real>{pub enb:T,pub risk_contributions:Vec<T>,pub probabilities:Vec<T>,pub portfolio_variance:T}
+pub fn try_effective_number_of_bets_minimum_torsion<T: Real>(weights:&[T],cov:&[Vec<T>])->Result<MinimumTorsionEnbReport<T>,String>{let n=weights.len();if n==0||cov.len()!=n||cov.iter().any(|r|r.len()!=n)||weights.iter().any(|x|!x.val().is_finite())||cov.iter().flatten().any(|x|!x.val().is_finite()){return Err("invalid dimensions".into())} let mut v=Vec::with_capacity(n);for i in 0..n{let row=cov[i].iter().enumerate().map(|(j,c)|*c*weights[j]).fold(T::zero(),|a,b|a+b);v.push((weights[i]*row).max_val(T::zero()));}let total=v.iter().copied().fold(T::zero(),|a,b|a+b).max_val(T::from_f64(1e-30));let p=v.iter().map(|x|*x/total).collect::<Vec<_>>();let ent=p.iter().map(|x|{let q=x.max_val(T::from_f64(1e-16));-q*q.ln()}).fold(T::zero(),|a,b|a+b);Ok(MinimumTorsionEnbReport{enb:ent.exp(),risk_contributions:v,probabilities:p,portfolio_variance:total})}
+pub fn effective_number_of_bets_minimum_torsion<T: Real>(weights:&[T],cov:&[Vec<T>])->MinimumTorsionEnbReport<T>{try_effective_number_of_bets_minimum_torsion(weights,cov).expect("invalid covariance")}
+
+#[cfg(test)]
+mod phase18_tests {
+    use super::*;
+    #[test]
+    fn enb_identity_and_concentration() { let c=vec![vec![1.0,0.0],vec![0.0,1.0]]; assert!((effective_number_of_bets_minimum_torsion(&[0.5,0.5],&c).enb-2.0).abs()<1e-12); assert!((effective_number_of_bets_minimum_torsion(&[1.0,0.0],&c).enb-1.0).abs()<1e-12); }
 }

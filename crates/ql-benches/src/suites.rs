@@ -3454,6 +3454,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_phase15_jy_tba_bergomi_nco(scale),
         benchmark_cheyette_cmo_qrh_basecorr_cdar_aad(scale),
         benchmark_asw_mf1f_ah_bess_ep_aad(scale),
+        benchmark_mtmxccs_colva_zabr_pdv_weather_enb_aad(scale),
     ]
 }
 
@@ -3481,3 +3482,22 @@ pub fn run_all_benchmark_suites_with_Config(
 ) -> Vec<ComparisonRow> {
     run_all_benchmark_suites_with_config(warmup_iters, samples)
 }
+
+fn phase18_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
+    let d=date(2024,1,1); let curve=FlatForwardCurve::new(d,T::from_f64(0.03)+x[0]*0.001);
+    let mtm=ql_fx::price_mtm_resetting_xccs(&ql_fx::MtmResettingXccs{for_notional:T::from_f64(1e6),spot_fx:T::from_f64(1.1)+x[1]*0.01,payment_times:vec![1.0,2.0],accrual_fractions:vec![1.0,1.0],for_basis_spread:x[2]*0.001,dom_spread:T::zero(),receive_foreign:true},&curve,&curve,&curve).npv;
+    let ten=ql_rates::price_tenor_basis_swap(&ql_rates::TenorBasisSwapSpec{notional:T::from_f64(1e6),short_leg_times:vec![0.5,1.0],long_leg_times:vec![1.0],short_leg_basis_spread:x[3]*0.001,pay_short_leg:true},&curve,&curve,&curve).npv;
+    let z=ql_models::evaluate_zabr_smile(&ql_models::local_vol::ZabrParams{alpha:T::from_f64(0.2),beta:T::from_f64(0.5),nu:T::from_f64(0.4),rho:T::from_f64(-0.2),gamma:T::from_f64(1.0)},T::from_f64(100.0),T::from_f64(100.0),T::one()).call_price;
+    let pdv=ql_models::pdv_implied_vol_expansion(&ql_models::GuyonPdvParams{beta0:T::from_f64(0.2),beta1:x[0]*0.01,beta2:T::from_f64(0.1),theta1:T::from_f64(0.5),theta2:T::from_f64(0.5),r10:T::from_f64(0.1),r11:T::from_f64(0.2),r20:T::from_f64(0.04),r21:T::from_f64(0.09)},T::from_f64(100.0),T::from_f64(95.0),T::one());
+    let oas=ql_fixed_income::analyze_callable_bond_oas_ad(&ql_fixed_income::CallableBondOasSpec{market_dirty_price:T::from_f64(100.0),face_amount:T::from_f64(100.0),coupon_rate:T::from_f64(0.04),payment_times:vec![1.0,2.0,3.0],call_price:Some(T::from_f64(105.0)),put_price:None,short_rate:T::from_f64(0.03),short_rate_vol:T::from_f64(0.01),tree_steps:8,smoothing_eps:1e-6}).oas;
+    let colva=ql_xva::compute_multicurrency_ctd_colva(&ql_xva::MultiCurrencyCsaSpec{eligible_currency_spreads:vec![T::from_f64(0.01),T::from_f64(0.012)],spread_vols:vec![T::from_f64(0.01),T::from_f64(0.012)],cross_currency_corr:T::from_f64(0.2),collateral_balance_profile:vec![T::one()],payment_times:vec![1.0]}).total_ctd_colva;
+    let wwr=ql_xva::compute_turlakov_wwr_cva_fva(&ql_xva::TurlakovWwrSpec{times:vec![1.0],base_epe:vec![T::from_f64(1.0)],stressed_epe:vec![T::from_f64(2.0)],base_mtm:vec![T::from_f64(1.0)],stressed_mtm:vec![T::from_f64(2.0)],sovereign_hazard_rate:T::from_f64(0.02),counterparty_hazard_rate:T::from_f64(0.03),crisis_prob_threshold:T::from_f64(0.1),coupling_lambda:T::from_f64(0.2),lgd:T::from_f64(0.6),base_funding_spread:T::from_f64(0.01),stressed_funding_spread:T::from_f64(0.02),discount_rate:T::from_f64(0.03)}).wwr_cva;
+    let kiko=ql_fx::price_fx_kiko_option(&ql_fx::FxKikoOptionSpec{spot:T::from_f64(100.0),strike:T::from_f64(100.0),lower_barrier:T::from_f64(80.0),upper_barrier:T::from_f64(120.0),vol:T::from_f64(0.2),expiry:T::one(),r_dom:T::from_f64(0.03),r_for:T::from_f64(0.01),is_call:true,lower_is_ko_upper_is_ki:true});
+    let wb=ql_fx::price_fx_window_barrier_option(&ql_fx::FxWindowBarrierSpec{spot:T::from_f64(100.0),strike:T::from_f64(100.0),barrier:T::from_f64(130.0),vol:T::from_f64(0.2),expiry:T::one(),r_dom:T::from_f64(0.03),r_for:T::from_f64(0.01),window_start:T::zero(),window_end:T::one(),is_up_and_out:true,is_call:true});
+    let weather=ql_commodities::price_weather_hdd_cdd_option(&ql_commodities::WeatherDerivativeSpec{kind:ql_commodities::DegreeDayKind::Hdd,temperature_base:T::from_f64(18.0),initial_temperature:T::from_f64(15.0),mean_level:T::from_f64(15.0),seasonal_amplitude:T::from_f64(5.0),seasonal_phase:T::zero(),mean_reversion:T::from_f64(0.2),daily_vol:T::from_f64(2.0),market_price_risk:T::zero(),times:vec![1.0,2.0],strike:T::from_f64(10.0),notional:T::one(),is_call:true,cap:None}).npv;
+    let clean=ql_commodities::price_clean_spark_dark_spread(&ql_commodities::CleanSparkDarkSpreadSpec{power:T::from_f64(80.0),fuel:T::from_f64(3.0),carbon:T::from_f64(20.0),heat_rate:T::from_f64(7.0),emission_factor:T::from_f64(0.5),strike:T::from_f64(10.0),vol_power:T::from_f64(0.2),vol_fuel:T::from_f64(0.3),vol_carbon:T::from_f64(0.4),rho_power_fuel:T::from_f64(0.2),rho_power_carbon:T::from_f64(0.1),rho_fuel_carbon:T::from_f64(0.2),rate:T::from_f64(0.03),expiry:T::one(),option_type:ql_instruments::OptionType::Call});
+    let enb=ql_portfolio::effective_number_of_bets_minimum_torsion(&[T::from_f64(0.5),T::from_f64(0.5)],&[vec![T::one(),T::zero()],vec![T::zero(),T::one()]]).enb;
+    let ep=ql_portfolio::entropy_pooling_posterior(&ql_portfolio::EntropyPoolingSpec{scenario_returns:vec![vec![T::from_f64(0.01)],vec![T::from_f64(-0.01)]],prior_probs:vec![T::from_f64(0.5),T::from_f64(0.5)],view_matrix:vec![vec![T::one(),T::zero()]],view_targets:vec![T::from_f64(0.5)],risk_aversion:T::one()}).kl_divergence;
+    [mtm+ten+oas+colva+wwr, z+pdv+kiko+wb, weather+clean+enb, ep]
+}
+pub fn benchmark_mtmxccs_colva_zabr_pdv_weather_enb_aad(scale: usize)->ComparisonRow{let cfg=config(scale);let x0=[0.2,-0.1,0.3,-0.2];let h=1e-5;let baseline=||{let b=phase18_workloads(x0);let mut c=b.iter().sum();for lane in 0..4{let mut u=x0;let mut d=x0;u[lane]+=h;d[lane]-=h;let bu=phase18_workloads(u);let bd=phase18_workloads(d);for j in 0..4{c+=(bu[j]-bd[j])/(2.0*h);}}c};let sota=||{type D=Dual<4>;let x=[D::variable(x0[0],0),D::variable(x0[1],1),D::variable(x0[2],2),D::variable(x0[3],3)];phase18_workloads(x).iter().map(|y|y.val+y.d.iter().sum::<f64>()).sum()};run_comparison("30_mtmxccs_colva_zabr_pdv_weather_enb_aad","MtM-XCCS/CTD-COLVA/ZABR-PDV/Weather/ENB single-pass AD",cfg,1e-4,baseline,sota)}

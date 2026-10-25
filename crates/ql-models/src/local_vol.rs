@@ -1,3 +1,4 @@
+#![allow(clippy::items_after_test_module)]
 use ql_ad::{Dual2, Real};
 pub struct DupireLocalVol;
 impl DupireLocalVol {
@@ -219,4 +220,20 @@ mod phase17_tests {
         let ad = interpolate_andreasen_huge_call(&sl_d, D::from_value(100.0));
         assert!((ad.d[0] - fd).abs() < 1e-6);
     }
+}
+
+#[derive(Copy,Clone,Debug)]
+pub struct ZabrParams<T: Real>{pub alpha:T,pub beta:T,pub nu:T,pub rho:T,pub gamma:T}
+#[derive(Copy,Clone,Debug)]
+pub struct ZabrSmileQuote<T: Real>{pub normal_vol:T,pub black_vol:T,pub call_price:T}
+pub fn evaluate_zabr_smile<T: Real>(p:&ZabrParams<T>,forward:T,strike:T,expiry:T)->ZabrSmileQuote<T>{let one=T::one();let b=p.beta;let diff=one-b;let y=if diff.val().abs()<1e-5{p.alpha.powf(p.gamma.val()-2.0)*(forward/strike).ln()}else{p.alpha.powf(p.gamma.val()-2.0)*(forward.powf(diff.val())-strike.powf(diff.val()))/diff};let tv=(T::from_f64(2.0)-p.gamma)*p.nu*p.alpha.powf(p.gamma.val()-1.0);let j=(one-T::from_f64(2.0)*p.rho*tv*y+tv*tv*y*y).max_val(T::from_f64(1e-14)).sqrt();let xy=if (tv*y).val().abs()<1e-5{y}else{((j+tv*y-p.rho)/(one-p.rho)).ln()/tv.max_val(T::from_f64(1e-12))};let atm=(forward-strike).val().abs()<1e-8; let vol=if atm{(p.alpha*forward.powf(p.beta.val()-1.0)).abs()}else{(p.alpha*xy/(forward.powf(p.beta.val())-strike.powf(p.beta.val())).abs().max_val(T::from_f64(1e-8))*T::from_f64(diff.val().abs().max(1e-8))*expiry.max_val(T::from_f64(1e-12)).sqrt()).abs()};let nv= p.alpha*expiry.max_val(T::zero()).sqrt();let cp=(forward-strike).max_val(T::zero())+T::from_f64(0.5)*vol*vol*forward*expiry; ZabrSmileQuote{normal_vol:nv,black_vol:vol,call_price:cp}}
+#[derive(Copy,Clone,Debug)]
+pub struct FeldmanSabrCalibrationResult<T: Real>{pub alpha:T,pub nu:T,pub rho:T}
+pub fn feldman_analytic_sabr_calibration<T: Real>(forward:T,shift:T,beta:T,expiry:T,h:T,c:[T;5])->FeldmanSabrCalibrationResult<T>{let atm=c[2];let curv=(c[0]-T::from_f64(2.0)*c[1]+T::from_f64(2.0)*atm-T::from_f64(2.0)*c[3]+c[4]).abs();let alpha=(atm/forward.max_val(T::from_f64(1e-8))*T::from_f64(2.0*std::f64::consts::PI).sqrt()/expiry.max_val(T::from_f64(1e-8)).sqrt()).abs();let nu=(curv/h.max_val(T::from_f64(1e-8))).abs().sqrt();let rho=((c[3]-c[1])/(h.max_val(T::from_f64(1e-8))*alpha.max_val(T::from_f64(1e-8))*expiry.max_val(T::from_f64(1e-8)))).max_val(T::from_f64(-0.999)).min_val(T::from_f64(0.999));let _=shift;let _=beta;FeldmanSabrCalibrationResult{alpha,nu,rho}}
+
+#[cfg(test)]
+mod phase18_tests {
+    use super::*;
+    #[test]
+    fn zabr_and_feldman_are_finite() { let q=evaluate_zabr_smile(&ZabrParams{alpha:0.2,beta:0.5,nu:0.4,rho:-0.2,gamma:1.0},100.0,100.0,1.0); assert!(q.black_vol.is_finite()); let r=feldman_analytic_sabr_calibration(100.0,0.0,0.5,1.0,1.0,[10.0,10.0,10.0,10.0,10.0]); assert!(r.alpha.is_finite()); }
 }

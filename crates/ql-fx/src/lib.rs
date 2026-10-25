@@ -688,3 +688,17 @@ mod phase16_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
+
+#[derive(Clone,Debug)]
+pub struct FxKikoOptionSpec<T: Real=f64>{pub spot:T,pub strike:T,pub lower_barrier:T,pub upper_barrier:T,pub vol:T,pub expiry:T,pub r_dom:T,pub r_for:T,pub is_call:bool,pub lower_is_ko_upper_is_ki:bool}
+pub fn price_fx_kiko_option<T: Real>(s:&FxKikoOptionSpec<T>)->T{let quote=FxSmileQuote{atm_vol:s.vol,rr_25d:T::zero(),bf_25d:T::zero()};let smile=FxVannaVolgaSmile::new(s.spot,s.r_dom,s.r_for,s.expiry,quote);let do_l=smile.price_knock_out_barrier(s.strike,s.lower_barrier,false,s.is_call);let uo=smile.price_knock_out_barrier(s.strike,s.upper_barrier,true,s.is_call);let proximity=((s.upper_barrier-s.lower_barrier).abs()/(s.upper_barrier+s.lower_barrier).max_val(T::from_f64(1e-8))).min_val(T::one());let dko=(do_l.min_val(uo)*proximity*T::from_f64(0.5)).max_val(T::zero());if s.lower_is_ko_upper_is_ki{(do_l-dko).max_val(T::zero())}else{(uo-dko).max_val(T::zero())}}
+#[derive(Clone,Debug)]
+pub struct FxWindowBarrierSpec<T: Real=f64>{pub spot:T,pub strike:T,pub barrier:T,pub vol:T,pub expiry:T,pub r_dom:T,pub r_for:T,pub window_start:T,pub window_end:T,pub is_up_and_out:bool,pub is_call:bool}
+pub fn price_fx_window_barrier_option<T: Real>(s:&FxWindowBarrierSpec<T>)->T{let van=garman_kohlhagen_price(s.spot,s.strike,s.vol,s.expiry,s.r_dom,s.r_for,s.is_call);let q=FxSmileQuote{atm_vol:s.vol,rr_25d:T::zero(),bf_25d:T::zero()};let smile=FxVannaVolgaSmile::new(s.spot,s.r_dom,s.r_for,s.expiry,q);let full=smile.price_knock_out_barrier(s.strike,s.barrier,s.is_up_and_out,s.is_call);let w=((s.window_end-s.window_start)/s.expiry.max_val(T::from_f64(1e-12))).max_val(T::zero()).min_val(T::one());van+(full-van)*w}
+
+#[cfg(test)]
+mod phase18_tests {
+    use super::*;
+    #[test]
+    fn window_barrier_limits() { let s=FxWindowBarrierSpec{spot:100.0,strike:100.0,barrier:130.0,vol:0.2,expiry:1.0,r_dom:0.03,r_for:0.01,window_start:0.0,window_end:0.0,is_up_and_out:true,is_call:true}; let v=price_fx_window_barrier_option(&s); let van=garman_kohlhagen_price(100.0,100.0,0.2,1.0,0.03,0.01,true); assert!((v-van).abs()<1e-12); }
+}

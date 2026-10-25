@@ -391,3 +391,18 @@ pub fn hw1f_sofr_futures_rate_3m<T: Real>(
     ((curve.discount_factor(tau_0.max(0.0)) / curve.discount_factor(tau_1)) * conv.exp() - T::one())
         / dt
 }
+
+#[derive(Clone, Debug)]
+pub struct TenorBasisSwapSpec<T: Real = f64>{pub notional:T,pub short_leg_times:Vec<f64>,pub long_leg_times:Vec<f64>,pub short_leg_basis_spread:T,pub pay_short_leg:bool}
+#[derive(Copy,Clone,Debug)]
+pub struct TenorBasisValuation<T: Real>{pub npv:T,pub fair_short_basis_spread:T,pub short_leg_bpv:T,pub long_leg_pv:T}
+pub fn price_tenor_basis_swap<T: Real>(s:&TenorBasisSwapSpec<T>, d:&impl YieldTermStructure<T>, sh:&impl YieldTermStructure<T>, lo:&impl YieldTermStructure<T>)->TenorBasisValuation<T>{
+ let mut sf=T::zero(); let mut bpv=T::zero(); let mut prev=0.0; for &t in &s.short_leg_times{if t<=prev+1e-8{continue} let tau=t-prev; let p0=if prev<=1e-12{T::one()}else{sh.discount_factor(prev)}; let p1=sh.discount_factor(t).max_val(T::from_f64(1e-12)); let df=d.discount_factor(t); sf += s.notional*(p0/p1-T::one())*df; bpv += s.notional*df*tau; prev=t;} let mut lp=T::zero(); prev=0.0; for &t in &s.long_leg_times{if t<=prev+1e-8{continue} let p0=if prev<=1e-12{T::one()}else{lo.discount_factor(prev)}; let p1=lo.discount_factor(t).max_val(T::from_f64(1e-12)); lp += s.notional*(p0/p1-T::one())*d.discount_factor(t); prev=t;} let fair=(lp-sf)/bpv.max_val(T::from_f64(1e-12)); let st=sf+s.short_leg_basis_spread*bpv; let npv=if s.pay_short_leg{lp-st}else{st-lp}; TenorBasisValuation{npv,fair_short_basis_spread:fair,short_leg_bpv:bpv,long_leg_pv:lp}
+}
+
+#[cfg(test)]
+mod phase18_tests {
+    use super::*;
+    #[test]
+    fn tenor_basis_zero_identity() { let c=ql_curves::FlatForwardCurve::new(ql_time::Date(0),0.03); let s=TenorBasisSwapSpec{notional:1.0,short_leg_times:vec![0.5,1.0],long_leg_times:vec![1.0],short_leg_basis_spread:0.0,pay_short_leg:true}; let v=price_tenor_basis_swap(&s,&c,&c,&c); assert!(v.npv.abs()<1e-12); }
+}

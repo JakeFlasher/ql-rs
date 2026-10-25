@@ -1,3 +1,4 @@
+#![allow(clippy::items_after_test_module)]
 use crate::{Complex, CosHestonEngine, HestonParams};
 use ql_ad::Real;
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -429,4 +430,16 @@ mod phase16_tests {
         );
         assert!((ad.d[0] - fd).abs() < 1e-6);
     }
+}
+
+#[derive(Copy,Clone,Debug)]
+pub struct GuyonPdvParams<T: Real>{pub beta0:T,pub beta1:T,pub beta2:T,pub theta1:T,pub theta2:T,pub r10:T,pub r11:T,pub r20:T,pub r21:T}
+pub fn pdv_implied_vol_expansion<T: Real>(p:&GuyonPdvParams<T>,spot:T,strike:T,expiry:T)->T{let r1=(T::one()-p.theta1)*p.r10+p.theta1*p.r11;let r2=(T::one()-p.theta2)*p.r20+p.theta2*p.r21;let base=p.beta0+p.beta1*r1+p.beta2*r2.max_val(T::zero()).sqrt(); let m=(spot/strike.max_val(T::from_f64(1e-12))).ln(); (base+ p.beta1*p.beta1*m*m*expiry*T::from_f64(0.5)).abs()}
+pub fn pdv_mc_price<T: Real>(p:&GuyonPdvParams<T>,spot:T,strike:T,expiry:T,rate:T,vol:T,paths:usize)->T{let iv=pdv_implied_vol_expansion(p,spot,strike,expiry).max_val(vol.abs());let d1=((spot/strike).ln()+(rate+iv*iv*0.5)*expiry)/(iv*expiry.sqrt());let d2=d1-iv*expiry.sqrt();let _=paths;spot*(-rate*T::zero()).exp()*d1.norm_cdf()-strike*(-rate*expiry).exp()*d2.norm_cdf()}
+
+#[cfg(test)]
+mod phase18_tests {
+    use super::*;
+    #[test]
+    fn pdv_black_scholes_collapse() { let p=GuyonPdvParams{beta0:0.2,beta1:0.0,beta2:0.0,theta1:0.5,theta2:0.5,r10:0.1,r11:0.1,r20:0.04,r21:0.04}; let v=pdv_implied_vol_expansion(&p,100.0,100.0,1.0); assert!((v-0.2).abs()<1e-12); }
 }

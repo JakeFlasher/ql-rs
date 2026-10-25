@@ -40,7 +40,7 @@ The comparison in `03_CROSS_LANGUAGE_BENCHMARK_ARCHITECTURES.md` shows that the 
 | `05_BLUEPRINT_MODERN_RUST_QUANTLIB.md` | Detailed 23-crate software and mathematical blueprint. |
 | `06_LITERATURE_AND_REFERENCES.md` | Annotated 66-paper and repository bibliography. |
 | `07_BENCHMARK_METHODOLOGY_AND_STUDY.md` | Harness design, suite descriptions, and empirical interpretation. |
-| `08_BENCHMARK_RESULTS.md` | Reproducible 29-suite benchmark output. |
+| `08_BENCHMARK_RESULTS.md` | Reproducible 30-suite benchmark output. |
 
 ## Release verification
 
@@ -50,3 +50,7 @@ cargo +nightly clippy --workspace --all-targets -- -D warnings
 cargo +nightly test --workspace --release --no-fail-fast
 cargo run -p ql-benches --release
 ```
+
+
+## Phase 18 Institutional Expansion
+The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB and entropy pooling. The workstation now exposes Tab 28 and the benchmark suite contains 30 AD parity workloads.

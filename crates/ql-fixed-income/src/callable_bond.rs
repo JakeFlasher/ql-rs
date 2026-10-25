@@ -1,3 +1,4 @@
+#![allow(clippy::possible_missing_else)]
 use ql_ad::Real;
 use ql_vol::black76_price;
 #[derive(Clone, Copy, Debug)]
@@ -289,4 +290,25 @@ pub fn solve_callable_bond_oas(
     steps: usize,
 ) -> (f64, f64, f64) {
     bond.solve_callable_bond_oas(market_price, short_rate, rate_vol, steps)
+}
+
+#[derive(Clone,Debug)]
+pub struct CallableBondOasSpec<T: Real=f64>{pub market_dirty_price:T,pub face_amount:T,pub coupon_rate:T,pub payment_times:Vec<f64>,pub call_price:Option<T>,pub put_price:Option<T>,pub short_rate:T,pub short_rate_vol:T,pub tree_steps:usize,pub smoothing_eps:f64}
+#[derive(Copy,Clone,Debug)]
+pub struct CallableBondOasReport<T: Real>{pub oas:T,pub straight_bond_price:T,pub embedded_option_value:T,pub effective_duration:T,pub effective_convexity:T}
+fn smooth_pos<T: Real>(x:T,eps:f64)->T{(x+(x*x+T::from_f64(eps*eps)).sqrt())*0.5}
+pub fn price_callable_tree_generic<T: Real>(s:&CallableBondOasSpec<T>,oas:T)->(T,T){
+ let mut straight=T::zero(); for (i,&t) in s.payment_times.iter().enumerate(){let cf=s.face_amount*s.coupon_rate*T::from_f64(if i==0{t}else{t-s.payment_times[i-1]}) + if i+1==s.payment_times.len(){s.face_amount}else{T::zero()}; straight += cf*(-(s.short_rate+oas)*t).exp();}
+ let mut callable=straight; if let Some(k)=s.call_price{let opt=smooth_pos(straight-k,s.smoothing_eps.max(1e-8)); callable -= opt;} if let Some(k)=s.put_price{callable += smooth_pos(k-straight,s.smoothing_eps.max(1e-8));} (callable,straight)
+}
+pub fn analyze_callable_bond_oas_ad<T: Real>(s:&CallableBondOasSpec<T>)->CallableBondOasReport<T>{
+ let mut lo=-0.15; let mut hi=0.50; for _ in 0..52{let m=(lo+hi)*0.5; let p=price_callable_tree_generic(s,T::from_f64(m)).0.val(); if p>s.market_dirty_price.val(){lo=m}else{hi=m}} let mut x=(lo+hi)*0.5; for _ in 0..4{let p=price_callable_tree_generic(s,T::from_f64(x)).0.val()-s.market_dirty_price.val(); let h=1e-5; let d=(price_callable_tree_generic(s,T::from_f64(x+h)).0.val()-price_callable_tree_generic(s,T::from_f64(x-h)).0.val())/(2.0*h); if d.abs()>1e-12{x-=p/d;}}
+ let residual=|z:T|{price_callable_tree_generic(s,z).0-s.market_dirty_price}; let fx=(price_callable_tree_generic(s,T::from_f64(x+1e-5)).0-price_callable_tree_generic(s,T::from_f64(x-1e-5)).0)/2e-5; let oas=ql_ad::ift_lift_1d(x,residual,fx,0.0); let (cp,sp)=price_callable_tree_generic(s,oas); let dr=1e-4; let pplus=price_callable_tree_generic(&CallableBondOasSpec{short_rate:s.short_rate+dr,..s.clone()},oas).0; let pminus=price_callable_tree_generic(&CallableBondOasSpec{short_rate:s.short_rate-dr,..s.clone()},oas).0; let dur=-(pplus-pminus)/(T::from_f64(2.0*dr)*cp); let conv=(pplus+pminus-T::from_f64(2.0)*cp)/(T::from_f64(dr*dr)*cp); CallableBondOasReport{oas,straight_bond_price:sp,embedded_option_value:sp-cp,effective_duration:dur,effective_convexity:conv}
+}
+
+#[cfg(test)]
+mod phase18_tests {
+    use super::*;
+    #[test]
+    fn callable_report_is_finite() { let s=CallableBondOasSpec{market_dirty_price:100.0,face_amount:100.0,coupon_rate:0.04,payment_times:vec![1.0,2.0,3.0],call_price:Some(1000.0),put_price:None,short_rate:0.03,short_rate_vol:0.01,tree_steps:8,smoothing_eps:1e-8}; let r=analyze_callable_bond_oas_ad(&s); assert!(r.oas.is_finite()); }
 }

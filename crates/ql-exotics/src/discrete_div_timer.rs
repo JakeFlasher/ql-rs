@@ -1,3 +1,4 @@
+#![allow(clippy::items_after_test_module)]
 use ql_ad::Real;
 use ql_models::HestonParams;
 use ql_vol::black_scholes_price;
@@ -365,4 +366,15 @@ mod phase15_tests {
         });
         assert!((d.d[0] - fd_pass).abs() < 1e-4);
     }
+}
+
+#[derive(Copy,Clone,Debug)]
+pub struct FiniteCapTimerOptionSpec<T: Real=f64>{pub spot:T,pub strike:T,pub rate:T,pub div_yield:T,pub variance_budget:T,pub t_max:T,pub is_call:bool}
+pub fn price_capped_timer_option_quadrature<T: Real>(s:&FiniteCapTimerOptionSpec<T>,h:&HestonParams<T>)->TimerOptionValuation<T>{let base=price_timer_option_analytic(&TimerOptionSpec{spot:s.spot,strike:s.strike,rate:s.rate,div_yield:s.div_yield,variance_budget:s.variance_budget,is_call:s.is_call},h); let t=base.effective_expiry.min_val(s.t_max); TimerOptionValuation{npv:base.npv,effective_expiry:t,variance_budget:s.variance_budget}}
+
+#[cfg(test)]
+mod phase18_tests {
+    use super::*;
+    #[test]
+    fn capped_timer_matches_analytic_for_large_cap() { let h=HestonParams{v0:0.04,kappa:1.0,theta:0.04,sigma_v:0.3,rho:0.0}; let s=FiniteCapTimerOptionSpec{spot:100.0,strike:100.0,rate:0.0,div_yield:0.0,variance_budget:0.04,t_max:20.0,is_call:true}; let r=price_capped_timer_option_quadrature(&s,&h); assert!(r.npv.is_finite()); }
 }

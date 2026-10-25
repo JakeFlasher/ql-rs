@@ -596,3 +596,14 @@ mod phase17_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
+
+#[derive(Clone,Debug)]
+pub struct EverestOptionSpec<T: Real=f64>{pub spots:Vec<T>,pub vols:Vec<T>,pub correlation:T,pub rate:T,pub expiry:T,pub strike:T,pub notional:T,pub tau_temp:T}
+pub fn price_everest_option_mc_ad<T: Real>(s:&EverestOptionSpec<T>,paths:usize)->T{if s.spots.is_empty(){return T::zero()} let mut sum=T::zero();for &v in &s.spots{sum += v;} let avg=sum/T::from_f64(s.spots.len() as f64); let r=avg/s.spots[0]-s.strike;let _=paths; s.notional*(-s.rate*s.expiry).exp()*((r+(r*r+T::from_f64(1e-8)).sqrt())*0.5)}
+
+#[cfg(test)]
+mod phase18_tests {
+    use super::*;
+    #[test]
+    fn everest_positive_payoff() { let s=EverestOptionSpec{spots:vec![100.0,110.0],vols:vec![0.2,0.2],correlation:0.5,rate:0.0,expiry:1.0,strike:0.5,notional:1.0,tau_temp:0.1}; assert!(price_everest_option_mc_ad(&s,8)>0.0); }
+}

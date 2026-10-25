@@ -50,7 +50,7 @@ Date / Calendar / Convention
 
 ### 3.6 Delivery, measurements, and workstation
 
-`ql-benches` is an offline statistical harness with fixed workloads, warmups, medians, IQRs, speedups, and hard parity assertions across 29 suites (`01_calendar_popcnt` through `29_asw_mf1f_ah_bess_ep_aad`). `ql-terminal` re-exports `ql_terminal::prelude::*` and renders a zero-dependency 27-tab risk workstation: a $2 \times 4$ sub-pixel `BrailleCanvas`, 24-bit ANSI TrueColor ladders, live blotter values, XVA/SIMM/MVA/SA-CCR/BA-CVA/KVA/FRTB, and calibrated chart series.
+`ql-benches` is an offline statistical harness with fixed workloads, warmups, medians, IQRs, speedups, and hard parity assertions across 30 suites (`01_calendar_popcnt` through `30_mtmxccs_colva_zabr_pdv_weather_enb_aad`). `ql-terminal` re-exports `ql_terminal::prelude::*` and renders a zero-dependency 28-tab risk workstation: a $2 \times 4$ sub-pixel `BrailleCanvas`, 24-bit ANSI TrueColor ladders, live blotter values, XVA/SIMM/MVA/SA-CCR/BA-CVA/KVA/FRTB, and calibrated chart series.
 
 ## 4. Subsystem Architecture Matrix
 
@@ -63,4 +63,8 @@ Date / Calendar / Convention
 | Models/PDE/MC | `ql-models`, `ql-levy`, `ql-pde`, `ql-mc` | Heston/Bates/Double-Heston COS, Bergomi 2F & Bergomi-Guyon expansion, Quadratic Rough Heston (QRH), Andreasen-Huge 1-Step FD Local Vol, Lewis/Carr-Madan FFT Lévy strips, H1-HW & BSM-HW hybrids, SLV particle & rBergomi, VIX futures/options, ADI, SIMD MC, QE, AMC envelope-AAD, Andersen-Broadie dual, RQMC | 05, 06, 14, 15, 23, 25, 26, 27, 28, 29 |
 | Asset classes | `ql-credit`, `ql-inflation`, `ql-fx`, `ql-exotics`, `ql-commodities` | CDS/CDS-Swaption/Index-CDS-Swaption/CDO/Base-Correlation/kth-to-default/Black-Cox-Structural, CPI & ZCIIS/YYIIS swaps/caps/swaptions & Jarrow-Yildirim 3F, FX smiles/VV-digitals-barriers/TARF/Accumulator/PRDC/RKF/XCCS, barriers/Parisian, compound/chooser/lookback/Asian/Rainbow/Spread/Cliquet/Himalaya/Napoleon/Atlas/Altiplano/Extensible/Discrete-Div/Timer/Passport, Worst-Of Autocallable, Heston/Bates/corridor variance swaps, SS2F IFT, Gibson-Schwartz 2F, 3-leg crack/dark spreads, Commodity APO, Swing/Take-or-Pay/Gas-Storage/BESS DP | 09, 10, 13, 16, 18, 23, 25, 26, 27, 28, 29 and crate suites |
 | Risk/automation | `ql-scripting`, `ql-xva`, `ql-dml`, `ql-portfolio` | VM/AAD, XVA/FtD-XVA/FCA-FBA-ColVA/WWR/MPoR/CCDS/SA-CCR/BA-CVA/KVA/SIMM/DIM/FRTB, DML/NN/PLS, DAG, coherent ES/EVaR/CDaR/Factor-Risk, Black-Litterman/Idzorek/Kelly, Ledoit-Wolf, Gerber/Marchenko-Pastur/NCO, Box/Robust-Markowitz KKT IFT, Mean-CVaR, HRP, 1D & Multi-Asset Almgren-Chriss/Obizhaeva-Wang/Kratz-Schöneborn Dark-Pool & IFT Risk-Parity | 07, 08, 11, 12, 20, 22, 24, 25, 26, 27, 28, 29 and risk suites |
-| Delivery | `ql-benches`, `ql-terminal` | Statistical parity, SDK, 27-tab Braille/ANSI UI | 29-suite harness and terminal suite |
+| Delivery | `ql-benches`, `ql-terminal` | Statistical parity, SDK, 28-tab Braille/ANSI UI | 30-suite harness and terminal suite |
+
+
+## Phase 18 Institutional Expansion
+The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB and entropy pooling. The workstation now exposes Tab 28 and the benchmark suite contains 30 AD parity workloads.

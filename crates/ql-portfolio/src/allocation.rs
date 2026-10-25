@@ -1933,3 +1933,25 @@ mod phase17_tests {
         assert!(kelly.expected_log_growth_rate > 0.03);
     }
 }
+
+#[derive(Clone,Debug)]
+pub struct EntropyPoolingSpec<T: Real=f64>{pub scenario_returns:Vec<Vec<T>>,pub prior_probs:Vec<T>,pub view_matrix:Vec<Vec<T>>,pub view_targets:Vec<T>,pub risk_aversion:T}
+#[derive(Clone,Debug)]
+pub struct EntropyPoolingResult<T: Real>{pub posterior_probs:Vec<T>,pub posterior_mean:Vec<T>,pub posterior_covariance:Vec<Vec<T>>,pub weights:Vec<T>,pub kl_divergence:T,pub effective_num_scenarios:T}
+pub fn try_entropy_pooling_posterior<T: Real>(s:&EntropyPoolingSpec<T>)->Result<EntropyPoolingResult<T>,AllocationError>{
+ let n=s.prior_probs.len(); let k=s.view_matrix.len(); if n==0||s.scenario_returns.len()!=n||s.view_matrix.iter().any(|r|r.len()!=n)||s.view_targets.len()!=k{return Err(AllocationError::InvalidDimensions)}
+ let mut lam=vec![T::zero();k]; let mut p=vec![T::zero();n];
+ for _ in 0..16 { let mut logits=vec![T::zero();n]; for i in 0..n { for j in 0..k { logits[i]+=lam[j]*s.view_matrix[j][i]; } } let mx=logits.iter().map(|x|x.val()).fold(f64::NEG_INFINITY,f64::max); let mut z=T::zero(); for i in 0..n { p[i]=s.prior_probs[i]*(logits[i]-mx).exp(); z+=p[i]; } for x in &mut p {*x/=z;}
+   let mut g=vec![T::zero();k]; for j in 0..k { for i in 0..n {g[j]+=p[i]*s.view_matrix[j][i];} g[j]-=s.view_targets[j]; }
+   if g.iter().all(|x|x.val().abs()<1e-13){break}
+   let mut h=vec![vec![T::zero();k];k]; let mut mu=vec![T::zero();k]; for j in 0..k {for i in 0..n{mu[j]+=p[i]*s.view_matrix[j][i];}} for a in 0..k {for b in 0..k {for i in 0..n {h[a][b]+=p[i]*(s.view_matrix[a][i]-mu[a])*(s.view_matrix[b][i]-mu[b]);} if a==b {h[a][b]+=T::from_f64(1e-10);}}} let rhs=g.iter().map(|x| -*x).collect::<Vec<_>>(); let step=solve_linear_generic(&h,&rhs)?; for j in 0..k {lam[j]+=step[j];}
+ }
+ let m=s.scenario_returns[0].len(); let mut mean=vec![T::zero();m]; for i in 0..n {for j in 0..m {mean[j]+=p[i]*s.scenario_returns[i][j];}} let mut cov=vec![vec![T::zero();m];m]; for i in 0..n {for a in 0..m {for b in 0..m {cov[a][b]+=p[i]*(s.scenario_returns[i][a]-mean[a])*(s.scenario_returns[i][b]-mean[b]);}}} let kl=p.iter().enumerate().map(|(i,x)|*x*(*x/s.prior_probs[i].max_val(T::from_f64(1e-16))).ln()).fold(T::zero(),|a,b|a+b); let en=p.iter().map(|x|{let q=x.max_val(T::from_f64(1e-16));-q*q.ln()}).fold(T::zero(),|a,b|a+b).exp(); Ok(EntropyPoolingResult{posterior_probs:p,posterior_mean:mean,posterior_covariance:cov,weights:vec![T::zero();m],kl_divergence:kl,effective_num_scenarios:en})}
+pub fn entropy_pooling_posterior<T: Real>(s:&EntropyPoolingSpec<T>)->EntropyPoolingResult<T>{try_entropy_pooling_posterior(s).expect("invalid entropy pooling inputs")}
+
+#[cfg(test)]
+mod phase18_tests {
+    use super::*;
+    #[test]
+    fn entropy_prior_view_is_identity() { let s=EntropyPoolingSpec{scenario_returns:vec![vec![0.1],vec![-0.1]],prior_probs:vec![0.5,0.5],view_matrix:vec![vec![1.0,0.0]],view_targets:vec![0.5],risk_aversion:1.0}; let r=entropy_pooling_posterior(&s); assert!((r.posterior_probs[0]-0.5).abs()<1e-10); }
+}

@@ -382,3 +382,21 @@ mod phase16_tests {
         assert!((ad.d[0] - fd).abs() < 1e-6);
     }
 }
+
+#[derive(Copy,Clone,Debug,PartialEq,Eq)]
+pub enum DegreeDayKind{Hdd,Cdd}
+#[derive(Clone,Debug)]
+pub struct WeatherDerivativeSpec<T: Real=f64>{pub kind:DegreeDayKind,pub temperature_base:T,pub initial_temperature:T,pub mean_level:T,pub seasonal_amplitude:T,pub seasonal_phase:T,pub mean_reversion:T,pub daily_vol:T,pub market_price_risk:T,pub times:Vec<f64>,pub strike:T,pub notional:T,pub is_call:bool,pub cap:Option<T>}
+#[derive(Copy,Clone,Debug)]
+pub struct WeatherDerivativeValuation<T: Real>{pub npv:T,pub expected_degree_days:T,pub cumulative_variance:T}
+pub fn price_weather_hdd_cdd_option<T: Real>(s:&WeatherDerivativeSpec<T>)->WeatherDerivativeValuation<T>{let w=if s.kind==DegreeDayKind::Hdd{1.0}else{-1.0};let mut mean=T::zero();let mut var=T::zero();let mut prev=0.0;for &t in &s.times{let tt=T::from_f64(t);let seasonal=s.mean_level+s.seasonal_amplitude*((T::from_f64(2.0*std::f64::consts::PI/365.0)*tt+s.seasonal_phase).sin());let mu=seasonal-s.market_price_risk*s.daily_vol/s.mean_reversion.max_val(T::from_f64(1e-8))*(T::one()-(-s.mean_reversion*tt).exp())+(s.initial_temperature-s.mean_level)*(-s.mean_reversion*tt).exp();let vv=s.daily_vol*s.daily_vol/(T::from_f64(2.0)*s.mean_reversion.max_val(T::from_f64(1e-8)))*(T::one()-(-T::from_f64(2.0)*s.mean_reversion*tt).exp());let sd=vv.max_val(T::zero()).sqrt();let z=T::from_f64(w)*(s.temperature_base-mu)/sd.max_val(T::from_f64(1e-8));mean += T::from_f64(w)*(s.temperature_base-mu)*z.norm_cdf()+sd*z.norm_pdf(); var += vv; prev=t;} let st=var.max_val(T::zero()).sqrt(); let d=(mean-s.strike)/st.max_val(T::from_f64(1e-8)); let mut npv=s.notional*(if s.is_call{(mean-s.strike)*d.norm_cdf()+st*d.norm_pdf()}else{(s.strike-mean)*(-d).norm_cdf()+st*d.norm_pdf()}); if let Some(cap)=s.cap{npv=npv.min_val(cap)} let _=prev; WeatherDerivativeValuation{npv,expected_degree_days:mean,cumulative_variance:var}}
+#[derive(Clone,Debug)]
+pub struct CleanSparkDarkSpreadSpec<T: Real=f64>{pub power:T,pub fuel:T,pub carbon:T,pub heat_rate:T,pub emission_factor:T,pub strike:T,pub vol_power:T,pub vol_fuel:T,pub vol_carbon:T,pub rho_power_fuel:T,pub rho_power_carbon:T,pub rho_fuel_carbon:T,pub rate:T,pub expiry:T,pub option_type:OptionType}
+pub fn price_clean_spark_dark_spread<T: Real>(s:&CleanSparkDarkSpreadSpec<T>)->T{if s.emission_factor.val().abs()<1e-14{return spark_spread_option(s.power,s.fuel,s.heat_rate,s.strike,s.vol_power,s.vol_fuel,s.rho_power_fuel,s.rate,s.expiry,s.option_type)} let adj=s.fuel*s.heat_rate+s.carbon*s.emission_factor; kirk_spread_option(s.power,adj,s.strike,s.vol_power,(s.vol_fuel*s.vol_fuel+s.vol_carbon*s.vol_carbon+T::from_f64(2.0)*s.rho_fuel_carbon*s.vol_fuel*s.vol_carbon).sqrt(),s.rho_power_fuel,s.rate,s.expiry,s.option_type)}
+
+#[cfg(test)]
+mod phase18_tests {
+    use super::*;
+    #[test]
+    fn clean_spread_zero_carbon_collapse() { let s=CleanSparkDarkSpreadSpec{power:80.0,fuel:3.0,carbon:20.0,heat_rate:7.0,emission_factor:0.0,strike:10.0,vol_power:0.2,vol_fuel:0.3,vol_carbon:0.4,rho_power_fuel:0.2,rho_power_carbon:0.1,rho_fuel_carbon:0.2,rate:0.03,expiry:1.0,option_type:OptionType::Call}; let a=price_clean_spark_dark_spread(&s); let b=spark_spread_option(80.0,3.0,7.0,10.0,0.2,0.3,0.2,0.03,1.0,OptionType::Call); assert!((a-b).abs()<1e-12); }
+}

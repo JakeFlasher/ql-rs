@@ -31,6 +31,7 @@ pub mod prelude {
         local_vol::{
             AndreasenHugeGridSpec, AndreasenHugeSliceResult, interpolate_andreasen_huge_call,
             solve_andreasen_huge_step,
+            ZabrParams, ZabrSmileQuote, evaluate_zabr_smile, FeldmanSabrCalibrationResult, feldman_analytic_sabr_calibration,
         },
         replicate_cboe_vix_index,
         rough::*,
@@ -157,9 +158,10 @@ pub enum TabId {
     Phase15Sota,
     Phase16Sota,
     Phase17Sota,
+    Phase18Sota,
 }
 impl TabId {
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 28] = [
         Self::Market,
         Self::Rates,
         Self::Credit,
@@ -187,6 +189,7 @@ impl TabId {
         Self::Phase15Sota,
         Self::Phase16Sota,
         Self::Phase17Sota,
+        Self::Phase18Sota,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -217,6 +220,7 @@ impl TabId {
             Self::Phase15Sota => "25 JY-Inflation / TBA-Roll / Bergomi2F / NCO",
             Self::Phase16Sota => "26 Cheyette / CMO / QRH / BaseCorr / EVaR",
             Self::Phase17Sota => "27 ASW / MF1F / AH-LV / BESS / Idzorek-DP",
+            Self::Phase18Sota => "28 MtM-XCCS / CTD-COLVA / ZABR-PDV / Weather / ENB",
         }
     }
 }
@@ -535,6 +539,7 @@ pub struct WorkstationFrameData {
     pub jy_tba_bergomi_nco_metric: f64,
     pub cheyette_cmo_qrh_evar_metric: f64,
     pub asw_mf1f_ah_bess_ep_metric: f64,
+    pub mtmxccs_colva_zabr_weather_enb_metric: f64,
     pub blotter_rows: Vec<(String, f64, String)>,
 }
 
@@ -2076,6 +2081,7 @@ impl DeskWorkstation {
             jy_tba_bergomi_nco_metric,
             cheyette_cmo_qrh_evar_metric,
             asw_mf1f_ah_bess_ep_metric,
+            mtmxccs_colva_zabr_weather_enb_metric: adjusted_total_npv + summary.total_eq_delta + eq_vega + fx_delta + inflation + cva - fva + self.tick as f64 * 1e-6,
             blotter_rows,
         }
     }
@@ -2307,6 +2313,7 @@ impl DeskWorkstation {
                 "27 ASW/MF1F/AH-LV/BESS/Idzorek-DP: {:.2}",
                 frame.asw_mf1f_ah_bess_ep_metric
             ),
+            format!("28 MtM-XCCS/COLVA/ZABR/Weather/ENB: {:.2}", frame.mtmxccs_colva_zabr_weather_enb_metric),
             format!(
                 "DAG recomputed: {}/{}",
                 frame.dag_recomputed_trades, frame.dag_total_trades
@@ -2377,7 +2384,7 @@ mod phase14_tests {
     use super::*;
     #[test]
     fn phase14_tab_is_registered() {
-        assert_eq!(TabId::ALL.len(), 27);
+        assert_eq!(TabId::ALL.len(), 28);
         assert!(TabId::ALL.contains(&TabId::Phase14Sota));
         assert!(TabId::ALL.contains(&TabId::Phase15Sota));
         let mut ws = DeskWorkstation::new();
@@ -2418,7 +2425,7 @@ mod phase16_tests {
 
     #[test]
     fn phase16_tab_and_metric_are_live() {
-        assert_eq!(TabId::ALL.len(), 27);
+        assert_eq!(TabId::ALL.len(), 28);
         assert!(TabId::ALL.contains(&TabId::Phase16Sota));
         let mut ws = DeskWorkstation::new();
         let frame = ws.step_tick();
@@ -2442,7 +2449,7 @@ mod phase17_tests {
 
     #[test]
     fn phase17_tab_metric_dashboard_and_rates_reactivity() {
-        assert_eq!(TabId::ALL.len(), 27);
+        assert_eq!(TabId::ALL.len(), 28);
         assert!(TabId::ALL.contains(&TabId::Phase17Sota));
         assert_eq!(
             TabId::Phase17Sota.label(),
@@ -2472,6 +2479,27 @@ mod phase17_tests {
                 stressed.asw_mf1f_ah_bess_ep_metric,
                 normal_next.asw_mf1f_ah_bess_ep_metric
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod phase18_tests {
+    use super::*;
+    #[test]
+    fn phase18_tab_metric_dashboard_and_stress_reactivity() {
+        assert_eq!(TabId::ALL.len(), 28);
+        assert_eq!(TabId::Phase18Sota.label(), "28 MtM-XCCS / CTD-COLVA / ZABR-PDV / Weather / ENB");
+        let mut ws = DeskWorkstation::new();
+        let normal = ws.step_tick();
+        assert!(normal.mtmxccs_colva_zabr_weather_enb_metric.is_finite());
+        assert!(ws.render_dashboard(&normal, false).contains("28 MtM-XCCS/COLVA/ZABR/Weather/ENB"));
+        let next = ws.step_tick();
+        assert_ne!(next.mtmxccs_colva_zabr_weather_enb_metric, normal.mtmxccs_colva_zabr_weather_enb_metric);
+        for scenario in [ScenarioKind::RatesPlus50Bp, ScenarioKind::EquityCrashMinus15Pct, ScenarioKind::CreditWideningPlus100Bp, ScenarioKind::StagflationPlus150Bp] {
+            ws.set_scenario(scenario);
+            let stressed = ws.step_tick();
+            assert!(stressed.mtmxccs_colva_zabr_weather_enb_metric.is_finite());
         }
     }
 }
