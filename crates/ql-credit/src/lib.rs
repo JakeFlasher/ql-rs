@@ -636,8 +636,11 @@ pub fn analyze_structural_credit_black_cox<T: Real>(
     } else {
         let log_b = (b0 / v0).ln();
         let mu_tilde = r - q - spec.barrier_growth_rate - sig * sig * 0.5;
-        let z1 = (-log_b + mu_tilde * t) / st;
-        let z2 = (log_b + mu_tilde * t) / st;
+        let k_t = (d_face / (b0 * (spec.barrier_growth_rate * t).exp()))
+            .ln()
+            .max_val(T::zero());
+        let z1 = (-log_b - k_t + mu_tilde * t) / st;
+        let z2 = (log_b - k_t + mu_tilde * t) / st;
         let exp_arg = (mu_tilde * log_b * 2.0 / (sig * sig)).min_val(T::from_f64(50.0));
         (z1.norm_cdf() - exp_arg.exp() * z2.norm_cdf())
             .max_val(T::from_f64(1e-8))

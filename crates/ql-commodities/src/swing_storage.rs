@@ -394,8 +394,26 @@ pub fn price_take_or_pay_contract<T: Real>(
             swing_optionality_value: T::zero(),
         };
     }
-    let times = make_times(&spec.decision_times, 1);
+    let mut decision_times = spec.decision_times.clone();
+    decision_times.sort_by(f64::total_cmp);
+    decision_times.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+    decision_times.retain(|&t| t >= 0.0);
+    if decision_times.is_empty() {
+        return TakeOrPayValuation {
+            npv: T::zero(),
+            min_take_swap_npv: T::zero(),
+            swing_optionality_value: T::zero(),
+        };
+    }
+    let times = make_times(&decision_times, 1);
     let tree = build_tree(times, kappa, sigma);
+    let mut dec_rank = vec![None; tree.times.len()];
+    for (r, &t) in decision_times.iter().enumerate() {
+        if let Some(m) = tree.times.iter().position(|x| (*x - t).abs() < 1e-10) {
+            dec_rank[m] = Some(r);
+        }
+    }
+    let n_dec = decision_times.len();
     let m_steps = tree.times.len();
     let dq_span = (spec.daily_max_qty - spec.daily_min_qty).max(0.0);
     let l_sub = spec.daily_discretization_steps.max(1);
@@ -404,22 +422,24 @@ pub fn price_take_or_pay_contract<T: Real>(
     } else {
         dq_span / (l_sub as f64)
     };
-    let max_units = if dq_span <= 1e-12 {
-        0
-    } else {
-        m_steps * l_sub
-    };
+    let max_units = if dq_span <= 1e-12 { 0 } else { n_dec * l_sub };
     let n_last = m_steps.saturating_sub(1);
     let term_w = (2 * tree.j_bounds[n_last] + 1) as usize;
     let mut values = vec![vec![T::zero(); term_w]; max_units + 1];
 
     let final_spots = node_spots(&tree, curve, n_last);
-    for u in 0..=max_units {
-        let q_cum_before = (n_last as f64) * spec.daily_min_qty + (u as f64) * dq;
+    let prev_dec_last = n_dec.saturating_sub(1);
+    let max_u_last = if dq_span <= 1e-12 {
+        0
+    } else {
+        prev_dec_last * l_sub
+    };
+    for u in 0..=max_u_last {
+        let q_cum_before = (prev_dec_last as f64) * spec.daily_min_qty + (u as f64) * dq;
         for (idx, &spot) in final_spots.iter().enumerate() {
             let mut best = T::from_f64(-1e100);
             let max_step = if dq_span <= 1e-12 { 0 } else { l_sub };
-            for step_u in (0..=max_step).step_by(l_sub) {
+            for step_u in 0..=max_step {
                 let q_take = spec.daily_min_qty + (step_u as f64) * dq;
                 let q_tot = q_cum_before + q_take;
                 if q_tot > spec.cumulative_max_qty + 1e-9 {
@@ -437,38 +457,48 @@ pub fn price_take_or_pay_contract<T: Real>(
         let jb = tree.j_bounds[m];
         let jbn = tree.j_bounds[m + 1];
         let spots = node_spots(&tree, curve, m);
-        let max_u_m = if dq_span <= 1e-12 { 0 } else { m * l_sub };
         let mut next = vec![vec![T::zero(); (2 * jb + 1) as usize]; max_units + 1];
-        for u in 0..=max_u_m {
-            let q_cum_before = (m as f64) * spec.daily_min_qty + (u as f64) * dq;
+        if let Some(r) = dec_rank[m] {
+            let max_u_m = if dq_span <= 1e-12 { 0 } else { r * l_sub };
+            for u in 0..=max_u_m {
+                let q_cum_before = (r as f64) * spec.daily_min_qty + (u as f64) * dq;
+                for j in -jb..=jb {
+                    let idx = (j + jb) as usize;
+                    let (k, pd, pm, pu, dt) = transition(&tree, m, j);
+                    let df = (-rate * dt).exp();
+                    let mut best = T::from_f64(-1e100);
+                    let max_step = if dq_span <= 1e-12 { 0 } else { l_sub };
+                    for step_u in 0..=max_step {
+                        let q_take = spec.daily_min_qty + (step_u as f64) * dq;
+                        if q_cum_before + q_take > spec.cumulative_max_qty + 1e-9 {
+                            continue;
+                        }
+                        let u_next = (u + step_u).min(max_units);
+                        let val_n =
+                            |node: isize| values[u_next][(node + jbn).clamp(0, 2 * jbn) as usize];
+                        let cont = df * (pd * val_n(k - 1) + pm * val_n(k) + pu * val_n(k + 1));
+                        let total = (spots[idx] - spec.strike) * q_take + cont;
+                        best = best.max_val(total);
+                    }
+                    next[u][idx] = best;
+                }
+            }
+        } else {
             for j in -jb..=jb {
                 let idx = (j + jb) as usize;
                 let (k, pd, pm, pu, dt) = transition(&tree, m, j);
                 let df = (-rate * dt).exp();
-                let mut best = T::from_f64(-1e100);
-                let max_step = if dq_span <= 1e-12 { 0 } else { l_sub };
-                for step_u in (0..=max_step).step_by(l_sub) {
-                    let q_take = spec.daily_min_qty + (step_u as f64) * dq;
-                    if q_cum_before + q_take > spec.cumulative_max_qty + 1e-9 {
-                        continue;
-                    }
-                    let u_next = (u + step_u).min(max_units);
-                    let val_n =
-                        |node: isize| values[u_next][(node + jbn).clamp(0, 2 * jbn) as usize];
-                    let cont = df * (pd * val_n(k - 1) + pm * val_n(k) + pu * val_n(k + 1));
-                    let total = (spots[idx] - spec.strike) * q_take + cont;
-                    best = best.max_val(total);
-                }
-                next[u][idx] = best;
+                let val_n = |node: isize| values[0][(node + jbn).clamp(0, 2 * jbn) as usize];
+                next[0][idx] = df * (pd * val_n(k - 1) + pm * val_n(k) + pu * val_n(k + 1));
             }
         }
         values = next;
     }
 
-    let min_per_step = (spec.cumulative_min_qty / (m_steps as f64))
-        .clamp(spec.daily_min_qty, spec.daily_max_qty);
+    let min_per_step =
+        (spec.cumulative_min_qty / (n_dec as f64)).clamp(spec.daily_min_qty, spec.daily_max_qty);
     let mut swap_npv = T::zero();
-    for &t in &tree.times {
+    for &t in &decision_times {
         let df = (-rate * t).exp();
         let fwd = curve.futures_price(T::from_f64(t));
         swap_npv += df * (fwd - spec.strike) * min_per_step;
@@ -515,13 +545,25 @@ fn solve_bess_tree<T: Real>(
     }
     let times = make_times(&spec.decision_times, 1);
     let tree = build_tree(times, kappa, sigma);
+    let mut decision = vec![false; tree.times.len()];
+    for &t in &spec.decision_times {
+        if let Some(m) = tree.times.iter().position(|x| (*x - t).abs() < 1e-10) {
+            decision[m] = true;
+        }
+    }
     let g = spec.soc_grid_points.max(2);
     let de = spec.energy_capacity_mwh / (g as f64);
     let n = tree.times.len().saturating_sub(1);
     let term_w = (2 * tree.j_bounds[n] + 1) as usize;
     let mut values = vec![vec![T::zero(); term_w]; g + 1];
-    let eta_c = spec.charge_efficiency.max_val(T::from_f64(0.1)).min_val(T::one());
-    let eta_d = spec.discharge_efficiency.max_val(T::from_f64(0.1)).min_val(T::one());
+    let eta_c = spec
+        .charge_efficiency
+        .max_val(T::from_f64(0.1))
+        .min_val(T::one());
+    let eta_d = spec
+        .discharge_efficiency
+        .max_val(T::from_f64(0.1))
+        .min_val(T::one());
 
     if n > 0 {
         let dt_n = (tree.times[n] - tree.times[n - 1]).max(1e-6);
@@ -555,6 +597,10 @@ fn solve_bess_tree<T: Real>(
             let headroom = soc.min(spec.energy_capacity_mwh - soc).max(0.0);
             for j in -jb..=jb {
                 let idx = (j + jb) as usize;
+                if !decision[m] {
+                    next[gi][idx] = cont_by_j[idx][gi];
+                    continue;
+                }
                 let (_, _, _, _, dt) = transition(&tree, m, j);
                 let dt_val = dt.val().max(1e-6);
                 let lo = (soc - spec.max_discharge_mw * dt_val).max(0.0);
@@ -575,6 +621,18 @@ fn solve_bess_tree<T: Real>(
                         T::zero()
                     };
                     best = best.max_val(cash + anc + cont_by_j[idx][gp]);
+                }
+                for soc_next in [lo, hi] {
+                    let d_soc = soc_next - soc;
+                    let cash = if d_soc > 0.0 {
+                        -(spots[idx] / eta_c + spec.cycle_degradation_cost) * d_soc
+                    } else if d_soc < 0.0 {
+                        (eta_d * spots[idx] - spec.cycle_degradation_cost) * (-d_soc)
+                    } else {
+                        T::zero()
+                    };
+                    let cont = interpolate(&cont_by_j[idx], soc_next, de);
+                    best = best.max_val(cash + anc + cont);
                 }
                 next[gi][idx] = best;
             }
@@ -612,11 +670,9 @@ mod phase17_tests {
 
     #[test]
     fn take_or_pay_bang_bang_and_bess_arbitrage_ad() {
-        let curve = CommodityFuturesCurve::new(
-            vec![0.25, 0.50, 0.75, 1.0],
-            vec![45.0, 58.0, 42.0, 62.0],
-        )
-        .unwrap();
+        let curve =
+            CommodityFuturesCurve::new(vec![0.25, 0.50, 0.75, 1.0], vec![45.0, 58.0, 42.0, 62.0])
+                .unwrap();
         let top1 = TakeOrPayContractSpec {
             decision_times: vec![0.25, 0.50, 0.75, 1.0],
             strike: 50.0,
@@ -633,6 +689,16 @@ mod phase17_tests {
         let v4 = price_take_or_pay_contract(&top4, &curve, 1.5, 0.30, 0.03);
         assert!((v1.npv - v4.npv).abs() < 1e-10);
         assert!(v1.swing_optionality_value > 0.0);
+
+        let mut top_frac1 = top1.clone();
+        top_frac1.cumulative_min_qty = 7.0;
+        top_frac1.cumulative_max_qty = 7.0;
+        top_frac1.daily_discretization_steps = 1;
+        let mut top_frac2 = top_frac1.clone();
+        top_frac2.daily_discretization_steps = 2;
+        let vf1 = price_take_or_pay_contract(&top_frac1, &curve, 1.5, 0.30, 0.03);
+        let vf2 = price_take_or_pay_contract(&top_frac2, &curve, 1.5, 0.30, 0.03);
+        assert!(vf2.npv > vf1.npv);
 
         let bess = BessSpec {
             decision_times: vec![0.25, 0.50, 0.75, 1.0],

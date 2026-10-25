@@ -1,6 +1,5 @@
 //! A dependency-free terminal dashboard and umbrella SDK for ql-rs.
 
-#[allow(ambiguous_glob_reexports)]
 pub mod prelude {
     pub use crate::TabId;
     pub use ql_ad::*;
@@ -28,7 +27,14 @@ pub mod prelude {
         calibrate_heston, double_heston_cos_price, double_heston_cos_strip_prices,
         h1_hw_char_func_unit_spot, heston_bates_vix_future_and_option_price, heston_cos_price,
         lifted_heston_char_fn, lifted_heston_char_func_unit_spot, lifted_heston_cos_price,
-        lifted_heston_kernel, local_vol::*, replicate_cboe_vix_index, rough::*, slv::*,
+        lifted_heston_kernel,
+        local_vol::{
+            AndreasenHugeGridSpec, AndreasenHugeSliceResult, interpolate_andreasen_huge_call,
+            solve_andreasen_huge_step,
+        },
+        replicate_cboe_vix_index,
+        rough::*,
+        slv::*,
     };
     pub use ql_pde::*;
     pub use ql_portfolio::*;
@@ -42,7 +48,8 @@ pub mod prelude {
 use ql_ad::Real;
 use ql_commodities::{
     BessSpec, CommodityFuturesCurve, GasStorageSpec, SchwartzSmith2F, SwingOptionSpec,
-    kirk_spread_option, price_bess_arbitrage_dp, price_gas_storage, price_swing_option,
+    TakeOrPayContractSpec, kirk_spread_option, price_bess_arbitrage_dp, price_gas_storage,
+    price_swing_option, price_take_or_pay_contract,
 };
 use ql_credit::{
     BaseCorrelationTrancheQuote, BlackCoxStructuralSpec, CalibratedCreditCurve, CdsQuote,
@@ -51,21 +58,22 @@ use ql_credit::{
 };
 use ql_curves::{DiscountCurve, FlatForwardCurve, MonotoneConvexZeroCurve, YieldTermStructure};
 use ql_exotics::{
-    BarrierOptionSpec, BarrierType as ExoticBarrierType, ExcursionClockKind, MonitoringFrequency,
-    ParisianBarrierOptionSpec, WorstOfAutocallableSpec, price_barrier_option,
-    price_parisian_option_mc_ad, price_worst_of_autocallable,
+    AtlasOptionSpec, BarrierOptionSpec, BarrierType as ExoticBarrierType, ExcursionClockKind,
+    MonitoringFrequency, ParisianBarrierOptionSpec, WorstOfAutocallableSpec,
+    price_atlas_option_mc_ad, price_barrier_option, price_parisian_option_mc_ad,
+    price_worst_of_autocallable,
 };
 use ql_fixed_income::{
     BondAssetSwapSpec, CmoTrancheSpec, CmoWaterfallSpec, CocoBondSpec, CocoTriggerPayoff,
     ConvertibleBondSpec, SpecifiedPoolMbsSpec, TbaDollarRollSpec, TreasuryFutureDeliverable,
     TreasuryFuturesBasketSpec, analyze_bond_asset_swap_and_z_spread, analyze_tba_dollar_roll,
-    analyze_treasury_futures_ctd, price_cmo_waterfall, price_coco_bond_ds, price_convertible_bond_tf,
-    price_specified_pool_mbs,
+    analyze_treasury_futures_ctd, price_cmo_waterfall, price_coco_bond_ds,
+    price_convertible_bond_tf, price_specified_pool_mbs,
 };
-use ql_fx::ConstNotionalXccs;
 use ql_fx::{
-    FxSmileQuote, FxTarfCapConvention, FxTarfSpec, FxVannaVolgaSmile, PrdcNoteSpec,
-    garman_kohlhagen_spot_delta, price_fx_tarf_mc_ad, price_prdc_note_hybrid,
+    ConstNotionalXccs, FxAccumulatorSpec, FxSmileQuote, FxTarfCapConvention, FxTarfSpec,
+    FxVannaVolgaSmile, PrdcNoteSpec, garman_kohlhagen_spot_delta, price_fx_accumulator_strip_no_ko,
+    price_fx_tarf_mc_ad, price_prdc_note_hybrid,
 };
 use ql_inflation::{
     CalibratedInflationCurve, JarrowYildirimParams, MultiplicativeSeasonality,
@@ -85,12 +93,13 @@ use ql_models::{
     lifted_heston_cos_price, solve_andreasen_huge_step,
 };
 use ql_portfolio::{
-    BoxConstrainedMarkowitzSpec, DarkLitRoutingSpec, IdzorekBlackLittermanSpec, KellyAllocationSpec,
-    MarketSnapshot, ObizhaevaWangSpec, PortfolioDag, PortfolioRiskSummary, PortfolioTrade,
-    RobustMarkowitzSpec, box_constrained_markowitz_weights, equal_risk_contribution_weights,
-    gerber_covariance_matrix, hierarchical_risk_parity_weights, idzorek_black_litterman_posterior,
-    kelly_fractional_allocation, nested_clustered_optimization_weights,
-    obizhaeva_wang_execution, optimal_dark_lit_execution, robust_markowitz_weights,
+    BoxConstrainedMarkowitzSpec, DarkLitRoutingSpec, IdzorekBlackLittermanSpec,
+    KellyAllocationSpec, MarketSnapshot, ObizhaevaWangSpec, PortfolioDag, PortfolioRiskSummary,
+    PortfolioTrade, RobustMarkowitzSpec, box_constrained_markowitz_weights,
+    equal_risk_contribution_weights, gerber_covariance_matrix, hierarchical_risk_parity_weights,
+    idzorek_black_litterman_posterior, kelly_fractional_allocation,
+    nested_clustered_optimization_weights, obizhaeva_wang_execution, optimal_dark_lit_execution,
+    robust_markowitz_weights,
 };
 use ql_portfolio::{
     conditional_drawdown_at_risk, entropic_value_at_risk, factor_risk_attribution,
@@ -888,6 +897,11 @@ impl DeskWorkstation {
         let mva = self.mva_metric();
         let (inflation, inflation_npv) = self.inflation_metrics(self.scenario);
         let active_curves = self.active_curve_system(&market);
+        let credit_bump = if self.scenario == ScenarioKind::CreditWideningPlus100Bp {
+            0.01
+        } else {
+            0.0
+        };
         let fx = FxVannaVolgaSmile::new(
             market.eq_spot,
             0.03,
@@ -1819,7 +1833,7 @@ impl DeskWorkstation {
             default_barrier: 85.0,
             barrier_growth_rate: 0.02,
             asset_vol: 0.20 + market.eq_vol,
-            risk_free_rate: rate,
+            risk_free_rate: rate + credit_bump,
             asset_payout_rate: 0.01,
             maturity: 3.0,
             recovery_rate: 0.40,
@@ -1841,7 +1855,12 @@ impl DeskWorkstation {
         let ah_call = interpolate_andreasen_huge_call(&ah_slice, 100.0);
         let phase17_curve_futures = CommodityFuturesCurve::from_futures_pillars(
             vec![0.25, 0.50, 0.75, 1.0],
-            &[45.0 + market.eq_vol * 5.0, 58.0, 42.0, 62.0],
+            &[
+                45.0 + market.eq_vol * 5.0 + market.eq_spot * 1e-3,
+                58.0,
+                42.0,
+                62.0,
+            ],
             ql_commodities::SeasonalParams {
                 a1: 0.0,
                 b1: 0.0,
@@ -1866,6 +1885,52 @@ impl DeskWorkstation {
             1.5,
             0.35 + market.eq_vol,
             rate,
+        );
+        let fx_accumulator = price_fx_accumulator_strip_no_ko(&FxAccumulatorSpec {
+            base_notional_per_fixing: 1.0,
+            spot: market.eq_spot,
+            strike: 100.0,
+            knockout_barrier: 120.0,
+            r_dom: rate + credit_bump,
+            r_for: 0.01,
+            vol: market.eq_vol.max(0.01),
+            fixing_times: vec![0.25, 0.50, 0.75, 1.0],
+            guaranteed_fixings: 0,
+            downside_gearing: 1.2,
+            is_accumulator: true,
+            smoothing_eps: 1e-6,
+        });
+        let atlas = price_atlas_option_mc_ad(
+            &AtlasOptionSpec {
+                spots: vec![market.eq_spot, market.eq_spot * 1.02, market.eq_spot * 0.98],
+                vols: vec![market.eq_vol.max(0.01); 3],
+                div_yields: vec![0.01; 3],
+                correlation: 0.35,
+                rate: rate + credit_bump,
+                expiry: 1.0,
+                strike: 0.0,
+                notional: 1.0,
+                remove_best: 0,
+                remove_worst: 0,
+            },
+            32,
+            17,
+        );
+        let take_or_pay = price_take_or_pay_contract(
+            &TakeOrPayContractSpec {
+                decision_times: vec![0.25, 0.50, 0.75, 1.0],
+                strike: 50.0 + credit_bump,
+                daily_min_qty: 1.0,
+                daily_max_qty: 3.0,
+                cumulative_min_qty: 6.0,
+                cumulative_max_qty: 10.0,
+                shortfall_penalty_rate: 50.0,
+                daily_discretization_steps: 2,
+            },
+            &phase17_curve_futures,
+            1.5,
+            0.30 + market.eq_vol,
+            rate + credit_bump,
         );
         let bl = idzorek_black_litterman_posterior(&IdzorekBlackLittermanSpec {
             covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
@@ -1905,7 +1970,11 @@ impl DeskWorkstation {
             + bl.weights.iter().map(|x| x.val()).sum::<f64>()
             + kelly.effective_kelly_fraction.val()
             + kelly.expected_log_growth_rate.val()
-            + dark_lit.expected_total_cost.val();
+            + dark_lit.expected_total_cost.val()
+            + fx_accumulator.val()
+            + atlas.val()
+            + take_or_pay.npv.val()
+            + market.eq_spot * 1e-6;
         let blotter_rows = vec![
             ("IRS 5Y PayFix".to_string(), irs_npv, "IFT".to_string()),
             ("Heston Call 1Y".to_string(), heston_npv, "COS".to_string()),
@@ -2386,11 +2455,23 @@ mod phase17_tests {
             ws.render_dashboard(&frame, false)
                 .contains("27 ASW/MF1F/AH-LV/BESS/Idzorek-DP")
         );
-        ws.set_scenario(ScenarioKind::RatesPlus50Bp);
-        let stressed = ws.step_tick();
+        let normal_next = ws.step_tick();
         assert_ne!(
-            stressed.asw_mf1f_ah_bess_ep_metric,
+            normal_next.asw_mf1f_ah_bess_ep_metric,
             frame.asw_mf1f_ah_bess_ep_metric
         );
+        for scenario in [
+            ScenarioKind::RatesPlus50Bp,
+            ScenarioKind::EquityCrashMinus15Pct,
+            ScenarioKind::CreditWideningPlus100Bp,
+            ScenarioKind::StagflationPlus150Bp,
+        ] {
+            ws.set_scenario(scenario);
+            let stressed = ws.step_tick();
+            assert_ne!(
+                stressed.asw_mf1f_ah_bess_ep_metric,
+                normal_next.asw_mf1f_ah_bess_ep_metric
+            );
+        }
     }
 }

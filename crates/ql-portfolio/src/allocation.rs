@@ -1674,10 +1674,17 @@ pub fn try_idzorek_black_litterman_posterior<T: Real>(
     let k = s.view_returns.len();
     if n == 0
         || s.market_weights.len() != n
-        || s.covariance.iter().any(|r| r.len() != n)
+        || s.market_weights.iter().any(|x| !x.val().is_finite())
+        || s.covariance
+            .iter()
+            .any(|r| r.len() != n || r.iter().any(|x| !x.val().is_finite()))
         || s.view_matrix.len() != k
-        || s.view_matrix.iter().any(|r| r.len() != n)
+        || s.view_matrix
+            .iter()
+            .any(|r| r.len() != n || r.iter().any(|x| !x.val().is_finite()))
+        || s.view_returns.iter().any(|x| !x.val().is_finite())
         || s.view_confidences.len() != k
+        || s.view_confidences.iter().any(|x| !x.val().is_finite())
         || !s.risk_aversion.val().is_finite()
         || s.risk_aversion.val() <= 0.0
         || !s.tau.val().is_finite()
@@ -1798,7 +1805,17 @@ pub fn try_kelly_fractional_allocation<T: Real>(
     s: &KellyAllocationSpec<T>,
 ) -> Result<KellyAllocationResult<T>, AllocationError> {
     let n = s.expected_returns.len();
-    if n == 0 || s.covariance.len() != n || s.covariance.iter().any(|r| r.len() != n) {
+    if n == 0
+        || s.expected_returns.iter().any(|x| !x.val().is_finite())
+        || s.covariance.len() != n
+        || s.covariance
+            .iter()
+            .any(|r| r.len() != n || r.iter().any(|x| !x.val().is_finite()))
+        || !s.risk_free_rate.val().is_finite()
+        || !s.max_kelly_fraction.val().is_finite()
+        || !s.max_drawdown_limit.val().is_finite()
+        || !s.drawdown_tail_prob.val().is_finite()
+    {
         return Err(AllocationError::InvalidDimensions);
     }
     let excess: Vec<T> = s
@@ -1820,11 +1837,11 @@ pub fn try_kelly_fractional_allocation<T: Real>(
         .drawdown_tail_prob
         .max_val(T::from_f64(1e-4))
         .min_val(T::from_f64(0.99));
-    let f_dd = (beta.ln() * (-2.0)) / (-(T::one() - d_max).ln() * sr2_safe).max_val(T::from_f64(1e-12));
-    let f_eff = s
-        .max_kelly_fraction
-        .min_val(f_dd)
-        .max_val(T::zero());
+    let neg_ln_one_minus_d = -(T::one() - d_max).ln();
+    let neg_ln_beta = -beta.ln();
+    let f_dd =
+        (neg_ln_one_minus_d * 2.0) / (neg_ln_beta + neg_ln_one_minus_d).max_val(T::from_f64(1e-12));
+    let f_eff = s.max_kelly_fraction.min_val(f_dd).max_val(T::zero());
     let weights: Vec<T> = w_full.into_iter().map(|w| w * f_eff).collect();
     let sum_w = weights.iter().copied().fold(T::zero(), |a, b| a + b);
     let cash_weight = T::one() - sum_w;
@@ -1903,7 +1920,16 @@ mod phase17_tests {
             max_drawdown_limit: 0.20,
             drawdown_tail_prob: 0.10,
         });
-        assert!(kelly.effective_kelly_fraction > 0.0 && kelly.effective_kelly_fraction <= 0.5);
+        let kelly_tighter = kelly_fractional_allocation(&KellyAllocationSpec {
+            expected_returns: vec![0.08, 0.11],
+            covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
+            risk_free_rate: 0.03,
+            max_kelly_fraction: 0.5,
+            max_drawdown_limit: 0.10,
+            drawdown_tail_prob: 0.10,
+        });
+        assert!(kelly.effective_kelly_fraction > 0.0 && kelly.effective_kelly_fraction < 0.5);
+        assert!(kelly_tighter.effective_kelly_fraction < kelly.effective_kelly_fraction);
         assert!(kelly.expected_log_growth_rate > 0.03);
     }
 }

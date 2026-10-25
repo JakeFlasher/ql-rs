@@ -281,6 +281,14 @@ pub fn price_markov_functional_1f<T: Real>(
     }
     let shift = s0 - mean_s_ann;
 
+    let mut raw_cms_w = vec![T::zero(); n_q];
+    let mut sum_cms_w = T::zero();
+    for q in 0..n_q {
+        let cw = (g_tn * sig_x * z_nodes[q]).exp() * n_weights[q];
+        raw_cms_w[q] = cw;
+        sum_cms_w += cw;
+    }
+
     let eps = T::from_f64(1e-6);
     let mut unit_swaption = T::zero();
     let mut unit_digital = T::zero();
@@ -292,13 +300,14 @@ pub fn price_markov_functional_1f<T: Real>(
         } else {
             spec.strike - s_q
         };
-        let payoff = (diff + (diff * diff + eps * eps).sqrt() - eps).max_val(T::zero()) * 0.5;
+        let payoff = (diff + (diff * diff + eps * eps).sqrt()) * 0.5;
         unit_swaption += w_ann[q] * payoff;
         let dig_diff = s_q - spec.strike;
-        let dig = T::from_f64(0.5)
-            * (T::one() + dig_diff / (dig_diff * dig_diff + eps * eps).sqrt());
+        let dig =
+            T::from_f64(0.5) * (T::one() + dig_diff / (dig_diff * dig_diff + eps * eps).sqrt());
         unit_digital += w_ann[q] * dig;
-        cms_rate += s_q * n_weights[q];
+        let w_cms_q = raw_cms_w[q] / sum_cms_w.max_val(T::from_f64(1e-12));
+        cms_rate += w_cms_q * s_q;
     }
 
     MarkovFunctionalValuation {
@@ -336,7 +345,8 @@ mod phase17_tests {
         s.is_payer = false;
         let rec = price_markov_functional_1f(&s, &c, 16);
         let intrinsic = s.notional * pay.annuity * (pay.forward_swap_rate - s.strike);
-        assert!((pay.swaption_npv - rec.swaption_npv - intrinsic).abs() < 1e-4);
+        assert!((pay.swaption_npv - rec.swaption_npv - intrinsic).abs() < 1e-11);
+        assert!(pay.cms_swaplet_rate > pay.forward_swap_rate);
 
         let h = 1e-5;
         let eval_v = |v: f64| {

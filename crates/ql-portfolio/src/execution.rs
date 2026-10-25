@@ -371,11 +371,18 @@ pub fn try_optimal_dark_lit_execution<T: Real>(
     s: &DarkLitRoutingSpec<T>,
 ) -> Result<DarkLitRoutingReport<T>, AllocationError> {
     if s.num_steps == 0
+        || !s.initial_inventory.val().is_finite()
+        || !s.horizon.val().is_finite()
         || s.horizon.val() <= 0.0
-        || s.lit_temporary_impact.val() <= 0.0
-        || s.dark_fill_intensity.val() < 0.0
-        || s.risk_aversion.val() < 0.0
+        || !s.volatility.val().is_finite()
         || s.volatility.val() < 0.0
+        || !s.lit_temporary_impact.val().is_finite()
+        || s.lit_temporary_impact.val() <= 0.0
+        || !s.lit_permanent_impact.val().is_finite()
+        || !s.dark_fill_intensity.val().is_finite()
+        || s.dark_fill_intensity.val() < 0.0
+        || !s.risk_aversion.val().is_finite()
+        || s.risk_aversion.val() < 0.0
     {
         return Err(AllocationError::InvalidDimensions);
     }
@@ -383,7 +390,7 @@ pub fn try_optimal_dark_lit_execution<T: Real>(
     let t_cap = s.horizon;
     let eta = s.lit_temporary_impact;
     let theta = s.dark_fill_intensity;
-    let phi = s.risk_aversion * s.volatility * s.volatility * 0.5;
+    let phi = s.risk_aversion * s.volatility * s.volatility;
     let half_theta = theta * 0.5;
     let gamma = (half_theta * half_theta + phi / eta)
         .max_val(T::from_f64(1e-16))
@@ -406,7 +413,7 @@ pub fn try_optimal_dark_lit_execution<T: Real>(
             let r_s = T::from_f64(1.0 - frac)
                 * (T::one() + gamma * gamma * (rem * rem - t_cap * t_cap) / 6.0);
             let r_v = (T::one() / t_cap)
-                * (T::one() + gamma * gamma * (t_cap * t_cap - rem * rem * 3.0) / 6.0)
+                * (T::one() + gamma * gamma * (rem * rem * 3.0 - t_cap * t_cap) / 6.0)
                 - half_theta * r_s;
             (r_s, r_v)
         } else {
@@ -447,9 +454,7 @@ pub fn try_optimal_dark_lit_execution<T: Real>(
     })
 }
 
-pub fn optimal_dark_lit_execution<T: Real>(
-    s: &DarkLitRoutingSpec<T>,
-) -> DarkLitRoutingReport<T> {
+pub fn optimal_dark_lit_execution<T: Real>(s: &DarkLitRoutingSpec<T>) -> DarkLitRoutingReport<T> {
     try_optimal_dark_lit_execution(s).expect("valid dark-lit execution inputs")
 }
 
@@ -474,9 +479,7 @@ mod phase17_tests {
         s.dark_fill_intensity = 1.5;
         let with_dark = optimal_dark_lit_execution(&s);
         assert!(with_dark.expected_total_cost < no_dark.expected_total_cost);
-        assert!(
-            with_dark.lit_trading_rate_schedule[0] < with_dark.lit_trading_rate_schedule[4]
-        );
+        assert!(with_dark.lit_trading_rate_schedule[0] < with_dark.lit_trading_rate_schedule[4]);
 
         let h = 1e-5;
         let eval_theta = |th: f64| {

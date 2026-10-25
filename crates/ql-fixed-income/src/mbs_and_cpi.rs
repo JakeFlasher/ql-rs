@@ -894,6 +894,8 @@ pub fn analyze_bond_asset_swap_and_z_spread<T: Real>(
     let dirty = (spec.clean_price + spec.accrued_interest) / par_scale;
     let mut ann = T::zero();
     let mut theo_dirty = T::zero();
+    let mut dfs = Vec::with_capacity(n);
+    let mut cfs = Vec::with_capacity(n);
     let mut dfs_f64 = Vec::with_capacity(n);
     let mut cfs_f64 = Vec::with_capacity(n);
     for i in 0..n {
@@ -907,6 +909,8 @@ pub fn analyze_bond_asset_swap_and_z_spread<T: Real>(
             spec.coupon_rate * tau
         };
         theo_dirty += cf * df;
+        dfs.push(df);
+        cfs.push(cf);
         dfs_f64.push(df.val());
         cfs_f64.push(cf.val());
     }
@@ -948,32 +952,25 @@ pub fn analyze_bond_asset_swap_and_z_spread<T: Real>(
             z_root = (z_root - r / dr).clamp(-0.20, 1.0);
         }
     }
-    let (_, f_z_f64, f_zz_f64) = eval_f64(z_root);
+    let (_, _, f_zz_f64) = eval_f64(z_root);
+    let mut f_z = T::zero();
+    for i in 0..n {
+        let t = spec.payment_times[i].max(1e-8);
+        f_z -= cfs[i] * dfs[i] * (-z_root * t).exp() * t;
+    }
     let residual_at = |z_t: T| -> T {
         let mut pv = T::zero();
         for i in 0..n {
             let t = spec.payment_times[i].max(1e-8);
-            let tau = spec.accrual_fractions[i].max(0.0);
-            let cf = if i + 1 == n {
-                spec.coupon_rate * tau + T::one()
-            } else {
-                spec.coupon_rate * tau
-            };
-            pv += cf * ois_curve.discount_factor(t) * (-z_t * t).exp();
+            pv += cfs[i] * dfs[i] * (-z_t * t).exp();
         }
         pv - dirty
     };
-    let z_spread = ql_ad::ift_lift_1d(z_root, residual_at, T::from_f64(f_z_f64), f_zz_f64);
+    let z_spread = ql_ad::ift_lift_1d(z_root, residual_at, f_z, f_zz_f64);
     let mut dv01 = T::zero();
     for i in 0..n {
         let t = spec.payment_times[i].max(1e-8);
-        let tau = spec.accrual_fractions[i].max(0.0);
-        let cf = if i + 1 == n {
-            spec.coupon_rate * tau + T::one()
-        } else {
-            spec.coupon_rate * tau
-        };
-        dv01 += cf * ois_curve.discount_factor(t) * (-z_spread * t).exp() * t;
+        dv01 += cfs[i] * dfs[i] * (-z_spread * t).exp() * t;
     }
     BondSpreadReport {
         dirty_price: dirty,

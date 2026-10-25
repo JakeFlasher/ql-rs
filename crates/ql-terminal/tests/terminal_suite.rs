@@ -134,10 +134,22 @@ fn phase17_tab_metric_and_rates_scenario_are_live() {
         ws.render_dashboard(&frame, false)
             .contains("27 ASW/MF1F/AH-LV/BESS/Idzorek-DP")
     );
-    ws.set_scenario(ScenarioKind::RatesPlus50Bp);
-    let stressed = ws.step_tick();
+    let normal_next = ws.step_tick();
     assert_ne!(
-        stressed.asw_mf1f_ah_bess_ep_metric,
+        normal_next.asw_mf1f_ah_bess_ep_metric,
         frame.asw_mf1f_ah_bess_ep_metric
     );
+    for scenario in [
+        ScenarioKind::RatesPlus50Bp,
+        ScenarioKind::EquityCrashMinus15Pct,
+        ScenarioKind::CreditWideningPlus100Bp,
+        ScenarioKind::StagflationPlus150Bp,
+    ] {
+        ws.set_scenario(scenario);
+        let stressed = ws.step_tick();
+        assert_ne!(
+            stressed.asw_mf1f_ah_bess_ep_metric,
+            normal_next.asw_mf1f_ah_bess_ep_metric
+        );
+    }
 }

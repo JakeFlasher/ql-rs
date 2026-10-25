@@ -99,7 +99,7 @@ pub fn solve_andreasen_huge_step<T: Real>(
             rhs.push(prev[i]);
         } else {
             let diff = spec.forward - k_i;
-            let intrinsic = (diff + (diff * diff + eps * eps).sqrt() - eps).max_val(T::zero()) * 0.5;
+            let intrinsic = (diff + (diff * diff + eps * eps).sqrt()) * 0.5;
             rhs.push(intrinsic);
         }
     }
@@ -134,8 +134,8 @@ pub fn solve_andreasen_huge_step<T: Real>(
     let call_prices: Vec<T> = u_calls.iter().map(|&c_val| c_val * df).collect();
     let mut densities = vec![T::zero(); g];
     for i in 1..(g - 1) {
-        densities[i] =
-            ((u_calls[i + 1] - u_calls[i] * 2.0 + u_calls[i - 1]) / (dk_safe * dk_safe)).max_val(T::zero());
+        densities[i] = ((u_calls[i + 1] - u_calls[i] * 2.0 + u_calls[i - 1]) / (dk_safe * dk_safe))
+            .max_val(T::zero());
     }
 
     AndreasenHugeSliceResult {

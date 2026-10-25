@@ -243,8 +243,8 @@ pub fn price_fx_accumulator_mc_ad<T: Real>(
                 .exp();
 
             let bar_dist = (spec.knockout_barrier - s) * omega;
-            let step_surv = T::from_f64(0.5)
-                * (T::one() + bar_dist / (bar_dist * bar_dist + eps * eps).sqrt());
+            let step_surv =
+                T::from_f64(0.5) * (T::one() + bar_dist / (bar_dist * bar_dist + eps * eps).sqrt());
             alive *= step_surv;
             let w_active = if m < spec.guaranteed_fixings {
                 T::one()
@@ -253,9 +253,9 @@ pub fn price_fx_accumulator_mc_ad<T: Real>(
             };
 
             let x = (s - spec.strike) * omega;
-            let root = (x * x + eps * eps).sqrt();
-            let gain = (x + root - eps).max_val(T::zero()) * 0.5;
-            let loss = (-x + root - eps).max_val(T::zero()) * 0.5;
+            let root = (x * x + T::from_f64(1e-12)).sqrt();
+            let gain = (x + root) * 0.5;
+            let loss = (-x + root) * 0.5;
             let df = (-spec.r_dom * t).exp();
             path_pv += spec.base_notional_per_fixing
                 * df
