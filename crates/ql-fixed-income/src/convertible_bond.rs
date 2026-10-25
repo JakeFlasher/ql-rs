@@ -503,7 +503,9 @@ pub fn analyze_thorp_kassouf_calamos_convertible_arbitrage<T: Real>(
 ) -> ThorpKassoufCalamosConvertibleArbReport<T> {
     let t = s.maturity.max_val(T::from_f64(1e-12));
     let parity = s.stock_price * s.conversion_ratio;
-    let floor = s.face_value * (-(s.risk_free_rate + s.credit_spread) * t).exp();
+    let y = (s.risk_free_rate + s.credit_spread).max_val(T::from_f64(1e-8));
+    let coupon_pv = s.annual_coupon_rate * s.face_value * (T::one() - (-y * t).exp()) / y;
+    let floor = coupon_pv + s.face_value * (-y * t).exp();
     let vol = s.implied_volatility.max_val(T::from_f64(1e-8));
     let d1 = ((s.stock_price / (s.face_value / s.conversion_ratio + T::from_f64(1e-14))).ln()
         + (s.risk_free_rate - s.stock_dividend_yield + T::from_f64(0.5) * vol * vol) * t)
@@ -529,7 +531,8 @@ pub fn analyze_thorp_kassouf_calamos_convertible_arbitrage<T: Real>(
         + adv;
     ThorpKassoufCalamosConvertibleArbReport {
         conversion_parity: parity,
-        conversion_premium_ratio: theo / (parity + T::from_f64(1e-14)) - T::one(),
+        conversion_premium_ratio: s.convertible_market_price / parity.max_val(T::from_f64(1e-14))
+            - T::one(),
         straight_bond_investment_floor: floor,
         theoretical_convertible_value: theo,
         delta_neutral_short_shares: delta,
@@ -610,7 +613,7 @@ mod phase25_tests {
         let r = analyze_thorp_kassouf_calamos_convertible_arbitrage(&cb(100.0));
         assert!(
             (r.conversion_parity * (1.0 + r.conversion_premium_ratio)
-                - r.theoretical_convertible_value)
+                - cb(100.0).convertible_market_price)
                 .abs()
                 < 1e-12
         );

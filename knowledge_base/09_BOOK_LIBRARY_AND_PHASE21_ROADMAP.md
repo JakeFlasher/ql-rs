@@ -37,3 +37,7 @@ The workspace book library contains **86 books and monographs across 14 topic fo
 
 ### Phase 24 Round 1 delivery
 The twelve institutional engines above are now wired into `ql-fixed-income`, `ql-credit`, `ql-xva`, `ql-models`, `ql-vol`, `ql-portfolio`, and `ql-ad`, with Suite 37 (`37_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin`) and workstation Tab 35 (`35 Phase 25 SOTA`).
+
+
+### Phase 25 book-backed SOTA delivery
+Phase 25 adds twelve book-backed engines: Tsay Kalman/RTS state-space smoothing, Johansen–Tsay VECM cointegration, Cochrane–Hansen–Jagannathan SDF/Campbell–Shiller news, IFRS 9 CECL multistage ECL, Wakker–Tversky–Kahneman CPT, Hasbrouck information share/DSSW limits, Fong–Vasicek stochastic-volatility bonds, Lando–Cox affine default/liquidity, Sornette LPPL crash hazard, Thorp–Kassouf–Calamos convertible arbitrage, López de Prado causal backdoor/collider bias, and Fournié–Lasry–Lions Malliavin BEL Greeks. They are exposed in workstation Tab 35 and validated by Suite 37 (`37_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin`).

@@ -3823,67 +3823,155 @@ pub fn solve_johansen_tsay_vecm_cointegration_basket<T: Real>(
     s: &JohansenTsayVecmCointegrationSpec<T>,
 ) -> JohansenTsayVecmCointegrationReport<T> {
     let n = s.price_series.len().max(2);
-    let m = s.price_series.len().saturating_sub(1).max(1);
-    let mut mu = [T::zero(); 2];
-    for y in &s.price_series {
-        mu[0] += y[0];
-        mu[1] += y[1];
-    }
-    mu[0] /= T::from_f64(n as f64);
-    mu[1] /= T::from_f64(n as f64);
-    let mut c11 = T::zero();
-    let mut c22 = T::zero();
-    let mut c12 = T::zero();
-    for y in &s.price_series {
-        let a = y[0] - mu[0];
-        let b = y[1] - mu[1];
-        c11 += a * a;
-        c22 += b * b;
-        c12 += a * b;
-    }
-    c11 /= T::from_f64(n as f64);
-    c22 /= T::from_f64(n as f64);
-    c12 /= T::from_f64(n as f64);
-    let slope = c12 / (c11 + T::from_f64(1e-14));
-    let beta = [T::one(), -slope];
-    let mut dmu = [T::zero(); 2];
+    let teff = s.price_series.len().saturating_sub(1).max(1);
+    let tf = T::from_f64(teff as f64);
+    let eps = T::from_f64(1e-12);
+    let mut mean_d = [T::zero(); 2];
+    let mut mean_l = [T::zero(); 2];
     for t in 1..s.price_series.len() {
-        dmu[0] += s.price_series[t][0] - s.price_series[t - 1][0];
-        dmu[1] += s.price_series[t][1] - s.price_series[t - 1][1];
+        mean_d[0] += s.price_series[t][0] - s.price_series[t - 1][0];
+        mean_d[1] += s.price_series[t][1] - s.price_series[t - 1][1];
+        mean_l[0] += s.price_series[t - 1][0];
+        mean_l[1] += s.price_series[t - 1][1];
     }
-    dmu[0] /= T::from_f64(m as f64);
-    dmu[1] /= T::from_f64(m as f64);
-    let mut a1 = T::zero();
-    let mut a2 = T::zero();
-    let mut vz = T::zero();
-    let mut dz = T::zero();
+    mean_d[0] /= tf;
+    mean_d[1] /= tf;
+    mean_l[0] /= tf;
+    mean_l[1] /= tf;
+    let mut s00 = [[T::zero(); 2]; 2];
+    let mut s01 = [[T::zero(); 2]; 2];
+    let mut s11 = [[T::zero(); 2]; 2];
     for t in 1..s.price_series.len() {
-        let z = s.price_series[t - 1][0] + beta[1] * s.price_series[t - 1][1];
-        let dzv = (s.price_series[t][0] + beta[1] * s.price_series[t][1])
-            - (s.price_series[t - 1][0] + beta[1] * s.price_series[t - 1][1]);
-        a1 += (s.price_series[t][0] - s.price_series[t - 1][0] - dmu[0]) * z;
-        a2 += (s.price_series[t][1] - s.price_series[t - 1][1] - dmu[1]) * z;
-        vz += z * z;
-        dz += dzv * z;
+        let r0 = [
+            s.price_series[t][0] - s.price_series[t - 1][0] - mean_d[0],
+            s.price_series[t][1] - s.price_series[t - 1][1] - mean_d[1],
+        ];
+        let r1 = [
+            s.price_series[t - 1][0] - mean_l[0],
+            s.price_series[t - 1][1] - mean_l[1],
+        ];
+        for i in 0..2 {
+            for j in 0..2 {
+                s00[i][j] += r0[i] * r0[j] / tf;
+                s01[i][j] += r0[i] * r1[j] / tf;
+                s11[i][j] += r1[i] * r1[j] / tf;
+            }
+        }
     }
-    let alpha = [
-        a1 / (vz + T::from_f64(1e-14)),
-        a2 / (vz + T::from_f64(1e-14)),
+    s00[0][0] += eps;
+    s00[1][1] += eps;
+    s11[0][0] += eps;
+    s11[1][1] += eps;
+    let inv2 = |a: [[T; 2]; 2]| -> [[T; 2]; 2] {
+        let mut d = a[0][0] * a[1][1] - a[0][1] * a[1][0];
+        if d.val().abs() < 1e-14 {
+            d = T::from_f64(if d.val().is_sign_negative() {
+                -1e-14
+            } else {
+                1e-14
+            });
+        }
+        let di = T::one() / d;
+        [[a[1][1] * di, -a[0][1] * di], [-a[1][0] * di, a[0][0] * di]]
+    };
+    let l00 = s11[0][0].sqrt();
+    let l10 = s11[1][0] / l00.max_val(eps);
+    let l11 = (s11[1][1] - l10 * l10).max_val(eps).sqrt();
+    let linv = [
+        [T::one() / l00.max_val(eps), T::zero()],
+        [
+            -l10 / (l00.max_val(eps) * l11.max_val(eps)),
+            T::one() / l11.max_val(eps),
+        ],
     ];
-    let kappa = -(dz / (vz + T::from_f64(1e-14)));
-    let half = T::from_f64(std::f64::consts::LN_2) / (kappa.abs() + T::from_f64(1e-14));
-    let varz = T::from_f64(1.0).max_val((vz / T::from_f64(n as f64)).sqrt());
-    let zterm = s.price_series.last().unwrap()[0] + beta[1] * s.price_series.last().unwrap()[1];
-    let zscore = (zterm - (mu[0] + beta[1] * mu[1])) / (varz + T::from_f64(1e-14));
-    let corr = (c12 * c12 / ((c11 + T::from_f64(1e-14)) * (c22 + T::from_f64(1e-14))))
+    let linvt = [[linv[0][0], linv[1][0]], [linv[0][1], linv[1][1]]];
+    let mt = |a: [[T; 2]; 2], b: [[T; 2]; 2]| -> [[T; 2]; 2] {
+        [
+            [
+                a[0][0] * b[0][0] + a[0][1] * b[1][0],
+                a[0][0] * b[0][1] + a[0][1] * b[1][1],
+            ],
+            [
+                a[1][0] * b[0][0] + a[1][1] * b[1][0],
+                a[1][0] * b[0][1] + a[1][1] * b[1][1],
+            ],
+        ]
+    };
+    let si = inv2(s00);
+    let s10 = [[s01[0][0], s01[1][0]], [s01[0][1], s01[1][1]]];
+    let mtx = mt(mt(mt(linv, s10), si), mt(s01, linvt));
+    let tr = mtx[0][0] + mtx[1][1];
+    let disc = ((tr - T::from_f64(2.0) * mtx[0][0]).powf(2.0)
+        + T::from_f64(4.0) * mtx[0][1] * mtx[0][1]
+        + T::from_f64(1e-24))
+    .sqrt();
+    let mut l1 = ((tr + disc) / T::from_f64(2.0))
         .max_val(T::zero())
-        .min_val(T::from_f64(0.999999));
-    let l1 = corr;
-    let l2 = (T::from_f64(0.25) * l1).max_val(T::zero());
-    let tr0 = -(T::from_f64(n as f64)) * (T::one() - l1).ln()
-        - (T::from_f64(n as f64)) * (T::one() - l2).ln();
-    let tr1 = -(T::from_f64(n as f64)) * (T::one() - l2).ln();
-    let max0 = -(T::from_f64(n as f64)) * (T::one() - l1).ln();
+        .min_val(T::one() - eps);
+    let mut l2 = ((tr - disc) / T::from_f64(2.0))
+        .max_val(T::zero())
+        .min_val(T::one() - eps);
+    if l2.val() > l1.val() {
+        std::mem::swap(&mut l1, &mut l2);
+    }
+    let lam = l1;
+    let mut v = [mtx[0][1], lam - mtx[0][0]];
+    if v[0].abs().val() + v[1].abs().val() < 1e-14 {
+        v = [lam - mtx[1][1], mtx[1][0]];
+    }
+    let vn = (v[0] * v[0] + v[1] * v[1]).sqrt().max_val(eps);
+    v[0] /= vn;
+    v[1] /= vn;
+    let tilde = [
+        linvt[0][0] * v[0] + linvt[0][1] * v[1],
+        linvt[1][0] * v[0] + linvt[1][1] * v[1],
+    ];
+    let t0 = if tilde[0].abs().val() < 1e-14 {
+        T::from_f64(if tilde[0].val().is_sign_negative() {
+            -1e-14
+        } else {
+            1e-14
+        })
+    } else {
+        tilde[0]
+    };
+    let beta = [T::one(), tilde[1] / t0];
+    let s11b = [
+        s11[0][0] * beta[0] + s11[0][1] * beta[1],
+        s11[1][0] * beta[0] + s11[1][1] * beta[1],
+    ];
+    let den = (beta[0] * s11b[0] + beta[1] * s11b[1]).max_val(eps);
+    let s01b = [
+        s01[0][0] * beta[0] + s01[0][1] * beta[1],
+        s01[1][0] * beta[0] + s01[1][1] * beta[1],
+    ];
+    let alpha = [s01b[0] / den, s01b[1] / den];
+    let tr0 = -tf * ((T::one() - l1).ln() + (T::one() - l2).ln());
+    let tr1 = -tf * (T::one() - l2).ln();
+    let max0 = -tf * (T::one() - l1).ln();
+    let mut zbar = T::zero();
+    for y in &s.price_series {
+        zbar += y[0] + beta[1] * y[1];
+    }
+    zbar /= T::from_f64(n as f64);
+    let mut den_ar = T::zero();
+    let mut num_ar = T::zero();
+    let mut vz = T::zero();
+    for t in 1..s.price_series.len() {
+        let z0 = s.price_series[t - 1][0] + beta[1] * s.price_series[t - 1][1] - zbar;
+        let z1 = s.price_series[t][0] + beta[1] * s.price_series[t][1] - zbar;
+        num_ar += z1 * z0;
+        den_ar += z0 * z0;
+        vz += z1 * z1;
+    }
+    let phi = (num_ar / den_ar.max_val(eps))
+        .max_val(T::from_f64(0.01))
+        .min_val(T::from_f64(0.9999));
+    let kappa = -phi.ln();
+    let half = T::from_f64(std::f64::consts::LN_2) / kappa.max_val(eps);
+    let sigma_z = (vz / tf).sqrt();
+    let last = s.price_series.last().copied().unwrap_or([T::zero(); 2]);
+    let zscore = (last[0] + beta[1] * last[1] - zbar) / sigma_z.max_val(T::from_f64(1e-12));
     JohansenTsayVecmCointegrationReport {
         canonical_eigenvalues: [l1, l2],
         johansen_trace_stat_r0: tr0,
@@ -3922,29 +4010,29 @@ pub fn evaluate_lopez_de_prado_causal_backdoor_vs_collider_bias<T: Real>(
     s: &LopezDePradoCausalFactorSpec<T>,
 ) -> LopezDePradoCausalFactorReport<T> {
     let vz = s.confounder_var;
+    let cxz = s.confounder_to_factor_axz * vz;
     let vx =
         s.confounder_to_factor_axz * s.confounder_to_factor_axz * vz + s.factor_idiosyncratic_var;
+    let cyz = s.true_causal_beta_xy * cxz + s.confounder_to_return_byz * vz;
+    let cxy = s.true_causal_beta_xy * vx + s.confounder_to_return_byz * cxz;
     let vy = s.true_causal_beta_xy * s.true_causal_beta_xy * vx
         + s.confounder_to_return_byz * s.confounder_to_return_byz * vz
-        + s.return_idiosyncratic_var
-        + T::from_f64(2.0)
-            * s.true_causal_beta_xy
-            * s.confounder_to_factor_axz
-            * s.confounder_to_return_byz
-            * vz;
-    let cxy =
-        s.true_causal_beta_xy * vx + s.confounder_to_factor_axz * s.confounder_to_return_byz * vz;
-    let naive = cxy / (vx + T::from_f64(1e-14));
-    let back = naive - (naive - s.true_causal_beta_xy);
-    let covxc = s.factor_to_collider_ccx * vx + s.return_to_collider_ccy * cxy;
-    let covyc = s.factor_to_collider_ccx * cxy + s.return_to_collider_ccy * vy;
-    let varc = s.factor_to_collider_ccx * s.factor_to_collider_ccx * vx
-        + s.return_to_collider_ccy * s.return_to_collider_ccy * vy
-        + T::from_f64(2.0) * s.factor_to_collider_ccx * s.return_to_collider_ccy * cxy
+        + T::from_f64(2.0) * s.true_causal_beta_xy * s.confounder_to_return_byz * cxz
+        + s.return_idiosyncratic_var;
+    let naive = cxy / vx.max_val(T::from_f64(1e-14));
+    let cxy_z = cxy - cxz * cyz / vz.max_val(T::from_f64(1e-14));
+    let vx_z = vx - cxz * cxz / vz.max_val(T::from_f64(1e-14));
+    let vy_z = vy - cyz * cyz / vz.max_val(T::from_f64(1e-14));
+    let back = cxy_z / vx_z.max_val(T::from_f64(1e-14));
+    let xcz = s.factor_to_collider_ccx * vx_z + s.return_to_collider_ccy * cxy_z;
+    let ycz = s.factor_to_collider_ccx * cxy_z + s.return_to_collider_ccy * vy_z;
+    let vcz = s.factor_to_collider_ccx * s.factor_to_collider_ccx * vx_z
+        + s.return_to_collider_ccy * s.return_to_collider_ccy * vy_z
+        + T::from_f64(2.0) * s.factor_to_collider_ccx * s.return_to_collider_ccy * cxy_z
         + s.collider_idiosyncratic_var;
-    let condxy = cxy - covxc * covyc / (varc + T::from_f64(1e-14));
-    let condx = vx - covxc * covxc / (varc + T::from_f64(1e-14));
-    let collider = condxy / (condx + T::from_f64(1e-14));
+    let cxy_zc = cxy_z - xcz * ycz / vcz.max_val(T::from_f64(1e-14));
+    let vx_zc = vx_z - xcz * xcz / vcz.max_val(T::from_f64(1e-14));
+    let collider = cxy_zc / vx_zc.max_val(T::from_f64(1e-14));
     LopezDePradoCausalFactorReport {
         unadjusted_observational_beta: naive,
         backdoor_adjusted_beta: back,

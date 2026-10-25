@@ -1439,13 +1439,25 @@ pub fn evaluate_cochrane_hansen_jagannathan_sdf_and_campbell_shiller<T: Real>(
         ai[1][0] * s.candidate_sdf_pricing_errors[0] + ai[1][1] * s.candidate_sdf_pricing_errors[1];
     let dist =
         (s.candidate_sdf_pricing_errors[0] * d0 + s.candidate_sdf_pricing_errors[1] * d1).sqrt();
-    let rho = T::one() / (T::one() + (s.steady_state_log_dp_ratio).exp());
-    let drv = s.var1_companion_matrix[0][0] * s.state_innovation_cov[0][0]
-        + s.var1_companion_matrix[0][1] * s.state_innovation_cov[1][0]
-        + s.var1_companion_matrix[1][0] * s.state_innovation_cov[0][1]
-        + s.var1_companion_matrix[1][1] * s.state_innovation_cov[1][1];
-    let cvar = s.state_innovation_cov[0][0] + s.state_innovation_cov[1][1];
-    let dr = (drv * drv) / (drv * drv + cvar * cvar + T::from_f64(1e-14));
+    let rho = T::one() / (T::one() + s.steady_state_log_dp_ratio.exp());
+    let a = s.var1_companion_matrix;
+    let mmat = [
+        [T::one() - rho * a[0][0], -rho * a[0][1]],
+        [-rho * a[1][0], T::one() - rho * a[1][1]],
+    ];
+    let mi = inv2_rm(mmat);
+    let lam = [
+        rho * (a[0][0] * mi[0][0] + a[0][1] * mi[1][0]),
+        rho * (a[0][0] * mi[0][1] + a[0][1] * mi[1][1]),
+    ];
+    let cf = [T::one() + lam[0], lam[1]];
+    let qform = |v: [T; 2]| -> T {
+        v[0] * (s.state_innovation_cov[0][0] * v[0] + s.state_innovation_cov[0][1] * v[1])
+            + v[1] * (s.state_innovation_cov[1][0] * v[0] + s.state_innovation_cov[1][1] * v[1])
+    };
+    let vdr = qform(lam).max_val(T::zero());
+    let vcf = qform(cf).max_val(T::zero());
+    let dr = vdr / (vdr + vcf).max_val(T::from_f64(1e-14));
     CochraneHansenJagannathanSdfReport {
         mean_sdf_m_bar: m,
         max_sharpe_ratio: sr,
@@ -1491,8 +1503,15 @@ pub fn evaluate_wakker_tversky_kahneman_cumulative_prospect_utility<T: Real>(
     });
     let mut w = [T::zero(); 4];
     let mut v = [T::zero(); 4];
-    let prelec =
-        |p: T, gamma: T| (-s.prelec_delta * (-p.max_val(T::from_f64(1e-14)).ln()).pow(gamma)).exp();
+    let prelec = |p: T, gamma: T| {
+        if p.val() <= 1e-15 {
+            T::zero()
+        } else if p.val() >= 1.0 - 1e-15 {
+            T::one()
+        } else {
+            (-s.prelec_delta * (-p.ln()).pow(gamma)).exp()
+        }
+    };
     for (k, &i) in idx.iter().enumerate() {
         let gain = s.scenario_returns[i].val() >= s.reference_return.val();
         let gamma = if gain {
@@ -1538,7 +1557,7 @@ pub fn evaluate_wakker_tversky_kahneman_cumulative_prospect_utility<T: Real>(
         decision_weights: w,
         prospect_values: v,
         cumulative_prospect_utility: cum,
-        cpt_certainty_equivalent: ce,
+        cpt_certainty_equivalent: s.reference_return + ce,
         loss_tail_overweighting_ratio: loss_ratio,
         gain_tail_overweighting_ratio: gain_ratio,
     }
@@ -1572,7 +1591,14 @@ fn solve4_lp<T: Real>(mut a: [[T; 5]; 4]) -> [T; 4] {
             }
         }
         a.swap(i, p);
-        let d = a[i][i];
+        let mut d = a[i][i];
+        if d.val().abs() < 1e-14 {
+            d = T::from_f64(if d.val().is_sign_negative() {
+                -1e-14
+            } else {
+                1e-14
+            });
+        }
         for value in a[i].iter_mut().skip(i) {
             *value /= d;
         }
@@ -1623,15 +1649,27 @@ pub fn calibrate_sornette_lppl_bubble_and_crash_hazard<T: Real>(
     let damp = s.power_law_exponent_m.abs() * p[1].abs()
         / (s.log_periodic_omega.abs() * c + T::from_f64(1e-14));
     let tn = *s.observation_times.last().unwrap_or(&T::zero());
-    let hazard = s.expected_crash_drop_kappa.abs() * s.log_periodic_omega.abs()
-        / (s.critical_time_tc - tn).max_val(T::from_f64(1e-8));
-    let prob = T::one() - (-hazard * (s.critical_time_tc - tn).max_val(T::zero())).exp();
+    let tau = (s.critical_time_tc - tn).max_val(T::from_f64(1e-8));
+    let th = s.log_periodic_omega * tau.ln();
+    let hp = -tau.pow(s.power_law_exponent_m - T::one())
+        * (s.power_law_exponent_m * p[1]
+            + (s.power_law_exponent_m * p[2] - s.log_periodic_omega * p[3]) * th.cos()
+            + (s.power_law_exponent_m * p[3] + s.log_periodic_omega * p[2]) * th.sin());
+    let terminal =
+        (hp / s.expected_crash_drop_kappa.max_val(T::from_f64(1e-12))).max_val(T::zero());
+    let drop = ((-p[1])
+        * ((s.critical_time_tc - s.observation_times.first().copied().unwrap_or(T::zero()))
+            .max_val(T::zero())
+            .pow(s.power_law_exponent_m)
+            - tau.pow(s.power_law_exponent_m)))
+    .max_val(T::zero());
+    let prob = T::one() - (-drop / s.expected_crash_drop_kappa.max_val(T::from_f64(1e-12))).exp();
     SornetteLpplBubbleCrashReport {
         linear_params_a_b_c1_c2: p,
         oscillation_amplitude_c: c,
         fitted_rmse: rm,
         sornette_damping_parameter: damp,
-        terminal_crash_hazard_rate: hazard,
+        terminal_crash_hazard_rate: terminal,
         cumulative_crash_probability: prob,
     }
 }

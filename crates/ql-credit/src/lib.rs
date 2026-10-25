@@ -1332,6 +1332,87 @@ pub struct Ifrs9CeclMultiStageEclReport<T: Real = f64> {
     pub stage1_gross_interest_income: T,
     pub stage3_net_eir_interest_income: T,
 }
+fn norm_inv<T: Real>(p: T) -> T {
+    // Acklam's rational approximation followed by Newton refinement in T.
+    let pp = p
+        .max_val(T::from_f64(1e-15))
+        .min_val(T::one() - T::from_f64(1e-15));
+    let a = [
+        -39.6968302866538,
+        220.946098424521,
+        -275.928510446969,
+        138.357751867269,
+        -30.6647980661472,
+        2.50662827745924,
+    ];
+    let b = [
+        -54.4760987982241,
+        161.585836858041,
+        -155.698979859887,
+        66.8013118877197,
+        -13.2806815528857,
+    ];
+    let c = [
+        -0.00778489400243029,
+        -0.322396458041136,
+        -2.40075827716184,
+        -2.54973253934373,
+        4.37466414146497,
+        2.93816398269878,
+    ];
+    let d = [
+        0.00778469570904146,
+        0.32246712907004,
+        2.445134137143,
+        3.75440866190742,
+    ];
+    let mut x;
+    if pp.val() < 0.02425 {
+        let q = (-T::from_f64(2.0) * pp.ln()).sqrt();
+        x = (((((T::from_f64(c[0]) * q + T::from_f64(c[1])) * q + T::from_f64(c[2])) * q
+            + T::from_f64(c[3]))
+            * q
+            + T::from_f64(c[4]))
+            * q
+            + T::from_f64(c[5]))
+            / ((((T::from_f64(d[0]) * q + T::from_f64(d[1])) * q + T::from_f64(d[2])) * q
+                + T::from_f64(d[3]))
+                * q
+                + T::one());
+    } else if pp.val() > 0.97575 {
+        let q = (-T::from_f64(2.0) * (T::one() - pp).ln()).sqrt();
+        x = -(((((T::from_f64(c[0]) * q + T::from_f64(c[1])) * q + T::from_f64(c[2])) * q
+            + T::from_f64(c[3]))
+            * q
+            + T::from_f64(c[4]))
+            * q
+            + T::from_f64(c[5]))
+            / ((((T::from_f64(d[0]) * q + T::from_f64(d[1])) * q + T::from_f64(d[2])) * q
+                + T::from_f64(d[3]))
+                * q
+                + T::one());
+    } else {
+        let q = pp - T::from_f64(0.5);
+        let r = q * q;
+        x = (((((T::from_f64(a[0]) * r + T::from_f64(a[1])) * r + T::from_f64(a[2])) * r
+            + T::from_f64(a[3]))
+            * r
+            + T::from_f64(a[4]))
+            * r
+            + T::from_f64(a[5]))
+            * q
+            / (((((T::from_f64(b[0]) * r + T::from_f64(b[1])) * r + T::from_f64(b[2])) * r
+                + T::from_f64(b[3]))
+                * r
+                + T::from_f64(b[4]))
+                * r
+                + T::one());
+    }
+    for _ in 0..2 {
+        x -= (x.norm_cdf() - pp) / x.norm_pdf().max_val(T::from_f64(1e-15));
+    }
+    x
+}
 pub fn compute_ifrs9_cecl_multistage_expected_credit_loss<T: Real>(
     s: &Ifrs9CeclMultiStageEclSpec<T>,
 ) -> Ifrs9CeclMultiStageEclReport<T> {
@@ -1341,37 +1422,48 @@ pub fn compute_ifrs9_cecl_multistage_expected_credit_loss<T: Real>(
         .min_val(T::from_f64(0.999999));
     let sr = rho.sqrt();
     let id = (T::one() - rho).sqrt();
-    let mut wp = T::zero();
-    let mut life = T::zero();
+    let wsum = (s.scenario_weights[0] + s.scenario_weights[1] + s.scenario_weights[2])
+        .max_val(T::from_f64(1e-14));
     let mut stage1 = T::zero();
     let mut stage2 = T::zero();
     let mut stage3 = T::zero();
-    for j in 0..3 {
-        let w = s.scenario_weights[j];
-        let z = s.scenario_macro_shocks_z[j];
-        let mut surv = T::zero();
+    let mut life_pd = T::zero();
+    for k in 0..3 {
+        let w = s.scenario_weights[k] / wsum;
+        let z = s.scenario_macro_shocks_z[k];
+        let mut surv = T::one();
+        let mut s1k = T::zero();
+        let mut s2k = T::zero();
         for h in 0..3 {
-            let p = s.annual_ttc_pds[h].max_val(T::from_f64(1e-10));
-            let q = ((p.ln() * -T::one() + sr * z) / id).neg();
-            let pit = q.norm_cdf();
+            let pttc = s.annual_ttc_pds[h]
+                .max_val(T::from_f64(1e-12))
+                .min_val(T::one() - T::from_f64(1e-12));
+            let pit = ((norm_inv(pttc) - sr * z) / id).norm_cdf();
+            let d = surv * pit;
+            surv *= T::one() - pit;
+            life_pd += w * d;
+            let lgd = (s.base_lgd + s.lgd_macro_sensitivity * (pit - pttc).max_val(T::zero()))
+                .max_val(T::from_f64(0.01))
+                .min_val(T::from_f64(0.99));
             let disc = (T::one() + s.effective_interest_rate).powf(-(h as f64 + 1.0));
-            life += w * pit * disc;
+            let loss = s.annual_eads[h] * lgd * d * disc;
+            s2k += loss;
             if h == 0 {
-                stage1 += w * pit;
+                s1k = loss;
             }
-            stage2 += w * pit * disc;
-            stage3 += w * pit * disc * (T::one() + s.annual_ttc_pds[2].max_val(T::zero()));
-            surv += pit;
         }
-        wp += w * surv / T::from_f64(3.0);
+        stage1 += w * s1k;
+        stage2 += w * s2k;
+        let pttc = s.annual_ttc_pds[0]
+            .max_val(T::from_f64(1e-12))
+            .min_val(T::one() - T::from_f64(1e-12));
+        let pit = ((norm_inv(pttc) - sr * z) / id).norm_cdf();
+        let lgd = (s.base_lgd + s.lgd_macro_sensitivity * (pit - pttc).max_val(T::zero()))
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.99));
+        stage3 += w * s.annual_eads[0] * lgd;
     }
-    let lgd = (s.base_lgd + s.lgd_macro_sensitivity * wp)
-        .max_val(T::zero())
-        .min_val(T::one());
-    stage1 *= s.annual_eads[0] * lgd;
-    stage2 *= s.annual_eads[1] * lgd;
-    stage3 *= s.annual_eads[2] * lgd;
-    let mult = wp / (s.origination_lifetime_pd + T::from_f64(1e-14));
+    let mult = life_pd / (s.origination_lifetime_pd + T::from_f64(1e-14));
     let omega = T::one()
         / (T::one() + (-(mult - s.sicr_pd_multiplier_threshold) * T::from_f64(20.0)).exp());
     let blend = (T::one() - omega) * stage1 + omega * stage2;
@@ -1379,13 +1471,12 @@ pub fn compute_ifrs9_cecl_multistage_expected_credit_loss<T: Real>(
         stage1_12m_ecl: stage1,
         stage2_lifetime_ecl: stage2,
         stage3_credit_impaired_ecl: stage3,
-        current_weighted_lifetime_pd: life,
+        current_weighted_lifetime_pd: life_pd,
         sicr_stage2_allocation_weight: omega,
         blended_ifrs9_ecl_provision: blend,
         stage1_gross_interest_income: s.annual_eads[0] * s.effective_interest_rate,
-        stage3_net_eir_interest_income: s.annual_eads[2]
-            * s.effective_interest_rate
-            * (T::one() - lgd),
+        stage3_net_eir_interest_income: (s.annual_eads[0] - stage3).max_val(T::zero())
+            * s.effective_interest_rate,
     }
 }
 
@@ -1417,6 +1508,9 @@ pub struct LandoCoxAffineDefaultReport<T: Real = f64> {
     pub credit_spread_fraction: T,
 }
 fn cir_surv<T: Real>(k: T, th: T, sig: T, y: T, t: T) -> T {
+    if k.val().abs() + th.val().abs() + sig.val().abs() + y.val().abs() < 1e-14 {
+        return T::one();
+    }
     let e = (-k * t).exp();
     let g = (k * k + T::from_f64(2.0) * sig * sig).sqrt();
     let b = T::from_f64(2.0) * (e - T::one()) / ((k + g) * (e - T::one()) + T::from_f64(2.0) * g);
@@ -1429,6 +1523,7 @@ pub fn evaluate_lando_cox_affine_default_and_liquidity_decomposition<T: Real>(
     s: &LandoCoxAffineDefaultSpec<T>,
 ) -> LandoCoxAffineDefaultReport<T> {
     let t = s.maturity;
+    let eps = T::from_f64(1e-14);
     let surv = (-s.base_default_hazard * t).exp()
         * cir_surv(
             s.credit_kappa,
@@ -1446,17 +1541,88 @@ pub fn evaluate_lando_cox_affine_default_and_liquidity_decomposition<T: Real>(
     );
     let df = (-s.risk_free_rate * t).exp();
     let defp = df * surv;
+    const X: [f64; 16] = [
+        -0.98940093499165,
+        -0.944575023073233,
+        -0.865631202387832,
+        -0.755404408355003,
+        -0.617876244402644,
+        -0.458016777657227,
+        -0.281603550779259,
+        -0.095012509837637,
+        0.095012509837637,
+        0.281603550779259,
+        0.458016777657227,
+        0.617876244402644,
+        0.755404408355003,
+        0.865631202387832,
+        0.944575023073233,
+        0.98940093499165,
+    ];
+    const W: [f64; 16] = [
+        0.027152459411754,
+        0.062253523938648,
+        0.095158511682493,
+        0.124628971255534,
+        0.149595988816577,
+        0.169156519395003,
+        0.182603415044924,
+        0.189450610455069,
+        0.189450610455069,
+        0.182603415044924,
+        0.169156519395003,
+        0.149595988816577,
+        0.124628971255534,
+        0.095158511682493,
+        0.062253523938648,
+        0.027152459411754,
+    ];
+    let cir_b = |k: T, sig: T, u: T| -> T {
+        let g = (k * k + T::from_f64(2.0) * sig * sig).sqrt();
+        let e = (-k * u).exp();
+        T::from_f64(2.0) * (e - T::one()) / ((k + g) * (e - T::one()) + T::from_f64(2.0) * g)
+    };
     let mut rec = T::zero();
     for i in 0..16 {
-        let x = -0.9894009349916499 + (i as f64 + 0.5) * 1.9788018699832998 / 16.0;
-        let u = t * (x + 1.0) / 2.0;
-        let q = (-s.risk_free_rate * u).exp() * (-s.base_default_hazard * u).exp();
-        rec += s.recovery_rate * q * s.base_default_hazard * t / T::from_f64(16.0);
+        let u = t * (T::from_f64(X[i]) + T::one()) / T::from_f64(2.0);
+        let b = cir_b(s.credit_kappa, s.credit_sigma, u);
+        let g = (s.credit_kappa * s.credit_kappa
+            + T::from_f64(2.0) * s.credit_sigma * s.credit_sigma)
+            .sqrt();
+        let e = (g * u).exp();
+        let den = (s.credit_kappa + g) * (-s.credit_kappa * u).exp() - (s.credit_kappa + g)
+            + T::from_f64(2.0) * g;
+        let bp = T::from_f64(4.0) * g * g * e / (den * den).max_val(eps);
+        let sd = (-s.base_default_hazard * u).exp()
+            * cir_surv(
+                s.credit_kappa,
+                s.credit_theta,
+                s.credit_sigma,
+                s.initial_credit_intensity_y0,
+                u,
+            );
+        let sl = cir_surv(
+            s.liquidity_kappa,
+            s.liquidity_theta,
+            s.liquidity_sigma,
+            s.initial_liquidity_intensity_z0,
+            u,
+        );
+        let hz = s.base_default_hazard
+            + s.credit_kappa * s.credit_theta * b
+            + bp * s.initial_credit_intensity_y0;
+        let q = s.recovery_rate * (-s.risk_free_rate * u).exp() * sd * sl * hz;
+        rec += q * t * T::from_f64(0.5 * W[i]);
     }
-    let credit = -(surv.max_val(T::from_f64(1e-14))).ln() / t.max_val(T::from_f64(1e-14));
-    let lspread = -(liq.max_val(T::from_f64(1e-14))).ln() / t.max_val(T::from_f64(1e-14));
+    let credit = -(surv.max_val(eps)).ln() / t.max_val(eps);
+    let lspread = -(liq.max_val(eps)).ln() / t.max_val(eps);
     let total = credit + lspread;
     let risky = df * (-total * t).exp() + rec;
+    let frac = if total.val().abs() <= 1e-14 {
+        T::one()
+    } else {
+        credit / total
+    };
     LandoCoxAffineDefaultReport {
         survival_probability: surv,
         liquidity_discount_factor: liq,
@@ -1466,7 +1632,7 @@ pub fn evaluate_lando_cox_affine_default_and_liquidity_decomposition<T: Real>(
         total_yield_spread_bps: total * T::from_f64(1e4),
         pure_credit_spread_bps: credit * T::from_f64(1e4),
         pure_liquidity_spread_bps: lspread * T::from_f64(1e4),
-        credit_spread_fraction: credit / total,
+        credit_spread_fraction: frac,
     }
 }
 

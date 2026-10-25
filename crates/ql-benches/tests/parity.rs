@@ -1,6 +1,8 @@
 use ql_benches::harness::with_config_override;
 use ql_benches::{
-    benchmark_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad, run_all_benchmarks,
+    benchmark_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad,
+    benchmark_phase25_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin,
+    run_all_benchmarks,
     suites::{
         benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad,
         benchmark_phase24_mbs_io_po_rmv_mo_xva_dilution_sig_garch_pot_rie_pin_gp_brinson_ierp,
@@ -55,11 +57,9 @@ fn phase24_suite36_and_invariants() {
 
 #[test]
 fn phase25_suite37_and_invariants() {
-    let rows = ql_benches::run_all_benchmark_suites_with_config(1, 3);
-    let row = rows
-        .iter()
-        .find(|r| r.id.starts_with("37_"))
-        .expect("suite 37");
-    assert!(row.parity_ok);
-    assert!(row.max_abs_diff < 1e-4);
+    let row = with_config_override(1, 3, || {
+        benchmark_phase25_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin(1)
+    });
+    assert!(row.parity_diff < 1e-4);
+    assert!(row.speedup > 1.0);
 }

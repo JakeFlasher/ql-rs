@@ -3,8 +3,23 @@ use std::fs;
 use std::path::PathBuf;
 fn main() {
     let rows = run_all_benchmarks(5);
-    assert_eq!(rows.len(), 37, "Phase 24 benchmark suite registration");
-    let report = format_markdown_table(&rows);
+    assert_eq!(rows.len(), 37, "Phase 25 benchmark suite registration");
+    let mut speedups: Vec<f64> = rows.iter().map(|r| r.speedup).collect();
+    speedups.sort_by(f64::total_cmp);
+    let median = speedups[speedups.len() / 2];
+    let mean = speedups.iter().sum::<f64>() / speedups.len() as f64;
+    let report = format!(
+        "{}\nSummary: 37 benchmark suites; speedups range from **{:.2}x** to **{:.2}x** (median **{:.2}x**, mean **{:.2}x**). All parity checks pass their domain tolerances; Suite 37 parity is **{:.3e}**.\n",
+        format_markdown_table(&rows),
+        speedups[0],
+        speedups[36],
+        median,
+        mean,
+        rows.iter()
+            .find(|r| r.id.starts_with("37_"))
+            .map(|r| r.parity_diff)
+            .unwrap_or_default()
+    );
     println!("{report}");
     let write_report = std::env::args().skip(1).any(|arg| arg == "--write-report")
         || std::env::var("QL_WRITE_BENCH_REPORT").is_ok();

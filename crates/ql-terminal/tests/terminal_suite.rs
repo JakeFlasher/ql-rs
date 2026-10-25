@@ -402,11 +402,23 @@ fn phase25_tab35_terminal_renders_and_reacts() {
     let mut ws = DeskWorkstation::new();
     assert_eq!(TabId::ALL.len(), 35);
     assert!(TabId::Phase25Sota.label().starts_with("35 Phase 25 SOTA"));
-    let fa = ws.step_tick();
-    let a = ws.render_dashboard(&fa, false);
-    ws.set_scenario(ScenarioKind::StagflationPlus150Bp);
-    let fb = ws.step_tick();
-    let b = ws.render_dashboard(&fb, false);
-    assert!(a.contains("35 Phase25") && b.contains("35 Phase25"));
-    assert_ne!(a, b);
+    let mut values = Vec::new();
+    for scenario in [
+        ScenarioKind::RatesParallelPlus50Bp,
+        ScenarioKind::VolShockPlus5Pts,
+        ScenarioKind::CreditSpreadWidening100Bp,
+        ScenarioKind::EquityCrashMinus15Pct,
+        ScenarioKind::StagflationPlus150Bp,
+    ] {
+        ws.set_scenario(scenario);
+        let f = ws.step_tick();
+        values
+            .push(f.kalman_vecm_hj_ifrs9_cpt_hasbrouck_fv_lando_lppl_cbarb_causal_malliavin_metric);
+        assert!(
+            f.kalman_vecm_hj_ifrs9_cpt_hasbrouck_fv_lando_lppl_cbarb_causal_malliavin_metric
+                .is_finite()
+        );
+        assert!(ws.render_dashboard(&f, false).contains("35 Phase25"));
+    }
+    assert!(values.windows(2).any(|w| (w[1] - w[0]).abs() > 1e-12));
 }

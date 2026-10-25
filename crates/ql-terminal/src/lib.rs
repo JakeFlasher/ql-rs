@@ -616,6 +616,7 @@ pub struct WorkstationFrameData {
     pub krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric: f64,
     pub rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml_metric: f64,
     pub mbs_rmv_mo_sig_garch_rie_gp_ierp_metric: f64,
+    pub kalman_vecm_hj_ifrs9_cpt_hasbrouck_fv_lando_lppl_cbarb_causal_malliavin_metric: f64,
     pub blotter_rows: Vec<(String, f64, String)>,
 }
 
@@ -1825,10 +1826,190 @@ impl DeskWorkstation {
         Self::phase23_live_metric_from_market(&market, bump)
     }
     pub fn phase25_live_metric_from_market(m: &MarketSnapshot, credit_bump: f64) -> f64 {
+        let r = m.ois_quotes[0];
+        let spot = m.eq_spot;
+        let vol = m.eq_vol.max(1e-4);
         let inf = m.inflation_quotes.first().map(|(_, z)| *z).unwrap_or(0.023);
-        let base = Self::phase24_live_metric_from_market(m, credit_bump);
-        let shock = inf - 0.023;
-        base + 100.0 * shock + m.eq_vol * 10.0 + credit_bump * 50.0
+        let kal = ql_curves::evaluate_tsay_kalman_rts_state_space_curve(
+            &ql_curves::TsayKalmanRtsStateSpaceCurveSpec {
+                transition_f: [[0.9, 0.1], [0.0, 0.95]],
+                state_drift_c: [0.0, 0.0],
+                process_noise_q: [[0.01, 0.0], [0.0, 0.01]],
+                measurement_h: [[1.0, 0.0], [0.0, 1.0]],
+                measurement_noise_r: [0.02, 0.02],
+                initial_state_mean: [r, spot],
+                initial_state_cov: [[1.0, 0.0], [0.0, 1.0]],
+                observations: vec![[spot, r], [spot * 1.001, r + 0.001]],
+            },
+        );
+        let vecm = ql_portfolio::solve_johansen_tsay_vecm_cointegration_basket(
+            &ql_portfolio::JohansenTsayVecmCointegrationSpec {
+                price_series: (0..8)
+                    .map(|i| {
+                        [
+                            100.0 + i as f64,
+                            100.0 + i as f64 + 0.5 * (1.0 - (0.9_f64).powi(i)),
+                        ]
+                    })
+                    .collect(),
+            },
+        );
+        let hj = ql_portfolio::evaluate_cochrane_hansen_jagannathan_sdf_and_campbell_shiller(
+            &ql_portfolio::CochraneHansenJagannathanSdfSpec {
+                mean_excess_returns: [0.03, 0.04],
+                excess_return_cov: [[0.04, 0.01], [0.01, 0.09]],
+                risk_free_rate: r,
+                candidate_sdf_pricing_errors: [0.001, 0.002],
+                steady_state_log_dp_ratio: inf.ln(),
+                var1_companion_matrix: [[0.9, 0.1], [0.0, 0.8]],
+                state_innovation_cov: [[0.02, 0.005], [0.005, 0.03]],
+            },
+        );
+        let ifrs = ql_credit::compute_ifrs9_cecl_multistage_expected_credit_loss(
+            &ql_credit::Ifrs9CeclMultiStageEclSpec {
+                annual_ttc_pds: [
+                    0.02 + credit_bump * 0.2,
+                    0.04 + credit_bump * 0.2,
+                    0.08 + credit_bump * 0.2,
+                ],
+                annual_eads: [100.0, 98.0, 95.0],
+                base_lgd: 0.45,
+                lgd_macro_sensitivity: 0.05,
+                vasicek_asset_correlation: 0.2,
+                effective_interest_rate: r,
+                scenario_weights: [0.3, 0.5, 0.2],
+                scenario_macro_shocks_z: [-1.0, 0.0, 1.0],
+                origination_lifetime_pd: 0.04,
+                sicr_pd_multiplier_threshold: 1.5,
+            },
+        );
+        let cpt = ql_portfolio::evaluate_wakker_tversky_kahneman_cumulative_prospect_utility(
+            &ql_portfolio::WakkerTverskyKahnemanCptSpec {
+                scenario_returns: [-0.10, -0.02, 0.03, 0.12],
+                scenario_probabilities: [0.1, 0.2, 0.4, 0.3],
+                reference_return: 0.0,
+                alpha_gain: 0.88,
+                beta_loss: 0.88,
+                loss_aversion_lambda: 2.25,
+                prelec_gamma_gain: 0.7,
+                prelec_gamma_loss: 0.8,
+                prelec_delta: 1.0,
+            },
+        );
+        let has = ql_portfolio::evaluate_hasbrouck_information_share_and_dssw_limits_to_arb(
+            &ql_portfolio::HasbrouckDsswPriceDiscoverySpec {
+                alpha_venue1: 0.3,
+                alpha_venue2: 0.2,
+                sigma_venue1: vol,
+                sigma_venue2: vol * 1.1,
+                venue_innovation_corr: 0.2,
+                fundamental_dividend: 2.0,
+                risk_free_rate: r,
+                noise_trader_share_mu: 0.2,
+                noise_trader_sentiment_mean: 0.01,
+                noise_trader_sentiment_var: 0.02,
+                arbitrageur_risk_aversion_gamma: 2.0,
+            },
+        );
+        let fv = ql_rates::price_fong_vasicek_stochastic_vol_bond(
+            &ql_rates::FongVasicekStochVolShortRateSpec {
+                initial_short_rate_r0: r,
+                initial_variance_v0: vol * vol,
+                rate_mean_reversion_alpha: 0.5,
+                long_run_rate_r_bar: r,
+                vol_mean_reversion_gamma: 1.0,
+                long_run_variance_v_bar: vol * vol,
+                vol_of_vol_xi: 0.2,
+                correlation_rho: -0.3,
+                maturity_tau: 2.0,
+            },
+        );
+        let lando = ql_credit::evaluate_lando_cox_affine_default_and_liquidity_decomposition(
+            &ql_credit::LandoCoxAffineDefaultSpec {
+                risk_free_rate: r,
+                base_default_hazard: 0.01 + credit_bump,
+                initial_credit_intensity_y0: 0.02,
+                credit_kappa: 0.5,
+                credit_theta: 0.02,
+                credit_sigma: 0.1,
+                initial_liquidity_intensity_z0: 0.01,
+                liquidity_kappa: 0.6,
+                liquidity_theta: 0.01,
+                liquidity_sigma: 0.08,
+                recovery_rate: 0.4,
+                maturity: 5.0,
+            },
+        );
+        let times: Vec<f64> = (0..8).map(|i| i as f64 + 1.0).collect();
+        let logs: Vec<f64> = times
+            .iter()
+            .map(|&t| 4.0 - 0.2 * (10.0 - t).powf(0.5) + 0.01 * (8.0 * (10.0 - t).ln()).cos())
+            .collect();
+        let lppl = ql_portfolio::calibrate_sornette_lppl_bubble_and_crash_hazard(
+            &ql_portfolio::SornetteLpplBubbleCrashSpec {
+                observation_times: times,
+                log_prices: logs,
+                critical_time_tc: 10.0,
+                power_law_exponent_m: 0.5,
+                log_periodic_omega: 8.0,
+                expected_crash_drop_kappa: 0.2,
+                ridge_penalty: 1e-8,
+            },
+        );
+        let cb = ql_fixed_income::analyze_thorp_kassouf_calamos_convertible_arbitrage(
+            &ql_fixed_income::ThorpKassoufCalamosConvertibleArbSpec {
+                stock_price: spot,
+                conversion_ratio: 0.8,
+                convertible_market_price: 95.0,
+                face_value: 100.0,
+                annual_coupon_rate: 0.03,
+                stock_dividend_yield: 0.01,
+                risk_free_rate: r,
+                credit_spread: 0.03 + credit_bump,
+                short_stock_rebate_rate: 0.01,
+                implied_volatility: vol,
+                realized_volatility: vol * 1.1,
+                maturity: 3.0,
+            },
+        );
+        let causal = ql_portfolio::evaluate_lopez_de_prado_causal_backdoor_vs_collider_bias(
+            &ql_portfolio::LopezDePradoCausalFactorSpec {
+                true_causal_beta_xy: 0.5,
+                confounder_to_factor_axz: 0.8,
+                confounder_to_return_byz: 0.6,
+                factor_to_collider_ccx: 0.4,
+                return_to_collider_ccy: 0.5,
+                confounder_var: 1.0,
+                factor_idiosyncratic_var: 0.5,
+                return_idiosyncratic_var: 0.7,
+                collider_idiosyncratic_var: 0.4,
+            },
+        );
+        let mal = ql_dml::evaluate_fournie_lasry_lions_malliavin_bel_greeks(
+            &ql_dml::FournieLasryLionsMalliavinBelSpec {
+                spot,
+                strike: spot,
+                rate: r,
+                div_yield: 0.0,
+                vol,
+                expiry: 1.0,
+                localization_bandwidth: 0.5,
+            },
+        );
+        kal.innovation_log_likelihood.val()
+            + vecm.johansen_trace_stat_r0.val() * 1e-3
+            + hj.discount_rate_news_variance_share.val()
+            + ifrs.blended_ifrs9_ecl_provision.val() * 1e-2
+            + cpt.cumulative_prospect_utility.val()
+            + has.efficient_price_innovation_var.val()
+            + fv.zero_coupon_bond_price.val()
+            + lando.risky_corporate_bond_price.val()
+            + lppl.terminal_crash_hazard_rate.val()
+            + cb.theoretical_convertible_value.val() * 1e-2
+            + causal.kitchen_sink_collider_conditioned_beta.val()
+            + mal.call_malliavin_delta.val()
+            + inf * 10.0
+            + credit_bump
     }
     pub fn phase25_live_metric(&self) -> f64 {
         let market = self.scenario_market();
@@ -3757,6 +3938,8 @@ impl DeskWorkstation {
             rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml_metric: self
                 .phase23_live_metric(),
             mbs_rmv_mo_sig_garch_rie_gp_ierp_metric: self.phase24_live_metric(),
+            kalman_vecm_hj_ifrs9_cpt_hasbrouck_fv_lando_lppl_cbarb_causal_malliavin_metric:
+                Self::phase25_live_metric_from_market(&market, credit_bump),
             blotter_rows,
         }
     }
@@ -4016,7 +4199,11 @@ impl DeskWorkstation {
                 "34 MBS/RMV/MO/CB/Sig/HN/POT/RIE/PIN/GP/BC/IERP: {:.2}",
                 frame.mbs_rmv_mo_sig_garch_rie_gp_ierp_metric
             ),
-            format!("35 Phase25 SOTA live: {:.2}", self.phase25_live_metric()),
+            format!(
+                "35 Phase25 SOTA live: {:.2}",
+                frame
+                    .kalman_vecm_hj_ifrs9_cpt_hasbrouck_fv_lando_lppl_cbarb_causal_malliavin_metric
+            ),
             format!(
                 "DAG recomputed: {}/{}",
                 frame.dag_recomputed_trades, frame.dag_total_trades
@@ -4459,6 +4646,40 @@ mod phase24_tests {
             assert!(!frame.contains('\u{1b}') || frame.contains("34"));
         }
         assert!(vals.iter().all(|x| x.is_finite()));
+        assert!(vals.windows(2).any(|w| (w[1] - w[0]).abs() > 1e-12));
+    }
+}
+
+#[cfg(test)]
+mod phase25_tests {
+    use super::*;
+    #[test]
+    fn phase25_tab35_metric_reacts_across_scenarios() {
+        let mut ws = DeskWorkstation::new();
+        let mut vals = Vec::new();
+        for scenario in [
+            ScenarioKind::RatesParallelPlus50Bp,
+            ScenarioKind::VolShockPlus5Pts,
+            ScenarioKind::CreditSpreadWidening100Bp,
+            ScenarioKind::EquityCrashMinus15Pct,
+            ScenarioKind::StagflationPlus150Bp,
+        ] {
+            ws.set_scenario(scenario);
+            let frame = ws.step_tick();
+            assert!(
+                frame
+                    .kalman_vecm_hj_ifrs9_cpt_hasbrouck_fv_lando_lppl_cbarb_causal_malliavin_metric
+                    .is_finite()
+            );
+            assert!(
+                ws.render_dashboard(&frame, false)
+                    .contains("35 Phase25 SOTA")
+            );
+            vals.push(
+                frame
+                    .kalman_vecm_hj_ifrs9_cpt_hasbrouck_fv_lando_lppl_cbarb_causal_malliavin_metric,
+            );
+        }
         assert!(vals.windows(2).any(|w| (w[1] - w[0]).abs() > 1e-12));
     }
 }

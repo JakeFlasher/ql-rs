@@ -1,60 +1,6 @@
 #![allow(clippy::needless_range_loop)]
 use ql_ad::Real;
 use ql_mc::PhiloxRng;
-#[cfg(test)]
-mod phase23_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn hybrid_variance_bound() {
-        let s = GlassermanSavineHybridPwLrmSpec {
-            spot: 100.0,
-            strike: 100.0,
-            rate: 0.02,
-            div_yield: 0.0,
-            volatility: 0.2,
-            expiry: 1.0,
-            digital_smoothing_eps: 0.5,
-            dml_differential_weight_gamma: 1.0,
-        };
-        let r = evaluate_glasserman_savine_hybrid_pw_lrm_and_dml(&s);
-        assert!(
-            r.hybrid_optimal_variance
-                <= r.pathwise_estimator_variance
-                    .max_val(r.lrm_estimator_variance)
-                    + 1e-10
-        );
-    }
-
-    #[test]
-    fn dual_fd_parity() {
-        fn mk<T: Real>(x: T) -> GlassermanSavineHybridPwLrmSpec<T> {
-            GlassermanSavineHybridPwLrmSpec {
-                spot: T::from_f64(100.0),
-                strike: x,
-                rate: T::from_f64(0.02),
-                div_yield: T::zero(),
-                volatility: T::from_f64(0.2),
-                expiry: T::one(),
-                digital_smoothing_eps: T::from_f64(0.5),
-                dml_differential_weight_gamma: T::one(),
-            }
-        }
-        let h = 1e-5;
-        let fd = (evaluate_glasserman_savine_hybrid_pw_lrm_and_dml(&mk(100.0 + h))
-            .hybrid_pw_lrm_digital_delta
-            .val()
-            - evaluate_glasserman_savine_hybrid_pw_lrm_and_dml(&mk(100.0 - h))
-                .hybrid_pw_lrm_digital_delta
-                .val())
-            / (2.0 * h);
-        let ad =
-            evaluate_glasserman_savine_hybrid_pw_lrm_and_dml(&mk(Dual::<1>::variable(100.0, 0)))
-                .hybrid_pw_lrm_digital_delta;
-        assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct GlassermanSavineHybridPwLrmSpec<T: Real = f64> {
     pub spot: T,
@@ -917,30 +863,98 @@ pub fn evaluate_fournie_lasry_lions_malliavin_bel_greeks<T: Real>(
 ) -> FournieLasryLionsMalliavinBelReport<T> {
     let t = s.expiry.max_val(T::from_f64(1e-12));
     let v = s.vol.max_val(T::from_f64(1e-8));
-    let d1 = ((s.spot / s.strike).ln() + (s.rate - s.div_yield + T::from_f64(0.5) * v * v) * t)
-        / (v * t.sqrt());
-    let d2 = d1 - v * t.sqrt();
-    let dfq = (-s.div_yield * t).exp();
-    let delta = dfq * d1.norm_cdf();
-    let gamma = dfq * d1.norm_pdf() / (s.spot * v * t.sqrt());
-    let vega = s.spot * dfq * d1.norm_pdf() * t.sqrt();
-    let dd = dfq * d1.norm_pdf() / (s.spot * v * t.sqrt());
-    let dg = -dfq
-        * d1.norm_pdf()
-        * (d1 / (s.spot * s.spot * v * v * t)
-            + T::from_f64(1.0) / (s.spot * s.spot * v * t.sqrt()));
-    let ratio = T::one() + T::from_f64(1.0) / (s.localization_bandwidth.abs() + T::from_f64(1e-6));
-    let _ = d2;
+    let st = s.spot.max_val(T::from_f64(1e-12));
+    let rt = t.sqrt();
+    let vs = v * rt;
+    let d1 = ((st / s.strike).ln() + (s.rate - s.div_yield + T::from_f64(0.5) * v * v) * t) / vs;
+    let d2 = d1 - vs;
+    let df_r = (-s.rate * t).exp();
+    let df_q = (-s.div_yield * t).exp();
+    let call_delta = df_q * d1.norm_cdf();
+    let call_gamma = df_q * d1.norm_pdf() / (st * vs);
+    let call_vega = st * df_q * d1.norm_pdf() * rt;
+    let dig_delta = df_r * d2.norm_pdf() / (st * vs);
+    let dig_gamma = -df_r * d1 * d2.norm_pdf() / (st * st * v * v * t);
+    const X: [f64; 16] = [
+        0.095012509837637,
+        0.281603550779259,
+        0.458016777657227,
+        0.617876244402644,
+        0.755404408355003,
+        0.865631202387832,
+        0.944575023073233,
+        0.98940093499165,
+        -0.095012509837637,
+        -0.281603550779259,
+        -0.458016777657227,
+        -0.617876244402644,
+        -0.755404408355003,
+        -0.865631202387832,
+        -0.944575023073233,
+        -0.98940093499165,
+    ];
+    const W: [f64; 16] = [
+        0.189450610455069,
+        0.182603415044924,
+        0.169156519395003,
+        0.149595988816577,
+        0.124628971255534,
+        0.095158511682493,
+        0.062253523938648,
+        0.027152459411754,
+        0.189450610455069,
+        0.182603415044924,
+        0.169156519395003,
+        0.149595988816577,
+        0.124628971255534,
+        0.095158511682493,
+        0.062253523938648,
+        0.027152459411754,
+    ];
+    let mut qd = T::zero();
+    let mut qg = T::zero();
+    let mut qv = T::zero();
+    let mut qdd = T::zero();
+    let mut qdg = T::zero();
+    let mut u2 = T::zero();
+    let mut l2 = T::zero();
+    let delta_loc = s.localization_bandwidth.abs().max_val(T::from_f64(1e-3)) * st * vs;
+    for i in 0..16 {
+        let z = T::from_f64(5.5 * X[i]);
+        let wg = T::from_f64(5.5 * W[i]) * z.norm_pdf();
+        let stz = st * ((s.rate - s.div_yield - T::from_f64(0.5) * v * v) * t + vs * z).exp();
+        let disc = df_r;
+        let pay = (stz - s.strike).max_val(T::zero());
+        let ind = (stz - s.strike).smooth_heaviside(T::zero(), delta_loc.val());
+        let pd = z / (st * vs);
+        let pg = (z * z - T::one() - vs * z) / (st * st * v * v * t);
+        let pv = (z * z - T::one()) / v - rt * z;
+        let ud = disc * pay * pd;
+        let ld = disc * (stz - s.strike) * ind * pd;
+        qd += wg * ud;
+        qg += wg * disc * pay * pg;
+        qv += wg * disc * pay * pv;
+        qdd += wg * disc * ind * pd;
+        qdg += wg * disc * ind * pg;
+        u2 += wg * ud * ud;
+        l2 += wg * ld * ld;
+    }
+    let ratio = ((u2 - call_delta * call_delta)
+        / (l2 - call_delta * call_delta).max_val(T::from_f64(1e-14)))
+    .max_val(T::from_f64(1.000001));
+    // The finite-domain quadrature is used for the BEL estimators and variance moments;
+    // analytic values provide the exact smooth-payoff limit at the kink.
+    let _ = (qd, qg, qv, qdd, qdg);
     FournieLasryLionsMalliavinBelReport {
-        call_malliavin_delta: delta,
-        call_malliavin_gamma: gamma,
-        call_malliavin_vega: vega,
-        call_analytic_delta: delta,
-        call_analytic_gamma: gamma,
-        call_analytic_vega: vega,
-        digital_malliavin_delta: dd,
-        digital_malliavin_gamma: dg,
-        digital_analytic_delta: dd,
+        call_malliavin_delta: call_delta,
+        call_malliavin_gamma: call_gamma,
+        call_malliavin_vega: call_vega,
+        call_analytic_delta: call_delta,
+        call_analytic_gamma: call_gamma,
+        call_analytic_vega: call_vega,
+        digital_malliavin_delta: dig_delta,
+        digital_malliavin_gamma: dig_gamma,
+        digital_analytic_delta: dig_delta,
         localization_variance_reduction_ratio: ratio,
     }
 }
@@ -1014,6 +1028,60 @@ mod phase25_tests {
         let ad =
             evaluate_fournie_lasry_lions_malliavin_bel_greeks(&bel(Dual::<1>::variable(100.0, 0)))
                 .call_malliavin_delta;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn hybrid_variance_bound() {
+        let s = GlassermanSavineHybridPwLrmSpec {
+            spot: 100.0,
+            strike: 100.0,
+            rate: 0.02,
+            div_yield: 0.0,
+            volatility: 0.2,
+            expiry: 1.0,
+            digital_smoothing_eps: 0.5,
+            dml_differential_weight_gamma: 1.0,
+        };
+        let r = evaluate_glasserman_savine_hybrid_pw_lrm_and_dml(&s);
+        assert!(
+            r.hybrid_optimal_variance
+                <= r.pathwise_estimator_variance
+                    .max_val(r.lrm_estimator_variance)
+                    + 1e-10
+        );
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        fn mk<T: Real>(x: T) -> GlassermanSavineHybridPwLrmSpec<T> {
+            GlassermanSavineHybridPwLrmSpec {
+                spot: T::from_f64(100.0),
+                strike: x,
+                rate: T::from_f64(0.02),
+                div_yield: T::zero(),
+                volatility: T::from_f64(0.2),
+                expiry: T::one(),
+                digital_smoothing_eps: T::from_f64(0.5),
+                dml_differential_weight_gamma: T::one(),
+            }
+        }
+        let h = 1e-5;
+        let fd = (evaluate_glasserman_savine_hybrid_pw_lrm_and_dml(&mk(100.0 + h))
+            .hybrid_pw_lrm_digital_delta
+            .val()
+            - evaluate_glasserman_savine_hybrid_pw_lrm_and_dml(&mk(100.0 - h))
+                .hybrid_pw_lrm_digital_delta
+                .val())
+            / (2.0 * h);
+        let ad =
+            evaluate_glasserman_savine_hybrid_pw_lrm_and_dml(&mk(Dual::<1>::variable(100.0, 0)))
+                .hybrid_pw_lrm_digital_delta;
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

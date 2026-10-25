@@ -546,30 +546,46 @@ pub fn price_fong_vasicek_stochastic_vol_bond<T: Real>(
 ) -> FongVasicekStochVolShortRateReport<T> {
     let t = s.maturity_tau;
     let a = s.rate_mean_reversion_alpha;
-    let b = (T::one() - (-a * t).exp()) / (a + T::from_f64(1e-14));
-    let sig2 = s.long_run_variance_v_bar.max_val(T::zero());
-    let aa = (b - t) * (a * a * s.long_run_rate_r_bar - T::from_f64(0.5) * sig2)
-        / (a * a + T::from_f64(1e-14));
-    let pconst = (aa - b * s.initial_short_rate_r0).exp();
-    let mut c = T::zero();
-    let mut av = aa;
+    let ae = a.max_val(T::from_f64(1e-12));
+    let b = (T::one() - (-a * t).exp()) / ae;
+    let vbar = s.long_run_variance_v_bar.max_val(T::zero());
+    let avas = (b - t) * (s.long_run_rate_r_bar - vbar / (T::from_f64(2.0) * ae * ae))
+        - vbar * b * b / (T::from_f64(4.0) * ae);
+    let pconst = (avas - b * s.initial_short_rate_r0).exp();
     let dt = t / T::from_f64(64.0);
-    let mut v = s.initial_variance_v0;
+    let mut c = T::zero();
+    let mut av = T::zero();
+    let deriv = |u: T, cc: T, _aa: T| -> (T, T) {
+        let bu = (T::one() - (-a * u).exp()) / ae;
+        let dc = -T::from_f64(0.5) * bu * bu
+            - (s.vol_mean_reversion_gamma - s.correlation_rho * s.vol_of_vol_xi * bu) * cc
+            + T::from_f64(0.5) * s.vol_of_vol_xi * s.vol_of_vol_xi * cc * cc;
+        let da = -a * s.long_run_rate_r_bar * bu + s.vol_mean_reversion_gamma * vbar * cc;
+        (dc, da)
+    };
+    let mut u = T::zero();
     for _ in 0..64 {
-        let k1 = -s.vol_mean_reversion_gamma * (v - s.long_run_variance_v_bar);
-        let k2 = -s.vol_mean_reversion_gamma
-            * (v + dt * k1 / T::from_f64(2.0) - s.long_run_variance_v_bar);
-        let k3 = -s.vol_mean_reversion_gamma
-            * (v + dt * k2 / T::from_f64(2.0) - s.long_run_variance_v_bar);
-        let k4 = -s.vol_mean_reversion_gamma * (v + dt * k3 - s.long_run_variance_v_bar);
-        v += dt * (k1 + T::from_f64(2.0) * k2 + T::from_f64(2.0) * k3 + k4) / T::from_f64(6.0);
-        c += -T::from_f64(0.5) * dt * s.vol_of_vol_xi * s.vol_of_vol_xi * T::from_f64(0.1);
-        av +=
-            -T::from_f64(0.5) * dt * s.vol_of_vol_xi * s.vol_of_vol_xi * b * b * T::from_f64(0.01);
+        let (k1c, k1a) = deriv(u, c, av);
+        let (k2c, k2a) = deriv(
+            u + dt / T::from_f64(2.0),
+            c + dt * k1c / T::from_f64(2.0),
+            av + dt * k1a / T::from_f64(2.0),
+        );
+        let (k3c, k3a) = deriv(
+            u + dt / T::from_f64(2.0),
+            c + dt * k2c / T::from_f64(2.0),
+            av + dt * k2a / T::from_f64(2.0),
+        );
+        let (k4c, k4a) = deriv(u + dt, c + dt * k3c, av + dt * k3a);
+        c += dt * (k1c + T::from_f64(2.0) * k2c + T::from_f64(2.0) * k3c + k4c) / T::from_f64(6.0);
+        av += dt * (k1a + T::from_f64(2.0) * k2a + T::from_f64(2.0) * k3a + k4a) / T::from_f64(6.0);
+        u += dt;
     }
-    let corr_adj =
-        s.correlation_rho * s.vol_of_vol_xi * b * s.initial_variance_v0 * t * T::from_f64(0.01);
-    let p = (av - b * s.initial_short_rate_r0 + corr_adj).exp();
+    let mut p = (av - b * s.initial_short_rate_r0 + c * s.initial_variance_v0).exp();
+    // In the constant-volatility collapse use the closed-form Vasicek identity exactly.
+    if s.vol_of_vol_xi.val().abs() < 1e-14 && (s.initial_variance_v0 - vbar).val().abs() < 1e-14 {
+        p = pconst;
+    }
     let y = -p.ln() / t.max_val(T::from_f64(1e-12));
     let prem = (p / pconst).ln() * T::from_f64(1e4) / t.max_val(T::from_f64(1e-12));
     FongVasicekStochVolShortRateReport {

@@ -1452,37 +1452,38 @@ pub struct HasbrouckDsswPriceDiscoveryReport<T: Real = f64> {
 pub fn evaluate_hasbrouck_information_share_and_dssw_limits_to_arb<T: Real>(
     s: &HasbrouckDsswPriceDiscoverySpec<T>,
 ) -> HasbrouckDsswPriceDiscoveryReport<T> {
-    let den = s.alpha_venue1.abs() + s.alpha_venue2.abs() + T::from_f64(1e-14);
-    let cs1 = s.alpha_venue2.abs() / den;
-    let cs2 = T::one() - cs1;
-    let v1 = s.sigma_venue1 * s.sigma_venue1;
-    let v2 = s.sigma_venue2 * s.sigma_venue2;
-    let cov = s.venue_innovation_corr * s.sigma_venue1 * s.sigma_venue2;
-    let total = (v1 + v2 + T::from_f64(2.0) * cov).abs() + T::from_f64(1e-14);
-    let mid1 = (cs1 * cs1 * v1 + cs2 * cs2 * v2 + T::from_f64(2.0) * cs1 * cs2 * cov) / total;
-    let rho_smooth = (s.venue_innovation_corr * s.venue_innovation_corr + T::from_f64(1e-24))
-        .sqrt()
-        - T::from_f64(1e-12);
-    let spread = (rho_smooth * cs1 * cs2 * (v1 + v2 - T::from_f64(2.0) * cov).abs()) / total;
-    let up = (mid1 + spread).min_val(T::one());
-    let low = (mid1 - spread).max_val(T::zero());
-    let evar = total;
+    let den = (s.alpha_venue1.abs() + s.alpha_venue2.abs()).max_val(T::from_f64(1e-14));
+    let psi1 = s.alpha_venue2.abs() / den;
+    let psi2 = s.alpha_venue1.abs() / den;
+    let cs1 = psi1;
+    let cs2 = psi2;
+    let sig1 = s.sigma_venue1;
+    let sig2 = s.sigma_venue2;
+    let rho = s.venue_innovation_corr;
+    let evar = (psi1 * psi1 * sig1 * sig1
+        + T::from_f64(2.0) * psi1 * psi2 * rho * sig1 * sig2
+        + psi2 * psi2 * sig2 * sig2)
+        .max_val(T::from_f64(1e-14));
+    let s1_12 = (psi1 * sig1 + psi2 * rho * sig2).powf(2.0) / evar;
+    let s1_21 = psi1 * psi1 * sig1 * sig1 * (T::one() - rho * rho) / evar;
+    let s2_12 = psi2 * psi2 * sig2 * sig2 * (T::one() - rho * rho) / evar;
+    let s2_21 = (psi2 * sig2 + psi1 * rho * sig1).powf(2.0) / evar;
+    let up = s1_12.max_val(s1_21);
+    let low = s1_12.min_val(s1_21);
     let fundamental = s.fundamental_dividend / (s.risk_free_rate + T::from_f64(1e-8));
+    let sent = s.noise_trader_share_mu * s.noise_trader_sentiment_mean;
     let risk =
         s.arbitrageur_risk_aversion_gamma * s.noise_trader_share_mu * s.noise_trader_sentiment_var;
-    let eq = fundamental
-        - s.noise_trader_share_mu * s.noise_trader_sentiment_mean
-            / (T::one() + s.arbitrageur_risk_aversion_gamma * s.noise_trader_sentiment_var.abs());
     HasbrouckDsswPriceDiscoveryReport {
         gonzalo_granger_cs_venue1: cs1,
         gonzalo_granger_cs_venue2: cs2,
         hasbrouck_is_upper_venue1: up,
         hasbrouck_is_lower_venue1: low,
-        hasbrouck_is_midpoint_venue1: (up + low) / 2.0,
-        hasbrouck_is_midpoint_venue2: T::one() - (up + low) / 2.0,
+        hasbrouck_is_midpoint_venue1: T::from_f64(0.5) * (s1_12 + s1_21),
+        hasbrouck_is_midpoint_venue2: T::from_f64(0.5) * (s2_12 + s2_21),
         efficient_price_innovation_var: evar,
         dssw_fundamental_price: fundamental,
-        dssw_equilibrium_price: eq,
+        dssw_equilibrium_price: fundamental + sent - risk,
         dssw_noise_trader_risk_discount: risk,
     }
 }

@@ -1094,7 +1094,15 @@ fn mat2_sub<T: Real>(a: [[T; 2]; 2], b: [[T; 2]; 2]) -> [[T; 2]; 2] {
     ]
 }
 fn mat2_inv<T: Real>(a: [[T; 2]; 2]) -> [[T; 2]; 2] {
-    let d = a[0][0] * a[1][1] - a[0][1] * a[1][0];
+    let mut d = a[0][0] * a[1][1] - a[0][1] * a[1][0];
+    // Preserve the determinant sign while avoiding explosive inverses near singularity.
+    if d.val().abs() < 1e-12 {
+        d = T::from_f64(if d.val().is_sign_negative() {
+            -1e-12
+        } else {
+            1e-12
+        });
+    }
     let di = T::one() / d;
     [[a[1][1] * di, -a[0][1] * di], [-a[1][0] * di, a[0][0] * di]]
 }
@@ -1147,7 +1155,8 @@ pub fn evaluate_tsay_kalman_rts_state_space_curve<T: Real>(
         let det = ss[0][0] * ss[1][1] - ss[0][1] * ss[1][0];
         let q =
             v[0] * (si[0][0] * v[0] + si[0][1] * v[1]) + v[1] * (si[1][0] * v[0] + si[1][1] * v[1]);
-        ll += -T::from_f64(0.5) * (T::from_f64(2.0 * std::f64::consts::PI).ln() + det.ln() + q);
+        ll += -T::from_f64(0.5)
+            * (T::from_f64(2.0 * (2.0 * std::f64::consts::PI).ln()) + det.ln() + q);
         kg = (k[0][0] * k[0][0] + k[0][1] * k[0][1] + k[1][0] * k[1][0] + k[1][1] * k[1][1]).sqrt();
         xp.push(xpred);
         pp.push(ppred);
@@ -1306,5 +1315,21 @@ mod phase25_tests {
         let ad = evaluate_tsay_kalman_rts_state_space_curve(&spec(Dual::<1>::variable(1.0, 0)))
             .innovation_log_likelihood;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+        let r = evaluate_tsay_kalman_rts_state_space_curve(&spec(1.0));
+        assert!(r.smoothed_trace_covariances[0] < r.filtered_trace_covariances[0]);
+        let n = r.filtered_states.len() - 1;
+        assert!((r.smoothed_states[n][0] - r.filtered_states[n][0]).abs() < 1e-12);
+        assert!((r.smoothed_states[n][1] - r.filtered_states[n][1]).abs() < 1e-12);
+        let h = 1e-5;
+        let fd_state = (evaluate_tsay_kalman_rts_state_space_curve(&spec(1.0 + h)).smoothed_states
+            [0][0]
+            .val()
+            - evaluate_tsay_kalman_rts_state_space_curve(&spec(1.0 - h)).smoothed_states[0][0]
+                .val())
+            / (2.0 * h);
+        let ad_state =
+            evaluate_tsay_kalman_rts_state_space_curve(&spec(Dual::<1>::variable(1.0, 0)))
+                .smoothed_states[0][0];
+        assert!((ad_state.d[0] - fd_state).abs() < 1e-5);
     }
 }
