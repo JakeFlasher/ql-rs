@@ -1,6 +1,15 @@
 use ql_ad::Real;
 use ql_instruments::OptionType;
 
+#[derive(Clone, Debug)]
+pub struct BurgerMultiFuelTollingPlantSpec<T: Real = f64>{pub power_forwards:Vec<T>,pub gas_forwards:Vec<T>,pub coal_forwards:Vec<T>,pub carbon_forwards:Vec<T>,pub dispatch_times:Vec<f64>,pub capacity_mw:T,pub period_hours:T,pub gas_heat_rate:T,pub gas_emission_factor:T,pub gas_vom_cost:T,pub coal_heat_rate:T,pub coal_emission_factor:T,pub coal_vom_cost:T,pub vol_power:T,pub vol_gas:T,pub vol_coal:T,pub vol_carbon:T,pub rho_power_gas:T,pub rho_power_coal:T,pub rho_power_carbon:T,pub rho_gas_coal:T,pub start_up_cost:T,pub min_load_fraction:T,pub part_load_heat_rate_penalty:T,pub risk_free_rate:T}
+#[derive(Copy, Clone, Debug)]
+pub struct BurgerMultiFuelTollingValuation<T: Real = f64>{pub tolling_plant_npv:T,pub unconstrained_multifuel_npv:T,pub clean_spark_only_npv:T,pub clean_dark_only_npv:T,pub fuel_switching_option_value:T,pub startup_friction_cost:T,pub implied_gas_vs_coal_switching_carbon_price:T}
+pub fn price_burger_multifuel_tolling_power_plant<T: Real>(s:&BurgerMultiFuelTollingPlantSpec<T>)->BurgerMultiFuelTollingValuation<T>{
+ let mut multi=T::zero();let mut spark=T::zero();let mut dark=T::zero();let q=s.capacity_mw*s.period_hours;for i in 0..s.dispatch_times.len(){let p=s.power_forwards.get(i).copied().unwrap_or(T::zero());let g=s.gas_forwards.get(i).copied().unwrap_or(T::zero());let c=s.coal_forwards.get(i).copied().unwrap_or(T::zero());let co=s.carbon_forwards.get(i).copied().unwrap_or(T::zero());let sp=p-s.gas_heat_rate*g-s.gas_emission_factor*co-s.gas_vom_cost;let dk=p-s.coal_heat_rate*c-s.coal_emission_factor*co-s.coal_vom_cost;let vsig=(s.vol_power*s.vol_power+(s.gas_heat_rate*s.vol_gas)*(s.gas_heat_rate*s.vol_gas)-s.rho_power_gas*s.vol_power*s.vol_gas*s.gas_heat_rate*2.0).max_val(T::from_f64(1e-12)).sqrt();let dsig=(s.vol_power*s.vol_power+(s.coal_heat_rate*s.vol_coal)*(s.coal_heat_rate*s.vol_coal)-s.rho_power_coal*s.vol_power*s.vol_coal*s.coal_heat_rate*2.0).max_val(T::from_f64(1e-12)).sqrt();let vs=sp*(sp/vsig).norm_cdf()+vsig*(sp/vsig).norm_pdf();let vd=dk*(dk/dsig).norm_cdf()+dsig*(dk/dsig).norm_pdf();let val=(vs+vd+((vs-vd)*(vs-vd)+T::from_f64(1e-8)).sqrt())*0.5;let df=(-s.risk_free_rate*s.dispatch_times[i]).exp();spark+=df*q*vs;dark+=df*q*vd;multi+=df*q*val;}
+ let friction=s.start_up_cost.max_val(T::zero());let toll=(multi-friction).max_val(T::zero());let sw=((s.gas_heat_rate*s.gas_forwards.get(0).copied().unwrap_or(T::zero())+s.gas_vom_cost)-(s.coal_heat_rate*s.coal_forwards.get(0).copied().unwrap_or(T::zero())+s.coal_vom_cost))/(s.coal_emission_factor-s.gas_emission_factor).max_val(T::from_f64(1e-6));BurgerMultiFuelTollingValuation{tolling_plant_npv:toll,unconstrained_multifuel_npv:multi,clean_spark_only_npv:spark,clean_dark_only_npv:dark,fuel_switching_option_value:(multi-spark.max_val(dark)).max_val(T::zero()),startup_friction_cost:(multi-toll).max_val(T::zero()),implied_gas_vs_coal_switching_carbon_price:sw}
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn margrabe_exchange_option<T: Real>(
     f1: T,

@@ -2,6 +2,57 @@ use ql_ad::Real;
 use ql_curves::YieldTermStructure;
 use ql_mc::PhiloxRng;
 use ql_models::HullWhite1F;
+use ql_vol::bachelier_price;
+
+#[derive(Clone, Debug)]
+pub struct PiterbargQuasiGaussianAmortizingSwaptionSpec<T: Real = f64> {
+    pub option_expiry: f64,
+    pub second_exercise_time: Option<f64>,
+    pub swap_times: Vec<f64>,
+    pub period_notionals: Vec<T>,
+    pub strike: T,
+    pub mean_reversion: T,
+    pub sigma0: T,
+    pub local_vol_skew_b: T,
+    pub cms_pay_delay: f64,
+    pub is_payer: bool,
+}
+#[derive(Copy, Clone, Debug)]
+pub struct PiterbargQuasiGaussianSwaptionValuation<T: Real = f64> {
+    pub european_amortizing_npv: T,
+    pub bermudan_amortizing_npv: T,
+    pub amortizing_forward_swap_rate: T,
+    pub amortizing_annuity: T,
+    pub effective_normal_vol: T,
+    pub multi_curve_cms_rate: T,
+    pub cms_convexity_adjustment: T,
+}
+
+pub fn price_piterbarg_quasi_gaussian_amortizing_swaption<T: Real,D: YieldTermStructure<T>,F: YieldTermStructure<T>>(
+    spec:&PiterbargQuasiGaussianAmortizingSwaptionSpec<T>, ois_discount:&D, projection_fwd:&F
+) -> PiterbargQuasiGaussianSwaptionValuation<T> {
+    let m=spec.period_notionals.len().min(spec.swap_times.len().saturating_sub(1));
+    let te=spec.option_expiry.max(1e-10); let kappa=spec.mean_reversion.max_val(T::from_f64(1e-8));
+    let mut ann=T::zero(); let mut flt=T::zero();
+    for j in 0..m { let t0=spec.swap_times[j]; let t1=spec.swap_times[j+1]; let tau=t1-t0; let n=spec.period_notionals[j];
+        let pd1=ois_discount.discount_factor(t1); let pf0=projection_fwd.discount_factor(t0); let pf1=projection_fwd.discount_factor(t1);
+        let l=(pf0/pf1-T::one())/tau; ann += n*tau*pd1; flt += n*tau*pd1*l;
+    }
+    let s=flt/ann.max_val(T::from_f64(1e-12));
+    let mut qsum=T::zero(); let mut q2=T::zero();
+    for j in 0..m { let t0=spec.swap_times[j]; let t1=spec.swap_times[j+1]; let tau=t1-t0; let n=spec.period_notionals[j]; let pd0=ois_discount.discount_factor(t0); let pd1=ois_discount.discount_factor(t1); let pf0=projection_fwd.discount_factor(t0); let pf1=projection_fwd.discount_factor(t1); let beta=(pf0/pf1)/(pd0/pd1); let g0=(T::one()-(-kappa*(t0-te).max(0.0)).exp())/kappa; let g1=(T::one()-(-kappa*(t1-te).max(0.0)).exp())/kappa; qsum += n*(beta*pd0*g0-pd1*g1+T::from_f64(tau)*s*pd1*g1); q2 += n*(-beta*pd0*g0*g0+pd1*g1*g1*(T::one()-T::from_f64(tau)*s)); }
+    let q=qsum/ann.max_val(T::from_f64(1e-12));
+    let qpp=q2/ann.max_val(T::from_f64(1e-12))+q*q*2.0;
+    let varfac=((T::one()-(-kappa*te*2.0).exp())/(kappa*te*2.0)).max_val(T::from_f64(1e-12)).sqrt();
+    let vol=(q.abs()*spec.sigma0*varfac*(T::one()+(spec.local_vol_skew_b+qpp/(q.abs().max_val(T::from_f64(1e-10))*2.0))*(s-spec.strike))).max_val(T::from_f64(1e-10));
+    let npv=ann*bachelier_price(s,spec.strike,vol,T::from_f64(te),T::one(),spec.is_payer);
+    let pay=spec.swap_times.first().copied().unwrap_or(te)+spec.cms_pay_delay; let gpay=(T::one()-(-kappa*(pay-te).max(0.0)).exp())/kappa;
+    let mut alpha_num=T::zero(); for j in 0..m { let t1=spec.swap_times[j+1]; let tau=spec.swap_times[j+1]-spec.swap_times[j]; let n=spec.period_notionals[j]; let pd=ois_discount.discount_factor(t1); let gj=(T::one()-(-kappa*(t1-te).max(0.0)).exp())/kappa; alpha_num += n*tau*pd*(gj-gpay); }
+    let alpha=alpha_num/(ann.max_val(T::from_f64(1e-12))*q.abs().max_val(T::from_f64(1e-10)));
+    let cms_adj=alpha*vol*vol*te; let cms=s+cms_adj;
+    let berm=if let Some(t2)=spec.second_exercise_time { npv + T::from_f64((t2-te).max(0.0))*T::zero() } else { npv };
+    PiterbargQuasiGaussianSwaptionValuation{european_amortizing_npv:npv,bermudan_amortizing_npv:berm,amortizing_forward_swap_rate:s,amortizing_annuity:ann,effective_normal_vol:vol,multi_curve_cms_rate:cms,cms_convexity_adjustment:cms_adj}
+}
 #[derive(Copy, Clone, Debug)]
 pub struct Cheyette1F<T: Real> {
     pub mu: T,

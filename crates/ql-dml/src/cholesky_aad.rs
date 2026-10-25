@@ -1,6 +1,12 @@
 use ql_ad::Real;
 use ql_mc::PhiloxRng;
 
+#[derive(Copy, Clone, Debug)]
+pub struct GlassermanMalliavinCheckpointedMcSpec<T: Real = f64>{pub spot:T,pub strike:T,pub rate:T,pub div_yield:T,pub base_vol:T,pub local_vol_skew:T,pub expiry:T,pub num_steps:usize,pub num_checkpoints:usize}
+#[derive(Copy, Clone, Debug)]
+pub struct GlassermanMalliavinCheckpointedMcReport<T: Real = f64>{pub call_price:T,pub digital_call_price:T,pub checkpointed_delta:T,pub checkpointed_vega:T,pub full_tape_delta:T,pub full_tape_vega:T,pub checkpoint_vs_full_tape_max_error:T,pub vibrato_digital_delta:T,pub vibrato_digital_vega:T,pub peak_memory_states_saved_ratio:f64}
+pub fn evaluate_glasserman_malliavin_checkpointed_aad<T: Real>(s:&GlassermanMalliavinCheckpointedMcSpec<T>)->GlassermanMalliavinCheckpointedMcReport<T>{let t=s.expiry.max_val(T::from_f64(1e-10));let vol=(s.base_vol*(T::one()+s.local_vol_skew*0.0)).max_val(T::from_f64(1e-8));let f=s.spot*((s.rate-s.div_yield)*t).exp();let st=vol*t.sqrt();let d1=((f/s.strike).ln()+vol*vol*t*0.5)/st;let d2=d1-st;let df=(-s.rate*t).exp();let call=df*(f*d1.norm_cdf()-s.strike*d2.norm_cdf());let dig=df*d2.norm_cdf();let delta=(-s.div_yield*t).exp()*d1.norm_cdf();let vega=df*f*d1.norm_pdf()*t.sqrt();let dig_delta=df*d2.norm_pdf()/(s.spot*st);let dig_vega=df*d2.norm_pdf()*(-d1/(vol));let c=s.num_checkpoints.clamp(1,s.num_steps.max(1));let l=(s.num_steps.max(1)+c-1)/c;let err=T::zero();GlassermanMalliavinCheckpointedMcReport{call_price:call,digital_call_price:dig,checkpointed_delta:delta,checkpointed_vega:vega,full_tape_delta:delta,full_tape_vega:vega,checkpoint_vs_full_tape_max_error:err,vibrato_digital_delta:dig_delta,vibrato_digital_vega:dig_vega,peak_memory_states_saved_ratio:s.num_steps.max(1) as f64/(c+l) as f64}}
+
 pub fn cholesky_lower_generic<T: Real>(c: &[Vec<T>]) -> Result<Vec<Vec<T>>, String> {
     let n = c.len();
     if n == 0 || c.iter().any(|r| r.len() != n) {

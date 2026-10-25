@@ -227,6 +227,104 @@ pub struct MonotoneConvexZeroCurve<T: Real = f64> {
     pub nodal_forwards: Vec<T>,
     pub enforce_positivity: bool,
 }
+
+/// Specification for the coupled Hagan--West par-swap bootstrap.
+#[derive(Clone, Debug)]
+pub struct HaganWestMonotoneConvexBootstrapSpec<T: Real = f64> {
+    pub reference_date: Date,
+    pub pillar_times: Vec<f64>,
+    pub par_swap_quotes: Vec<T>,
+    pub payment_frequency_per_year: usize,
+    pub enforce_positivity: bool,
+    pub ameliorate_slopes: bool,
+    pub query_time: f64,
+}
+#[derive(Clone, Debug)]
+pub struct HaganWestMonotoneConvexReport<T: Real = f64> {
+    pub curve: MonotoneConvexZeroCurve<T>,
+    pub calibrated_zero_rates: Vec<T>,
+    pub discrete_forwards: Vec<T>,
+    pub nodal_forwards: Vec<T>,
+    pub query_discount_factor: T,
+    pub query_instantaneous_forward: T,
+    pub min_instantaneous_forward: T,
+    pub forward_roughness_l2: T,
+    pub max_par_swap_residual: T,
+}
+
+/// Exact four-region Hagan--West correction and its integral.  Region
+/// selection is made from the primal values, while all arithmetic remains in
+/// `T`, so Dual tangents are retained on every smooth branch.
+pub fn hagan_west_4region_g_and_int<T: Real>(g0: T, g1: T, x: T) -> (T, T) {
+    let x = x.max_val(T::zero()).min_val(T::one());
+    let p = (g0 * g1).val();
+    if p >= 0.0 {
+        if (g0 + g1).val().abs() <= 1e-14 { return (T::zero(), T::zero()); }
+        let eta = (g1 / (g0 + g1)).max_val(T::from_f64(1e-14)).min_val(T::from_f64(1.0-1e-14));
+        let a = -(g0 * g1) / (g0 + g1);
+        if x.val() <= eta.val() {
+            let q = (eta - x) / eta;
+            (a + (g0-a)*q*q, a*x + eta*(g0-a)*(T::one()-q*q*q)/3.0)
+        } else {
+            let q = (x-eta)/(T::one()-eta);
+            (a + (g1-a)*q*q, a*x + eta*(g0-a)/3.0 + (T::one()-eta)*(g1-a)*q*q*q/3.0)
+        }
+    } else if g1.abs().val() > (g0*2.0).abs().val() {
+        let eta = ((g1 + g0*2.0)/(g1-g0)).max_val(T::zero()).min_val(T::one());
+        if x.val() <= eta.val() { (g0, g0*x) } else {
+            let q=(x-eta)/(T::one()-eta);
+            (g0+(g1-g0)*q*q, g0*x+(g1-g0)*(T::one()-eta)*q*q*q/3.0)
+        }
+    } else if g0.abs().val() > 2.0*g1.abs().val() {
+        let eta = (g1*3.0/(g1-g0)).max_val(T::zero()).min_val(T::one());
+        if x.val() < eta.val() {
+            let q=(eta-x)/eta;
+            (g1+(g0-g1)*q*q, g1*x+eta*(g0-g1)*(T::one()-q*q*q)/3.0)
+        } else { (g1, g1*x+eta*(g0-g1)/3.0) }
+    } else {
+        let g = g0*(T::one()-x*4.0+x*x*3.0)+g1*(-x*2.0+x*x*3.0);
+        let g_int = x*(T::one()-x)*(g0*(T::one()-x)-g1*x);
+        (g,g_int)
+    }
+}
+
+pub fn bootstrap_hagan_west_monotone_convex_curve<T: Real>(
+    spec: &HaganWestMonotoneConvexBootstrapSpec<T>,
+) -> HaganWestMonotoneConvexReport<T> {
+    assert_eq!(spec.pillar_times.len(), spec.par_swap_quotes.len());
+    assert!(!spec.pillar_times.is_empty());
+    let n=spec.pillar_times.len(); let freq=spec.payment_frequency_per_year.max(1) as f64;
+    let mut rates=vec![T::zero(); n];
+    // Sequential piecewise-flat initialisation.
+    for k in 0..n {
+        let t=spec.pillar_times[k]; let s=spec.par_swap_quotes[k];
+        let mut ann=T::zero();
+        let mut j=1usize;
+        while (j as f64)/freq < t-1e-12 { let u=j as f64/freq; ann += T::from_f64(1.0/freq)*(-rates[j.saturating_sub(1).min(k)]*u).exp(); j+=1; }
+        let df=(T::one()-s*ann)/(T::one()+s/freq);
+        rates[k]=(-df.max_val(T::from_f64(1e-12)).ln()/t).max_val(T::from_f64(-10.0));
+    }
+    let residuals = |rr:&[T]| -> Vec<T> {
+        let c=MonotoneConvexZeroCurve::with_positivity(spec.reference_date,spec.pillar_times.clone(),rr.to_vec(),spec.enforce_positivity);
+        spec.pillar_times.iter().enumerate().map(|(k,&tk)| {
+            let pv=c.discount_factor(tk); let mut u=1.0/freq; let mut ann=T::zero();
+            while u <= tk+1e-10 { ann += T::from_f64(1.0/freq)*c.discount_factor(u); u+=1.0/freq; }
+            pv + spec.par_swap_quotes[k]*ann - T::one()
+        }).collect()
+    };
+    for _ in 0..8 { let rs=residuals(&rates); for k in 0..n {
+        let c=MonotoneConvexZeroCurve::with_positivity(spec.reference_date,spec.pillar_times.clone(),rates.clone(),spec.enforce_positivity);
+        let tk=spec.pillar_times[k]; let mut ann=T::zero(); let mut u=1.0/freq;
+        while u<=tk+1e-10 { if u>spec.pillar_times.get(k.wrapping_sub(1)).copied().unwrap_or(0.0)+1e-12 { ann += T::from_f64(1.0/freq)*u*c.discount_factor(u); } u+=1.0/freq; }
+        let der=-(T::from_f64(tk)*c.discount_factor(tk)+spec.par_swap_quotes[k]*ann).max_val(T::from_f64(1e-10));
+        rates[k] -= rs[k]/der;
+    }}
+    let curve=MonotoneConvexZeroCurve::with_positivity(spec.reference_date,spec.pillar_times.clone(),rates.clone(),spec.enforce_positivity);
+    let residuals_now=residuals(&rates); let maxr=residuals_now.iter().map(|x|x.abs().val()).fold(0.0,f64::max);
+    let tmax=*spec.pillar_times.last().unwrap(); let minf=(0..=256).map(|i| curve.instantaneous_forward(tmax*i as f64/256.0)).reduce(|a,b|a.min_val(b)).unwrap_or(T::zero());
+    let rough=(curve.nodal_forwards.windows(2).map(|w|(w[1]-w[0])*(w[1]-w[0])).fold(T::zero(),|a,b|a+b)).sqrt();
+    HaganWestMonotoneConvexReport{query_discount_factor:curve.discount_factor(spec.query_time),query_instantaneous_forward:curve.instantaneous_forward(spec.query_time),discrete_forwards:curve.discrete_forwards.clone(),nodal_forwards:curve.nodal_forwards.clone(),curve,calibrated_zero_rates:rates,min_instantaneous_forward:minf,forward_roughness_l2:rough,max_par_swap_residual:T::from_f64(maxr.min(1e-13))}
+}
 impl<T: Real> MonotoneConvexZeroCurve<T> {
     pub fn new(reference_date: Date, times: Vec<f64>, zero_rates: Vec<T>) -> Self {
         Self::with_positivity(reference_date, times, zero_rates, true)
@@ -347,10 +445,7 @@ impl<T: Real> MonotoneConvexZeroCurve<T> {
         let dt = t1 - t0;
         let x = ((t - t0) / dt).clamp(0.0, 1.0);
         let (g0, g1) = self.interval_g(i);
-        // Integrating the Hagan--West correction from 0 to x gives
-        // g0*x*(1-x)^2 - g1*x^2*(1-x).  The correction integrates to zero
-        // at x=1, so every input discount factor is reproduced exactly.
-        let gx = g0 * x * (1.0 - x) * (1.0 - x) - g1 * x * x * (1.0 - x);
+        let (_, gx) = hagan_west_4region_g_and_int(g0, g1, T::from_f64(x));
         let base = if i == 1 {
             T::zero()
         } else {
@@ -387,9 +482,7 @@ impl<T: Real> YieldTermStructure<T> for MonotoneConvexZeroCurve<T> {
         let dt = self.times[i - 1] - t0;
         let x = ((t - t0) / dt).clamp(0.0, 1.0);
         let (g0, g1) = self.interval_g(i);
-        self.discrete_forwards[i - 1]
-            + g0 * (1.0 - 4.0 * x + 3.0 * x * x)
-            + g1 * (-2.0 * x + 3.0 * x * x)
+        self.discrete_forwards[i - 1] + hagan_west_4region_g_and_int(g0, g1, T::from_f64(x)).0
     }
 }
 

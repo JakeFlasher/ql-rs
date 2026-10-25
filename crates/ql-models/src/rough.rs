@@ -1,6 +1,19 @@
 use crate::{Complex, CosHestonEngine, HestonParams};
 use ql_ad::Real;
 use ql_math as ql_mc;
+
+#[derive(Copy, Clone, Debug)]
+pub struct BayerFrizGatheralMarkovianRoughSpec<T: Real = f64>{pub spot:T,pub strike:T,pub expiry:T,pub rate:T,pub div_yield:T,pub xi0:T,pub eta:T,pub rho:T,pub hurst:T,pub num_markov_factors:usize,pub is_call:bool}
+#[derive(Clone, Debug)]
+pub struct BayerFrizGatheralMarkovianRoughReport<T: Real = f64>{pub option_price:T,pub implied_vol:T,pub atm_skew:T,pub skew_stickiness_ratio_ssr:T,pub markov_weights:Vec<T>,pub markov_gammas:Vec<T>,pub kernel_variance_markov:T,pub kernel_variance_exact:T}
+pub fn evaluate_bayer_friz_gatheral_markovian_rough<T: Real>(s:&BayerFrizGatheralMarkovianRoughSpec<T>)->BayerFrizGatheralMarkovianRoughReport<T>{
+    let h=s.hurst.max_val(T::from_f64(0.02)).min_val(T::from_f64(0.48)); let m=s.num_markov_factors.clamp(2,16); let rm=(1.0+3.2/m as f64).min(2.5); let ah=T::from_f64(0.5)-h; let mut gam=Vec::with_capacity(m); let mut raw=Vec::with_capacity(m);
+    for k in 1..=m { let g=rm.powf(k as f64-0.5*(m as f64+1.0)); gam.push(T::from_f64(g)); let rm_t=T::from_f64(rm); let g_t=T::from_f64(g); let rw=(h*2.0).sqrt()*(ah*std::f64::consts::PI).sin()/std::f64::consts::PI*((rm_t.pow(ah)-T::one())/ah.max_val(T::from_f64(1e-8)))*g_t.pow(ah); raw.push(rw); }
+    let t=s.expiry.max_val(T::from_f64(1e-8)); let mut var=T::zero(); for i in 0..m { for j in 0..m { let gij=gam[i]+gam[j]; var += raw[i]*raw[j]*(T::one()-(-gij*t).exp())/gij; } }
+    let scale=(t.powf(2.0*h.val())/var.max_val(T::from_f64(1e-12))).sqrt()*T::from_f64(1.0-0.02/(m as f64*m as f64)); let weights:Vec<T>=raw.iter().map(|x|*x*scale).collect(); let mut vm=T::zero(); for i in 0..m { for j in 0..m { let gij=gam[i]+gam[j]; vm += weights[i]*weights[j]*(T::one()-(-gij*t).exp())/gij; } }
+    let mut csv=T::zero(); for i in 0..m { let g=gam[i]; csv += weights[i]*(t-(T::one()-(-g*t).exp())/g)/g; }
+    let cs=s.rho*s.eta*s.xi0*csv; let xi=s.xi0.max_val(T::from_f64(1e-12)); let vatm=xi.sqrt()*(T::one()+cs/(xi*t*4.0)+s.eta*s.eta*(T::from_f64(2.0)-s.rho*s.rho*3.0)*vm/24.0); let skew=cs/(xi*t).max_val(T::from_f64(1e-12)).sqrt()/(xi.sqrt()*2.0); let k=(s.strike/(s.spot*((s.rate-s.div_yield)*t).exp())).ln(); let chi=s.eta*s.eta*(T::one()-s.rho*s.rho)*vm/(xi.sqrt()*t*4.0); let imp=vatm+skew*k+chi*k*k*0.5; let f=s.spot*((s.rate-s.div_yield)*t).exp(); let price=ql_vol::bachelier_price(f,s.strike,imp*f.max_val(T::from_f64(1e-8))*t.sqrt(),t,(-s.rate*t).exp(),s.is_call); let ssr=(h+1.5)/(h+0.5)*(T::one()-s.eta*s.eta*s.rho*s.rho*vm/((h+1.0)*(h+1.0)*4.0)); BayerFrizGatheralMarkovianRoughReport{option_price:price,implied_vol:imp,atm_skew:skew,skew_stickiness_ratio_ssr:ssr,markov_weights:weights,markov_gammas:gam,kernel_variance_markov:vm,kernel_variance_exact:t.pow(h*2.0)}
+}
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct LiftedHestonParams<T: Real> {
     pub v0: T,

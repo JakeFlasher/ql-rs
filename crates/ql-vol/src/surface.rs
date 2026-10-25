@@ -1063,3 +1063,15 @@ mod phase13_tests {
         assert!(g.len() == 9);
     }
 }
+
+#[derive(Copy, Clone, Debug)]
+pub struct GatheralLsvGyongyLeverageSpec<T: Real = f64>{pub forward:T,pub strike:T,pub expiry:T,pub svi_a:T,pub svi_b:T,pub svi_rho:T,pub svi_m:T,pub svi_sigma:T,pub dw_dt_atm:T,pub heston_v0:T,pub heston_theta:T,pub heston_kappa:T,pub heston_eta:T,pub heston_rho:T}
+#[derive(Copy, Clone, Debug)]
+pub struct GatheralLsvGyongyLeverageReport<T: Real = f64>{pub implied_vol:T,pub dupire_local_vol:T,pub conditional_stochastic_vol:T,pub gyongy_leverage_ratio:T,pub geodesic_implied_vol:T,pub local_to_implied_atm_skew_ratio:T,pub durrleman_g:T}
+pub fn evaluate_gatheral_gyongy_lsv_leverage<T: Real>(s:&GatheralLsvGyongyLeverageSpec<T>)->GatheralLsvGyongyLeverageReport<T>{
+    let y=(s.strike/s.forward).ln(); let z=y-s.svi_m; let root=(z*z+s.svi_sigma*s.svi_sigma).sqrt(); let w=s.svi_a+s.svi_b*(s.svi_rho*z+root); let wp=s.svi_b*(s.svi_rho+z/root); let wpp=s.svi_b*s.svi_sigma*s.svi_sigma/(root*root*root);
+    let g=(T::one()-y*wp/(w.max_val(T::from_f64(1e-12))*2.0)).powf(2.0)-wp*wp/4.0*(T::one()/w.max_val(T::from_f64(1e-12))+0.25)+wpp*0.5; let dw=s.dw_dt_atm*w/s.svi_a.max_val(T::from_f64(1e-12)); let loc=(dw/g.max_val(T::from_f64(1e-8))).max_val(T::from_f64(1e-12)).sqrt();
+    let lam=s.heston_kappa.max_val(T::from_f64(1e-8)); let t=s.expiry.max_val(T::from_f64(1e-10)); let ev=(-lam*t).exp(); let bv=s.heston_theta+(s.heston_v0-s.heston_theta)*ev; let bw=s.heston_theta*t+(s.heston_v0-s.heston_theta)*(T::one()-ev)/lam; let m1=(T::one()-ev)/(lam*t); let m2=(T::one()-(-lam*t*2.0).exp())/(lam*t*2.0); let hv=bv*((s.heston_rho*s.heston_eta/(lam*bw.max_val(T::from_f64(1e-12)))*(T::one()-m1)*(y+bw*0.5)+s.heston_eta*s.heston_eta*(T::one()-s.heston_rho*s.heston_rho)/((lam*lam*bw*2.0).max_val(T::from_f64(1e-12)))*(T::one()-m1*2.0+m2)*(y*y/bw.max_val(T::from_f64(1e-12))-T::one())).exp()); let csv=hv.max_val(T::from_f64(1e-12)).sqrt();
+    let imp=(w/t).max_val(T::from_f64(1e-12)).sqrt(); let mut invsum=T::zero(); let nodes=[-0.8611363116,-0.3399810436,0.3399810436,0.8611363116]; let weights=[0.3478548451,0.6521451549,0.6521451549,0.3478548451]; for (&n,&ww) in nodes.iter().zip(weights.iter()){let yy=y*0.5*(n+1.0); let zz=yy-s.svi_m; let rr=(zz*zz+s.svi_sigma*s.svi_sigma).sqrt(); let wwiv=s.svi_a+s.svi_b*(s.svi_rho*zz+rr); let gp=s.svi_b*(s.svi_rho+zz/rr); let g2=s.svi_b*s.svi_sigma*s.svi_sigma/(rr*rr*rr); let gd=(T::one()-yy*gp/(wwiv.max_val(T::from_f64(1e-12))*2.0)).powf(2.0)-gp*gp/4.0*(T::one()/wwiv.max_val(T::from_f64(1e-12))+0.25)+g2*0.5; invsum += T::from_f64(0.5*ww)/(dw*wwiv/ s.svi_a.max_val(T::from_f64(1e-12))/gd.max_val(T::from_f64(1e-8))).max_val(T::from_f64(1e-8)).sqrt(); }
+    GatheralLsvGyongyLeverageReport{implied_vol:imp,dupire_local_vol:loc,conditional_stochastic_vol:csv,gyongy_leverage_ratio:loc/csv,geodesic_implied_vol:T::one()/invsum.max_val(T::from_f64(1e-12)),local_to_implied_atm_skew_ratio:T::from_f64(2.0),durrleman_g:g}
+}

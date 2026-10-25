@@ -102,7 +102,7 @@ fn dashboard_renders_all_quadrants_and_chart_modes() {
 
 #[test]
 fn phase11_tabs_and_live_telemetry_are_present() {
-    assert_eq!(TabId::ALL.len(), 30);
+    assert_eq!(TabId::ALL.len(), 31);
     assert_eq!(TabId::ALL[18], TabId::BermudanVolIft);
     assert_eq!(TabId::ALL[19], TabId::SaCcrSwingQp);
     assert_eq!(TabId::ALL[22], TabId::MonotoneConvexVixParisianRobust);
@@ -125,7 +125,7 @@ fn phase11_tabs_and_live_telemetry_are_present() {
 
 #[test]
 fn phase17_tab_metric_and_rates_scenario_are_live() {
-    assert_eq!(TabId::ALL.len(), 30);
+    assert_eq!(TabId::ALL.len(), 31);
     assert!(TabId::ALL.contains(&TabId::Phase17Sota));
     let mut ws = DeskWorkstation::new();
     let frame = ws.step_tick();
@@ -175,7 +175,7 @@ fn phase18_tab28_terminal_renders_and_ticks_cleanly() {
 
 #[test]
 fn phase19_tab29_terminal_renders_and_ticks_cleanly() {
-    assert_eq!(TabId::ALL.len(), 30);
+    assert_eq!(TabId::ALL.len(), 31);
     assert_eq!(TabId::Phase19Sota.label(), "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP");
     let mut ws = DeskWorkstation::new();
     let normal = ws.step_tick();
@@ -205,7 +205,7 @@ fn phase19_tab29_terminal_renders_and_ticks_cleanly() {
 
 #[test]
 fn phase20_tab30_terminal_renders_and_ticks_cleanly() {
-    assert_eq!(TabId::ALL.len(), 30);
+    assert_eq!(TabId::ALL.len(), 31);
     assert_eq!(TabId::Phase20Sota.label(), "30 Sinh-OU / BK-FRN / Morini-Brigo / WWM-XVA / mrBergomi / Choi / AFS-LOB / EXVaR");
     let mut ws = DeskWorkstation::new();
     let normal = ws.step_tick();
@@ -230,4 +230,15 @@ fn phase20_tab30_terminal_renders_and_ticks_cleanly() {
             normal.sinhou_mb_rbergomi_choi_afs_expectile_metric
         );
     }
+}
+
+#[test]
+fn phase21_tab31_terminal_renders_and_ticks_cleanly() {
+    assert_eq!(TabId::ALL.len(), 31);
+    assert_eq!(TabId::Phase21Sota.label(), "31 HW-MC / Clark-FX / SA-CCR-KVA / BFG-rVol / Cartea-Alpha / Paleologo");
+    let mut ws=DeskWorkstation::new(); let normal=ws.step_tick();
+    assert!(normal.monotone_convex_clark_saccr_rvol_cartea_paleologo_metric.is_finite());
+    assert!(ws.render_dashboard(&normal,false).contains("31 HW-MC/Clark/SACCR/rVol/Cartea/Paleo"));
+    ws.set_scenario(ScenarioKind::RatesPlus50Bp); let stressed=ws.step_tick();
+    assert!(stressed.monotone_convex_clark_saccr_rvol_cartea_paleologo_metric.is_finite());
 }

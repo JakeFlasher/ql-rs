@@ -1,5 +1,14 @@
 use super::allocation::AllocationError;
 use ql_ad::Real;
+
+#[derive(Copy, Clone, Debug)]
+pub struct CarteaJaimungalAlphaExecutionSpec<T: Real = f64>{pub initial_inventory:T,pub horizon:T,pub num_steps:usize,pub temporary_impact_k:T,pub permanent_impact_b:T,pub inventory_penalty_phi:T,pub terminal_penalty_a:T,pub initial_alpha_signal:T,pub alpha_mean_reversion_kappa:T,pub alpha_volatility:T}
+#[derive(Clone, Debug)]
+pub struct CarteaJaimungalAlphaExecutionReport<T: Real = f64>{pub times:Vec<T>,pub inventory_trajectory:Vec<T>,pub baseline_ac_inventory_trajectory:Vec<T>,pub optimal_trading_rates:Vec<T>,pub alpha_speculative_tilt_rates:Vec<T>,pub expected_alpha_capture_pnl:T,pub expected_execution_cost_net_of_alpha:T,pub value_function_h0_alpha_variance_bonus:T}
+pub fn solve_cartea_jaimungal_alpha_execution<T: Real>(s:&CarteaJaimungalAlphaExecutionSpec<T>)->CarteaJaimungalAlphaExecutionReport<T>{
+ let n=s.num_steps.max(4);let dt=s.horizon/T::from_f64(n as f64);let k=s.temporary_impact_k.max_val(T::from_f64(1e-8));let phi=s.inventory_penalty_phi.max_val(T::from_f64(1e-8));let gam=(phi/k).sqrt();let kap=s.alpha_mean_reversion_kappa.max_val(T::from_f64(1e-6));let den=(gam*s.horizon).sinh().max_val(T::from_f64(1e-12));let mut times=Vec::with_capacity(n+1);let mut ac=Vec::with_capacity(n+1);let mut q=Vec::with_capacity(n+1);for j in 0..=n{let tt=dt*(j as f64);let qa=s.initial_inventory*(gam*(s.horizon-tt)).sinh()/den;let tilt=s.initial_alpha_signal/(k*den*2.0)*(gam*(s.horizon-tt)).sinh()*(T::one()-(-kap*tt).exp())/kap;times.push(tt);ac.push(qa);q.push(qa+tilt);}
+ let mut rates=Vec::with_capacity(n);let mut tilt_rates=Vec::with_capacity(n);let mut cap=T::zero();let mut cost=T::zero();for j in 0..n{let nu=-(q[j+1]-q[j])/dt;let nua=-(ac[j+1]-ac[j])/dt;rates.push(nu);tilt_rates.push(nu-nua);let t=times[j];let alpha=s.initial_alpha_signal*(-kap*t).exp();cap+=alpha*q[j]*dt;cost+=(k*nu*nu+phi*q[j]*q[j])*dt;}cap+=s.alpha_volatility*s.alpha_volatility/(k*kap*kap*4.0)*s.horizon;cost+=s.permanent_impact_b*0.5*s.initial_inventory*s.initial_inventory-cap;CarteaJaimungalAlphaExecutionReport{times,inventory_trajectory:q,baseline_ac_inventory_trajectory:ac,optimal_trading_rates:rates,alpha_speculative_tilt_rates:tilt_rates,expected_alpha_capture_pnl:cap,expected_execution_cost_net_of_alpha:cost,value_function_h0_alpha_variance_bonus:s.alpha_volatility*s.alpha_volatility/(k*kap*kap*4.0)*s.horizon}
+}
 #[derive(Clone, Debug)]
 pub struct AlmgrenChrissSpec<T: Real> {
     pub initial_inventory: T,

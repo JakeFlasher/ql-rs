@@ -163,9 +163,11 @@ pub enum TabId {
     Phase18Sota,
     Phase19Sota,
     Phase20Sota,
+    Phase21Sota,
 }
 impl TabId {
-    pub const ALL: [Self; 30] = [
+    pub const TAB_COUNT: usize = 31;
+    pub const ALL: [Self; 31] = [
         Self::Market,
         Self::Rates,
         Self::Credit,
@@ -196,6 +198,7 @@ impl TabId {
         Self::Phase18Sota,
         Self::Phase19Sota,
         Self::Phase20Sota,
+        Self::Phase21Sota,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -229,6 +232,7 @@ impl TabId {
             Self::Phase18Sota => "28 MtM-XCCS / CTD-COLVA / ZABR-PDV / Weather / ENB",
             Self::Phase19Sota => "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP",
             Self::Phase20Sota => "30 Sinh-OU / BK-FRN / Morini-Brigo / WWM-XVA / mrBergomi / Choi / AFS-LOB / EXVaR",
+            Self::Phase21Sota => "31 HW-MC / Clark-FX / SA-CCR-KVA / BFG-rVol / Cartea-Alpha / Paleologo",
         }
     }
 }
@@ -550,6 +554,7 @@ pub struct WorkstationFrameData {
     pub mtmxccs_colva_zabr_weather_enb_metric: f64,
     pub burnout_cmcds_quintic_afv_cs_schur_metric: f64,
     pub sinhou_mb_rbergomi_choi_afs_expectile_metric: f64,
+    pub monotone_convex_clark_saccr_rvol_cartea_paleologo_metric: f64,
     pub blotter_rows: Vec<(String, f64, String)>,
 }
 
@@ -575,6 +580,23 @@ fn range3(a: &[f64], b: &[f64], c: &[f64]) -> (f64, f64) {
         .fold(f64::NEG_INFINITY, f64::max);
     let pad = ((hi - lo).abs() * 0.08).max(1e-6);
     (lo - pad, hi + pad)
+}
+
+fn phase21_live_metric(m: &MarketSnapshot) -> f64 {
+    let c = FlatForwardCurve::new(m.ref_date, m.ois_quotes[0]);
+    let hw = ql_curves::bootstrap_hagan_west_monotone_convex_curve(&ql_curves::HaganWestMonotoneConvexBootstrapSpec { reference_date:m.ref_date, pillar_times:vec![1.0,2.0,5.0], par_swap_quotes:m.ois_quotes.to_vec(), payment_frequency_per_year:2, enforce_positivity:true, ameliorate_slopes:true, query_time:2.0 });
+    let sw = ql_rates::price_piterbarg_quasi_gaussian_amortizing_swaption(&ql_rates::PiterbargQuasiGaussianAmortizingSwaptionSpec { option_expiry:1.0, second_exercise_time:None, swap_times:vec![1.0,2.0,3.0], period_notionals:vec![1.0,0.9], strike:m.ois_quotes[0], mean_reversion:0.05, sigma0:0.01+m.eq_vol*0.02, local_vol_skew_b:0.0, cms_pay_delay:0.0, is_payer:true }, &c, &c);
+    let fx = ql_fx::calibrate_clark_fx_delta_smile(&ql_fx::ClarkFxDeltaConventionSpec { spot:1.10, r_dom:m.ois_quotes[0], r_for:m.fwd_quotes[0], expiry:1.0, atm_vol:0.12+m.eq_vol*0.1, rr_25d:0.0, market_strangle_25d:0.01, is_premium_included_delta:false, is_forward_delta:false, query_strike:1.10 });
+    let rv = ql_vol::evaluate_gatheral_gyongy_lsv_leverage(&ql_vol::GatheralLsvGyongyLeverageSpec { forward:m.eq_spot, strike:m.eq_spot, expiry:1.0, svi_a:(m.eq_vol*m.eq_vol).max(1e-4), svi_b:0.2, svi_rho:-0.3, svi_m:0.0, svi_sigma:0.2, dw_dt_atm:0.04, heston_v0:0.04, heston_theta:0.04, heston_kappa:1.0, heston_eta:0.5, heston_rho:-0.7 });
+    let sac = ql_xva::compute_green_saccr_lifetime_kva_mva(&ql_xva::GreenSaCcrLifetimeKvaMvaSpec { time_grid:vec![0.0,1.0,2.0], trade_notional:1.0e6, trade_maturity:5.0, initial_mtm:0.0, mtm_volatility:0.1, collateral_threshold:0.0, initial_margin_ratio:0.1, counterparty_pd:0.02, counterparty_lgd:0.6, cva_risk_weight:0.5, capital_ratio_requirement:0.08, hurdle_rate_gamma_k:0.1, funding_spread_sf:0.01, mva_spread_sm:0.01, risk_free_rate:m.ois_quotes[0] });
+    let greg = ql_xva::allocate_gregory_netting_set_xva(&ql_xva::GregoryNettingSetAllocationSpec { trade_weights:vec![1.0,1.0], trade_expected_mtms:vec![1.0,-1.0], trade_exposure_vols:vec![0.2,0.2], correlation_matrix:vec![vec![1.0,0.0],vec![0.0,1.0]], collateral_fraction:0.0, horizon:1.0, num_steps:4, risk_free_rate:m.ois_quotes[0], cpty_hazard_rate:0.02, cpty_lgd:0.6, own_hazard_rate:0.01, own_lgd:0.6, funding_spread:0.01, colva_spread:0.01 });
+    let rough = ql_models::evaluate_bayer_friz_gatheral_markovian_rough(&ql_models::BayerFrizGatheralMarkovianRoughSpec { spot:m.eq_spot, strike:m.eq_spot, expiry:1.0, rate:m.ois_quotes[0], div_yield:0.0, xi0:(m.eq_vol*m.eq_vol).max(1e-4), eta:1.0, rho:-0.7, hurst:0.1, num_markov_factors:4, is_call:true });
+    let cli = ql_exotics::price_bouzoubaa_reverse_and_global_cliquet(&ql_exotics::BouzoubaaReverseAndGlobalCliquetSpec { notional:1.0, rate:m.ois_quotes[0], div_yield:0.0, reset_times:vec![0.5,1.0], forward_vols:vec![m.eq_vol,m.eq_vol], forward_skews:vec![0.0,0.0], initial_coupon_cmax:0.0, local_floor:-0.1, local_cap:0.1, global_floor:-0.2, global_cap:0.2, is_reverse_cliquet:false });
+    let plant = ql_commodities::price_burger_multifuel_tolling_power_plant(&ql_commodities::BurgerMultiFuelTollingPlantSpec { power_forwards:vec![80.0,80.0], gas_forwards:vec![20.0,20.0], coal_forwards:vec![15.0,15.0], carbon_forwards:vec![50.0,50.0], dispatch_times:vec![0.25,0.75], capacity_mw:100.0, period_hours:1.0, gas_heat_rate:2.0, gas_emission_factor:0.4, gas_vom_cost:2.0, coal_heat_rate:2.5, coal_emission_factor:0.8, coal_vom_cost:1.0, vol_power:0.2, vol_gas:0.2, vol_coal:0.2, vol_carbon:0.2, rho_power_gas:0.2, rho_power_coal:0.2, rho_power_carbon:0.2, rho_gas_coal:0.2, start_up_cost:100.0, min_load_fraction:0.5, part_load_heat_rate_penalty:0.1, risk_free_rate:m.ois_quotes[0] });
+    let exec = ql_portfolio::solve_cartea_jaimungal_alpha_execution(&ql_portfolio::CarteaJaimungalAlphaExecutionSpec { initial_inventory:1.0, horizon:1.0, num_steps:8, temporary_impact_k:1.0, permanent_impact_b:0.1, inventory_penalty_phi:0.2, terminal_penalty_a:0.0, initial_alpha_signal:0.1, alpha_mean_reversion_kappa:1.0, alpha_volatility:0.2 });
+    let paleo = ql_portfolio::solve_paleologo_factor_neutral_portfolio(&ql_portfolio::PaleologoFactorNeutralAlphaSpec { raw_alphas:vec![1.0,2.0], factor_loadings_b:vec![vec![1.0],vec![1.0]], factor_covariance_omega:vec![vec![1.0]], sample_idio_variances:vec![0.1,0.2], idio_shrinkage_xi:0.5, idio_risk_aversion:1.0, factor_risk_aversion:1.0, factor_crowding_scores:vec![0.0,0.0], crowding_penalty_lambda:0.0 });
+    let aad = ql_dml::evaluate_glasserman_malliavin_checkpointed_aad(&ql_dml::GlassermanMalliavinCheckpointedMcSpec { spot:m.eq_spot, strike:m.eq_spot, rate:m.ois_quotes[0], div_yield:0.0, base_vol:m.eq_vol, local_vol_skew:0.0, expiry:1.0, num_steps:8, num_checkpoints:2 });
+    hw.query_discount_factor.val()+sw.european_amortizing_npv.val()+fx.query_call_price.val()+rv.implied_vol.val()+sac.lifetime_kva.val()+greg.netted_total_xva.val()+rough.option_price.val()+cli.npv.val()+plant.tolling_plant_npv.val()+exec.expected_execution_cost_net_of_alpha.val()+paleo.expected_active_return.val()+aad.call_price.val()
 }
 
 pub struct DeskWorkstation {
@@ -2743,6 +2765,7 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
             mtmxccs_colva_zabr_weather_enb_metric,
             burnout_cmcds_quintic_afv_cs_schur_metric,
             sinhou_mb_rbergomi_choi_afs_expectile_metric,
+            monotone_convex_clark_saccr_rvol_cartea_paleologo_metric: phase21_live_metric(&market),
             blotter_rows,
         }
     }
@@ -2977,6 +3000,7 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
             format!("28 MtM-XCCS/COLVA/ZABR/Weather/ENB: {:.2}", frame.mtmxccs_colva_zabr_weather_enb_metric),
             format!("29 Burnout/CMCDS/Quintic/AFV/Schur: {:.2}", frame.burnout_cmcds_quintic_afv_cs_schur_metric),
             format!("30 SinhOU/MB/mrBergomi/Choi/EXVaR: {:.2}", frame.sinhou_mb_rbergomi_choi_afs_expectile_metric),
+            format!("31 HW-MC/Clark/SACCR/rVol/Cartea/Paleo: {:.2}", frame.monotone_convex_clark_saccr_rvol_cartea_paleologo_metric),
             format!(
                 "DAG recomputed: {}/{}",
                 frame.dag_recomputed_trades, frame.dag_total_trades
@@ -2988,7 +3012,7 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
         // There are six IR buckets, five credit buckets and ten telemetry
         // lines (including Tab 23).  Render all 21 rows instead of silently
         // dropping the final BL/Risk-Parity line.
-        const BOTTOM_ROWS: usize = 27;
+        const BOTTOM_ROWS: usize = 28;
         while left_bottom.len() < BOTTOM_ROWS {
             left_bottom.push(String::new());
         }
@@ -3047,7 +3071,7 @@ mod phase14_tests {
     use super::*;
     #[test]
     fn phase14_tab_is_registered() {
-        assert_eq!(TabId::ALL.len(), 30);
+        assert_eq!(TabId::ALL.len(), 31);
         assert!(TabId::ALL.contains(&TabId::Phase14Sota));
         assert!(TabId::ALL.contains(&TabId::Phase15Sota));
         let mut ws = DeskWorkstation::new();
@@ -3088,7 +3112,7 @@ mod phase16_tests {
 
     #[test]
     fn phase16_tab_and_metric_are_live() {
-        assert_eq!(TabId::ALL.len(), 30);
+        assert_eq!(TabId::ALL.len(), 31);
         assert!(TabId::ALL.contains(&TabId::Phase16Sota));
         let mut ws = DeskWorkstation::new();
         let frame = ws.step_tick();
@@ -3112,7 +3136,7 @@ mod phase17_tests {
 
     #[test]
     fn phase17_tab_metric_dashboard_and_rates_reactivity() {
-        assert_eq!(TabId::ALL.len(), 30);
+        assert_eq!(TabId::ALL.len(), 31);
         assert!(TabId::ALL.contains(&TabId::Phase17Sota));
         assert_eq!(
             TabId::Phase17Sota.label(),
@@ -3151,7 +3175,7 @@ mod phase18_tests {
     use super::*;
     #[test]
     fn phase18_tab_metric_dashboard_and_stress_reactivity() {
-        assert_eq!(TabId::ALL.len(), 30);
+        assert_eq!(TabId::ALL.len(), 31);
         assert_eq!(TabId::Phase18Sota.label(), "28 MtM-XCCS / CTD-COLVA / ZABR-PDV / Weather / ENB");
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
@@ -3174,7 +3198,7 @@ mod phase19_tests {
 
     #[test]
     fn phase19_tab29_terminal_renders_and_ticks_cleanly() {
-        assert_eq!(TabId::ALL.len(), 30);
+        assert_eq!(TabId::ALL.len(), 31);
         assert_eq!(TabId::Phase19Sota.label(), "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP");
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
@@ -3209,7 +3233,7 @@ mod phase20_tests {
 
     #[test]
     fn phase20_tab_metric_dashboard_and_stress_reactivity() {
-        assert_eq!(TabId::ALL.len(), 30);
+        assert_eq!(TabId::ALL.len(), 31);
         assert!(TabId::ALL.contains(&TabId::Phase20Sota));
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
