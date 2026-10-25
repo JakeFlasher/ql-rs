@@ -523,8 +523,8 @@ pub fn evaluate_gatheral_rosenbaum_joint_spx_vix_qrh<T: Real>(
     let mut vf = T::zero();
     let mut vv = T::zero();
     let mut call_sum = T::zero();
-    let dv_var =
-        p.nu * p.nu * dv.powf(2.0 * h) / (T::from_f64(2.0 * h) * gh * gh) * (-p.lambda * dv).exp();
+    let dv_var = p.nu * p.nu * v0 * dv.powf(2.0 * h) / (T::from_f64(2.0 * h) * gh * gh)
+        * (-p.lambda * dv).exp();
     let mut vix_nodes = Vec::with_capacity(9);
     for i in 0..9 {
         let z = muz + varz.max_val(T::zero()).sqrt() * T::from_f64(nodes[i]);
@@ -543,9 +543,12 @@ pub fn evaluate_gatheral_rosenbaum_joint_spx_vix_qrh<T: Real>(
     let call = (-s.rate * s.expiry).exp() * call_sum;
     let zshock = p.nu * v0.sqrt() * s.expiry.powf(h);
     let asym = T::from_f64(4.0) * p.a * p.b * zshock;
+    let expiry = s.expiry.max_val(T::from_f64(1e-8));
+    let eta_h = p.nu * expiry.powf(h - 0.5) / gh;
     GatheralRosenbaumJointSpxVixQrhReport {
         spx_implied_vol: iv,
-        spx_atm_skew: -p.a * (zb * zb + T::from_f64(1e-12)).sqrt(),
+        spx_atm_skew: -p.a * (zb * zb + T::from_f64(1e-12)).sqrt() * eta_h
+            / (iv * expiry.sqrt()).max_val(T::from_f64(1e-12)),
         vix_futures_fair_value: vf,
         vix_variance_swap_strike: vv.max_val(T::zero()).sqrt(),
         vix_call_option_price: call,

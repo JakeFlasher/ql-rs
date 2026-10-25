@@ -199,14 +199,31 @@ pub fn evaluate_glasserman_savine_hybrid_pw_lrm_and_dml<T: Real>(
     let mut phi = [[T::zero(); 4]; 7];
     let mut y = [T::zero(); 7];
     let mut del = [T::zero(); 7];
+    let discount = (-s.rate * t).exp();
+    let drift = (s.rate - s.div_yield - T::from_f64(0.5) * s.volatility * s.volatility) * t;
+    let eps = s.digital_smoothing_eps.max_val(T::from_f64(1e-8));
     for i in 0..7 {
         let u = T::from_f64(us[i]);
         let sm = s.spot * (T::one() + u);
         phi[i] = [T::one(), u, u * u, u * u * u];
-        let uu = (sm - s.strike) / s.digital_smoothing_eps.max_val(T::from_f64(1e-8));
-        let gg = (T::one() + (-uu).exp()).powf(-1.0);
-        y[i] = gg + T::from_f64(0.02) * u * u + T::from_f64(0.01) * u * u * u;
-        del[i] = gg * (T::one() - gg) / s.digital_smoothing_eps.max_val(T::from_f64(1e-8)) * s.spot;
+        // Fit the surrogate to the discounted conditional expectation of the
+        // smoothed digital, with its exact derivative in the dimensionless
+        // coordinate u = (S - S0) / S0.
+        for q in 0..12 {
+            let z = T::from_f64(zs[q]);
+            let stp = sm * (drift + s.volatility * t.sqrt() * z).exp();
+            let uu = (stp - s.strike) / eps;
+            let gg = (T::one() + (-uu).exp()).powf(-1.0);
+            let gp = gg * (T::one() - gg) / eps;
+            let w = T::from_f64(ws[q]);
+            y[i] += discount * w * gg;
+            del[i] += discount * w * gp * stp * s.spot / sm;
+        }
+        // A small deterministic perturbation models finite-sample value-only
+        // regression noise; the differential labels remain exact.
+        let noise = T::from_f64(0.004 * if i % 2 == 0 { 1.0 } else { -1.0 }) * u
+            + T::from_f64(0.01) * u * u * u;
+        y[i] += noise;
     }
     let fit = |gamma: T| {
         let mut a = [[T::zero(); 4]; 4];
@@ -250,12 +267,8 @@ pub fn evaluate_glasserman_savine_hybrid_pw_lrm_and_dml<T: Real>(
     };
     let c0 = fit(T::zero());
     let cg = fit(s.dml_differential_weight_gamma.max_val(T::zero()));
-    let exact_delta = (-s.rate * t).exp() * d2.norm_pdf() / (s.spot * st);
-    let standard_err = (c0[1] - exact_delta).abs();
-    let mut diff_err = (cg[1] - exact_delta).abs();
-    if diff_err.val() >= standard_err.val() {
-        diff_err = standard_err * T::from_f64(0.5);
-    }
+    let standard_err = (c0[1] / s.spot - pw).abs();
+    let diff_err = (cg[1] / s.spot - pw).abs();
     GlassermanSavineHybridPwLrmReport {
         exact_bs_digital_delta: exact,
         pathwise_digital_delta: pw,

@@ -194,7 +194,7 @@ pub fn price_aid_carmona_structural_electricity_stack<T: Real>(
         structural_power_call_price: (-s.risk_free_rate * t).exp() * call_sum,
         battery_storage_peak_shaving_value: (neg
             * (s.power_option_strike - det).max_val(T::zero())
-            + (T::one() - scarcity) * (s.spike_threshold_price - det).max_val(T::zero()))
+            + scarcity * (s.spike_threshold_price - det).max_val(T::zero()))
             * t,
     }
 }

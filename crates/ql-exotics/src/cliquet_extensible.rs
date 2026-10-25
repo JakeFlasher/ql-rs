@@ -180,8 +180,8 @@ pub fn price_chesney_yor_cumulative_parisian_and_rainbow<T: Real>(
                 g2 - s.vol_2 * t.sqrt(),
                 s.correlation,
             );
-    let maxc_stulz = s.spot_1 * (-s.div_1 * t).exp() * bivariate_normal_cdf(g1, g12, r1)
-        + s.spot_2 * (-s.div_2 * t).exp() * bivariate_normal_cdf(g2, g21, r2)
+    let maxc_stulz = s.spot_1 * (-s.div_1 * t).exp() * bivariate_normal_cdf(g1, -g21, r1)
+        + s.spot_2 * (-s.div_2 * t).exp() * bivariate_normal_cdf(g2, -g12, r2)
         - s.strike
             * (-s.risk_free_rate * t).exp()
             * (T::one()
@@ -190,7 +190,7 @@ pub fn price_chesney_yor_cumulative_parisian_and_rainbow<T: Real>(
                     -g2 + s.vol_2 * t.sqrt(),
                     s.correlation,
                 ));
-    let maxc = maxc_stulz + (c1 + c2 - minc - maxc_stulz);
+    let maxc = maxc_stulz;
     let f_min = s.spot_1 * (-s.div_1 * t).exp() * g21.norm_cdf()
         + s.spot_2 * (-s.div_2 * t).exp() * g12.norm_cdf();
     let putmin = (minc + s.strike * (-s.risk_free_rate * t).exp() - f_min).max_val(T::zero());

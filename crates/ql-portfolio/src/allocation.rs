@@ -179,7 +179,7 @@ pub fn solve_lopez_de_prado_denoised_nco_allocation<T: Real>(
             det[i][j] /= det_diag[i] * det_diag[j];
         }
     }
-    let mut mark_a = ds.clone();
+    let mut mark_a = s.covariance.clone();
     for i in 0..n {
         mark_a[i][i] += T::from_f64(1e-8);
     }
@@ -217,12 +217,8 @@ pub fn solve_lopez_de_prado_denoised_nco_allocation<T: Real>(
         }
     }
     let mut omega = vec![vec![T::zero(); k]; k];
-    let mut cmu = vec![T::zero(); k];
     for aidx in 0..k {
         let (alo, ahi) = ranges[aidx];
-        for i in alo..ahi {
-            cmu[aidx] += intra[i] * s.expected_returns[i];
-        }
         for bidx in 0..k {
             let (blo, bhi) = ranges[bidx];
             for i in alo..ahi {
@@ -235,7 +231,8 @@ pub fn solve_lopez_de_prado_denoised_nco_allocation<T: Real>(
     for i in 0..k {
         omega[i][i] += T::from_f64(1e-8);
     }
-    let eraw = solve_dense_alloc(&omega, &cmu);
+    let c_rhs = vec![T::one(); k];
+    let eraw = solve_dense_alloc(&omega, &c_rhs);
     let esum = eraw.iter().copied().fold(T::zero(), |a, v| a + v);
     let eden = if esum.abs().val() < 1e-12 {
         T::from_f64(1e-12)

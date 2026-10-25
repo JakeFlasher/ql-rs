@@ -191,9 +191,10 @@ pub fn evaluate_guyon_markovian_projection_lsv_smile<T: Real>(
             .max_val(T::from_f64(1e-6));
         let cond_y = (s.sv_v0 * my).max_val(T::from_f64(1e-12));
         let lev_y = d / cond_y.sqrt();
-        integ += T::from_f64(0.5 * gw[j]) * lev_y * cond_y.sqrt();
+        let eff_vol_y = (lev_y * cond_y.sqrt()).max_val(T::from_f64(1e-12));
+        integ += T::from_f64(0.5 * gw[j]) / eff_vol_y;
     }
-    let rec = integ.max_val(T::from_f64(1e-12));
+    let rec = T::one() / integ.max_val(T::from_f64(1e-12));
     let mkt = s.atm_vol + s.market_atm_skew * x + T::from_f64(0.5) * s.market_atm_curvature * x * x;
     let rem = t - s.forward_start_t1;
     let i2r = if rem.val() > 1e-8 {
