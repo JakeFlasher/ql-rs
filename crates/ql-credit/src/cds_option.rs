@@ -122,6 +122,111 @@ pub fn price_cds_swaption_from_curves<T: Real>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct IndexCdsSwaptionSpec<T: Real = f64> {
+    pub notional: T,
+    pub index_coupon: T,
+    pub strike_spread: T,
+    pub option_expiry: f64,
+    pub maturity: f64,
+    pub payment_times: Vec<f64>,
+    pub constituent_weights: Vec<f64>,
+    pub constituent_recoveries: Vec<T>,
+    pub vol: T,
+    pub is_payer: bool,
+    pub include_fep: bool,
+}
+#[derive(Copy, Clone, Debug)]
+pub struct IndexCdsSwaptionValuation<T: Real> {
+    pub npv: T,
+    pub fep_adjusted_forward_spread: T,
+    pub adjusted_strike_spread: T,
+    pub pool_risky_annuity: T,
+    pub pool_protection_pv: T,
+    pub pool_fep_pv: T,
+    pub expected_surviving_factor: T,
+}
+pub fn price_index_cds_swaption<T: Real>(
+    s: &IndexCdsSwaptionSpec<T>,
+    discount: &impl ql_curves::YieldTermStructure<T>,
+    curves: &[crate::SurvivalProbabilityCurve<T>],
+) -> IndexCdsSwaptionValuation<T> {
+    let n = curves
+        .len()
+        .min(s.constituent_weights.len())
+        .min(s.constituent_recoveries.len());
+    if n == 0 {
+        return IndexCdsSwaptionValuation {
+            npv: T::zero(),
+            fep_adjusted_forward_spread: T::zero(),
+            adjusted_strike_spread: s.strike_spread,
+            pool_risky_annuity: T::zero(),
+            pool_protection_pv: T::zero(),
+            pool_fep_pv: T::zero(),
+            expected_surviving_factor: T::zero(),
+        };
+    }
+    let wsum = s.constituent_weights[..n].iter().sum::<f64>().max(1e-14);
+    let mut ann = T::zero();
+    let mut prot = T::zero();
+    let mut fep = T::zero();
+    let mut surv = T::zero();
+    for i in 0..n {
+        let w = T::from_f64(s.constituent_weights[i] / wsum);
+        let cds = crate::CreditDefaultSwap {
+            side: crate::ProtectionSide::Buyer,
+            notional: 1.0,
+            running_spread: 1.0,
+            recovery_rate: s.constituent_recoveries[i].val(),
+            payment_times: s.payment_times.clone(),
+            accrual_fractions: s
+                .payment_times
+                .iter()
+                .scan(s.option_expiry, |p, &x| {
+                    let z = (x - *p).max(0.0);
+                    *p = x;
+                    Some(z)
+                })
+                .collect(),
+        };
+        let v = crate::IsdaCdsEngine::price(&cds, discount, &curves[i]);
+        ann += w * v.risky_annuity;
+        prot += w * v.protection_leg_npv;
+        let q = curves[i].survival_probability(s.option_expiry);
+        surv += w * q;
+        if s.include_fep {
+            fep += w
+                * (T::one() - s.constituent_recoveries[i])
+                * discount.discount_factor(s.option_expiry)
+                * (T::one() - q);
+        }
+    }
+    let fwd = (prot + fep) / ann.max_val(T::from_f64(1e-14));
+    let kadj = s.index_coupon + (s.strike_spread - s.index_coupon) * surv;
+    let npv = crate::black_cds_option_price(
+        fwd,
+        kadj,
+        ann,
+        s.vol,
+        T::from_f64(s.option_expiry),
+        T::one() - surv,
+        discount.discount_factor(s.option_expiry),
+        T::from_f64(0.4),
+        s.notional,
+        s.is_payer,
+        true,
+    );
+    IndexCdsSwaptionValuation {
+        npv,
+        fep_adjusted_forward_spread: fwd,
+        adjusted_strike_spread: kadj,
+        pool_risky_annuity: ann,
+        pool_protection_pv: prot,
+        pool_fep_pv: fep,
+        expected_surviving_factor: surv,
+    }
+}
+
 #[cfg(test)]
 mod phase14_tests {
     use super::*;
@@ -186,5 +291,44 @@ mod phase14_tests {
         };
         let ad = price_cds_swaption_from_curves(&sd, &disc_d, &credit_d).npv;
         assert!((ad.d[0] - fd_vega).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod phase15_tests {
+    use super::*;
+    use crate::SurvivalProbabilityCurve;
+    use ql_curves::FlatForwardCurve;
+    use ql_time::Date;
+    #[test]
+    fn index_cds_swaption_pool_parity() {
+        let d = Date::from_ymd(2024, 1, 1).unwrap();
+        let disc = FlatForwardCurve::new(d, 0.02);
+        let curve = SurvivalProbabilityCurve::new(d, vec![1.0, 2.0, 5.0], vec![0.03, 0.03, 0.03]);
+        let mut s = IndexCdsSwaptionSpec {
+            notional: 1.0,
+            index_coupon: 0.01,
+            strike_spread: 0.012,
+            option_expiry: 1.0,
+            maturity: 5.0,
+            payment_times: vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            constituent_weights: vec![1.0],
+            constituent_recoveries: vec![0.4],
+            vol: 0.2,
+            is_payer: true,
+            include_fep: true,
+        };
+        let p = price_index_cds_swaption(&s, &disc, std::slice::from_ref(&curve));
+        s.is_payer = false;
+        let r = price_index_cds_swaption(&s, &disc, std::slice::from_ref(&curve));
+        assert!(
+            (p.npv
+                - r.npv
+                - s.notional
+                    * p.pool_risky_annuity
+                    * (p.fep_adjusted_forward_spread - p.adjusted_strike_spread))
+                .abs()
+                < 1e-8
+        );
     }
 }

@@ -102,10 +102,11 @@ fn dashboard_renders_all_quadrants_and_chart_modes() {
 
 #[test]
 fn phase11_tabs_and_live_telemetry_are_present() {
-    assert_eq!(TabId::ALL.len(), 24);
+    assert_eq!(TabId::ALL.len(), 25);
     assert_eq!(TabId::ALL[18], TabId::BermudanVolIft);
     assert_eq!(TabId::ALL[19], TabId::SaCcrSwingQp);
     assert_eq!(TabId::ALL[22], TabId::MonotoneConvexVixParisianRobust);
+    assert_eq!(TabId::ALL[24], TabId::Phase15Sota);
     let mut ws = DeskWorkstation::new();
     let frame = ws.step_tick();
     assert!(frame.vix_parisian_robust_metric.is_finite());
@@ -113,6 +114,7 @@ fn phase11_tabs_and_live_telemetry_are_present() {
     assert!(dashboard.contains("Bermudan HW") && dashboard.contains("SA-CCR EAD"));
     assert!(dashboard.contains("Commodity Swing") && dashboard.contains("Box Markowitz"));
     assert!(dashboard.contains("23 Monotone/VIX/Parisian/Robust"));
+    assert!(dashboard.contains("25 JY-Inflation/TBA/Bergomi2F/NCO"));
     ws.set_scenario(ScenarioKind::RatesPlus50Bp);
     let stressed = ws.step_tick();
     assert_ne!(

@@ -22,3 +22,5 @@ pub use variance_swap::*;
 
 pub mod parisian;
 pub use parisian::*;
+pub mod discrete_div_timer;
+pub use discrete_div_timer::*;

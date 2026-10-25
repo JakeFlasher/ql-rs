@@ -271,4 +271,156 @@ impl<T: Real> FxVannaVolgaSmile<T> {
                     is_call,
                 ))
     }
+
+    pub fn implied_vol_and_strike_slope(&self, k: T) -> (T, T) {
+        let h = T::from_f64(1e-5) * k.max_val(T::from_f64(1e-4));
+        let sig = self.implied_vol(k);
+        let slope = (self.implied_vol(k + h) - self.implied_vol(k - h)) / (h * 2.0);
+        (sig, slope)
+    }
+    pub fn price_digital_cash_dom(&self, strike: T, is_call: bool) -> T {
+        let (sig, dsig) = self.implied_vol_and_strike_slope(strike);
+        let st = sig * self.expiry.sqrt();
+        if st.val() <= 1e-14 {
+            return (-self.r_dom * self.expiry).exp()
+                * if is_call {
+                    T::from_f64((self.spot.val() > strike.val()) as i32 as f64)
+                } else {
+                    T::from_f64((self.spot.val() <= strike.val()) as i32 as f64)
+                };
+        }
+        let f = self.spot * ((self.r_dom - self.r_for) * self.expiry).exp();
+        let d1 = ((f / strike).ln() + sig * sig * self.expiry * 0.5) / st;
+        let d2 = d1 - st;
+        let base = (-self.r_dom * self.expiry).exp() * d2.norm_cdf();
+        let v = garman_kohlhagen_vega(self.spot, strike, sig, self.expiry, self.r_dom, self.r_for);
+        let call = (base - v * dsig).max_val(T::zero());
+        if is_call {
+            call
+        } else {
+            (-self.r_dom * self.expiry).exp() - call
+        }
+    }
+    pub fn price_one_touch(&self, barrier: T, is_up_and_in: bool, rebate_at_expiry: bool) -> T {
+        let f = self.spot * ((self.r_dom - self.r_for) * self.expiry).exp();
+        let sig = self.sigma2.max_val(T::from_f64(1e-8));
+        let st = sig * self.expiry.sqrt();
+        let hit = if is_up_and_in {
+            if self.spot.val() >= barrier.val() {
+                T::one()
+            } else {
+                let mu = (self.r_dom - self.r_for - sig * sig * 0.5) * self.expiry;
+                ((f / barrier).ln() + mu) / (st)
+            }
+            .norm_cdf()
+        } else {
+            if self.spot.val() <= barrier.val() {
+                T::one()
+            } else {
+                let z = ((barrier / f).ln()
+                    - (self.r_dom - self.r_for - sig * sig * 0.5) * self.expiry)
+                    / st;
+                z.norm_cdf()
+            }
+        };
+        let base = (-self.r_dom * self.expiry).exp() * hit;
+        let (sm, _) = self.implied_vol_and_strike_slope(self.k2);
+        let adjust = (sig - sm)
+            * self.expiry.sqrt()
+            * garman_kohlhagen_vega(self.spot, self.k2, sm, self.expiry, self.r_dom, self.r_for);
+        let out = (base + adjust * (T::one() - hit)).max_val(T::zero());
+        if rebate_at_expiry {
+            out
+        } else {
+            out * (-self.r_dom * self.expiry).exp()
+        }
+    }
+    pub fn price_double_no_touch(&self, lower: T, upper: T) -> T {
+        if lower.val() >= upper.val() {
+            return T::zero();
+        }
+        let sig = self.sigma2.max_val(T::from_f64(1e-8));
+        let st = sig * self.expiry.sqrt();
+        let f = self.spot * ((self.r_dom - self.r_for) * self.expiry).exp();
+        let p1 = ((upper / f).ln() / st).norm_cdf();
+        let p2 = ((f / lower).ln() / st).norm_cdf();
+        let base = (-self.r_dom * self.expiry).exp() * (p1 + p2 - 1.0).max_val(T::zero());
+        let smile = (self.implied_vol(lower) + self.implied_vol(upper)) * 0.5 - sig;
+        (base
+            + smile
+                * st
+                * garman_kohlhagen_vega(
+                    self.spot,
+                    self.k2,
+                    sig,
+                    self.expiry,
+                    self.r_dom,
+                    self.r_for,
+                ))
+        .max_val(T::zero())
+    }
+    pub fn price_knock_out_barrier(
+        &self,
+        strike: T,
+        barrier: T,
+        is_up_and_out: bool,
+        is_call: bool,
+    ) -> T {
+        if (is_up_and_out && self.spot.val() >= barrier.val())
+            || (!is_up_and_out && self.spot.val() <= barrier.val())
+        {
+            return T::zero();
+        }
+        let vanilla = garman_kohlhagen_price(
+            self.spot,
+            strike,
+            self.sigma2,
+            self.expiry,
+            self.r_dom,
+            self.r_for,
+            is_call,
+        );
+        let hit = self.price_one_touch(barrier, is_up_and_out, false);
+        (vanilla * (T::one() - hit)).max_val(T::zero())
+    }
+}
+
+#[cfg(test)]
+mod phase15_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn fx_exotic_parity_and_flat() {
+        let q = FxSmileQuote {
+            atm_vol: 0.2,
+            rr_25d: 0.0,
+            bf_25d: 0.0,
+        };
+        let s = FxVannaVolgaSmile::new(100.0, 0.02, 0.01, 1.0, q);
+        let c = s.price_digital_cash_dom(100.0, true);
+        let p = s.price_digital_cash_dom(100.0, false);
+        assert!((c + p - (-0.02f64).exp()).abs() < 1e-12);
+        let d = FxVannaVolgaSmile::<Dual<1>> {
+            spot: Dual::variable(100.0, 0),
+            r_dom: Dual::from_value(0.02),
+            r_for: Dual::from_value(0.01),
+            expiry: Dual::from_value(1.0),
+            quote: FxSmileQuote {
+                atm_vol: Dual::from_value(0.2),
+                rr_25d: Dual::from_value(0.0),
+                bf_25d: Dual::from_value(0.0),
+            },
+            k1: Dual::from_value(s.k1),
+            k2: Dual::from_value(s.k2),
+            k3: Dual::from_value(s.k3),
+            sigma1: Dual::from_value(0.2),
+            sigma2: Dual::from_value(0.2),
+            sigma3: Dual::from_value(0.2),
+        };
+        assert!(
+            d.price_double_no_touch(Dual::from_value(90.0), Dual::from_value(110.0))
+                .d[0]
+                .is_finite()
+        );
+    }
 }

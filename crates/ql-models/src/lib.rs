@@ -20,3 +20,5 @@ pub use slv::*;
 
 pub mod vix;
 pub use vix::*;
+pub mod bergomi;
+pub use bergomi::*;

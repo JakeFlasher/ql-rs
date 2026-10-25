@@ -20,10 +20,11 @@ pub mod prelude {
     pub use ql_math::*;
     pub use ql_mc::*;
     pub use ql_models::{
-        AnalyticBsmHullWhiteEngine, BatesParams, CalibratedHestonModel, Complex, CosHestonEngine,
-        CosHestonHullWhiteEngine, DoubleHestonParams, HestonHullWhiteParams, HestonMarketQuote,
-        HestonParams, HullWhite1F, LiftedHestonParams, VixOptionValuation, calibrate_heston,
-        double_heston_cos_price, double_heston_cos_strip_prices, h1_hw_char_func_unit_spot,
+        AnalyticBsmHullWhiteEngine, BatesParams, Bergomi2FParams, CalibratedHestonModel, Complex,
+        CosHestonEngine, CosHestonHullWhiteEngine, DoubleHestonParams, HestonHullWhiteParams,
+        HestonMarketQuote, HestonParams, HullWhite1F, LiftedHestonParams, VixOptionValuation,
+        bergomi_2f_implied_vol_bg, calibrate_heston, double_heston_cos_price,
+        double_heston_cos_strip_prices, h1_hw_char_func_unit_spot,
         heston_bates_vix_future_and_option_price, heston_cos_price, lifted_heston_char_fn,
         lifted_heston_char_func_unit_spot, lifted_heston_cos_price, lifted_heston_kernel,
         replicate_cboe_vix_index, rough::*, slv::*,
@@ -52,28 +53,34 @@ use ql_exotics::{
     price_parisian_option_mc_ad, price_worst_of_autocallable,
 };
 use ql_fixed_income::{
-    CocoBondSpec, CocoTriggerPayoff, ConvertibleBondSpec, price_coco_bond_ds,
-    price_convertible_bond_tf,
+    CocoBondSpec, CocoTriggerPayoff, ConvertibleBondSpec, SpecifiedPoolMbsSpec, TbaDollarRollSpec,
+    analyze_tba_dollar_roll, price_coco_bond_ds, price_convertible_bond_tf,
+    price_specified_pool_mbs,
 };
 use ql_fx::ConstNotionalXccs;
 use ql_fx::{
     FxSmileQuote, FxTarfCapConvention, FxTarfSpec, FxVannaVolgaSmile, garman_kohlhagen_spot_delta,
     price_fx_tarf_mc_ad,
 };
-use ql_inflation::{CalibratedInflationCurve, MultiplicativeSeasonality, ZeroCouponInflationSwap};
+use ql_inflation::{
+    CalibratedInflationCurve, JarrowYildirimParams, MultiplicativeSeasonality,
+    YoYInflationCapFloor, YoYInflationCapFloorType, ZeroCouponInflationSwap, ZeroInflationCurve,
+    price_yoy_capfloor_jarrow_yildirim,
+};
 use ql_instruments::{BaroneAdesiWhaleyEngine, SwapType, VanillaSwapSpec};
 use ql_levy::{VarianceGamma, cos_levy_price};
 use ql_models::rough::{RoughBergomiParams, rbergomi_hybrid_mc_price};
 use ql_models::{
-    BatesParams, DoubleHestonParams, HestonParams, HullWhite1F, LiftedHestonParams,
-    double_heston_cos_price, heston_bates_vix_future_and_option_price, lifted_heston_cos_price,
+    BatesParams, Bergomi2FParams, DoubleHestonParams, HestonParams, HullWhite1F,
+    LiftedHestonParams, bergomi_2f_implied_vol_bg, double_heston_cos_price,
+    heston_bates_vix_future_and_option_price, lifted_heston_cos_price,
 };
 use ql_portfolio::gaussian_expected_shortfall;
 use ql_portfolio::{
     BoxConstrainedMarkowitzSpec, MarketSnapshot, ObizhaevaWangSpec, PortfolioDag,
     PortfolioRiskSummary, PortfolioTrade, RobustMarkowitzSpec, box_constrained_markowitz_weights,
-    equal_risk_contribution_weights, hierarchical_risk_parity_weights, obizhaeva_wang_execution,
-    robust_markowitz_weights,
+    equal_risk_contribution_weights, gerber_covariance_matrix, hierarchical_risk_parity_weights,
+    nested_clustered_optimization_weights, obizhaeva_wang_execution, robust_markowitz_weights,
 };
 use ql_rates::{
     BermudanSwaption, EuropeanSwaption, G2PlusPlus, HullWhiteBermudanTreeEngine, RfrCapletSpec,
@@ -120,9 +127,10 @@ pub enum TabId {
     FrtbCvarExecution,
     MonotoneConvexVixParisianRobust,
     Phase14Sota,
+    Phase15Sota,
 }
 impl TabId {
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::Market,
         Self::Rates,
         Self::Credit,
@@ -147,6 +155,7 @@ impl TabId {
         Self::FrtbCvarExecution,
         Self::MonotoneConvexVixParisianRobust,
         Self::Phase14Sota,
+        Self::Phase15Sota,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -174,6 +183,7 @@ impl TabId {
             Self::FrtbCvarExecution => "22 FRTB / CVaR / Exec",
             Self::MonotoneConvexVixParisianRobust => "23 Monotone Convex / VIX / Parisian / Robust",
             Self::Phase14Sota => "24 Double Heston / TARF / CoCo / HRP",
+            Self::Phase15Sota => "25 JY-Inflation / TBA-Roll / Bergomi2F / NCO",
         }
     }
 }
@@ -489,6 +499,7 @@ pub struct WorkstationFrameData {
     pub frtb_cvar_execution_metric: f64,
     pub vix_parisian_robust_metric: f64,
     pub double_heston_tarf_coco_hrp_metric: f64,
+    pub jy_tba_bergomi_nco_metric: f64,
     pub blotter_rows: Vec<(String, f64, String)>,
 }
 
@@ -1485,6 +1496,108 @@ impl DeskWorkstation {
         let hrp_w = hierarchical_risk_parity_weights(&[vec![0.04, 0.01], vec![0.01, 0.09]]);
         let double_heston_tarf_coco_hrp_metric =
             dh_metric + tarf_metric + coco_metric + hrp_w[0] + 2.0 * hrp_w[1];
+        let jy_curve = ZeroInflationCurve::new(
+            market.ref_date,
+            100.0,
+            vec![1.0, 2.0, 5.0, 10.0],
+            vec![0.02, 0.021, 0.023, 0.025],
+            None,
+        );
+        let jy_instrument = YoYInflationCapFloor {
+            notional: 1.0,
+            maturity_years: 10,
+            cap_rate: Some(0.025),
+            floor_rate: None,
+            gearing: 1.0,
+            spread: 0.0,
+            cap_floor_type: YoYInflationCapFloorType::Cap,
+        };
+        let jy_value = price_yoy_capfloor_jarrow_yildirim(
+            &jy_instrument,
+            &active_curves.curves[0],
+            &jy_curve,
+            &JarrowYildirimParams {
+                a_nom: 0.1,
+                sigma_nom: 0.01,
+                a_real: 0.08,
+                sigma_real: 0.012,
+                sigma_cpi: 0.01,
+                rho_nom_real: 0.2,
+                rho_nom_cpi: 0.1,
+                rho_real_cpi: -0.2,
+            },
+        )
+        .0
+        .val();
+        let tba = analyze_tba_dollar_roll(&TbaDollarRollSpec {
+            front_clean_price: 99.0,
+            back_clean_price: 98.5,
+            wac: 0.04,
+            pass_through_rate: 0.035,
+            remaining_months: 120,
+            front_accrued_fraction: 0.5,
+            back_accrued_fraction: 0.5,
+            roll_period_years: 1.0,
+            assumed_cpr: 0.06,
+            repo_rate: rate,
+        });
+        let pool = price_specified_pool_mbs(
+            &SpecifiedPoolMbsSpec {
+                original_balance: 100.0,
+                wac: 0.04,
+                pass_through_rate: 0.035,
+                term_months: 120,
+                seasoning_months: 30,
+                cpr_min: 0.02,
+                cpr_max: 0.10,
+                refi_slope: 2.0,
+                refi_inflection: 0.0,
+                primary_secondary_spread: 0.01,
+                cdr: 0.002,
+                loss_severity: 0.4,
+            },
+            &active_curves.curves[0],
+            0.0,
+        );
+        let bg = bergomi_2f_implied_vol_bg(
+            &Bergomi2FParams {
+                xi0: 0.04,
+                omega: 0.4,
+                theta: 0.5,
+                k1: 1.0,
+                k2: 2.0,
+                rho12: 0.25,
+                rho_s1: -0.5,
+                rho_s2: -0.3,
+            },
+            100.0,
+            100.0,
+            1.0,
+        )
+        .val();
+        let returns = (0..16)
+            .map(|i| {
+                vec![
+                    0.01 * (i as f64 - 7.0),
+                    0.02 * ((i % 5) as f64 - 2.0),
+                    0.015 * ((i % 3) as f64 - 1.0),
+                    0.01 * ((i % 4) as f64 - 1.5),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let gerber = gerber_covariance_matrix(&returns, 0.5, 1e-3).unwrap_or_default();
+        let nco =
+            nested_clustered_optimization_weights(&ql_portfolio::NestedClusteredOptimizationSpec {
+                covariance: gerber.clone(),
+                expected_returns: None,
+                risk_aversion: 1.0,
+                num_clusters: 2,
+            });
+        let jy_tba_bergomi_nco_metric = jy_value
+            + tba.net_roll_advantage.val()
+            + pool.pv.val() * 1e-3
+            + bg
+            + nco.iter().sum::<f64>();
         let blotter_rows = vec![
             ("IRS 5Y PayFix".to_string(), irs_npv, "IFT".to_string()),
             ("Heston Call 1Y".to_string(), heston_npv, "COS".to_string()),
@@ -1583,6 +1696,7 @@ impl DeskWorkstation {
             frtb_cvar_execution_metric: execution_metric,
             vix_parisian_robust_metric,
             double_heston_tarf_coco_hrp_metric,
+            jy_tba_bergomi_nco_metric,
             blotter_rows,
         }
     }
@@ -1803,6 +1917,10 @@ impl DeskWorkstation {
                 frame.double_heston_tarf_coco_hrp_metric
             ),
             format!(
+                "25 JY-Inflation/TBA/Bergomi2F/NCO: {:.2}",
+                frame.jy_tba_bergomi_nco_metric
+            ),
+            format!(
                 "DAG recomputed: {}/{}",
                 frame.dag_recomputed_trades, frame.dag_total_trades
             ),
@@ -1813,7 +1931,7 @@ impl DeskWorkstation {
         // There are six IR buckets, five credit buckets and ten telemetry
         // lines (including Tab 23).  Render all 21 rows instead of silently
         // dropping the final BL/Risk-Parity line.
-        const BOTTOM_ROWS: usize = 22;
+        const BOTTOM_ROWS: usize = 23;
         while left_bottom.len() < BOTTOM_ROWS {
             left_bottom.push(String::new());
         }
@@ -1872,14 +1990,31 @@ mod phase14_tests {
     use super::*;
     #[test]
     fn phase14_tab_is_registered() {
-        assert_eq!(TabId::ALL.len(), 24);
+        assert_eq!(TabId::ALL.len(), 25);
         assert!(TabId::ALL.contains(&TabId::Phase14Sota));
+        assert!(TabId::ALL.contains(&TabId::Phase15Sota));
         let mut ws = DeskWorkstation::new();
         let frame = ws.step_tick();
         assert!(frame.double_heston_tarf_coco_hrp_metric > 100.0);
         assert!(
             ws.render_dashboard(&frame, false)
                 .contains("24 Double Heston/TARF/CoCo/HRP")
+        );
+    }
+}
+
+#[cfg(test)]
+mod phase15_tests {
+    use super::*;
+    #[test]
+    fn phase15_tab_and_metric_are_live() {
+        assert!(TabId::ALL.contains(&TabId::Phase15Sota));
+        let mut ws = DeskWorkstation::new();
+        let frame = ws.step_tick();
+        assert!(frame.jy_tba_bergomi_nco_metric.is_finite());
+        assert!(
+            ws.render_dashboard(&frame, false)
+                .contains("25 JY-Inflation/TBA/Bergomi2F/NCO")
         );
     }
 }

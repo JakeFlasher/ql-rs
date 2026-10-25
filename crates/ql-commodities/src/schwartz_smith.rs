@@ -227,6 +227,130 @@ impl<T: Real> SchwartzSmith2F<T> {
     }
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct GibsonSchwartz2F<T: Real = f64> {
+    pub spot: T,
+    pub convenience_yield0: T,
+    pub rate: T,
+    pub kappa: T,
+    pub alpha_rn: T,
+    pub sigma_spot: T,
+    pub sigma_cy: T,
+    pub rho: T,
+}
+impl<T: Real> GibsonSchwartz2F<T> {
+    fn b(&self, t: T) -> T {
+        let at = self.kappa * t;
+        if at.val().abs() < 1e-6 {
+            t - at * t * t * 0.5 + at * at * t / 6.0
+        } else {
+            (T::one() - (-at).exp()) / self.kappa
+        }
+    }
+    pub fn futures_price(&self, maturity: T) -> T {
+        let b = self.b(maturity);
+        let b2 = self.b(maturity * 2.0);
+        let var = self.sigma_cy * self.sigma_cy * (maturity - b * 2.0 + b2)
+            / (self.kappa * self.kappa).max_val(T::from_f64(1e-12))
+            - self.rho * self.sigma_spot * self.sigma_cy * (maturity - b) * 2.0
+                / self.kappa.max_val(T::from_f64(1e-12));
+        self.spot
+            * (-b * self.convenience_yield0
+                + (self.rate - self.alpha_rn) * maturity
+                + b * self.alpha_rn
+                + var * 0.5)
+                .exp()
+    }
+    pub fn log_futures_variance(&self, t_opt: T, t_fut: T) -> T {
+        let t = t_opt.max_val(T::zero());
+        let nodes = [
+            -0.9602898565,
+            -0.7966664774,
+            -0.5255324099,
+            -0.1834346425,
+            0.1834346425,
+            0.5255324099,
+            0.7966664774,
+            0.9602898565,
+        ];
+        let weights = [
+            0.1012285363,
+            0.2223810345,
+            0.3137066459,
+            0.3626837834,
+            0.3626837834,
+            0.3137066459,
+            0.2223810345,
+            0.1012285363,
+        ];
+        let mut v = T::zero();
+        for (&x, &w) in nodes.iter().zip(weights.iter()) {
+            let u = t * (x + 1.0) * 0.5;
+            let b = self.b(t_fut - u);
+            v += (self.sigma_spot * self.sigma_spot
+                - self.rho * self.sigma_spot * self.sigma_cy * b * 2.0
+                + self.sigma_cy * self.sigma_cy * b * b)
+                * (t * 0.5 * w);
+        }
+        v.max_val(T::zero())
+    }
+    pub fn price_futures_option(
+        &self,
+        t_opt: T,
+        t_fut: T,
+        strike: T,
+        option_type: ql_instruments::OptionType,
+    ) -> T {
+        let var = self.log_futures_variance(t_opt, t_fut);
+        let vol = if t_opt.val() > 1e-14 {
+            (var / t_opt).sqrt()
+        } else {
+            T::zero()
+        };
+        ql_vol::black76_price(
+            self.futures_price(t_fut),
+            strike,
+            vol,
+            t_opt,
+            (-self.rate * t_opt).exp(),
+            option_type.is_call(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod phase15_tests_gibson {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn gibson_parity() {
+        let m = GibsonSchwartz2F {
+            spot: 100.0,
+            convenience_yield0: 0.03,
+            rate: 0.02,
+            kappa: 1.0,
+            alpha_rn: 0.02,
+            sigma_spot: 0.2,
+            sigma_cy: 0.3,
+            rho: -0.2,
+        };
+        let c = m.price_futures_option(1.0, 2.0, 100.0, ql_instruments::OptionType::Call);
+        let p = m.price_futures_option(1.0, 2.0, 100.0, ql_instruments::OptionType::Put);
+        assert!((c - p - (-0.02f64).exp() * (m.futures_price(2.0) - 100.0)).abs() < 1e-10);
+        let md = GibsonSchwartz2F::<Dual<1>> {
+            spot: Dual::from_value(100.0),
+            convenience_yield0: Dual::variable(0.03, 0),
+            rate: Dual::from_value(0.02),
+            kappa: Dual::from_value(1.0),
+            alpha_rn: Dual::from_value(0.02),
+            sigma_spot: Dual::from_value(0.2),
+            sigma_cy: Dual::variable(0.3, 0),
+            rho: Dual::from_value(-0.2),
+        };
+        assert!(md.futures_price(Dual::from_value(2.0)).d[0].is_finite());
+    }
+}
+
 #[cfg(test)]
 mod phase14_tests {
     use super::*;

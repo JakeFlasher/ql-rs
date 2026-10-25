@@ -1297,3 +1297,264 @@ mod phase13_tests {
         assert!((w_ad.d[1] - fd_kap).abs() < 1e-6);
     }
 }
+
+pub fn gerber_covariance_matrix<T: Real>(
+    returns: &[Vec<T>],
+    threshold_c: f64,
+    smoothing_eps: f64,
+) -> Result<Vec<Vec<T>>, AllocationError> {
+    let m = returns.len();
+    if m < 2
+        || returns[0].is_empty()
+        || returns
+            .iter()
+            .any(|r| r.len() != returns[0].len() || r.iter().any(|x| !x.val().is_finite()))
+        || !(0.0..2.0).contains(&threshold_c)
+    {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    let n = returns[0].len();
+    let mut mean = vec![T::zero(); n];
+    for r in returns {
+        for j in 0..n {
+            mean[j] += r[j] / m as f64;
+        }
+    }
+    let mut sd = vec![T::zero(); n];
+    for j in 0..n {
+        let mut q = T::zero();
+        for r in returns {
+            let d = r[j] - mean[j];
+            q += d * d;
+        }
+        sd[j] = (q / (m as f64 - 1.0)).sqrt().max_val(T::from_f64(1e-12));
+    }
+    let eps = smoothing_eps.max(1e-4);
+    let step = |u: T| (T::one() + u / (u * u + eps * eps).sqrt()) * 0.5;
+    let mut out = vec![vec![T::zero(); n]; n];
+    for i in 0..n {
+        out[i][i] = sd[i] * sd[i];
+        for j in i + 1..n {
+            let (mut con, mut dis) = (T::zero(), T::zero());
+            for r in returns {
+                let zi = (r[i] - mean[i]) / sd[i];
+                let zj = (r[j] - mean[j]) / sd[j];
+                let ui = step(zi - threshold_c);
+                let di = step(-zi - threshold_c);
+                let uj = step(zj - threshold_c);
+                let dj = step(-zj - threshold_c);
+                con += ui * uj + di * dj;
+                dis += ui * dj + di * uj;
+            }
+            let g = (con - dis) / (con + dis + 1e-12);
+            out[i][j] = sd[i] * sd[j] * g;
+            out[j][i] = out[i][j];
+        }
+    }
+    Ok(out)
+}
+
+#[allow(clippy::needless_range_loop)]
+pub fn marchenko_pastur_denoise_covariance<T: Real>(
+    cov: &[Vec<T>],
+    num_observations: usize,
+) -> Result<Vec<Vec<T>>, AllocationError> {
+    let n = cov.len();
+    if n == 0
+        || num_observations < 2
+        || cov.iter().any(|r| r.len() != n)
+        || cov.iter().flatten().any(|x| !x.val().is_finite())
+    {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    for i in 0..n {
+        if cov[i][i].val() <= 0.0 {
+            return Err(AllocationError::SingularCovariance);
+        }
+    }
+    let mut c = vec![vec![0.0; n]; n];
+    let mut sd = vec![0.0; n];
+    for i in 0..n {
+        sd[i] = cov[i][i].val().sqrt();
+        for j in 0..n {
+            c[i][j] = cov[i][j].val() / (sd[i] * sd[j]);
+        }
+    }
+    let mut v = vec![vec![0.0; n]; n];
+    for i in 0..n {
+        v[i][i] = 1.0;
+    }
+    for _ in 0..64 {
+        let mut p = (0, 1);
+        let mut mx = 0.0;
+        for i in 0..n {
+            for j in i + 1..n {
+                if c[i][j].abs() > mx {
+                    mx = c[i][j].abs();
+                    p = (i, j);
+                }
+            }
+        }
+        if mx < 1e-14 {
+            break;
+        }
+        let (i, j) = p;
+        let th = 0.5 * (2.0 * c[i][j]).atan2(c[i][i] - c[j][j]);
+        let (co, si) = (th.cos(), th.sin());
+        for k in 0..n {
+            let a = c[k][i];
+            let b = c[k][j];
+            c[k][i] = co * a - si * b;
+            c[k][j] = si * a + co * b;
+        }
+        for k in 0..n {
+            let a = c[i][k];
+            let b = c[j][k];
+            c[i][k] = co * a - si * b;
+            c[j][k] = si * a + co * b;
+        }
+        for k in 0..n {
+            let a = v[k][i];
+            let b = v[k][j];
+            v[k][i] = co * a - si * b;
+            v[k][j] = si * a + co * b;
+        }
+    }
+    let mut eig = (0..n).map(|i| c[i][i]).collect::<Vec<_>>();
+    let lp = (1.0 + (n as f64 / num_observations as f64).sqrt()).powi(2);
+    let noise = eig.iter().filter(|x| **x <= lp).sum::<f64>()
+        / (eig.iter().filter(|x| **x <= lp).count().max(1) as f64);
+    for x in &mut eig {
+        if *x <= lp {
+            *x = noise;
+        }
+    }
+    let mut out = vec![vec![T::zero(); n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            let mut z = T::zero();
+            for k in 0..n {
+                z += T::from_f64(v[i][k] * v[j][k] * eig[k]);
+            }
+            out[i][j] = z * sd[i] * sd[j];
+        }
+        out[i][i] = cov[i][i];
+    }
+    Ok(out)
+}
+
+#[derive(Clone, Debug)]
+pub struct NestedClusteredOptimizationSpec<T: Real = f64> {
+    pub covariance: Vec<Vec<T>>,
+    pub expected_returns: Option<Vec<T>>,
+    pub risk_aversion: T,
+    pub num_clusters: usize,
+}
+#[allow(clippy::possible_missing_else)]
+pub fn try_nested_clustered_optimization_weights<T: Real>(
+    s: &NestedClusteredOptimizationSpec<T>,
+) -> Result<Vec<T>, AllocationError> {
+    let n = s.covariance.len();
+    if n == 0
+        || s.covariance.iter().any(|r| r.len() != n)
+        || s.num_clusters == 0
+        || s.num_clusters > n
+    {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    if s.expected_returns.is_none() {
+        return Ok(markowitz_minimum_variance_weights(&s.covariance));
+    }
+    let mu = s.expected_returns.as_ref().unwrap();
+    if mu.len() != n {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    let k = s.num_clusters;
+    let mut clusters = vec![Vec::new(); k];
+    for i in 0..n {
+        clusters[i % k].push(i);
+    }
+    let mut local = vec![vec![T::zero(); n]; k];
+    for (ci, cl) in clusters.iter().enumerate() {
+        let mut sub = vec![vec![T::zero(); cl.len()]; cl.len()];
+        let mut rhs = vec![T::zero(); cl.len()];
+        for (a, &i) in cl.iter().enumerate() {
+            rhs[a] = T::one() + mu[i] / s.risk_aversion.max_val(T::from_f64(1e-12));
+            for (b, &j) in cl.iter().enumerate() {
+                sub[a][b] = s.covariance[i][j];
+            }
+        }
+        let x = solve_linear_generic(&sub, &rhs)?;
+        let z = x.iter().fold(T::zero(), |a, b| a + *b);
+        for (a, &i) in cl.iter().enumerate() {
+            local[ci][i] = x[a] / z.max_val(T::from_f64(1e-14));
+        }
+    }
+    let mut red = vec![vec![T::zero(); k]; k];
+    for a in 0..k {
+        for b in 0..k {
+            for i in &clusters[a] {
+                for j in &clusters[b] {
+                    red[a][b] += local[a][*i] * s.covariance[*i][*j] * local[b][*j];
+                }
+            }
+        }
+    }
+    let ones = vec![T::one(); k];
+    let om = solve_linear_generic(&red, &ones)?;
+    let oz = om.iter().fold(T::zero(), |a, b| a + *b);
+    let mut w = vec![T::zero(); n];
+    for i in 0..n {
+        let ci = i % k;
+        w[i] = om[ci] / oz.max_val(T::from_f64(1e-14)) * local[ci][i];
+    }
+    Ok(w)
+}
+pub fn nested_clustered_optimization_weights<T: Real>(
+    s: &NestedClusteredOptimizationSpec<T>,
+) -> Vec<T> {
+    try_nested_clustered_optimization_weights(s).expect("valid NCO inputs")
+}
+
+#[allow(clippy::useless_vec)]
+#[cfg(test)]
+mod phase15_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn gerber_rmt_nco() {
+        let r = vec![
+            vec![0.01, 0.02],
+            vec![-0.02, -0.01],
+            vec![0.03, 0.02],
+            vec![-0.01, -0.02],
+        ];
+        let g = gerber_covariance_matrix(&r, 0.5, 1e-3).unwrap();
+        assert!(g[0][0] > 0.0);
+        let c = vec![
+            vec![0.04, 0.01, 0., 0.],
+            vec![0.01, 0.09, 0., 0.],
+            vec![0., 0., 0.16, 0.02],
+            vec![0., 0., 0.02, 0.25],
+        ];
+        let w = nested_clustered_optimization_weights(&NestedClusteredOptimizationSpec {
+            covariance: c.clone(),
+            expected_returns: None,
+            risk_aversion: 1.0,
+            num_clusters: 2,
+        });
+        assert!((w.iter().sum::<f64>() - 1.0).abs() < 1e-10);
+        let d = vec![
+            vec![Dual::<1>::variable(0.04, 0), Dual::<1>::from_value(0.01)],
+            vec![Dual::<1>::from_value(0.01), Dual::<1>::from_value(0.09)],
+        ];
+        assert!(
+            gerber_covariance_matrix(
+                &vec![vec![d[0][0], d[0][1]], vec![d[1][0], d[1][1]]],
+                0.5,
+                1e-3
+            )
+            .is_ok()
+        );
+    }
+}

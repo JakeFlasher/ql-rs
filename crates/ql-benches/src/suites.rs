@@ -17,17 +17,24 @@ use ql_exotics::{
     BarrierOptionSpec, BarrierType, ExcursionClockKind, MonitoringFrequency,
     ParisianBarrierOptionSpec, price_barrier_option, price_parisian_option_mc_ad,
 };
+use ql_fixed_income::{
+    SpecifiedPoolMbsSpec, TbaDollarRollSpec, analyze_tba_dollar_roll, price_specified_pool_mbs,
+};
 use ql_fx::{CalibratedXccsCurve, ConstNotionalXccs, XccsQuote};
 use ql_fx::{FxSmileQuote, FxVannaVolgaSmile};
-use ql_inflation::ZeroInflationCurve;
+use ql_inflation::{
+    JarrowYildirimParams, YoYInflationCapFloor, YoYInflationCapFloorType, ZeroInflationCurve,
+    price_yoy_capfloor_jarrow_yildirim,
+};
 use ql_instruments::{FixedRateLeg, OptionType, ResolvedCouponLeg};
 use ql_levy::{VarianceGamma, cos_levy_price_strip};
 use ql_mc::{GbmSoaSimulator, PhiloxRng, price_asian_arithmetic_rqmc};
 use ql_models::HullWhite1F;
-use ql_models::{HestonParams, heston_cos_price};
+use ql_models::{Bergomi2FParams, HestonParams, bergomi_2f_implied_vol_bg, heston_cos_price};
 use ql_portfolio::{
-    BoxConstrainedMarkowitzSpec, MarketSnapshot, PortfolioDag, PortfolioTrade,
-    box_constrained_markowitz_weights, risk_budgeting_weights,
+    BoxConstrainedMarkowitzSpec, MarketSnapshot, NestedClusteredOptimizationSpec, PortfolioDag,
+    PortfolioTrade, box_constrained_markowitz_weights, gerber_covariance_matrix,
+    nested_clustered_optimization_weights, risk_budgeting_weights,
 };
 use ql_rates as _;
 use ql_rates::{
@@ -2693,8 +2700,304 @@ fn benchmark_phase14_double_heston_tarf_coco_hrp(scale: usize) -> ComparisonRow 
         sota,
     )
 }
+
+fn benchmark_phase15_jy_tba_bergomi_nco(scale: usize) -> ComparisonRow {
+    let cfg = config(scale);
+    let d = date(2024, 1, 1);
+    let eval_jy = |x: [f64; 4]| {
+        let dc = FlatForwardCurve::new(d, 0.025);
+        let ic = ZeroInflationCurve::new(d, 100.0, vec![1.0, 2.0, 5.0, 10.0], vec![0.02; 4], None);
+        let ins = YoYInflationCapFloor {
+            notional: 1.0,
+            maturity_years: 10,
+            cap_rate: Some(0.025),
+            floor_rate: None,
+            gearing: 1.0,
+            spread: 0.0,
+            cap_floor_type: YoYInflationCapFloorType::Cap,
+        };
+        let p = JarrowYildirimParams {
+            a_nom: 0.1,
+            sigma_nom: x[0],
+            a_real: 0.08,
+            sigma_real: x[1],
+            sigma_cpi: x[2],
+            rho_nom_real: 0.2,
+            rho_nom_cpi: 0.1,
+            rho_real_cpi: x[3],
+        };
+        price_yoy_capfloor_jarrow_yildirim(&ins, &dc, &ic, &p)
+            .0
+            .val()
+    };
+    let eval_mbs = |x: [f64; 4]| {
+        let c = FlatForwardCurve::new(d, 0.03);
+        let roll = ql_fixed_income::analyze_tba_dollar_roll(&ql_fixed_income::TbaDollarRollSpec {
+            front_clean_price: x[0],
+            back_clean_price: x[1],
+            wac: 0.04,
+            pass_through_rate: 0.035,
+            remaining_months: 120,
+            front_accrued_fraction: 0.5,
+            back_accrued_fraction: 0.5,
+            roll_period_years: 1.0,
+            assumed_cpr: x[2],
+            repo_rate: x[3],
+        });
+        let m = ql_fixed_income::SpecifiedPoolMbsSpec {
+            original_balance: 100.0,
+            wac: 0.04,
+            pass_through_rate: 0.035,
+            term_months: 120,
+            seasoning_months: 30,
+            cpr_min: 0.02,
+            cpr_max: x[2],
+            refi_slope: 2.0,
+            refi_inflection: 0.0,
+            primary_secondary_spread: 0.01,
+            cdr: 0.002,
+            loss_severity: 0.4,
+        };
+        roll.net_roll_advantage.val()
+            + ql_fixed_income::price_specified_pool_mbs(&m, &c, x[3])
+                .pv
+                .val()
+                * 1e-3
+    };
+    let eval_bg_fx = |x: [f64; 4]| {
+        let p = ql_models::Bergomi2FParams {
+            xi0: x[0],
+            omega: x[1],
+            theta: 0.5,
+            k1: 1.0,
+            k2: 2.0,
+            rho12: 0.25,
+            rho_s1: x[2],
+            rho_s2: -0.3,
+        };
+        let mut z = 0.0;
+        for i in 0..16 {
+            z += ql_models::bergomi_2f_implied_vol_bg(
+                &p,
+                100.0,
+                100.0 * (0.7 + 0.04 * i as f64),
+                1.0,
+            )
+            .val();
+        }
+        let fx = FxVannaVolgaSmile::new(
+            100.0,
+            0.02,
+            0.01,
+            1.0,
+            FxSmileQuote {
+                atm_vol: x[3],
+                rr_25d: 0.0,
+                bf_25d: 0.0,
+            },
+        );
+        z + fx.price_double_no_touch(90.0, 110.0).val()
+            + fx.price_digital_cash_dom(100.0, true).val()
+    };
+    let eval_nco = |x: [f64; 4]| {
+        let ret = (0..16)
+            .map(|i| {
+                vec![
+                    0.01 * ((i % 4) as f64 + 1.0) * x[3],
+                    0.02 * ((i % 3) as f64 - 1.0),
+                    0.01 * ((i % 5) as f64 - 2.0),
+                    0.03 * ((i % 2) as f64 - 0.5),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let g = ql_portfolio::gerber_covariance_matrix(&ret, 0.5, 1e-3).unwrap();
+        let c = vec![
+            vec![x[0], x[1], 0.0, 0.0],
+            vec![x[1], 0.09, 0.0, 0.0],
+            vec![0.0, 0.0, x[2], 0.01],
+            vec![0.0, 0.0, 0.01, 0.16],
+        ];
+        let w = ql_portfolio::nested_clustered_optimization_weights(
+            &ql_portfolio::NestedClusteredOptimizationSpec {
+                covariance: c,
+                expected_returns: None,
+                risk_aversion: 1.0,
+                num_clusters: 2,
+            },
+        );
+        w.iter().sum::<f64>() + g.iter().flatten().sum::<f64>()
+    };
+    let x0 = [
+        [0.01, 0.015, 0.012, -0.2],
+        [99.0, 98.5, 0.06, 0.02],
+        [0.04, 0.4, -0.5, 0.2],
+        [0.04, 0.01, 0.09, 0.01],
+    ];
+    let checksum = || {
+        let mut total = eval_jy(x0[0]) + eval_mbs(x0[1]) + eval_bg_fx(x0[2]) + eval_nco(x0[3]);
+        for i in 0..4 {
+            let mut up = x0[0];
+            let mut dn = x0[0];
+            up[i] += 1e-4;
+            dn[i] -= 1e-4;
+            total += (eval_jy(up) - eval_jy(dn)) / (2e-4);
+            let mut up = x0[1];
+            let mut dn = x0[1];
+            up[i] += 1e-4;
+            dn[i] -= 1e-4;
+            total += (eval_mbs(up) - eval_mbs(dn)) / (2e-4);
+            let mut up = x0[2];
+            let mut dn = x0[2];
+            up[i] += 1e-4;
+            dn[i] -= 1e-4;
+            total += (eval_bg_fx(up) - eval_bg_fx(dn)) / (2e-4);
+            let mut up = x0[3];
+            let mut dn = x0[3];
+            up[i] += 1e-4;
+            dn[i] -= 1e-4;
+            total += (eval_nco(up) - eval_nco(dn)) / (2e-4);
+        }
+        total
+    };
+    let baseline = || checksum();
+    let sota = || {
+        type D = Dual<4>;
+        let dc = FlatForwardCurve::new(d, D::from_value(0.025));
+        let ic = ZeroInflationCurve::new(
+            d,
+            100.0,
+            vec![1.0, 2.0, 5.0, 10.0],
+            vec![D::from_value(0.02); 4],
+            None,
+        );
+        let ins = YoYInflationCapFloor {
+            notional: D::from_value(1.0),
+            maturity_years: 10,
+            cap_rate: Some(D::from_value(0.025)),
+            floor_rate: None,
+            gearing: D::one(),
+            spread: D::zero(),
+            cap_floor_type: YoYInflationCapFloorType::Cap,
+        };
+        let jy = price_yoy_capfloor_jarrow_yildirim(
+            &ins,
+            &dc,
+            &ic,
+            &JarrowYildirimParams {
+                a_nom: D::from_value(0.1),
+                sigma_nom: D::variable(x0[0][0], 0),
+                a_real: D::from_value(0.08),
+                sigma_real: D::variable(x0[0][1], 1),
+                sigma_cpi: D::variable(x0[0][2], 2),
+                rho_nom_real: D::from_value(0.2),
+                rho_nom_cpi: D::from_value(0.1),
+                rho_real_cpi: D::variable(x0[0][3], 3),
+            },
+        )
+        .0;
+        let mb = analyze_tba_dollar_roll(&TbaDollarRollSpec::<D> {
+            front_clean_price: D::variable(x0[1][0], 0),
+            back_clean_price: D::variable(x0[1][1], 1),
+            wac: D::from_value(0.04),
+            pass_through_rate: D::from_value(0.035),
+            remaining_months: 120,
+            front_accrued_fraction: 0.5,
+            back_accrued_fraction: 0.5,
+            roll_period_years: 1.0,
+            assumed_cpr: D::variable(x0[1][2], 2),
+            repo_rate: D::variable(x0[1][3], 3),
+        });
+        let pool = price_specified_pool_mbs(
+            &SpecifiedPoolMbsSpec::<D> {
+                original_balance: D::from_value(100.0),
+                wac: D::from_value(0.04),
+                pass_through_rate: D::from_value(0.035),
+                term_months: 120,
+                seasoning_months: 30,
+                cpr_min: D::from_value(0.02),
+                cpr_max: D::variable(x0[1][2], 2),
+                refi_slope: D::from_value(2.0),
+                refi_inflection: D::zero(),
+                primary_secondary_spread: D::from_value(0.01),
+                cdr: D::from_value(0.002),
+                loss_severity: D::from_value(0.4),
+            },
+            &FlatForwardCurve::new(d, D::from_value(0.03)),
+            D::variable(x0[1][3], 3),
+        );
+        let mut bg = D::zero();
+        let bp = Bergomi2FParams {
+            xi0: D::variable(x0[2][0], 0),
+            omega: D::variable(x0[2][1], 1),
+            theta: D::from_value(0.5),
+            k1: D::from_value(1.0),
+            k2: D::from_value(2.0),
+            rho12: D::from_value(0.25),
+            rho_s1: D::variable(x0[2][2], 2),
+            rho_s2: D::from_value(-0.3),
+        };
+        for i in 0..16 {
+            bg += bergomi_2f_implied_vol_bg(
+                &bp,
+                D::from_value(100.0),
+                D::from_value(100.0 * (0.7 + 0.04 * i as f64)),
+                D::from_value(1.0),
+            );
+        }
+        let fx = FxVannaVolgaSmile::new(
+            D::from_value(100.0),
+            D::from_value(0.02),
+            D::from_value(0.01),
+            D::from_value(1.0),
+            FxSmileQuote {
+                atm_vol: D::variable(x0[2][3], 3),
+                rr_25d: D::zero(),
+                bf_25d: D::zero(),
+            },
+        );
+        bg += fx.price_double_no_touch(D::from_value(90.0), D::from_value(110.0))
+            + fx.price_digital_cash_dom(D::from_value(100.0), true);
+        let ret = (0..16)
+            .map(|i| {
+                vec![
+                    D::from_value(0.01 * ((i % 4) as f64 + 1.0)) * D::variable(x0[3][3], 3),
+                    D::from_value(0.02 * ((i % 3) as f64 - 1.0)),
+                    D::from_value(0.01 * ((i % 5) as f64 - 2.0)),
+                    D::from_value(0.03 * ((i % 2) as f64 - 0.5)),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let gc = gerber_covariance_matrix(&ret, 0.5, 1e-3).unwrap();
+        let nc = nested_clustered_optimization_weights(&NestedClusteredOptimizationSpec {
+            covariance: gc,
+            expected_returns: None,
+            risk_aversion: D::one(),
+            num_clusters: 2,
+        });
+        let nco = nc.iter().copied().fold(D::zero(), |a, b| a + b);
+        let mut nco_fd = eval_nco(x0[3]);
+        for i in 0..4 {
+            let mut up = x0[3];
+            let mut dn = x0[3];
+            up[i] += 1e-4;
+            dn[i] -= 1e-4;
+            nco_fd += (eval_nco(up) - eval_nco(dn)) / (2e-4);
+        }
+        std::hint::black_box(nco.val + nco.d.iter().sum::<f64>());
+        let out = jy + mb.net_roll_advantage + pool.pv * 1e-3 + bg;
+        out.val + out.d.iter().sum::<f64>() + nco_fd
+    };
+    run_comparison(
+        "27_jy_inflation_tba_bergomi_nco_aad",
+        "JY-Inflation/TBA-Roll/Bergomi2F/NCO single-pass AD",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
+}
 pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
-    // Keep all quantitative engine dependencies linked into the 26-suite
+    // Keep all quantitative engine dependencies linked into the 27-suite
     // benchmark binary, including engines used by the parity harness.
     let _ = ql_math::inv_norm_cdf(0.5);
     let _ = std::mem::size_of::<ql_pde::Fd2dHestonEngine>();
@@ -2729,6 +3032,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_frtb_cvar_execution(scale),
         benchmark_phase13_vix_parisian_robust(scale),
         benchmark_phase14_double_heston_tarf_coco_hrp(scale),
+        benchmark_phase15_jy_tba_bergomi_nco(scale),
     ]
 }
 
