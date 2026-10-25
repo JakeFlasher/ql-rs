@@ -585,7 +585,6 @@ mod phase19_tests {
     }
 }
 
-
 #[derive(Copy, Clone, Debug)]
 pub struct HikspoorsJaimungalMrjdSpec<T: Real = f64> {
     pub x0: T,
@@ -659,23 +658,25 @@ pub fn price_hikspoors_jaimungal_mrjd_commodity<T: Real>(
 
     // Diffusive variance of F(T_e, T_m) over [0, T_e]
     let e_kx_rem = (-kx * tau_rem).exp();
-    let var_f_diff = e_kx_rem * e_kx_rem * spec.sigma_x * spec.sigma_x * (T::one() - (-kx * te * 2.0).exp())
-        / (kx * 2.0)
-        + spec.sigma_y * spec.sigma_y * te
-        + e_kx_rem
-            * spec.rho_xy
-            * spec.sigma_x
-            * spec.sigma_y
-            * (T::one() - (-kx * te).exp())
-            * 2.0
-            / kx;
+    let var_f_diff =
+        e_kx_rem * e_kx_rem * spec.sigma_x * spec.sigma_x * (T::one() - (-kx * te * 2.0).exp())
+            / (kx * 2.0)
+            + spec.sigma_y * spec.sigma_y * te
+            + e_kx_rem
+                * spec.rho_xy
+                * spec.sigma_x
+                * spec.sigma_y
+                * (T::one() - (-kx * te).exp())
+                * 2.0
+                / kx;
     let var_s_diff = spec.sigma_x * spec.sigma_x * (T::one() - (-kx * te * 2.0).exp()) / (kx * 2.0)
         + spec.sigma_y * spec.sigma_y * te
         + spec.rho_xy * spec.sigma_x * spec.sigma_y * (T::one() - (-kx * te).exp()) * 2.0 / kx;
 
     // Spike attenuation in futures at option expiry vs spot at option expiry
     let atten_f = (-kj * tau_rem).exp();
-    let jump_mean_unit = mu_j * (T::one() - (-kj * te).exp()) / (kj * te).max_val(T::from_f64(1e-8));
+    let jump_mean_unit =
+        mu_j * (T::one() - (-kj * te).exp()) / (kj * te).max_val(T::from_f64(1e-8));
     let jump_second_moment_unit = mu_j * mu_j * (T::one() - (-kj * te * 2.0).exp())
         / (kj * te * 2.0).max_val(T::from_f64(1e-8));
     let jump_var_unit =
@@ -787,7 +788,8 @@ pub fn price_hikspoors_jaimungal_mrjd_commodity<T: Real>(
     let spike_option_surcharge = futures_option_price - no_spike_opt;
 
     // Effective Black-76 implied volatility of the futures option
-    let tot_var_f = var_f_diff + lam_te * atten_f * atten_f * (jump_mean_unit * jump_mean_unit + jump_var_unit);
+    let tot_var_f =
+        var_f_diff + lam_te * atten_f * atten_f * (jump_mean_unit * jump_mean_unit + jump_var_unit);
     let implied_black76_vol = (tot_var_f.max_val(T::from_f64(1e-12)) / te).sqrt();
 
     HikspoorsJaimungalMrjdValuation {
@@ -800,8 +802,6 @@ pub fn price_hikspoors_jaimungal_mrjd_commodity<T: Real>(
         implied_black76_vol,
     }
 }
-
-
 
 #[cfg(test)]
 mod phase20_tests {

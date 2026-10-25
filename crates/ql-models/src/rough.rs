@@ -3,16 +3,107 @@ use ql_ad::Real;
 use ql_math as ql_mc;
 
 #[derive(Copy, Clone, Debug)]
-pub struct BayerFrizGatheralMarkovianRoughSpec<T: Real = f64>{pub spot:T,pub strike:T,pub expiry:T,pub rate:T,pub div_yield:T,pub xi0:T,pub eta:T,pub rho:T,pub hurst:T,pub num_markov_factors:usize,pub is_call:bool}
+pub struct BayerFrizGatheralMarkovianRoughSpec<T: Real = f64> {
+    pub spot: T,
+    pub strike: T,
+    pub expiry: T,
+    pub rate: T,
+    pub div_yield: T,
+    pub xi0: T,
+    pub eta: T,
+    pub rho: T,
+    pub hurst: T,
+    pub num_markov_factors: usize,
+    pub is_call: bool,
+}
 #[derive(Clone, Debug)]
-pub struct BayerFrizGatheralMarkovianRoughReport<T: Real = f64>{pub option_price:T,pub implied_vol:T,pub atm_skew:T,pub skew_stickiness_ratio_ssr:T,pub markov_weights:Vec<T>,pub markov_gammas:Vec<T>,pub kernel_variance_markov:T,pub kernel_variance_exact:T}
-pub fn evaluate_bayer_friz_gatheral_markovian_rough<T: Real>(s:&BayerFrizGatheralMarkovianRoughSpec<T>)->BayerFrizGatheralMarkovianRoughReport<T>{
-    let h=s.hurst.max_val(T::from_f64(0.02)).min_val(T::from_f64(0.48)); let m=s.num_markov_factors.clamp(2,16); let rm=(1.0+3.2/m as f64).min(2.5); let ah=T::from_f64(0.5)-h; let mut gam=Vec::with_capacity(m); let mut raw=Vec::with_capacity(m);
-    for k in 1..=m { let g=rm.powf(k as f64-0.5*(m as f64+1.0)); gam.push(T::from_f64(g)); let rm_t=T::from_f64(rm); let g_t=T::from_f64(g); let rw=(h*2.0).sqrt()*(ah*std::f64::consts::PI).sin()/std::f64::consts::PI*((rm_t.pow(ah)-T::one())/ah.max_val(T::from_f64(1e-8)))*g_t.pow(ah); raw.push(rw); }
-    let t=s.expiry.max_val(T::from_f64(1e-8)); let mut var=T::zero(); for i in 0..m { for j in 0..m { let gij=gam[i]+gam[j]; var += raw[i]*raw[j]*(T::one()-(-gij*t).exp())/gij; } }
-    let scale=(t.powf(2.0*h.val())/var.max_val(T::from_f64(1e-12))).sqrt()*T::from_f64(1.0-0.02/(m as f64*m as f64)); let weights:Vec<T>=raw.iter().map(|x|*x*scale).collect(); let mut vm=T::zero(); for i in 0..m { for j in 0..m { let gij=gam[i]+gam[j]; vm += weights[i]*weights[j]*(T::one()-(-gij*t).exp())/gij; } }
-    let mut csv=T::zero(); for i in 0..m { let g=gam[i]; csv += weights[i]*(t-(T::one()-(-g*t).exp())/g)/g; }
-    let cs=s.rho*s.eta*s.xi0*csv; let xi=s.xi0.max_val(T::from_f64(1e-12)); let vatm=xi.sqrt()*(T::one()+cs/(xi*t*4.0)+s.eta*s.eta*(T::from_f64(2.0)-s.rho*s.rho*3.0)*vm/24.0); let skew=cs/(xi*t).max_val(T::from_f64(1e-12)).sqrt()/(xi.sqrt()*2.0); let k=(s.strike/(s.spot*((s.rate-s.div_yield)*t).exp())).ln(); let chi=s.eta*s.eta*(T::one()-s.rho*s.rho)*vm/(xi.sqrt()*t*4.0); let imp=vatm+skew*k+chi*k*k*0.5; let f=s.spot*((s.rate-s.div_yield)*t).exp(); let price=ql_vol::bachelier_price(f,s.strike,imp*f.max_val(T::from_f64(1e-8))*t.sqrt(),t,(-s.rate*t).exp(),s.is_call); let ssr=(h+1.5)/(h+0.5)*(T::one()-s.eta*s.eta*s.rho*s.rho*vm/((h+1.0)*(h+1.0)*4.0)); BayerFrizGatheralMarkovianRoughReport{option_price:price,implied_vol:imp,atm_skew:skew,skew_stickiness_ratio_ssr:ssr,markov_weights:weights,markov_gammas:gam,kernel_variance_markov:vm,kernel_variance_exact:t.pow(h*2.0)}
+pub struct BayerFrizGatheralMarkovianRoughReport<T: Real = f64> {
+    pub option_price: T,
+    pub implied_vol: T,
+    pub atm_skew: T,
+    pub skew_stickiness_ratio_ssr: T,
+    pub markov_weights: Vec<T>,
+    pub markov_gammas: Vec<T>,
+    pub kernel_variance_markov: T,
+    pub kernel_variance_exact: T,
+}
+pub fn evaluate_bayer_friz_gatheral_markovian_rough<T: Real>(
+    s: &BayerFrizGatheralMarkovianRoughSpec<T>,
+) -> BayerFrizGatheralMarkovianRoughReport<T> {
+    let h = s
+        .hurst
+        .max_val(T::from_f64(0.02))
+        .min_val(T::from_f64(0.48));
+    let m = s.num_markov_factors.clamp(2, 16);
+    let rm = (1.0 + 3.2 / m as f64).min(2.5);
+    let ah = T::from_f64(0.5) - h;
+    let mut gam = Vec::with_capacity(m);
+    let mut raw = Vec::with_capacity(m);
+    for k in 1..=m {
+        let g = rm.powf(k as f64 - 0.5 * (m as f64 + 1.0));
+        gam.push(T::from_f64(g));
+        let rm_t = T::from_f64(rm);
+        let g_t = T::from_f64(g);
+        let rw = (h * 2.0).sqrt() * (ah * std::f64::consts::PI).sin() / std::f64::consts::PI
+            * ((rm_t.pow(ah) - T::one()) / ah.max_val(T::from_f64(1e-8)))
+            * g_t.pow(ah);
+        raw.push(rw);
+    }
+    let t = s.expiry.max_val(T::from_f64(1e-8));
+    let mut var = T::zero();
+    for i in 0..m {
+        for j in 0..m {
+            let gij = gam[i] + gam[j];
+            var += raw[i] * raw[j] * (T::one() - (-gij * t).exp()) / gij;
+        }
+    }
+    let scale = (t.pow(h * 2.0) / var.max_val(T::from_f64(1e-12))).sqrt()
+        * T::from_f64(1.0 - 0.02 / (m as f64 * m as f64));
+    let weights: Vec<T> = raw.iter().map(|x| *x * scale).collect();
+    let mut vm = T::zero();
+    for i in 0..m {
+        for j in 0..m {
+            let gij = gam[i] + gam[j];
+            vm += weights[i] * weights[j] * (T::one() - (-gij * t).exp()) / gij;
+        }
+    }
+    let mut csv = T::zero();
+    for i in 0..m {
+        let g = gam[i];
+        csv += weights[i] * (t - (T::one() - (-g * t).exp()) / g) / g;
+    }
+    let cs = s.rho * s.eta * s.xi0 * csv;
+    let xi = s.xi0.max_val(T::from_f64(1e-12));
+    let vatm = xi.sqrt()
+        * (T::one()
+            + cs / (xi * t * 4.0)
+            + s.eta * s.eta * (T::from_f64(2.0) - s.rho * s.rho * 3.0) * vm / 24.0);
+    let skew = s.rho * s.eta * csv / (t * t.sqrt() * 2.0) * t.pow(h - 0.5);
+    let k = (s.strike / (s.spot * ((s.rate - s.div_yield) * t).exp())).ln();
+    let chi = s.eta * s.eta * (T::one() - s.rho * s.rho) * vm / (xi.sqrt() * t * 4.0);
+    let imp = vatm + skew * k + chi * k * k * 0.5;
+    let _f = s.spot * ((s.rate - s.div_yield) * t).exp();
+    let price = ql_vol::black_scholes_price(
+        s.spot,
+        s.strike,
+        imp.max_val(T::from_f64(1e-8)),
+        t,
+        s.rate,
+        s.div_yield,
+        s.is_call,
+    );
+    let ssr = (h + 1.5) / (h + 0.5)
+        * (T::one() - s.eta * s.eta * s.rho * s.rho * vm / ((h + 1.0) * (h + 1.0) * 4.0));
+    BayerFrizGatheralMarkovianRoughReport {
+        option_price: price,
+        implied_vol: imp,
+        atm_skew: skew,
+        skew_stickiness_ratio_ssr: ssr,
+        markov_weights: weights,
+        markov_gammas: gam,
+        kernel_variance_markov: vm,
+        kernel_variance_exact: t.pow(h * 2.0),
+    }
 }
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct LiftedHestonParams<T: Real> {
@@ -412,8 +503,7 @@ pub fn pdv_implied_vol_expansion<T: Real>(
     let lam_eff = T::from_f64(4.0) * (T::one() - p.theta1) + T::from_f64(1.0) * p.theta1;
     let decay = (T::one() - (-lam_eff * t).exp()) / (lam_eff * t).max_val(T::from_f64(1e-8));
     let skew_term = p.beta1 * decay * k_log * 0.5;
-    let curv_term =
-        (p.beta1 * p.beta1 + p.beta2 * p.beta2 / r2.sqrt()) * k_log * k_log * t * 0.25;
+    let curv_term = (p.beta1 * p.beta1 + p.beta2 * p.beta2 / r2.sqrt()) * k_log * k_log * t * 0.25;
     (sig0 + skew_term + curv_term).max_val(T::from_f64(1e-4))
 }
 
@@ -597,6 +687,57 @@ mod phase18_tests {
             D::from_value(0.20),
             32,
         );
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase21_tests {
+    use super::*;
+
+    #[test]
+    fn rough_skew_short_end_and_hurst_sensitivity() {
+        let mut s = BayerFrizGatheralMarkovianRoughSpec {
+            spot: 100.0,
+            strike: 100.0,
+            expiry: 0.1,
+            rate: 0.03,
+            div_yield: 0.0,
+            xi0: 0.04,
+            eta: 1.0,
+            rho: -0.7,
+            hurst: 0.1,
+            num_markov_factors: 4,
+            is_call: true,
+        };
+        let short = evaluate_bayer_friz_gatheral_markovian_rough(&s);
+        s.expiry = 1.0;
+        let long = evaluate_bayer_friz_gatheral_markovian_rough(&s);
+        assert!(short.atm_skew.abs() > long.atm_skew.abs());
+        let h = 1e-5;
+        s.expiry = 1.0;
+        let mut up = s;
+        up.hurst += h;
+        let mut dn = s;
+        dn.hurst -= h;
+        let fd = (evaluate_bayer_friz_gatheral_markovian_rough(&up).option_price
+            - evaluate_bayer_friz_gatheral_markovian_rough(&dn).option_price)
+            / (2.0 * h);
+        type D = ql_ad::Dual<1>;
+        let ad_spec = BayerFrizGatheralMarkovianRoughSpec {
+            spot: D::from_value(100.0),
+            strike: D::from_value(100.0),
+            expiry: D::one(),
+            rate: D::from_value(0.03),
+            div_yield: D::zero(),
+            xi0: D::from_value(0.04),
+            eta: D::one(),
+            rho: D::from_value(-0.7),
+            hurst: D::variable(0.1, 0),
+            num_markov_factors: 4,
+            is_call: true,
+        };
+        let ad = evaluate_bayer_friz_gatheral_markovian_rough(&ad_spec).option_price;
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

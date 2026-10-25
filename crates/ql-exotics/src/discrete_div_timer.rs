@@ -310,11 +310,21 @@ pub fn price_capped_timer_option_quadrature<T: Real>(
         let t_q = t_cap * (0.5 * (xi + 1.0));
         let dt_w = t_cap * (0.5 * wi);
         let z_ig = (t_q - mu_tau) / (mu_tau * (t_q / lam_ig).sqrt()).max_val(T::from_f64(1e-8));
-        let pdf_ig = (lam_ig / (t_q * t_q * t_q * (2.0 * std::f64::consts::PI)).max_val(T::from_f64(1e-12))).sqrt()
+        let pdf_ig = (lam_ig
+            / (t_q * t_q * t_q * (2.0 * std::f64::consts::PI)).max_val(T::from_f64(1e-12)))
+        .sqrt()
             * (-z_ig * z_ig * 0.5).exp();
         let w_q = pdf_ig * dt_w;
         let vol_eff = (b_budget / t_q.max_val(T::from_f64(1e-8))).sqrt();
-        let c_q = black_scholes_price(s.spot, s.strike, vol_eff, t_q, s.rate, s.div_yield, s.is_call);
+        let c_q = black_scholes_price(
+            s.spot,
+            s.strike,
+            vol_eff,
+            t_q,
+            s.rate,
+            s.div_yield,
+            s.is_call,
+        );
         p_hit += w_q;
         npv_hit += w_q * c_q;
         t_hit += w_q * t_q;
@@ -323,7 +333,15 @@ pub fn price_capped_timer_option_quadrature<T: Real>(
     let p_cap = T::one() - p_hit_clamped;
     let var_at_cap = (v_bar * t_cap).min_val(b_budget);
     let vol_cap = (var_at_cap / t_cap).sqrt();
-    let c_cap = black_scholes_price(s.spot, s.strike, vol_cap, t_cap, s.rate, s.div_yield, s.is_call);
+    let c_cap = black_scholes_price(
+        s.spot,
+        s.strike,
+        vol_cap,
+        t_cap,
+        s.rate,
+        s.div_yield,
+        s.is_call,
+    );
 
     let scale_hit = if p_hit.val() > 1.0 {
         T::one() / p_hit

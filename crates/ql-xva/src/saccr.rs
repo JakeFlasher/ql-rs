@@ -3,14 +3,117 @@ use ql_math::inv_norm_cdf;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
-pub struct GreenSaCcrLifetimeKvaMvaSpec<T: Real = f64>{pub time_grid:Vec<f64>,pub trade_notional:T,pub trade_maturity:f64,pub initial_mtm:T,pub mtm_volatility:T,pub collateral_threshold:T,pub initial_margin_ratio:T,pub counterparty_pd:T,pub counterparty_lgd:T,pub cva_risk_weight:T,pub capital_ratio_requirement:T,pub hurdle_rate_gamma_k:T,pub funding_spread_sf:T,pub mva_spread_sm:T,pub risk_free_rate:T}
+pub struct GreenSaCcrLifetimeKvaMvaSpec<T: Real = f64> {
+    pub time_grid: Vec<f64>,
+    pub trade_notional: T,
+    pub trade_maturity: f64,
+    pub initial_mtm: T,
+    pub mtm_volatility: T,
+    pub collateral_threshold: T,
+    pub initial_margin_ratio: T,
+    pub counterparty_pd: T,
+    pub counterparty_lgd: T,
+    pub cva_risk_weight: T,
+    pub capital_ratio_requirement: T,
+    pub hurdle_rate_gamma_k: T,
+    pub funding_spread_sf: T,
+    pub mva_spread_sm: T,
+    pub risk_free_rate: T,
+}
 #[derive(Clone, Debug)]
-pub struct GreenSaCcrLifetimeKvaMvaReport<T: Real = f64>{pub ead_profile:Vec<T>,pub k_ccr_profile:Vec<T>,pub k_cva_profile:Vec<T>,pub total_capital_profile:Vec<T>,pub lifetime_kva:T,pub capital_fva_offset:T,pub net_kva_after_funding_benefit:T,pub lifetime_mva:T}
-pub fn compute_green_saccr_lifetime_kva_mva<T: Real>(s:&GreenSaCcrLifetimeKvaMvaSpec<T>)->GreenSaCcrLifetimeKvaMvaReport<T>{
- let mut ead=Vec::new();let mut kccr=Vec::new();let mut kcva=Vec::new();let mut kt=Vec::new();let mut kva=T::zero();let mut off=T::zero();let mut mva=T::zero();let pd=s.counterparty_pd.max_val(T::from_f64(1e-10));let lgd=s.counterparty_lgd.max_val(T::from_f64(1e-8));let lambda=pd/lgd;
- let mut zpd=T::from_f64(inv_norm_cdf(pd.val())); for _ in 0..3 { zpd-=(zpd.norm_cdf()-pd)/zpd.norm_pdf().max_val(T::from_f64(1e-12)); }
- for (idx,&t) in s.time_grid.iter().enumerate(){if t>=s.trade_maturity{ead.push(T::zero());kccr.push(T::zero());kcva.push(T::zero());kt.push(T::zero());continue;}let tau=(s.trade_maturity-t).max(1e-4);let sd=T::from_f64((1.0-(-0.05*tau).exp())/0.05);let addon=s.trade_notional*sd*0.005;let sig=s.mtm_volatility*T::from_f64((t*tau/s.trade_maturity.max(1e-8)).max(0.0).sqrt())+T::from_f64(1e-6);let mu=s.initial_mtm*T::from_f64(tau/s.trade_maturity);let z=(mu-s.collateral_threshold)/sig;let rc=(mu-s.collateral_threshold)*z.norm_cdf()+sig*z.norm_pdf();let mult=(T::from_f64(0.05)+T::from_f64(0.95)*((mu-s.collateral_threshold).min_val(T::zero())/(addon.abs().max_val(T::from_f64(1e-8))*1.9)).exp()).min_val(T::one());let e=(rc+mult*addon)*1.4;let _rho=T::from_f64(0.12)*(T::one()-(-pd*50.0).exp())/T::from_f64(1.0-(-50.0f64).exp())+T::from_f64(0.24)*(T::one()-(T::one()-(-pd*50.0).exp())/T::from_f64(1.0-(-50.0f64).exp()));let mm=T::from_f64(tau.max(1.0).min(5.0));let b=(T::from_f64(0.11852)-pd.ln()*0.05478).powf(2.0);let rho=_rho;let q=(zpd+rho.sqrt()*T::from_f64(3.090232306))/((T::one()-rho).max_val(T::from_f64(1e-8)).sqrt());let w=lgd*(q.norm_cdf()-pd)*(T::one()+(mm-2.5)*b)/(T::one()-b*1.5).max_val(T::from_f64(1e-8))*1.06;let kc=s.capital_ratio_requirement*w*e*12.5;let kv=s.capital_ratio_requirement*s.cva_risk_weight*sd*e*0.65*12.5/1.4;let total=kc+kv;ead.push(e);kccr.push(kc);kcva.push(kv);kt.push(total);let dt=if idx+1<s.time_grid.len(){s.time_grid[idx+1]-t}else{0.0};let disc=(-(s.risk_free_rate+lambda)*t).exp()*dt;kva+=disc*s.hurdle_rate_gamma_k*total;off-=disc*s.funding_spread_sf*total;mva+=disc*s.mva_spread_sm*s.initial_margin_ratio*addon;}
- GreenSaCcrLifetimeKvaMvaReport{ead_profile:ead,k_ccr_profile:kccr,k_cva_profile:kcva,total_capital_profile:kt,lifetime_kva:kva,capital_fva_offset:off,net_kva_after_funding_benefit:kva+off,lifetime_mva:mva}
+pub struct GreenSaCcrLifetimeKvaMvaReport<T: Real = f64> {
+    pub ead_profile: Vec<T>,
+    pub k_ccr_profile: Vec<T>,
+    pub k_cva_profile: Vec<T>,
+    pub total_capital_profile: Vec<T>,
+    pub lifetime_kva: T,
+    pub capital_fva_offset: T,
+    pub net_kva_after_funding_benefit: T,
+    pub lifetime_mva: T,
+}
+pub fn compute_green_saccr_lifetime_kva_mva<T: Real>(
+    s: &GreenSaCcrLifetimeKvaMvaSpec<T>,
+) -> GreenSaCcrLifetimeKvaMvaReport<T> {
+    let mut ead = Vec::new();
+    let mut kccr = Vec::new();
+    let mut kcva = Vec::new();
+    let mut kt = Vec::new();
+    let mut kva = T::zero();
+    let mut off = T::zero();
+    let mut mva = T::zero();
+    let pd = s.counterparty_pd.max_val(T::from_f64(1e-10));
+    let lgd = s.counterparty_lgd.max_val(T::from_f64(1e-8));
+    let lambda = -(T::one() - pd.min_val(T::from_f64(0.999))).ln();
+    let mut zpd = T::from_f64(inv_norm_cdf(pd.val()));
+    for _ in 0..3 {
+        zpd -= (zpd.norm_cdf() - pd) / zpd.norm_pdf().max_val(T::from_f64(1e-12));
+    }
+    for (idx, &t) in s.time_grid.iter().enumerate() {
+        if t >= s.trade_maturity {
+            ead.push(T::zero());
+            kccr.push(T::zero());
+            kcva.push(T::zero());
+            kt.push(T::zero());
+            continue;
+        }
+        let tau = (s.trade_maturity - t).max(1e-4);
+        let sd = T::from_f64((1.0 - (-0.05 * tau).exp()) / 0.05);
+        let addon = s.trade_notional * sd * 0.005;
+        let sig = s.mtm_volatility
+            * T::from_f64((t * tau / s.trade_maturity.max(1e-8)).max(0.0).sqrt())
+            + T::from_f64(1e-6);
+        let mu = s.initial_mtm * T::from_f64(tau / s.trade_maturity);
+        let z = (mu - s.collateral_threshold) / sig;
+        let rc = (mu - s.collateral_threshold) * z.norm_cdf() + sig * z.norm_pdf();
+        let mult = (T::from_f64(0.05)
+            + T::from_f64(0.95)
+                * ((mu - s.collateral_threshold).min_val(T::zero())
+                    / (addon.abs().max_val(T::from_f64(1e-8)) * 1.9))
+                    .exp())
+        .min_val(T::one());
+        let e = (rc + mult * addon) * 1.4;
+        let _rho = T::from_f64(0.12) * (T::one() - (-pd * 50.0).exp())
+            / T::from_f64(1.0 - (-50.0f64).exp())
+            + T::from_f64(0.24)
+                * (T::one()
+                    - (T::one() - (-pd * 50.0).exp()) / T::from_f64(1.0 - (-50.0f64).exp()));
+        let mm = T::from_f64(tau.clamp(1.0, 5.0));
+        let b = (T::from_f64(0.11852) - pd.ln() * 0.05478).powf(2.0);
+        let rho = _rho;
+        let q = (zpd + rho.sqrt() * T::from_f64(3.090232306))
+            / ((T::one() - rho).max_val(T::from_f64(1e-8)).sqrt());
+        let w = lgd * (q.norm_cdf() - pd) * (T::one() + (mm - 2.5) * b)
+            / (T::one() - b * 1.5).max_val(T::from_f64(1e-8))
+            * 1.06;
+        let kc = s.capital_ratio_requirement * w * e * 12.5;
+        let kv = s.capital_ratio_requirement * s.cva_risk_weight * sd * e * 0.65 * 12.5 / 1.4;
+        let total = kc + kv;
+        ead.push(e);
+        kccr.push(kc);
+        kcva.push(kv);
+        kt.push(total);
+        let next_t = s
+            .time_grid
+            .get(idx + 1)
+            .copied()
+            .unwrap_or(s.trade_maturity)
+            .min(s.trade_maturity);
+        let dt = (next_t - t).max(0.0);
+        let disc = (-(s.risk_free_rate + lambda) * t).exp() * dt;
+        kva += disc * s.hurdle_rate_gamma_k * total;
+        off -= disc * s.funding_spread_sf * total;
+        mva += disc * s.mva_spread_sm * s.initial_margin_ratio * addon;
+    }
+    GreenSaCcrLifetimeKvaMvaReport {
+        ead_profile: ead,
+        k_ccr_profile: kccr,
+        k_cva_profile: kcva,
+        total_capital_profile: kt,
+        lifetime_kva: kva,
+        capital_fva_offset: off,
+        net_kva_after_funding_benefit: kva + off,
+        lifetime_mva: mva,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -388,11 +491,13 @@ mod phase17_tests {
         assert!((rep0.k_full - rep0.k_reduced).abs() < 1e-12);
 
         let mut hedged = unhedged.clone();
-        hedged.counterparties[0].single_name_hedges.push(BaCvaSingleNameHedge {
-            notional: 40.0,
-            maturity: 3.0,
-            hedge_correlation: 1.0,
-        });
+        hedged.counterparties[0]
+            .single_name_hedges
+            .push(BaCvaSingleNameHedge {
+                notional: 40.0,
+                maturity: 3.0,
+                hedge_correlation: 1.0,
+            });
         let rep_h = compute_ba_cva_capital(&hedged);
         assert!(rep_h.capital_charge < rep0.capital_charge);
 
@@ -421,5 +526,34 @@ mod phase17_tests {
         };
         let ad = compute_ba_cva_capital(&sp_d).capital_charge;
         assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod phase21_tests {
+    use super::*;
+
+    #[test]
+    fn green_lifetime_profiles_are_finite_and_nonnegative() {
+        let s = GreenSaCcrLifetimeKvaMvaSpec {
+            time_grid: vec![0.0, 1.0, 2.0],
+            trade_notional: 1e6,
+            trade_maturity: 2.5,
+            initial_mtm: 1e4,
+            mtm_volatility: 0.1,
+            collateral_threshold: 0.0,
+            initial_margin_ratio: 0.1,
+            counterparty_pd: 0.02,
+            counterparty_lgd: 0.6,
+            cva_risk_weight: 0.5,
+            capital_ratio_requirement: 0.08,
+            hurdle_rate_gamma_k: 0.1,
+            funding_spread_sf: 0.01,
+            mva_spread_sm: 0.01,
+            risk_free_rate: 0.03,
+        };
+        let r = compute_green_saccr_lifetime_kva_mva(&s);
+        assert!(r.lifetime_kva.val().is_finite());
+        assert!(r.ead_profile.iter().all(|x| x.val() >= 0.0));
     }
 }

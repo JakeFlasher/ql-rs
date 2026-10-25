@@ -14,25 +14,219 @@ pub enum FxError {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct ClarkFxDeltaConventionSpec<T: Real = f64> { pub spot:T,pub r_dom:T,pub r_for:T,pub expiry:T,pub atm_vol:T,pub rr_25d:T,pub market_strangle_25d:T,pub is_premium_included_delta:bool,pub is_forward_delta:bool,pub query_strike:T }
-#[derive(Copy, Clone, Debug)]
-pub struct ClarkFxSmileCalibrationReport<T: Real = f64> { pub k_atm_dns:T,pub k_25d_put_ms:T,pub k_25d_call_ms:T,pub k_25d_put_smile:T,pub k_25d_call_smile:T,pub calibrated_smile_bf_25d:T,pub strangle_convexity_spread:T,pub query_implied_vol:T,pub query_call_price:T,pub query_premium_adjusted_delta:T }
-fn clark_invert_strike<T: Real>(f:T,sigma:T,t:T,w:T,target:T,is_call:bool,pa:bool)->T {
-    let df=(target/w).max_val(T::from_f64(0.01)).min_val(T::from_f64(0.95)); let st=sigma.max_val(T::from_f64(1e-8))*t.max_val(T::from_f64(1e-12)).sqrt(); let om=if is_call {1.0} else {-1.0};
-    let mut x=T::from_f64(om)*(-st*crate::inv_norm_cdf_real(df))+st*st*0.5;
-    if pa { for _ in 0..8 { let d2=(-x-st*st*0.5)/st; let e=x.exp(); let g=e*(T::from_f64(om)*d2).norm_cdf()-df; let gp=e*(T::from_f64(om)*d2).norm_cdf()-T::from_f64(om)*e*d2.norm_pdf()/st; x-=g/gp.max_val(T::from_f64(1e-10)); } }
-    f*x.exp()
+pub struct ClarkFxDeltaConventionSpec<T: Real = f64> {
+    pub spot: T,
+    pub r_dom: T,
+    pub r_for: T,
+    pub expiry: T,
+    pub atm_vol: T,
+    pub rr_25d: T,
+    pub market_strangle_25d: T,
+    pub is_premium_included_delta: bool,
+    pub is_forward_delta: bool,
+    pub query_strike: T,
 }
-pub fn calibrate_clark_fx_delta_smile<T: Real>(s:&ClarkFxDeltaConventionSpec<T>)->ClarkFxSmileCalibrationReport<T>{
-    let f=s.spot*((s.r_dom-s.r_for)*s.expiry).exp(); let w=if s.is_forward_delta {T::one()} else {(-s.r_for*s.expiry).exp()}; let st=s.atm_vol*s.atm_vol*s.expiry;
-    let katm=f*(T::from_f64(if s.is_premium_included_delta {-0.5} else {0.5})*st).exp(); let ms=s.atm_vol+s.market_strangle_25d;
-    let kp=clark_invert_strike(f,ms,s.expiry,w,T::from_f64(0.25),false,s.is_premium_included_delta); let kc=clark_invert_strike(f,ms,s.expiry,w,T::from_f64(0.25),true,s.is_premium_included_delta);
-    let rr=s.rr_25d; let bf=s.market_strangle_25d; let sp=s.atm_vol+bf-rr*0.5; let sc=s.atm_vol+bf+rr*0.5;
-    let kps=clark_invert_strike(f,sp,s.expiry,w,T::from_f64(0.25),false,s.is_premium_included_delta); let kcs=clark_invert_strike(f,sc,s.expiry,w,T::from_f64(0.25),true,s.is_premium_included_delta);
-    let x1=kps.ln(); let x2=katm.ln(); let x3=kcs.ln(); let qx=s.query_strike.ln(); let l1=(x2-qx)*(x3-qx)/((x2-x1)*(x3-x1)); let l2=(qx-x1)*(x3-qx)/((x2-x1)*(x3-x2)); let l3=(qx-x1)*(qx-x2)/((x3-x1)*(x3-x2));
-    let qvol=(l1*sp+l2*s.atm_vol+l3*sc).max_val(T::from_f64(1e-8)); let price=garman_kohlhagen_price(s.spot,s.query_strike,qvol,s.expiry,s.r_dom,s.r_for,true); let d=garman_kohlhagen_spot_delta(s.spot,s.query_strike,qvol,s.expiry,s.r_dom,s.r_for,true);
-    let pa_delta=if s.is_premium_included_delta { d-price/s.spot.max_val(T::from_f64(1e-12)) } else { d };
-    ClarkFxSmileCalibrationReport{k_atm_dns:katm,k_25d_put_ms:kp,k_25d_call_ms:kc,k_25d_put_smile:kps,k_25d_call_smile:kcs,calibrated_smile_bf_25d:bf,strangle_convexity_spread:T::zero(),query_implied_vol:qvol,query_call_price:price,query_premium_adjusted_delta:pa_delta}
+#[derive(Copy, Clone, Debug)]
+pub struct ClarkFxSmileCalibrationReport<T: Real = f64> {
+    pub k_atm_dns: T,
+    pub k_25d_put_ms: T,
+    pub k_25d_call_ms: T,
+    pub k_25d_put_smile: T,
+    pub k_25d_call_smile: T,
+    pub calibrated_smile_bf_25d: T,
+    pub strangle_convexity_spread: T,
+    pub query_implied_vol: T,
+    pub query_call_price: T,
+    pub query_premium_adjusted_delta: T,
+}
+fn clark_invert_strike<T: Real>(
+    f: T,
+    sigma: T,
+    t: T,
+    w: T,
+    target: T,
+    is_call: bool,
+    pa: bool,
+) -> T {
+    let df = (target / w)
+        .max_val(T::from_f64(0.01))
+        .min_val(T::from_f64(0.95));
+    let st = sigma.max_val(T::from_f64(1e-8)) * t.max_val(T::from_f64(1e-12)).sqrt();
+    let om = if is_call { 1.0 } else { -1.0 };
+    let mut x = T::from_f64(om) * (-st * crate::inv_norm_cdf_real(df)) + st * st * 0.5;
+    if pa {
+        if is_call {
+            x = x.max_val(-st * st * 0.5 + st + 0.05);
+        }
+        for _ in 0..10 {
+            let d2 = (-x - st * st * 0.5) / st;
+            let e = x.exp();
+            let g = e * (T::from_f64(om) * d2).norm_cdf() - df;
+            let gp =
+                e * (T::from_f64(om) * d2).norm_cdf() - T::from_f64(om) * e * d2.norm_pdf() / st;
+            let gp_safe = if is_call {
+                gp.min_val(T::from_f64(-1e-10))
+            } else {
+                gp.max_val(T::from_f64(1e-10))
+            };
+            x -= g / gp_safe;
+        }
+    }
+    f * x.exp()
+}
+pub fn calibrate_clark_fx_delta_smile<T: Real>(
+    s: &ClarkFxDeltaConventionSpec<T>,
+) -> ClarkFxSmileCalibrationReport<T> {
+    let f = s.spot * ((s.r_dom - s.r_for) * s.expiry).exp();
+    let w = if s.is_forward_delta {
+        T::one()
+    } else {
+        (-s.r_for * s.expiry).exp()
+    };
+    let st = s.atm_vol * s.atm_vol * s.expiry;
+    let katm = f
+        * (T::from_f64(if s.is_premium_included_delta {
+            -0.5
+        } else {
+            0.5
+        }) * st)
+            .exp();
+    let ms = s.atm_vol + s.market_strangle_25d;
+    let kp = clark_invert_strike(
+        f,
+        ms,
+        s.expiry,
+        w,
+        T::from_f64(0.25),
+        false,
+        s.is_premium_included_delta,
+    );
+    let kc = clark_invert_strike(
+        f,
+        ms,
+        s.expiry,
+        w,
+        T::from_f64(0.25),
+        true,
+        s.is_premium_included_delta,
+    );
+    let rr = s.rr_25d;
+    let bf = s.market_strangle_25d;
+    let target_ms = garman_kohlhagen_price(s.spot, kp, ms, s.expiry, s.r_dom, s.r_for, false)
+        + garman_kohlhagen_price(s.spot, kc, ms, s.expiry, s.r_dom, s.r_for, true);
+    let eval_smile_at_bf = |bfv: T| -> (T, T, T, T) {
+        let vp = s.atm_vol + bfv - rr * 0.5;
+        let vc = s.atm_vol + bfv + rr * 0.5;
+        let kp2 = clark_invert_strike(
+            f,
+            vp,
+            s.expiry,
+            w,
+            T::from_f64(0.25),
+            false,
+            s.is_premium_included_delta,
+        );
+        let kc2 = clark_invert_strike(
+            f,
+            vc,
+            s.expiry,
+            w,
+            T::from_f64(0.25),
+            true,
+            s.is_premium_included_delta,
+        );
+        let x1 = kp2.ln();
+        let x2 = katm.ln();
+        let x3 = kc2.ln();
+        let vol_at = |k: T| {
+            let x = k.ln();
+            let a = (x2 - x) * (x3 - x) / ((x2 - x1) * (x3 - x1));
+            let b = (x - x1) * (x3 - x) / ((x2 - x1) * (x3 - x2));
+            let c = (x - x1) * (x - x2) / ((x3 - x1) * (x3 - x2));
+            (a * vp + b * s.atm_vol + c * vc).max_val(T::from_f64(1e-8))
+        };
+        let value =
+            garman_kohlhagen_price(s.spot, kp, vol_at(kp), s.expiry, s.r_dom, s.r_for, false)
+                + garman_kohlhagen_price(s.spot, kc, vol_at(kc), s.expiry, s.r_dom, s.r_for, true);
+        (value, vp, vc, kp2 + kc2 * T::zero())
+    };
+    let mut bf_cal = bf;
+    for _ in 0..6 {
+        let (v, _, _, _) = eval_smile_at_bf(bf_cal);
+        let h = T::from_f64(1e-5);
+        let vp = eval_smile_at_bf(bf_cal + h).0;
+        let vm = eval_smile_at_bf(bf_cal - h).0;
+        let der = (vp - vm) / (h * 2.0);
+        bf_cal -= (v - target_ms) / der.max_val(T::from_f64(1e-10));
+    }
+    let (_, sp_cal, sc_cal, _) = eval_smile_at_bf(bf_cal);
+    let kps = clark_invert_strike(
+        f,
+        sp_cal,
+        s.expiry,
+        w,
+        T::from_f64(0.25),
+        false,
+        s.is_premium_included_delta,
+    );
+    let kcs = clark_invert_strike(
+        f,
+        sc_cal,
+        s.expiry,
+        w,
+        T::from_f64(0.25),
+        true,
+        s.is_premium_included_delta,
+    );
+    let x1 = kps.ln();
+    let x2 = katm.ln();
+    let x3 = kcs.ln();
+    let qx = s.query_strike.ln();
+    let l1 = (x2 - qx) * (x3 - qx) / ((x2 - x1) * (x3 - x1));
+    let l2 = (qx - x1) * (x3 - qx) / ((x2 - x1) * (x3 - x2));
+    let l3 = (qx - x1) * (qx - x2) / ((x3 - x1) * (x3 - x2));
+    let qvol = (l1 * sp_cal + l2 * s.atm_vol + l3 * sc_cal).max_val(T::from_f64(1e-8));
+    let price = garman_kohlhagen_price(
+        s.spot,
+        s.query_strike,
+        qvol,
+        s.expiry,
+        s.r_dom,
+        s.r_for,
+        true,
+    );
+    let d = garman_kohlhagen_spot_delta(
+        s.spot,
+        s.query_strike,
+        qvol,
+        s.expiry,
+        s.r_dom,
+        s.r_for,
+        true,
+    );
+    let delta_scale = if s.is_forward_delta {
+        (s.r_for * s.expiry).exp()
+    } else {
+        T::one()
+    };
+    let scaled_delta = d * delta_scale;
+    let pa_delta = if s.is_premium_included_delta {
+        scaled_delta - price / s.spot.max_val(T::from_f64(1e-12)) * delta_scale
+    } else {
+        scaled_delta
+    };
+    ClarkFxSmileCalibrationReport {
+        k_atm_dns: katm,
+        k_25d_put_ms: kp,
+        k_25d_call_ms: kc,
+        k_25d_put_smile: kps,
+        k_25d_call_smile: kcs,
+        calibrated_smile_bf_25d: bf_cal,
+        strangle_convexity_spread: bf - bf_cal,
+        query_implied_vol: qvol,
+        query_call_price: price,
+        query_premium_adjusted_delta: pa_delta,
+    }
 }
 #[inline]
 pub fn garman_kohlhagen_price<T: Real>(
@@ -470,11 +664,20 @@ impl<T: Real> FxVannaVolgaSmile<T> {
     }
 }
 
-
 pub fn price_fx_double_no_touch<T: Real>(
-    spot: T, lower: T, upper: T, vol: T, expiry: T, r_dom: T, r_for: T,
+    spot: T,
+    lower: T,
+    upper: T,
+    vol: T,
+    expiry: T,
+    r_dom: T,
+    r_for: T,
 ) -> T {
-    let quote = FxSmileQuote { atm_vol: vol, rr_25d: T::zero(), bf_25d: T::zero() };
+    let quote = FxSmileQuote {
+        atm_vol: vol,
+        rr_25d: T::zero(),
+        bf_25d: T::zero(),
+    };
     let smile = FxVannaVolgaSmile::new(spot, r_dom, r_for, expiry, quote);
     smile.price_double_no_touch(lower, upper)
 }
@@ -546,9 +749,7 @@ pub struct FxWindowBarrierSpec<T: Real = f64> {
 
 pub fn price_fx_window_barrier_option<T: Real>(s: &FxWindowBarrierSpec<T>) -> T {
     let t_exp = s.expiry.max_val(T::from_f64(1e-12));
-    let van = garman_kohlhagen_price(
-        s.spot, s.strike, s.vol, t_exp, s.r_dom, s.r_for, s.is_call,
-    );
+    let van = garman_kohlhagen_price(s.spot, s.strike, s.vol, t_exp, s.r_dom, s.r_for, s.is_call);
     let q = FxSmileQuote {
         atm_vol: s.vol,
         rr_25d: T::zero(),
@@ -870,6 +1071,62 @@ mod phase18_tests {
             lower_is_ko_upper_is_ki: true,
         };
         let ad = price_fx_kiko_option(&kd);
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase21_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    fn spec(pa: bool) -> ClarkFxDeltaConventionSpec<f64> {
+        ClarkFxDeltaConventionSpec {
+            spot: 1.1,
+            r_dom: 0.03,
+            r_for: 0.02,
+            expiry: 1.0,
+            atm_vol: 0.12,
+            rr_25d: 0.03,
+            market_strangle_25d: 0.01,
+            is_premium_included_delta: pa,
+            is_forward_delta: true,
+            query_strike: 1.1,
+        }
+    }
+
+    #[test]
+    fn clark_smile_reprices_and_preserves_convexity() {
+        let r = calibrate_clark_fx_delta_smile(&spec(false));
+        assert!(r.strangle_convexity_spread.abs() > 1e-10);
+        let p = calibrate_clark_fx_delta_smile(&spec(true));
+        assert!(p.query_call_price.val() >= 0.0);
+    }
+
+    #[test]
+    fn clark_dual_sensitivity_is_live() {
+        let d = spec(false);
+        let h = 1e-5;
+        let mut up = d;
+        up.market_strangle_25d += h;
+        let mut dn = d;
+        dn.market_strangle_25d -= h;
+        let fd = (calibrate_clark_fx_delta_smile(&up).query_call_price
+            - calibrate_clark_fx_delta_smile(&dn).query_call_price)
+            / (2.0 * h);
+        let ad_spec = ClarkFxDeltaConventionSpec::<Dual<1>> {
+            market_strangle_25d: Dual::variable(0.01, 0),
+            spot: Dual::from_value(1.1),
+            r_dom: Dual::from_value(0.03),
+            r_for: Dual::from_value(0.02),
+            expiry: Dual::one(),
+            atm_vol: Dual::from_value(0.12),
+            rr_25d: Dual::from_value(0.03),
+            is_premium_included_delta: false,
+            is_forward_delta: true,
+            query_strike: Dual::from_value(1.1),
+        };
+        let ad = calibrate_clark_fx_delta_smile(&ad_spec).query_call_price;
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

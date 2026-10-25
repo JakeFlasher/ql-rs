@@ -76,8 +76,7 @@ fn fb_sabr_normal_vol_and_call_undisc<T: Real>(
     let y_cev = df_cev / p.alpha.max_val(T::from_f64(1e-8));
     let z = p.nu * y_cev;
     let z_over_chi = if z.val().abs() < 1e-4 {
-        T::one() - p.rho * z * 0.5
-            + (T::from_f64(2.0) - p.rho * p.rho * 3.0) * z * z / 12.0
+        T::one() - p.rho * z * 0.5 + (T::from_f64(2.0) - p.rho * p.rho * 3.0) * z * z / 12.0
     } else {
         let disc = (T::one() - p.rho * z * 2.0 + z * z)
             .max_val(T::from_f64(1e-12))
@@ -163,13 +162,12 @@ mod phase19_tests {
             rho: D::from_value(-0.20),
             nu: D::from_value(0.45),
         };
-        let ad = evaluate_free_boundary_sabr(&pd, D::from_value(-0.002), D::from_value(0.99))
-            .call_price;
+        let ad =
+            evaluate_free_boundary_sabr(&pd, D::from_value(-0.002), D::from_value(0.99)).call_price;
         assert!(ad.d[0] > 0.0);
         assert!((ad.d[0] - fd).abs() < 2e-6);
     }
 }
-
 
 #[derive(Copy, Clone, Debug)]
 pub struct ThirdOrderSpeedVolExpansionSpec<T: Real = f64> {
@@ -269,9 +267,8 @@ pub fn evaluate_third_order_speed_vol_expansion<T: Real>(
     let implied_vol = if target_val <= (f_val - k_val).max(0.0) + 1e-6 {
         s_p / t.sqrt()
     } else {
-        let bs_f64 = |v: f64| -> f64 {
-            crate::black_scholes_price(f_val, k_val, v, t_val, 0.0, 0.0, true)
-        };
+        let bs_f64 =
+            |v: f64| -> f64 { crate::black_scholes_price(f_val, k_val, v, t_val, 0.0, 0.0, true) };
         let mut lo = 1e-4_f64;
         let mut hi = 5.0_f64;
         for _ in 0..36 {
@@ -291,8 +288,8 @@ pub fn evaluate_third_order_speed_vol_expansion<T: Real>(
                 iv_root = (iv_root - r / dr).clamp(1e-4, 5.0);
             }
         }
-        let f_xx =
-            (bs_f64(iv_root + h_iv) - 2.0 * bs_f64(iv_root) + bs_f64(iv_root - h_iv)) / (h_iv * h_iv);
+        let f_xx = (bs_f64(iv_root + h_iv) - 2.0 * bs_f64(iv_root) + bs_f64(iv_root - h_iv))
+            / (h_iv * h_iv);
         let iv_t = T::from_f64(iv_root);
         let h_t = T::from_f64(h_iv);
         let c_up = crate::black_scholes_price(
@@ -339,8 +336,6 @@ pub fn evaluate_third_order_speed_vol_expansion<T: Real>(
     }
 }
 
-
-
 #[cfg(test)]
 mod phase20_tests {
     use super::*;
@@ -360,18 +355,10 @@ mod phase20_tests {
         let q = evaluate_third_order_speed_vol_expansion(&spec);
         assert!(q.bs_gamma > 0.0);
         assert!(q.bs_speed.is_finite());
-        assert!(
-            (q.call_price - q.put_price - 0.99 * (q.model_forward - 0.20)).abs() < 1e-12
-        );
-        let repriced = crate::black_scholes_price(
-            q.model_forward,
-            0.20,
-            q.implied_vol,
-            0.25,
-            0.0,
-            0.0,
-            true,
-        ) * 0.99;
+        assert!((q.call_price - q.put_price - 0.99 * (q.model_forward - 0.20)).abs() < 1e-12);
+        let repriced =
+            crate::black_scholes_price(q.model_forward, 0.20, q.implied_vol, 0.25, 0.0, 0.0, true)
+                * 0.99;
         assert!((repriced - q.call_price).abs() < 1e-7);
 
         let h = 1e-5;

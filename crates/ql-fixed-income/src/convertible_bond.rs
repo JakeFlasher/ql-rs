@@ -227,7 +227,8 @@ pub fn price_convertible_bond_afv_pde<T: Real>(
                 rhs_bf[i] = u_bf[i] + coupon_dt + lam * rec_debt * dt;
             } else {
                 // AFV (2003) Eq. 12: risk-neutral drift includes +\lambda(S) \eta for default jump martingale compensation
-                let mu_x = spec.rate - spec.div_yield + lam * spec.equity_loss_on_default_eta - sig2 * 0.5;
+                let mu_x =
+                    spec.rate - spec.div_yield + lam * spec.equity_loss_on_default_eta - sig2 * 0.5;
                 let a_diff = sig2 * 0.5 / (dx * dx);
                 let b_adv = mu_x / (2.0 * dx);
                 l[i] = -(a_diff - b_adv) * dt;

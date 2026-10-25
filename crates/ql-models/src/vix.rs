@@ -228,7 +228,9 @@ pub fn evaluate_quintic_ou_spx_vix<T: Real>(
             .max_val(T::zero())
             .min_val(T::from_f64(0.999999))
             .sqrt();
-            let s_cond = (T::one() - rho_u * rho_u).max_val(T::from_f64(1e-12)).sqrt();
+            let s_cond = (T::one() - rho_u * rho_u)
+                .max_val(T::from_f64(1e-12))
+                .sqrt();
             let m_cond = rho_u * z_node;
             let cond_exp = p.xi0 * poly_sq_exp(m_cond, s_cond) / norm_denom;
             vix2_z += cond_exp * (0.5 * gw);
@@ -276,23 +278,49 @@ pub fn evaluate_quintic_ou_spx_vix<T: Real>(
                 iv_root = (iv_root - r / dr).clamp(1e-4, 5.0);
             }
         }
-        let f_xx = (bs_undisc_f64(iv_root + h_iv) - 2.0 * bs_undisc_f64(iv_root) + bs_undisc_f64(iv_root - h_iv))
+        let f_xx = (bs_undisc_f64(iv_root + h_iv) - 2.0 * bs_undisc_f64(iv_root)
+            + bs_undisc_f64(iv_root - h_iv))
             / (h_iv * h_iv);
         let iv_t = T::from_f64(iv_root);
         let h_t = T::from_f64(h_iv);
-        let c_up = ql_vol::black_scholes_price(vix_fut, vix_strike, iv_t + h_t, t_exp, T::zero(), T::zero(), true);
-        let c_dn = ql_vol::black_scholes_price(vix_fut, vix_strike, iv_t - h_t, t_exp, T::zero(), T::zero(), true);
+        let c_up = ql_vol::black_scholes_price(
+            vix_fut,
+            vix_strike,
+            iv_t + h_t,
+            t_exp,
+            T::zero(),
+            T::zero(),
+            true,
+        );
+        let c_dn = ql_vol::black_scholes_price(
+            vix_fut,
+            vix_strike,
+            iv_t - h_t,
+            t_exp,
+            T::zero(),
+            T::zero(),
+            true,
+        );
         let f_x = (c_up - c_dn) / (2.0 * h_iv);
         ql_ad::ift_lift_1d(
             iv_root,
-            |s| ql_vol::black_scholes_price(vix_fut, vix_strike, s, t_exp, T::zero(), T::zero(), true) - vix_call_undisc,
+            |s| {
+                ql_vol::black_scholes_price(
+                    vix_fut,
+                    vix_strike,
+                    s,
+                    t_exp,
+                    T::zero(),
+                    T::zero(),
+                    true,
+                ) - vix_call_undisc
+            },
             f_x,
             f_xx,
         )
     };
     let spx_atm_vol = p.xi0.max_val(T::from_f64(1e-12)).sqrt();
-    let spx_atm_skew = p.rho * eff_vvol
-        * (T::one() - (-p.kappa * t_exp).exp())
+    let spx_atm_skew = p.rho * eff_vvol * (T::one() - (-p.kappa * t_exp).exp())
         / (p.kappa * t_exp).max_val(T::from_f64(1e-6));
 
     QuinticOuVixSpxReport {
@@ -341,7 +369,20 @@ mod phase19_tests {
             (rep.vix_call_price - rep.vix_put_price - 0.985 * (rep.vix_future - 20.0)).abs()
                 < 1e-12
         );
-        assert!((ql_vol::black_scholes_price(rep.vix_future, 20.0, rep.vix_implied_vol, 0.5, 0.0, 0.0, true) * 0.985 - rep.vix_call_price).abs() < 1e-6);
+        assert!(
+            (ql_vol::black_scholes_price(
+                rep.vix_future,
+                20.0,
+                rep.vix_implied_vol,
+                0.5,
+                0.0,
+                0.0,
+                true
+            ) * 0.985
+                - rep.vix_call_price)
+                .abs()
+                < 1e-6
+        );
         assert!(rep.spx_atm_skew < 0.0);
 
         let h = 1e-5;
@@ -374,7 +415,6 @@ mod phase19_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
-
 
 #[derive(Copy, Clone, Debug)]
 pub struct MixedRoughBergomiVixSpec<T: Real = f64> {
@@ -633,8 +673,7 @@ pub fn evaluate_mixed_rough_bergomi_vix<T: Real>(
                 iv_root = (iv_root - r / dr).clamp(1e-4, 5.0);
             }
         }
-        let f_xx = (bs_undisc_f64(iv_root + h_iv)
-            - 2.0 * bs_undisc_f64(iv_root)
+        let f_xx = (bs_undisc_f64(iv_root + h_iv) - 2.0 * bs_undisc_f64(iv_root)
             + bs_undisc_f64(iv_root - h_iv))
             / (h_iv * h_iv);
         let iv_t = T::from_f64(iv_root);
@@ -690,8 +729,6 @@ pub fn evaluate_mixed_rough_bergomi_vix<T: Real>(
         vix_atm_skew_proxy,
     }
 }
-
-
 
 #[cfg(test)]
 mod phase20_tests {

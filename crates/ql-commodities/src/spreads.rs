@@ -2,12 +2,144 @@ use ql_ad::Real;
 use ql_instruments::OptionType;
 
 #[derive(Clone, Debug)]
-pub struct BurgerMultiFuelTollingPlantSpec<T: Real = f64>{pub power_forwards:Vec<T>,pub gas_forwards:Vec<T>,pub coal_forwards:Vec<T>,pub carbon_forwards:Vec<T>,pub dispatch_times:Vec<f64>,pub capacity_mw:T,pub period_hours:T,pub gas_heat_rate:T,pub gas_emission_factor:T,pub gas_vom_cost:T,pub coal_heat_rate:T,pub coal_emission_factor:T,pub coal_vom_cost:T,pub vol_power:T,pub vol_gas:T,pub vol_coal:T,pub vol_carbon:T,pub rho_power_gas:T,pub rho_power_coal:T,pub rho_power_carbon:T,pub rho_gas_coal:T,pub start_up_cost:T,pub min_load_fraction:T,pub part_load_heat_rate_penalty:T,pub risk_free_rate:T}
+pub struct BurgerMultiFuelTollingPlantSpec<T: Real = f64> {
+    pub power_forwards: Vec<T>,
+    pub gas_forwards: Vec<T>,
+    pub coal_forwards: Vec<T>,
+    pub carbon_forwards: Vec<T>,
+    pub dispatch_times: Vec<f64>,
+    pub capacity_mw: T,
+    pub period_hours: T,
+    pub gas_heat_rate: T,
+    pub gas_emission_factor: T,
+    pub gas_vom_cost: T,
+    pub coal_heat_rate: T,
+    pub coal_emission_factor: T,
+    pub coal_vom_cost: T,
+    pub vol_power: T,
+    pub vol_gas: T,
+    pub vol_coal: T,
+    pub vol_carbon: T,
+    pub rho_power_gas: T,
+    pub rho_power_coal: T,
+    pub rho_power_carbon: T,
+    pub rho_gas_coal: T,
+    pub start_up_cost: T,
+    pub min_load_fraction: T,
+    pub part_load_heat_rate_penalty: T,
+    pub risk_free_rate: T,
+}
 #[derive(Copy, Clone, Debug)]
-pub struct BurgerMultiFuelTollingValuation<T: Real = f64>{pub tolling_plant_npv:T,pub unconstrained_multifuel_npv:T,pub clean_spark_only_npv:T,pub clean_dark_only_npv:T,pub fuel_switching_option_value:T,pub startup_friction_cost:T,pub implied_gas_vs_coal_switching_carbon_price:T}
-pub fn price_burger_multifuel_tolling_power_plant<T: Real>(s:&BurgerMultiFuelTollingPlantSpec<T>)->BurgerMultiFuelTollingValuation<T>{
- let mut multi=T::zero();let mut spark=T::zero();let mut dark=T::zero();let q=s.capacity_mw*s.period_hours;for i in 0..s.dispatch_times.len(){let p=s.power_forwards.get(i).copied().unwrap_or(T::zero());let g=s.gas_forwards.get(i).copied().unwrap_or(T::zero());let c=s.coal_forwards.get(i).copied().unwrap_or(T::zero());let co=s.carbon_forwards.get(i).copied().unwrap_or(T::zero());let sp=p-s.gas_heat_rate*g-s.gas_emission_factor*co-s.gas_vom_cost;let dk=p-s.coal_heat_rate*c-s.coal_emission_factor*co-s.coal_vom_cost;let vsig=(s.vol_power*s.vol_power+(s.gas_heat_rate*s.vol_gas)*(s.gas_heat_rate*s.vol_gas)-s.rho_power_gas*s.vol_power*s.vol_gas*s.gas_heat_rate*2.0).max_val(T::from_f64(1e-12)).sqrt();let dsig=(s.vol_power*s.vol_power+(s.coal_heat_rate*s.vol_coal)*(s.coal_heat_rate*s.vol_coal)-s.rho_power_coal*s.vol_power*s.vol_coal*s.coal_heat_rate*2.0).max_val(T::from_f64(1e-12)).sqrt();let vs=sp*(sp/vsig).norm_cdf()+vsig*(sp/vsig).norm_pdf();let vd=dk*(dk/dsig).norm_cdf()+dsig*(dk/dsig).norm_pdf();let val=(vs+vd+((vs-vd)*(vs-vd)+T::from_f64(1e-8)).sqrt())*0.5;let df=(-s.risk_free_rate*s.dispatch_times[i]).exp();spark+=df*q*vs;dark+=df*q*vd;multi+=df*q*val;}
- let friction=s.start_up_cost.max_val(T::zero());let toll=(multi-friction).max_val(T::zero());let sw=((s.gas_heat_rate*s.gas_forwards.get(0).copied().unwrap_or(T::zero())+s.gas_vom_cost)-(s.coal_heat_rate*s.coal_forwards.get(0).copied().unwrap_or(T::zero())+s.coal_vom_cost))/(s.coal_emission_factor-s.gas_emission_factor).max_val(T::from_f64(1e-6));BurgerMultiFuelTollingValuation{tolling_plant_npv:toll,unconstrained_multifuel_npv:multi,clean_spark_only_npv:spark,clean_dark_only_npv:dark,fuel_switching_option_value:(multi-spark.max_val(dark)).max_val(T::zero()),startup_friction_cost:(multi-toll).max_val(T::zero()),implied_gas_vs_coal_switching_carbon_price:sw}
+pub struct BurgerMultiFuelTollingValuation<T: Real = f64> {
+    pub tolling_plant_npv: T,
+    pub unconstrained_multifuel_npv: T,
+    pub clean_spark_only_npv: T,
+    pub clean_dark_only_npv: T,
+    pub fuel_switching_option_value: T,
+    pub startup_friction_cost: T,
+    pub implied_gas_vs_coal_switching_carbon_price: T,
+}
+pub fn price_burger_multifuel_tolling_power_plant<T: Real>(
+    s: &BurgerMultiFuelTollingPlantSpec<T>,
+) -> BurgerMultiFuelTollingValuation<T> {
+    let normal_nodes = [-2.02018287, -0.95857246, 0.0, 0.95857246, 2.02018287];
+    let normal_weights = [0.01995324, 0.39361932, 0.94530872, 0.39361932, 0.01995324];
+    let block = s.capacity_mw * s.period_hours;
+    let mut multi = T::zero();
+    let mut spark = T::zero();
+    let mut dark = T::zero();
+    let mut values = Vec::with_capacity(s.dispatch_times.len());
+    for i in 0..s.dispatch_times.len() {
+        let t = s.dispatch_times[i].max(1e-4);
+        let p = s.power_forwards.get(i).copied().unwrap_or(T::zero());
+        let gas = s.gas_forwards.get(i).copied().unwrap_or(T::zero());
+        let coal = s.coal_forwards.get(i).copied().unwrap_or(T::zero());
+        let carbon = s.carbon_forwards.get(i).copied().unwrap_or(T::zero());
+        let sqrt_t = T::from_f64(t.sqrt());
+        let sp_mean = p - s.gas_heat_rate * gas - s.gas_emission_factor * carbon - s.gas_vom_cost;
+        let dk_mean =
+            p - s.coal_heat_rate * coal - s.coal_emission_factor * carbon - s.coal_vom_cost;
+        let sp = p * s.vol_power * sqrt_t;
+        let sg = s.gas_heat_rate * gas * s.vol_gas * sqrt_t;
+        let sc = s.coal_heat_rate * coal * s.vol_coal * sqrt_t;
+        let se = carbon * s.vol_carbon * sqrt_t;
+        let ss = (sp * sp + sg * sg + (s.gas_emission_factor * se).powf(2.0)
+            - T::from_f64(2.0) * s.rho_power_gas * sp * sg
+            - T::from_f64(2.0) * s.rho_power_carbon * s.gas_emission_factor * sp * se)
+            .max_val(T::from_f64(1e-14))
+            .sqrt();
+        let ds = (sp * sp + sc * sc + (s.coal_emission_factor * se).powf(2.0)
+            - T::from_f64(2.0) * s.rho_power_coal * sp * sc
+            - T::from_f64(2.0) * s.rho_power_carbon * s.coal_emission_factor * sp * se)
+            .max_val(T::from_f64(1e-14))
+            .sqrt();
+        let sdc = (sg * sg + sc * sc - T::from_f64(2.0) * s.rho_gas_coal * sg * sc
+            + ((s.coal_emission_factor - s.gas_emission_factor) * se).powf(2.0))
+        .max_val(T::from_f64(1e-14))
+        .sqrt();
+        let rho_sd = ((ss * ss + ds * ds - sdc * sdc) / (T::from_f64(2.0) * ss * ds))
+            .max_val(T::from_f64(-0.999))
+            .min_val(T::from_f64(0.999));
+        let mut emax = T::zero();
+        let mut es = T::zero();
+        let mut ed = T::zero();
+        for (&x, &wx) in normal_nodes.iter().zip(normal_weights.iter()) {
+            for (&y, &wy) in normal_nodes.iter().zip(normal_weights.iter()) {
+                let z1 = T::from_f64(2.0_f64.sqrt() * x);
+                let z2 = T::from_f64(2.0_f64.sqrt() * y);
+                let zs = z1;
+                let zd = rho_sd * z1 + (T::one() - rho_sd * rho_sd).sqrt() * z2;
+                let sv = sp_mean + ss * zs;
+                let dv = dk_mean + ds * zd;
+                let weight = T::from_f64(wx * wy / std::f64::consts::PI);
+                emax += weight * sv.max_val(dv).max_val(T::zero());
+                es += weight * sv.max_val(T::zero());
+                ed += weight * dv.max_val(T::zero());
+            }
+        }
+        let df = (-s.risk_free_rate * T::from_f64(t)).exp();
+        let disc_multi = df * block * emax;
+        multi += disc_multi;
+        spark += df * block * es;
+        dark += df * block * ed;
+        values.push(disc_multi);
+    }
+    let mut state = [T::zero(); 3];
+    let mut toll = T::zero();
+    for i in (0..values.len()).rev() {
+        let flow = values[i];
+        let min_flow = flow * s.min_load_fraction.max_val(T::zero())
+            - s.start_up_cost
+            - s.part_load_heat_rate_penalty * flow;
+        let full_flow = flow - s.start_up_cost;
+        let next_off = state[0];
+        let next_min = state[1];
+        let next_full = state[2];
+        state[0] = next_off.max_val(next_min.max_val(next_full));
+        state[1] = (min_flow + next_min).max_val(min_flow + next_full);
+        state[2] = (full_flow + next_full).max_val(full_flow + next_min);
+        if i == 0 {
+            toll = state[0].max_val(state[1].max_val(state[2]));
+        }
+    }
+    let switch_value = (multi - spark.max_val(dark)).max_val(T::zero());
+    BurgerMultiFuelTollingValuation {
+        tolling_plant_npv: toll.max_val(T::zero()),
+        unconstrained_multifuel_npv: multi,
+        clean_spark_only_npv: spark,
+        clean_dark_only_npv: dark,
+        fuel_switching_option_value: switch_value,
+        startup_friction_cost: (multi - toll).max_val(T::zero()),
+        implied_gas_vs_coal_switching_carbon_price: {
+            let gas_cost = s.gas_heat_rate * s.gas_forwards.first().copied().unwrap_or(T::zero())
+                + s.gas_vom_cost;
+            let coal_cost = s.coal_heat_rate
+                * s.coal_forwards.first().copied().unwrap_or(T::zero())
+                + s.coal_vom_cost;
+            (gas_cost - coal_cost)
+                / (s.coal_emission_factor - s.gas_emission_factor).max_val(T::from_f64(1e-6))
+        },
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -236,7 +368,11 @@ pub fn price_weather_hdd_cdd_option<T: Real>(
             cumulative_variance: T::zero(),
         };
     }
-    let w = if s.kind == DegreeDayKind::Hdd { 1.0 } else { -1.0 };
+    let w = if s.kind == DegreeDayKind::Hdd {
+        1.0
+    } else {
+        -1.0
+    };
     let kappa = s.mean_reversion.max_val(T::from_f64(1e-6));
     let sig = s.daily_vol.abs();
     let omega_s = 2.0 * std::f64::consts::PI / 365.0;
@@ -251,11 +387,10 @@ pub fn price_weather_hdd_cdd_option<T: Real>(
     for &t_raw in &s.times {
         let t_f64 = t_raw.max(1e-6);
         let tt = T::from_f64(t_f64);
-        let seasonal = s.mean_level
-            + s.seasonal_amplitude * (tt * omega_s + s.seasonal_phase).sin();
+        let seasonal =
+            s.mean_level + s.seasonal_amplitude * (tt * omega_s + s.seasonal_phase).sin();
         let e_kt = (-kappa * tt).exp();
-        let mu = seasonal
-            + (s.initial_temperature - theta0) * e_kt
+        let mu = seasonal + (s.initial_temperature - theta0) * e_kt
             - (s.market_price_risk * sig / kappa) * (T::one() - e_kt);
         let v_i = (sig * sig / (kappa * 2.0)) * (T::one() - e_kt * e_kt);
         let sd_i = (v_i.max_val(T::zero()) + T::from_f64(1e-16)).sqrt();
@@ -573,7 +708,18 @@ mod phase18_tests {
             option_type: OptionType::Call,
         };
         let a = price_clean_spark_dark_spread(&s);
-        let b = spark_spread_option(80.0, 3.0, 7.0, 10.0, 0.2, 0.3, 0.2, 0.03, 1.0, OptionType::Call);
+        let b = spark_spread_option(
+            80.0,
+            3.0,
+            7.0,
+            10.0,
+            0.2,
+            0.3,
+            0.2,
+            0.03,
+            1.0,
+            OptionType::Call,
+        );
         assert!((a - b).abs() < 1e-12);
 
         let w_call = WeatherDerivativeSpec {
@@ -625,5 +771,49 @@ mod phase18_tests {
         };
         let ad = price_weather_hdd_cdd_option(&wd).npv;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase21_tests {
+    use super::*;
+
+    fn spec(rho: f64) -> BurgerMultiFuelTollingPlantSpec<f64> {
+        BurgerMultiFuelTollingPlantSpec {
+            power_forwards: vec![80.0, 80.0],
+            gas_forwards: vec![20.0, 20.0],
+            coal_forwards: vec![15.0, 15.0],
+            carbon_forwards: vec![50.0, 50.0],
+            dispatch_times: vec![0.25, 0.75],
+            capacity_mw: 100.0,
+            period_hours: 1.0,
+            gas_heat_rate: 2.0,
+            gas_emission_factor: 0.4,
+            gas_vom_cost: 2.0,
+            coal_heat_rate: 2.5,
+            coal_emission_factor: 0.8,
+            coal_vom_cost: 1.0,
+            vol_power: 0.2,
+            vol_gas: 0.2,
+            vol_coal: 0.2,
+            vol_carbon: 0.2,
+            rho_power_gas: 0.2,
+            rho_power_coal: 0.2,
+            rho_power_carbon: 0.2,
+            rho_gas_coal: rho,
+            start_up_cost: 10.0,
+            min_load_fraction: 0.5,
+            part_load_heat_rate_penalty: 0.1,
+            risk_free_rate: 0.03,
+        }
+    }
+
+    #[test]
+    fn multifuel_switching_is_positive_and_correlation_sensitive() {
+        let low = price_burger_multifuel_tolling_power_plant(&spec(-0.5));
+        let high = price_burger_multifuel_tolling_power_plant(&spec(0.8));
+        assert!(low.fuel_switching_option_value >= 0.0);
+        assert!(low.fuel_switching_option_value >= high.fuel_switching_option_value - 1e-10);
+        assert!(low.startup_friction_cost >= 0.0);
     }
 }

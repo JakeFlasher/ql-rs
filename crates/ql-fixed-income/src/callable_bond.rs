@@ -320,10 +320,7 @@ fn smooth_pos<T: Real>(x: T, eps: f64) -> T {
     (x + (x * x + T::from_f64(e * e)).sqrt()) * 0.5
 }
 
-pub fn price_callable_tree_generic<T: Real>(
-    s: &CallableBondOasSpec<T>,
-    oas: T,
-) -> (T, T) {
+pub fn price_callable_tree_generic<T: Real>(s: &CallableBondOasSpec<T>, oas: T) -> (T, T) {
     if s.payment_times.is_empty() {
         return (T::zero(), T::zero());
     }
@@ -340,7 +337,11 @@ pub fn price_callable_tree_generic<T: Real>(
 
     let mut step_coupons = vec![T::zero(); n + 1];
     for (idx, &t) in s.payment_times.iter().enumerate() {
-        let prev_t = if idx == 0 { 0.0 } else { s.payment_times[idx - 1] };
+        let prev_t = if idx == 0 {
+            0.0
+        } else {
+            s.payment_times[idx - 1]
+        };
         let tau = (t - prev_t).max(0.0);
         let step_idx = ((t / dt).round() as usize).min(n);
         step_coupons[step_idx] += s.face_amount * s.coupon_rate * tau;
@@ -391,9 +392,8 @@ pub fn analyze_callable_bond_oas_ad<T: Real>(
         tree_steps: s.tree_steps,
         smoothing_eps: s.smoothing_eps,
     };
-    let eval_f64 = |z: f64| -> f64 {
-        price_callable_tree_generic(&s_f64, z).0 - s_f64.market_dirty_price
-    };
+    let eval_f64 =
+        |z: f64| -> f64 { price_callable_tree_generic(&s_f64, z).0 - s_f64.market_dirty_price };
     let mut lo = -0.15_f64;
     let mut hi = 0.50_f64;
     let f_lo = eval_f64(lo);
@@ -421,9 +421,8 @@ pub fn analyze_callable_bond_oas_ad<T: Real>(
     let f_x = (r_up - r_dn) / (2.0 * h);
     let f_xx = (r_up - 2.0 * r_0 + r_dn) / (h * h);
 
-    let residual_at = |z_t: T| -> T {
-        price_callable_tree_generic(s, z_t).0 - s.market_dirty_price
-    };
+    let residual_at =
+        |z_t: T| -> T { price_callable_tree_generic(s, z_t).0 - s.market_dirty_price };
     let oas = ql_ad::ift_lift_1d(x_root, residual_at, T::from_f64(f_x), f_xx);
     let (cp, sp) = price_callable_tree_generic(s, oas);
     let dr = 1e-4;
@@ -499,7 +498,6 @@ mod phase18_tests {
     }
 }
 
-
 #[derive(Clone, Debug)]
 pub struct BlackKarasinskiCallableFrnSpec<T: Real = f64> {
     pub face_amount: T,
@@ -529,10 +527,7 @@ pub struct BlackKarasinskiCallableFrnReport<T: Real = f64> {
     pub effective_convexity: T,
 }
 
-fn bk_tree_frn_prices<T: Real>(
-    s: &BlackKarasinskiCallableFrnSpec<T>,
-    oas: T,
-) -> (T, T, T) {
+fn bk_tree_frn_prices<T: Real>(s: &BlackKarasinskiCallableFrnSpec<T>, oas: T) -> (T, T, T) {
     let n = s.coupon_steps.max(2);
     let dt = s.maturity.max(0.25) / n as f64;
     let a = s.mean_reversion.max_val(T::from_f64(1e-6));
@@ -685,7 +680,8 @@ pub fn analyze_black_karasinski_callable_frn_oas_ad<T: Real>(
         target_market_price: s.target_market_price.val(),
         smoothing_eps: s.smoothing_eps,
     };
-    let eval_f64 = |oas: f64| -> f64 { bk_tree_frn_prices(&s_f64, oas).0 - s_f64.target_market_price };
+    let eval_f64 =
+        |oas: f64| -> f64 { bk_tree_frn_prices(&s_f64, oas).0 - s_f64.target_market_price };
     let mut lo = -0.08_f64;
     let mut hi = 0.25_f64;
     let f_lo = eval_f64(lo);
@@ -712,8 +708,8 @@ pub fn analyze_black_karasinski_callable_frn_oas_ad<T: Real>(
     let f_xx = (r_up - 2.0 * r_0 + r_dn) / (h * h);
     let oas_t0 = T::from_f64(oas_root);
     let h_t = T::from_f64(h);
-    let f_x = (bk_tree_frn_prices(s, oas_t0 + h_t).0 - bk_tree_frn_prices(s, oas_t0 - h_t).0)
-        / (2.0 * h);
+    let f_x =
+        (bk_tree_frn_prices(s, oas_t0 + h_t).0 - bk_tree_frn_prices(s, oas_t0 - h_t).0) / (2.0 * h);
     let oas_spread = ql_ad::ift_lift_1d(
         oas_root,
         |z| bk_tree_frn_prices(s, z).0 - s.target_market_price,
@@ -747,8 +743,6 @@ pub fn analyze_black_karasinski_callable_frn_oas_ad<T: Real>(
         effective_convexity,
     }
 }
-
-
 
 #[cfg(test)]
 mod phase20_tests {

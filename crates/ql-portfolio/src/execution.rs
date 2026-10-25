@@ -2,13 +2,91 @@ use super::allocation::AllocationError;
 use ql_ad::Real;
 
 #[derive(Copy, Clone, Debug)]
-pub struct CarteaJaimungalAlphaExecutionSpec<T: Real = f64>{pub initial_inventory:T,pub horizon:T,pub num_steps:usize,pub temporary_impact_k:T,pub permanent_impact_b:T,pub inventory_penalty_phi:T,pub terminal_penalty_a:T,pub initial_alpha_signal:T,pub alpha_mean_reversion_kappa:T,pub alpha_volatility:T}
-#[derive(Clone, Debug)]
-pub struct CarteaJaimungalAlphaExecutionReport<T: Real = f64>{pub times:Vec<T>,pub inventory_trajectory:Vec<T>,pub baseline_ac_inventory_trajectory:Vec<T>,pub optimal_trading_rates:Vec<T>,pub alpha_speculative_tilt_rates:Vec<T>,pub expected_alpha_capture_pnl:T,pub expected_execution_cost_net_of_alpha:T,pub value_function_h0_alpha_variance_bonus:T}
-pub fn solve_cartea_jaimungal_alpha_execution<T: Real>(s:&CarteaJaimungalAlphaExecutionSpec<T>)->CarteaJaimungalAlphaExecutionReport<T>{
- let n=s.num_steps.max(4);let dt=s.horizon/T::from_f64(n as f64);let k=s.temporary_impact_k.max_val(T::from_f64(1e-8));let phi=s.inventory_penalty_phi.max_val(T::from_f64(1e-8));let gam=(phi/k).sqrt();let kap=s.alpha_mean_reversion_kappa.max_val(T::from_f64(1e-6));let den=(gam*s.horizon).sinh().max_val(T::from_f64(1e-12));let mut times=Vec::with_capacity(n+1);let mut ac=Vec::with_capacity(n+1);let mut q=Vec::with_capacity(n+1);for j in 0..=n{let tt=dt*(j as f64);let qa=s.initial_inventory*(gam*(s.horizon-tt)).sinh()/den;let tilt=s.initial_alpha_signal/(k*den*2.0)*(gam*(s.horizon-tt)).sinh()*(T::one()-(-kap*tt).exp())/kap;times.push(tt);ac.push(qa);q.push(qa+tilt);}
- let mut rates=Vec::with_capacity(n);let mut tilt_rates=Vec::with_capacity(n);let mut cap=T::zero();let mut cost=T::zero();for j in 0..n{let nu=-(q[j+1]-q[j])/dt;let nua=-(ac[j+1]-ac[j])/dt;rates.push(nu);tilt_rates.push(nu-nua);let t=times[j];let alpha=s.initial_alpha_signal*(-kap*t).exp();cap+=alpha*q[j]*dt;cost+=(k*nu*nu+phi*q[j]*q[j])*dt;}cap+=s.alpha_volatility*s.alpha_volatility/(k*kap*kap*4.0)*s.horizon;cost+=s.permanent_impact_b*0.5*s.initial_inventory*s.initial_inventory-cap;CarteaJaimungalAlphaExecutionReport{times,inventory_trajectory:q,baseline_ac_inventory_trajectory:ac,optimal_trading_rates:rates,alpha_speculative_tilt_rates:tilt_rates,expected_alpha_capture_pnl:cap,expected_execution_cost_net_of_alpha:cost,value_function_h0_alpha_variance_bonus:s.alpha_volatility*s.alpha_volatility/(k*kap*kap*4.0)*s.horizon}
+pub struct CarteaJaimungalAlphaExecutionSpec<T: Real = f64> {
+    pub initial_inventory: T,
+    pub horizon: T,
+    pub num_steps: usize,
+    pub temporary_impact_k: T,
+    pub permanent_impact_b: T,
+    pub inventory_penalty_phi: T,
+    pub terminal_penalty_a: T,
+    pub initial_alpha_signal: T,
+    pub alpha_mean_reversion_kappa: T,
+    pub alpha_volatility: T,
 }
+#[derive(Clone, Debug)]
+pub struct CarteaJaimungalAlphaExecutionReport<T: Real = f64> {
+    pub times: Vec<T>,
+    pub inventory_trajectory: Vec<T>,
+    pub baseline_ac_inventory_trajectory: Vec<T>,
+    pub optimal_trading_rates: Vec<T>,
+    pub alpha_speculative_tilt_rates: Vec<T>,
+    pub expected_alpha_capture_pnl: T,
+    pub expected_execution_cost_net_of_alpha: T,
+    pub value_function_h0_alpha_variance_bonus: T,
+}
+pub fn solve_cartea_jaimungal_alpha_execution<T: Real>(
+    s: &CarteaJaimungalAlphaExecutionSpec<T>,
+) -> CarteaJaimungalAlphaExecutionReport<T> {
+    let n = s.num_steps.max(4);
+    let dt = s.horizon / T::from_f64(n as f64);
+    let k = s.temporary_impact_k.max_val(T::from_f64(1e-8));
+    let phi = s.inventory_penalty_phi.max_val(T::from_f64(1e-8));
+    let root = (k * phi).sqrt();
+    let gamma = (phi / k).sqrt();
+    let a_eff = if s.terminal_penalty_a.val() > 0.0 {
+        s.terminal_penalty_a + root
+    } else {
+        s.terminal_penalty_a.max_val(root) + root * 10.0
+    };
+    let zeta = root / a_eff.max_val(T::from_f64(1e-12));
+    let psi = |tau: T| tau.sinh() + zeta * tau.cosh();
+    let denom = psi(gamma * s.horizon).max_val(T::from_f64(1e-12));
+    let kap = s.alpha_mean_reversion_kappa.max_val(T::from_f64(1e-6));
+    let mut times = Vec::with_capacity(n + 1);
+    let mut baseline = Vec::with_capacity(n + 1);
+    let mut inventory = Vec::with_capacity(n + 1);
+    for j in 0..=n {
+        let t = dt * j as f64;
+        let tau = s.horizon - t;
+        let base = s.initial_inventory * psi(gamma * tau) / denom;
+        let tilt = s.initial_alpha_signal / (k * denom * 2.0)
+            * psi(gamma * tau)
+            * (T::one() - (-kap * t).exp())
+            / kap;
+        times.push(t);
+        baseline.push(base);
+        inventory.push(base + tilt);
+    }
+    let mut rates = Vec::with_capacity(n);
+    let mut tilt_rates = Vec::with_capacity(n);
+    let mut capture = T::zero();
+    let mut cost = T::zero();
+    for j in 0..n {
+        let rate = -(inventory[j + 1] - inventory[j]) / dt;
+        let base_rate = -(baseline[j + 1] - baseline[j]) / dt;
+        let alpha = s.initial_alpha_signal * (-kap * times[j]).exp();
+        rates.push(rate);
+        tilt_rates.push(rate - base_rate);
+        capture += alpha * inventory[j] * dt;
+        cost += (k * rate * rate + phi * inventory[j] * inventory[j]) * dt;
+    }
+    let variance_bonus =
+        s.alpha_volatility * s.alpha_volatility / (k * kap * kap * 4.0) * s.horizon;
+    capture += variance_bonus;
+    cost += s.permanent_impact_b * 0.5 * s.initial_inventory * s.initial_inventory - capture;
+    CarteaJaimungalAlphaExecutionReport {
+        times,
+        inventory_trajectory: inventory,
+        baseline_ac_inventory_trajectory: baseline,
+        optimal_trading_rates: rates,
+        alpha_speculative_tilt_rates: tilt_rates,
+        expected_alpha_capture_pnl: capture,
+        expected_execution_cost_net_of_alpha: cost,
+        value_function_h0_alpha_variance_bonus: variance_bonus,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AlmgrenChrissSpec<T: Real> {
     pub initial_inventory: T,
@@ -359,7 +437,8 @@ pub fn solve_avellaneda_stoikov_market_making<T: Real>(
     let sig2 = spec.volatility * spec.volatility;
 
     // Reservation (indifference) price at t = 0: r(s, q, T) = s + alpha * T - q * gamma * sigma^2 * T
-    let res_price = spec.mid_price + spec.alpha_drift * tau - spec.initial_inventory * gamma * sig2 * tau;
+    let res_price =
+        spec.mid_price + spec.alpha_drift * tau - spec.initial_inventory * gamma * sig2 * tau;
     let base_half_spread = (T::one() + gamma / kappa).ln() / kappa;
     let half_spread = base_half_spread + gamma * sig2 * tau * 0.5;
     let opt_bid = res_price - half_spread;
@@ -631,7 +710,14 @@ mod phase19_tests {
         // Long inventory skews reservation price downward and increases ask fill intensity vs bid
         assert!(rep_long.reservation_price < 100.0);
         assert!(rep_long.ask_fill_intensity > rep_long.bid_fill_intensity);
-        assert!(rep_long.expected_inventory_trajectory.last().copied().unwrap() < 5.0);
+        assert!(
+            rep_long
+                .expected_inventory_trajectory
+                .last()
+                .copied()
+                .unwrap()
+                < 5.0
+        );
 
         let h = 1e-5;
         let eval_q = |q: f64| {
@@ -657,7 +743,6 @@ mod phase19_tests {
         assert!((ad.d[0] - fd).abs() < 1e-6);
     }
 }
-
 
 #[derive(Copy, Clone, Debug)]
 pub struct AlfonsiFruthSchiedLobSpec<T: Real = f64> {
@@ -822,8 +907,6 @@ pub fn solve_alfonsi_fruth_schied_lob_execution<T: Real>(
     }
 }
 
-
-
 #[cfg(test)]
 mod phase20_tests {
     use super::*;
@@ -883,5 +966,32 @@ mod phase20_tests {
         let ad = solve_alfonsi_fruth_schied_lob_execution(&spec_d).volume_resilience_cost;
         assert!(ad.d[0] < 0.0);
         assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase21_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_penalty_changes_inventory_smoothly() {
+        let base = CarteaJaimungalAlphaExecutionSpec {
+            initial_inventory: 1.0,
+            horizon: 1.0,
+            num_steps: 8,
+            temporary_impact_k: 1.0,
+            permanent_impact_b: 0.1,
+            inventory_penalty_phi: 0.2,
+            terminal_penalty_a: 0.0,
+            initial_alpha_signal: 0.1,
+            alpha_mean_reversion_kappa: 1.0,
+            alpha_volatility: 0.2,
+        };
+        let mut penalized = base;
+        penalized.terminal_penalty_a = 0.5;
+        let r0 = solve_cartea_jaimungal_alpha_execution(&base);
+        let r1 = solve_cartea_jaimungal_alpha_execution(&penalized);
+        assert!((r0.inventory_trajectory[1] - r1.inventory_trajectory[1]).abs() > 1e-10);
+        assert!(r0.inventory_trajectory.last().unwrap().val().is_finite());
     }
 }

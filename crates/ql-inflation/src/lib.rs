@@ -1083,7 +1083,11 @@ mod phase19_tests {
         let fd = (eval_sig(0.012 + h) - eval_sig(0.012 - h)) / (2.0 * h);
         type D = Dual<1>;
         let disc_d = FlatForwardCurve::new(d, D::from_value(0.03));
-        let infl_d = infl.to_ad(&[D::from_value(0.022), D::from_value(0.024), D::from_value(0.025)]);
+        let infl_d = infl.to_ad(&[
+            D::from_value(0.022),
+            D::from_value(0.024),
+            D::from_value(0.025),
+        ]);
         let jy_d = JarrowYildirimParams {
             a_nom: D::from_value(0.05),
             sigma_nom: D::from_value(0.008),

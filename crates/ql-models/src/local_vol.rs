@@ -213,13 +213,12 @@ pub fn evaluate_zabr_smile<T: Real>(
 
     let alpha_gm2 = pow_real(alpha, p.gamma - T::from_f64(2.0));
     let y = alpha_gm2 * i_cev;
-    let nu_tilde =
-        (T::from_f64(2.0) - p.gamma).max_val(T::from_f64(0.05)) * p.nu * pow_real(alpha, p.gamma - T::one());
+    let nu_tilde = (T::from_f64(2.0) - p.gamma).max_val(T::from_f64(0.05))
+        * p.nu
+        * pow_real(alpha, p.gamma - T::one());
     let z = nu_tilde * y;
     let y_over_x = if z.val().abs() < 1e-4 {
-        T::one()
-            - p.rho * z * 0.5
-            + (T::from_f64(2.0) - p.rho * p.rho * 3.0) * z * z / 12.0
+        T::one() - p.rho * z * 0.5 + (T::from_f64(2.0) - p.rho * p.rho * 3.0) * z * z / 12.0
     } else {
         let j = (T::one() - p.rho * z * 2.0 + z * z)
             .max_val(T::from_f64(1e-14))
@@ -303,8 +302,8 @@ pub fn feldman_analytic_sabr_calibration<T: Real>(
 
     let lv_m2 = pow_real((f_s - h_s).max_val(T::from_f64(1e-6)), beta * 2.0);
     let lv_p2 = pow_real(f_s + h_s, beta * 2.0);
-    let r_minus = ((z_minus * h_s * h_s) / (t * kappa_h * alpha * alpha * lv_m2 * 2.0) - T::one())
-        / y_minus;
+    let r_minus =
+        ((z_minus * h_s * h_s) / (t * kappa_h * alpha * alpha * lv_m2 * 2.0) - T::one()) / y_minus;
     let r_plus =
         ((z_plus * h_s * h_s) / (t * kappa_h * alpha * alpha * lv_p2 * 2.0) - T::one()) / y_plus;
 
@@ -404,13 +403,8 @@ mod phase18_tests {
             rho: D::from_value(-0.30),
             gamma: D::variable(1.0, 0),
         };
-        let ad = evaluate_zabr_smile(
-            &pd,
-            D::from_value(100.0),
-            D::from_value(115.0),
-            D::one(),
-        )
-        .black_vol;
+        let ad = evaluate_zabr_smile(&pd, D::from_value(100.0), D::from_value(115.0), D::one())
+            .black_vol;
         assert!((ad.d[0] - fd).abs() < 1e-6);
 
         let cal = feldman_analytic_sabr_calibration(

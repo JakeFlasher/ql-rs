@@ -22,17 +22,18 @@ pub mod prelude {
     pub use ql_models::{
         AnalyticBsmHullWhiteEngine, BatesParams, Bergomi2FParams, CalibratedHestonModel, Complex,
         CosHestonEngine, CosHestonHullWhiteEngine, DoubleHestonParams, HestonHullWhiteParams,
-        HestonMarketQuote, HestonParams, HullWhite1F, LiftedHestonParams, QuinticOuParams, QuinticOuVixSpxReport, VixOptionValuation,
-        MixedRoughBergomiVixSpec, MixedRoughBergomiVixReport, evaluate_mixed_rough_bergomi_vix,
-        bergomi_2f_implied_vol_bg, bergomi_2f_mc_price, bergomi_2f_smile_moments_bg,
-        calibrate_heston, double_heston_cos_price, double_heston_cos_strip_prices,
-        h1_hw_char_func_unit_spot, heston_bates_vix_future_and_option_price, heston_cos_price,
-        lifted_heston_char_fn, lifted_heston_char_func_unit_spot, lifted_heston_cos_price,
-        lifted_heston_kernel, evaluate_quintic_ou_spx_vix,
+        HestonMarketQuote, HestonParams, HullWhite1F, LiftedHestonParams,
+        MixedRoughBergomiVixReport, MixedRoughBergomiVixSpec, QuinticOuParams,
+        QuinticOuVixSpxReport, VixOptionValuation, bergomi_2f_implied_vol_bg, bergomi_2f_mc_price,
+        bergomi_2f_smile_moments_bg, calibrate_heston, double_heston_cos_price,
+        double_heston_cos_strip_prices, evaluate_mixed_rough_bergomi_vix,
+        evaluate_quintic_ou_spx_vix, h1_hw_char_func_unit_spot,
+        heston_bates_vix_future_and_option_price, heston_cos_price, lifted_heston_char_fn,
+        lifted_heston_char_func_unit_spot, lifted_heston_cos_price, lifted_heston_kernel,
         local_vol::{
-            AndreasenHugeGridSpec, AndreasenHugeSliceResult, interpolate_andreasen_huge_call,
-            solve_andreasen_huge_step,
-            ZabrParams, ZabrSmileQuote, evaluate_zabr_smile, FeldmanSabrCalibrationResult, feldman_analytic_sabr_calibration,
+            AndreasenHugeGridSpec, AndreasenHugeSliceResult, FeldmanSabrCalibrationResult,
+            ZabrParams, ZabrSmileQuote, evaluate_zabr_smile, feldman_analytic_sabr_calibration,
+            interpolate_andreasen_huge_call, solve_andreasen_huge_step,
         },
         replicate_cboe_vix_index,
         rough::*,
@@ -48,80 +49,101 @@ pub mod prelude {
 }
 
 use ql_ad::Real;
-use ql_commodities::{ClewlowStricklandSwaptionSpec, price_clewlow_strickland_strip_swaption,
-    BessSpec, CommodityFuturesCurve, GasStorageSpec, SchwartzSmith2F, SwingOptionSpec,
-    TakeOrPayContractSpec, DegreeDayKind, WeatherDerivativeSpec, CleanSparkDarkSpreadSpec, kirk_spread_option, price_bess_arbitrage_dp, price_gas_storage,
-    price_swing_option, price_take_or_pay_contract, price_weather_hdd_cdd_option, price_clean_spark_dark_spread,
+use ql_commodities::{
+    BessSpec, CleanSparkDarkSpreadSpec, ClewlowStricklandSwaptionSpec, CommodityFuturesCurve,
+    DegreeDayKind, GasStorageSpec, SchwartzSmith2F, SwingOptionSpec, TakeOrPayContractSpec,
+    WeatherDerivativeSpec, kirk_spread_option, price_bess_arbitrage_dp,
+    price_clean_spark_dark_spread, price_clewlow_strickland_strip_swaption, price_gas_storage,
+    price_swing_option, price_take_or_pay_contract, price_weather_hdd_cdd_option,
 };
 use ql_credit::{
-    BaseCorrelationTrancheQuote, BlackCoxStructuralSpec, CalibratedCreditCurve, CdsQuote, CmCdsMarketModelSpec, JltRatingMigrationSpec, SurvivalProbabilityCurve,
-    CreditDefaultSwap, IsdaCdsEngine, ProtectionSide, analyze_structural_credit_black_cox,
-    bootstrap_base_correlation_curve, evaluate_jlt_rating_migration_credit, price_cmcds_market_model,
+    BaseCorrelationTrancheQuote, BlackCoxStructuralSpec, CalibratedCreditCurve, CdsQuote,
+    CmCdsMarketModelSpec, CreditDefaultSwap, IsdaCdsEngine, JltRatingMigrationSpec, ProtectionSide,
+    SurvivalProbabilityCurve, analyze_structural_credit_black_cox,
+    bootstrap_base_correlation_curve, evaluate_jlt_rating_migration_credit,
+    price_cmcds_market_model,
 };
 use ql_curves::{DiscountCurve, FlatForwardCurve, MonotoneConvexZeroCurve, YieldTermStructure};
 use ql_exotics::{
-    AtlasOptionSpec, BarrierOptionSpec, BarrierType as ExoticBarrierType, ExcursionClockKind,
-    MonitoringFrequency, ParisianBarrierOptionSpec, WorstOfAutocallableSpec, EverestOptionSpec, FiniteCapTimerOptionSpec,
-    price_atlas_option_mc_ad, price_barrier_option, price_parisian_option_mc_ad, price_worst_of_autocallable, price_everest_option_mc_ad, price_capped_timer_option_quadrature, GammaSwapAndVarOptionSpec, VarianceSwapStrikeQuote, price_gamma_swap_and_variance_option,
+    AtlasOptionSpec, BarrierOptionSpec, BarrierType as ExoticBarrierType, EverestOptionSpec,
+    ExcursionClockKind, FiniteCapTimerOptionSpec, GammaSwapAndVarOptionSpec, MonitoringFrequency,
+    ParisianBarrierOptionSpec, VarianceSwapStrikeQuote, WorstOfAutocallableSpec,
+    price_atlas_option_mc_ad, price_barrier_option, price_capped_timer_option_quadrature,
+    price_everest_option_mc_ad, price_gamma_swap_and_variance_option, price_parisian_option_mc_ad,
+    price_worst_of_autocallable,
 };
 use ql_fixed_income::{
-    BondAssetSwapSpec, CmoTrancheSpec, CmoWaterfallSpec, CocoBondSpec, CocoTriggerPayoff, CallableBondOasSpec, analyze_callable_bond_oas_ad,
-    AfvConvertibleBondSpec, ConvertibleBondSpec, MbsBurnoutOasSpec, SpecifiedPoolMbsSpec, TbaDollarRollSpec, TreasuryFutureDeliverable,
-    TreasuryFuturesBasketSpec, analyze_bond_asset_swap_and_z_spread, analyze_tba_dollar_roll,
-    analyze_treasury_futures_ctd, price_cmo_waterfall, price_coco_bond_ds,
-    price_convertible_bond_tf, price_convertible_bond_afv_pde, price_specified_pool_mbs, analyze_mbs_burnout_oas_ad,
+    AfvConvertibleBondSpec, BondAssetSwapSpec, CallableBondOasSpec, CmoTrancheSpec,
+    CmoWaterfallSpec, CocoBondSpec, CocoTriggerPayoff, ConvertibleBondSpec, MbsBurnoutOasSpec,
+    SpecifiedPoolMbsSpec, TbaDollarRollSpec, TreasuryFutureDeliverable, TreasuryFuturesBasketSpec,
+    analyze_bond_asset_swap_and_z_spread, analyze_callable_bond_oas_ad, analyze_mbs_burnout_oas_ad,
+    analyze_tba_dollar_roll, analyze_treasury_futures_ctd, price_cmo_waterfall, price_coco_bond_ds,
+    price_convertible_bond_afv_pde, price_convertible_bond_tf, price_specified_pool_mbs,
 };
 use ql_fx::{
-    ConstNotionalXccs, FxAccumulatorSpec, FxSmileQuote, FxTarfCapConvention, FxTarfSpec, MtmResettingXccs, FxKikoOptionSpec, FxWindowBarrierSpec,
-    FxVannaVolgaSmile, PrdcNoteSpec, garman_kohlhagen_spot_delta, price_fx_accumulator_strip_no_ko, price_mtm_resetting_xccs, price_fx_kiko_option, price_fx_window_barrier_option,
-    price_fx_tarf_mc_ad, price_prdc_note_hybrid,
+    ConstNotionalXccs, FxAccumulatorSpec, FxKikoOptionSpec, FxSmileQuote, FxTarfCapConvention,
+    FxTarfSpec, FxVannaVolgaSmile, FxWindowBarrierSpec, MtmResettingXccs, PrdcNoteSpec,
+    garman_kohlhagen_spot_delta, price_fx_accumulator_strip_no_ko, price_fx_kiko_option,
+    price_fx_tarf_mc_ad, price_fx_window_barrier_option, price_mtm_resetting_xccs,
+    price_prdc_note_hybrid,
 };
 use ql_inflation::{
     CalibratedInflationCurve, JarrowYildirimParams, MultiplicativeSeasonality,
-    YoYInflationCapFloor, YoYInflationCapFloorType, ZeroCouponInflationSwap, ZeroInflationCurve, ZciisCapFloorSpec, price_zciis_capfloor_jarrow_yildirim,
-    price_yoy_capfloor_jarrow_yildirim,
+    YoYInflationCapFloor, YoYInflationCapFloorType, ZciisCapFloorSpec, ZeroCouponInflationSwap,
+    ZeroInflationCurve, price_yoy_capfloor_jarrow_yildirim, price_zciis_capfloor_jarrow_yildirim,
 };
-use ql_instruments::{BaroneAdesiWhaleyEngine, SwapType, VanillaSwapSpec, OptionType};
+use ql_instruments::{BaroneAdesiWhaleyEngine, OptionType, SwapType, VanillaSwapSpec};
 use ql_levy::{VarianceGamma, cos_levy_price};
 use ql_models::rough::{
     QuadraticRoughHestonParams, RoughBergomiParams, qrh_implied_vol_expansion,
     rbergomi_hybrid_mc_price,
 };
 use ql_models::{
-    AndreasenHugeGridSpec, BatesParams, Bergomi2FParams, DoubleHestonParams, HestonParams, QuinticOuParams, evaluate_quintic_ou_spx_vix,
-    HullWhite1F, LiftedHestonParams, bergomi_2f_implied_vol_bg, double_heston_cos_price,
-    local_vol::{ZabrParams, evaluate_zabr_smile}, rough::{GuyonPdvParams, pdv_implied_vol_expansion},
-    heston_bates_vix_future_and_option_price, interpolate_andreasen_huge_call,
-    lifted_heston_cos_price, solve_andreasen_huge_step,
-    MixedRoughBergomiVixSpec, evaluate_mixed_rough_bergomi_vix,
+    AndreasenHugeGridSpec, BatesParams, Bergomi2FParams, DoubleHestonParams, HestonParams,
+    HullWhite1F, LiftedHestonParams, MixedRoughBergomiVixSpec, QuinticOuParams,
+    bergomi_2f_implied_vol_bg, double_heston_cos_price, evaluate_mixed_rough_bergomi_vix,
+    evaluate_quintic_ou_spx_vix, heston_bates_vix_future_and_option_price,
+    interpolate_andreasen_huge_call, lifted_heston_cos_price,
+    local_vol::{ZabrParams, evaluate_zabr_smile},
+    rough::{GuyonPdvParams, pdv_implied_vol_expansion},
+    solve_andreasen_huge_step,
 };
 use ql_portfolio::{
-    BoxConstrainedMarkowitzSpec, DarkLitRoutingSpec, IdzorekBlackLittermanSpec,
-    KellyAllocationSpec, MarketSnapshot, ObizhaevaWangSpec, PortfolioDag, PortfolioRiskSummary,
-    PortfolioTrade, RobustMarkowitzSpec, box_constrained_markowitz_weights,
-    equal_risk_contribution_weights, gerber_covariance_matrix, hierarchical_risk_parity_weights,
-    idzorek_black_litterman_posterior, kelly_fractional_allocation,
-    nested_clustered_optimization_weights, obizhaeva_wang_execution, optimal_dark_lit_execution, robust_markowitz_weights, effective_number_of_bets_minimum_torsion, EntropyPoolingSpec, entropy_pooling_posterior,
-    AlfonsiFruthSchiedLobSpec, solve_alfonsi_fruth_schied_lob_execution, ExpectileRiskAndPortfolioSpec, evaluate_and_optimize_expectile_portfolio,
+    AlfonsiFruthSchiedLobSpec, BoxConstrainedMarkowitzSpec, DarkLitRoutingSpec, EntropyPoolingSpec,
+    ExpectileRiskAndPortfolioSpec, IdzorekBlackLittermanSpec, KellyAllocationSpec, MarketSnapshot,
+    ObizhaevaWangSpec, PortfolioDag, PortfolioRiskSummary, PortfolioTrade, RobustMarkowitzSpec,
+    box_constrained_markowitz_weights, effective_number_of_bets_minimum_torsion,
+    entropy_pooling_posterior, equal_risk_contribution_weights,
+    evaluate_and_optimize_expectile_portfolio, gerber_covariance_matrix,
+    hierarchical_risk_parity_weights, idzorek_black_litterman_posterior,
+    kelly_fractional_allocation, nested_clustered_optimization_weights, obizhaeva_wang_execution,
+    optimal_dark_lit_execution, robust_markowitz_weights, solve_alfonsi_fruth_schied_lob_execution,
 };
 use ql_portfolio::{
-    AvellanedaStoikovMmSpec, MeanCdarPortfolioSpec, SchurHrpSpec, conditional_drawdown_at_risk, entropic_value_at_risk, factor_risk_attribution, optimize_mean_cdar_portfolio, schur_complementary_hrp, oas_and_nonlinear_shrinkage_covariance, solve_avellaneda_stoikov_market_making,
-    gaussian_expected_shortfall,
+    AvellanedaStoikovMmSpec, MeanCdarPortfolioSpec, SchurHrpSpec, conditional_drawdown_at_risk,
+    entropic_value_at_risk, factor_risk_attribution, gaussian_expected_shortfall,
+    oas_and_nonlinear_shrinkage_covariance, optimize_mean_cdar_portfolio, schur_complementary_hrp,
+    solve_avellaneda_stoikov_market_making,
 };
 use ql_rates::{
-    BermudanSwaption, CheyetteSwaptionSpec, EuropeanSwaption, G2PlusPlus, TenorBasisSwapSpec, price_tenor_basis_swap,
+    BermudanSwaption, CheyetteSwaptionSpec, EuropeanSwaption, G2PlusPlus,
     HullWhiteBermudanTreeEngine, MarkovFunctionalSwaptionSpec, RfrCapletSpec, RfrRateType,
-    SwaptionSettlement, price_cheyette_swaption_markov_projection, price_markov_functional_1f,
-    willems_backward_sabr_caplet_price, SinhOuRfrCapletSpec, price_sinh_ou_rfr_caplet,
+    SinhOuRfrCapletSpec, SwaptionSettlement, TenorBasisSwapSpec,
+    price_cheyette_swaption_markov_projection, price_markov_functional_1f,
+    price_sinh_ou_rfr_caplet, price_tenor_basis_swap, willems_backward_sabr_caplet_price,
 };
 use ql_time::{BitsetCalendar, BusinessDayConvention, Date, DayCounter, Period};
-use ql_vol::{CalibratedSabrSmile, FreeBoundarySabrParams, SmileStrikeQuote, evaluate_free_boundary_sabr, implied_black_vol, ThirdOrderSpeedVolExpansionSpec, evaluate_third_order_speed_vol_expansion};
+use ql_vol::{
+    CalibratedSabrSmile, FreeBoundarySabrParams, SmileStrikeQuote, ThirdOrderSpeedVolExpansionSpec,
+    evaluate_free_boundary_sabr, evaluate_third_order_speed_vol_expansion, implied_black_vol,
+};
 use ql_xva::{
-    BaCvaCounterpartySpec, BaCvaPortfolioSpec, BaCvaSingleNameHedge, NettingSetSwap,
-    SaCcrAssetClass, SaCcrNettingSet, SaCcrTrade, SimmBucket, compute_ba_cva_capital,
-    compute_frtb_sa, compute_isda_simm, compute_isda_simm_6_risk_classes, compute_sa_ccr_ead,
-    compute_xva, expected_positive_exposure, potential_future_exposure, DynamicSimmMvaSpec, compute_dynamic_simm_mva_and_spike,
-    simulate_hw1f_exposure_cube, MultiCurrencyCsaSpec, TurlakovWwrSpec, compute_multicurrency_ctd_colva, compute_turlakov_wwr_cva_fva,
+    BaCvaCounterpartySpec, BaCvaPortfolioSpec, BaCvaSingleNameHedge, DynamicSimmMvaSpec,
+    MultiCurrencyCsaSpec, NettingSetSwap, SaCcrAssetClass, SaCcrNettingSet, SaCcrTrade, SimmBucket,
+    TurlakovWwrSpec, compute_ba_cva_capital, compute_dynamic_simm_mva_and_spike, compute_frtb_sa,
+    compute_isda_simm, compute_isda_simm_6_risk_classes, compute_multicurrency_ctd_colva,
+    compute_sa_ccr_ead, compute_turlakov_wwr_cva_fva, compute_xva, expected_positive_exposure,
+    potential_future_exposure, simulate_hw1f_exposure_cube,
 };
 use std::fmt::Write as FmtWrite;
 use std::sync::Arc;
@@ -230,9 +252,15 @@ impl TabId {
             Self::Phase16Sota => "26 Cheyette / CMO / QRH / BaseCorr / EVaR",
             Self::Phase17Sota => "27 ASW / MF1F / AH-LV / BESS / Idzorek-DP",
             Self::Phase18Sota => "28 MtM-XCCS / CTD-COLVA / ZABR-PDV / Weather / ENB",
-            Self::Phase19Sota => "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP",
-            Self::Phase20Sota => "30 Sinh-OU / BK-FRN / Morini-Brigo / WWM-XVA / mrBergomi / Choi / AFS-LOB / EXVaR",
-            Self::Phase21Sota => "31 HW-MC / Clark-FX / SA-CCR-KVA / BFG-rVol / Cartea-Alpha / Paleologo",
+            Self::Phase19Sota => {
+                "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP"
+            }
+            Self::Phase20Sota => {
+                "30 Sinh-OU / BK-FRN / Morini-Brigo / WWM-XVA / mrBergomi / Choi / AFS-LOB / EXVaR"
+            }
+            Self::Phase21Sota => {
+                "31 HW-MC / Clark-FX / SA-CCR-KVA / BFG-rVol / Cartea-Alpha / Paleologo"
+            }
         }
     }
 }
@@ -582,21 +610,209 @@ fn range3(a: &[f64], b: &[f64], c: &[f64]) -> (f64, f64) {
     (lo - pad, hi + pad)
 }
 
-fn phase21_live_metric(m: &MarketSnapshot) -> f64 {
+fn phase21_live_metric(m: &MarketSnapshot, credit_bump: f64) -> f64 {
     let c = FlatForwardCurve::new(m.ref_date, m.ois_quotes[0]);
-    let hw = ql_curves::bootstrap_hagan_west_monotone_convex_curve(&ql_curves::HaganWestMonotoneConvexBootstrapSpec { reference_date:m.ref_date, pillar_times:vec![1.0,2.0,5.0], par_swap_quotes:m.ois_quotes.to_vec(), payment_frequency_per_year:2, enforce_positivity:true, ameliorate_slopes:true, query_time:2.0 });
-    let sw = ql_rates::price_piterbarg_quasi_gaussian_amortizing_swaption(&ql_rates::PiterbargQuasiGaussianAmortizingSwaptionSpec { option_expiry:1.0, second_exercise_time:None, swap_times:vec![1.0,2.0,3.0], period_notionals:vec![1.0,0.9], strike:m.ois_quotes[0], mean_reversion:0.05, sigma0:0.01+m.eq_vol*0.02, local_vol_skew_b:0.0, cms_pay_delay:0.0, is_payer:true }, &c, &c);
-    let fx = ql_fx::calibrate_clark_fx_delta_smile(&ql_fx::ClarkFxDeltaConventionSpec { spot:1.10, r_dom:m.ois_quotes[0], r_for:m.fwd_quotes[0], expiry:1.0, atm_vol:0.12+m.eq_vol*0.1, rr_25d:0.0, market_strangle_25d:0.01, is_premium_included_delta:false, is_forward_delta:false, query_strike:1.10 });
-    let rv = ql_vol::evaluate_gatheral_gyongy_lsv_leverage(&ql_vol::GatheralLsvGyongyLeverageSpec { forward:m.eq_spot, strike:m.eq_spot, expiry:1.0, svi_a:(m.eq_vol*m.eq_vol).max(1e-4), svi_b:0.2, svi_rho:-0.3, svi_m:0.0, svi_sigma:0.2, dw_dt_atm:0.04, heston_v0:0.04, heston_theta:0.04, heston_kappa:1.0, heston_eta:0.5, heston_rho:-0.7 });
-    let sac = ql_xva::compute_green_saccr_lifetime_kva_mva(&ql_xva::GreenSaCcrLifetimeKvaMvaSpec { time_grid:vec![0.0,1.0,2.0], trade_notional:1.0e6, trade_maturity:5.0, initial_mtm:0.0, mtm_volatility:0.1, collateral_threshold:0.0, initial_margin_ratio:0.1, counterparty_pd:0.02, counterparty_lgd:0.6, cva_risk_weight:0.5, capital_ratio_requirement:0.08, hurdle_rate_gamma_k:0.1, funding_spread_sf:0.01, mva_spread_sm:0.01, risk_free_rate:m.ois_quotes[0] });
-    let greg = ql_xva::allocate_gregory_netting_set_xva(&ql_xva::GregoryNettingSetAllocationSpec { trade_weights:vec![1.0,1.0], trade_expected_mtms:vec![1.0,-1.0], trade_exposure_vols:vec![0.2,0.2], correlation_matrix:vec![vec![1.0,0.0],vec![0.0,1.0]], collateral_fraction:0.0, horizon:1.0, num_steps:4, risk_free_rate:m.ois_quotes[0], cpty_hazard_rate:0.02, cpty_lgd:0.6, own_hazard_rate:0.01, own_lgd:0.6, funding_spread:0.01, colva_spread:0.01 });
-    let rough = ql_models::evaluate_bayer_friz_gatheral_markovian_rough(&ql_models::BayerFrizGatheralMarkovianRoughSpec { spot:m.eq_spot, strike:m.eq_spot, expiry:1.0, rate:m.ois_quotes[0], div_yield:0.0, xi0:(m.eq_vol*m.eq_vol).max(1e-4), eta:1.0, rho:-0.7, hurst:0.1, num_markov_factors:4, is_call:true });
-    let cli = ql_exotics::price_bouzoubaa_reverse_and_global_cliquet(&ql_exotics::BouzoubaaReverseAndGlobalCliquetSpec { notional:1.0, rate:m.ois_quotes[0], div_yield:0.0, reset_times:vec![0.5,1.0], forward_vols:vec![m.eq_vol,m.eq_vol], forward_skews:vec![0.0,0.0], initial_coupon_cmax:0.0, local_floor:-0.1, local_cap:0.1, global_floor:-0.2, global_cap:0.2, is_reverse_cliquet:false });
-    let plant = ql_commodities::price_burger_multifuel_tolling_power_plant(&ql_commodities::BurgerMultiFuelTollingPlantSpec { power_forwards:vec![80.0,80.0], gas_forwards:vec![20.0,20.0], coal_forwards:vec![15.0,15.0], carbon_forwards:vec![50.0,50.0], dispatch_times:vec![0.25,0.75], capacity_mw:100.0, period_hours:1.0, gas_heat_rate:2.0, gas_emission_factor:0.4, gas_vom_cost:2.0, coal_heat_rate:2.5, coal_emission_factor:0.8, coal_vom_cost:1.0, vol_power:0.2, vol_gas:0.2, vol_coal:0.2, vol_carbon:0.2, rho_power_gas:0.2, rho_power_coal:0.2, rho_power_carbon:0.2, rho_gas_coal:0.2, start_up_cost:100.0, min_load_fraction:0.5, part_load_heat_rate_penalty:0.1, risk_free_rate:m.ois_quotes[0] });
-    let exec = ql_portfolio::solve_cartea_jaimungal_alpha_execution(&ql_portfolio::CarteaJaimungalAlphaExecutionSpec { initial_inventory:1.0, horizon:1.0, num_steps:8, temporary_impact_k:1.0, permanent_impact_b:0.1, inventory_penalty_phi:0.2, terminal_penalty_a:0.0, initial_alpha_signal:0.1, alpha_mean_reversion_kappa:1.0, alpha_volatility:0.2 });
-    let paleo = ql_portfolio::solve_paleologo_factor_neutral_portfolio(&ql_portfolio::PaleologoFactorNeutralAlphaSpec { raw_alphas:vec![1.0,2.0], factor_loadings_b:vec![vec![1.0],vec![1.0]], factor_covariance_omega:vec![vec![1.0]], sample_idio_variances:vec![0.1,0.2], idio_shrinkage_xi:0.5, idio_risk_aversion:1.0, factor_risk_aversion:1.0, factor_crowding_scores:vec![0.0,0.0], crowding_penalty_lambda:0.0 });
-    let aad = ql_dml::evaluate_glasserman_malliavin_checkpointed_aad(&ql_dml::GlassermanMalliavinCheckpointedMcSpec { spot:m.eq_spot, strike:m.eq_spot, rate:m.ois_quotes[0], div_yield:0.0, base_vol:m.eq_vol, local_vol_skew:0.0, expiry:1.0, num_steps:8, num_checkpoints:2 });
-    hw.query_discount_factor.val()+sw.european_amortizing_npv.val()+fx.query_call_price.val()+rv.implied_vol.val()+sac.lifetime_kva.val()+greg.netted_total_xva.val()+rough.option_price.val()+cli.npv.val()+plant.tolling_plant_npv.val()+exec.expected_execution_cost_net_of_alpha.val()+paleo.expected_active_return.val()+aad.call_price.val()
+    let hw = ql_curves::bootstrap_hagan_west_monotone_convex_curve(
+        &ql_curves::HaganWestMonotoneConvexBootstrapSpec {
+            reference_date: m.ref_date,
+            pillar_times: vec![1.0, 2.0, 5.0],
+            par_swap_quotes: m.ois_quotes.to_vec(),
+            payment_frequency_per_year: 2,
+            enforce_positivity: true,
+            ameliorate_slopes: true,
+            query_time: 2.0,
+        },
+    );
+    let sw = ql_rates::price_piterbarg_quasi_gaussian_amortizing_swaption(
+        &ql_rates::PiterbargQuasiGaussianAmortizingSwaptionSpec {
+            option_expiry: 1.0,
+            second_exercise_time: None,
+            swap_times: vec![1.0, 2.0, 3.0],
+            period_notionals: vec![1.0, 0.9],
+            strike: m.ois_quotes[0],
+            mean_reversion: 0.05,
+            sigma0: 0.01 + m.eq_vol * 0.02,
+            local_vol_skew_b: 0.0,
+            cms_pay_delay: 0.0,
+            is_payer: true,
+        },
+        &c,
+        &c,
+    );
+    let fx = ql_fx::calibrate_clark_fx_delta_smile(&ql_fx::ClarkFxDeltaConventionSpec {
+        spot: 1.10,
+        r_dom: m.ois_quotes[0],
+        r_for: m.fwd_quotes[0],
+        expiry: 1.0,
+        atm_vol: 0.12 + m.eq_vol * 0.1,
+        rr_25d: 0.0,
+        market_strangle_25d: 0.01,
+        is_premium_included_delta: false,
+        is_forward_delta: false,
+        query_strike: 1.10,
+    });
+    let rv =
+        ql_vol::evaluate_gatheral_gyongy_lsv_leverage(&ql_vol::GatheralLsvGyongyLeverageSpec {
+            forward: m.eq_spot,
+            strike: m.eq_spot,
+            expiry: 1.0,
+            svi_a: (m.eq_vol * m.eq_vol).max(1e-4),
+            svi_b: 0.2,
+            svi_rho: -0.3,
+            svi_m: 0.0,
+            svi_sigma: 0.2,
+            dw_dt_atm: 0.04,
+            heston_v0: 0.04,
+            heston_theta: 0.04,
+            heston_kappa: 1.0,
+            heston_eta: 0.5,
+            heston_rho: -0.7,
+        });
+    let sac = ql_xva::compute_green_saccr_lifetime_kva_mva(&ql_xva::GreenSaCcrLifetimeKvaMvaSpec {
+        time_grid: vec![0.0, 1.0, 2.0],
+        trade_notional: 1.0e6,
+        trade_maturity: 5.0,
+        initial_mtm: 0.0,
+        mtm_volatility: 0.1,
+        collateral_threshold: 0.0,
+        initial_margin_ratio: 0.1,
+        counterparty_pd: 0.02 + credit_bump,
+        counterparty_lgd: 0.6,
+        cva_risk_weight: 0.5,
+        capital_ratio_requirement: 0.08,
+        hurdle_rate_gamma_k: 0.1,
+        funding_spread_sf: 0.01,
+        mva_spread_sm: 0.01,
+        risk_free_rate: m.ois_quotes[0],
+    });
+    let greg = ql_xva::allocate_gregory_netting_set_xva(&ql_xva::GregoryNettingSetAllocationSpec {
+        trade_weights: vec![1.0, 1.0],
+        trade_expected_mtms: vec![1.0, -1.0],
+        trade_exposure_vols: vec![0.2, 0.2],
+        correlation_matrix: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
+        collateral_fraction: 0.0,
+        horizon: 1.0,
+        num_steps: 4,
+        risk_free_rate: m.ois_quotes[0],
+        cpty_hazard_rate: 0.02 + credit_bump,
+        cpty_lgd: 0.6,
+        own_hazard_rate: 0.01,
+        own_lgd: 0.6,
+        funding_spread: 0.01,
+        colva_spread: 0.01,
+    });
+    let rough = ql_models::evaluate_bayer_friz_gatheral_markovian_rough(
+        &ql_models::BayerFrizGatheralMarkovianRoughSpec {
+            spot: m.eq_spot,
+            strike: m.eq_spot,
+            expiry: 1.0,
+            rate: m.ois_quotes[0],
+            div_yield: 0.0,
+            xi0: (m.eq_vol * m.eq_vol).max(1e-4),
+            eta: 1.0,
+            rho: -0.7,
+            hurst: 0.1,
+            num_markov_factors: 4,
+            is_call: true,
+        },
+    );
+    let cli = ql_exotics::price_bouzoubaa_reverse_and_global_cliquet(
+        &ql_exotics::BouzoubaaReverseAndGlobalCliquetSpec {
+            notional: 1.0,
+            rate: m.ois_quotes[0],
+            div_yield: 0.0,
+            reset_times: vec![0.5, 1.0],
+            forward_vols: vec![m.eq_vol, m.eq_vol],
+            forward_skews: vec![0.0, 0.0],
+            initial_coupon_cmax: 0.0,
+            local_floor: -0.1,
+            local_cap: 0.1,
+            global_floor: -0.2,
+            global_cap: 0.2,
+            is_reverse_cliquet: false,
+        },
+    );
+    let plant = ql_commodities::price_burger_multifuel_tolling_power_plant(
+        &ql_commodities::BurgerMultiFuelTollingPlantSpec {
+            power_forwards: vec![80.0, 80.0],
+            gas_forwards: vec![20.0, 20.0],
+            coal_forwards: vec![15.0, 15.0],
+            carbon_forwards: vec![50.0, 50.0],
+            dispatch_times: vec![0.25, 0.75],
+            capacity_mw: 100.0,
+            period_hours: 1.0,
+            gas_heat_rate: 2.0,
+            gas_emission_factor: 0.4,
+            gas_vom_cost: 2.0,
+            coal_heat_rate: 2.5,
+            coal_emission_factor: 0.8,
+            coal_vom_cost: 1.0,
+            vol_power: 0.2,
+            vol_gas: 0.2,
+            vol_coal: 0.2,
+            vol_carbon: 0.2,
+            rho_power_gas: 0.2,
+            rho_power_coal: 0.2,
+            rho_power_carbon: 0.2,
+            rho_gas_coal: 0.2,
+            start_up_cost: 100.0,
+            min_load_fraction: 0.5,
+            part_load_heat_rate_penalty: 0.1,
+            risk_free_rate: m.ois_quotes[0],
+        },
+    );
+    let exec = ql_portfolio::solve_cartea_jaimungal_alpha_execution(
+        &ql_portfolio::CarteaJaimungalAlphaExecutionSpec {
+            initial_inventory: 1.0,
+            horizon: 1.0,
+            num_steps: 8,
+            temporary_impact_k: 1.0,
+            permanent_impact_b: 0.1,
+            inventory_penalty_phi: 0.2,
+            terminal_penalty_a: 0.0,
+            initial_alpha_signal: 0.1,
+            alpha_mean_reversion_kappa: 1.0,
+            alpha_volatility: 0.2,
+        },
+    );
+    let paleo = ql_portfolio::solve_paleologo_factor_neutral_portfolio(
+        &ql_portfolio::PaleologoFactorNeutralAlphaSpec {
+            raw_alphas: vec![1.0, 2.0],
+            factor_loadings_b: vec![vec![1.0], vec![1.0]],
+            factor_covariance_omega: vec![vec![1.0]],
+            sample_idio_variances: vec![0.1, 0.2],
+            idio_shrinkage_xi: 0.5,
+            idio_risk_aversion: 1.0,
+            factor_risk_aversion: 1.0,
+            factor_crowding_scores: vec![0.0, 0.0],
+            crowding_penalty_lambda: 0.0,
+        },
+    );
+    let aad = ql_dml::evaluate_glasserman_malliavin_checkpointed_aad(
+        &ql_dml::GlassermanMalliavinCheckpointedMcSpec {
+            spot: m.eq_spot,
+            strike: m.eq_spot,
+            rate: m.ois_quotes[0],
+            div_yield: 0.0,
+            base_vol: m.eq_vol,
+            local_vol_skew: 0.0,
+            expiry: 1.0,
+            num_steps: 8,
+            num_checkpoints: 2,
+        },
+    );
+    hw.query_discount_factor.val()
+        + sw.european_amortizing_npv.val()
+        + fx.query_call_price.val()
+        + rv.implied_vol.val()
+        + sac.lifetime_kva.val()
+        + greg.netted_total_xva.val()
+        + rough.option_price.val()
+        + cli.npv.val()
+        + plant.tolling_plant_npv.val()
+        + exec.expected_execution_cost_net_of_alpha.val()
+        + paleo.expected_active_return.val()
+        + aad.call_price.val()
 }
 
 pub struct DeskWorkstation {
@@ -957,7 +1173,9 @@ impl DeskWorkstation {
                 is_backward_compounded: true,
             },
             &curve,
-        ).npv.val();
+        )
+        .npv
+        .val();
         let mrb_metric = evaluate_mixed_rough_bergomi_vix(&MixedRoughBergomiVixSpec {
             xi0: (market.eq_vol * market.eq_vol).max(1e-4),
             hurst: 0.12,
@@ -968,9 +1186,11 @@ impl DeskWorkstation {
             vix_window: 1.0 / 12.0,
             strike: 20.0,
             discount_factor: (-market.ois_quotes[0] * 0.25).exp(),
-        }).vix_call_price.val();
-        let choi_metric = ql_exotics::price_choi_sum_of_bsm_basket_option(
-            &ql_exotics::ChoiSumOfBsmBasketSpec {
+        })
+        .vix_call_price
+        .val();
+        let choi_metric =
+            ql_exotics::price_choi_sum_of_bsm_basket_option(&ql_exotics::ChoiSumOfBsmBasketSpec {
                 spots: vec![market.eq_spot.max(1e-4), (0.9 * market.eq_spot).max(1e-4)],
                 weights: vec![1.0, -1.0],
                 vols: vec![market.eq_vol.max(1e-4), (0.8 * market.eq_vol).max(1e-4)],
@@ -980,20 +1200,21 @@ impl DeskWorkstation {
                 risk_free_rate: market.ois_quotes[0],
                 expiry: 1.0,
                 is_call: true,
-            },
-        ).price.val();
-        let afs_metric = solve_alfonsi_fruth_schied_lob_execution(
-            &AlfonsiFruthSchiedLobSpec {
-                total_order_size: 100.0 + market.eq_spot * 0.01,
-                horizon: 1.0,
-                num_intervals: 4,
-                lob_density_q: 50.0,
-                shape_exponent_alpha: 0.4,
-                resilience_rho: 1.2 + market.eq_vol,
-            },
-        ).volume_resilience_cost.val();
-        let exvar_metric = evaluate_and_optimize_expectile_portfolio(
-            &ExpectileRiskAndPortfolioSpec {
+            })
+            .price
+            .val();
+        let afs_metric = solve_alfonsi_fruth_schied_lob_execution(&AlfonsiFruthSchiedLobSpec {
+            total_order_size: 100.0 + market.eq_spot * 0.01,
+            horizon: 1.0,
+            num_intervals: 4,
+            lob_density_q: 50.0,
+            shape_exponent_alpha: 0.4,
+            resilience_rho: 1.2 + market.eq_vol,
+        })
+        .volume_resilience_cost
+        .val();
+        let exvar_metric =
+            evaluate_and_optimize_expectile_portfolio(&ExpectileRiskAndPortfolioSpec {
                 scenario_returns: vec![
                     vec![-0.07 - credit_bump, -0.01],
                     vec![-0.04, -0.005],
@@ -1004,17 +1225,21 @@ impl DeskWorkstation {
                 tau_confidence: 0.85,
                 return_weight_lambda: 0.2,
                 smoothing_eps: 1e-3,
-            },
-        ).optimal_expectile_exvar.val();
-        let speed_metric = evaluate_third_order_speed_vol_expansion(&ThirdOrderSpeedVolExpansionSpec {
-            xi0: (market.eq_vol * market.eq_vol).max(1e-4),
-            omega_vol_of_vol: 1.8,
-            k_mean_reversion: 3.0,
-            expiry: 0.25,
-            window_delta: 1.0 / 12.0,
-            strike: 0.20,
-            discount_factor: (-market.ois_quotes[0] * 0.25).exp(),
-        }).call_price.val();
+            })
+            .optimal_expectile_exvar
+            .val();
+        let speed_metric =
+            evaluate_third_order_speed_vol_expansion(&ThirdOrderSpeedVolExpansionSpec {
+                xi0: (market.eq_vol * market.eq_vol).max(1e-4),
+                omega_vol_of_vol: 1.8,
+                k_mean_reversion: 3.0,
+                expiry: 0.25,
+                window_delta: 1.0 / 12.0,
+                strike: 0.20,
+                discount_factor: (-market.ois_quotes[0] * 0.25).exp(),
+            })
+            .call_price
+            .val();
 
         // Complete Phase 20 telemetry: all fourteen engines consume the live
         // market/scenario snapshot so rates, equity, credit and tick changes
@@ -1089,8 +1314,8 @@ impl DeskWorkstation {
         })
         .wwm_cva
         .val();
-        let bcs_metric = ql_xva::compute_bichuch_capponi_sturm_xva_band(
-            &ql_xva::AsymmetricRateXvaBandSpec {
+        let bcs_metric =
+            ql_xva::compute_bichuch_capponi_sturm_xva_band(&ql_xva::AsymmetricRateXvaBandSpec {
                 maturity: 1.0,
                 num_steps: 6,
                 clean_claim_value: 25.0 + market.eq_spot * 0.01,
@@ -1108,10 +1333,9 @@ impl DeskWorkstation {
                 cpty_bond_yield_mu_c: 0.048 + credit_bump,
                 own_lgd: 0.60,
                 cpty_lgd: 0.60,
-            },
-        )
-        .no_arbitrage_band_width
-        .val();
+            })
+            .no_arbitrage_band_width
+            .val();
         let ldz_metric = ql_exotics::price_li_deng_zhou_multi_spread_option(
             &ql_exotics::LiDengZhouMultiSpreadSpec {
                 long_spot: market.eq_spot,
@@ -1167,7 +1391,7 @@ impl DeskWorkstation {
             },
         )
         .weights[0]
-        .val();
+            .val();
         let sinhou_mb_rbergomi_choi_afs_expectile_metric = sinhou_metric
             + mrb_metric
             + choi_metric
@@ -2255,8 +2479,10 @@ impl DeskWorkstation {
             + atlas.val()
             + take_or_pay.npv.val()
             + market.eq_spot * 1e-6;
-let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inflation * 0.2);
-        let phase18_csa_curve = FlatForwardCurve::new(market.ref_date, rate * 0.90 + credit_bump * 0.3);
+        let phase18_for_curve =
+            FlatForwardCurve::new(market.ref_date, rate * 0.85 + inflation * 0.2);
+        let phase18_csa_curve =
+            FlatForwardCurve::new(market.ref_date, rate * 0.90 + credit_bump * 0.3);
         let mtm_xccs = price_mtm_resetting_xccs(
             &MtmResettingXccs {
                 for_notional: 100.0,
@@ -2296,7 +2522,11 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
             smoothing_eps: 1e-3,
         });
         let ctd_colva = compute_multicurrency_ctd_colva(&MultiCurrencyCsaSpec {
-            eligible_currency_spreads: vec![0.008 + rate * 0.1, 0.010 + credit_bump * 0.5, 0.009 + inflation * 0.3],
+            eligible_currency_spreads: vec![
+                0.008 + rate * 0.1,
+                0.010 + credit_bump * 0.5,
+                0.009 + inflation * 0.3,
+            ],
             spread_vols: vec![0.006 + market.eq_vol * 0.01, 0.008, 0.007],
             cross_currency_corr: 0.25,
             collateral_balance_profile: vec![50.0, 40.0],
@@ -2436,11 +2666,7 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
             ],
         );
         let ep_post = entropy_pooling_posterior(&EntropyPoolingSpec {
-            scenario_returns: vec![
-                vec![0.08, 0.02],
-                vec![-0.04, 0.06],
-                vec![0.02, -0.03],
-            ],
+            scenario_returns: vec![vec![0.08, 0.02], vec![-0.04, 0.06], vec![0.02, -0.03]],
             prior_probs: vec![1.0 / 3.0; 3],
             view_matrix: vec![vec![0.08, -0.04, 0.02]],
             view_targets: vec![0.03 + rate * 0.2],
@@ -2479,7 +2705,8 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
                 primary_secondary_spread: 0.01,
             },
             &active_curves.curves[0],
-        ).oas;
+        )
+        .oas;
         let phase19_zciis = price_zciis_capfloor_jarrow_yildirim(
             &ZciisCapFloorSpec {
                 notional: 100.0,
@@ -2500,7 +2727,8 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
                 rho_nom_cpi: 0.2,
                 rho_real_cpi: -0.1,
             },
-        ).npv;
+        )
+        .npv;
         let p19_credit = SurvivalProbabilityCurve::new(
             market.ref_date,
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
@@ -2520,7 +2748,8 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
             },
             &active_curves.curves[0],
             &p19_credit,
-        ).seller_npv;
+        )
+        .seller_npv;
         let phase19_simm = compute_dynamic_simm_mva_and_spike(&DynamicSimmMvaSpec {
             times: vec![0.5, 1.0, 1.5],
             bucket_sensitivities_t0: vec![100.0 + summary.total_eq_delta.abs(), 70.0],
@@ -2534,7 +2763,8 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
             hazard_rate: 0.02 + credit_bump,
             lgd: 0.6,
             discount_rate: rate,
-        }).total_aps_cva;
+        })
+        .total_aps_cva;
         let phase19_jlt = evaluate_jlt_rating_migration_credit(&JltRatingMigrationSpec {
             generator_matrix: vec![
                 vec![-0.06, 0.045, 0.01, 0.005],
@@ -2550,7 +2780,8 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
             downgrade_step_up_spreads: vec![0.0, 0.005, 0.015, 0.0],
             recovery_rate: 0.4,
             risk_free_rate: rate,
-        }).step_up_bond_price;
+        })
+        .step_up_bond_price;
         let phase19_qou = evaluate_quintic_ou_spx_vix(
             &QuinticOuParams {
                 xi0: 0.04 + market.eq_vol * 0.01,
@@ -2566,7 +2797,8 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
             1.0 / 12.0,
             20.0,
             (-rate * 0.5).exp(),
-        ).vix_call_price;
+        )
+        .vix_call_price;
         let phase19_fbs = evaluate_free_boundary_sabr(
             &FreeBoundarySabrParams {
                 forward: -0.003 + market.eq_spot * 1e-5,
@@ -2578,7 +2810,8 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
             },
             -0.001,
             (-rate).exp(),
-        ).call_price;
+        )
+        .call_price;
         let phase19_afv = price_convertible_bond_afv_pde(
             &AfvConvertibleBondSpec {
                 spot: market.eq_spot,
@@ -2599,7 +2832,8 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
             },
             15,
             8,
-        ).total_price;
+        )
+        .total_price;
         let phase19_gswap = price_gamma_swap_and_variance_option(&GammaSwapAndVarOptionSpec {
             spot: market.eq_spot,
             rate,
@@ -2608,13 +2842,29 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
             cut_strike: 100.0,
             variance_strike: 0.04,
             quotes: vec![
-                VarianceSwapStrikeQuote { strike: 85.0, implied_vol: 0.24 },
-                VarianceSwapStrikeQuote { strike: 100.0, implied_vol: 0.20 },
-                VarianceSwapStrikeQuote { strike: 115.0, implied_vol: 0.18 },
+                VarianceSwapStrikeQuote {
+                    strike: 85.0,
+                    implied_vol: 0.24,
+                },
+                VarianceSwapStrikeQuote {
+                    strike: 100.0,
+                    implied_vol: 0.20,
+                },
+                VarianceSwapStrikeQuote {
+                    strike: 115.0,
+                    implied_vol: 0.18,
+                },
             ],
-            heston: HestonParams { v0: market.heston_params.v0, kappa: 2.0, theta: 0.04, sigma_v: 0.35, rho: -0.7 },
+            heston: HestonParams {
+                v0: market.heston_params.v0,
+                kappa: 2.0,
+                theta: 0.04,
+                sigma_v: 0.35,
+                rho: -0.7,
+            },
             is_variance_call: true,
-        }).variance_option_price;
+        })
+        .variance_option_price;
         let phase19_cs = price_clewlow_strickland_strip_swaption(&ClewlowStricklandSwaptionSpec {
             option_expiry: 0.5,
             delivery_times: vec![0.75, 1.0, 1.25],
@@ -2628,7 +2878,8 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
             rho_factors: 0.2,
             seasonal_vol_amp: 0.05,
             is_payer_call: true,
-        }).npv;
+        })
+        .npv;
         let phase19_mm = solve_avellaneda_stoikov_market_making(&AvellanedaStoikovMmSpec {
             mid_price: market.eq_spot,
             initial_inventory: 3.0 + credit_bump * 100.0,
@@ -2639,28 +2890,50 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
             order_book_kappa: 1.5,
             base_arrival_intensity: 10.0,
             alpha_drift: 0.01,
-        }).expected_spread_capture_pnl;
+        })
+        .expected_spread_capture_pnl;
         let phase19_cdar = optimize_mean_cdar_portfolio(&MeanCdarPortfolioSpec {
-            path_asset_returns: vec![vec![0.03, 0.01], vec![-0.06, -0.01], vec![-0.04, -0.005], vec![0.04, 0.012]],
+            path_asset_returns: vec![
+                vec![0.03, 0.01],
+                vec![-0.06, -0.01],
+                vec![-0.04, -0.005],
+                vec![0.04, 0.012],
+            ],
             expected_returns: vec![0.09 + market.eq_vol * 0.01, 0.04],
             cdar_aversion: 4.0,
             confidence: 0.80,
             smoothing_eps: 1e-3,
-        }).cdar;
+        })
+        .cdar;
         let phase19_schur = schur_complementary_hrp(&SchurHrpSpec {
-            covariance: vec![vec![0.04 + market.eq_vol * 0.01, 0.012], vec![0.012, 0.09 + credit_bump]],
+            covariance: vec![
+                vec![0.04 + market.eq_vol * 0.01, 0.012],
+                vec![0.012, 0.09 + credit_bump],
+            ],
             gamma: 0.6,
-        }).portfolio_variance;
+        })
+        .portfolio_variance;
         let phase19_oas = oas_and_nonlinear_shrinkage_covariance(&[
             vec![0.02 + market.eq_vol * 0.001, -0.01],
             vec![-0.015, 0.025 + credit_bump * 0.1],
             vec![0.01, 0.005],
             vec![-0.005, -0.01],
-        ]).oas_shrinkage_intensity;
+        ])
+        .oas_shrinkage_intensity;
         let burnout_cmcds_quintic_afv_cs_schur_metric = phase19_mbs * 100.0
-            + phase19_zciis + phase19_cmcds + phase19_simm + phase19_jlt
-            + phase19_qou + phase19_fbs * 100.0 + phase19_afv + phase19_gswap
-            + phase19_cs + phase19_mm + phase19_cdar + phase19_schur + phase19_oas;
+            + phase19_zciis
+            + phase19_cmcds
+            + phase19_simm
+            + phase19_jlt
+            + phase19_qou
+            + phase19_fbs * 100.0
+            + phase19_afv
+            + phase19_gswap
+            + phase19_cs
+            + phase19_mm
+            + phase19_cdar
+            + phase19_schur
+            + phase19_oas;
         let blotter_rows = vec![
             ("IRS 5Y PayFix".to_string(), irs_npv, "IFT".to_string()),
             ("Heston Call 1Y".to_string(), heston_npv, "COS".to_string()),
@@ -2765,7 +3038,10 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
             mtmxccs_colva_zabr_weather_enb_metric,
             burnout_cmcds_quintic_afv_cs_schur_metric,
             sinhou_mb_rbergomi_choi_afs_expectile_metric,
-            monotone_convex_clark_saccr_rvol_cartea_paleologo_metric: phase21_live_metric(&market),
+            monotone_convex_clark_saccr_rvol_cartea_paleologo_metric: phase21_live_metric(
+                &market,
+                credit_bump,
+            ),
             blotter_rows,
         }
     }
@@ -2997,10 +3273,22 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
                 "27 ASW/MF1F/AH-LV/BESS/Idzorek-DP: {:.2}",
                 frame.asw_mf1f_ah_bess_ep_metric
             ),
-            format!("28 MtM-XCCS/COLVA/ZABR/Weather/ENB: {:.2}", frame.mtmxccs_colva_zabr_weather_enb_metric),
-            format!("29 Burnout/CMCDS/Quintic/AFV/Schur: {:.2}", frame.burnout_cmcds_quintic_afv_cs_schur_metric),
-            format!("30 SinhOU/MB/mrBergomi/Choi/EXVaR: {:.2}", frame.sinhou_mb_rbergomi_choi_afs_expectile_metric),
-            format!("31 HW-MC/Clark/SACCR/rVol/Cartea/Paleo: {:.2}", frame.monotone_convex_clark_saccr_rvol_cartea_paleologo_metric),
+            format!(
+                "28 MtM-XCCS/COLVA/ZABR/Weather/ENB: {:.2}",
+                frame.mtmxccs_colva_zabr_weather_enb_metric
+            ),
+            format!(
+                "29 Burnout/CMCDS/Quintic/AFV/Schur: {:.2}",
+                frame.burnout_cmcds_quintic_afv_cs_schur_metric
+            ),
+            format!(
+                "30 SinhOU/MB/mrBergomi/Choi/EXVaR: {:.2}",
+                frame.sinhou_mb_rbergomi_choi_afs_expectile_metric
+            ),
+            format!(
+                "31 HW-MC/Clark/SACCR/rVol/Cartea/Paleo: {:.2}",
+                frame.monotone_convex_clark_saccr_rvol_cartea_paleologo_metric
+            ),
             format!(
                 "DAG recomputed: {}/{}",
                 frame.dag_recomputed_trades, frame.dag_total_trades
@@ -3176,18 +3464,38 @@ mod phase18_tests {
     #[test]
     fn phase18_tab_metric_dashboard_and_stress_reactivity() {
         assert_eq!(TabId::ALL.len(), 31);
-        assert_eq!(TabId::Phase18Sota.label(), "28 MtM-XCCS / CTD-COLVA / ZABR-PDV / Weather / ENB");
+        assert_eq!(
+            TabId::Phase18Sota.label(),
+            "28 MtM-XCCS / CTD-COLVA / ZABR-PDV / Weather / ENB"
+        );
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
         assert!(normal.mtmxccs_colva_zabr_weather_enb_metric.is_finite());
-        assert!(ws.render_dashboard(&normal, false).contains("28 MtM-XCCS/COLVA/ZABR/Weather/ENB"));
-        assert!(ws.render_dashboard(&normal, false).contains("BL / Risk Parity ERC"));
+        assert!(
+            ws.render_dashboard(&normal, false)
+                .contains("28 MtM-XCCS/COLVA/ZABR/Weather/ENB")
+        );
+        assert!(
+            ws.render_dashboard(&normal, false)
+                .contains("BL / Risk Parity ERC")
+        );
         let next = ws.step_tick();
-        assert_ne!(next.mtmxccs_colva_zabr_weather_enb_metric, normal.mtmxccs_colva_zabr_weather_enb_metric);
-        for scenario in [ScenarioKind::RatesPlus50Bp, ScenarioKind::EquityCrashMinus15Pct, ScenarioKind::CreditWideningPlus100Bp, ScenarioKind::StagflationPlus150Bp] {
+        assert_ne!(
+            next.mtmxccs_colva_zabr_weather_enb_metric,
+            normal.mtmxccs_colva_zabr_weather_enb_metric
+        );
+        for scenario in [
+            ScenarioKind::RatesPlus50Bp,
+            ScenarioKind::EquityCrashMinus15Pct,
+            ScenarioKind::CreditWideningPlus100Bp,
+            ScenarioKind::StagflationPlus150Bp,
+        ] {
             ws.set_scenario(scenario);
             let stressed = ws.step_tick();
-            assert_ne!(stressed.mtmxccs_colva_zabr_weather_enb_metric, normal.mtmxccs_colva_zabr_weather_enb_metric);
+            assert_ne!(
+                stressed.mtmxccs_colva_zabr_weather_enb_metric,
+                normal.mtmxccs_colva_zabr_weather_enb_metric
+            );
         }
     }
 }
@@ -3199,7 +3507,10 @@ mod phase19_tests {
     #[test]
     fn phase19_tab29_terminal_renders_and_ticks_cleanly() {
         assert_eq!(TabId::ALL.len(), 31);
-        assert_eq!(TabId::Phase19Sota.label(), "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP");
+        assert_eq!(
+            TabId::Phase19Sota.label(),
+            "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP"
+        );
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
         assert!(normal.burnout_cmcds_quintic_afv_cs_schur_metric.is_finite());
@@ -3237,8 +3548,15 @@ mod phase20_tests {
         assert!(TabId::ALL.contains(&TabId::Phase20Sota));
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
-        assert!(normal.sinhou_mb_rbergomi_choi_afs_expectile_metric.is_finite());
-        assert!(ws.render_dashboard(&normal, false).contains("30 SinhOU/MB/mrBergomi/Choi/EXVaR"));
+        assert!(
+            normal
+                .sinhou_mb_rbergomi_choi_afs_expectile_metric
+                .is_finite()
+        );
+        assert!(
+            ws.render_dashboard(&normal, false)
+                .contains("30 SinhOU/MB/mrBergomi/Choi/EXVaR")
+        );
         for scenario in [
             ScenarioKind::RatesPlus50Bp,
             ScenarioKind::EquityCrashMinus15Pct,
@@ -3247,9 +3565,53 @@ mod phase20_tests {
         ] {
             ws.set_scenario(scenario);
             let stressed = ws.step_tick();
-            assert!(stressed.sinhou_mb_rbergomi_choi_afs_expectile_metric.is_finite());
-            assert_ne!(stressed.sinhou_mb_rbergomi_choi_afs_expectile_metric,
-                       normal.sinhou_mb_rbergomi_choi_afs_expectile_metric);
+            assert!(
+                stressed
+                    .sinhou_mb_rbergomi_choi_afs_expectile_metric
+                    .is_finite()
+            );
+            assert_ne!(
+                stressed.sinhou_mb_rbergomi_choi_afs_expectile_metric,
+                normal.sinhou_mb_rbergomi_choi_afs_expectile_metric
+            );
         }
+    }
+}
+
+#[cfg(test)]
+mod phase21_tests {
+    use super::*;
+
+    #[test]
+    fn phase21_terminal_reactivity() {
+        assert_eq!(TabId::ALL.len(), 31);
+        let mut ws = DeskWorkstation::new();
+        let normal = ws.step_tick();
+        let next = ws.step_tick();
+        assert_ne!(
+            next.monotone_convex_clark_saccr_rvol_cartea_paleologo_metric,
+            normal.monotone_convex_clark_saccr_rvol_cartea_paleologo_metric
+        );
+        for scenario in [
+            ScenarioKind::RatesPlus50Bp,
+            ScenarioKind::EquityCrashMinus15Pct,
+            ScenarioKind::CreditWideningPlus100Bp,
+            ScenarioKind::StagflationPlus150Bp,
+        ] {
+            ws.set_scenario(scenario);
+            let stressed = ws.step_tick();
+            assert_ne!(
+                stressed.monotone_convex_clark_saccr_rvol_cartea_paleologo_metric,
+                normal.monotone_convex_clark_saccr_rvol_cartea_paleologo_metric
+            );
+        }
+        assert!(
+            ws.render_dashboard(&normal, false)
+                .contains("31 HW-MC/Clark/SACCR/rVol/Cartea/Paleo")
+        );
+        assert!(
+            ws.render_dashboard(&normal, false)
+                .contains("BL / Risk Parity ERC")
+        );
     }
 }

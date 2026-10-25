@@ -1,9 +1,9 @@
 //! Black's option on a forward CDS spread, including front-end protection.
 #![allow(clippy::excessive_precision)]
 
+use crate::SurvivalProbabilityCurve;
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
-use crate::SurvivalProbabilityCurve;
 
 /// Black (1976) CDS option.  `risky_annuity` is the PV of one unit of
 /// running spread, `default_prob_to_expiry` is the cumulative default
@@ -283,7 +283,9 @@ pub fn price_cmcds_market_model<T: Real>(
         let alpha_k = (t_curr - t_prev).max(1e-8);
         alphas[k] = alpha_k;
         let q_prev = credit.survival_probability(t_prev);
-        let q_curr = credit.survival_probability(t_curr).max_val(T::from_f64(1e-12));
+        let q_curr = credit
+            .survival_probability(t_curr)
+            .max_val(T::from_f64(1e-12));
         p_def[k] = discount.discount_factor(t_curr) * q_curr;
         r_one[k] = spec.lgd * (q_prev / q_curr - T::one()) / alpha_k;
     }
@@ -562,7 +564,6 @@ mod phase19_tests {
     }
 }
 
-
 #[derive(Clone, Debug)]
 pub struct MoriniBrigoIndexOptionSpec<T: Real = f64> {
     pub notional: T,
@@ -700,7 +701,8 @@ pub fn price_morini_brigo_credit_index_option<T: Real>(
     let d1_hat = (s_hat / k).ln() / st + st * 0.5;
     let d2_hat = d1_hat - st;
     let npv = if spec.is_payer {
-        spec.notional * (annuity_safe * (s_hat * d1_hat.norm_cdf() - k * d2_hat.norm_cdf()) + o2_arm)
+        spec.notional
+            * (annuity_safe * (s_hat * d1_hat.norm_cdf() - k * d2_hat.norm_cdf()) + o2_arm)
     } else {
         spec.notional * annuity_safe * (k * (-d2_hat).norm_cdf() - s_hat * (-d1_hat).norm_cdf())
     };
@@ -724,8 +726,6 @@ pub fn price_morini_brigo_credit_index_option<T: Real>(
     }
 }
 
-
-
 #[cfg(test)]
 mod phase20_tests {
     use super::*;
@@ -738,11 +738,7 @@ mod phase20_tests {
     fn morini_brigo_no_armageddon_put_call_parity_copula_limits_and_ad() {
         let d = Date::from_ymd(2024, 1, 1).unwrap();
         let disc = FlatForwardCurve::new(d, 0.03);
-        let surv = SurvivalProbabilityCurve::new(
-            d,
-            vec![1.0, 2.0, 3.0, 4.0, 5.0],
-            vec![0.025; 5],
-        );
+        let surv = SurvivalProbabilityCurve::new(d, vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![0.025; 5]);
         let payer_spec = MoriniBrigoIndexOptionSpec {
             notional: 100.0,
             strike_spread: 0.025,

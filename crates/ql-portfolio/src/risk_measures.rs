@@ -796,12 +796,14 @@ mod phase18_tests {
         assert!((rep.probabilities[0] + rep.probabilities[1] - 1.0).abs() < 1e-12);
 
         let h = 1e-5;
-        let eval_w = |w0: f64| {
-            effective_number_of_bets_minimum_torsion(&[w0, 1.0 - w0], &c_corr).enb
-        };
+        let eval_w =
+            |w0: f64| effective_number_of_bets_minimum_torsion(&[w0, 1.0 - w0], &c_corr).enb;
         let fd = (eval_w(0.6 + h) - eval_w(0.6 - h)) / (2.0 * h);
         type D = Dual<1>;
-        let w_d = [D::variable(0.6, 0), D::from_value(1.0) - D::variable(0.6, 0)];
+        let w_d = [
+            D::variable(0.6, 0),
+            D::from_value(1.0) - D::variable(0.6, 0),
+        ];
         let c_d = vec![
             vec![D::from_value(0.04), D::from_value(0.015)],
             vec![D::from_value(0.015), D::from_value(0.09)],
@@ -872,7 +874,6 @@ mod phase19_tests {
     }
 }
 
-
 #[derive(Clone, Debug)]
 pub struct ExpectileRiskAndPortfolioSpec<T: Real = f64> {
     pub scenario_returns: Vec<Vec<T>>,
@@ -916,11 +917,7 @@ fn solve_expectile_and_grad<T: Real>(
         .collect();
 
     // 32-step f64 bisection + 6-step T: Real Newton root solve on the asymmetric expectile balance
-    let mut lo = losses
-        .iter()
-        .map(|l| l.val())
-        .fold(f64::INFINITY, f64::min)
-        - 1.0;
+    let mut lo = losses.iter().map(|l| l.val()).fold(f64::INFINITY, f64::min) - 1.0;
     let mut hi = losses
         .iter()
         .map(|l| l.val())
@@ -1042,11 +1039,12 @@ pub fn evaluate_and_optimize_expectile_portfolio<T: Real>(
         .collect();
     let mut w = vec![T::from_f64(1.0 / n as f64); n];
     for iter in 0..24 {
-        let max_l = logits
-            .iter()
-            .fold(logits[0], |a, &b| a.max_val(b));
+        let max_l = logits.iter().fold(logits[0], |a, &b| a.max_val(b));
         let exps: Vec<T> = logits.iter().map(|&l| (l - max_l).exp()).collect();
-        let sum_e = exps.iter().fold(T::zero(), |a, &b| a + b).max_val(T::from_f64(1e-14));
+        let sum_e = exps
+            .iter()
+            .fold(T::zero(), |a, &b| a + b)
+            .max_val(T::from_f64(1e-14));
         for j in 0..n {
             w[j] = exps[j] / sum_e;
         }
@@ -1058,11 +1056,12 @@ pub fn evaluate_and_optimize_expectile_portfolio<T: Real>(
             logits[j] -= g_j * step;
         }
     }
-    let max_l = logits
-        .iter()
-        .fold(logits[0], |a, &b| a.max_val(b));
+    let max_l = logits.iter().fold(logits[0], |a, &b| a.max_val(b));
     let exps: Vec<T> = logits.iter().map(|&l| (l - max_l).exp()).collect();
-    let sum_e = exps.iter().fold(T::zero(), |a, &b| a + b).max_val(T::from_f64(1e-14));
+    let sum_e = exps
+        .iter()
+        .fold(T::zero(), |a, &b| a + b)
+        .max_val(T::from_f64(1e-14));
     for j in 0..n {
         w[j] = exps[j] / sum_e;
     }
@@ -1085,8 +1084,6 @@ pub fn evaluate_and_optimize_expectile_portfolio<T: Real>(
         omega_gain_loss_ratio: omega,
     }
 }
-
-
 
 #[cfg(test)]
 mod phase20_tests {

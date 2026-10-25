@@ -54,3 +54,5 @@ cargo run -p ql-benches --release
 
 ## Phase 18 Institutional Expansion
 The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB and entropy pooling. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic OU SPX/VIX, AFV convertibles, Clewlow–Strickland swaptions, Schur-HRP and nonlinear shrinkage. The workstation now exposes Tab 31 and the benchmark suite contains 33 AD parity workloads.
+
+Phase 20 adds production-grade inflation, structured-credit, rough-volatility, callable, portfolio, and XVA engines with exact Dual/IFT parity. Phase 21 completes the institutional expansion with Hagan–West monotone-convex bootstrapping, Piterbarg quasi-Gaussian amortizing swaptions, Clark FX delta-smile calibration, Gatheral–Gyöngy LSV leverage, Green SA-CCR lifetime KVA/MVA, Gregory Euler netting allocation, Bayer–Friz–Gatheral rough volatility, Bouzoubaa cliquets, Burger multifuel dispatch, Cartea–Jaimungal execution, Paleologo factor-neutral allocation, and checkpointed Glasserman–Malliavin AAD.

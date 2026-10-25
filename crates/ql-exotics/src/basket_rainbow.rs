@@ -236,7 +236,6 @@ impl LevyBasketEngine {
     }
 }
 
-
 #[derive(Clone, Debug)]
 pub struct ChoiSumOfBsmBasketSpec<T: Real = f64> {
     pub spots: Vec<T>,
@@ -795,7 +794,9 @@ pub fn price_li_deng_zhou_multi_spread_option<T: Real>(
         sig10_e_sig10 += sig10[i] * e_sig10[i];
     }
     let c0 = c_base + tr_f + nu0 * sqrt_sig_xy + nu0 * sig10_d + nu0 * nu0 * sig10_e_sig10;
-    let d0_in: Vec<T> = (0..n).map(|i| d_vec[i] + e_sig10[i] * (nu0 * 2.0)).collect();
+    let d0_in: Vec<T> = (0..n)
+        .map(|i| d_vec[i] + e_sig10[i] * (nu0 * 2.0))
+        .collect();
     let d0: Vec<T> = (0..n)
         .map(|i| (0..n).fold(T::zero(), |acc, j| acc + sig11_sqrt[i][j] * d0_in[j]))
         .collect();
@@ -810,7 +811,10 @@ pub fn price_li_deng_zhou_multi_spread_option<T: Real>(
         for j in 0..n {
             sig11_d_k += sig11[k][j] * d_vec[j];
         }
-        let ck = c_base + tr_f + nu_short[k] * sig11_d_k + nu_short[k] * nu_short[k] * sig11_e_sig11[k][k];
+        let ck = c_base
+            + tr_f
+            + nu_short[k] * sig11_d_k
+            + nu_short[k] * nu_short[k] * sig11_e_sig11[k][k];
         let dk_in: Vec<T> = (0..n)
             .map(|i| d_vec[i] + e_sig11[i][k] * (nu_short[k] * 2.0))
             .collect();
@@ -873,8 +877,6 @@ pub fn price_li_deng_zhou_multi_spread_option<T: Real>(
         boundary_intercept_c: c_base,
     }
 }
-
-
 
 #[cfg(test)]
 mod phase20_tests {

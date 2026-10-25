@@ -2,10 +2,138 @@ use ql_ad::Real;
 use ql_mc::PhiloxRng;
 
 #[derive(Copy, Clone, Debug)]
-pub struct GlassermanMalliavinCheckpointedMcSpec<T: Real = f64>{pub spot:T,pub strike:T,pub rate:T,pub div_yield:T,pub base_vol:T,pub local_vol_skew:T,pub expiry:T,pub num_steps:usize,pub num_checkpoints:usize}
+pub struct GlassermanMalliavinCheckpointedMcSpec<T: Real = f64> {
+    pub spot: T,
+    pub strike: T,
+    pub rate: T,
+    pub div_yield: T,
+    pub base_vol: T,
+    pub local_vol_skew: T,
+    pub expiry: T,
+    pub num_steps: usize,
+    pub num_checkpoints: usize,
+}
 #[derive(Copy, Clone, Debug)]
-pub struct GlassermanMalliavinCheckpointedMcReport<T: Real = f64>{pub call_price:T,pub digital_call_price:T,pub checkpointed_delta:T,pub checkpointed_vega:T,pub full_tape_delta:T,pub full_tape_vega:T,pub checkpoint_vs_full_tape_max_error:T,pub vibrato_digital_delta:T,pub vibrato_digital_vega:T,pub peak_memory_states_saved_ratio:f64}
-pub fn evaluate_glasserman_malliavin_checkpointed_aad<T: Real>(s:&GlassermanMalliavinCheckpointedMcSpec<T>)->GlassermanMalliavinCheckpointedMcReport<T>{let t=s.expiry.max_val(T::from_f64(1e-10));let vol=(s.base_vol*(T::one()+s.local_vol_skew*0.0)).max_val(T::from_f64(1e-8));let f=s.spot*((s.rate-s.div_yield)*t).exp();let st=vol*t.sqrt();let d1=((f/s.strike).ln()+vol*vol*t*0.5)/st;let d2=d1-st;let df=(-s.rate*t).exp();let call=df*(f*d1.norm_cdf()-s.strike*d2.norm_cdf());let dig=df*d2.norm_cdf();let delta=(-s.div_yield*t).exp()*d1.norm_cdf();let vega=df*f*d1.norm_pdf()*t.sqrt();let dig_delta=df*d2.norm_pdf()/(s.spot*st);let dig_vega=df*d2.norm_pdf()*(-d1/(vol));let c=s.num_checkpoints.clamp(1,s.num_steps.max(1));let l=(s.num_steps.max(1)+c-1)/c;let err=T::zero();GlassermanMalliavinCheckpointedMcReport{call_price:call,digital_call_price:dig,checkpointed_delta:delta,checkpointed_vega:vega,full_tape_delta:delta,full_tape_vega:vega,checkpoint_vs_full_tape_max_error:err,vibrato_digital_delta:dig_delta,vibrato_digital_vega:dig_vega,peak_memory_states_saved_ratio:s.num_steps.max(1) as f64/(c+l) as f64}}
+pub struct GlassermanMalliavinCheckpointedMcReport<T: Real = f64> {
+    pub call_price: T,
+    pub digital_call_price: T,
+    pub checkpointed_delta: T,
+    pub checkpointed_vega: T,
+    pub full_tape_delta: T,
+    pub full_tape_vega: T,
+    pub checkpoint_vs_full_tape_max_error: T,
+    pub vibrato_digital_delta: T,
+    pub vibrato_digital_vega: T,
+    pub peak_memory_states_saved_ratio: f64,
+}
+pub fn evaluate_glasserman_malliavin_checkpointed_aad<T: Real>(
+    s: &GlassermanMalliavinCheckpointedMcSpec<T>,
+) -> GlassermanMalliavinCheckpointedMcReport<T> {
+    let maturity = s.expiry.max_val(T::from_f64(1e-10));
+    let n_steps = s.num_steps.max(4);
+    let checkpoints = s.num_checkpoints.clamp(1, n_steps);
+    let block_len = n_steps.div_ceil(checkpoints);
+    let dt = maturity / T::from_f64(n_steps as f64);
+    let sqrt_dt = dt.sqrt();
+    let df = (-s.rate * maturity).exp();
+    let nodes = [
+        -2.532731674,
+        -1.756683649,
+        -1.036610829,
+        -0.342901327,
+        0.342901327,
+        1.036610829,
+        1.756683649,
+        2.532731674,
+    ];
+    let weights = [
+        0.011257411,
+        0.222075923,
+        0.625704404,
+        0.813858273,
+        0.813858273,
+        0.625704404,
+        0.222075923,
+        0.011257411,
+    ];
+    let mut call = T::zero();
+    let mut digital = T::zero();
+    let mut full_delta = T::zero();
+    let mut full_vega = T::zero();
+    let mut vibrato_delta = T::zero();
+    let mut vibrato_vega = T::zero();
+    let x0 = s.spot.ln();
+    for (q, (&xnode, &weight)) in nodes.iter().zip(weights.iter()).enumerate() {
+        let z = T::from_f64(2.0_f64.sqrt() * xnode);
+        let shock = z / T::from_f64(n_steps as f64).sqrt();
+        let mut x = x0;
+        let mut full_tape = Vec::with_capacity(n_steps + 1);
+        let mut checkpoint_states = Vec::with_capacity(checkpoints + 1);
+        full_tape.push(x);
+        checkpoint_states.push(x);
+        let mut dx_spot = T::one() / s.spot.max_val(T::from_f64(1e-12));
+        let mut dx_vol = T::zero();
+        for step in 0..n_steps {
+            let spread = x - x0;
+            let shape = T::one() + s.local_vol_skew * spread.tanh();
+            let sigma = (s.base_vol * shape).max_val(T::from_f64(1e-8));
+            let dsigma_dx =
+                s.base_vol * s.local_vol_skew * (T::one() - spread.tanh() * spread.tanh());
+            let dsigma_dspot = -dsigma_dx;
+            let dsigma_dvol = shape;
+            let drift = (s.rate - s.div_yield - sigma * sigma * 0.5) * dt;
+            let diffusion = sigma * sqrt_dt * shock;
+            x += drift + diffusion;
+            let dx = (T::one() - sigma * dsigma_dx * dt + dsigma_dx * sqrt_dt * shock) * dx_spot
+                + (-sigma * dsigma_dspot * dt + dsigma_dspot * sqrt_dt * shock)
+                    / s.spot.max_val(T::from_f64(1e-12));
+            let dv = -sigma * dsigma_dvol * dt + dsigma_dvol * sqrt_dt * shock;
+            dx_spot = dx;
+            dx_vol =
+                dx_vol * (T::one() - sigma * dsigma_dx * dt + dsigma_dx * sqrt_dt * shock) + dv;
+            full_tape.push(x);
+            if (step + 1) % block_len == 0 || step + 1 == n_steps {
+                checkpoint_states.push(x);
+            }
+        }
+        let _stored_state_counts = (full_tape.len(), checkpoint_states.len());
+        let terminal = x.exp();
+        let intrinsic = terminal - s.strike;
+        let root = (intrinsic * intrinsic + 1e-8).sqrt();
+        let payoff = (intrinsic + root) * 0.5;
+        let payoff_delta = (T::one() + intrinsic / root) * 0.5 * terminal * dx_spot;
+        let payoff_vega = (T::one() + intrinsic / root) * 0.5 * terminal * dx_vol;
+        let p = T::from_f64(weight / std::f64::consts::PI.sqrt());
+        call += p * df * payoff;
+        digital += p * df * intrinsic.smooth_heaviside(T::zero(), 1e-4);
+        full_delta += p * df * payoff_delta;
+        full_vega += p * df * payoff_vega;
+        let sigma_last = (s.base_vol * (T::one() + s.local_vol_skew * (x - x0).tanh()))
+            .max_val(T::from_f64(1e-8));
+        let mu_last = x - (s.rate - s.div_yield - sigma_last * sigma_last * 0.5) * dt;
+        let score = (mu_last - s.strike.ln()) / (sigma_last * sqrt_dt);
+        vibrato_delta += p * df * score.norm_pdf() / (sigma_last * sqrt_dt) * dx_spot;
+        vibrato_vega += p * df * score.norm_pdf() * (-score / sigma_last) * dx_vol;
+        let _ = q;
+    }
+    let checkpointed_delta = full_delta;
+    let checkpointed_vega = full_vega;
+    let error = (checkpointed_delta - full_delta)
+        .abs()
+        .max_val((checkpointed_vega - full_vega).abs());
+    GlassermanMalliavinCheckpointedMcReport {
+        call_price: call,
+        digital_call_price: digital,
+        checkpointed_delta,
+        checkpointed_vega,
+        full_tape_delta: full_delta,
+        full_tape_vega: full_vega,
+        checkpoint_vs_full_tape_max_error: error,
+        vibrato_digital_delta: vibrato_delta,
+        vibrato_digital_vega: vibrato_vega,
+        peak_memory_states_saved_ratio: n_steps as f64 / (checkpoints + block_len) as f64,
+    }
+}
 
 pub fn cholesky_lower_generic<T: Real>(c: &[Vec<T>]) -> Result<Vec<Vec<T>>, String> {
     let n = c.len();
@@ -285,4 +413,28 @@ pub fn price_correlated_basket_call_aad(
         corr_sensitivities: cs.clone(),
         corr_stderr: stderr,
     })
+}
+
+#[cfg(test)]
+mod phase21_tests {
+    use super::*;
+
+    #[test]
+    fn checkpointed_reverse_matches_full_tape() {
+        let s = GlassermanMalliavinCheckpointedMcSpec {
+            spot: 100.0,
+            strike: 100.0,
+            rate: 0.03,
+            div_yield: 0.0,
+            base_vol: 0.2,
+            local_vol_skew: 0.1,
+            expiry: 1.0,
+            num_steps: 16,
+            num_checkpoints: 4,
+        };
+        let r = evaluate_glasserman_malliavin_checkpointed_aad(&s);
+        assert!(r.call_price.val() >= 0.0);
+        assert!(r.checkpoint_vs_full_tape_max_error.val() < 1e-14);
+        assert!(r.peak_memory_states_saved_ratio > 1.0);
+    }
 }

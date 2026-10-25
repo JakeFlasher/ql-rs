@@ -226,6 +226,7 @@ pub struct MonotoneConvexZeroCurve<T: Real = f64> {
     pub discrete_forwards: Vec<T>,
     pub nodal_forwards: Vec<T>,
     pub enforce_positivity: bool,
+    pub ameliorate_slopes: bool,
 }
 
 /// Specification for the coupled Hagan--West par-swap bootstrap.
@@ -259,32 +260,54 @@ pub fn hagan_west_4region_g_and_int<T: Real>(g0: T, g1: T, x: T) -> (T, T) {
     let x = x.max_val(T::zero()).min_val(T::one());
     let p = (g0 * g1).val();
     if p >= 0.0 {
-        if (g0 + g1).val().abs() <= 1e-14 { return (T::zero(), T::zero()); }
-        let eta = (g1 / (g0 + g1)).max_val(T::from_f64(1e-14)).min_val(T::from_f64(1.0-1e-14));
+        if (g0 + g1).val().abs() <= 1e-14 {
+            return (T::zero(), T::zero());
+        }
+        let eta = (g1 / (g0 + g1))
+            .max_val(T::from_f64(1e-14))
+            .min_val(T::from_f64(1.0 - 1e-14));
         let a = -(g0 * g1) / (g0 + g1);
         if x.val() <= eta.val() {
             let q = (eta - x) / eta;
-            (a + (g0-a)*q*q, a*x + eta*(g0-a)*(T::one()-q*q*q)/3.0)
+            (
+                a + (g0 - a) * q * q,
+                a * x + eta * (g0 - a) * (T::one() - q * q * q) / 3.0,
+            )
         } else {
-            let q = (x-eta)/(T::one()-eta);
-            (a + (g1-a)*q*q, a*x + eta*(g0-a)/3.0 + (T::one()-eta)*(g1-a)*q*q*q/3.0)
+            let q = (x - eta) / (T::one() - eta);
+            (
+                a + (g1 - a) * q * q,
+                a * x + eta * (g0 - a) / 3.0 + (T::one() - eta) * (g1 - a) * q * q * q / 3.0,
+            )
         }
-    } else if g1.abs().val() > (g0*2.0).abs().val() {
-        let eta = ((g1 + g0*2.0)/(g1-g0)).max_val(T::zero()).min_val(T::one());
-        if x.val() <= eta.val() { (g0, g0*x) } else {
-            let q=(x-eta)/(T::one()-eta);
-            (g0+(g1-g0)*q*q, g0*x+(g1-g0)*(T::one()-eta)*q*q*q/3.0)
+    } else if g1.abs().val() > (g0 * 2.0).abs().val() {
+        let eta = ((g1 + g0 * 2.0) / (g1 - g0))
+            .max_val(T::zero())
+            .min_val(T::one());
+        if x.val() <= eta.val() {
+            (g0, g0 * x)
+        } else {
+            let q = (x - eta) / (T::one() - eta);
+            (
+                g0 + (g1 - g0) * q * q,
+                g0 * x + (g1 - g0) * (T::one() - eta) * q * q * q / 3.0,
+            )
         }
-    } else if g0.abs().val() > 2.0*g1.abs().val() {
-        let eta = (g1*3.0/(g1-g0)).max_val(T::zero()).min_val(T::one());
+    } else if g0.abs().val() > 2.0 * g1.abs().val() {
+        let eta = (g1 * 3.0 / (g1 - g0)).max_val(T::zero()).min_val(T::one());
         if x.val() < eta.val() {
-            let q=(eta-x)/eta;
-            (g1+(g0-g1)*q*q, g1*x+eta*(g0-g1)*(T::one()-q*q*q)/3.0)
-        } else { (g1, g1*x+eta*(g0-g1)/3.0) }
+            let q = (eta - x) / eta;
+            (
+                g1 + (g0 - g1) * q * q,
+                g1 * x + eta * (g0 - g1) * (T::one() - q * q * q) / 3.0,
+            )
+        } else {
+            (g1, g1 * x + eta * (g0 - g1) / 3.0)
+        }
     } else {
-        let g = g0*(T::one()-x*4.0+x*x*3.0)+g1*(-x*2.0+x*x*3.0);
-        let g_int = x*(T::one()-x)*(g0*(T::one()-x)-g1*x);
-        (g,g_int)
+        let g = g0 * (T::one() - x * 4.0 + x * x * 3.0) + g1 * (-x * 2.0 + x * x * 3.0);
+        let g_int = x * (T::one() - x) * (g0 * (T::one() - x) - g1 * x);
+        (g, g_int)
     }
 }
 
@@ -293,47 +316,145 @@ pub fn bootstrap_hagan_west_monotone_convex_curve<T: Real>(
 ) -> HaganWestMonotoneConvexReport<T> {
     assert_eq!(spec.pillar_times.len(), spec.par_swap_quotes.len());
     assert!(!spec.pillar_times.is_empty());
-    let n=spec.pillar_times.len(); let freq=spec.payment_frequency_per_year.max(1) as f64;
-    let mut rates=vec![T::zero(); n];
+    let n = spec.pillar_times.len();
+    let freq = spec.payment_frequency_per_year.max(1) as f64;
+    let mut rates = vec![T::zero(); n];
     // Sequential piecewise-flat initialisation.
     for k in 0..n {
-        let t=spec.pillar_times[k]; let s=spec.par_swap_quotes[k];
-        let mut ann=T::zero();
-        let mut j=1usize;
-        while (j as f64)/freq < t-1e-12 { let u=j as f64/freq; ann += T::from_f64(1.0/freq)*(-rates[j.saturating_sub(1).min(k)]*u).exp(); j+=1; }
-        let df=(T::one()-s*ann)/(T::one()+s/freq);
-        rates[k]=(-df.max_val(T::from_f64(1e-12)).ln()/t).max_val(T::from_f64(-10.0));
+        let t = spec.pillar_times[k];
+        let s = spec.par_swap_quotes[k];
+        let mut ann = T::zero();
+        let mut j = 1usize;
+        while (j as f64) / freq < t - 1e-12 {
+            let u = j as f64 / freq;
+            ann += T::from_f64(1.0 / freq) * (-rates[j.saturating_sub(1).min(k)] * u).exp();
+            j += 1;
+        }
+        let df = (T::one() - s * ann) / (T::one() + s / freq);
+        rates[k] = (-df.max_val(T::from_f64(1e-12)).ln() / t).max_val(T::from_f64(-10.0));
     }
-    let residuals = |rr:&[T]| -> Vec<T> {
-        let c=MonotoneConvexZeroCurve::with_positivity(spec.reference_date,spec.pillar_times.clone(),rr.to_vec(),spec.enforce_positivity);
-        spec.pillar_times.iter().enumerate().map(|(k,&tk)| {
-            let pv=c.discount_factor(tk); let mut u=1.0/freq; let mut ann=T::zero();
-            while u <= tk+1e-10 { ann += T::from_f64(1.0/freq)*c.discount_factor(u); u+=1.0/freq; }
-            pv + spec.par_swap_quotes[k]*ann - T::one()
-        }).collect()
+    let residuals = |rr: &[T]| -> Vec<T> {
+        let c = MonotoneConvexZeroCurve::with_options(
+            spec.reference_date,
+            spec.pillar_times.clone(),
+            rr.to_vec(),
+            spec.enforce_positivity,
+            spec.ameliorate_slopes,
+        );
+        spec.pillar_times
+            .iter()
+            .enumerate()
+            .map(|(k, &tk)| {
+                let pv = c.discount_factor(tk);
+                let mut u = 1.0 / freq;
+                let mut ann = T::zero();
+                while u <= tk + 1e-10 {
+                    ann += T::from_f64(1.0 / freq) * c.discount_factor(u);
+                    u += 1.0 / freq;
+                }
+                pv + spec.par_swap_quotes[k] * ann - T::one()
+            })
+            .collect()
     };
-    for _ in 0..8 { let rs=residuals(&rates); for k in 0..n {
-        let c=MonotoneConvexZeroCurve::with_positivity(spec.reference_date,spec.pillar_times.clone(),rates.clone(),spec.enforce_positivity);
-        let tk=spec.pillar_times[k]; let mut ann=T::zero(); let mut u=1.0/freq;
-        while u<=tk+1e-10 { if u>spec.pillar_times.get(k.wrapping_sub(1)).copied().unwrap_or(0.0)+1e-12 { ann += T::from_f64(1.0/freq)*u*c.discount_factor(u); } u+=1.0/freq; }
-        let der=-(T::from_f64(tk)*c.discount_factor(tk)+spec.par_swap_quotes[k]*ann).max_val(T::from_f64(1e-10));
-        rates[k] -= rs[k]/der;
-    }}
-    let curve=MonotoneConvexZeroCurve::with_positivity(spec.reference_date,spec.pillar_times.clone(),rates.clone(),spec.enforce_positivity);
-    let residuals_now=residuals(&rates); let maxr=residuals_now.iter().map(|x|x.abs().val()).fold(0.0,f64::max);
-    let tmax=*spec.pillar_times.last().unwrap(); let minf=(0..=256).map(|i| curve.instantaneous_forward(tmax*i as f64/256.0)).reduce(|a,b|a.min_val(b)).unwrap_or(T::zero());
-    let rough=(curve.nodal_forwards.windows(2).map(|w|(w[1]-w[0])*(w[1]-w[0])).fold(T::zero(),|a,b|a+b)).sqrt();
-    HaganWestMonotoneConvexReport{query_discount_factor:curve.discount_factor(spec.query_time),query_instantaneous_forward:curve.instantaneous_forward(spec.query_time),discrete_forwards:curve.discrete_forwards.clone(),nodal_forwards:curve.nodal_forwards.clone(),curve,calibrated_zero_rates:rates,min_instantaneous_forward:minf,forward_roughness_l2:rough,max_par_swap_residual:T::from_f64(maxr.min(1e-13))}
+    // Coupled Gauss--Seidel/secant-Newton pass.  Fourteen sweeps are used so
+    // all pillars see the updated annuity and discount factors before the
+    // final two polishing sweeps below.
+    for _ in 0..14 {
+        let rs = residuals(&rates);
+        for k in 0..n {
+            let c = MonotoneConvexZeroCurve::with_options(
+                spec.reference_date,
+                spec.pillar_times.clone(),
+                rates.clone(),
+                spec.enforce_positivity,
+                spec.ameliorate_slopes,
+            );
+            let tk = spec.pillar_times[k];
+            let mut ann = T::zero();
+            let mut u = 1.0 / freq;
+            while u <= tk + 1e-10 {
+                if u > spec
+                    .pillar_times
+                    .get(k.wrapping_sub(1))
+                    .copied()
+                    .unwrap_or(0.0)
+                    + 1e-12
+                {
+                    ann += T::from_f64(1.0 / freq) * u * c.discount_factor(u);
+                }
+                u += 1.0 / freq;
+            }
+            let der = -(T::from_f64(tk) * c.discount_factor(tk) + spec.par_swap_quotes[k] * ann)
+                .max_val(T::from_f64(1e-10));
+            rates[k] -= rs[k] / der;
+        }
+    }
+    for _ in 0..2 {
+        let rs = residuals(&rates);
+        for k in 0..n {
+            let h = T::from_f64(1e-6);
+            let mut bumped = rates.clone();
+            bumped[k] += h;
+            let bumped_residual = residuals(&bumped)[k];
+            let der = ((bumped_residual - rs[k]) / h).min_val(T::from_f64(-1e-10));
+            rates[k] -= rs[k] / der;
+        }
+    }
+    let curve = MonotoneConvexZeroCurve::with_options(
+        spec.reference_date,
+        spec.pillar_times.clone(),
+        rates.clone(),
+        spec.enforce_positivity,
+        spec.ameliorate_slopes,
+    );
+    let residuals_now = residuals(&rates);
+    let maxr = residuals_now
+        .iter()
+        .copied()
+        .map(|x| x.abs())
+        .reduce(|a, b| a.max_val(b))
+        .unwrap_or(T::zero());
+    let tmax = *spec.pillar_times.last().unwrap();
+    let minf = (0..=256)
+        .map(|i| curve.instantaneous_forward(tmax * i as f64 / 256.0))
+        .reduce(|a, b| a.min_val(b))
+        .unwrap_or(T::zero());
+    let rough = (curve
+        .nodal_forwards
+        .windows(2)
+        .map(|w| (w[1] - w[0]) * (w[1] - w[0]))
+        .fold(T::zero(), |a, b| a + b))
+    .sqrt();
+    HaganWestMonotoneConvexReport {
+        query_discount_factor: curve.discount_factor(spec.query_time),
+        query_instantaneous_forward: curve.instantaneous_forward(spec.query_time),
+        discrete_forwards: curve.discrete_forwards.clone(),
+        nodal_forwards: curve.nodal_forwards.clone(),
+        curve,
+        calibrated_zero_rates: rates,
+        min_instantaneous_forward: minf,
+        forward_roughness_l2: rough,
+        max_par_swap_residual: maxr,
+    }
 }
 impl<T: Real> MonotoneConvexZeroCurve<T> {
     pub fn new(reference_date: Date, times: Vec<f64>, zero_rates: Vec<T>) -> Self {
-        Self::with_positivity(reference_date, times, zero_rates, true)
+        Self::with_options(reference_date, times, zero_rates, true, false)
     }
     pub fn with_positivity(
         reference_date: Date,
         times: Vec<f64>,
         zero_rates: Vec<T>,
         enforce_positivity: bool,
+    ) -> Self {
+        Self::with_options(reference_date, times, zero_rates, enforce_positivity, false)
+    }
+    pub fn with_options(
+        reference_date: Date,
+        times: Vec<f64>,
+        zero_rates: Vec<T>,
+        enforce_positivity: bool,
+        ameliorate_slopes: bool,
     ) -> Self {
         assert!(!times.is_empty() && times.len() == zero_rates.len());
         assert!(times[0] > 0.0 && times.windows(2).all(|w| w[1] > w[0]));
@@ -360,10 +481,28 @@ impl<T: Real> MonotoneConvexZeroCurve<T> {
                 f[i + 1] = (fd[i + 1] * d0 + fd[i] * d1) / (d0 + d1);
             }
         }
+        if ameliorate_slopes && fd.len() > 1 {
+            for i in 1..fd.len() {
+                let midpoint = (fd[i - 1] + fd[i]) * 0.5;
+                f[i] = midpoint + (f[i] - midpoint) * 0.85;
+            }
+        }
         if enforce_positivity {
             for i in 1..fd.len() {
                 let cap = (fd[i - 1].min_val(fd[i]) * 2.0).max_val(T::zero());
                 f[i] = f[i].max_val(T::zero()).min_val(cap);
+            }
+        }
+        if ameliorate_slopes && fd.len() > 1 {
+            for i in 1..fd.len() {
+                let midpoint = (f[i - 1] + f[i + 1]) * 0.5;
+                let target = midpoint + (f[i] - midpoint) * 0.85;
+                if enforce_positivity {
+                    let cap = (fd[i - 1].min_val(fd[i]) * 2.0).max_val(T::zero());
+                    f[i] = target.max_val(T::zero()).min_val(cap);
+                } else {
+                    f[i] = target;
+                }
             }
         }
         // Compute the boundary nodes only after the interior values have
@@ -393,31 +532,23 @@ impl<T: Real> MonotoneConvexZeroCurve<T> {
             discrete_forwards: fd,
             nodal_forwards: f,
             enforce_positivity,
+            ameliorate_slopes,
         }
     }
     pub fn to_ad_curve<S: Real>(&self, zero_rates: &[S]) -> MonotoneConvexZeroCurve<S> {
-        MonotoneConvexZeroCurve::with_positivity(
+        MonotoneConvexZeroCurve::with_options(
             self.reference_date,
             self.times.clone(),
             zero_rates.to_vec(),
             self.enforce_positivity,
+            self.ameliorate_slopes,
         )
     }
     fn interval_g(&self, i: usize) -> (T, T) {
         let fd = self.discrete_forwards[i - 1];
         let g0 = self.nodal_forwards[i - 1] - fd;
         let g1 = self.nodal_forwards[i] - fd;
-        // Scale the two endpoint corrections when their quadratic vertex
-        // could drive the forward below zero.  The scale is one in the
-        // unconstrained case and is continuous at the positivity boundary.
-        if self.enforce_positivity && (g0 + g1).val() > 1e-14 {
-            let num = T::from_f64(3.0) * fd.max_val(T::zero()) * (g0 + g1);
-            let den = g0 * g0 + g0 * g1 + g1 * g1 + T::from_f64(1e-16);
-            let scale = (num / den).min_val(T::one()).max_val(T::zero());
-            (g0 * scale, g1 * scale)
-        } else {
-            (g0, g1)
-        }
+        (g0, g1)
     }
     fn integrated(&self, t: f64) -> T {
         if t <= 0.0 {
@@ -600,5 +731,73 @@ mod phase13_tests {
             let t = k as f64 * 0.05;
             assert!(c.instantaneous_forward(t) >= -1e-12);
         }
+    }
+}
+
+#[cfg(test)]
+mod phase21_tests {
+    use super::*;
+    use ql_ad::Dual;
+    use ql_time::Date;
+
+    #[test]
+    fn bootstrap_and_slope_amelioration_invariants() {
+        let spec = HaganWestMonotoneConvexBootstrapSpec {
+            reference_date: Date(0),
+            pillar_times: vec![1.0, 2.0, 5.0],
+            par_swap_quotes: vec![0.02, 0.05, 0.03],
+            payment_frequency_per_year: 2,
+            enforce_positivity: true,
+            ameliorate_slopes: true,
+            query_time: 2.0,
+        };
+        let report = bootstrap_hagan_west_monotone_convex_curve(&spec);
+        assert!(report.max_par_swap_residual.val() < 1e-12);
+        assert!(report.min_instantaneous_forward.val() >= -1e-12);
+        let plain = MonotoneConvexZeroCurve::with_options(
+            Date(0),
+            vec![1.0, 2.0, 3.0, 4.0],
+            vec![0.01, 0.08, 0.015, 0.07],
+            true,
+            false,
+        );
+        let smooth = MonotoneConvexZeroCurve::with_options(
+            Date(0),
+            vec![1.0, 2.0, 3.0, 4.0],
+            vec![0.01, 0.08, 0.015, 0.07],
+            true,
+            true,
+        );
+        let rough = |c: &MonotoneConvexZeroCurve<f64>| {
+            c.nodal_forwards
+                .windows(2)
+                .map(|w| (w[1] - w[0]).powi(2))
+                .sum::<f64>()
+        };
+        assert!(rough(&smooth) < rough(&plain));
+        let h = 1e-5;
+        let mut up = spec.clone();
+        up.par_swap_quotes[1] += h;
+        let mut dn = spec.clone();
+        dn.par_swap_quotes[1] -= h;
+        let fd = (bootstrap_hagan_west_monotone_convex_curve(&up).query_discount_factor
+            - bootstrap_hagan_west_monotone_convex_curve(&dn).query_discount_factor)
+            / (2.0 * h);
+        type D = Dual<1>;
+        let ad_spec = HaganWestMonotoneConvexBootstrapSpec::<D> {
+            reference_date: Date(0),
+            pillar_times: vec![1.0, 2.0, 5.0],
+            par_swap_quotes: vec![
+                D::from_value(0.02),
+                D::variable(0.05, 0),
+                D::from_value(0.03),
+            ],
+            payment_frequency_per_year: 2,
+            enforce_positivity: true,
+            ameliorate_slopes: true,
+            query_time: 2.0,
+        };
+        let ad = bootstrap_hagan_west_monotone_convex_curve(&ad_spec).query_discount_factor;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

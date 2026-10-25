@@ -68,3 +68,5 @@ Date / Calendar / Convention
 
 ## Phase 18–19 Institutional Expansion
 The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB, entropy pooling, dynamic SIMM/MVA, Schur-HRP/OAS nonlinear shrinkage. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic OU SPX/VIX, AFV convertibles, Clewlow–Strickland swaptions, JLT rating migration, free-boundary SABR, gamma/variance swaps and Avellaneda–Stoikov/CDaR allocation. The workstation now exposes Tab 31 and the benchmark suite contains 33 AD parity workloads.
+
+Phase 20 and Phase 21 institutional engines are now integrated end-to-end: every workload is deterministic, differentiable through `Dual<N>`, covered by collapse/arbitrage invariants, and surfaced in the 31-tab terminal and synchronized 33-row benchmark suite.

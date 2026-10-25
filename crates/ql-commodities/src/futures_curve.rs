@@ -31,7 +31,9 @@ impl<T: Real> CommodityFuturesCurve<T> {
         if times.is_empty()
             || times.len() != market_futures.len()
             || times.iter().any(|&t| !t.is_finite() || t < 0.0)
-            || market_futures.iter().any(|f| !f.val().is_finite() || f.val() <= 0.0)
+            || market_futures
+                .iter()
+                .any(|f| !f.val().is_finite() || f.val() <= 0.0)
         {
             return Err("invalid futures curve pillars".to_string());
         }

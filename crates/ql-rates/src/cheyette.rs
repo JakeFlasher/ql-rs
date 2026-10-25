@@ -28,30 +28,194 @@ pub struct PiterbargQuasiGaussianSwaptionValuation<T: Real = f64> {
     pub cms_convexity_adjustment: T,
 }
 
-pub fn price_piterbarg_quasi_gaussian_amortizing_swaption<T: Real,D: YieldTermStructure<T>,F: YieldTermStructure<T>>(
-    spec:&PiterbargQuasiGaussianAmortizingSwaptionSpec<T>, ois_discount:&D, projection_fwd:&F
+pub fn price_piterbarg_quasi_gaussian_amortizing_swaption<
+    T: Real,
+    D: YieldTermStructure<T>,
+    F: YieldTermStructure<T>,
+>(
+    spec: &PiterbargQuasiGaussianAmortizingSwaptionSpec<T>,
+    ois_discount: &D,
+    projection_fwd: &F,
 ) -> PiterbargQuasiGaussianSwaptionValuation<T> {
-    let m=spec.period_notionals.len().min(spec.swap_times.len().saturating_sub(1));
-    let te=spec.option_expiry.max(1e-10); let kappa=spec.mean_reversion.max_val(T::from_f64(1e-8));
-    let mut ann=T::zero(); let mut flt=T::zero();
-    for j in 0..m { let t0=spec.swap_times[j]; let t1=spec.swap_times[j+1]; let tau=t1-t0; let n=spec.period_notionals[j];
-        let pd1=ois_discount.discount_factor(t1); let pf0=projection_fwd.discount_factor(t0); let pf1=projection_fwd.discount_factor(t1);
-        let l=(pf0/pf1-T::one())/tau; ann += n*tau*pd1; flt += n*tau*pd1*l;
+    let m = spec
+        .period_notionals
+        .len()
+        .min(spec.swap_times.len().saturating_sub(1));
+    let te = spec.option_expiry.max(1e-10);
+    let kappa = spec.mean_reversion.max_val(T::from_f64(1e-8));
+    let mut ann = T::zero();
+    let mut flt = T::zero();
+    for j in 0..m {
+        let t0 = spec.swap_times[j];
+        let t1 = spec.swap_times[j + 1];
+        let tau = t1 - t0;
+        let n = spec.period_notionals[j];
+        let pd1 = ois_discount.discount_factor(t1);
+        let pf0 = projection_fwd.discount_factor(t0);
+        let pf1 = projection_fwd.discount_factor(t1);
+        let l = (pf0 / pf1 - T::one()) / tau;
+        ann += n * tau * pd1;
+        flt += n * tau * pd1 * l;
     }
-    let s=flt/ann.max_val(T::from_f64(1e-12));
-    let mut qsum=T::zero(); let mut q2=T::zero();
-    for j in 0..m { let t0=spec.swap_times[j]; let t1=spec.swap_times[j+1]; let tau=t1-t0; let n=spec.period_notionals[j]; let pd0=ois_discount.discount_factor(t0); let pd1=ois_discount.discount_factor(t1); let pf0=projection_fwd.discount_factor(t0); let pf1=projection_fwd.discount_factor(t1); let beta=(pf0/pf1)/(pd0/pd1); let g0=(T::one()-(-kappa*(t0-te).max(0.0)).exp())/kappa; let g1=(T::one()-(-kappa*(t1-te).max(0.0)).exp())/kappa; qsum += n*(beta*pd0*g0-pd1*g1+T::from_f64(tau)*s*pd1*g1); q2 += n*(-beta*pd0*g0*g0+pd1*g1*g1*(T::one()-T::from_f64(tau)*s)); }
-    let q=qsum/ann.max_val(T::from_f64(1e-12));
-    let qpp=q2/ann.max_val(T::from_f64(1e-12))+q*q*2.0;
-    let varfac=((T::one()-(-kappa*te*2.0).exp())/(kappa*te*2.0)).max_val(T::from_f64(1e-12)).sqrt();
-    let vol=(q.abs()*spec.sigma0*varfac*(T::one()+(spec.local_vol_skew_b+qpp/(q.abs().max_val(T::from_f64(1e-10))*2.0))*(s-spec.strike))).max_val(T::from_f64(1e-10));
-    let npv=ann*bachelier_price(s,spec.strike,vol,T::from_f64(te),T::one(),spec.is_payer);
-    let pay=spec.swap_times.first().copied().unwrap_or(te)+spec.cms_pay_delay; let gpay=(T::one()-(-kappa*(pay-te).max(0.0)).exp())/kappa;
-    let mut alpha_num=T::zero(); for j in 0..m { let t1=spec.swap_times[j+1]; let tau=spec.swap_times[j+1]-spec.swap_times[j]; let n=spec.period_notionals[j]; let pd=ois_discount.discount_factor(t1); let gj=(T::one()-(-kappa*(t1-te).max(0.0)).exp())/kappa; alpha_num += n*tau*pd*(gj-gpay); }
-    let alpha=alpha_num/(ann.max_val(T::from_f64(1e-12))*q.abs().max_val(T::from_f64(1e-10)));
-    let cms_adj=alpha*vol*vol*te; let cms=s+cms_adj;
-    let berm=if let Some(t2)=spec.second_exercise_time { npv + T::from_f64((t2-te).max(0.0))*T::zero() } else { npv };
-    PiterbargQuasiGaussianSwaptionValuation{european_amortizing_npv:npv,bermudan_amortizing_npv:berm,amortizing_forward_swap_rate:s,amortizing_annuity:ann,effective_normal_vol:vol,multi_curve_cms_rate:cms,cms_convexity_adjustment:cms_adj}
+    let s = flt / ann.max_val(T::from_f64(1e-12));
+    let mut qsum = T::zero();
+    let mut q2 = T::zero();
+    for j in 0..m {
+        let t0 = spec.swap_times[j];
+        let t1 = spec.swap_times[j + 1];
+        let tau = t1 - t0;
+        let n = spec.period_notionals[j];
+        let pd0 = ois_discount.discount_factor(t0);
+        let pd1 = ois_discount.discount_factor(t1);
+        let pf0 = projection_fwd.discount_factor(t0);
+        let pf1 = projection_fwd.discount_factor(t1);
+        let beta = (pf0 / pf1) / (pd0 / pd1);
+        let g0 = (T::one() - (-kappa * (t0 - te).max(0.0)).exp()) / kappa;
+        let g1 = (T::one() - (-kappa * (t1 - te).max(0.0)).exp()) / kappa;
+        qsum += n * (beta * pd0 * g0 - pd1 * g1 + T::from_f64(tau) * s * pd1 * g1);
+        q2 += n * (-beta * pd0 * g0 * g0 + pd1 * g1 * g1 * (T::one() - T::from_f64(tau) * s));
+    }
+    let q = qsum / ann.max_val(T::from_f64(1e-12));
+    let mut g_ann = T::zero();
+    for j in 0..m {
+        let t1 = spec.swap_times[j + 1];
+        let tau = spec.swap_times[j + 1] - spec.swap_times[j];
+        let n = spec.period_notionals[j];
+        let pd = ois_discount.discount_factor(t1);
+        let g = (T::one() - (-kappa * (t1 - te).max(0.0)).exp()) / kappa;
+        g_ann += n * T::from_f64(tau) * pd * g;
+    }
+    let g_ann = g_ann / ann.max_val(T::from_f64(1e-12));
+    let qpp = q2 / ann.max_val(T::from_f64(1e-12)) + q * g_ann * 2.0;
+    let varfac = ((T::one() - (-kappa * te * 2.0).exp()) / (kappa * te * 2.0))
+        .max_val(T::from_f64(1e-12))
+        .sqrt();
+    let vol = (q.abs()
+        * spec.sigma0
+        * varfac
+        * (T::one()
+            + (spec.local_vol_skew_b + qpp / (q.abs().max_val(T::from_f64(1e-10)) * 2.0))
+                * (spec.strike - s)
+                * 0.5))
+        .max_val(T::from_f64(1e-10));
+    let npv = ann
+        * bachelier_price(
+            s,
+            spec.strike,
+            vol,
+            T::from_f64(te),
+            T::one(),
+            spec.is_payer,
+        );
+    let pay = spec.swap_times.first().copied().unwrap_or(te) + spec.cms_pay_delay;
+    let gpay = (T::one() - (-kappa * (pay - te).max(0.0)).exp()) / kappa;
+    let mut alpha_num = T::zero();
+    for j in 0..m {
+        let t1 = spec.swap_times[j + 1];
+        let tau = spec.swap_times[j + 1] - spec.swap_times[j];
+        let n = spec.period_notionals[j];
+        let pd = ois_discount.discount_factor(t1);
+        let gj = (T::one() - (-kappa * (t1 - te).max(0.0)).exp()) / kappa;
+        alpha_num += n * tau * pd * (gj - gpay);
+    }
+    let alpha = alpha_num / (ann.max_val(T::from_f64(1e-12)) * q.abs().max_val(T::from_f64(1e-10)));
+    let cms_adj = alpha * vol * vol * te;
+    let cms = s + cms_adj;
+    let berm = if let Some(t2) = spec.second_exercise_time {
+        if t2 <= te {
+            npv
+        } else {
+            let tail: Vec<usize> = (0..m).filter(|&j| spec.swap_times[j + 1] > t2).collect();
+            if tail.is_empty() {
+                npv
+            } else {
+                let mut a2 = T::zero();
+                let mut f2 = T::zero();
+                for &j in &tail {
+                    let tau = spec.swap_times[j + 1] - spec.swap_times[j];
+                    let n = spec.period_notionals[j];
+                    let pd = ois_discount.discount_factor(spec.swap_times[j + 1]);
+                    let pf0 = projection_fwd.discount_factor(spec.swap_times[j]);
+                    let pf1 = projection_fwd.discount_factor(spec.swap_times[j + 1]);
+                    let l = (pf0 / pf1 - T::one()) / tau;
+                    a2 += n * T::from_f64(tau) * pd;
+                    f2 += n * T::from_f64(tau) * pd * l;
+                }
+                let s2 = f2 / a2.max_val(T::from_f64(1e-12));
+                let sigma_n2 = vol;
+                let rho12 = (-kappa * (t2 - te)).exp();
+                let rem_t = (t2 - te).max(1e-12);
+                let rem_var =
+                    (sigma_n2 * sigma_n2 * (T::from_f64(t2) - rho12 * rho12 * T::from_f64(te)))
+                        .max_val(T::from_f64(1e-12));
+                let rem_vol = rem_var.sqrt() / T::from_f64(rem_t).sqrt();
+                let nodes = [
+                    -3.1909932018,
+                    -2.2665805845,
+                    -1.4685532892,
+                    -0.7235510188,
+                    0.0,
+                    0.7235510188,
+                    1.4685532892,
+                    2.2665805845,
+                    3.1909932018,
+                ];
+                let weights = [
+                    0.0003960698,
+                    0.0149487324,
+                    0.1187461380,
+                    0.3740123450,
+                    0.4929700840,
+                    0.3740123450,
+                    0.1187461380,
+                    0.0149487324,
+                    0.0003960698,
+                ];
+                let weight_norm = weights.iter().sum::<f64>();
+                let gh_sum = nodes
+                    .iter()
+                    .zip(weights.iter())
+                    .fold(T::zero(), |acc, (&z, &w)| {
+                        let zt = T::from_f64(z);
+                        let s1 = s + vol * T::from_f64(te).sqrt() * zt;
+                        let immediate = ann
+                            * (if spec.is_payer {
+                                s1 - spec.strike
+                            } else {
+                                spec.strike - s1
+                            })
+                            .max_val(T::zero());
+                        let s2z = s2 + rho12 * sigma_n2 * T::from_f64(te).sqrt() * zt;
+                        let continuation = a2
+                            * bachelier_price(
+                                s2z,
+                                spec.strike,
+                                rem_vol,
+                                T::from_f64(rem_t),
+                                T::one(),
+                                spec.is_payer,
+                            );
+                        let diff = immediate - continuation;
+                        let smooth_max = continuation
+                            + (diff * diff + T::from_f64(1e-10)).sqrt() * 0.5
+                            + diff * 0.5;
+                        acc + T::from_f64(w / weight_norm) * smooth_max
+                    });
+                gh_sum.max_val(npv)
+            }
+        }
+    } else {
+        npv
+    };
+    PiterbargQuasiGaussianSwaptionValuation {
+        european_amortizing_npv: npv,
+        bermudan_amortizing_npv: berm,
+        amortizing_forward_swap_rate: s,
+        amortizing_annuity: ann,
+        effective_normal_vol: vol,
+        multi_curve_cms_rate: cms,
+        cms_convexity_adjustment: cms_adj,
+    }
 }
 #[derive(Copy, Clone, Debug)]
 pub struct Cheyette1F<T: Real> {
@@ -514,5 +678,37 @@ mod phase16_tests {
         };
         let ad = price_cheyette_swaption_markov_projection(&sd, &cd).npv;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase21_tests {
+    use super::*;
+    use ql_curves::FlatForwardCurve;
+    use ql_time::Date;
+
+    #[test]
+    fn amortizing_bermudan_collapse_and_premium() {
+        let curve = FlatForwardCurve::new(Date(0), 0.03);
+        let base = PiterbargQuasiGaussianAmortizingSwaptionSpec {
+            option_expiry: 1.0,
+            second_exercise_time: None,
+            swap_times: vec![1.0, 2.0, 3.0],
+            period_notionals: vec![1.0, 0.9],
+            strike: 0.03,
+            mean_reversion: 0.05,
+            sigma0: 0.01,
+            local_vol_skew_b: 0.1,
+            cms_pay_delay: 0.0,
+            is_payer: true,
+        };
+        let european = price_piterbarg_quasi_gaussian_amortizing_swaption(&base, &curve, &curve);
+        assert!(
+            (european.bermudan_amortizing_npv - european.european_amortizing_npv).abs() < 1e-12
+        );
+        let mut berm_spec = base.clone();
+        berm_spec.second_exercise_time = Some(2.0);
+        let berm = price_piterbarg_quasi_gaussian_amortizing_swaption(&berm_spec, &curve, &curve);
+        assert!(berm.bermudan_amortizing_npv >= berm.european_amortizing_npv - 1e-12);
     }
 }

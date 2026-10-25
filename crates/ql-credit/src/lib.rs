@@ -764,7 +764,9 @@ pub fn evaluate_jlt_rating_migration_credit<T: Real>(
     let i0 = spec.initial_rating_index;
     let p_horizon = jlt_matrix_exp(&q_tilde, spec.horizon_years.max(1e-6));
     let row_h = p_horizon[i0].clone();
-    let p_def_h = row_h[m - 1].max_val(T::zero()).min_val(T::from_f64(0.999999));
+    let p_def_h = row_h[m - 1]
+        .max_val(T::zero())
+        .min_val(T::from_f64(0.999999));
     let p_surv_h = (T::one() - p_def_h).max_val(T::from_f64(1e-8));
     let mut p_down = T::zero();
     for p in row_h.iter().take(m - 1).skip(i0 + 1) {
@@ -793,7 +795,8 @@ pub fn evaluate_jlt_rating_migration_credit<T: Real>(
         prev_t = t;
         prev_def = def_t;
     }
-    let imp_spread = -p_surv_h.ln() / spec.horizon_years.max(1e-6) * (T::one() - spec.recovery_rate);
+    let imp_spread =
+        -p_surv_h.ln() / spec.horizon_years.max(1e-6) * (T::one() - spec.recovery_rate);
 
     JltMigrationValuation {
         transition_probabilities: row_h,

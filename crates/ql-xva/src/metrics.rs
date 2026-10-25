@@ -4,18 +4,193 @@ use ql_ad::Real;
 use ql_curves::YieldTermStructure;
 
 #[derive(Clone, Debug)]
-pub struct GregoryNettingSetAllocationSpec<T: Real = f64>{pub trade_weights:Vec<T>,pub trade_expected_mtms:Vec<T>,pub trade_exposure_vols:Vec<T>,pub correlation_matrix:Vec<Vec<T>>,pub collateral_fraction:T,pub horizon:f64,pub num_steps:usize,pub risk_free_rate:T,pub cpty_hazard_rate:T,pub cpty_lgd:T,pub own_hazard_rate:T,pub own_lgd:T,pub funding_spread:T,pub colva_spread:T}
-#[derive(Clone, Debug)]
-pub struct GregoryNettingSetAllocationReport<T: Real = f64>{pub netted_total_xva:T,pub standalone_total_xva:T,pub netting_benefit:T,pub netting_factor:T,pub euler_allocated_cva:Vec<T>,pub euler_allocated_dva:Vec<T>,pub euler_allocated_fva:Vec<T>,pub euler_allocated_total_xva:Vec<T>,pub incremental_xva_by_trade:Vec<T>}
-pub fn allocate_gregory_netting_set_xva<T: Real>(s:&GregoryNettingSetAllocationSpec<T>)->GregoryNettingSetAllocationReport<T>{
-    let n=s.trade_weights.len(); let a=(T::one()-s.collateral_fraction).max_val(T::from_f64(1e-12)); let mut mu=T::zero(); let mut var=T::zero(); for i in 0..n{mu+=s.trade_weights[i]*s.trade_expected_mtms[i]; for j in 0..n{var+=s.trade_weights[i]*s.trade_weights[j]*s.correlation_matrix.get(i).and_then(|r|r.get(j)).copied().unwrap_or(T::zero())*s.trade_exposure_vols[i]*s.trade_exposure_vols[j];}} let mut cva=T::zero();let mut dva=T::zero();let mut fva=T::zero(); let mut ac=vec![T::zero();n];let mut ad=vec![T::zero();n];let mut af=vec![T::zero();n]; let steps=s.num_steps.max(1);for k in 1..=steps{let t=s.horizon*k as f64/steps as f64;let sk=(t*(1.0-0.5*t/s.horizon.max(1e-8))).max(0.0).sqrt();let m=a*mu*sk;let sig=(a*a*var).max_val(T::from_f64(1e-14)).sqrt()*T::from_f64(sk);let d=m/sig.max_val(T::from_f64(1e-10));let epe=m*d.norm_cdf()+sig*d.norm_pdf();let ene=-m*(-d).norm_cdf()+sig*d.norm_pdf();let wt=T::from_f64(s.horizon/steps as f64)*(-(s.risk_free_rate+s.cpty_hazard_rate+s.own_hazard_rate)*t).exp();let wc=wt*s.cpty_hazard_rate*s.cpty_lgd;let wd=-wt*s.own_hazard_rate*s.own_lgd;let wf=wt*s.funding_spread+wt*s.colva_spread*s.collateral_fraction/a; cva+=wc*epe;dva+=wd*ene;fva+=wf*(epe+ene); for i in 0..n{let cross=(0..n).map(|j|s.trade_weights[j]*s.correlation_matrix.get(i).and_then(|r|r.get(j)).copied().unwrap_or(T::zero())*s.trade_exposure_vols[i]*s.trade_exposure_vols[j]).fold(T::zero(),|x,y|x+y);let common=s.trade_weights[i]*a*s.trade_expected_mtms[i]*sk*d.norm_cdf();let risk=s.trade_weights[i]*a*a*cross/sig.max_val(T::from_f64(1e-10))*T::from_f64(sk)*d.norm_pdf();ac[i]+=wc*(common+risk);ad[i]+=wd*(-s.trade_weights[i]*a*s.trade_expected_mtms[i]*sk*(-d).norm_cdf()+risk);af[i]+=wf*(common+risk + (-s.trade_weights[i]*a*s.trade_expected_mtms[i]*sk*(-d).norm_cdf()+risk));}}
-    let total=cva+dva+fva; let stand=s.trade_weights.iter().enumerate().map(|(i,_w)|{let mut one=s.clone();for j in 0..n{one.trade_weights[j]=if i==j{s.trade_weights[j]}else{T::zero()};} allocate_gregory_netting_set_xva_single(&one)}).fold(T::zero(),|x,y|x+y); let alloc_total:Vec<T>=(0..n).map(|i|ac[i]+ad[i]+af[i]).collect(); let mut inc=Vec::with_capacity(n);for i in 0..n{let mut minus=s.clone();minus.trade_weights[i]=T::zero();inc.push(total-allocate_gregory_netting_set_xva_single(&minus));}
-    let mut ac=ac; let mut ad=ad; let mut af=af; let mut alloc_total=alloc_total;
-    if n>0 { let sc=ac.iter().copied().fold(T::zero(),|x,y|x+y); let sd=ad.iter().copied().fold(T::zero(),|x,y|x+y); let sf=af.iter().copied().fold(T::zero(),|x,y|x+y); ac[0]+=cva-sc; ad[0]+=dva-sd; af[0]+=fva-sf; let st=alloc_total.iter().copied().fold(T::zero(),|x,y|x+y); alloc_total[0]+=total-st; }
-    GregoryNettingSetAllocationReport{netted_total_xva:total,standalone_total_xva:stand,netting_benefit:(stand-total).max_val(T::zero()),netting_factor:total/stand.max_val(T::from_f64(1e-12)),euler_allocated_cva:ac,euler_allocated_dva:ad,euler_allocated_fva:af,euler_allocated_total_xva:alloc_total,incremental_xva_by_trade:inc}
+pub struct GregoryNettingSetAllocationSpec<T: Real = f64> {
+    pub trade_weights: Vec<T>,
+    pub trade_expected_mtms: Vec<T>,
+    pub trade_exposure_vols: Vec<T>,
+    pub correlation_matrix: Vec<Vec<T>>,
+    pub collateral_fraction: T,
+    pub horizon: f64,
+    pub num_steps: usize,
+    pub risk_free_rate: T,
+    pub cpty_hazard_rate: T,
+    pub cpty_lgd: T,
+    pub own_hazard_rate: T,
+    pub own_lgd: T,
+    pub funding_spread: T,
+    pub colva_spread: T,
 }
-fn allocate_gregory_netting_set_xva_single<T: Real>(s:&GregoryNettingSetAllocationSpec<T>)->T{let x=s.clone();let n=x.trade_weights.len();let mut total=T::zero();for i in 0..n{if x.trade_weights[i].val()!=0.0{let mut y=x.clone();for j in 0..n{y.trade_weights[j]=if i==j{x.trade_weights[i]}else{T::zero()};}total+=allocate_gregory_netting_set_xva_core(&y);}}total}
-fn allocate_gregory_netting_set_xva_core<T: Real>(s:&GregoryNettingSetAllocationSpec<T>)->T{let n=s.trade_weights.len();let a=(T::one()-s.collateral_fraction).max_val(T::from_f64(1e-12));let mut mu=T::zero();let mut var=T::zero();for i in 0..n{mu+=s.trade_weights[i]*s.trade_expected_mtms[i];for j in 0..n{var+=s.trade_weights[i]*s.trade_weights[j]*s.correlation_matrix[i][j]*s.trade_exposure_vols[i]*s.trade_exposure_vols[j];}}let mut x=T::zero();for k in 1..=s.num_steps.max(1){let t=s.horizon*k as f64/s.num_steps.max(1) as f64;let sk=(t*(1.-0.5*t/s.horizon.max(1e-8))).sqrt();let m=a*mu*sk;let sig=(a*a*var).sqrt()*T::from_f64(sk);let d=m/sig.max_val(T::from_f64(1e-10));let e=m*d.norm_cdf()+sig*d.norm_pdf();let en=-m*(-d).norm_cdf()+sig*d.norm_pdf();let wt=T::from_f64(s.horizon/s.num_steps.max(1) as f64)*(-(s.risk_free_rate+s.cpty_hazard_rate+s.own_hazard_rate)*t).exp();x+=wt*(s.cpty_hazard_rate*s.cpty_lgd*e-s.own_hazard_rate*s.own_lgd*en+(s.funding_spread+s.colva_spread*s.collateral_fraction/a)*(e+en));}x}
+#[derive(Clone, Debug)]
+pub struct GregoryNettingSetAllocationReport<T: Real = f64> {
+    pub netted_total_xva: T,
+    pub standalone_total_xva: T,
+    pub netting_benefit: T,
+    pub netting_factor: T,
+    pub euler_allocated_cva: Vec<T>,
+    pub euler_allocated_dva: Vec<T>,
+    pub euler_allocated_fva: Vec<T>,
+    pub euler_allocated_total_xva: Vec<T>,
+    pub incremental_xva_by_trade: Vec<T>,
+}
+pub fn allocate_gregory_netting_set_xva<T: Real>(
+    s: &GregoryNettingSetAllocationSpec<T>,
+) -> GregoryNettingSetAllocationReport<T> {
+    let n = s.trade_weights.len();
+    let a = (T::one() - s.collateral_fraction).max_val(T::from_f64(1e-12));
+    let mut mu = T::zero();
+    let mut var = T::zero();
+    for i in 0..n {
+        mu += s.trade_weights[i] * s.trade_expected_mtms[i];
+        for j in 0..n {
+            var += s.trade_weights[i]
+                * s.trade_weights[j]
+                * s.correlation_matrix
+                    .get(i)
+                    .and_then(|r| r.get(j))
+                    .copied()
+                    .unwrap_or(T::zero())
+                * s.trade_exposure_vols[i]
+                * s.trade_exposure_vols[j];
+        }
+    }
+    let mut cva = T::zero();
+    let mut dva = T::zero();
+    let mut fva = T::zero();
+    let mut ac = vec![T::zero(); n];
+    let mut ad = vec![T::zero(); n];
+    let mut af = vec![T::zero(); n];
+    let steps = s.num_steps.max(1);
+    for k in 1..=steps {
+        let t = s.horizon * k as f64 / steps as f64;
+        let sk = (t * (1.0 - 0.5 * t / s.horizon.max(1e-8))).max(0.0).sqrt();
+        let m = a * mu * sk;
+        let sig = (a * a * var).max_val(T::from_f64(1e-14)).sqrt() * T::from_f64(sk);
+        let d = m / sig.max_val(T::from_f64(1e-10));
+        let epe = m * d.norm_cdf() + sig * d.norm_pdf();
+        let ene = -m * (-d).norm_cdf() + sig * d.norm_pdf();
+        let wt = T::from_f64(s.horizon / steps as f64)
+            * (-(s.risk_free_rate + s.cpty_hazard_rate + s.own_hazard_rate) * t).exp();
+        let wc = wt * s.cpty_hazard_rate * s.cpty_lgd;
+        let wd = -wt * s.own_hazard_rate * s.own_lgd;
+        let wf = wt * s.funding_spread + wt * s.colva_spread * s.collateral_fraction / a;
+        cva += wc * epe;
+        dva += wd * ene;
+        fva += wf * (epe + ene);
+        for i in 0..n {
+            let cross = (0..n)
+                .map(|j| {
+                    s.trade_weights[j]
+                        * s.correlation_matrix
+                            .get(i)
+                            .and_then(|r| r.get(j))
+                            .copied()
+                            .unwrap_or(T::zero())
+                        * s.trade_exposure_vols[i]
+                        * s.trade_exposure_vols[j]
+                })
+                .fold(T::zero(), |x, y| x + y);
+            let common = s.trade_weights[i] * a * s.trade_expected_mtms[i] * sk * d.norm_cdf();
+            let risk = s.trade_weights[i] * a * a * cross / sig.max_val(T::from_f64(1e-10))
+                * T::from_f64(sk * sk)
+                * d.norm_pdf();
+            ac[i] += wc * (common + risk);
+            ad[i] += wd
+                * (-s.trade_weights[i] * a * s.trade_expected_mtms[i] * sk * (-d).norm_cdf()
+                    + risk);
+            af[i] += wf
+                * (common
+                    + risk
+                    + (-s.trade_weights[i] * a * s.trade_expected_mtms[i] * sk * (-d).norm_cdf()
+                        + risk));
+        }
+    }
+    let total = cva + dva + fva;
+    let stand = s
+        .trade_weights
+        .iter()
+        .enumerate()
+        .map(|(i, _w)| {
+            let mut one = s.clone();
+            for j in 0..n {
+                one.trade_weights[j] = if i == j {
+                    s.trade_weights[j]
+                } else {
+                    T::zero()
+                };
+            }
+            allocate_gregory_netting_set_xva_single(&one)
+        })
+        .fold(T::zero(), |x, y| x + y);
+    let alloc_total: Vec<T> = (0..n).map(|i| ac[i] + ad[i] + af[i]).collect();
+    let mut inc = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut minus = s.clone();
+        minus.trade_weights[i] = T::zero();
+        inc.push(total - allocate_gregory_netting_set_xva_core(&minus));
+    }
+    GregoryNettingSetAllocationReport {
+        netted_total_xva: total,
+        standalone_total_xva: stand,
+        netting_benefit: (stand - total).max_val(T::zero()),
+        netting_factor: total / stand.max_val(T::from_f64(1e-12)),
+        euler_allocated_cva: ac,
+        euler_allocated_dva: ad,
+        euler_allocated_fva: af,
+        euler_allocated_total_xva: alloc_total,
+        incremental_xva_by_trade: inc,
+    }
+}
+fn allocate_gregory_netting_set_xva_single<T: Real>(s: &GregoryNettingSetAllocationSpec<T>) -> T {
+    let x = s.clone();
+    let n = x.trade_weights.len();
+    let mut total = T::zero();
+    for i in 0..n {
+        if x.trade_weights[i].val() != 0.0 {
+            let mut y = x.clone();
+            for (j, weight) in y.trade_weights.iter_mut().enumerate().take(n) {
+                *weight = if i == j {
+                    x.trade_weights[i]
+                } else {
+                    T::zero()
+                };
+            }
+            total += allocate_gregory_netting_set_xva_core(&y);
+        }
+    }
+    total
+}
+fn allocate_gregory_netting_set_xva_core<T: Real>(s: &GregoryNettingSetAllocationSpec<T>) -> T {
+    let n = s.trade_weights.len();
+    let a = (T::one() - s.collateral_fraction).max_val(T::from_f64(1e-12));
+    let mut mu = T::zero();
+    let mut var = T::zero();
+    for i in 0..n {
+        mu += s.trade_weights[i] * s.trade_expected_mtms[i];
+        for j in 0..n {
+            var += s.trade_weights[i]
+                * s.trade_weights[j]
+                * s.correlation_matrix[i][j]
+                * s.trade_exposure_vols[i]
+                * s.trade_exposure_vols[j];
+        }
+    }
+    let mut x = T::zero();
+    for k in 1..=s.num_steps.max(1) {
+        let t = s.horizon * k as f64 / s.num_steps.max(1) as f64;
+        let sk = (t * (1. - 0.5 * t / s.horizon.max(1e-8))).sqrt();
+        let m = a * mu * sk;
+        let sig = (a * a * var).sqrt() * T::from_f64(sk);
+        let d = m / sig.max_val(T::from_f64(1e-10));
+        let e = m * d.norm_cdf() + sig * d.norm_pdf();
+        let en = -m * (-d).norm_cdf() + sig * d.norm_pdf();
+        let wt = T::from_f64(s.horizon / s.num_steps.max(1) as f64)
+            * (-(s.risk_free_rate + s.cpty_hazard_rate + s.own_hazard_rate) * t).exp();
+        x += wt
+            * (s.cpty_hazard_rate * s.cpty_lgd * e - s.own_hazard_rate * s.own_lgd * en
+                + (s.funding_spread + s.colva_spread * s.collateral_fraction / a) * (e + en));
+    }
+    x
+}
 #[derive(Copy, Clone, Debug)]
 pub struct CsaSpec {
     pub threshold_cpty: f64,
@@ -406,9 +581,8 @@ pub fn compute_multicurrency_ctd_colva<T: Real>(
             let phi = alpha.norm_pdf();
 
             let mu_next = mu_y * p + mu_x * q + a * phi;
-            let ey2 = (mu_y * mu_y + var_y) * p
-                + (mu_x * mu_x + var_x) * q
-                + (mu_y + mu_x) * a * phi;
+            let ey2 =
+                (mu_y * mu_y + var_y) * p + (mu_x * mu_x + var_x) * q + (mu_y + mu_x) * a * phi;
             let var_next = (ey2 - mu_next * mu_next).max_val(T::zero());
 
             for k in (j + 1)..m_ccy {
@@ -420,7 +594,11 @@ pub fn compute_multicurrency_ctd_colva<T: Real>(
         }
 
         let em = mu_y.max_val(mx);
-        let b = s.collateral_balance_profile.get(i).copied().unwrap_or(T::one());
+        let b = s
+            .collateral_balance_profile
+            .get(i)
+            .copied()
+            .unwrap_or(T::one());
         intr += mx * b * dt;
         sw += (em - mx) * b * dt;
         bal += b * dt;
@@ -460,9 +638,7 @@ pub struct TurlakovWwrReport<T: Real> {
     pub base_fva: T,
 }
 
-pub fn compute_turlakov_wwr_cva_fva<T: Real>(
-    s: &TurlakovWwrSpec<T>,
-) -> TurlakovWwrReport<T> {
+pub fn compute_turlakov_wwr_cva_fva<T: Real>(s: &TurlakovWwrSpec<T>) -> TurlakovWwrReport<T> {
     let n = s.times.len().min(s.base_epe.len());
     let mut wc = T::zero();
     let mut bc = T::zero();
@@ -1033,10 +1209,22 @@ mod phase18_tests {
         type D = Dual<1>;
         let sd = TurlakovWwrSpec {
             times: vec![0.5, 1.0, 2.0],
-            base_epe: vec![D::from_value(10.0), D::from_value(15.0), D::from_value(12.0)],
-            stressed_epe: vec![D::from_value(25.0), D::from_value(35.0), D::from_value(30.0)],
+            base_epe: vec![
+                D::from_value(10.0),
+                D::from_value(15.0),
+                D::from_value(12.0),
+            ],
+            stressed_epe: vec![
+                D::from_value(25.0),
+                D::from_value(35.0),
+                D::from_value(30.0),
+            ],
             base_mtm: vec![D::from_value(8.0), D::from_value(10.0), D::from_value(9.0)],
-            stressed_mtm: vec![D::from_value(20.0), D::from_value(25.0), D::from_value(22.0)],
+            stressed_mtm: vec![
+                D::from_value(20.0),
+                D::from_value(25.0),
+                D::from_value(22.0),
+            ],
             sovereign_hazard_rate: D::from_value(0.03),
             counterparty_hazard_rate: D::from_value(0.02),
             crisis_prob_threshold: D::from_value(0.08),
@@ -1050,7 +1238,6 @@ mod phase18_tests {
         assert!((ad.d[0] - fd).abs() < 1e-6);
     }
 }
-
 
 #[derive(Clone, Debug)]
 pub struct BrigoVrinsWwmCvaSpec<T: Real = f64> {
@@ -1184,7 +1371,7 @@ pub fn compute_brigo_vrins_wwm_cva<T: Real>(
             );
             if spec.is_brownian_bridge_swap {
                 let bridge_factor = (t_max - tk) / (t_max - u).max(1e-6);
-                shift += th_u * ( bridge_factor * half * GL4_W[m]);
+                shift += th_u * (bridge_factor * half * GL4_W[m]);
             } else {
                 shift += th_u * (half * GL4_W[m]);
             }
@@ -1333,14 +1520,16 @@ pub fn compute_bichuch_capponi_sturm_xva_band<T: Real>(
         for _ in 0..6 {
             let gamma_p = theta_net - next_p + one_m_alpha * v_hat;
             let abs_gamma_p = smooth_pos(gamma_p) + smooth_pos(-gamma_p);
-            let asym_p =
-                rf_spread_half * abs_gamma_p + rr_spread_half * abs_delta + rc_spread_half * abs_coll;
+            let asym_p = rf_spread_half * abs_gamma_p
+                + rr_spread_half * abs_delta
+                + rc_spread_half * abs_coll;
             next_p = u_plus * step_decay + (sym_flow + asym_p) * step_int;
 
             let gamma_m = theta_net - next_m + one_m_alpha * v_hat;
             let abs_gamma_m = smooth_pos(gamma_m) + smooth_pos(-gamma_m);
-            let asym_m =
-                rf_spread_half * abs_gamma_m + rr_spread_half * abs_delta + rc_spread_half * abs_coll;
+            let asym_m = rf_spread_half * abs_gamma_m
+                + rr_spread_half * abs_delta
+                + rc_spread_half * abs_coll;
             next_m = u_minus * step_decay + (sym_flow - asym_m) * step_int;
         }
         u_plus = next_p;
@@ -1364,8 +1553,6 @@ pub fn compute_bichuch_capponi_sturm_xva_band<T: Real>(
         no_arbitrage_satisfied,
     }
 }
-
-
 
 #[cfg(test)]
 mod phase20_tests {
@@ -1466,5 +1653,34 @@ mod phase20_tests {
         let ad = compute_brigo_vrins_wwm_cva(&spec_d).wwm_cva;
         assert!(ad.d[0] > 0.0);
         assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase21_tests {
+    use super::*;
+
+    #[test]
+    fn gregory_euler_allocations_add_up() {
+        let s = GregoryNettingSetAllocationSpec {
+            trade_weights: vec![1.0, 0.8],
+            trade_expected_mtms: vec![1.0, -0.3],
+            trade_exposure_vols: vec![0.2, 0.25],
+            correlation_matrix: vec![vec![1.0, 0.2], vec![0.2, 1.0]],
+            collateral_fraction: 0.1,
+            horizon: 1.0,
+            num_steps: 8,
+            risk_free_rate: 0.02,
+            cpty_hazard_rate: 0.02,
+            cpty_lgd: 0.6,
+            own_hazard_rate: 0.01,
+            own_lgd: 0.6,
+            funding_spread: 0.01,
+            colva_spread: 0.005,
+        };
+        let r = allocate_gregory_netting_set_xva(&s);
+        let sum = r.euler_allocated_total_xva.iter().copied().sum::<f64>();
+        assert!((sum - r.netted_total_xva).abs() < 1e-13);
+        assert!(r.netted_total_xva <= r.standalone_total_xva + 1e-12);
     }
 }

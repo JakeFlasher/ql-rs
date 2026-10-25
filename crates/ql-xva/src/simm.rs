@@ -209,10 +209,7 @@ pub fn compute_dynamic_simm_mva_and_spike<T: Real>(
             let ratio = (s_bt * s_bt + T::from_f64(1e-12)).sqrt() / thr;
             let sqrt_ratio = ratio.sqrt();
             let diff_cr = sqrt_ratio - T::one();
-            let cr = (T::one()
-                + sqrt_ratio
-                + (diff_cr * diff_cr + T::from_f64(1e-6)).sqrt())
-                * 0.5;
+            let cr = (T::one() + sqrt_ratio + (diff_cr * diff_cr + T::from_f64(1e-6)).sqrt()) * 0.5;
             crs.push(cr);
             ws.push(s_bt * spec.risk_weights[b] * cr);
         }
@@ -242,7 +239,8 @@ pub fn compute_dynamic_simm_mva_and_spike<T: Real>(
         // Unpaid cashflow spike over MPoR window adds Bachelier E[(CF_k + sigma_mpor * Z)^+] - E[(sigma_mpor * Z)^+]
         let z_spike = cf_k / sigma_mpor.max_val(T::from_f64(1e-12));
         let epe_with_spike = cf_k * z_spike.norm_cdf() + sigma_mpor * z_spike.norm_pdf();
-        let spike_inc = (epe_with_spike - epe_base).max_val(T::zero()) * (mpor / dt.max(mpor)).min(1.0);
+        let spike_inc =
+            (epe_with_spike - epe_base).max_val(T::zero()) * (mpor / dt.max(mpor)).min(1.0);
 
         let dp_def = spec.hazard_rate * df_surv * dt;
         base_cva += spec.lgd * epe_base * dp_def;

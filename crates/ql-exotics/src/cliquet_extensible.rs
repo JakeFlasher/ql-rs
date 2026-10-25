@@ -463,11 +463,7 @@ pub struct AtlasOptionSpec<T: Real = f64> {
     pub remove_worst: usize,
 }
 
-pub fn price_atlas_option_mc_ad<T: Real>(
-    s: &AtlasOptionSpec<T>,
-    n_paths: usize,
-    seed: u64,
-) -> T {
+pub fn price_atlas_option_mc_ad<T: Real>(s: &AtlasOptionSpec<T>, n_paths: usize, seed: u64) -> T {
     let m = s.spots.len().min(s.vols.len()).min(s.div_yields.len());
     if m == 0 || s.remove_best + s.remove_worst >= m {
         return T::zero();
@@ -505,8 +501,8 @@ pub fn price_atlas_option_mc_ad<T: Real>(
         for (i, &zi) in z_raw.iter().enumerate().take(m) {
             let dw = b_orth * (zi - z_mean) + a_comm * z_mean;
             let v = s.vols[i];
-            let ret_i = ((s.rate - s.div_yields[i] - v * v * 0.5) * t + v * sqrt_t * dw).exp()
-                - T::one();
+            let ret_i =
+                ((s.rate - s.div_yields[i] - v * v * 0.5) * t + v * sqrt_t * dw).exp() - T::one();
             perf.push((ret_i.val(), ret_i));
         }
         perf.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -583,10 +579,10 @@ pub fn price_altiplano_option_mc_ad<T: Real>(
             for (i, &zi) in z_raw.iter().enumerate().take(m) {
                 let dw = b_orth * (zi - z_mean) + a_comm * z_mean;
                 let v = s.vols[i];
-                ratios[i] *= ((s.rate - s.div_yields[i] - v * v * 0.5) * dt + v * sqrt_dt * dw).exp();
+                ratios[i] *=
+                    ((s.rate - s.div_yields[i] - v * v * 0.5) * dt + v * sqrt_dt * dw).exp();
                 let dist = ratios[i] - s.coupon_barrier_ratio;
-                let w_ok = T::from_f64(0.5)
-                    * (T::one() + dist / (dist * dist + eps * eps).sqrt());
+                let w_ok = T::from_f64(0.5) * (T::one() + dist / (dist * dist + eps * eps).sqrt());
                 no_breach *= w_ok;
             }
             prev_t = t_now.max(prev_t);
@@ -668,6 +664,134 @@ mod phase17_tests {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct BouzoubaaReverseAndGlobalCliquetSpec<T: Real = f64> {
+    pub notional: T,
+    pub rate: T,
+    pub div_yield: T,
+    pub reset_times: Vec<f64>,
+    pub forward_vols: Vec<T>,
+    pub forward_skews: Vec<T>,
+    pub initial_coupon_cmax: T,
+    pub local_floor: T,
+    pub local_cap: T,
+    pub global_floor: T,
+    pub global_cap: T,
+    pub is_reverse_cliquet: bool,
+}
+#[derive(Copy, Clone, Debug)]
+pub struct BouzoubaaCliquetValuation<T: Real = f64> {
+    pub npv: T,
+    pub sum_of_local_caps_npv: T,
+    pub global_floor_cap_optionality: T,
+    pub total_return_mean: T,
+    pub total_return_std: T,
+    pub total_return_skewness: T,
+    pub total_return_excess_kurtosis: T,
+    pub forward_skew_adjustment_pv: T,
+}
+pub fn price_bouzoubaa_reverse_and_global_cliquet<T: Real>(
+    s: &BouzoubaaReverseAndGlobalCliquetSpec<T>,
+) -> BouzoubaaCliquetValuation<T> {
+    let nodes = [
+        -2.532731674,
+        -1.756683649,
+        -1.036610829,
+        -0.342901327,
+        0.342901327,
+        1.036610829,
+        1.756683649,
+        2.532731674,
+    ];
+    let weights = [
+        0.011257411,
+        0.222075923,
+        0.625704404,
+        0.813858273,
+        0.813858273,
+        0.625704404,
+        0.222075923,
+        0.011257411,
+    ];
+    let eval_cliquet_core = |with_skew: bool| {
+        let mut mean = T::zero();
+        let mut variance = T::zero();
+        let mut k3 = T::zero();
+        let mut k4 = T::zero();
+        let mut previous = 0.0;
+        for i in 0..s.reset_times.len() {
+            let dt = (s.reset_times[i] - previous).max(0.0);
+            previous = s.reset_times[i];
+            let vol = s.forward_vols.get(i).copied().unwrap_or(T::zero());
+            let skew = if with_skew {
+                s.forward_skews.get(i).copied().unwrap_or(T::zero())
+            } else {
+                T::zero()
+            };
+            let mu = (s.rate - s.div_yield - vol * vol * 0.5) * dt;
+            let sd = vol * T::from_f64(dt.sqrt());
+            let mut ys = [T::zero(); 8];
+            let mut period_mean = T::zero();
+            for (q, (&x, &weight)) in nodes.iter().zip(weights.iter()).enumerate() {
+                let z = T::from_f64(2.0_f64.sqrt() * x);
+                let y = (mu + sd * z - skew * sd * sd * 0.5 * (z * z - T::one())).exp() - T::one();
+                let clipped = if s.is_reverse_cliquet {
+                    T::zero().min_val(y.max_val(s.local_floor))
+                } else {
+                    y.max_val(s.local_floor).min_val(s.local_cap)
+                };
+                ys[q] = clipped;
+                period_mean += T::from_f64(weight / std::f64::consts::PI.sqrt()) * clipped;
+            }
+            let mut period_var = T::zero();
+            let mut period_k3 = T::zero();
+            let mut period_k4 = T::zero();
+            for (q, _) in nodes.iter().enumerate() {
+                let p = T::from_f64(weights[q] / std::f64::consts::PI.sqrt());
+                let d = ys[q] - period_mean;
+                period_var += p * d * d;
+                period_k3 += p * d * d * d;
+                period_k4 += p * d * d * d * d;
+            }
+            mean += period_mean;
+            variance += period_var;
+            k3 += period_k3;
+            k4 += period_k4 - T::from_f64(3.0) * period_var * period_var;
+        }
+        let total_mean = s.initial_coupon_cmax + mean;
+        let total_var = variance.max_val(T::from_f64(1e-14));
+        let total_sd = total_var.sqrt();
+        let total_skew = k3 / total_sd.powf(3.0);
+        let total_kurt = k4 / (total_var * total_var);
+        let call = |k: T| {
+            let d = (total_mean - k) / total_sd;
+            (total_mean - k) * d.norm_cdf()
+                + total_sd
+                    * d.norm_pdf()
+                    * (T::one() + total_skew * d / 6.0 + total_kurt * (d * d - T::one()) / 24.0)
+        };
+        let value = (s.global_floor + call(s.global_floor) - call(s.global_cap))
+            .max_val(s.global_floor)
+            .min_val(s.global_cap);
+        let df = (-s.rate * s.reset_times.last().copied().unwrap_or(0.0)).exp();
+        let npv = s.notional * df * value;
+        (npv, total_mean, total_sd, total_skew, total_kurt)
+    };
+    let (npv, mean, sd, skew, kurt) = eval_cliquet_core(true);
+    let zero_skew_npv = eval_cliquet_core(false).0;
+    let df = (-s.rate * s.reset_times.last().copied().unwrap_or(0.0)).exp();
+    BouzoubaaCliquetValuation {
+        npv,
+        sum_of_local_caps_npv: s.notional * df * mean,
+        global_floor_cap_optionality: npv - s.notional * df * mean,
+        total_return_mean: mean,
+        total_return_std: sd,
+        total_return_skewness: skew,
+        total_return_excess_kurtosis: kurt,
+        forward_skew_adjustment_pv: npv - zero_skew_npv,
+    }
+}
+
 #[cfg(test)]
 mod phase18_tests {
     use super::*;
@@ -700,7 +824,11 @@ mod phase18_tests {
         type D = Dual<1>;
         let sd = EverestOptionSpec {
             spots: vec![D::from_value(100.0); 3],
-            vols: vec![D::from_value(0.20), D::from_value(0.25), D::from_value(0.22)],
+            vols: vec![
+                D::from_value(0.20),
+                D::from_value(0.25),
+                D::from_value(0.22),
+            ],
             correlation: D::variable(0.5, 0),
             rate: D::from_value(0.03),
             expiry: D::one(),
@@ -713,11 +841,28 @@ mod phase18_tests {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct BouzoubaaReverseAndGlobalCliquetSpec<T: Real = f64>{pub notional:T,pub rate:T,pub div_yield:T,pub reset_times:Vec<f64>,pub forward_vols:Vec<T>,pub forward_skews:Vec<T>,pub initial_coupon_cmax:T,pub local_floor:T,pub local_cap:T,pub global_floor:T,pub global_cap:T,pub is_reverse_cliquet:bool}
-#[derive(Copy, Clone, Debug)]
-pub struct BouzoubaaCliquetValuation<T: Real = f64>{pub npv:T,pub sum_of_local_caps_npv:T,pub global_floor_cap_optionality:T,pub total_return_mean:T,pub total_return_std:T,pub total_return_skewness:T,pub total_return_excess_kurtosis:T,pub forward_skew_adjustment_pv:T}
-pub fn price_bouzoubaa_reverse_and_global_cliquet<T: Real>(s:&BouzoubaaReverseAndGlobalCliquetSpec<T>)->BouzoubaaCliquetValuation<T>{
-    let nodes=[-2.532731674, -1.756683649, -1.036610829, -0.342901327,0.342901327,1.036610829,1.756683649,2.532731674];let weights=[0.011257411,0.222075923,0.625704404,0.813858273,0.813858273,0.625704404,0.222075923,0.011257411];let m=s.reset_times.len();let mut means=Vec::new();let mut vars=Vec::new();let mut k3=T::zero();let mut k4=T::zero();let mut mean=T::zero();let mut localpv=T::zero();let mut skewpv=T::zero();let mut prev=0.0;for i in 0..m{let dt=(s.reset_times[i]-prev).max(0.0);prev=s.reset_times[i];let vol=s.forward_vols.get(i).copied().unwrap_or(T::zero());let sk=s.forward_skews.get(i).copied().unwrap_or(T::zero());let mu=(s.rate-s.div_yield-vol*vol*0.5)*dt as f64;let vv=vol*dt.sqrt();let mut ys=Vec::new();for (&z,&w) in nodes.iter().zip(weights.iter()){let r=(mu+vv*z-sk*vv*vv*0.5*(z*z-1.0)).exp()-T::one();let y=if s.is_reverse_cliquet{T::zero().min_val(r.max_val(s.local_floor))}else{r.max_val(s.local_floor).min_val(s.local_cap)};ys.push(y);mean+=T::from_f64(w/2.0_f64.sqrt())*y;}let mm=ys.iter().copied().fold(T::zero(),|a,b|a+b)/ys.len() as f64;let mut v=T::zero();for y in &ys{let d=*y-mm;v+=d*d;}v*=T::from_f64(1.0/ys.len() as f64);vars.push(v);means.push(mm);for y in &ys{let d=*y-mm;k3+=d*d*d/ys.len() as f64;k4+=d*d*d*d/ys.len() as f64;}localpv+=mm;skewpv+=sk*vv;}
-    let mu=s.initial_coupon_cmax+means.iter().copied().fold(T::zero(),|a,b|a+b);let var=vars.iter().copied().fold(T::zero(),|a,b|a+b);let sd=var.max_val(T::from_f64(1e-12)).sqrt();let skew=k3/sd.powf(3.0);let kurt=k4/sd.powf(4.0)-3.0;let call=|k:T|{let d=(mu-k)/sd; (mu-k)*d.norm_cdf()+sd*d.norm_pdf()*(T::one()+skew*d/6.0+kurt*(d*d-T::one())/24.0)};let val=(s.global_floor+call(s.global_floor)-call(s.global_cap)).max_val(s.global_floor).min_val(s.global_cap);let df=(-s.rate*s.reset_times.last().copied().unwrap_or(0.0)).exp();let npv=s.notional*df*val;let local=s.notional*df*mu;BouzoubaaCliquetValuation{npv,sum_of_local_caps_npv:local,global_floor_cap_optionality:npv-local,total_return_mean:mu,total_return_std:sd,total_return_skewness:skew,total_return_excess_kurtosis:kurt,forward_skew_adjustment_pv:s.notional*df*skewpv}
+#[cfg(test)]
+mod phase21_tests {
+    use super::*;
+
+    #[test]
+    fn bouzoubaa_cumulants_and_skew_adjustment() {
+        let s = BouzoubaaReverseAndGlobalCliquetSpec {
+            notional: 100.0,
+            rate: 0.03,
+            div_yield: 0.0,
+            reset_times: vec![0.5, 1.0],
+            forward_vols: vec![0.2, 0.2],
+            forward_skews: vec![0.1, 0.1],
+            initial_coupon_cmax: 0.0,
+            local_floor: -0.1,
+            local_cap: 0.1,
+            global_floor: -0.2,
+            global_cap: 0.2,
+            is_reverse_cliquet: false,
+        };
+        let r = price_bouzoubaa_reverse_and_global_cliquet(&s);
+        assert!(r.total_return_std.val() >= 0.0);
+        assert!(r.forward_skew_adjustment_pv.val().is_finite());
+    }
 }

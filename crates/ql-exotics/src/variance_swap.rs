@@ -369,9 +369,8 @@ pub fn price_gamma_swap_and_variance_option<T: Real>(
                 spec.div_yield,
                 k1.val() >= spec.cut_strike.val(),
             );
-            vs_strip_flat0 += (k1 - k0)
-                * (p0_f / (k0 * k0) + pm_f * 2.0 / (km * km) + p1_f / (k1 * k1))
-                * 0.25;
+            vs_strip_flat0 +=
+                (k1 - k0) * (p0_f / (k0 * k0) + pm_f * 2.0 / (km * km) + p1_f / (k1 * k1)) * 0.25;
             gamma_strip_flat0 += (k1 - k0)
                 * (p0_f / (k0 * forward) + pm_f * 2.0 / (km * forward) + p1_f / (k1 * forward))
                 * 0.25;
@@ -389,11 +388,11 @@ pub fn price_gamma_swap_and_variance_option<T: Real>(
             - (-d10).norm_cdf()
             - v0 * (d10.norm_pdf() + (-d10) * (-d10).norm_cdf());
 
-        let vn = (spec.quotes[spec.quotes.len() - 1].implied_vol * sqrt_t).max_val(T::from_f64(1e-12));
+        let vn =
+            (spec.quotes[spec.quotes.len() - 1].implied_vol * sqrt_t).max_val(T::from_f64(1e-12));
         let d1n = ((forward / kn).ln() + vn * vn * 0.5) / vn;
         let d2n = d1n - vn;
-        let ct = kn / forward * d2n.norm_cdf()
-            - d1n.norm_cdf()
+        let ct = kn / forward * d2n.norm_cdf() - d1n.norm_cdf()
             + vn * (d1n.norm_pdf() + d1n * d1n.norm_cdf());
 
         let v_ref = spec.quotes[spec.quotes.len() / 2].implied_vol;
@@ -408,8 +407,7 @@ pub fn price_gamma_swap_and_variance_option<T: Real>(
 
         let d1n_r = ((forward / kn).ln() + vr * vr * 0.5) / vr;
         let d2n_r = d1n_r - vr;
-        let ct_r = kn / forward * d2n_r.norm_cdf()
-            - d1n_r.norm_cdf()
+        let ct_r = kn / forward * d2n_r.norm_cdf() - d1n_r.norm_cdf()
             + vr * (d1n_r.norm_pdf() + d1n_r * d1n_r.norm_cdf());
         let vs_ct_r = forward / kn * d1n_r.norm_cdf()
             - d2n_r.norm_cdf()
@@ -424,19 +422,16 @@ pub fn price_gamma_swap_and_variance_option<T: Real>(
     } else {
         (T::zero(), T::zero(), T::zero())
     };
-    let fair_gamma = ((gs_drift + gs_put_tail + gs_call_tail + (spec.rate * t).exp() * gamma_strip)
-        * (T::from_f64(2.0) / t)
-        + quad_bias_corr)
-        .max_val(T::zero());
+    let fair_gamma =
+        ((gs_drift + gs_put_tail + gs_call_tail + (spec.rate * t).exp() * gamma_strip)
+            * (T::from_f64(2.0) / t)
+            + quad_bias_corr)
+            .max_val(T::zero());
     let skew_spread = fair_var - fair_gamma;
 
-    let mean_rv = heston_analytical_fair_variance(
-        spec.heston.v0,
-        spec.heston.kappa,
-        spec.heston.theta,
-        t,
-    )
-    .max_val(T::from_f64(1e-12));
+    let mean_rv =
+        heston_analytical_fair_variance(spec.heston.v0, spec.heston.kappa, spec.heston.theta, t)
+            .max_val(T::from_f64(1e-12));
     let var_rv = heston_integrated_variance_var(
         spec.heston.v0,
         spec.heston.kappa,

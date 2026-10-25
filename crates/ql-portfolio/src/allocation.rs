@@ -3,11 +3,252 @@ use ql_ad::Real;
 use thiserror::Error;
 
 #[derive(Clone, Debug)]
-pub struct PaleologoFactorNeutralAlphaSpec<T: Real = f64>{pub raw_alphas:Vec<T>,pub factor_loadings_b:Vec<Vec<T>>,pub factor_covariance_omega:Vec<Vec<T>>,pub sample_idio_variances:Vec<T>,pub idio_shrinkage_xi:T,pub idio_risk_aversion:T,pub factor_risk_aversion:T,pub factor_crowding_scores:Vec<T>,pub crowding_penalty_lambda:T}
+pub struct PaleologoFactorNeutralAlphaSpec<T: Real = f64> {
+    pub raw_alphas: Vec<T>,
+    pub factor_loadings_b: Vec<Vec<T>>,
+    pub factor_covariance_omega: Vec<Vec<T>>,
+    pub sample_idio_variances: Vec<T>,
+    pub idio_shrinkage_xi: T,
+    pub idio_risk_aversion: T,
+    pub factor_risk_aversion: T,
+    pub factor_crowding_scores: Vec<T>,
+    pub crowding_penalty_lambda: T,
+}
 #[derive(Clone, Debug)]
-pub struct PaleologoFactorNeutralAlphaReport<T: Real = f64>{pub orthogonal_alphas:Vec<T>,pub shrunk_idio_variances:Vec<T>,pub pure_factor_neutral_weights:Vec<T>,pub crowding_penalized_weights:Vec<T>,pub residual_factor_exposures:Vec<T>,pub idiosyncratic_information_ratio:T,pub proportion_idiosyncratic_variance_pvi:T,pub expected_active_return:T}
-fn paleo_solve<T: Real>(mut a:Vec<Vec<T>>,mut b:Vec<T>)->Vec<T>{let n=b.len();for i in 0..n{let p=(i..n).max_by(|&x,&y|a[x][i].val().partial_cmp(&a[y][i].val()).unwrap()).unwrap();a.swap(i,p);b.swap(i,p);let d=a[i][i].max_val(T::from_f64(1e-12));let pivot_row=a[i].clone();let pivot_b=b[i];for j in i+1..n{let z=a[j][i]/d;for k in i..n{a[j][k]-=z*pivot_row[k];}b[j]-=z*pivot_b;}}let mut x=vec![T::zero();n];for i in (0..n).rev(){let mut z=b[i];for j in i+1..n{z-=a[i][j]*x[j];}x[i]=z/a[i][i].max_val(T::from_f64(1e-12));}x}
-pub fn solve_paleologo_factor_neutral_portfolio<T: Real>(s:&PaleologoFactorNeutralAlphaSpec<T>)->PaleologoFactorNeutralAlphaReport<T>{let n=s.raw_alphas.len();let k=s.factor_covariance_omega.len();let xi=s.idio_shrinkage_xi.max_val(T::zero()).min_val(T::one());let mean=s.sample_idio_variances.iter().copied().fold(T::zero(),|a,b|a+b)/n.max(1) as f64;let d:Vec<T>=s.sample_idio_variances.iter().map(|x|*x*(T::one()-xi)+xi*mean).collect();let mut g=vec![vec![T::zero();k];k];let mut ba=vec![T::zero();k];for i in 0..n{let di=T::one()/d[i].max_val(T::from_f64(1e-12));for p in 0..k{let bp=s.factor_loadings_b.get(i).and_then(|r|r.get(p)).copied().unwrap_or(T::zero());ba[p]+=bp*di*s.raw_alphas[i];for q in 0..k{g[p][q]+=bp*di*s.factor_loadings_b.get(i).and_then(|r|r.get(q)).copied().unwrap_or(T::zero());}}}let beta=paleo_solve(g,ba);let ortho:Vec<T>=(0..n).map(|i|s.raw_alphas[i]-(0..k).map(|p|s.factor_loadings_b.get(i).and_then(|r|r.get(p)).copied().unwrap_or(T::zero())*beta[p]).fold(T::zero(),|a,b|a+b)).collect();let gi=s.idio_risk_aversion.max_val(T::from_f64(1e-8));let pure:Vec<T>=(0..n).map(|i|ortho[i]/d[i].max_val(T::from_f64(1e-12))/gi).collect();let mut cw=pure.clone();for i in 0..n{let crowd=(0..k).map(|p|s.factor_loadings_b.get(i).and_then(|r|r.get(p)).copied().unwrap_or(T::zero())*s.factor_crowding_scores.get(p).copied().unwrap_or(T::zero())).fold(T::zero(),|a,b|a+b);cw[i]=pure[i]/(T::one()+(s.factor_risk_aversion/s.idio_risk_aversion.max_val(T::from_f64(1e-8))+s.crowding_penalty_lambda)*crowd*crowd); }let mut exp=T::zero();for i in 0..n{exp+=s.raw_alphas[i]*cw[i];}let ir=(ortho.iter().enumerate().map(|(i,x)|*x**x/d[i].max_val(T::from_f64(1e-12))).fold(T::zero(),|a,b|a+b)).sqrt();let mut residual=vec![T::zero();k];for p in 0..k{for i in 0..n{residual[p]+=s.factor_loadings_b.get(i).and_then(|r|r.get(p)).copied().unwrap_or(T::zero())*cw[i];}}let num=cw.iter().enumerate().map(|(i,x)|*x*d[i]* *x).fold(T::zero(),|a,b|a+b);let mut den=num;for i in 0..n{for j in 0..n{let mut bo=T::zero();for p in 0..k{for q in 0..k{bo+=s.factor_loadings_b.get(i).and_then(|r|r.get(p)).copied().unwrap_or(T::zero())*s.factor_covariance_omega.get(p).and_then(|r|r.get(q)).copied().unwrap_or(T::zero())*s.factor_loadings_b.get(j).and_then(|r|r.get(q)).copied().unwrap_or(T::zero());}}den+=cw[i]*cw[j]*bo;}}PaleologoFactorNeutralAlphaReport{orthogonal_alphas:ortho,shrunk_idio_variances:d,pure_factor_neutral_weights:pure,crowding_penalized_weights:cw,residual_factor_exposures:residual,idiosyncratic_information_ratio:ir,proportion_idiosyncratic_variance_pvi:num/den.max_val(T::from_f64(1e-12)),expected_active_return:exp}
+pub struct PaleologoFactorNeutralAlphaReport<T: Real = f64> {
+    pub orthogonal_alphas: Vec<T>,
+    pub shrunk_idio_variances: Vec<T>,
+    pub pure_factor_neutral_weights: Vec<T>,
+    pub crowding_penalized_weights: Vec<T>,
+    pub residual_factor_exposures: Vec<T>,
+    pub idiosyncratic_information_ratio: T,
+    pub proportion_idiosyncratic_variance_pvi: T,
+    pub expected_active_return: T,
+}
+fn paleo_solve<T: Real>(mut a: Vec<Vec<T>>, mut b: Vec<T>) -> Vec<T> {
+    let n = b.len();
+    for i in 0..n {
+        let p = (i..n)
+            .max_by(|&x, &y| {
+                a[x][i]
+                    .val()
+                    .abs()
+                    .partial_cmp(&a[y][i].val().abs())
+                    .unwrap()
+            })
+            .unwrap();
+        a.swap(i, p);
+        b.swap(i, p);
+        let d = if a[i][i].val() >= 0.0 {
+            a[i][i].max_val(T::from_f64(1e-12))
+        } else {
+            a[i][i].min_val(T::from_f64(-1e-12))
+        };
+        let row = a[i].clone();
+        let rhs = b[i];
+        for j in i + 1..n {
+            let z = a[j][i] / d;
+            for k in i..n {
+                a[j][k] -= z * row[k];
+            }
+            b[j] -= z * rhs;
+        }
+    }
+    let mut x = vec![T::zero(); n];
+    for i in (0..n).rev() {
+        let mut z = b[i];
+        for j in i + 1..n {
+            z -= a[i][j] * x[j];
+        }
+        let d = if a[i][i].val() >= 0.0 {
+            a[i][i].max_val(T::from_f64(1e-12))
+        } else {
+            a[i][i].min_val(T::from_f64(-1e-12))
+        };
+        x[i] = z / d;
+    }
+    x
+}
+
+pub fn solve_paleologo_factor_neutral_portfolio<T: Real>(
+    s: &PaleologoFactorNeutralAlphaSpec<T>,
+) -> PaleologoFactorNeutralAlphaReport<T> {
+    let n = s.raw_alphas.len();
+    let k = s.factor_covariance_omega.len();
+    let xi = s.idio_shrinkage_xi.max_val(T::zero()).min_val(T::one());
+    let mean = s
+        .sample_idio_variances
+        .iter()
+        .copied()
+        .fold(T::zero(), |a, b| a + b)
+        / n.max(1) as f64;
+    let d: Vec<T> = s
+        .sample_idio_variances
+        .iter()
+        .map(|x| *x * (T::one() - xi) + xi * mean)
+        .collect();
+    let mut g = vec![vec![T::zero(); k]; k];
+    let mut ba = vec![T::zero(); k];
+    for i in 0..n {
+        let di = T::one() / d[i].max_val(T::from_f64(1e-12));
+        for p in 0..k {
+            let bp = s
+                .factor_loadings_b
+                .get(i)
+                .and_then(|r| r.get(p))
+                .copied()
+                .unwrap_or(T::zero());
+            ba[p] += bp * di * s.raw_alphas[i];
+            for q in 0..k {
+                let bq = s
+                    .factor_loadings_b
+                    .get(i)
+                    .and_then(|r| r.get(q))
+                    .copied()
+                    .unwrap_or(T::zero());
+                g[p][q] += bp * di * bq;
+            }
+        }
+    }
+    let beta_alpha = paleo_solve(g.clone(), ba.clone());
+    let orthogonal_alphas: Vec<T> = (0..n)
+        .map(|i| {
+            s.raw_alphas[i]
+                - (0..k)
+                    .map(|p| {
+                        s.factor_loadings_b
+                            .get(i)
+                            .and_then(|r| r.get(p))
+                            .copied()
+                            .unwrap_or(T::zero())
+                            * beta_alpha[p]
+                    })
+                    .fold(T::zero(), |a, b| a + b)
+        })
+        .collect();
+    let gamma_i = s.idio_risk_aversion.max_val(T::from_f64(1e-8));
+    let pure_factor_neutral_weights: Vec<T> = orthogonal_alphas
+        .iter()
+        .enumerate()
+        .map(|(i, x)| *x / d[i].max_val(T::from_f64(1e-12)) / gamma_i)
+        .collect();
+    let gamma_ratio = s.factor_risk_aversion / gamma_i;
+    let mut omega_tilde = vec![vec![T::zero(); k]; k];
+    for p in 0..k {
+        for q in 0..k {
+            omega_tilde[p][q] = gamma_ratio
+                * s.factor_covariance_omega
+                    .get(p)
+                    .and_then(|r| r.get(q))
+                    .copied()
+                    .unwrap_or(T::zero());
+        }
+        let c = s
+            .factor_crowding_scores
+            .get(p)
+            .copied()
+            .unwrap_or(T::zero());
+        omega_tilde[p][p] += s.crowding_penalty_lambda / gamma_i * c * c;
+    }
+    let mut mtx = vec![vec![T::zero(); k]; k];
+    let mut rhs = vec![T::zero(); k];
+    for p in 0..k {
+        rhs[p] = (0..k)
+            .map(|q| omega_tilde[p][q] * ba[q])
+            .fold(T::zero(), |a, b| a + b);
+        for q in 0..k {
+            mtx[p][q] = if p == q { T::one() } else { T::zero() };
+            for r in 0..k {
+                mtx[p][q] += omega_tilde[p][r] * g[r][q];
+            }
+        }
+    }
+    let beta_tilde = if k == 0 {
+        Vec::new()
+    } else {
+        paleo_solve(mtx, rhs)
+    };
+    let crowding_penalized_weights: Vec<T> = (0..n)
+        .map(|i| {
+            let factor = (0..k)
+                .map(|p| {
+                    s.factor_loadings_b
+                        .get(i)
+                        .and_then(|r| r.get(p))
+                        .copied()
+                        .unwrap_or(T::zero())
+                        * beta_tilde.get(p).copied().unwrap_or(T::zero())
+                })
+                .fold(T::zero(), |a, b| a + b);
+            (s.raw_alphas[i] - factor) / gamma_i / d[i].max_val(T::from_f64(1e-12))
+        })
+        .collect();
+    let expected_active_return = s
+        .raw_alphas
+        .iter()
+        .zip(&crowding_penalized_weights)
+        .map(|(a, w)| *a * *w)
+        .fold(T::zero(), |a, b| a + b);
+    let idiosyncratic_information_ratio = orthogonal_alphas
+        .iter()
+        .enumerate()
+        .map(|(i, x)| *x * *x / d[i].max_val(T::from_f64(1e-12)))
+        .fold(T::zero(), |a, b| a + b)
+        .sqrt();
+    let mut residual_factor_exposures = vec![T::zero(); k];
+    for p in 0..k {
+        for i in 0..n {
+            residual_factor_exposures[p] += s
+                .factor_loadings_b
+                .get(i)
+                .and_then(|r| r.get(p))
+                .copied()
+                .unwrap_or(T::zero())
+                * crowding_penalized_weights[i];
+        }
+    }
+    let num = crowding_penalized_weights
+        .iter()
+        .enumerate()
+        .map(|(i, w)| *w * d[i] * *w)
+        .fold(T::zero(), |a, b| a + b);
+    let mut den = num;
+    for i in 0..n {
+        for j in 0..n {
+            let mut bo = T::zero();
+            for p in 0..k {
+                for q in 0..k {
+                    bo += s
+                        .factor_loadings_b
+                        .get(i)
+                        .and_then(|r| r.get(p))
+                        .copied()
+                        .unwrap_or(T::zero())
+                        * s.factor_covariance_omega
+                            .get(p)
+                            .and_then(|r| r.get(q))
+                            .copied()
+                            .unwrap_or(T::zero())
+                        * s.factor_loadings_b
+                            .get(j)
+                            .and_then(|r| r.get(q))
+                            .copied()
+                            .unwrap_or(T::zero());
+                }
+            }
+            den += crowding_penalized_weights[i] * crowding_penalized_weights[j] * bo;
+        }
+    }
+    PaleologoFactorNeutralAlphaReport {
+        orthogonal_alphas,
+        shrunk_idio_variances: d,
+        pure_factor_neutral_weights,
+        crowding_penalized_weights,
+        residual_factor_exposures,
+        idiosyncratic_information_ratio,
+        proportion_idiosyncratic_variance_pvi: num / den.max_val(T::from_f64(1e-12)),
+        expected_active_return,
+    }
 }
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
@@ -516,10 +757,12 @@ pub fn try_entropy_pooling_posterior<T: Real>(
         || s.scenario_returns.iter().any(|r| {
             r.len() != s.scenario_returns[0].len() || r.iter().any(|x| !x.val().is_finite())
         })
-        || s.prior_probs.iter().any(|x| !x.val().is_finite() || x.val() <= 0.0)
-        || s.view_matrix.iter().any(|r| {
-            r.len() != n || r.iter().any(|x| !x.val().is_finite())
-        })
+        || s.prior_probs
+            .iter()
+            .any(|x| !x.val().is_finite() || x.val() <= 0.0)
+        || s.view_matrix
+            .iter()
+            .any(|r| r.len() != n || r.iter().any(|x| !x.val().is_finite()))
         || s.view_targets.len() != k
         || s.view_targets.iter().any(|x| !x.val().is_finite())
         || !s.risk_aversion.val().is_finite()
@@ -687,9 +930,7 @@ pub fn try_entropy_pooling_posterior<T: Real>(
     })
 }
 
-pub fn entropy_pooling_posterior<T: Real>(
-    s: &EntropyPoolingSpec<T>,
-) -> EntropyPoolingResult<T> {
+pub fn entropy_pooling_posterior<T: Real>(s: &EntropyPoolingSpec<T>) -> EntropyPoolingResult<T> {
     try_entropy_pooling_posterior(s).expect("invalid entropy pooling inputs")
 }
 
@@ -945,9 +1186,8 @@ pub fn try_oas_and_nonlinear_shrinkage_covariance<T: Real>(
             } else {
                 T::zero()
             };
-            nl_raw[i][j] = s[i][j] * (1.0 - c)
-                + diag_term
-                - reg_inv[i][j] * mu_target * (c * (2.0 - c));
+            nl_raw[i][j] =
+                s[i][j] * (1.0 - c) + diag_term - reg_inv[i][j] * mu_target * (c * (2.0 - c));
         }
         tr_nl += nl_raw[i][i];
     }
@@ -2437,11 +2677,7 @@ mod phase18_tests {
     #[test]
     fn entropy_pooling_view_satisfaction_weights_and_ad() {
         let s_prior = EntropyPoolingSpec {
-            scenario_returns: vec![
-                vec![0.08, 0.02],
-                vec![-0.04, 0.06],
-                vec![0.02, -0.03],
-            ],
+            scenario_returns: vec![vec![0.08, 0.02], vec![-0.04, 0.06], vec![0.02, -0.03]],
             prior_probs: vec![1.0 / 3.0; 3],
             view_matrix: vec![vec![0.08, -0.04, 0.02]],
             view_targets: vec![0.02],
@@ -2524,9 +2760,8 @@ mod phase19_tests {
         ];
         let shrink = oas_and_nonlinear_shrinkage_covariance(&rets);
         assert!(shrink.oas_shrinkage_intensity > 0.0 && shrink.oas_shrinkage_intensity <= 1.0);
-        let tr_oas = shrink.oas_covariance[0][0]
-            + shrink.oas_covariance[1][1]
-            + shrink.oas_covariance[2][2];
+        let tr_oas =
+            shrink.oas_covariance[0][0] + shrink.oas_covariance[1][1] + shrink.oas_covariance[2][2];
         let tr_nl = shrink.nonlinear_shrunk_covariance[0][0]
             + shrink.nonlinear_shrunk_covariance[1][1]
             + shrink.nonlinear_shrunk_covariance[2][2];
@@ -2554,7 +2789,6 @@ mod phase19_tests {
         assert!((ad.d[0] - fd).abs() < 1e-6);
     }
 }
-
 
 #[derive(Clone, Debug)]
 pub struct FactorEigenRiskParitySpec<T: Real = f64> {
@@ -2702,9 +2936,7 @@ pub fn try_solve_principal_component_risk_parity<T: Real>(
     };
 
     let factor_exposures: Vec<T> = (0..n)
-        .map(|k| {
-            (0..n).fold(T::zero(), |acc, i| acc + evecs[i][k] * weights[i])
-        })
+        .map(|k| (0..n).fold(T::zero(), |acc, i| acc + evecs[i][k] * weights[i]))
         .collect();
     let factor_vars: Vec<T> = (0..n)
         .map(|k| (evals[k] * factor_exposures[k] * factor_exposures[k]).max_val(T::from_f64(1e-16)))
@@ -2714,9 +2946,9 @@ pub fn try_solve_principal_component_risk_parity<T: Real>(
         .fold(T::zero(), |acc, &v| acc + v)
         .max_val(T::from_f64(1e-14));
     let factor_variance_shares: Vec<T> = factor_vars.iter().map(|&v| v / tot_var).collect();
-    let entropy = factor_variance_shares
-        .iter()
-        .fold(T::zero(), |acc, &p| acc - p * p.max_val(T::from_f64(1e-14)).ln());
+    let entropy = factor_variance_shares.iter().fold(T::zero(), |acc, &p| {
+        acc - p * p.max_val(T::from_f64(1e-14)).ln()
+    });
     let enb = entropy.exp();
 
     // Equal-weight portfolio PCA ENB for comparison
@@ -2734,7 +2966,9 @@ pub fn try_solve_principal_component_risk_parity<T: Real>(
     let ew_enb = ew_vars
         .iter()
         .map(|&v| v / ew_tot)
-        .fold(T::zero(), |acc, p| acc - p * p.max_val(T::from_f64(1e-14)).ln())
+        .fold(T::zero(), |acc, p| {
+            acc - p * p.max_val(T::from_f64(1e-14)).ln()
+        })
         .exp();
 
     Ok(FactorEigenRiskParityReport {
@@ -2754,8 +2988,6 @@ pub fn solve_principal_component_risk_parity<T: Real>(
     try_solve_principal_component_risk_parity(spec)
         .expect("valid covariance matrix and factor risk budgets for PCRP")
 }
-
-
 
 #[cfg(test)]
 mod phase20_tests {
@@ -2806,5 +3038,32 @@ mod phase20_tests {
         })
         .weights[0];
         assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod phase21_tests {
+    use super::*;
+
+    #[test]
+    fn paleologo_factor_neutrality_and_crowding() {
+        let s = PaleologoFactorNeutralAlphaSpec {
+            raw_alphas: vec![1.0, 2.0, 1.5],
+            factor_loadings_b: vec![vec![1.0], vec![1.0], vec![0.5]],
+            factor_covariance_omega: vec![vec![1.0]],
+            sample_idio_variances: vec![0.1, 0.2, 0.15],
+            idio_shrinkage_xi: 0.5,
+            idio_risk_aversion: 1.0,
+            factor_risk_aversion: 2.0,
+            factor_crowding_scores: vec![1.0],
+            crowding_penalty_lambda: 1.0,
+        };
+        let r = solve_paleologo_factor_neutral_portfolio(&s);
+        assert!(r.residual_factor_exposures[0].val().is_finite());
+        assert!(
+            r.crowding_penalized_weights
+                .iter()
+                .all(|x| x.val().is_finite())
+        );
     }
 }

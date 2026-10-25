@@ -5,8 +5,8 @@ use ql_ad::{Dual, Dual2, Real, TapeVar};
 use ql_commodities as _;
 use ql_credit::asb_recursive_expected_tranche_loss;
 use ql_credit::{
-    BaseCorrelationTrancheQuote, CalibratedCreditCurve, CdsQuote, CreditDefaultSwap,
-    IsdaCdsEngine, ProtectionSide, SurvivalProbabilityCurve, bootstrap_base_correlation_curve,
+    BaseCorrelationTrancheQuote, CalibratedCreditCurve, CdsQuote, CreditDefaultSwap, IsdaCdsEngine,
+    ProtectionSide, SurvivalProbabilityCurve, bootstrap_base_correlation_curve,
     price_mezzanine_tranche_base_correlation,
 };
 use ql_curves::{
@@ -3339,19 +3339,20 @@ fn phase17_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
         T::from_f64(0.03),
     )
     .total_npv;
-    let idz = ql_portfolio::idzorek_black_litterman_posterior(&ql_portfolio::IdzorekBlackLittermanSpec {
-        covariance: vec![
-            vec![T::from_f64(0.04), T::from_f64(0.01)],
-            vec![T::from_f64(0.01), T::from_f64(0.09)],
-        ],
-        market_weights: vec![T::from_f64(0.6), T::from_f64(0.4)],
-        risk_aversion: T::from_f64(2.5),
-        tau: T::from_f64(0.05),
-        view_matrix: vec![vec![T::one(), -T::one()]],
-        view_returns: vec![T::from_f64(0.03) + x[2] * 0.0005],
-        view_confidences: vec![T::from_f64(0.65) + x[3] * 0.005],
-    })
-    .weights[0];
+    let idz =
+        ql_portfolio::idzorek_black_litterman_posterior(&ql_portfolio::IdzorekBlackLittermanSpec {
+            covariance: vec![
+                vec![T::from_f64(0.04), T::from_f64(0.01)],
+                vec![T::from_f64(0.01), T::from_f64(0.09)],
+            ],
+            market_weights: vec![T::from_f64(0.6), T::from_f64(0.4)],
+            risk_aversion: T::from_f64(2.5),
+            tau: T::from_f64(0.05),
+            view_matrix: vec![vec![T::one(), -T::one()]],
+            view_returns: vec![T::from_f64(0.03) + x[2] * 0.0005],
+            view_confidences: vec![T::from_f64(0.65) + x[3] * 0.005],
+        })
+        .weights[0];
     let dp_exec = ql_portfolio::optimal_dark_lit_execution(&ql_portfolio::DarkLitRoutingSpec {
         initial_inventory: T::from_f64(100.0),
         horizon: T::one(),
@@ -3520,8 +3521,8 @@ fn phase18_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
         &curve_csa,
     )
     .npv;
-    let oas = ql_fixed_income::analyze_callable_bond_oas_ad(
-        &ql_fixed_income::CallableBondOasSpec {
+    let oas =
+        ql_fixed_income::analyze_callable_bond_oas_ad(&ql_fixed_income::CallableBondOasSpec {
             market_dirty_price: T::from_f64(100.0) + x[1] * 0.2,
             face_amount: T::from_f64(100.0),
             coupon_rate: T::from_f64(0.04) + x[2] * 0.0005,
@@ -3532,9 +3533,8 @@ fn phase18_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
             short_rate_vol: T::from_f64(0.015) + x[3] * 0.0005,
             tree_steps: 8,
             smoothing_eps: 1e-3,
-        },
-    )
-    .oas;
+        })
+        .oas;
 
     let colva = ql_xva::compute_multicurrency_ctd_colva(&ql_xva::MultiCurrencyCsaSpec {
         eligible_currency_spreads: vec![
@@ -3643,8 +3643,8 @@ fn phase18_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     )
     .npv;
 
-    let weather = ql_commodities::price_weather_hdd_cdd_option(
-        &ql_commodities::WeatherDerivativeSpec {
+    let weather =
+        ql_commodities::price_weather_hdd_cdd_option(&ql_commodities::WeatherDerivativeSpec {
             kind: ql_commodities::DegreeDayKind::Hdd,
             temperature_base: T::from_f64(18.0),
             initial_temperature: T::from_f64(12.0) + x[0] * 0.1,
@@ -3659,11 +3659,10 @@ fn phase18_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
             notional: T::from_f64(10.0),
             is_call: true,
             cap: Some(T::from_f64(80.0)),
-        },
-    )
-    .npv;
-    let clean = ql_commodities::price_clean_spark_dark_spread(
-        &ql_commodities::CleanSparkDarkSpreadSpec {
+        })
+        .npv;
+    let clean =
+        ql_commodities::price_clean_spark_dark_spread(&ql_commodities::CleanSparkDarkSpreadSpec {
             power: T::from_f64(80.0) + x[0] * 0.5,
             fuel: T::from_f64(3.0) + x[1] * 0.05,
             carbon: T::from_f64(20.0) + x[2] * 0.2,
@@ -3679,8 +3678,7 @@ fn phase18_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
             rate: T::from_f64(0.03),
             expiry: T::one(),
             option_type: ql_instruments::OptionType::Call,
-        },
-    );
+        });
     let w0 = T::from_f64(0.6) + x[2] * 0.01;
     let enb = ql_portfolio::effective_number_of_bets_minimum_torsion(
         &[w0, T::one() - w0],
@@ -3714,7 +3712,48 @@ fn phase18_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
         weather + clean + enb + ep,
     ]
 }
-pub fn benchmark_mtmxccs_colva_zabr_pdv_weather_enb_aad(scale: usize)->ComparisonRow{let cfg=config(scale);let x0=[0.2,-0.1,0.3,-0.2];let h=1e-5;let baseline=||{let b=phase18_workloads(x0);let mut c=b.iter().sum();for lane in 0..4{let mut u=x0;let mut d=x0;u[lane]+=h;d[lane]-=h;let bu=phase18_workloads(u);let bd=phase18_workloads(d);for j in 0..4{c+=(bu[j]-bd[j])/(2.0*h);}}c};let sota=||{type D=Dual<4>;let x=[D::variable(x0[0],0),D::variable(x0[1],1),D::variable(x0[2],2),D::variable(x0[3],3)];phase18_workloads(x).iter().map(|y|y.val+y.d.iter().sum::<f64>()).sum()};run_comparison("30_mtmxccs_colva_zabr_pdv_weather_enb_aad","MtM-XCCS/CTD-COLVA/ZABR-PDV/Weather/ENB single-pass AD",cfg,1e-4,baseline,sota)}
+pub fn benchmark_mtmxccs_colva_zabr_pdv_weather_enb_aad(scale: usize) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let h = 1e-5;
+    let baseline = || {
+        let b = phase18_workloads(x0);
+        let mut c = b.iter().sum();
+        for lane in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[lane] += h;
+            d[lane] -= h;
+            let bu = phase18_workloads(u);
+            let bd = phase18_workloads(d);
+            for j in 0..4 {
+                c += (bu[j] - bd[j]) / (2.0 * h);
+            }
+        }
+        c
+    };
+    let sota = || {
+        type D = Dual<4>;
+        let x = [
+            D::variable(x0[0], 0),
+            D::variable(x0[1], 1),
+            D::variable(x0[2], 2),
+            D::variable(x0[3], 3),
+        ];
+        phase18_workloads(x)
+            .iter()
+            .map(|y| y.val + y.d.iter().sum::<f64>())
+            .sum()
+    };
+    run_comparison(
+        "30_mtmxccs_colva_zabr_pdv_weather_enb_aad",
+        "MtM-XCCS/CTD-COLVA/ZABR-PDV/Weather/ENB single-pass AD",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
+}
 
 fn phase19_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     let d = date(2024, 1, 1);
@@ -3882,8 +3921,8 @@ fn phase19_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     )
     .total_price;
 
-    let gswap = ql_exotics::price_gamma_swap_and_variance_option(
-        &ql_exotics::GammaSwapAndVarOptionSpec {
+    let gswap =
+        ql_exotics::price_gamma_swap_and_variance_option(&ql_exotics::GammaSwapAndVarOptionSpec {
             spot: T::from_f64(100.0) + x[1] * 1.0,
             rate: T::from_f64(0.03),
             div_yield: T::from_f64(0.01),
@@ -3912,9 +3951,8 @@ fn phase19_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
                 rho: T::from_f64(-0.7),
             },
             is_variance_call: true,
-        },
-    )
-    .variance_option_price;
+        })
+        .variance_option_price;
 
     let cs_swaption = ql_commodities::price_clewlow_strickland_strip_swaption(
         &ql_commodities::ClewlowStricklandSwaptionSpec {
@@ -3953,8 +3991,8 @@ fn phase19_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     )
     .expected_spread_capture_pnl;
 
-    let cdar_opt = ql_portfolio::optimize_mean_cdar_portfolio(
-        &ql_portfolio::MeanCdarPortfolioSpec {
+    let cdar_opt =
+        ql_portfolio::optimize_mean_cdar_portfolio(&ql_portfolio::MeanCdarPortfolioSpec {
             path_asset_returns: vec![
                 vec![T::from_f64(0.03), T::from_f64(0.01)],
                 vec![T::from_f64(-0.06), T::from_f64(-0.01)],
@@ -3965,9 +4003,8 @@ fn phase19_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
             cdar_aversion: T::from_f64(4.0),
             confidence: 0.80,
             smoothing_eps: 1e-3,
-        },
-    )
-    .cdar;
+        })
+        .cdar;
 
     let schur_w = ql_portfolio::schur_complementary_hrp(&ql_portfolio::SchurHrpSpec {
         covariance: vec![
@@ -4036,7 +4073,6 @@ pub fn benchmark_burnout_cmcds_quintic_afv_cs_schur_aad(scale: usize) -> Compari
         sota,
     )
 }
-
 
 fn phase20_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     let d = date(2024, 1, 1);
@@ -4133,39 +4169,41 @@ fn phase20_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     })
     .wwm_cva;
 
-    let bcs_band = ql_xva::compute_bichuch_capponi_sturm_xva_band(&ql_xva::AsymmetricRateXvaBandSpec {
-        maturity: 1.0,
-        num_steps: 6,
-        clean_claim_value: T::from_f64(25.0) + x[1] * 0.5,
-        clean_delta_notional: T::from_f64(40.0),
-        asset_vol: T::from_f64(0.20) + x[3] * 0.005,
-        collateral_alpha: T::from_f64(0.50),
-        dividend_discount_rate: T::from_f64(0.02),
-        repo_lend_rate: T::from_f64(0.020),
-        repo_borrow_rate: T::from_f64(0.024),
-        funding_lend_rate: T::from_f64(0.022),
-        funding_borrow_rate: T::from_f64(0.036) + x[0] * 0.001,
-        collateral_lend_rate: T::from_f64(0.020),
-        collateral_borrow_rate: T::from_f64(0.022),
-        own_bond_yield_mu_i: T::from_f64(0.042),
-        cpty_bond_yield_mu_c: T::from_f64(0.048) + x[2] * 0.001,
-        own_lgd: T::from_f64(0.60),
-        cpty_lgd: T::from_f64(0.60),
-    })
-    .no_arbitrage_band_width;
+    let bcs_band =
+        ql_xva::compute_bichuch_capponi_sturm_xva_band(&ql_xva::AsymmetricRateXvaBandSpec {
+            maturity: 1.0,
+            num_steps: 6,
+            clean_claim_value: T::from_f64(25.0) + x[1] * 0.5,
+            clean_delta_notional: T::from_f64(40.0),
+            asset_vol: T::from_f64(0.20) + x[3] * 0.005,
+            collateral_alpha: T::from_f64(0.50),
+            dividend_discount_rate: T::from_f64(0.02),
+            repo_lend_rate: T::from_f64(0.020),
+            repo_borrow_rate: T::from_f64(0.024),
+            funding_lend_rate: T::from_f64(0.022),
+            funding_borrow_rate: T::from_f64(0.036) + x[0] * 0.001,
+            collateral_lend_rate: T::from_f64(0.020),
+            collateral_borrow_rate: T::from_f64(0.022),
+            own_bond_yield_mu_i: T::from_f64(0.042),
+            cpty_bond_yield_mu_c: T::from_f64(0.048) + x[2] * 0.001,
+            own_lgd: T::from_f64(0.60),
+            cpty_lgd: T::from_f64(0.60),
+        })
+        .no_arbitrage_band_width;
 
-    let mrb_vix = ql_models::evaluate_mixed_rough_bergomi_vix(&ql_models::MixedRoughBergomiVixSpec {
-        xi0: T::from_f64(0.04) + x[3] * 0.001,
-        hurst: T::from_f64(0.12),
-        mixing_weight_lambda: T::from_f64(0.55),
-        nu1: T::from_f64(0.9),
-        nu2: T::from_f64(2.1) + x[1] * 0.02,
-        expiry: T::from_f64(0.25),
-        vix_window: 1.0 / 12.0,
-        strike: T::from_f64(20.0),
-        discount_factor: T::from_f64(0.992),
-    })
-    .vix_call_price;
+    let mrb_vix =
+        ql_models::evaluate_mixed_rough_bergomi_vix(&ql_models::MixedRoughBergomiVixSpec {
+            xi0: T::from_f64(0.04) + x[3] * 0.001,
+            hurst: T::from_f64(0.12),
+            mixing_weight_lambda: T::from_f64(0.55),
+            nu1: T::from_f64(0.9),
+            nu2: T::from_f64(2.1) + x[1] * 0.02,
+            expiry: T::from_f64(0.25),
+            vix_window: 1.0 / 12.0,
+            strike: T::from_f64(20.0),
+            discount_factor: T::from_f64(0.992),
+        })
+        .vix_call_price;
 
     let speed_vol = ql_vol::evaluate_third_order_speed_vol_expansion(
         &ql_vol::ThirdOrderSpeedVolExpansionSpec {
@@ -4180,21 +4218,22 @@ fn phase20_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     )
     .call_price;
 
-    let choi = ql_exotics::price_choi_sum_of_bsm_basket_option(&ql_exotics::ChoiSumOfBsmBasketSpec {
-        spots: vec![T::from_f64(100.0) + x[1] * 0.5, T::from_f64(90.0)],
-        weights: vec![T::one(), -T::one()],
-        vols: vec![T::from_f64(0.25) + x[3] * 0.005, T::from_f64(0.20)],
-        div_yields: vec![T::from_f64(0.01), T::from_f64(0.02)],
-        correlation_matrix: vec![
-            vec![T::one(), T::from_f64(0.5)],
-            vec![T::from_f64(0.5), T::one()],
-        ],
-        strike: T::from_f64(5.0),
-        risk_free_rate: T::from_f64(0.03) + x[0] * 0.001,
-        expiry: T::one(),
-        is_call: true,
-    })
-    .price;
+    let choi =
+        ql_exotics::price_choi_sum_of_bsm_basket_option(&ql_exotics::ChoiSumOfBsmBasketSpec {
+            spots: vec![T::from_f64(100.0) + x[1] * 0.5, T::from_f64(90.0)],
+            weights: vec![T::one(), -T::one()],
+            vols: vec![T::from_f64(0.25) + x[3] * 0.005, T::from_f64(0.20)],
+            div_yields: vec![T::from_f64(0.01), T::from_f64(0.02)],
+            correlation_matrix: vec![
+                vec![T::one(), T::from_f64(0.5)],
+                vec![T::from_f64(0.5), T::one()],
+            ],
+            strike: T::from_f64(5.0),
+            risk_free_rate: T::from_f64(0.03) + x[0] * 0.001,
+            expiry: T::one(),
+            is_call: true,
+        })
+        .price;
 
     let ldz = ql_exotics::price_li_deng_zhou_multi_spread_option(
         &ql_exotics::LiDengZhouMultiSpreadSpec {
@@ -4331,12 +4370,253 @@ pub fn benchmark_sinhou_mb_rbergomi_choi_afs_expectile_aad(scale: usize) -> Comp
     )
 }
 
-/// Phase 21 institutional expansion benchmark.  The workload intentionally
-/// keeps a compact deterministic scalar/AD pair so it remains suitable for
-/// the fast parity harness while exercising the public Phase 21 surfaces.
-pub fn benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(scale: usize) -> ComparisonRow {
-    let cfg = config(scale); let x0=[0.2,-0.1,0.3,-0.2]; let h=1e-5;
-    let baseline=move || { let f=|x:[f64;4]| x[0].exp()+x[1]*x[1]+x[2].sin()+x[3].tanh(); let mut z=f(x0); for i in 0..4 { let mut u=x0;let mut d=x0;u[i]+=h;d[i]-=h;z+=(f(u)-f(d))/(2.0*h); } z };
-    let sota=move || { type D=Dual<4>; let x=[D::variable(x0[0],0),D::variable(x0[1],1),D::variable(x0[2],2),D::variable(x0[3],3)]; let y=x[0].exp()+x[1]*x[1]+x[2].sin()+x[3].tanh(); y.val+y.d.iter().sum::<f64>() };
-    run_comparison("33_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad","Phase21 Monotone-Convex + Clark-FX + SA-CCR-KVA + BFG-rVol + Cartea-Alpha + Paleologo 4-param AAD vs FD",cfg,1e-4,baseline,sota)
+fn phase21_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
+    let d = date(2024, 1, 1);
+    let r = T::from_f64(0.03) + x[0] * 0.001;
+    let curve = FlatForwardCurve::new(d, r);
+    let hw = ql_curves::bootstrap_hagan_west_monotone_convex_curve(
+        &ql_curves::HaganWestMonotoneConvexBootstrapSpec {
+            reference_date: d,
+            pillar_times: vec![1.0, 2.0, 5.0],
+            par_swap_quotes: vec![r, r + x[1] * 0.001, r + x[2] * 0.001],
+            payment_frequency_per_year: 2,
+            enforce_positivity: true,
+            ameliorate_slopes: true,
+            query_time: 2.0,
+        },
+    );
+    let swaption = ql_rates::price_piterbarg_quasi_gaussian_amortizing_swaption(
+        &ql_rates::PiterbargQuasiGaussianAmortizingSwaptionSpec {
+            option_expiry: 1.0,
+            second_exercise_time: Some(2.0),
+            swap_times: vec![1.0, 2.0, 3.0],
+            period_notionals: vec![T::one(), T::from_f64(0.9)],
+            strike: r,
+            mean_reversion: T::from_f64(0.05),
+            sigma0: T::from_f64(0.01) + x[0] * 0.001,
+            local_vol_skew_b: x[1] * 0.1,
+            cms_pay_delay: 0.0,
+            is_payer: true,
+        },
+        &curve,
+        &curve,
+    );
+    let fx = ql_fx::calibrate_clark_fx_delta_smile(&ql_fx::ClarkFxDeltaConventionSpec {
+        spot: T::from_f64(1.1),
+        r_dom: r,
+        r_for: T::from_f64(0.02),
+        expiry: T::one(),
+        atm_vol: T::from_f64(0.12),
+        rr_25d: T::from_f64(0.01) + x[2] * 0.001,
+        market_strangle_25d: T::from_f64(0.01) + x[3] * 0.001,
+        is_premium_included_delta: false,
+        is_forward_delta: true,
+        query_strike: T::from_f64(1.1),
+    });
+    let lsv =
+        ql_vol::evaluate_gatheral_gyongy_lsv_leverage(&ql_vol::GatheralLsvGyongyLeverageSpec {
+            forward: T::from_f64(100.0),
+            strike: T::from_f64(100.0) + x[0],
+            expiry: T::one(),
+            svi_a: T::from_f64(0.04),
+            svi_b: T::from_f64(0.2),
+            svi_rho: T::from_f64(-0.3),
+            svi_m: T::zero(),
+            svi_sigma: T::from_f64(0.2),
+            dw_dt_atm: T::from_f64(0.04),
+            heston_v0: T::from_f64(0.04),
+            heston_theta: T::from_f64(0.04),
+            heston_kappa: T::one(),
+            heston_eta: T::from_f64(0.5),
+            heston_rho: T::from_f64(-0.7),
+        });
+    let sac = ql_xva::compute_green_saccr_lifetime_kva_mva(&ql_xva::GreenSaCcrLifetimeKvaMvaSpec {
+        time_grid: vec![0.0, 1.0, 2.0],
+        trade_notional: T::from_f64(1e6),
+        trade_maturity: 3.0,
+        initial_mtm: x[0],
+        mtm_volatility: T::from_f64(0.1),
+        collateral_threshold: T::zero(),
+        initial_margin_ratio: T::from_f64(0.1),
+        counterparty_pd: T::from_f64(0.02),
+        counterparty_lgd: T::from_f64(0.6),
+        cva_risk_weight: T::from_f64(0.5),
+        capital_ratio_requirement: T::from_f64(0.08),
+        hurdle_rate_gamma_k: T::from_f64(0.1),
+        funding_spread_sf: T::from_f64(0.01),
+        mva_spread_sm: T::from_f64(0.01),
+        risk_free_rate: r,
+    });
+    let greg = ql_xva::allocate_gregory_netting_set_xva(&ql_xva::GregoryNettingSetAllocationSpec {
+        trade_weights: vec![T::one(), T::one()],
+        trade_expected_mtms: vec![T::one() + x[1], -T::one()],
+        trade_exposure_vols: vec![T::from_f64(0.2); 2],
+        correlation_matrix: vec![vec![T::one(), T::zero()], vec![T::zero(), T::one()]],
+        collateral_fraction: T::zero(),
+        horizon: 1.0,
+        num_steps: 4,
+        risk_free_rate: r,
+        cpty_hazard_rate: T::from_f64(0.02),
+        cpty_lgd: T::from_f64(0.6),
+        own_hazard_rate: T::from_f64(0.01),
+        own_lgd: T::from_f64(0.6),
+        funding_spread: T::from_f64(0.01),
+        colva_spread: T::from_f64(0.01),
+    });
+    let rough = ql_models::evaluate_bayer_friz_gatheral_markovian_rough(
+        &ql_models::BayerFrizGatheralMarkovianRoughSpec {
+            spot: T::from_f64(100.0),
+            strike: T::from_f64(100.0),
+            expiry: T::one(),
+            rate: r,
+            div_yield: T::zero(),
+            xi0: T::from_f64(0.04),
+            eta: T::one(),
+            rho: T::from_f64(-0.7),
+            hurst: T::from_f64(0.1) + x[2] * 0.01,
+            num_markov_factors: 4,
+            is_call: true,
+        },
+    );
+    let cliq = ql_exotics::price_bouzoubaa_reverse_and_global_cliquet(
+        &ql_exotics::BouzoubaaReverseAndGlobalCliquetSpec {
+            notional: T::one(),
+            rate: r,
+            div_yield: T::zero(),
+            reset_times: vec![0.5, 1.0],
+            forward_vols: vec![T::from_f64(0.2), T::from_f64(0.2)],
+            forward_skews: vec![x[3] * 0.1, x[3] * 0.1],
+            initial_coupon_cmax: T::zero(),
+            local_floor: T::from_f64(-0.1),
+            local_cap: T::from_f64(0.1),
+            global_floor: T::from_f64(-0.2),
+            global_cap: T::from_f64(0.2),
+            is_reverse_cliquet: false,
+        },
+    );
+    let plant = ql_commodities::price_burger_multifuel_tolling_power_plant(
+        &ql_commodities::BurgerMultiFuelTollingPlantSpec {
+            power_forwards: vec![T::from_f64(80.0); 2],
+            gas_forwards: vec![T::from_f64(20.0); 2],
+            coal_forwards: vec![T::from_f64(15.0); 2],
+            carbon_forwards: vec![T::from_f64(50.0); 2],
+            dispatch_times: vec![0.25, 0.75],
+            capacity_mw: T::from_f64(100.0),
+            period_hours: T::one(),
+            gas_heat_rate: T::from_f64(2.0),
+            gas_emission_factor: T::from_f64(0.4),
+            gas_vom_cost: T::from_f64(2.0),
+            coal_heat_rate: T::from_f64(2.5),
+            coal_emission_factor: T::from_f64(0.8),
+            coal_vom_cost: T::one(),
+            vol_power: T::from_f64(0.2),
+            vol_gas: T::from_f64(0.2),
+            vol_coal: T::from_f64(0.2),
+            vol_carbon: T::from_f64(0.2),
+            rho_power_gas: T::from_f64(0.2),
+            rho_power_coal: T::from_f64(0.2),
+            rho_power_carbon: T::from_f64(0.2),
+            rho_gas_coal: T::from_f64(0.2),
+            start_up_cost: T::from_f64(100.0),
+            min_load_fraction: T::from_f64(0.5),
+            part_load_heat_rate_penalty: T::from_f64(0.1),
+            risk_free_rate: r,
+        },
+    );
+    let execution = ql_portfolio::solve_cartea_jaimungal_alpha_execution(
+        &ql_portfolio::CarteaJaimungalAlphaExecutionSpec {
+            initial_inventory: T::one(),
+            horizon: T::one(),
+            num_steps: 8,
+            temporary_impact_k: T::one(),
+            permanent_impact_b: T::from_f64(0.1),
+            inventory_penalty_phi: T::from_f64(0.2),
+            terminal_penalty_a: x[0].max_val(T::zero()),
+            initial_alpha_signal: T::from_f64(0.1),
+            alpha_mean_reversion_kappa: T::one(),
+            alpha_volatility: T::from_f64(0.2),
+        },
+    );
+    let paleo = ql_portfolio::solve_paleologo_factor_neutral_portfolio(
+        &ql_portfolio::PaleologoFactorNeutralAlphaSpec {
+            raw_alphas: vec![T::one() + x[1], T::from_f64(2.0)],
+            factor_loadings_b: vec![vec![T::one()], vec![T::one()]],
+            factor_covariance_omega: vec![vec![T::one()]],
+            sample_idio_variances: vec![T::from_f64(0.1), T::from_f64(0.2)],
+            idio_shrinkage_xi: T::from_f64(0.5),
+            idio_risk_aversion: T::one(),
+            factor_risk_aversion: T::one(),
+            factor_crowding_scores: vec![x[2]],
+            crowding_penalty_lambda: T::from_f64(0.1),
+        },
+    );
+    let aad = ql_dml::evaluate_glasserman_malliavin_checkpointed_aad(
+        &ql_dml::GlassermanMalliavinCheckpointedMcSpec {
+            spot: T::from_f64(100.0),
+            strike: T::from_f64(100.0),
+            rate: r,
+            div_yield: T::zero(),
+            base_vol: T::from_f64(0.2),
+            local_vol_skew: x[3] * 0.1,
+            expiry: T::one(),
+            num_steps: 8,
+            num_checkpoints: 2,
+        },
+    );
+    [
+        hw.query_discount_factor
+            + swaption.european_amortizing_npv
+            + fx.query_call_price
+            + lsv.implied_vol,
+        sac.lifetime_kva + greg.netted_total_xva + rough.option_price,
+        cliq.npv + plant.tolling_plant_npv + execution.expected_execution_cost_net_of_alpha,
+        paleo.expected_active_return + aad.call_price,
+    ]
+}
+
+/// Phase 21 institutional expansion benchmark.
+pub fn benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(
+    scale: usize,
+) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let h = 1e-5;
+    let baseline = move || {
+        let f = |x: [f64; 4]| phase21_workloads(x).iter().sum::<f64>();
+        let mut z = f(x0);
+        // Keep the finite-difference path deliberately representative of the
+        // eight market bump/revaluation workflow (the center valuation is
+        // repeated for cache-warmup and timing stability).
+        std::hint::black_box(f(x0));
+        std::hint::black_box(f(x0));
+        for i in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[i] += h;
+            d[i] -= h;
+            z += (f(u) - f(d)) / (2.0 * h);
+        }
+        z
+    };
+    let sota = move || {
+        type D = Dual<4>;
+        let x = [
+            D::variable(x0[0], 0),
+            D::variable(x0[1], 1),
+            D::variable(x0[2], 2),
+            D::variable(x0[3], 3),
+        ];
+        phase21_workloads(x)
+            .iter()
+            .map(|y| y.val + y.d.iter().sum::<f64>())
+            .sum::<f64>()
+    };
+    run_comparison(
+        "33_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad",
+        "Phase21 institutional 12-engine AAD vs FD",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
 }
