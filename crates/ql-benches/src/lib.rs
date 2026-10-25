@@ -40,6 +40,6 @@ pub const SUITE_NAMES: [&str; SUITE_COUNT] = [
 ];
 pub use harness::{BenchConfig, ComparisonRow, format_markdown_table, run_comparison};
 pub use suites::{
-    run_all_benchmark_suites_with_Config, run_all_benchmark_suites_with_config, run_all_benchmarks,
-    run_all_suites,
+    benchmark_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad, run_all_benchmark_suites_with_Config,
+    run_all_benchmark_suites_with_config, run_all_benchmarks, run_all_suites,
 };

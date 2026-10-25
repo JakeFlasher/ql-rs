@@ -694,21 +694,21 @@ pub fn execute_savine_revolve_checkpointed_adjoint<T: Real>(
 ) -> SavineRevolveCheckpointReport<T> {
     let n = s.num_time_steps.max(2);
     let c = s.num_checkpoints.clamp(1, n);
-    let mut beta = 1usize;
-    let mut tier = 0usize;
-    while beta < n {
-        tier += 1;
-        beta = beta.saturating_mul(c + tier) / tier.max(1);
-    }
-    let first = if tier == 0 {
-        1
-    } else {
+    // Griewank--Walther binomial Revolve schedule.  The repetition tier t is
+    // the smallest integer with beta(c,t) >= n, beta(c,t)=C(c+t,t).
+    fn beta(c: usize, t: usize) -> usize {
         let mut b = 1usize;
-        for i in 0..tier.saturating_sub(1) {
-            b = b.saturating_mul(c + i + 1) / (i + 1);
+        for k in 1..=t {
+            b = b.saturating_mul(c.saturating_add(k)) / k;
         }
-        b.clamp(1, n - 1)
-    };
+        b
+    }
+    let mut tier = 0usize;
+    while beta(c, tier) < n {
+        tier += 1;
+    }
+    // First split is beta(c-1,t)=C(c-1+t,t), clamped to the interior.
+    let first = beta(c.saturating_sub(1), tier).clamp(1, n - 1);
     let dt = s.dt;
     let step = |sn: T, i: usize| -> (T, T, T, T, T) {
         let z = (0.73 * (i + 1) as f64).sin() + 0.5 * (1.19 * ((i + 1) * (i + 1)) as f64).cos();
@@ -728,15 +728,36 @@ pub fn execute_savine_revolve_checkpointed_adjoint<T: Real>(
     let mut states = Vec::with_capacity(n + 1);
     let mut x = s.initial_spot;
     states.push(x);
-    let block = n.div_ceil(c);
-    let mut checkpoints = Vec::new();
     for i in 0..n {
-        if i % block == 0 {
-            checkpoints.push(x);
-        }
         x = step(x, i).0;
         states.push(x);
     }
+    // Revolve checkpoint indices.  The first split is the prescribed
+    // beta(c-1,t) step; subsequent splits bisect the remaining intervals while
+    // respecting the checkpoint budget.
+    let mut checkpoint_indices = vec![0usize];
+    if c > 1 {
+        checkpoint_indices.push(first);
+    }
+    while checkpoint_indices.len() < c {
+        let mut best = None;
+        let mut best_len = 0usize;
+        for w in checkpoint_indices.windows(2) {
+            let len = w[1] - w[0];
+            if len > best_len {
+                best_len = len;
+                best = Some((w[0], w[1]));
+            }
+        }
+        let (a, b) = best.unwrap_or((checkpoint_indices[0], n));
+        if b <= a + 1 {
+            break;
+        }
+        let mid = a + (b - a) / 2;
+        checkpoint_indices.push(mid);
+        checkpoint_indices.sort_unstable();
+    }
+    let checkpoints: Vec<T> = checkpoint_indices.iter().map(|&i| states[i]).collect();
     let y = x - s.strike;
     let root = (y * y + T::from_f64(1e-8)).sqrt();
     let df = (-s.drift_rate * T::from_f64(n as f64) * dt).exp();
@@ -759,11 +780,16 @@ pub fn execute_savine_revolve_checkpointed_adjoint<T: Real>(
     let mut c0 = T::zero();
     let mut cv = T::zero();
     let mut cr = -T::from_f64(n as f64) * dt * payoff;
-    for blk in (0..checkpoints.len()).rev() {
-        let begin = blk * block;
-        let end = (begin + block).min(n);
+    // Re-simulate each exact Revolve segment and sweep its adjoint in reverse.
+    for seg in (0..checkpoint_indices.len()).rev() {
+        let begin = checkpoint_indices[seg];
+        let end = if seg + 1 < checkpoint_indices.len() {
+            checkpoint_indices[seg + 1]
+        } else {
+            n
+        };
         let mut local = Vec::with_capacity(end - begin + 1);
-        let mut z = checkpoints[blk];
+        let mut z = checkpoints[seg];
         local.push(z);
         for i in begin..end {
             z = step(z, i).0;
@@ -793,6 +819,28 @@ pub fn execute_savine_revolve_checkpointed_adjoint<T: Real>(
         max_adjoint_discrepancy: discrepancy,
         revolve_repetition_tier_t: tier,
         first_revolve_checkpoint_step: first,
-        memory_compression_ratio: T::from_f64(n as f64 / (c + block) as f64),
+        memory_compression_ratio: T::from_f64(n as f64 / c as f64),
+    }
+}
+
+#[cfg(test)]
+mod phase22_tests {
+    use super::*;
+    #[test]
+    fn revolve_binomial_schedule_and_compression() {
+        let s = SavineRevolveCheckpointSpec {
+            num_time_steps: 32,
+            num_checkpoints: 4,
+            initial_spot: 100.0,
+            drift_rate: 0.02,
+            volatility: 0.2,
+            mean_reversion_kappa: 0.1,
+            dt: 1.0 / 32.0,
+            strike: 100.0,
+        };
+        let r = execute_savine_revolve_checkpointed_adjoint(&s);
+        assert!(r.first_revolve_checkpoint_step >= 1 && r.first_revolve_checkpoint_step < 32);
+        assert!((r.memory_compression_ratio.val() - 8.0).abs() < 1e-12);
+        assert!(r.max_adjoint_discrepancy.val() < 1e-8);
     }
 }

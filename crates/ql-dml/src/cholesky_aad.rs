@@ -79,18 +79,21 @@ pub fn evaluate_ift_calibrated_exotic_quote_hedge<T: Real>(
     }
     let x = (s.exotic_strike / s.spot).ln();
     let sig = (th[0] + th[1] * x + th[2] * x * x).max_val(T::from_f64(1e-8));
-    let f = s.spot * (-s.risk_free_rate * s.expiry).exp();
-    let d = ((f / s.exotic_strike).ln() + T::from_f64(0.5) * sig * sig * s.expiry)
-        / (sig * s.expiry.sqrt());
-    let price = (-s.risk_free_rate * s.expiry).exp()
-        * (f * d.norm_cdf() - s.exotic_strike * (d - sig * s.expiry.sqrt()).norm_cdf())
-        * s.exotic_strike.pow(s.exotic_power_p);
-    let vega = (-s.risk_free_rate * s.expiry).exp()
-        * f
-        * d.norm_pdf()
-        * s.expiry.sqrt()
-        * s.exotic_strike.pow(s.exotic_power_p);
-    let g = [vega, vega * x, vega * x * x];
+    let p = s.exotic_power_p;
+    let fp = s.spot.pow(p)
+        * ((p * s.risk_free_rate + T::from_f64(0.5) * p * (p - T::one()) * sig * sig) * s.expiry)
+            .exp();
+    let sigma_p = (p * sig).max_val(T::from_f64(1e-6));
+    let sqrt_t = s.expiry.sqrt();
+    let d1 = ((fp / s.exotic_strike).ln() + T::from_f64(0.5) * sigma_p * sigma_p * s.expiry)
+        / (sigma_p * sqrt_t);
+    let d2 = d1 - sigma_p * sqrt_t;
+    let disc = (-s.risk_free_rate * s.expiry).exp();
+    let price = disc * (fp * d1.norm_cdf() - s.exotic_strike * d2.norm_cdf());
+    let dprice_dsig = disc
+        * fp
+        * (d1.norm_cdf() * p * (p - T::one()) * sig * s.expiry + d1.norm_pdf() * p * sqrt_t);
+    let g = [dprice_dsig, dprice_dsig * x, dprice_dsig * x * x];
     let lam = solve3(
         [
             [j[0][0], j[1][0], j[2][0]],
@@ -103,7 +106,7 @@ pub fn evaluate_ift_calibrated_exotic_quote_hedge<T: Real>(
     for i in 0..3 {
         let mut z = g[i];
         for k in 0..3 {
-            z -= j[i][k] * lam[k];
+            z -= j[k][i] * lam[k];
         }
         res += z * z;
     }
@@ -599,5 +602,18 @@ mod phase21_tests {
         assert!(r.call_price.val() >= 0.0);
         assert!(r.checkpoint_vs_full_tape_max_error.val() < 1e-14);
         assert!(r.peak_memory_states_saved_ratio > 1.0);
+    }
+}
+
+#[cfg(test)]
+mod phase22_tests {
+    #[test]
+    fn dual_fd_parity_smoke() {
+        let x = 0.37_f64;
+        let h = 1.0e-6_f64;
+        let f = |z: f64| z.exp() + z * z;
+        let fd = (f(x + h) - f(x - h)) / (2.0 * h);
+        let analytic = x.exp() + 2.0 * x;
+        assert!((fd - analytic).abs() < 1.0e-5);
     }
 }

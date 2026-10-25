@@ -1041,10 +1041,8 @@ pub fn solve_gueant_lehalle_bounded_market_making<T: Real>(
     }
     let ratio = s.risk_aversion_gamma / s.intensity_decay_k.max_val(T::from_f64(1e-12));
     let eta = s.base_intensity_a
-        * (T::one() + ratio).powf(
-            -(1.0
-                + s.intensity_decay_k.val()
-                    / s.risk_aversion_gamma.max_val(T::from_f64(1e-12)).val()),
+        * (T::one() + ratio).pow(
+            -(T::one() + s.intensity_decay_k / s.risk_aversion_gamma.max_val(T::from_f64(1e-12))),
         );
     let dt = s.horizon / T::from_f64(s.num_time_steps.max(1) as f64);
     for _ in 0..s.num_time_steps.max(1) {
@@ -1052,22 +1050,21 @@ pub fn solve_gueant_lehalle_bounded_market_making<T: Real>(
         for i in 0..m {
             let qi = i as isize - (q as isize);
             let q2 = (qi * qi) as f64;
-            let mut rhs = old[i]
-                - T::from_f64(0.5)
+            let diag_decay = T::one()
+                + T::from_f64(0.5 * q2)
                     * s.intensity_decay_k
                     * s.risk_aversion_gamma
                     * s.volatility
                     * s.volatility
-                    * q2
-                    * old[i]
                     * dt;
+            let mut num = old[i];
             if i > 0 {
-                rhs += eta * old[i - 1] * dt;
+                num += eta * old[i - 1] * dt;
             }
             if i + 1 < m {
-                rhs += eta * old[i + 1] * dt;
+                num += eta * old[i + 1] * dt;
             }
-            v[i] = rhs.max_val(T::from_f64(1e-14));
+            v[i] = (num / diag_decay).max_val(T::from_f64(1e-14));
         }
     }
     let theta = v
@@ -1120,5 +1117,31 @@ pub fn solve_gueant_lehalle_bounded_market_making<T: Real>(
             + T::from_f64(2.0) * s.adverse_selection_zeta,
         logistic_rfq_optimal_bid_markup: lb,
         logistic_rfq_optimal_ask_markup: la,
+    }
+}
+
+#[cfg(test)]
+mod phase22_tests {
+    use super::*;
+    #[test]
+    fn gueant_semi_implicit_values_positive() {
+        let s = GueantLehalleMarketMakingSpec {
+            max_inventory_q: 2,
+            current_inventory_q: 0,
+            horizon: 1.0,
+            num_time_steps: 8,
+            volatility: 0.2,
+            risk_aversion_gamma: 0.5,
+            intensity_decay_k: 1.2,
+            base_intensity_a: 2.0,
+            terminal_inventory_penalty: 0.1,
+            adverse_selection_zeta: 0.0,
+        };
+        let r = solve_gueant_lehalle_bounded_market_making(&s);
+        assert!(
+            r.value_function_theta_grid
+                .iter()
+                .all(|x| x.val().is_finite() && x.val() > 0.0)
+        );
     }
 }

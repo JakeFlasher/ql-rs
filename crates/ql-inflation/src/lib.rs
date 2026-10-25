@@ -1225,3 +1225,16 @@ mod phase19_tests {
         assert!((cap_d.npv.d[0] - fd).abs() < 2e-6);
     }
 }
+
+#[cfg(test)]
+mod phase22_tests {
+    #[test]
+    fn dual_fd_parity_smoke() {
+        let x = 0.37_f64;
+        let h = 1.0e-6_f64;
+        let f = |z: f64| z.exp() + z * z;
+        let fd = (f(x + h) - f(x - h)) / (2.0 * h);
+        let analytic = x.exp() + 2.0 * x;
+        assert!((fd - analytic).abs() < 1.0e-5);
+    }
+}

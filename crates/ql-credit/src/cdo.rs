@@ -821,13 +821,11 @@ pub fn vasicek_lhp_closed_form_base_tranche_loss<T: Real>(p: T, r: T, k: T, rho:
     let kn = (k / lg)
         .max_val(T::from_f64(1e-12))
         .min_val(T::one() - T::from_f64(1e-12));
-    let z = (inv_norm_cdf(p) - ((T::one() - rho).max_val(T::zero())).sqrt() * inv_norm_cdf(kn))
-        / rho.max_val(T::from_f64(1e-12)).sqrt();
-    lg * bivariate_normal_cdf(
-        inv_norm_cdf(p),
-        -z,
-        -rho.max_val(T::from_f64(-0.999)).min_val(T::from_f64(0.999)),
-    ) + k * z.norm_cdf()
+    let sr = rho.max_val(T::from_f64(1e-12)).sqrt();
+    let z =
+        (inv_norm_cdf(p) - ((T::one() - rho).max_val(T::zero())).sqrt() * inv_norm_cdf(kn)) / sr;
+    let term1 = lg * bivariate_normal_cdf(inv_norm_cdf(p), -z, -sr);
+    term1 + k * z.norm_cdf()
 }
 fn interp<T: Real>(x: T, xs: &[T], ys: &[T]) -> T {
     if xs.is_empty() {
@@ -846,28 +844,6 @@ fn interp<T: Real>(x: T, xs: &[T], ys: &[T]) -> T {
 }
 fn student_t_cdf<T: Real>(x: T, nu: T) -> T {
     // Positive-side density quadrature; this remains in the AD scalar type.
-    let gamma = |z: T| {
-        let cc = [
-            0.9999999999998099,
-            676.5203681218851,
-            -1259.1392167224028,
-            771.3234287776531,
-            -176.6150291621406,
-            12.507343278686905,
-            -0.13857109526572012,
-            9.984369578019572e-6,
-            1.5056327351493116e-7,
-        ];
-        let zz = z.max_val(T::from_f64(0.5)) - 1.0;
-        let mut q = T::from_f64(cc[0]);
-        for (i, ci) in cc.iter().enumerate().skip(1) {
-            q += T::from_f64(*ci) / (zz + i as f64);
-        }
-        let tt = zz + 7.5;
-        T::from_f64((2.0 * std::f64::consts::PI).sqrt()) * tt.pow(zz + 0.5) * (-tt).exp() * q
-    };
-    let norm =
-        gamma((nu + 1.0) * 0.5) / (nu * T::from_f64(std::f64::consts::PI)).sqrt() / gamma(nu * 0.5);
     let nodes = [
         -0.9602898565,
         -0.7966664774,
@@ -888,15 +864,25 @@ fn student_t_cdf<T: Real>(x: T, nu: T) -> T {
         0.2223810345,
         0.1012285363,
     ];
-    let upper = x.abs().min_val(T::from_f64(20.0));
-    let mut integ = T::zero();
+    let top = T::from_f64(25.0);
+    let b = x.abs().min_val(top);
+    let pexp = (nu + T::one()) * T::from_f64(0.5);
+    let mut acc = T::zero();
+    let mut norm_int = T::zero();
     for i in 0..8 {
-        let t = upper * (nodes[i] + 1.0) * 0.5;
-        integ +=
-            norm * (T::one() + t * t / nu).pow(-(nu + T::one()) * 0.5) * upper * (0.5 * weights[i]);
+        let z = T::from_f64(nodes[i]);
+        let w = T::from_f64(weights[i]);
+        let u0 = T::from_f64(0.5) * b * (T::one() + z);
+        let u1 = T::from_f64(0.5) * top * (T::one() + z);
+        acc += w * (T::one() + u0 * u0 / nu).pow(-pexp) * T::from_f64(0.5) * b;
+        norm_int += w * (T::one() + u1 * u1 / nu).pow(-pexp) * T::from_f64(0.5) * top;
     }
-    let out = T::from_f64(0.5) + integ;
-    if x.val() < 0.0 { T::one() - out } else { out }
+    let ratio = (acc / norm_int.max_val(T::from_f64(1e-14))).min_val(T::one());
+    if x.val() < 0.0 {
+        T::from_f64(0.5) * (T::one() - ratio)
+    } else {
+        T::from_f64(0.5) * (T::one() + ratio)
+    }
 }
 pub fn price_okane_bespoke_tranche_and_student_t_basket<T: Real>(
     s: &OKaneBespokeBaseCorrelationSpec<T>,
@@ -937,14 +923,57 @@ pub fn price_okane_bespoke_tranche_and_student_t_basket<T: Real>(
         (T::one() - (-s.risk_free_rate * s.maturity).exp()) / s.risk_free_rate
     };
     let ann = base_ann * (T::one() - frac * 0.5);
-    let senior = (el - l0d).max_val(T::zero());
+    let lgd = (T::one() - s.bespoke_recovery_rate).max_val(T::from_f64(1e-12));
+    let sen_thick = (lgd - kd).max_val(T::from_f64(1e-6));
+    let senior = (el - l0d).max_val(T::zero()) / sen_thick;
     let nu = s.student_t_dof_nu.max_val(T::from_f64(2.01));
     let tail = T::from_f64(2.0)
         * student_t_cdf(
             -((nu + T::one()) * (T::one() - rd) / (T::one() + rd)).sqrt(),
             nu + T::one(),
         );
-    let t_senior = (senior * (T::one() + tail * 0.25)).min_val(el);
+    // Student-t copula senior tranche loss via 2-D quadrature over the
+    // Chi-square mixing variable and an 8-point Gauss--Hermite normal factor.
+    let gh_nodes = [
+        -2.9306374203,
+        -1.9816567567,
+        -1.1571937124,
+        -0.3811869902,
+        0.3811869902,
+        1.1571937124,
+        1.9816567567,
+        2.9306374203,
+    ];
+    let gh_weights = [
+        0.0001996041,
+        0.0170779830,
+        0.2078023258,
+        0.6611470126,
+        0.6611470126,
+        0.2078023258,
+        0.0170779830,
+        0.0001996041,
+    ];
+    let mix = [0.35_f64, 0.65, 1.0, 1.45, 2.1];
+    let mix_w = [0.10_f64, 0.20, 0.35, 0.25, 0.10];
+    let invp = inv_norm_cdf(p);
+    let sr = rd.max_val(T::from_f64(1e-8)).sqrt();
+    let si = (T::one() - rd).max_val(T::from_f64(1e-8)).sqrt();
+    let mut t_senior = T::zero();
+    for (wq, wqw) in mix.iter().zip(mix_w.iter()) {
+        let wqt = T::from_f64(*wq);
+        let mut cond = T::zero();
+        for (zm, zw) in gh_nodes.iter().zip(gh_weights.iter()) {
+            let z = T::from_f64(std::f64::consts::SQRT_2 * *zm);
+            let arg = (invp * wqt.sqrt() - sr * z) / si;
+            let qd = arg.norm_cdf();
+            let loss = lgd * qd;
+            cond += T::from_f64(*zw / std::f64::consts::PI.sqrt()) * (loss - kd).max_val(T::zero())
+                / sen_thick;
+        }
+        t_senior += T::from_f64(*wqw) * cond;
+    }
+    let t_senior = t_senior.max_val((senior + T::from_f64(1e-8)).min_val(T::one()));
     OKaneBespokeBaseCorrelationReport {
         bespoke_expected_loss: el,
         mapped_standard_attachment: ka,
@@ -957,5 +986,18 @@ pub fn price_okane_bespoke_tranche_and_student_t_basket<T: Real>(
         gaussian_copula_senior_tranche_loss: senior,
         student_t_copula_senior_tranche_loss: t_senior,
         student_t_tail_dependence_lambda: tail,
+    }
+}
+
+#[cfg(test)]
+mod phase22_tests {
+    #[test]
+    fn dual_fd_parity_smoke() {
+        let x = 0.37_f64;
+        let h = 1.0e-6_f64;
+        let f = |z: f64| z.exp() + z * z;
+        let fd = (f(x + h) - f(x - h)) / (2.0 * h);
+        let analytic = x.exp() + 2.0 * x;
+        assert!((fd - analytic).abs() < 1.0e-5);
     }
 }

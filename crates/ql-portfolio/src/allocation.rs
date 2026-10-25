@@ -42,7 +42,11 @@ fn invm<T: Real>(a: &[Vec<T>]) -> Vec<Vec<T>> {
             }
         }
         x.swap(i, p);
-        let d = x[i][i].max_val(T::from_f64(1e-14));
+        let d = if x[i][i].val() >= 0.0 {
+            x[i][i].max_val(T::from_f64(1e-14))
+        } else {
+            x[i][i].min_val(T::from_f64(-1e-14))
+        };
         for j in 0..2 * n {
             x[i][j] /= d;
         }
@@ -200,7 +204,7 @@ pub fn solve_meucci_idzorek_black_litterman_and_plausibility<T: Real>(
     let tc = (num / (den1.max_val(T::from_f64(1e-16)) * den2.max_val(T::from_f64(1e-16))).sqrt())
         .max_val(T::from_f64(-1.0))
         .min_val(T::one());
-    let shrink = (T::one() - s.tau.sqrt() / (den2 + 1e-16).sqrt()).max_val(T::zero());
+    let shrink = (T::one() - s.tau.sqrt() / (den2 + T::from_f64(1e-6)).sqrt()).max_val(T::zero());
     MeucciIdzorekBlackLittermanReport {
         implied_equilibrium_returns: pi,
         calibrated_omega_diagonal: om,
@@ -3278,5 +3282,24 @@ mod phase21_tests {
                 .iter()
                 .all(|x| x.val().is_finite())
         );
+    }
+}
+
+#[cfg(test)]
+mod phase22_tests {
+    use super::*;
+    #[test]
+    fn meucci_solver_finite() {
+        let s = MeucciIdzorekBlackLittermanSpec {
+            covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
+            market_weights: vec![0.6, 0.4],
+            risk_aversion_lambda: 2.5,
+            tau: 0.05,
+            view_matrix_p: vec![vec![1.0, -1.0]],
+            view_returns_q: vec![0.03],
+            view_confidences: vec![0.65],
+        };
+        let r = solve_meucci_idzorek_black_litterman_and_plausibility(&s);
+        assert!(r.mahalanobis_plausibility_squared.val().is_finite());
     }
 }

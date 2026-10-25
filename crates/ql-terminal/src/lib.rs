@@ -13,21 +13,23 @@ pub mod prelude {
     pub use ql_inflation::*;
     pub use ql_instruments::*;
     pub use ql_levy::{
-        CgmyProcess, KouJumpDiffusion, LevyModel, MertonJumpDiffusion, VarianceGamma,
-        cos_levy_price, cos_levy_price_strip, merton_series_price,
+        CgmyFractionalFftAndPideReport, CgmyFractionalFftAndPideSpec, CgmyProcess,
+        KouJumpDiffusion, LevyModel, MertonJumpDiffusion, VarianceGamma, cos_levy_price,
+        cos_levy_price_strip, evaluate_cgmy_fractional_fft_and_pide, merton_series_price,
     };
     pub use ql_levy::{carr_madan_fft_levy_price_strip, lewis_levy_price_strip};
     pub use ql_math::*;
     pub use ql_mc::*;
     pub use ql_models::{
-        AnalyticBsmHullWhiteEngine, BatesParams, Bergomi2FParams, CalibratedHestonModel, Complex,
-        CosHestonEngine, CosHestonHullWhiteEngine, DoubleHestonParams, HestonHullWhiteParams,
-        HestonMarketQuote, HestonParams, HullWhite1F, LiftedHestonParams,
-        MixedRoughBergomiVixReport, MixedRoughBergomiVixSpec, QuinticOuParams,
+        AnalyticBsmHullWhiteEngine, BatesParams, Bergomi2FParams,
+        BergomiForwardStartAndVarStripReport, BergomiForwardStartAndVarStripSpec,
+        CalibratedHestonModel, Complex, CosHestonEngine, CosHestonHullWhiteEngine,
+        DoubleHestonParams, HestonHullWhiteParams, HestonMarketQuote, HestonParams, HullWhite1F,
+        LiftedHestonParams, MixedRoughBergomiVixReport, MixedRoughBergomiVixSpec, QuinticOuParams,
         QuinticOuVixSpxReport, VixOptionValuation, bergomi_2f_implied_vol_bg, bergomi_2f_mc_price,
         bergomi_2f_smile_moments_bg, calibrate_heston, double_heston_cos_price,
-        double_heston_cos_strip_prices, evaluate_mixed_rough_bergomi_vix,
-        evaluate_quintic_ou_spx_vix, h1_hw_char_func_unit_spot,
+        double_heston_cos_strip_prices, evaluate_bergomi_forward_start_and_var_strip,
+        evaluate_mixed_rough_bergomi_vix, evaluate_quintic_ou_spx_vix, h1_hw_char_func_unit_spot,
         heston_bates_vix_future_and_option_price, heston_cos_price, lifted_heston_char_fn,
         lifted_heston_char_func_unit_spot, lifted_heston_cos_price, lifted_heston_kernel,
         local_vol::{
@@ -74,11 +76,13 @@ use ql_exotics::{
 };
 use ql_fixed_income::{
     AfvConvertibleBondSpec, BondAssetSwapSpec, CallableBondOasSpec, CmoTrancheSpec,
-    CmoWaterfallSpec, CocoBondSpec, CocoTriggerPayoff, ConvertibleBondSpec, MbsBurnoutOasSpec,
-    SpecifiedPoolMbsSpec, TbaDollarRollSpec, TreasuryFutureDeliverable, TreasuryFuturesBasketSpec,
-    analyze_bond_asset_swap_and_z_spread, analyze_callable_bond_oas_ad, analyze_mbs_burnout_oas_ad,
-    analyze_tba_dollar_roll, analyze_treasury_futures_ctd, price_cmo_waterfall, price_coco_bond_ds,
-    price_convertible_bond_afv_pde, price_convertible_bond_tf, price_specified_pool_mbs,
+    CmoWaterfallSpec, CocoBondSpec, CocoTriggerPayoff, ConvertibleBondSpec,
+    DeSpiegeleerCoCoMandatoryConvSpec, MbsBurnoutOasSpec, SpecifiedPoolMbsSpec, TbaDollarRollSpec,
+    TreasuryFutureDeliverable, TreasuryFuturesBasketSpec, analyze_bond_asset_swap_and_z_spread,
+    analyze_callable_bond_oas_ad, analyze_mbs_burnout_oas_ad, analyze_tba_dollar_roll,
+    analyze_treasury_futures_ctd, price_cmo_waterfall, price_coco_bond_ds,
+    price_convertible_bond_afv_pde, price_convertible_bond_tf,
+    price_despiegeleer_coco_and_mandatory_convertible, price_specified_pool_mbs,
 };
 use ql_fx::{
     ConstNotionalXccs, FxAccumulatorSpec, FxKikoOptionSpec, FxSmileQuote, FxTarfCapConvention,
@@ -93,7 +97,7 @@ use ql_inflation::{
     ZeroInflationCurve, price_yoy_capfloor_jarrow_yildirim, price_zciis_capfloor_jarrow_yildirim,
 };
 use ql_instruments::{BaroneAdesiWhaleyEngine, OptionType, SwapType, VanillaSwapSpec};
-use ql_levy::{VarianceGamma, cos_levy_price};
+use ql_levy::{CgmyProcess, VarianceGamma, cos_levy_price, evaluate_cgmy_fractional_fft_and_pide};
 use ql_models::rough::{
     QuadraticRoughHestonParams, RoughBergomiParams, qrh_implied_vol_expansion,
     rbergomi_hybrid_mc_price,
@@ -586,6 +590,7 @@ pub struct WorkstationFrameData {
     pub burnout_cmcds_quintic_afv_cs_schur_metric: f64,
     pub sinhou_mb_rbergomi_choi_afs_expectile_metric: f64,
     pub monotone_convex_clark_saccr_rvol_cartea_paleologo_metric: f64,
+    pub krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric: f64,
     pub blotter_rows: Vec<(String, f64, String)>,
 }
 
@@ -1141,6 +1146,119 @@ impl DeskWorkstation {
         };
         let times: Vec<f64> = (1..=12).map(|k| k as f64 * 5.0 / 12.0).collect();
         ql_xva::compute_chebyshev_dim_and_mva(&model, &curve, &[swap], &times, 64, 6, 0.01, 29).mva
+    }
+    fn phase22_live_metric(m: &MarketSnapshot, credit_bump: f64) -> f64 {
+        let r = m.ois_quotes[0] + credit_bump;
+        let bg = ql_models::evaluate_bergomi_forward_start_and_var_strip(
+            &ql_models::BergomiForwardStartAndVarStripSpec {
+                params: ql_models::Bergomi2FParams {
+                    xi0: m.eq_vol * m.eq_vol,
+                    omega: 1.0,
+                    theta: 0.5,
+                    k1: 1.2,
+                    k2: 2.4,
+                    rho12: 0.2,
+                    rho_s1: -0.5,
+                    rho_s2: -0.3,
+                },
+                xi_long_run: m.eq_vol * m.eq_vol,
+                xi_curve_decay: 1.0,
+                forward_start_t1: 0.0,
+                expiry_t2: 1.0,
+                log_moneyness_k: 0.0,
+            },
+        )
+        .forward_start_implied_vol
+        .val();
+        let levy = cos_levy_price(
+            &VarianceGamma {
+                sigma: m.eq_vol.max(1e-4),
+                nu: 0.2,
+                theta: -0.1,
+            },
+            m.eq_spot,
+            m.eq_spot,
+            r,
+            0.01,
+            1.0,
+            ql_instruments::OptionType::Call,
+            128,
+        )
+        .val();
+        let cg = evaluate_cgmy_fractional_fft_and_pide(&ql_levy::CgmyFractionalFftAndPideSpec {
+            spot: m.eq_spot,
+            strikes: vec![m.eq_spot],
+            risk_free_rate: r,
+            dividend_yield: 0.01,
+            expiry: 1.0,
+            process: CgmyProcess {
+                sigma: m.eq_vol.max(1e-4),
+                c: 0.5,
+                g: 5.0,
+                m: 5.0,
+                y: 0.7,
+            },
+            damping_alpha: 1.0,
+            fourier_step_eta: 0.1,
+            log_strike_step_lambda: 0.1,
+            small_jump_cutoff_eps: 1e-4,
+        })
+        .frft_call_prices
+        .first()
+        .copied()
+        .unwrap_or(0.0)
+        .val();
+        let mm = ql_portfolio::solve_gueant_lehalle_bounded_market_making(
+            &ql_portfolio::GueantLehalleMarketMakingSpec {
+                max_inventory_q: 2,
+                current_inventory_q: 0,
+                horizon: 1.0,
+                num_time_steps: 4,
+                volatility: m.eq_vol.max(1e-4),
+                risk_aversion_gamma: 0.5,
+                intensity_decay_k: 1.5,
+                base_intensity_a: 2.0,
+                terminal_inventory_penalty: 0.1,
+                adverse_selection_zeta: 0.0,
+            },
+        )
+        .current_optimal_bid_offset
+        .val();
+        let bl = ql_portfolio::solve_meucci_idzorek_black_litterman_and_plausibility(
+            &ql_portfolio::MeucciIdzorekBlackLittermanSpec {
+                covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
+                market_weights: vec![0.6, 0.4],
+                risk_aversion_lambda: 2.5,
+                tau: 0.05,
+                view_matrix_p: vec![vec![1.0, -1.0]],
+                view_returns_q: vec![0.03],
+                view_confidences: vec![0.65],
+            },
+        )
+        .mahalanobis_plausibility_squared
+        .val();
+        let coco =
+            price_despiegeleer_coco_and_mandatory_convertible(&DeSpiegeleerCoCoMandatoryConvSpec {
+                notional: 100.0,
+                spot: m.eq_spot,
+                risk_free_rate: r,
+                dividend_yield: 0.01,
+                credit_spread: 0.02,
+                maturity: 2.0,
+                coupon_rate: 0.05,
+                coupon_freq: 2,
+                decs_lower_strike: 90.0,
+                decs_upper_strike: 110.0,
+                vol_lower_strike: m.eq_vol,
+                vol_upper_strike: m.eq_vol,
+                coco_cet1_trigger_spot: 70.0,
+                coco_ponv_trigger_spot: 50.0,
+                coco_conversion_floor_price: 60.0,
+                coco_equity_vol: m.eq_vol,
+            })
+            .dual_trigger_coco_value
+            .val();
+        phase21_live_metric(m, credit_bump) + bg + levy + cg + mm + bl + coco
     }
     pub fn step_tick(&mut self) -> WorkstationFrameData {
         self.tick += 1;
@@ -2937,6 +3055,8 @@ impl DeskWorkstation {
             + phase19_cdar
             + phase19_schur
             + phase19_oas;
+        let krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric =
+            Self::phase22_live_metric(&market, credit_bump);
         let blotter_rows = vec![
             ("IRS 5Y PayFix".to_string(), irs_npv, "IFT".to_string()),
             ("Heston Call 1Y".to_string(), heston_npv, "COS".to_string()),
@@ -3045,6 +3165,7 @@ impl DeskWorkstation {
                 &market,
                 credit_bump,
             ),
+            krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric,
             blotter_rows,
         }
     }
@@ -3291,6 +3412,10 @@ impl DeskWorkstation {
             format!(
                 "31 HW-MC/Clark/SACCR/rVol/Cartea/Paleo: {:.2}",
                 frame.monotone_convex_clark_saccr_rvol_cartea_paleologo_metric
+            ),
+            format!(
+                "32 KRD/LPI/CoCo/Bergomi2F/CGMY/Guéant/Meucci: {:.2}",
+                frame.krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric
             ),
             format!(
                 "DAG recomputed: {}/{}",
@@ -3616,6 +3741,25 @@ mod phase21_tests {
         assert!(
             ws.render_dashboard(&normal, false)
                 .contains("BL / Risk Parity ERC")
+        );
+    }
+}
+
+#[cfg(test)]
+mod phase22_tests {
+    use super::*;
+    #[test]
+    fn phase22_tab32_metric_renders() {
+        let mut ws = DeskWorkstation::new();
+        let frame = ws.step_tick();
+        assert!(
+            frame
+                .krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric
+                .is_finite()
+        );
+        assert!(
+            ws.render_dashboard(&frame, false)
+                .contains("32 KRD/LPI/CoCo/Bergomi2F/CGMY/Guéant/Meucci")
         );
     }
 }

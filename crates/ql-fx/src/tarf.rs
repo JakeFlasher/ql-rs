@@ -146,7 +146,9 @@ pub fn evaluate_wystup_fx_accumulator_and_dcd<T: Real>(
     }
     let dt = s.fixing_times.last().copied().unwrap_or(T::one()) / m as f64;
     let beta = T::from_f64(0.5825971579390107);
-    let be = s.knockout_barrier * (beta * s.volatility * dt.sqrt()).exp();
+    let is_up = s.knockout_barrier.val() >= s.spot.val();
+    let dir = if is_up { T::one() } else { -T::one() };
+    let be = s.knockout_barrier * (dir * beta * s.volatility * dt.sqrt()).exp();
     let strip = |k: T| {
         let mut u = T::zero();
         for (i, &t) in s.fixing_times.iter().enumerate() {
@@ -183,10 +185,10 @@ pub fn evaluate_wystup_fx_accumulator_and_dcd<T: Real>(
                         bf_25d: T::zero(),
                     },
                 );
-                sm.price_knock_out_barrier(k, be, true, true)
-                    - s.downside_gearing * sm.price_knock_out_barrier(k, be, true, false)
+                sm.price_knock_out_barrier(k, be, is_up, true)
+                    - s.downside_gearing * sm.price_knock_out_barrier(k, be, is_up, false)
             };
-            u += (-s.domestic_rate * t).exp() * vv;
+            u += vv;
         }
         u
     };
@@ -212,7 +214,7 @@ pub fn evaluate_wystup_fx_accumulator_and_dcd<T: Real>(
                     s.foreign_rate,
                     false,
                 );
-                (-s.domestic_rate * t).exp() * (c - s.downside_gearing * p)
+                c - s.downside_gearing * p
             })
             .fold(T::zero(), |a, b| a + b)
     };
@@ -227,35 +229,38 @@ pub fn evaluate_wystup_fx_accumulator_and_dcd<T: Real>(
             k_star -= f / der;
         }
     }
+    // Recompute the scalar Jacobian at the converged root before lifting it
+    // into the AD domain (the final Newton update may have moved the root).
+    let h_final = s.spot.val().abs().max(1.0) * 1e-5;
+    let last_der_f64 = (strip(T::from_f64(k_star + h_final)).val()
+        - strip(T::from_f64(k_star - h_final)).val())
+        / (2.0 * h_final);
     let mut kf = T::from_f64(k_star);
-    let h_lift = s.spot * T::from_f64(1e-5);
-    let d_lift = (strip(kf + h_lift) - strip(kf - h_lift)) / (T::from_f64(2.0) * h_lift);
-    if d_lift.val().abs() > 1e-12 {
-        kf = ift_lift_1d(kf.val(), strip, d_lift, 0.0);
+    if last_der_f64.abs() > 1e-12 {
+        kf = ift_lift_1d(kf.val(), strip, T::from_f64(last_der_f64), 0.0);
     }
     let g = strip(s.accumulator_strike);
     let guar = if s.guaranteed_fixings > 0 {
         let mut x = T::zero();
         for &t in s.fixing_times.iter().take(s.guaranteed_fixings) {
-            x += (-s.domestic_rate * t).exp()
-                * (crate::garman_kohlhagen_price(
+            x += crate::garman_kohlhagen_price(
+                s.spot,
+                s.accumulator_strike,
+                s.volatility,
+                t,
+                s.domestic_rate,
+                s.foreign_rate,
+                true,
+            ) - s.downside_gearing
+                * crate::garman_kohlhagen_price(
                     s.spot,
                     s.accumulator_strike,
                     s.volatility,
                     t,
                     s.domestic_rate,
                     s.foreign_rate,
-                    true,
-                ) - s.downside_gearing
-                    * crate::garman_kohlhagen_price(
-                        s.spot,
-                        s.accumulator_strike,
-                        s.volatility,
-                        t,
-                        s.domestic_rate,
-                        s.foreign_rate,
-                        false,
-                    ));
+                    false,
+                );
         }
         x
     } else {
@@ -522,5 +527,18 @@ mod phase17_tests {
         };
         let ad = price_fx_accumulator_mc_ad(&sd, 64, 17).npv;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase22_tests {
+    #[test]
+    fn dual_fd_parity_smoke() {
+        let x = 0.37_f64;
+        let h = 1.0e-6_f64;
+        let f = |z: f64| z.exp() + z * z;
+        let fd = (f(x + h) - f(x - h)) / (2.0 * h);
+        let analytic = x.exp() + 2.0 * x;
+        assert!((fd - analytic).abs() < 1.0e-5);
     }
 }

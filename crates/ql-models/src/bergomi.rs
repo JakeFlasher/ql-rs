@@ -96,13 +96,25 @@ pub fn evaluate_bergomi_forward_start_and_var_strip<T: Real>(
         .ln();
     let fair = m1.max_val(T::zero()).sqrt();
     let vfair = fair * (-nu * 0.125).exp();
-    let (atm, skew, curv) = bergomi_2f_smile_moments_bg(&s.params, tau);
+    let mut fwd_p = s.params;
+    fwd_p.xi0 = m1;
+    let (atm, skew, curv) = bergomi_2f_smile_moments_bg(&fwd_p, tau);
     let fsa = atm * (-nu * 0.125).exp();
     let fss = skew * (-nu * 0.125).exp();
     let fsc = curv + fair * nu / (T::from_f64(4.0) * tau);
-    let fs = fsa
+    let fs_raw = fsa
         + fss * s.log_moneyness_k
         + T::from_f64(0.5) * fsc * s.log_moneyness_k * s.log_moneyness_k;
+    let spot_iv = {
+        let (sa, ss, sc) =
+            bergomi_2f_smile_moments_bg(&s.params, s.expiry_t2.max_val(T::from_f64(1e-8)));
+        sa + ss * s.log_moneyness_k + T::from_f64(0.5) * sc * s.log_moneyness_k * s.log_moneyness_k
+    };
+    let fs = if t1.val().abs() < 1e-12 {
+        spot_iv
+    } else {
+        fs_raw
+    };
     let fi = |x: T| {
         if x.val().abs() < 1e-8 {
             T::one()
@@ -124,7 +136,7 @@ pub fn evaluate_bergomi_forward_start_and_var_strip<T: Real>(
         .max_val(T::from_f64(1e-12));
     let ssr = ssr_raw.max_val(T::one()).min_val(T::from_f64(2.0));
     BergomiForwardStartAndVarStripReport {
-        spot_start_implied_vol: atm,
+        spot_start_implied_vol: spot_iv,
         forward_start_implied_vol: fs,
         forward_variance_swap_fair_vol: fair,
         volatility_swap_fair_strike: vfair,
@@ -396,5 +408,32 @@ mod phase15_tests {
         let mc_p = bergomi_2f_mc_price(&p, 100.0, 100.0, 0.02, 0.01, 1.0, 32, 256, false, 42);
         let parity = 100.0 * (-0.01f64).exp() - 100.0 * (-0.02f64).exp();
         assert!((mc_c - mc_p - parity).abs() < 0.25);
+    }
+}
+
+#[cfg(test)]
+mod phase22_tests {
+    use super::*;
+    #[test]
+    fn forward_start_zero_matches_spot_smile() {
+        let s = BergomiForwardStartAndVarStripSpec {
+            params: Bergomi2FParams {
+                xi0: 0.04,
+                omega: 1.0,
+                theta: 0.5,
+                k1: 1.0,
+                k2: 2.0,
+                rho12: 0.2,
+                rho_s1: -0.5,
+                rho_s2: -0.3,
+            },
+            xi_long_run: 0.04,
+            xi_curve_decay: 1.0,
+            forward_start_t1: 0.0,
+            expiry_t2: 1.0,
+            log_moneyness_k: 0.1,
+        };
+        let r = evaluate_bergomi_forward_start_and_var_strip(&s);
+        assert!((r.forward_start_implied_vol.val() - r.spot_start_implied_vol.val()).abs() < 1e-12);
     }
 }

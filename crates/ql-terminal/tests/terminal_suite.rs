@@ -286,3 +286,24 @@ fn phase21_tab31_terminal_renders_and_ticks_cleanly() {
         );
     }
 }
+
+#[test]
+fn phase22_tab32_terminal_renders_and_ticks_cleanly() {
+    assert_eq!(TabId::ALL.len(), 32);
+    let mut ws = DeskWorkstation::new();
+    let normal = ws.step_tick();
+    assert!(
+        normal
+            .krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric
+            .is_finite()
+    );
+    assert!(
+        ws.render_dashboard(&normal, false)
+            .contains("32 KRD/LPI/CoCo/Bergomi2F/CGMY/Guéant/Meucci")
+    );
+    let next = ws.step_tick();
+    assert!(
+        next.krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric
+            .is_finite()
+    );
+}

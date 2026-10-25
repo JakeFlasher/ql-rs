@@ -245,10 +245,7 @@ pub fn price_despiegeleer_coco_and_mandatory_convertible<T: Real>(
         .coco_cet1_trigger_spot
         .max_val(s.coco_conversion_floor_price);
     let principal = s.notional * (-rr * s.maturity).exp() * pc
-        - s.notional / cp
-            * s.spot
-            * (-(s.dividend_yield + s.credit_spread) * s.maturity).exp()
-            * (pcs - pps);
+        - s.notional / cp * s.spot * (-s.dividend_yield * s.maturity).exp() * (pcs - pps);
     let coco = straight - loss - principal;
     let spread = if coco.val() > 0. && straight.val() > 0. {
         T::from_f64(10000.0) * (s.credit_spread - (coco / straight).ln() / s.maturity)
@@ -306,5 +303,33 @@ mod phase14_tests {
             },
         };
         assert!(price_coco_bond_ds(&sd).dirty_price.d[0] > 0.0);
+    }
+}
+
+#[cfg(test)]
+mod phase22_tests {
+    use super::*;
+    #[test]
+    fn converted_leg_discount_is_finite() {
+        let s = DeSpiegeleerCoCoMandatoryConvSpec {
+            notional: 100.0,
+            spot: 100.0,
+            risk_free_rate: 0.02,
+            dividend_yield: 0.01,
+            credit_spread: 0.02,
+            maturity: 2.0,
+            coupon_rate: 0.05,
+            coupon_freq: 2,
+            decs_lower_strike: 90.0,
+            decs_upper_strike: 110.0,
+            vol_lower_strike: 0.2,
+            vol_upper_strike: 0.2,
+            coco_cet1_trigger_spot: 70.0,
+            coco_ponv_trigger_spot: 50.0,
+            coco_conversion_floor_price: 60.0,
+            coco_equity_vol: 0.2,
+        };
+        let r = price_despiegeleer_coco_and_mandatory_convertible(&s);
+        assert!(r.dual_trigger_coco_value.val().is_finite());
     }
 }

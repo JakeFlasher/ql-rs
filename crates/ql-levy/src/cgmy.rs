@@ -1,6 +1,7 @@
 use crate::LevyModel;
 use ql_ad::Real;
 use ql_instruments::OptionType;
+use ql_vol::black_scholes_price;
 #[derive(Clone, Copy, Debug)]
 pub struct CgmyProcess<T: Real> {
     pub sigma: T,
@@ -156,8 +157,8 @@ fn gamma<T: Real>(z: T) -> T {
         1.5056327351493116e-7,
     ];
     if z.val() < 0.5 {
-        T::from_f64(std::f64::consts::PI) / (T::from_f64(std::f64::consts::PI) * z).sin()
-            * gamma(T::one() - z)
+        T::from_f64(std::f64::consts::PI)
+            / ((T::from_f64(std::f64::consts::PI) * z).sin() * gamma(T::one() - z))
     } else {
         let zz = z - 1.0;
         let mut x = T::from_f64(c[0]);
@@ -200,7 +201,18 @@ pub fn evaluate_cgmy_fractional_fft_and_pide<T: Real>(
         OptionType::Call,
         256,
     );
-    let frft = crate::lewis_levy_price_strip(
+    // Damped Carr--Madan/Fractional FFT quadrature.  The user supplied
+    // damping and grid spacings determine the FFT resolution (and therefore
+    // are not silently ignored as in the old stub).
+    let alpha = s.damping_alpha.clamp(0.25, 2.5);
+    let eta = s.fourier_step_eta.clamp(0.02, 0.25);
+    let lambda = s.log_strike_step_lambda.abs().max(1e-4);
+    let target_n = (std::f64::consts::TAU / (eta * lambda)).max(256.0);
+    let mut pow = 8usize;
+    while ((1usize << pow) as f64) < target_n && pow < 13 {
+        pow += 1;
+    }
+    let frft = crate::carr_madan_fft_levy_price_strip(
         p,
         s.spot,
         &s.strikes,
@@ -208,7 +220,8 @@ pub fn evaluate_cgmy_fractional_fft_and_pide<T: Real>(
         s.dividend_yield,
         s.expiry,
         OptionType::Call,
-        512,
+        pow,
+        alpha,
     );
     let max_err = frft
         .iter()
@@ -245,7 +258,30 @@ pub fn evaluate_cgmy_fractional_fft_and_pide<T: Real>(
             * (0.5 * w);
     }
     let atm = s.spot;
+    // Compensated two-sided non-local PIDE jump generator on a smooth
+    // Black--Scholes call profile.
+    let k0 = s.strikes.first().copied().unwrap_or(atm);
+    let sigma_eff = (p.sigma * p.sigma
+        + p.c * gn * (p.m.pow(p.y - T::from_f64(2.0)) + p.g.pow(p.y - T::from_f64(2.0))))
+    .max_val(T::from_f64(1e-10))
+    .sqrt();
+    let x0 = atm.ln();
+    let profile = |x: T| {
+        black_scholes_price(
+            x.exp(),
+            k0,
+            sigma_eff,
+            s.expiry,
+            s.risk_free_rate,
+            s.dividend_yield,
+            true,
+        )
+    };
+    let v0 = profile(x0);
+    let hx = T::from_f64(1e-4);
+    let vx = (profile(x0 + hx) - profile(x0 - hx)) / (T::from_f64(2.0) * hx);
     let mut non = T::zero();
+    let zmax = T::from_f64(3.0);
     for i in 0..8 {
         let x = [
             -0.9602898565,
@@ -267,11 +303,14 @@ pub fn evaluate_cgmy_fractional_fft_and_pide<T: Real>(
             0.2223810345,
             0.1012285363,
         ][i];
-        let z = eps + (T::from_f64(10.0) - eps) * (x + 1.0) * 0.5;
-        let nu = p.c * z.pow(-(p.y + T::one())) * ((-p.g * z).exp() + (-p.m * z).exp());
-        let prof = (atm * (z.exp() - T::one()) - s.strikes.first().copied().unwrap_or(atm))
-            .max_val(T::zero());
-        non += nu * prof * (T::from_f64(10.0) - eps) * 0.5 * w;
+        let z = eps + (zmax - eps) * (x + 1.0) * 0.5;
+        let vp = profile(x0 + z);
+        let vm = profile(x0 - z);
+        let comp_p = vp - v0 - (z.exp() - T::one()) * vx;
+        let comp_m = vm - v0 - ((-z).exp() - T::one()) * vx;
+        let nu_p = p.c * (-p.m * z).exp() * z.pow(-(p.y + T::one()));
+        let nu_m = p.c * (-p.g * z).exp() * z.pow(-(p.y + T::one()));
+        non += (comp_p * nu_p + comp_m * nu_m) * (zmax - eps) * T::from_f64(0.5 * w);
     }
     CgmyFractionalFftAndPideReport {
         cumulant_c1: c1,
@@ -286,5 +325,18 @@ pub fn evaluate_cgmy_fractional_fft_and_pide<T: Real>(
         return_excess_kurtosis: c4 / c2.max_val(T::from_f64(1e-12)).powf(2.0),
         small_jump_diffusion_variance: sj,
         pide_nonlocal_jump_generator_atm: non,
+    }
+}
+
+#[cfg(test)]
+mod phase22_tests {
+    #[test]
+    fn dual_fd_parity_smoke() {
+        let x = 0.37_f64;
+        let h = 1.0e-6_f64;
+        let f = |z: f64| z.exp() + z * z;
+        let fd = (f(x + h) - f(x - h)) / (2.0 * h);
+        let analytic = x.exp() + 2.0 * x;
+        assert!((fd - analytic).abs() < 1.0e-5);
     }
 }

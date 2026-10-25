@@ -856,7 +856,10 @@ pub fn solve_inthout_foulon_heston_adi_and_early_exercise<T: Real>(
         s.expiry,
         !s.is_put,
     );
-    let m = e(AdiScheme::ModifiedCraigSneyd, 0.5).price_european(
+    let optimal_mcs_theta =
+        T::from_f64(1.0 / 3.0).max_val(s.params.rho.abs() * T::from_f64(2.0 / 3.0));
+    let optimal_hv_theta = T::from_f64(1.0 - 0.5 * std::f64::consts::SQRT_2);
+    let m = e(AdiScheme::ModifiedCraigSneyd, optimal_mcs_theta.val()).price_european(
         &s.params,
         s.spot,
         s.strike,
@@ -865,7 +868,7 @@ pub fn solve_inthout_foulon_heston_adi_and_early_exercise<T: Real>(
         s.expiry,
         !s.is_put,
     );
-    let hv = e(AdiScheme::HundsdorferVerwer, 1.0 - 0.5 * 2.0_f64.sqrt()).price_european(
+    let hv = e(AdiScheme::HundsdorferVerwer, optimal_hv_theta.val()).price_european(
         &s.params,
         s.spot,
         s.strike,
@@ -874,7 +877,7 @@ pub fn solve_inthout_foulon_heston_adi_and_early_exercise<T: Real>(
         s.expiry,
         !s.is_put,
     );
-    let am = e(AdiScheme::ModifiedCraigSneyd, 0.5).price_american(
+    let am = e(AdiScheme::ModifiedCraigSneyd, optimal_mcs_theta.val()).price_american(
         &s.params,
         s.spot,
         s.strike,
@@ -887,7 +890,7 @@ pub fn solve_inthout_foulon_heston_adi_and_early_exercise<T: Real>(
         nx: s.nx.max(10),
         nv: s.nv.max(8),
         nt: (s.nt.max(4) / 2).max(1),
-        theta: 0.5,
+        theta: optimal_mcs_theta.val(),
         scheme: AdiScheme::ModifiedCraigSneyd,
     }
     .price_european(
@@ -901,10 +904,8 @@ pub fn solve_inthout_foulon_heston_adi_and_early_exercise<T: Real>(
     );
     IntHoutFoulonHestonAdiReport {
         feller_ratio: s.params.feller_ratio(),
-        optimal_mcs_theta: T::from_f64(
-            (1.0_f64 / 3.0_f64).max((2.0 * s.params.rho.val().abs()) / 3.0),
-        ),
-        optimal_hv_theta: T::from_f64(1.0 - 0.5 * 2.0_f64.sqrt()),
+        optimal_mcs_theta,
+        optimal_hv_theta,
         douglas_european_price: d,
         craig_sneyd_european_price: cs,
         mcs_european_price: m,
@@ -940,6 +941,8 @@ pub struct RannacherSinhPdeValuation<T: Real = f64> {
 pub fn solve_rannacher_crank_nicolson_sinh_pde<T: Real>(
     s: &RannacherSinhPdeSpec<T>,
 ) -> RannacherSinhPdeValuation<T> {
+    // Analytical Black--Scholes value used as the reference and for the
+    // reported discretisation error.
     let bs = black_scholes_price(
         s.spot,
         s.strike,
@@ -949,32 +952,213 @@ pub fn solve_rannacher_crank_nicolson_sinh_pde<T: Real>(
         s.dividend_yield,
         s.is_call,
     );
-    let h = (s.strike * T::from_f64(1e-4)).max_val(T::from_f64(1e-6));
-    let up = black_scholes_price(
-        s.spot + h,
-        s.strike,
-        s.volatility,
-        s.expiry,
-        s.risk_free_rate,
-        s.dividend_yield,
-        s.is_call,
-    );
-    let dn = black_scholes_price(
-        s.spot - h,
-        s.strike,
-        s.volatility,
-        s.expiry,
-        s.risk_free_rate,
-        s.dividend_yield,
-        s.is_call,
-    );
-    let delta = (up - dn) / (T::from_f64(2.0) * h);
-    let gamma = (up - T::from_f64(2.0) * bs + dn) / (h * h);
+
+    let nx = s.n_space.max(31);
+    let nt = s.n_time.max(8);
+    let dt = s.expiry / T::from_f64(nt as f64);
+    let sigma = s.volatility.max_val(T::from_f64(1e-4));
+    let alpha = s.sinh_concentration.max_val(T::from_f64(0.05));
+    let sqrt_t = s.expiry.max_val(T::zero()).sqrt();
+    let log_m = (s.spot / s.strike.max_val(T::from_f64(1e-14))).ln().abs();
+    let l = (T::from_f64(5.0) * sigma * sqrt_t)
+        .max_val(log_m + T::from_f64(3.0) * sigma * sqrt_t)
+        .max_val(T::from_f64(1e-3));
+    let xk = s.strike.max_val(T::from_f64(1e-14)).ln();
+    let sh = (T::one() / alpha).sinh();
+    let csh = l / sh;
+    let mut x = vec![T::zero(); nx];
+    let mut spot_grid = vec![T::zero(); nx];
+    for j in 0..nx {
+        let xi = T::from_f64(-1.0 + 2.0 * j as f64 / (nx - 1) as f64);
+        x[j] = xk + csh * (xi / alpha).sinh();
+        spot_grid[j] = x[j].exp();
+    }
+
+    // Cell-averaged payoff around the kink.  The integration is performed in
+    // log-spot, which removes the C0 kink from the initial grid vector.
+    let mut values = vec![T::zero(); nx];
+    for j in 0..nx {
+        let xl = if j == 0 {
+            x[0]
+        } else {
+            (x[j - 1] + x[j]) * 0.5
+        };
+        let xr = if j + 1 == nx {
+            x[nx - 1]
+        } else {
+            (x[j] + x[j + 1]) * 0.5
+        };
+        let width = (xr - xl).max_val(T::from_f64(1e-14));
+        if s.is_call {
+            // Integral of (exp(x)-K)^+ over [xl,xr].
+            let a = xl.max_val(xk);
+            let integ = if xr.val() <= xk.val() {
+                T::zero()
+            } else {
+                xr.exp() - a.exp() - s.strike * (xr - a)
+            };
+            values[j] = integ / width;
+        } else {
+            // Integral of (K-exp(x))^+ over [xl,xr].
+            let b = xr.min_val(xk);
+            let integ = if xl.val() >= xk.val() {
+                T::zero()
+            } else {
+                s.strike * (b - xl) - (b.exp() - xl.exp())
+            };
+            values[j] = integ / width;
+        }
+    }
+
+    // Tridiagonal coefficients of the Black--Scholes generator in x-space.
+    let mu = s.risk_free_rate - s.dividend_yield - T::from_f64(0.5) * sigma * sigma;
+    let mut lower = vec![T::zero(); nx];
+    let mut diag = vec![T::zero(); nx];
+    let mut upper = vec![T::zero(); nx];
+    for j in 1..nx - 1 {
+        let hm = x[j] - x[j - 1];
+        let hp = x[j + 1] - x[j];
+        let w1m = -hp / (hm * (hm + hp));
+        let w10 = (hp - hm) / (hm * hp);
+        let w1p = hm / (hp * (hm + hp));
+        let w2m = T::from_f64(2.0) / (hm * (hm + hp));
+        let w20 = -T::from_f64(2.0) / (hm * hp);
+        let w2p = T::from_f64(2.0) / (hp * (hm + hp));
+        lower[j] = T::from_f64(0.5) * sigma * sigma * w2m + mu * w1m;
+        diag[j] = T::from_f64(0.5) * sigma * sigma * w20 + mu * w10 - s.risk_free_rate;
+        upper[j] = T::from_f64(0.5) * sigma * sigma * w2p + mu * w1p;
+    }
+
+    let boundary = |tau: T| -> (T, T) {
+        let disc_r = (-s.risk_free_rate * tau).exp();
+        let disc_q = (-s.dividend_yield * tau).exp();
+        if s.is_call {
+            (T::zero(), spot_grid[nx - 1] * disc_q - s.strike * disc_r)
+        } else {
+            (s.strike * disc_r, T::zero())
+        }
+    };
+
+    // One theta-method step.  The same Thomas solver is used for BE and CN.
+    let step = |old: &[T], tau_old: T, h: T, theta: f64| -> Vec<T> {
+        let tau_new = tau_old + h;
+        let (bl_new, br_new) = boundary(tau_new);
+        let nint = nx - 2;
+        let th = T::from_f64(theta);
+        let mut lo = vec![T::zero(); nint];
+        let mut di = vec![T::zero(); nint];
+        let mut up = vec![T::zero(); nint];
+        let mut rhs = vec![T::zero(); nint];
+        for k in 0..nint {
+            let j = k + 1;
+            lo[k] = -th * h * lower[j];
+            di[k] = T::one() - th * h * diag[j];
+            up[k] = -th * h * upper[j];
+            let l_old = lower[j] * old[j - 1] + diag[j] * old[j] + upper[j] * old[j + 1];
+            rhs[k] = old[j] + h * (T::one() - th) * l_old;
+        }
+        // Move only the two implicit boundary couplings to the right hand side.
+        if nint > 0 {
+            rhs[0] += th * h * lower[1] * bl_new;
+            rhs[nint - 1] += th * h * upper[nx - 2] * br_new;
+        }
+        let mut interior = vec![T::zero(); nint];
+        let mut scratch = vec![T::zero(); nint];
+        solve_tridiag(&lo, &di, &up, &rhs, &mut interior, &mut scratch);
+        let mut out = vec![T::zero(); nx];
+        out[0] = bl_new;
+        out[nx - 1] = br_new;
+        out[1..(nint + 1)].copy_from_slice(&interior[..nint]);
+        out
+    };
+
+    values[0] = boundary(T::zero()).0;
+    values[nx - 1] = boundary(T::zero()).1;
+    let mut tau = T::zero();
+    let rann = s.rannacher_steps.min(nt);
+    for _ in 0..rann {
+        values = step(&values, tau, dt * T::from_f64(0.5), 1.0);
+        tau += dt * T::from_f64(0.5);
+        values = step(&values, tau, dt * T::from_f64(0.5), 1.0);
+        tau += dt * T::from_f64(0.5);
+    }
+    for _ in rann..nt {
+        values = step(&values, tau, dt, 0.5);
+        tau += dt;
+    }
+
+    let x0 = s.spot.max_val(T::from_f64(1e-14)).ln();
+    let mut j0 = 1usize;
+    let mut best = (x[1] - x0).abs().val();
+    for (j, xj) in x.iter().enumerate().take(nx - 1).skip(2) {
+        let d = (*xj - x0).abs().val();
+        if d < best {
+            best = d;
+            j0 = j;
+        }
+    }
+    let ids = [j0 - 1, j0, j0 + 1];
+    let mut value = T::zero();
+    let mut dx = T::zero();
+    let mut dxx = T::zero();
+    for (a, &k) in ids.iter().enumerate() {
+        let mut den = T::one();
+        for (b, &m) in ids.iter().enumerate() {
+            if a != b {
+                den *= x[k] - x[m];
+            }
+        }
+        let mut num = T::one();
+        for (b, &m) in ids.iter().enumerate() {
+            if a != b {
+                num *= x0 - x[m];
+            }
+        }
+        value += values[k] * num / den;
+        // Explicit two-point products for first/second derivatives of the
+        // Lagrange basis (avoids any assumptions on uniform spacing).
+        let k1 = ids[(a + 1) % 3];
+        let k2 = ids[(a + 2) % 3];
+        let den2 = (x[k] - x[k1]) * (x[k] - x[k2]);
+        dx += values[k] * ((x0 - x[k2]) + (x0 - x[k1])) / den2;
+        dxx += values[k] * T::from_f64(2.0) / den2;
+    }
+    let spot = s.spot.max_val(T::from_f64(1e-14));
+    let delta = dx / spot;
+    let gamma = (dxx - dx) / (spot * spot);
     RannacherSinhPdeValuation {
-        pde_price: bs,
+        pde_price: value,
         analytical_bs_price: bs,
-        abs_pricing_error: T::zero(),
+        abs_pricing_error: (value - bs).abs(),
         grid_delta: delta,
         grid_gamma: gamma,
+    }
+}
+
+#[cfg(test)]
+mod phase22_tests {
+    use super::*;
+    #[test]
+    fn sinh_rannacher_price_and_greeks_are_finite() {
+        let s = RannacherSinhPdeSpec {
+            spot: 100.0,
+            strike: 100.0,
+            volatility: 0.2,
+            risk_free_rate: 0.02,
+            dividend_yield: 0.01,
+            expiry: 1.0,
+            is_call: true,
+            n_space: 41,
+            n_time: 16,
+            rannacher_steps: 2,
+            sinh_concentration: 0.15,
+        };
+        let r = solve_rannacher_crank_nicolson_sinh_pde(&s);
+        assert!(
+            r.pde_price.val().is_finite()
+                && r.grid_delta.val().is_finite()
+                && r.grid_gamma.val().is_finite()
+        );
+        assert!(r.abs_pricing_error.val() < 2.0);
     }
 }

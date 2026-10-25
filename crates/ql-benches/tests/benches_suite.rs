@@ -37,3 +37,13 @@ fn benchmarks_verify_parity_and_optional_sota_speedups() {
         }
     }
 }
+
+#[test]
+fn phase22_suite34_workload_is_registered() {
+    let rows = run_all_benchmark_suites_with_config(1, 3);
+    let row = rows
+        .iter()
+        .find(|r| r.id.starts_with("34_"))
+        .expect("suite 34");
+    assert!(row.parity_ok);
+}

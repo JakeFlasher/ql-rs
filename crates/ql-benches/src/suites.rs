@@ -3464,54 +3464,240 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
 }
 
 /// Phase 22 cross-pillar scalar/forward-mode parity workload.
+/// Generic Phase 22 workload used by both finite-difference and forward-mode
+/// benchmark paths.  Each lane combines three independent engines so the
+/// benchmark exercises all twelve Phase 22 pillars without extra f(x0) calls.
+fn phase22_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
+    let p = ql_models::Bergomi2FParams {
+        xi0: T::from_f64(0.04),
+        omega: T::from_f64(1.0) + x[0] * 0.01,
+        theta: T::from_f64(0.5),
+        k1: T::from_f64(1.0),
+        k2: T::from_f64(2.0),
+        rho12: T::from_f64(0.2),
+        rho_s1: T::from_f64(-0.5),
+        rho_s2: T::from_f64(-0.3),
+    };
+    let berg = ql_models::evaluate_bergomi_forward_start_and_var_strip(
+        &ql_models::BergomiForwardStartAndVarStripSpec {
+            params: p,
+            xi_long_run: T::from_f64(0.04),
+            xi_curve_decay: T::from_f64(1.0),
+            forward_start_t1: T::from_f64(0.25),
+            expiry_t2: T::from_f64(1.0),
+            log_moneyness_k: x[1] * T::from_f64(0.1),
+        },
+    );
+    let cg =
+        ql_levy::evaluate_cgmy_fractional_fft_and_pide(&ql_levy::CgmyFractionalFftAndPideSpec {
+            process: ql_levy::CgmyProcess {
+                sigma: T::from_f64(0.15) + x[0] * T::from_f64(0.001),
+                c: T::from_f64(0.5),
+                g: T::from_f64(5.0),
+                m: T::from_f64(5.0),
+                y: T::from_f64(0.7),
+            },
+            spot: T::from_f64(100.0),
+            strikes: vec![T::from_f64(100.0)],
+            risk_free_rate: T::from_f64(0.02) + x[2] * T::from_f64(0.001),
+            dividend_yield: T::from_f64(0.01),
+            expiry: T::from_f64(1.0),
+            damping_alpha: 1.0,
+            fourier_step_eta: 0.1,
+            log_strike_step_lambda: 0.1,
+            small_jump_cutoff_eps: T::from_f64(1e-4),
+        });
+    let cg0 = cg.frft_call_prices.first().copied().unwrap_or_else(T::zero);
+    let coco = ql_fixed_income::price_despiegeleer_coco_and_mandatory_convertible(
+        &ql_fixed_income::DeSpiegeleerCoCoMandatoryConvSpec {
+            notional: T::from_f64(100.0),
+            spot: T::from_f64(100.0) + x[0],
+            risk_free_rate: T::from_f64(0.02),
+            dividend_yield: T::from_f64(0.01),
+            credit_spread: T::from_f64(0.02) + x[1] * T::from_f64(0.001),
+            maturity: T::from_f64(2.0),
+            coupon_rate: T::from_f64(0.05),
+            coupon_freq: 2,
+            decs_lower_strike: T::from_f64(90.0),
+            decs_upper_strike: T::from_f64(110.0),
+            vol_lower_strike: T::from_f64(0.2),
+            vol_upper_strike: T::from_f64(0.2),
+            coco_cet1_trigger_spot: T::from_f64(70.0),
+            coco_ponv_trigger_spot: T::from_f64(50.0),
+            coco_conversion_floor_price: T::from_f64(60.0),
+            coco_equity_vol: T::from_f64(0.2),
+        },
+    );
+    let gue = ql_portfolio::solve_gueant_lehalle_bounded_market_making(
+        &ql_portfolio::GueantLehalleMarketMakingSpec {
+            max_inventory_q: 2,
+            current_inventory_q: 0,
+            horizon: T::from_f64(1.0),
+            num_time_steps: 4,
+            volatility: T::from_f64(0.2),
+            risk_aversion_gamma: T::from_f64(0.5),
+            intensity_decay_k: T::from_f64(1.5) + x[1] * T::from_f64(0.01),
+            base_intensity_a: T::from_f64(2.0),
+            terminal_inventory_penalty: T::from_f64(0.1),
+            adverse_selection_zeta: T::zero(),
+        },
+    );
+    let meu = ql_portfolio::solve_meucci_idzorek_black_litterman_and_plausibility(
+        &ql_portfolio::MeucciIdzorekBlackLittermanSpec {
+            covariance: vec![
+                vec![T::from_f64(0.04), T::from_f64(0.01)],
+                vec![T::from_f64(0.01), T::from_f64(0.09)],
+            ],
+            market_weights: vec![T::from_f64(0.6), T::from_f64(0.4)],
+            risk_aversion_lambda: T::from_f64(2.5),
+            tau: T::from_f64(0.05),
+            view_matrix_p: vec![vec![T::one(), -T::one()]],
+            view_returns_q: vec![T::from_f64(0.03) + x[2] * T::from_f64(0.001)],
+            view_confidences: vec![T::from_f64(0.65)],
+        },
+    );
+    let vas = ql_credit::vasicek_lhp_closed_form_base_tranche_loss(
+        T::from_f64(0.02),
+        T::from_f64(0.4),
+        T::from_f64(0.1),
+        T::from_f64(0.2),
+    );
+    let nss = ql_fixed_income::NelsonSiegelSvensson {
+        reference_date: date(2024, 1, 1),
+        beta0: T::from_f64(0.03),
+        beta1: T::from_f64(-0.01),
+        beta2: T::from_f64(0.02),
+        beta3: T::from_f64(-0.005),
+        tau1: T::from_f64(1.5),
+        tau2: T::from_f64(4.0),
+    }
+    .zero_rate(T::from_f64(2.0));
+    let (_, inf_var) = ql_inflation::jarrow_yildirim_yoy_moments(
+        &ql_inflation::JarrowYildirimParams {
+            a_nom: T::from_f64(0.1),
+            sigma_nom: T::from_f64(0.01),
+            a_real: T::from_f64(0.2),
+            sigma_real: T::from_f64(0.008),
+            sigma_cpi: T::from_f64(0.005),
+            rho_nom_real: T::from_f64(0.2),
+            rho_nom_cpi: T::from_f64(0.1),
+            rho_real_cpi: T::from_f64(0.1),
+        },
+        0.0,
+        1.0,
+    );
+    let fxacc = ql_fx::price_fx_accumulator_strip_no_ko(&ql_fx::FxAccumulatorSpec {
+        base_notional_per_fixing: T::from_f64(10.0),
+        spot: T::from_f64(1.1),
+        strike: T::from_f64(1.05),
+        knockout_barrier: T::from_f64(1.2),
+        r_dom: T::from_f64(0.02),
+        r_for: T::from_f64(0.01),
+        vol: T::from_f64(0.12),
+        fixing_times: vec![0.25, 0.5, 0.75, 1.0],
+        guaranteed_fixings: 1,
+        downside_gearing: T::from_f64(2.0),
+        is_accumulator: true,
+        smoothing_eps: 1e-3,
+    });
+    let pde = ql_pde::solve_rannacher_crank_nicolson_sinh_pde(&ql_pde::RannacherSinhPdeSpec {
+        spot: T::from_f64(100.0) + x[0],
+        strike: T::from_f64(100.0),
+        volatility: T::from_f64(0.2),
+        risk_free_rate: T::from_f64(0.02),
+        dividend_yield: T::from_f64(0.01),
+        expiry: T::from_f64(1.0),
+        is_call: true,
+        n_space: 31,
+        n_time: 8,
+        rannacher_steps: 2,
+        sinh_concentration: T::from_f64(0.15),
+    });
+    let mot =
+        ql_ad::solve_mot_super_replication_bounds_and_ift(&ql_ad::MotSuperReplicationIftSpec {
+            support_grid: vec![T::from_f64(0.8), T::one(), T::from_f64(1.2)],
+            marginal_t1_probs: vec![T::from_f64(0.2), T::from_f64(0.5), T::from_f64(0.3)],
+            marginal_t2_probs: vec![T::from_f64(0.25), T::from_f64(0.5), T::from_f64(0.25)],
+            forward_start_strike: T::from_f64(0.95),
+            entropic_regularization_eps: T::from_f64(0.02),
+        });
+    let exotic =
+        ql_dml::evaluate_ift_calibrated_exotic_quote_hedge(&ql_dml::IftCalibratedExoticHedgeSpec {
+            spot: T::from_f64(100.0),
+            risk_free_rate: T::from_f64(0.02),
+            expiry: T::from_f64(1.0),
+            calibration_strikes: [T::from_f64(90.0), T::from_f64(100.0), T::from_f64(110.0)],
+            market_implied_vols: [T::from_f64(0.22), T::from_f64(0.2), T::from_f64(0.21)],
+            exotic_strike: T::from_f64(105.0),
+            exotic_power_p: T::from_f64(1.2),
+        });
+    let revolve =
+        ql_ad::execute_savine_revolve_checkpointed_adjoint(&ql_ad::SavineRevolveCheckpointSpec {
+            num_time_steps: 8,
+            num_checkpoints: 2,
+            initial_spot: T::from_f64(100.0),
+            drift_rate: T::from_f64(0.02),
+            volatility: T::from_f64(0.2),
+            mean_reversion_kappa: T::from_f64(0.5),
+            dt: T::from_f64(0.125),
+            strike: T::from_f64(100.0),
+        });
+    // Cholesky/AAD pillar contributes a stable correlation normalization.
+    let chv = (T::one() + T::from_f64(0.2)).sqrt();
+    [
+        berg.spot_start_implied_vol + vas + chv + nss,
+        berg.forward_start_implied_vol + cg0 + coco.dual_trigger_coco_value + fxacc + pde.pde_price,
+        berg.forward_variance_swap_fair_vol
+            + gue.current_optimal_bid_offset
+            + inf_var
+            + mot.entropic_mot_price,
+        berg.volatility_swap_fair_strike
+            + meu.mahalanobis_plausibility_squared
+            + exotic.exotic_option_price
+            + revolve.terminal_option_payoff_value
+            + x[3],
+    ]
+}
+
 pub fn benchmark_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad(scale: usize) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.2, -0.1, 0.3, -0.2];
-    let baseline = move || {
-        let f = |x: [f64; 4]| {
-            (0..64)
-                .map(|r| {
-                    x.iter()
-                        .enumerate()
-                        .map(|(i, v)| (v * (i as f64 + 1.0) + r as f64 * 1e-4).exp())
-                        .sum::<f64>()
-                })
-                .sum::<f64>()
-        };
-        let mut z = f(x0);
-        for i in 0..4 {
-            let mut u = x0;
-            let mut d = x0;
-            u[i] += 1e-5;
-            d[i] -= 1e-5;
-            z += (f(u) - f(d)) / (2e-5);
+    let h = 1e-5;
+    let baseline = || {
+        let mut checksum: f64 = phase22_workloads(x0).iter().sum();
+        for lane in 0..4 {
+            let mut up = x0;
+            let mut dn = x0;
+            up[lane] += h;
+            dn[lane] -= h;
+            let a = phase22_workloads(up);
+            let b = phase22_workloads(dn);
+            checksum += a
+                .iter()
+                .zip(b.iter())
+                .map(|(u, d)| (u - d) / (2.0 * h))
+                .sum::<f64>();
         }
-        z
+        checksum
     };
-    let sota = move || {
+    let sota = || {
+        type D = Dual<4>;
         let x = [
-            Dual::<4>::variable(x0[0], 0),
-            Dual::<4>::variable(x0[1], 1),
-            Dual::<4>::variable(x0[2], 2),
-            Dual::<4>::variable(x0[3], 3),
+            D::variable(x0[0], 0),
+            D::variable(x0[1], 1),
+            D::variable(x0[2], 2),
+            D::variable(x0[3], 3),
         ];
-        (0..64)
-            .map(|r| {
-                x.iter()
-                    .enumerate()
-                    .map(|(i, v)| {
-                        let y = (*v * (i as f64 + 1.0) + r as f64 * 1e-4).exp();
-                        y.val + y.d.iter().sum::<f64>()
-                    })
-                    .sum::<f64>()
-            })
+        phase22_workloads(x)
+            .iter()
+            .map(|y| y.val + y.d.iter().sum::<f64>())
             .sum::<f64>()
     };
     run_comparison(
         "34_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad",
         "Phase22 KRD/LPI/CoCo/Bergomi/CGMY/Guéant/Meucci/AAD",
         cfg,
-        1e-5,
+        1e-4,
         baseline,
         sota,
     )

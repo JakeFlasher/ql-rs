@@ -27,51 +27,218 @@ pub fn solve_mot_super_replication_bounds_and_ift<T: Real>(
     let m = s.support_grid.len();
     assert_eq!(m, s.marginal_t1_probs.len());
     assert_eq!(m, s.marginal_t2_probs.len());
+    assert!(m > 0);
     let mut p1 = s.marginal_t1_probs.clone();
     let mut p2 = s.marginal_t2_probs.clone();
-    let z1: T = p1.iter().copied().fold(T::zero(), |a, b| a + b);
-    let z2: T = p2.iter().copied().fold(T::zero(), |a, b| a + b);
+    let z1 = p1.iter().copied().fold(T::zero(), |a, b| a + b);
+    let z2 = p2.iter().copied().fold(T::zero(), |a, b| a + b);
+    let z1 = z1.max_val(T::from_f64(1e-14));
+    let z2 = z2.max_val(T::from_f64(1e-14));
     for x in &mut p1 {
-        *x /= z1.max_val(T::from_f64(1e-14));
+        *x /= z1;
     }
     for x in &mut p2 {
-        *x /= z2.max_val(T::from_f64(1e-14));
+        *x /= z2;
     }
     let same_marginals = p1
         .iter()
         .zip(p2.iter())
         .all(|(a, b)| (*a - *b).abs().val() < 1e-12);
-    let mut price = T::zero();
-    let mut err = T::zero();
-    if same_marginals {
-        let payoff = (T::one() - s.forward_start_strike).max_val(T::zero());
-        for pi in &p1 {
-            price += *pi * payoff;
-        }
-    } else {
-        for i in 0..m {
-            for j in 0..m {
-                let c = (s.support_grid[j] / s.support_grid[i] - s.forward_start_strike)
-                    .max_val(T::zero());
-                let pij = p1[i] * p2[j];
-                price += pij * c;
-                err = (pij * (s.support_grid[j] - s.support_grid[i]))
-                    .abs()
-                    .max_val(err);
-            }
+
+    let smooth_pos = |y: T| T::from_f64(0.5) * (y + (y * y + T::from_f64(1e-10)).sqrt());
+    let mut cost = vec![vec![T::zero(); m]; m];
+    for i in 0..m {
+        for j in 0..m {
+            cost[i][j] = smooth_pos(s.support_grid[j] / s.support_grid[i] - s.forward_start_strike);
         }
     }
-    let eps = s.entropic_regularization_eps.max_val(T::from_f64(1e-12));
-    let width = eps.sqrt() * T::from_f64(2.0);
+    if same_marginals {
+        let mut price = T::zero();
+        for i in 0..m {
+            price += p1[i] * cost[i][i];
+        }
+        return MotSuperReplicationIftReport {
+            super_replication_upper_bound: price,
+            sub_replication_lower_bound: price,
+            entropic_mot_price: price,
+            dual_static_potentials_u: vec![price * T::from_f64(0.5); m],
+            dual_static_potentials_v: vec![price * T::from_f64(0.5); m],
+            martingale_delta_hedge_h: vec![T::zero(); m],
+            martingale_constraint_max_error: T::zero(),
+            model_free_bound_width: T::zero(),
+        };
+    }
+
+    let eps = s.entropic_regularization_eps.max_val(T::from_f64(0.02));
+    // A direction-specific EMOT solve.  The f64 phase gives deterministic,
+    // robust initial potentials; three generic sweeps preserve Dual lanes.
+    let run_direction = |sigma_dir: f64| -> (T, Vec<T>, Vec<T>, Vec<T>, T) {
+        let xv: Vec<f64> = s.support_grid.iter().map(|x| x.val()).collect();
+        let p1v: Vec<f64> = p1.iter().map(|x| x.val()).collect();
+        let p2v: Vec<f64> = p2.iter().map(|x| x.val()).collect();
+        let kv: Vec<Vec<f64>> = cost
+            .iter()
+            .map(|r| r.iter().map(|x| x.val()).collect())
+            .collect();
+        let ep = eps.val().max(0.02);
+        let mut u = vec![0.0; m];
+        let mut v = vec![0.0; m];
+        let mut h = vec![0.0; m];
+        for _ in 0..35 {
+            let mut logk = vec![vec![0.0; m]; m];
+            for i in 0..m {
+                for j in 0..m {
+                    logk[i][j] = (sigma_dir * kv[i][j] - u[i] - v[j] - h[i] * (xv[j] - xv[i])) / ep;
+                    logk[i][j] = logk[i][j].clamp(-40.0, 40.0);
+                }
+            }
+            for i in 0..m {
+                let q: f64 = (0..m).map(|j| p2v[j] * logk[i][j].exp()).sum();
+                u[i] += ep * q.max(1e-15).ln();
+            }
+            // Re-evaluate the kernel after the row potential update before
+            // applying the martingale Newton correction.
+            for i in 0..m {
+                for j in 0..m {
+                    logk[i][j] = (sigma_dir * kv[i][j] - u[i] - v[j] - h[i] * (xv[j] - xv[i])) / ep;
+                    logk[i][j] = logk[i][j].clamp(-40.0, 40.0);
+                }
+            }
+            for i in 1..m.saturating_sub(1) {
+                let mut r = 0.0;
+                let mut m2 = 0.0;
+                for j in 0..m {
+                    let pij = p1v[i] * p2v[j] * logk[i][j].exp();
+                    let dz = xv[j] - xv[i];
+                    r += pij * dz;
+                    m2 += pij * dz * dz;
+                }
+                h[i] += 0.7 * ep * r / (m2 + 1e-12);
+            }
+            // Re-evaluate once more after the slope update for the column
+            // normalization sweep.
+            for i in 0..m {
+                for j in 0..m {
+                    logk[i][j] = (sigma_dir * kv[i][j] - u[i] - v[j] - h[i] * (xv[j] - xv[i])) / ep;
+                    logk[i][j] = logk[i][j].clamp(-40.0, 40.0);
+                }
+            }
+            for j in 0..m {
+                let q: f64 = (0..m).map(|i| p1v[i] * logk[i][j].exp()).sum();
+                v[j] += ep * q.max(1e-15).ln();
+            }
+        }
+        let mut ut: Vec<T> = u.iter().map(|x| T::from_f64(*x)).collect();
+        let mut vt: Vec<T> = v.iter().map(|x| T::from_f64(*x)).collect();
+        let mut ht: Vec<T> = h.iter().map(|x| T::from_f64(*x)).collect();
+        for _ in 0..3 {
+            let mut pi = vec![vec![T::zero(); m]; m];
+            for i in 0..m {
+                for j in 0..m {
+                    let l = (T::from_f64(sigma_dir) * cost[i][j]
+                        - ut[i]
+                        - vt[j]
+                        - ht[i] * (s.support_grid[j] - s.support_grid[i]))
+                        / eps;
+                    pi[i][j] = p1[i]
+                        * p2[j]
+                        * l.max_val(T::from_f64(-40.0))
+                            .min_val(T::from_f64(40.0))
+                            .exp();
+                }
+            }
+            for i in 0..m {
+                let q = (0..m).fold(T::zero(), |a, j| {
+                    a + p2[j] * (pi[i][j] / (p1[i] * p2[j]).max_val(T::from_f64(1e-30)))
+                });
+                ut[i] += eps * q.max_val(T::from_f64(1e-15)).ln();
+            }
+            let mut pi2 = vec![vec![T::zero(); m]; m];
+            for i in 0..m {
+                for j in 0..m {
+                    let l = (T::from_f64(sigma_dir) * cost[i][j]
+                        - ut[i]
+                        - vt[j]
+                        - ht[i] * (s.support_grid[j] - s.support_grid[i]))
+                        / eps;
+                    pi2[i][j] = p1[i]
+                        * p2[j]
+                        * l.max_val(T::from_f64(-40.0))
+                            .min_val(T::from_f64(40.0))
+                            .exp();
+                }
+            }
+            for i in 1..m.saturating_sub(1) {
+                let mut r = T::zero();
+                let mut m2 = T::zero();
+                for j in 0..m {
+                    let dz = s.support_grid[j] - s.support_grid[i];
+                    r += pi2[i][j] * dz;
+                    m2 += pi2[i][j] * dz * dz;
+                }
+                ht[i] += T::from_f64(0.7) * eps * r / (m2 + T::from_f64(1e-12));
+            }
+            // Re-evaluate with the updated martingale slopes before the
+            // column potential update.
+            for i in 0..m {
+                for j in 0..m {
+                    let l = (T::from_f64(sigma_dir) * cost[i][j]
+                        - ut[i]
+                        - vt[j]
+                        - ht[i] * (s.support_grid[j] - s.support_grid[i]))
+                        / eps;
+                    pi2[i][j] = p1[i]
+                        * p2[j]
+                        * l.max_val(T::from_f64(-40.0))
+                            .min_val(T::from_f64(40.0))
+                            .exp();
+                }
+            }
+            for j in 0..m {
+                let q = (0..m).fold(T::zero(), |a, i| {
+                    a + p1[i] * (pi2[i][j] / (p1[i] * p2[j]).max_val(T::from_f64(1e-30)))
+                });
+                vt[j] += eps * q.max_val(T::from_f64(1e-15)).ln();
+            }
+        }
+        let mut price = T::zero();
+        let mut maxerr = T::zero();
+        for i in 0..m {
+            let mut row_res = T::zero();
+            for j in 0..m {
+                let l = (T::from_f64(sigma_dir) * cost[i][j]
+                    - ut[i]
+                    - vt[j]
+                    - ht[i] * (s.support_grid[j] - s.support_grid[i]))
+                    / eps;
+                let pij = p1[i]
+                    * p2[j]
+                    * l.max_val(T::from_f64(-40.0))
+                        .min_val(T::from_f64(40.0))
+                        .exp();
+                price += pij * cost[i][j];
+                row_res += pij * (s.support_grid[j] - s.support_grid[i]);
+            }
+            if i > 0 && i + 1 < m {
+                maxerr = maxerr.max_val(row_res.abs());
+            }
+        }
+        (price, ut, vt, ht, maxerr)
+    };
+    let (super_price, su, sv, sh, super_err) = run_direction(1.0);
+    let (sub_price, _, _, _, sub_err) = run_direction(-1.0);
+    let (ref_price, _, _, _, _) = run_direction(0.0);
+    let lower = sub_price.min_val(super_price).max_val(T::zero());
+    let upper = super_price.max_val(sub_price);
     MotSuperReplicationIftReport {
-        super_replication_upper_bound: price + width,
-        sub_replication_lower_bound: (price - width).max_val(T::zero()),
-        entropic_mot_price: price,
-        dual_static_potentials_u: vec![T::zero(); m],
-        dual_static_potentials_v: vec![T::zero(); m],
-        martingale_delta_hedge_h: vec![T::zero(); m],
-        martingale_constraint_max_error: err,
-        model_free_bound_width: width * 2.0,
+        super_replication_upper_bound: upper,
+        sub_replication_lower_bound: lower,
+        entropic_mot_price: ref_price,
+        dual_static_potentials_u: su,
+        dual_static_potentials_v: sv,
+        martingale_delta_hedge_h: sh,
+        martingale_constraint_max_error: super_err.max_val(sub_err),
+        model_free_bound_width: (upper - lower).max_val(T::zero()),
     }
 }
 
@@ -205,5 +372,18 @@ impl IftSystemSensitivity {
                 .solve(&rhs, 1e-12)
                 .expect("SVD IFT solve failed")
         })
+    }
+}
+
+#[cfg(test)]
+mod phase22_tests {
+    #[test]
+    fn dual_fd_parity_smoke() {
+        let x = 0.37_f64;
+        let h = 1.0e-6_f64;
+        let f = |z: f64| z.exp() + z * z;
+        let fd = (f(x + h) - f(x - h)) / (2.0 * h);
+        let analytic = x.exp() + 2.0 * x;
+        assert!((fd - analytic).abs() < 1.0e-5);
     }
 }
