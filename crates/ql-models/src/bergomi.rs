@@ -76,6 +76,7 @@ pub fn evaluate_bergomi_forward_start_and_var_strip<T: Real>(
     let sig12 = s.params.rho12 * (T::one() - (-(s.params.k1 + s.params.k2) * t1).exp())
         / (s.params.k1 + s.params.k2).max_val(T::from_f64(1e-12));
     let mut m2 = T::zero();
+    let mut m1_q2 = T::zero();
     for a in 0..8 {
         for b in 0..8 {
             let u = t1 + tau * (nodes[a] + 1.0) * 0.5;
@@ -88,15 +89,12 @@ pub fn evaluate_bergomi_forward_start_and_var_strip<T: Real>(
                     * sig12;
             let xu = s.xi_long_run + (s.params.xi0 - s.xi_long_run) * (-kap * u).exp();
             let xv = s.xi_long_run + (s.params.xi0 - s.xi_long_run) * (-kap * v).exp();
-            m2 += xu * xv * cy.exp() * T::from_f64(weights[a] * weights[b] * 0.25);
+            let w_ab = T::from_f64(weights[a] * weights[b] * 0.25);
+            m1_q2 += xu * xv * w_ab;
+            m2 += xu * xv * cy.exp() * w_ab;
         }
     }
-    // The two-dimensional quadrature can overshoot the square of the first
-    // moment by a few ulps at zero start time.  Cap that purely numerical
-    // overshoot before taking the log; this keeps the t1=0 limit exactly
-    // variance-free while retaining the differentiable path for t1>0.
-    let m2 = m2.min_val(m1 * m1);
-    let nu = (m2 / m1.max_val(T::from_f64(1e-12)).powf(2.0))
+    let nu = (m2 / m1_q2.max_val(T::from_f64(1e-16)))
         .max_val(T::one())
         .ln();
     let fair = m1.max_val(T::zero()).sqrt();
@@ -443,6 +441,7 @@ mod phase22_tests {
         };
         let r = evaluate_bergomi_forward_start_and_var_strip(&s);
         assert!((r.forward_start_implied_vol.val() - r.spot_start_implied_vol.val()).abs() < 1e-12);
+        assert!(r.vol_swap_convexity_spread_bps.abs() < 1e-12);
         let h = 1e-5;
         let mut up = s;
         up.params.xi0 += h;
@@ -470,5 +469,28 @@ mod phase22_tests {
         };
         let ad = evaluate_bergomi_forward_start_and_var_strip(&sd);
         assert!((ad.forward_start_implied_vol.d[0] - fd).abs() < 1e-5);
+    }
+
+    #[test]
+    fn forward_start_positive_time_has_convexity_spread() {
+        let s = BergomiForwardStartAndVarStripSpec {
+            params: Bergomi2FParams {
+                xi0: 0.04,
+                omega: 1.0,
+                theta: 0.5,
+                k1: 1.0,
+                k2: 2.0,
+                rho12: 0.2,
+                rho_s1: -0.5,
+                rho_s2: -0.3,
+            },
+            xi_long_run: 0.04,
+            xi_curve_decay: 1.0,
+            forward_start_t1: 0.25,
+            expiry_t2: 1.0,
+            log_moneyness_k: 0.1,
+        };
+        let r_fwd = evaluate_bergomi_forward_start_and_var_strip(&s);
+        assert!(r_fwd.vol_swap_convexity_spread_bps.val() > 0.0);
     }
 }
