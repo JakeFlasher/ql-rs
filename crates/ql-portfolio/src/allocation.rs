@@ -1655,3 +1655,255 @@ mod phase15_tests {
         assert!((nco_d[0].d[0] - fd_nco).abs() < 1e-5);
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct IdzorekBlackLittermanSpec<T: Real = f64> {
+    pub covariance: Vec<Vec<T>>,
+    pub market_weights: Vec<T>,
+    pub risk_aversion: T,
+    pub tau: T,
+    pub view_matrix: Vec<Vec<T>>,
+    pub view_returns: Vec<T>,
+    pub view_confidences: Vec<T>,
+}
+
+pub fn try_idzorek_black_litterman_posterior<T: Real>(
+    s: &IdzorekBlackLittermanSpec<T>,
+) -> Result<BlackLittermanPosterior<T>, AllocationError> {
+    let n = s.covariance.len();
+    let k = s.view_returns.len();
+    if n == 0
+        || s.market_weights.len() != n
+        || s.covariance.iter().any(|r| r.len() != n)
+        || s.view_matrix.len() != k
+        || s.view_matrix.iter().any(|r| r.len() != n)
+        || s.view_confidences.len() != k
+        || !s.risk_aversion.val().is_finite()
+        || s.risk_aversion.val() <= 0.0
+        || !s.tau.val().is_finite()
+        || s.tau.val() <= 0.0
+    {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    let pi = implied_equilibrium_returns(&s.covariance, &s.market_weights, s.risk_aversion);
+    if k == 0 {
+        return Ok(BlackLittermanPosterior {
+            expected_returns: pi,
+            covariance: s.covariance.clone(),
+            weights: s.market_weights.clone(),
+        });
+    }
+
+    let mut p_sigma = vec![vec![T::zero(); n]; k];
+    for i in 0..k {
+        for j in 0..n {
+            for a in 0..n {
+                p_sigma[i][j] += s.view_matrix[i][a] * s.covariance[a][j];
+            }
+        }
+    }
+    let mut p_sigma_pt = vec![vec![T::zero(); k]; k];
+    for i in 0..k {
+        for j in 0..k {
+            for a in 0..n {
+                p_sigma_pt[i][j] += p_sigma[i][a] * s.view_matrix[j][a];
+            }
+        }
+    }
+
+    let mut m_c = vec![vec![T::zero(); k]; k];
+    let mut rhs_v = vec![T::zero(); k];
+    for i in 0..k {
+        let c_i = s.view_confidences[i].max_val(T::zero()).min_val(T::one());
+        let one_minus_c = T::one() - c_i;
+        for j in 0..k {
+            m_c[i][j] = c_i * p_sigma_pt[i][j];
+        }
+        m_c[i][i] += one_minus_c * p_sigma_pt[i][i].max_val(T::from_f64(1e-14));
+        let mut p_pi = T::zero();
+        for a in 0..n {
+            p_pi += s.view_matrix[i][a] * pi[a];
+        }
+        rhs_v[i] = c_i * (s.view_returns[i] - p_pi);
+    }
+
+    let v = solve_linear_generic(&m_c, &rhs_v)?;
+    let mut mu = pi;
+    for a in 0..n {
+        for i in 0..k {
+            mu[a] += p_sigma[i][a] * v[i];
+        }
+    }
+
+    let mut y_mat = vec![vec![T::zero(); n]; k];
+    for j in 0..n {
+        let col_rhs: Vec<T> = (0..k)
+            .map(|i| {
+                let c_i = s.view_confidences[i].max_val(T::zero()).min_val(T::one());
+                c_i * p_sigma[i][j]
+            })
+            .collect();
+        let sol = solve_linear_generic(&m_c, &col_rhs)?;
+        for i in 0..k {
+            y_mat[i][j] = sol[i];
+        }
+    }
+
+    let mut post_cov = vec![vec![T::zero(); n]; n];
+    for a in 0..n {
+        for b in 0..n {
+            let mut red = T::zero();
+            for i in 0..k {
+                red += p_sigma[i][a] * y_mat[i][b];
+            }
+            post_cov[a][b] = s.covariance[a][b] * (T::one() + s.tau) - s.tau * red;
+        }
+    }
+
+    let raw_w = solve_linear_generic(&s.covariance, &mu)?;
+    let weights: Vec<T> = raw_w.into_iter().map(|w| w / s.risk_aversion).collect();
+    Ok(BlackLittermanPosterior {
+        expected_returns: mu,
+        covariance: post_cov,
+        weights,
+    })
+}
+
+pub fn idzorek_black_litterman_posterior<T: Real>(
+    s: &IdzorekBlackLittermanSpec<T>,
+) -> BlackLittermanPosterior<T> {
+    try_idzorek_black_litterman_posterior(s).expect("valid Idzorek Black-Litterman inputs")
+}
+
+#[derive(Clone, Debug)]
+pub struct KellyAllocationSpec<T: Real = f64> {
+    pub expected_returns: Vec<T>,
+    pub covariance: Vec<Vec<T>>,
+    pub risk_free_rate: T,
+    pub max_kelly_fraction: T,
+    pub max_drawdown_limit: T,
+    pub drawdown_tail_prob: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct KellyAllocationResult<T: Real> {
+    pub weights: Vec<T>,
+    pub cash_weight: T,
+    pub effective_kelly_fraction: T,
+    pub expected_log_growth_rate: T,
+    pub portfolio_volatility: T,
+}
+
+pub fn try_kelly_fractional_allocation<T: Real>(
+    s: &KellyAllocationSpec<T>,
+) -> Result<KellyAllocationResult<T>, AllocationError> {
+    let n = s.expected_returns.len();
+    if n == 0 || s.covariance.len() != n || s.covariance.iter().any(|r| r.len() != n) {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    let excess: Vec<T> = s
+        .expected_returns
+        .iter()
+        .map(|&m| m - s.risk_free_rate)
+        .collect();
+    let w_full = solve_linear_generic(&s.covariance, &excess)?;
+    let mut sr2 = T::zero();
+    for i in 0..n {
+        sr2 += excess[i] * w_full[i];
+    }
+    let sr2_safe = sr2.max_val(T::from_f64(1e-12));
+    let d_max = s
+        .max_drawdown_limit
+        .max_val(T::from_f64(0.01))
+        .min_val(T::from_f64(0.95));
+    let beta = s
+        .drawdown_tail_prob
+        .max_val(T::from_f64(1e-4))
+        .min_val(T::from_f64(0.99));
+    let f_dd = (beta.ln() * (-2.0)) / (-(T::one() - d_max).ln() * sr2_safe).max_val(T::from_f64(1e-12));
+    let f_eff = s
+        .max_kelly_fraction
+        .min_val(f_dd)
+        .max_val(T::zero());
+    let weights: Vec<T> = w_full.into_iter().map(|w| w * f_eff).collect();
+    let sum_w = weights.iter().copied().fold(T::zero(), |a, b| a + b);
+    let cash_weight = T::one() - sum_w;
+    let growth = s.risk_free_rate + f_eff * sr2_safe - f_eff * f_eff * sr2_safe * 0.5;
+    let vol = f_eff * sr2_safe.sqrt();
+    Ok(KellyAllocationResult {
+        weights,
+        cash_weight,
+        effective_kelly_fraction: f_eff,
+        expected_log_growth_rate: growth,
+        portfolio_volatility: vol,
+    })
+}
+
+pub fn kelly_fractional_allocation<T: Real>(
+    s: &KellyAllocationSpec<T>,
+) -> KellyAllocationResult<T> {
+    try_kelly_fractional_allocation(s).expect("valid Kelly allocation inputs")
+}
+
+#[cfg(test)]
+mod phase17_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn idzorek_boundary_limits_and_kelly_ad() {
+        let cov = vec![vec![0.04, 0.01], vec![0.01, 0.09]];
+        let w_mkt = vec![0.6, 0.4];
+        let mut s = IdzorekBlackLittermanSpec {
+            covariance: cov.clone(),
+            market_weights: w_mkt.clone(),
+            risk_aversion: 2.5,
+            tau: 0.05,
+            view_matrix: vec![vec![1.0, -1.0]],
+            view_returns: vec![0.03],
+            view_confidences: vec![0.0],
+        };
+        let p0 = idzorek_black_litterman_posterior(&s);
+        assert!((p0.weights[0] - w_mkt[0]).abs() < 1e-12);
+        assert!((p0.weights[1] - w_mkt[1]).abs() < 1e-12);
+
+        s.view_confidences = vec![1.0];
+        let p1 = idzorek_black_litterman_posterior(&s);
+        let view_realized = p1.expected_returns[0] - p1.expected_returns[1];
+        assert!((view_realized - 0.03).abs() < 1e-12);
+
+        let h = 1e-5;
+        let eval_c = |c_val: f64| {
+            let mut sp = s.clone();
+            sp.view_confidences = vec![c_val];
+            idzorek_black_litterman_posterior(&sp).weights[0]
+        };
+        let fd = (eval_c(0.65 + h) - eval_c(0.65 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let sd = IdzorekBlackLittermanSpec {
+            covariance: vec![
+                vec![D::from_value(0.04), D::from_value(0.01)],
+                vec![D::from_value(0.01), D::from_value(0.09)],
+            ],
+            market_weights: vec![D::from_value(0.6), D::from_value(0.4)],
+            risk_aversion: D::from_value(2.5),
+            tau: D::from_value(0.05),
+            view_matrix: vec![vec![D::one(), -D::one()]],
+            view_returns: vec![D::from_value(0.03)],
+            view_confidences: vec![D::variable(0.65, 0)],
+        };
+        let ad = idzorek_black_litterman_posterior(&sd).weights[0];
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+
+        let kelly = kelly_fractional_allocation(&KellyAllocationSpec {
+            expected_returns: vec![0.08, 0.11],
+            covariance: cov,
+            risk_free_rate: 0.03,
+            max_kelly_fraction: 0.5,
+            max_drawdown_limit: 0.20,
+            drawdown_tail_prob: 0.10,
+        });
+        assert!(kelly.effective_kelly_fraction > 0.0 && kelly.effective_kelly_fraction <= 0.5);
+        assert!(kelly.expected_log_growth_rate > 0.03);
+    }
+}

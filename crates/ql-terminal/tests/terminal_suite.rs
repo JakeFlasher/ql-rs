@@ -102,7 +102,7 @@ fn dashboard_renders_all_quadrants_and_chart_modes() {
 
 #[test]
 fn phase11_tabs_and_live_telemetry_are_present() {
-    assert_eq!(TabId::ALL.len(), 26);
+    assert_eq!(TabId::ALL.len(), 27);
     assert_eq!(TabId::ALL[18], TabId::BermudanVolIft);
     assert_eq!(TabId::ALL[19], TabId::SaCcrSwingQp);
     assert_eq!(TabId::ALL[22], TabId::MonotoneConvexVixParisianRobust);
@@ -120,5 +120,24 @@ fn phase11_tabs_and_live_telemetry_are_present() {
     assert_ne!(
         stressed.vix_parisian_robust_metric,
         frame.vix_parisian_robust_metric
+    );
+}
+
+#[test]
+fn phase17_tab_metric_and_rates_scenario_are_live() {
+    assert_eq!(TabId::ALL.len(), 27);
+    assert!(TabId::ALL.contains(&TabId::Phase17Sota));
+    let mut ws = DeskWorkstation::new();
+    let frame = ws.step_tick();
+    assert!(frame.asw_mf1f_ah_bess_ep_metric.is_finite());
+    assert!(
+        ws.render_dashboard(&frame, false)
+            .contains("27 ASW/MF1F/AH-LV/BESS/Idzorek-DP")
+    );
+    ws.set_scenario(ScenarioKind::RatesPlus50Bp);
+    let stressed = ws.step_tick();
+    assert_ne!(
+        stressed.asw_mf1f_ah_bess_ep_metric,
+        frame.asw_mf1f_ah_bess_ep_metric
     );
 }

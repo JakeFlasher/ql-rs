@@ -23,6 +23,31 @@ pub struct CommodityFuturesCurve<T: Real> {
     pub seasonal: SeasonalParams<T>,
 }
 impl<T: Real> CommodityFuturesCurve<T> {
+    /// Construct a curve from futures pillars with a flat (zero) seasonal
+    /// component.  The convenience constructor keeps storage/arbitrage
+    /// callers concise while `from_futures_pillars` remains available for
+    /// calibrated seasonal curves.
+    pub fn new(times: Vec<f64>, market_futures: Vec<T>) -> Result<Self, String> {
+        if times.is_empty()
+            || times.len() != market_futures.len()
+            || times.iter().any(|&t| !t.is_finite() || t < 0.0)
+            || market_futures.iter().any(|f| !f.val().is_finite() || f.val() <= 0.0)
+        {
+            return Err("invalid futures curve pillars".to_string());
+        }
+        let times_t = times.into_iter().map(T::from_f64).collect::<Vec<_>>();
+        Ok(Self::from_futures_pillars(
+            times_t,
+            &market_futures,
+            SeasonalParams {
+                a1: T::zero(),
+                b1: T::zero(),
+                a2: T::zero(),
+                b2: T::zero(),
+            },
+        ))
+    }
+
     pub fn from_futures_pillars(
         times: Vec<T>,
         market_futures: &[T],

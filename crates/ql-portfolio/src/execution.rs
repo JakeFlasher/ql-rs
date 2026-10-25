@@ -344,3 +344,167 @@ mod phase14_tests {
         assert!((one_d.cost_variance - multi_1d.cost_variance).abs() < 1e-9);
     }
 }
+
+#[derive(Copy, Clone, Debug)]
+pub struct DarkLitRoutingSpec<T: Real = f64> {
+    pub initial_inventory: T,
+    pub horizon: T,
+    pub num_steps: usize,
+    pub volatility: T,
+    pub lit_temporary_impact: T,
+    pub lit_permanent_impact: T,
+    pub dark_fill_intensity: T,
+    pub risk_aversion: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct DarkLitRoutingReport<T: Real> {
+    pub times: Vec<f64>,
+    pub pre_fill_inventory_schedule: Vec<T>,
+    pub expected_inventory_schedule: Vec<T>,
+    pub lit_trading_rate_schedule: Vec<T>,
+    pub dark_pool_order_schedule: Vec<T>,
+    pub expected_total_cost: T,
+}
+
+pub fn try_optimal_dark_lit_execution<T: Real>(
+    s: &DarkLitRoutingSpec<T>,
+) -> Result<DarkLitRoutingReport<T>, AllocationError> {
+    if s.num_steps == 0
+        || s.horizon.val() <= 0.0
+        || s.lit_temporary_impact.val() <= 0.0
+        || s.dark_fill_intensity.val() < 0.0
+        || s.risk_aversion.val() < 0.0
+        || s.volatility.val() < 0.0
+    {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    let n = s.num_steps;
+    let t_cap = s.horizon;
+    let eta = s.lit_temporary_impact;
+    let theta = s.dark_fill_intensity;
+    let phi = s.risk_aversion * s.volatility * s.volatility * 0.5;
+    let half_theta = theta * 0.5;
+    let gamma = (half_theta * half_theta + phi / eta)
+        .max_val(T::from_f64(1e-16))
+        .sqrt();
+    let gt = gamma * t_cap;
+
+    let mut times = Vec::with_capacity(n + 1);
+    let mut pre_fill = Vec::with_capacity(n + 1);
+    let mut exp_inv = Vec::with_capacity(n + 1);
+    let mut lit_rate = Vec::with_capacity(n + 1);
+    let mut dark_orders = Vec::with_capacity(n + 1);
+
+    for k in 0..=n {
+        let frac = (k as f64) / (n as f64);
+        let t_f64 = s.horizon.val() * frac;
+        times.push(t_f64);
+        let t = t_cap * frac;
+        let rem = t_cap * (1.0 - frac);
+        let (ratio_sinh, rate_factor) = if gt.val().abs() < 1e-4 {
+            let r_s = T::from_f64(1.0 - frac)
+                * (T::one() + gamma * gamma * (rem * rem - t_cap * t_cap) / 6.0);
+            let r_v = (T::one() / t_cap)
+                * (T::one() + gamma * gamma * (t_cap * t_cap - rem * rem * 3.0) / 6.0)
+                - half_theta * r_s;
+            (r_s, r_v)
+        } else {
+            let sh_gt = ((gt).exp() - (-gt).exp()) * 0.5;
+            let g_rem = gamma * rem;
+            let sh_rem = (g_rem.exp() - (-g_rem).exp()) * 0.5;
+            let ch_rem = (g_rem.exp() + (-g_rem).exp()) * 0.5;
+            let r_s = sh_rem / sh_gt;
+            let r_v = (gamma * ch_rem - half_theta * sh_rem) / sh_gt;
+            (r_s, r_v)
+        };
+        let x_pre = s.initial_inventory * (half_theta * t).exp() * ratio_sinh;
+        let x_exp = s.initial_inventory * (-half_theta * t).exp() * ratio_sinh;
+        let v_lit = s.initial_inventory * (half_theta * t).exp() * rate_factor;
+        pre_fill.push(x_pre);
+        exp_inv.push(x_exp);
+        lit_rate.push(v_lit);
+        dark_orders.push(x_pre);
+    }
+
+    let coth_term = if gt.val().abs() < 1e-4 {
+        (T::one() / t_cap) * (T::one() + gt * gt / 3.0 - gt * gt * gt * gt / 45.0)
+    } else {
+        let e2 = (gt * 2.0).exp();
+        gamma * (e2 + T::one()) / (e2 - T::one())
+    };
+    let perm_cost = s.lit_permanent_impact * s.initial_inventory * s.initial_inventory * 0.5;
+    let expected_total_cost =
+        eta * s.initial_inventory * s.initial_inventory * (coth_term - half_theta) + perm_cost;
+
+    Ok(DarkLitRoutingReport {
+        times,
+        pre_fill_inventory_schedule: pre_fill,
+        expected_inventory_schedule: exp_inv,
+        lit_trading_rate_schedule: lit_rate,
+        dark_pool_order_schedule: dark_orders,
+        expected_total_cost,
+    })
+}
+
+pub fn optimal_dark_lit_execution<T: Real>(
+    s: &DarkLitRoutingSpec<T>,
+) -> DarkLitRoutingReport<T> {
+    try_optimal_dark_lit_execution(s).expect("valid dark-lit execution inputs")
+}
+
+#[cfg(test)]
+mod phase17_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn kratz_schoeneborn_dark_pool_monotonicity_delay_and_ad() {
+        let mut s = DarkLitRoutingSpec {
+            initial_inventory: 100.0,
+            horizon: 1.0,
+            num_steps: 4,
+            volatility: 0.20,
+            lit_temporary_impact: 1e-3,
+            lit_permanent_impact: 2e-4,
+            dark_fill_intensity: 0.0,
+            risk_aversion: 0.0,
+        };
+        let no_dark = optimal_dark_lit_execution(&s);
+        s.dark_fill_intensity = 1.5;
+        let with_dark = optimal_dark_lit_execution(&s);
+        assert!(with_dark.expected_total_cost < no_dark.expected_total_cost);
+        assert!(
+            with_dark.lit_trading_rate_schedule[0] < with_dark.lit_trading_rate_schedule[4]
+        );
+
+        let h = 1e-5;
+        let eval_theta = |th: f64| {
+            let mut sp = s;
+            sp.dark_fill_intensity = th;
+            optimal_dark_lit_execution(&sp).expected_total_cost
+        };
+        let fd = (eval_theta(1.5 + h) - eval_theta(1.5 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let sd = DarkLitRoutingSpec {
+            initial_inventory: D::from_value(100.0),
+            horizon: D::one(),
+            num_steps: 4,
+            volatility: D::from_value(0.20),
+            lit_temporary_impact: D::from_value(1e-3),
+            lit_permanent_impact: D::from_value(2e-4),
+            dark_fill_intensity: D::variable(1.5, 0),
+            risk_aversion: D::from_value(0.25),
+        };
+        let eval_theta_ra = |th: f64| {
+            let mut sp = s;
+            sp.risk_aversion = 0.25;
+            sp.dark_fill_intensity = th;
+            optimal_dark_lit_execution(&sp).expected_total_cost
+        };
+        let fd_ra = (eval_theta_ra(1.5 + h) - eval_theta_ra(1.5 - h)) / (2.0 * h);
+        let ad = optimal_dark_lit_execution(&sd).expected_total_cost;
+        assert!(fd < 0.0 && ad.d[0] < 0.0);
+        assert!((ad.d[0] - fd_ra).abs() < 1e-6);
+    }
+}

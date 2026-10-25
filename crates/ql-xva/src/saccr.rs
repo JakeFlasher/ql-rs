@@ -224,3 +224,190 @@ pub fn compute_sa_ccr_ead<T: Real>(ns: &SaCcrNettingSet<T>) -> SaCcrReport<T> {
         ead,
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct BaCvaSingleNameHedge<T: Real = f64> {
+    pub notional: T,
+    pub maturity: T,
+    pub hedge_correlation: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct BaCvaCounterpartySpec<T: Real = f64> {
+    pub risk_weight: T,
+    pub effective_maturity: T,
+    pub ead: T,
+    pub single_name_hedges: Vec<BaCvaSingleNameHedge<T>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BaCvaIndexHedge<T: Real = f64> {
+    pub risk_weight: T,
+    pub maturity: T,
+    pub notional: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct BaCvaPortfolioSpec<T: Real = f64> {
+    pub counterparties: Vec<BaCvaCounterpartySpec<T>>,
+    pub index_hedges: Vec<BaCvaIndexHedge<T>>,
+    pub hurdle_rate: T,
+    pub risk_free_rate: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct BaCvaReport<T: Real> {
+    pub scva_by_counterparty: Vec<T>,
+    pub k_reduced: T,
+    pub k_hedged: T,
+    pub k_full: T,
+    pub capital_charge: T,
+    pub kva_charge: T,
+}
+
+fn ba_cva_supervisory_df<T: Real>(maturity: T) -> T {
+    let m = maturity.max_val(T::zero());
+    let x = m * 0.05;
+    if x.val().abs() < 1e-2 {
+        T::one() - x * 0.5 + x * x / 6.0 - x * x * x / 24.0
+    } else {
+        (T::one() - (-x).exp()) / x
+    }
+}
+
+pub fn compute_ba_cva_capital<T: Real>(spec: &BaCvaPortfolioSpec<T>) -> BaCvaReport<T> {
+    if spec.counterparties.is_empty() {
+        return BaCvaReport {
+            scva_by_counterparty: Vec::new(),
+            k_reduced: T::zero(),
+            k_hedged: T::zero(),
+            k_full: T::zero(),
+            capital_charge: T::zero(),
+            kva_charge: T::zero(),
+        };
+    }
+    let rho = 0.50;
+    let one_minus_rho2 = 1.0 - rho * rho;
+    let inv_alpha = 1.0 / 1.4;
+    let mut scvas = Vec::with_capacity(spec.counterparties.len());
+    let mut sum_scva = T::zero();
+    let mut sum_scva2 = T::zero();
+    let mut sum_net = T::zero();
+    let mut sum_net2 = T::zero();
+    let mut sum_hma = T::zero();
+    let mut avg_m = T::zero();
+
+    for cpty in &spec.counterparties {
+        let df_c = ba_cva_supervisory_df(cpty.effective_maturity);
+        let scva = cpty.risk_weight * cpty.effective_maturity * cpty.ead * df_c * inv_alpha;
+        scvas.push(scva);
+        sum_scva += scva;
+        sum_scva2 += scva * scva;
+        avg_m += cpty.effective_maturity;
+
+        let mut snh = T::zero();
+        let mut hma = T::zero();
+        for h in &cpty.single_name_hedges {
+            let df_h = ba_cva_supervisory_df(h.maturity);
+            let h_term = cpty.risk_weight * h.maturity * h.notional * df_h;
+            let r_hc = h.hedge_correlation.clamp(0.0, 1.0);
+            snh += h_term * r_hc;
+            hma += h_term * h_term * (1.0 - r_hc * r_hc);
+        }
+        let net_c = scva - snh;
+        sum_net += net_c;
+        sum_net2 += net_c * net_c;
+        sum_hma += hma;
+    }
+    avg_m /= T::from_f64(spec.counterparties.len() as f64);
+
+    let mut ih = T::zero();
+    for ind in &spec.index_hedges {
+        let df_i = ba_cva_supervisory_df(ind.maturity);
+        ih += ind.risk_weight * ind.maturity * ind.notional * df_i;
+    }
+
+    let sys_red = sum_scva * rho;
+    let k_reduced = (sys_red * sys_red + sum_scva2 * one_minus_rho2)
+        .max_val(T::from_f64(1e-16))
+        .sqrt();
+
+    let sys_hedged = sum_net * rho - ih;
+    let k_hedged = (sys_hedged * sys_hedged + sum_net2 * one_minus_rho2 + sum_hma)
+        .max_val(T::from_f64(1e-16))
+        .sqrt();
+
+    let k_full = k_reduced * 0.25 + k_hedged * 0.75;
+    let capital_charge = k_full * 0.65;
+    let spread_cost = (spec.hurdle_rate - spec.risk_free_rate).max_val(T::zero());
+    let kva_df = ba_cva_supervisory_df(avg_m);
+    let kva_charge = capital_charge * spread_cost * avg_m * kva_df;
+
+    BaCvaReport {
+        scva_by_counterparty: scvas,
+        k_reduced,
+        k_hedged,
+        k_full,
+        capital_charge,
+        kva_charge,
+    }
+}
+
+#[cfg(test)]
+mod phase17_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn ba_cva_single_name_identity_hedge_reduction_and_ad() {
+        let unhedged = BaCvaPortfolioSpec {
+            counterparties: vec![BaCvaCounterpartySpec {
+                risk_weight: 0.05,
+                effective_maturity: 3.0,
+                ead: 100.0,
+                single_name_hedges: vec![],
+            }],
+            index_hedges: vec![],
+            hurdle_rate: 0.10,
+            risk_free_rate: 0.03,
+        };
+        let rep0 = compute_ba_cva_capital(&unhedged);
+        assert!((rep0.k_reduced - rep0.scva_by_counterparty[0]).abs() < 1e-12);
+        assert!((rep0.k_full - rep0.k_reduced).abs() < 1e-12);
+
+        let mut hedged = unhedged.clone();
+        hedged.counterparties[0].single_name_hedges.push(BaCvaSingleNameHedge {
+            notional: 40.0,
+            maturity: 3.0,
+            hedge_correlation: 1.0,
+        });
+        let rep_h = compute_ba_cva_capital(&hedged);
+        assert!(rep_h.capital_charge < rep0.capital_charge);
+
+        let h = 1e-5;
+        let eval_ead = |e: f64| {
+            let mut sp = hedged.clone();
+            sp.counterparties[0].ead = e;
+            compute_ba_cva_capital(&sp).capital_charge
+        };
+        let fd = (eval_ead(100.0 + h) - eval_ead(100.0 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let sp_d = BaCvaPortfolioSpec {
+            counterparties: vec![BaCvaCounterpartySpec {
+                risk_weight: D::from_value(0.05),
+                effective_maturity: D::from_value(3.0),
+                ead: D::variable(100.0, 0),
+                single_name_hedges: vec![BaCvaSingleNameHedge {
+                    notional: D::from_value(40.0),
+                    maturity: D::from_value(3.0),
+                    hedge_correlation: 1.0,
+                }],
+            }],
+            index_hedges: vec![],
+            hurdle_rate: D::from_value(0.10),
+            risk_free_rate: D::from_value(0.03),
+        };
+        let ad = compute_ba_cva_capital(&sp_d).capital_charge;
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}

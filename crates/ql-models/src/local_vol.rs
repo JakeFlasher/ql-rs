@@ -49,3 +49,174 @@ impl DupireLocalVol {
             .sqrt()
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct AndreasenHugeGridSpec<T: Real = f64> {
+    pub forward: T,
+    pub rate: T,
+    pub dt: T,
+    pub strike_min: T,
+    pub strike_max: T,
+    pub n_grid: usize,
+    pub local_vol_atm: T,
+    pub local_vol_skew: T,
+    pub local_vol_smile: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct AndreasenHugeSliceResult<T: Real> {
+    pub strikes: Vec<T>,
+    pub local_vols: Vec<T>,
+    pub undiscounted_calls: Vec<T>,
+    pub call_prices: Vec<T>,
+    pub implied_densities: Vec<T>,
+}
+
+pub fn solve_andreasen_huge_step<T: Real>(
+    spec: &AndreasenHugeGridSpec<T>,
+    prior_undiscounted_calls: Option<&[T]>,
+) -> AndreasenHugeSliceResult<T> {
+    let g = spec.n_grid.max(5);
+    let dk = (spec.strike_max - spec.strike_min) / (g as f64 - 1.0);
+    let dk_safe = dk.max_val(T::from_f64(1e-8));
+    let fwd_safe = spec.forward.max_val(T::from_f64(1e-8));
+    let dt_safe = spec.dt.max_val(T::from_f64(1e-8));
+    let eps = T::from_f64(1e-8);
+
+    let mut strikes = Vec::with_capacity(g);
+    let mut local_vols = Vec::with_capacity(g);
+    let mut rhs = Vec::with_capacity(g);
+    for i in 0..g {
+        let k_i = spec.strike_min + dk * (i as f64);
+        strikes.push(k_i);
+        let m_i = (k_i - spec.forward) / fwd_safe;
+        let lv = (spec.local_vol_atm
+            + spec.local_vol_skew * m_i
+            + spec.local_vol_smile * m_i * m_i * 0.5)
+            .max_val(T::from_f64(0.01));
+        local_vols.push(lv);
+        if let Some(prev) = prior_undiscounted_calls.filter(|p| p.len() == g) {
+            rhs.push(prev[i]);
+        } else {
+            let diff = spec.forward - k_i;
+            let intrinsic = (diff + (diff * diff + eps * eps).sqrt() - eps).max_val(T::zero()) * 0.5;
+            rhs.push(intrinsic);
+        }
+    }
+
+    let mut a = vec![T::zero(); g];
+    let mut b = vec![T::one(); g];
+    let mut c = vec![T::zero(); g];
+    for i in 1..(g - 1) {
+        let alpha = dt_safe * local_vols[i] * local_vols[i] * strikes[i] * strikes[i]
+            / (dk_safe * dk_safe * 2.0);
+        a[i] = -alpha;
+        b[i] = T::one() + alpha * 2.0;
+        c[i] = -alpha;
+    }
+
+    let mut c_prime = vec![T::zero(); g];
+    let mut d_prime = vec![T::zero(); g];
+    c_prime[0] = c[0] / b[0];
+    d_prime[0] = rhs[0] / b[0];
+    for i in 1..g {
+        let denom = (b[i] - a[i] * c_prime[i - 1]).max_val(T::from_f64(1e-14));
+        c_prime[i] = if i + 1 < g { c[i] / denom } else { T::zero() };
+        d_prime[i] = (rhs[i] - a[i] * d_prime[i - 1]) / denom;
+    }
+    let mut u_calls = vec![T::zero(); g];
+    u_calls[g - 1] = d_prime[g - 1];
+    for i in (0..(g - 1)).rev() {
+        u_calls[i] = d_prime[i] - c_prime[i] * u_calls[i + 1];
+    }
+
+    let df = (-spec.rate * dt_safe).exp();
+    let call_prices: Vec<T> = u_calls.iter().map(|&c_val| c_val * df).collect();
+    let mut densities = vec![T::zero(); g];
+    for i in 1..(g - 1) {
+        densities[i] =
+            ((u_calls[i + 1] - u_calls[i] * 2.0 + u_calls[i - 1]) / (dk_safe * dk_safe)).max_val(T::zero());
+    }
+
+    AndreasenHugeSliceResult {
+        strikes,
+        local_vols,
+        undiscounted_calls: u_calls,
+        call_prices,
+        implied_densities: densities,
+    }
+}
+
+pub fn interpolate_andreasen_huge_call<T: Real>(
+    slice: &AndreasenHugeSliceResult<T>,
+    target_strike: T,
+) -> T {
+    let g = slice.strikes.len();
+    if g == 0 {
+        return T::zero();
+    }
+    if target_strike.val() <= slice.strikes[0].val() || g == 1 {
+        return slice.call_prices[0];
+    }
+    if target_strike.val() >= slice.strikes[g - 1].val() {
+        return slice.call_prices[g - 1];
+    }
+    for i in 0..(g - 1) {
+        if target_strike.val() <= slice.strikes[i + 1].val() {
+            let dk = (slice.strikes[i + 1] - slice.strikes[i]).max_val(T::from_f64(1e-12));
+            let w = (target_strike - slice.strikes[i]) / dk;
+            return slice.call_prices[i] * (T::one() - w) + slice.call_prices[i + 1] * w;
+        }
+    }
+    slice.call_prices[g - 1]
+}
+
+#[cfg(test)]
+mod phase17_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn andreasen_huge_butterfly_calendar_arbitrage_free_and_ad() {
+        let spec1 = AndreasenHugeGridSpec {
+            forward: 100.0,
+            rate: 0.02,
+            dt: 0.5,
+            strike_min: 60.0,
+            strike_max: 140.0,
+            n_grid: 41,
+            local_vol_atm: 0.20,
+            local_vol_skew: -0.15,
+            local_vol_smile: 0.10,
+        };
+        let slice1 = solve_andreasen_huge_step(&spec1, None);
+        let slice2 = solve_andreasen_huge_step(&spec1, Some(&slice1.undiscounted_calls));
+        for i in 1..40 {
+            assert!(slice1.implied_densities[i] >= 0.0);
+            assert!(slice2.undiscounted_calls[i] >= slice1.undiscounted_calls[i] - 1e-12);
+        }
+        let h = 1e-5;
+        let eval_atm = |v: f64| {
+            let mut sp = spec1.clone();
+            sp.local_vol_atm = v;
+            let sl = solve_andreasen_huge_step(&sp, None);
+            interpolate_andreasen_huge_call(&sl, 100.0)
+        };
+        let fd = (eval_atm(0.20 + h) - eval_atm(0.20 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let spec_d = AndreasenHugeGridSpec {
+            forward: D::from_value(100.0),
+            rate: D::from_value(0.02),
+            dt: D::from_value(0.5),
+            strike_min: D::from_value(60.0),
+            strike_max: D::from_value(140.0),
+            n_grid: 41,
+            local_vol_atm: D::variable(0.20, 0),
+            local_vol_skew: D::from_value(-0.15),
+            local_vol_smile: D::from_value(0.10),
+        };
+        let sl_d = solve_andreasen_huge_step(&spec_d, None);
+        let ad = interpolate_andreasen_huge_call(&sl_d, D::from_value(100.0));
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}

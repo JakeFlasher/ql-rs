@@ -359,3 +359,335 @@ pub fn price_gas_storage<T: Real>(
         dv,
     )
 }
+
+#[derive(Clone, Debug)]
+pub struct TakeOrPayContractSpec<T: Real = f64> {
+    pub decision_times: Vec<f64>,
+    pub strike: T,
+    pub daily_min_qty: f64,
+    pub daily_max_qty: f64,
+    pub cumulative_min_qty: f64,
+    pub cumulative_max_qty: f64,
+    pub shortfall_penalty_rate: T,
+    pub daily_discretization_steps: usize,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct TakeOrPayValuation<T: Real> {
+    pub npv: T,
+    pub min_take_swap_npv: T,
+    pub swing_optionality_value: T,
+}
+
+#[allow(clippy::needless_range_loop)]
+pub fn price_take_or_pay_contract<T: Real>(
+    spec: &TakeOrPayContractSpec<T>,
+    curve: &CommodityFuturesCurve<T>,
+    kappa: T,
+    sigma: T,
+    rate: T,
+) -> TakeOrPayValuation<T> {
+    if spec.decision_times.is_empty() || spec.daily_max_qty < spec.daily_min_qty {
+        return TakeOrPayValuation {
+            npv: T::zero(),
+            min_take_swap_npv: T::zero(),
+            swing_optionality_value: T::zero(),
+        };
+    }
+    let times = make_times(&spec.decision_times, 1);
+    let tree = build_tree(times, kappa, sigma);
+    let m_steps = tree.times.len();
+    let dq_span = (spec.daily_max_qty - spec.daily_min_qty).max(0.0);
+    let l_sub = spec.daily_discretization_steps.max(1);
+    let dq = if dq_span <= 1e-12 {
+        1.0
+    } else {
+        dq_span / (l_sub as f64)
+    };
+    let max_units = if dq_span <= 1e-12 {
+        0
+    } else {
+        m_steps * l_sub
+    };
+    let n_last = m_steps.saturating_sub(1);
+    let term_w = (2 * tree.j_bounds[n_last] + 1) as usize;
+    let mut values = vec![vec![T::zero(); term_w]; max_units + 1];
+
+    let final_spots = node_spots(&tree, curve, n_last);
+    for u in 0..=max_units {
+        let q_cum_before = (n_last as f64) * spec.daily_min_qty + (u as f64) * dq;
+        for (idx, &spot) in final_spots.iter().enumerate() {
+            let mut best = T::from_f64(-1e100);
+            let max_step = if dq_span <= 1e-12 { 0 } else { l_sub };
+            for step_u in (0..=max_step).step_by(l_sub) {
+                let q_take = spec.daily_min_qty + (step_u as f64) * dq;
+                let q_tot = q_cum_before + q_take;
+                if q_tot > spec.cumulative_max_qty + 1e-9 {
+                    continue;
+                }
+                let shortfall = (spec.cumulative_min_qty - q_tot).max(0.0);
+                let val = (spot - spec.strike) * q_take - spec.shortfall_penalty_rate * shortfall;
+                best = best.max_val(val);
+            }
+            values[u][idx] = best;
+        }
+    }
+
+    for m in (0..n_last).rev() {
+        let jb = tree.j_bounds[m];
+        let jbn = tree.j_bounds[m + 1];
+        let spots = node_spots(&tree, curve, m);
+        let max_u_m = if dq_span <= 1e-12 { 0 } else { m * l_sub };
+        let mut next = vec![vec![T::zero(); (2 * jb + 1) as usize]; max_units + 1];
+        for u in 0..=max_u_m {
+            let q_cum_before = (m as f64) * spec.daily_min_qty + (u as f64) * dq;
+            for j in -jb..=jb {
+                let idx = (j + jb) as usize;
+                let (k, pd, pm, pu, dt) = transition(&tree, m, j);
+                let df = (-rate * dt).exp();
+                let mut best = T::from_f64(-1e100);
+                let max_step = if dq_span <= 1e-12 { 0 } else { l_sub };
+                for step_u in (0..=max_step).step_by(l_sub) {
+                    let q_take = spec.daily_min_qty + (step_u as f64) * dq;
+                    if q_cum_before + q_take > spec.cumulative_max_qty + 1e-9 {
+                        continue;
+                    }
+                    let u_next = (u + step_u).min(max_units);
+                    let val_n =
+                        |node: isize| values[u_next][(node + jbn).clamp(0, 2 * jbn) as usize];
+                    let cont = df * (pd * val_n(k - 1) + pm * val_n(k) + pu * val_n(k + 1));
+                    let total = (spots[idx] - spec.strike) * q_take + cont;
+                    best = best.max_val(total);
+                }
+                next[u][idx] = best;
+            }
+        }
+        values = next;
+    }
+
+    let min_per_step = (spec.cumulative_min_qty / (m_steps as f64))
+        .clamp(spec.daily_min_qty, spec.daily_max_qty);
+    let mut swap_npv = T::zero();
+    for &t in &tree.times {
+        let df = (-rate * t).exp();
+        let fwd = curve.futures_price(T::from_f64(t));
+        swap_npv += df * (fwd - spec.strike) * min_per_step;
+    }
+    let npv = values[0][0];
+    TakeOrPayValuation {
+        npv,
+        min_take_swap_npv: swap_npv,
+        swing_optionality_value: (npv - swap_npv).max_val(T::zero()),
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BessSpec<T: Real = f64> {
+    pub decision_times: Vec<f64>,
+    pub energy_capacity_mwh: f64,
+    pub initial_soc_mwh: f64,
+    pub max_charge_mw: f64,
+    pub max_discharge_mw: f64,
+    pub charge_efficiency: T,
+    pub discharge_efficiency: T,
+    pub cycle_degradation_cost: T,
+    pub ancillary_reserve_rate: T,
+    pub soc_grid_points: usize,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct BessValuation<T: Real> {
+    pub total_npv: T,
+    pub intrinsic_npv: T,
+    pub extrinsic_optionality: T,
+}
+
+#[allow(clippy::needless_range_loop)]
+fn solve_bess_tree<T: Real>(
+    spec: &BessSpec<T>,
+    curve: &CommodityFuturesCurve<T>,
+    kappa: T,
+    sigma: T,
+    rate: T,
+) -> T {
+    if spec.decision_times.is_empty() || spec.energy_capacity_mwh <= 0.0 {
+        return T::zero();
+    }
+    let times = make_times(&spec.decision_times, 1);
+    let tree = build_tree(times, kappa, sigma);
+    let g = spec.soc_grid_points.max(2);
+    let de = spec.energy_capacity_mwh / (g as f64);
+    let n = tree.times.len().saturating_sub(1);
+    let term_w = (2 * tree.j_bounds[n] + 1) as usize;
+    let mut values = vec![vec![T::zero(); term_w]; g + 1];
+    let eta_c = spec.charge_efficiency.max_val(T::from_f64(0.1)).min_val(T::one());
+    let eta_d = spec.discharge_efficiency.max_val(T::from_f64(0.1)).min_val(T::one());
+
+    if n > 0 {
+        let dt_n = (tree.times[n] - tree.times[n - 1]).max(1e-6);
+        let final_spots = node_spots(&tree, curve, n);
+        for (gi, row) in values.iter_mut().enumerate().take(g + 1) {
+            let soc = (gi as f64) * de;
+            let max_dis = soc.min(spec.max_discharge_mw * dt_n);
+            for (idx, &spot) in final_spots.iter().enumerate() {
+                let cash = (eta_d * spot - spec.cycle_degradation_cost) * max_dis;
+                row[idx] = cash.max_val(T::zero());
+            }
+        }
+    }
+
+    for m in (0..n).rev() {
+        let jb = tree.j_bounds[m];
+        let jbn = tree.j_bounds[m + 1];
+        let spots = node_spots(&tree, curve, m);
+        let mut next = vec![vec![T::zero(); (2 * jb + 1) as usize]; g + 1];
+        let mut cont_by_j = vec![vec![T::zero(); g + 1]; (2 * jb + 1) as usize];
+        for j in -jb..=jb {
+            let (k, pd, pm, pu, dt) = transition(&tree, m, j);
+            let row = &mut cont_by_j[(j + jb) as usize];
+            for gp in 0..=g {
+                let val = |node: isize| values[gp][(node + jbn).clamp(0, 2 * jbn) as usize];
+                row[gp] = (-rate * dt).exp() * (pd * val(k - 1) + pm * val(k) + pu * val(k + 1));
+            }
+        }
+        for gi in 0..=g {
+            let soc = (gi as f64) * de;
+            let headroom = soc.min(spec.energy_capacity_mwh - soc).max(0.0);
+            for j in -jb..=jb {
+                let idx = (j + jb) as usize;
+                let (_, _, _, _, dt) = transition(&tree, m, j);
+                let dt_val = dt.val().max(1e-6);
+                let lo = (soc - spec.max_discharge_mw * dt_val).max(0.0);
+                let hi = (soc + spec.max_charge_mw * dt_val).min(spec.energy_capacity_mwh);
+                let anc = spec.ancillary_reserve_rate * (headroom * dt_val);
+                let mut best = T::from_f64(-1e100);
+                for gp in 0..=g {
+                    let soc_next = (gp as f64) * de;
+                    if soc_next + 1e-12 < lo || soc_next - 1e-12 > hi {
+                        continue;
+                    }
+                    let d_soc = soc_next - soc;
+                    let cash = if d_soc > 0.0 {
+                        -(spots[idx] / eta_c + spec.cycle_degradation_cost) * d_soc
+                    } else if d_soc < 0.0 {
+                        (eta_d * spots[idx] - spec.cycle_degradation_cost) * (-d_soc)
+                    } else {
+                        T::zero()
+                    };
+                    best = best.max_val(cash + anc + cont_by_j[idx][gp]);
+                }
+                next[gi][idx] = best;
+            }
+        }
+        values = next;
+    }
+    let init_soc = spec.initial_soc_mwh.clamp(0.0, spec.energy_capacity_mwh);
+    interpolate(
+        &values.iter().map(|r| r[0]).collect::<Vec<_>>(),
+        init_soc,
+        de,
+    )
+}
+
+pub fn price_bess_arbitrage_dp<T: Real>(
+    spec: &BessSpec<T>,
+    power_curve: &CommodityFuturesCurve<T>,
+    kappa: T,
+    sigma: T,
+    rate: T,
+) -> BessValuation<T> {
+    let total = solve_bess_tree(spec, power_curve, kappa, sigma, rate);
+    let intrinsic = solve_bess_tree(spec, power_curve, kappa, T::from_f64(1e-6), rate);
+    BessValuation {
+        total_npv: total,
+        intrinsic_npv: intrinsic,
+        extrinsic_optionality: (total - intrinsic).max_val(T::zero()),
+    }
+}
+
+#[cfg(test)]
+mod phase17_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn take_or_pay_bang_bang_and_bess_arbitrage_ad() {
+        let curve = CommodityFuturesCurve::new(
+            vec![0.25, 0.50, 0.75, 1.0],
+            vec![45.0, 58.0, 42.0, 62.0],
+        )
+        .unwrap();
+        let top1 = TakeOrPayContractSpec {
+            decision_times: vec![0.25, 0.50, 0.75, 1.0],
+            strike: 50.0,
+            daily_min_qty: 1.0,
+            daily_max_qty: 3.0,
+            cumulative_min_qty: 6.0,
+            cumulative_max_qty: 10.0,
+            shortfall_penalty_rate: 50.0,
+            daily_discretization_steps: 1,
+        };
+        let mut top4 = top1.clone();
+        top4.daily_discretization_steps = 4;
+        let v1 = price_take_or_pay_contract(&top1, &curve, 1.5, 0.30, 0.03);
+        let v4 = price_take_or_pay_contract(&top4, &curve, 1.5, 0.30, 0.03);
+        assert!((v1.npv - v4.npv).abs() < 1e-10);
+        assert!(v1.swing_optionality_value > 0.0);
+
+        let bess = BessSpec {
+            decision_times: vec![0.25, 0.50, 0.75, 1.0],
+            energy_capacity_mwh: 4.0,
+            initial_soc_mwh: 2.0,
+            max_charge_mw: 8.0,
+            max_discharge_mw: 8.0,
+            charge_efficiency: 0.92,
+            discharge_efficiency: 0.92,
+            cycle_degradation_cost: 1.5,
+            ancillary_reserve_rate: 2.0,
+            soc_grid_points: 4,
+        };
+        let bv = price_bess_arbitrage_dp(&bess, &curve, 1.5, 0.35, 0.03);
+        assert!(bv.total_npv >= bv.intrinsic_npv - 1e-10);
+        assert!(bv.extrinsic_optionality >= 0.0);
+
+        let h = 1e-5;
+        let eval_eff = |eta: f64| {
+            let mut b2 = bess.clone();
+            b2.discharge_efficiency = eta;
+            price_bess_arbitrage_dp(&b2, &curve, 1.5, 0.35, 0.03).total_npv
+        };
+        let fd = (eval_eff(0.92 + h) - eval_eff(0.92 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let curve_d = CommodityFuturesCurve::new(
+            vec![0.25, 0.50, 0.75, 1.0],
+            vec![
+                D::from_value(45.0),
+                D::from_value(58.0),
+                D::from_value(42.0),
+                D::from_value(62.0),
+            ],
+        )
+        .unwrap();
+        let bess_d = BessSpec {
+            decision_times: vec![0.25, 0.50, 0.75, 1.0],
+            energy_capacity_mwh: 4.0,
+            initial_soc_mwh: 2.0,
+            max_charge_mw: 8.0,
+            max_discharge_mw: 8.0,
+            charge_efficiency: D::from_value(0.92),
+            discharge_efficiency: D::variable(0.92, 0),
+            cycle_degradation_cost: D::from_value(1.5),
+            ancillary_reserve_rate: D::from_value(2.0),
+            soc_grid_points: 4,
+        };
+        let ad = price_bess_arbitrage_dp(
+            &bess_d,
+            &curve_d,
+            D::from_value(1.5),
+            D::from_value(0.35),
+            D::from_value(0.03),
+        )
+        .total_npv;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

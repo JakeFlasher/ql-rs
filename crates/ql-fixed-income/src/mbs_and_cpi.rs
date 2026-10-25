@@ -849,3 +849,217 @@ mod phase16_tests {
         assert!((ad.d[0] - fd).abs() < 1e-6);
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct BondAssetSwapSpec<T: Real = f64> {
+    pub clean_price: T,
+    pub accrued_interest: T,
+    pub coupon_rate: T,
+    pub payment_times: Vec<f64>,
+    pub accrual_fractions: Vec<f64>,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct BondSpreadReport<T: Real> {
+    pub dirty_price: T,
+    pub theoretical_dirty_price: T,
+    pub float_annuity: T,
+    pub par_asset_swap_spread: T,
+    pub market_value_asset_swap_spread: T,
+    pub z_spread: T,
+    pub spread_dv01: T,
+}
+
+pub fn analyze_bond_asset_swap_and_z_spread<T: Real>(
+    spec: &BondAssetSwapSpec<T>,
+    ois_curve: &impl YieldTermStructure<T>,
+) -> BondSpreadReport<T> {
+    let n = spec.payment_times.len().min(spec.accrual_fractions.len());
+    if n == 0 {
+        return BondSpreadReport {
+            dirty_price: T::zero(),
+            theoretical_dirty_price: T::zero(),
+            float_annuity: T::zero(),
+            par_asset_swap_spread: T::zero(),
+            market_value_asset_swap_spread: T::zero(),
+            z_spread: T::zero(),
+            spread_dv01: T::zero(),
+        };
+    }
+    let par_scale = if spec.clean_price.val() > 2.0 {
+        100.0
+    } else {
+        1.0
+    };
+    let dirty = (spec.clean_price + spec.accrued_interest) / par_scale;
+    let mut ann = T::zero();
+    let mut theo_dirty = T::zero();
+    let mut dfs_f64 = Vec::with_capacity(n);
+    let mut cfs_f64 = Vec::with_capacity(n);
+    for i in 0..n {
+        let t = spec.payment_times[i].max(1e-8);
+        let tau = spec.accrual_fractions[i].max(0.0);
+        let df = ois_curve.discount_factor(t);
+        ann += df * tau;
+        let cf = if i + 1 == n {
+            spec.coupon_rate * tau + T::one()
+        } else {
+            spec.coupon_rate * tau
+        };
+        theo_dirty += cf * df;
+        dfs_f64.push(df.val());
+        cfs_f64.push(cf.val());
+    }
+    let ann_safe = ann.max_val(T::from_f64(1e-12));
+    let dirty_safe = dirty.max_val(T::from_f64(1e-12));
+    let par_asw = (theo_dirty - dirty) / ann_safe;
+    let mv_asw = (theo_dirty - dirty) / (dirty_safe * ann_safe);
+
+    let dirty_f64 = dirty.val();
+    let eval_f64 = |z: f64| -> (f64, f64, f64) {
+        let mut r = -dirty_f64;
+        let mut dr = 0.0;
+        let mut d2r = 0.0;
+        for i in 0..n {
+            let t = spec.payment_times[i].max(1e-8);
+            let term = cfs_f64[i] * dfs_f64[i] * (-z * t).exp();
+            r += term;
+            dr -= t * term;
+            d2r += t * t * term;
+        }
+        (r, dr, d2r)
+    };
+    let mut lo = -0.10f64;
+    let mut hi = 0.50f64;
+    let f_lo = eval_f64(lo).0;
+    for _ in 0..52 {
+        let mid = 0.5 * (lo + hi);
+        let f_mid = eval_f64(mid).0;
+        if (f_mid >= 0.0) == (f_lo >= 0.0) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let mut z_root = 0.5 * (lo + hi);
+    for _ in 0..4 {
+        let (r, dr, _) = eval_f64(z_root);
+        if dr.abs() > 1e-14 {
+            z_root = (z_root - r / dr).clamp(-0.20, 1.0);
+        }
+    }
+    let (_, f_z_f64, f_zz_f64) = eval_f64(z_root);
+    let residual_at = |z_t: T| -> T {
+        let mut pv = T::zero();
+        for i in 0..n {
+            let t = spec.payment_times[i].max(1e-8);
+            let tau = spec.accrual_fractions[i].max(0.0);
+            let cf = if i + 1 == n {
+                spec.coupon_rate * tau + T::one()
+            } else {
+                spec.coupon_rate * tau
+            };
+            pv += cf * ois_curve.discount_factor(t) * (-z_t * t).exp();
+        }
+        pv - dirty
+    };
+    let z_spread = ql_ad::ift_lift_1d(z_root, residual_at, T::from_f64(f_z_f64), f_zz_f64);
+    let mut dv01 = T::zero();
+    for i in 0..n {
+        let t = spec.payment_times[i].max(1e-8);
+        let tau = spec.accrual_fractions[i].max(0.0);
+        let cf = if i + 1 == n {
+            spec.coupon_rate * tau + T::one()
+        } else {
+            spec.coupon_rate * tau
+        };
+        dv01 += cf * ois_curve.discount_factor(t) * (-z_spread * t).exp() * t;
+    }
+    BondSpreadReport {
+        dirty_price: dirty,
+        theoretical_dirty_price: theo_dirty,
+        float_annuity: ann,
+        par_asset_swap_spread: par_asw,
+        market_value_asset_swap_spread: mv_asw,
+        z_spread,
+        spread_dv01: dv01,
+    }
+}
+
+#[cfg(test)]
+mod phase17_tests {
+    use super::*;
+    use ql_ad::Dual;
+    use ql_curves::FlatForwardCurve;
+    use ql_time::Date;
+
+    #[test]
+    fn bond_asw_and_z_spread_identities_and_ift_ad() {
+        let d = Date::from_ymd(2024, 1, 1).unwrap();
+        let ois = FlatForwardCurve::new(d, 0.03);
+        let times = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let taus = vec![1.0; 5];
+        let mut theo = 0.0;
+        for &t in &times {
+            theo += 0.04 * ois.discount_factor(t);
+        }
+        theo += ois.discount_factor(5.0);
+        let at_theo = analyze_bond_asset_swap_and_z_spread(
+            &BondAssetSwapSpec {
+                clean_price: theo,
+                accrued_interest: 0.0,
+                coupon_rate: 0.04,
+                payment_times: times.clone(),
+                accrual_fractions: taus.clone(),
+            },
+            &ois,
+        );
+        assert!(at_theo.par_asset_swap_spread.abs() < 1e-12);
+        assert!(at_theo.market_value_asset_swap_spread.abs() < 1e-12);
+        assert!(at_theo.z_spread.abs() < 1e-12);
+
+        let at_par = analyze_bond_asset_swap_and_z_spread(
+            &BondAssetSwapSpec {
+                clean_price: 1.0,
+                accrued_interest: 0.0,
+                coupon_rate: 0.04,
+                payment_times: times.clone(),
+                accrual_fractions: taus.clone(),
+            },
+            &ois,
+        );
+        assert!(
+            (at_par.par_asset_swap_spread - at_par.market_value_asset_swap_spread).abs() < 1e-12
+        );
+
+        let h = 1e-5;
+        let eval_z = |p: f64| {
+            analyze_bond_asset_swap_and_z_spread(
+                &BondAssetSwapSpec {
+                    clean_price: p,
+                    accrued_interest: 0.01,
+                    coupon_rate: 0.04,
+                    payment_times: times.clone(),
+                    accrual_fractions: taus.clone(),
+                },
+                &ois,
+            )
+            .z_spread
+        };
+        let fd = (eval_z(0.96 + h) - eval_z(0.96 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let ois_d = FlatForwardCurve::new(d, D::from_value(0.03));
+        let rep_d = analyze_bond_asset_swap_and_z_spread(
+            &BondAssetSwapSpec {
+                clean_price: D::variable(0.96, 0),
+                accrued_interest: D::from_value(0.01),
+                coupon_rate: D::from_value(0.04),
+                payment_times: times,
+                accrual_fractions: taus,
+            },
+            &ois_d,
+        );
+        assert!((rep_d.z_spread.d[0] - fd).abs() < 1e-6);
+        assert!((rep_d.z_spread.d[0] + 1.0 / rep_d.spread_dv01.val).abs() < 1e-6);
+    }
+}

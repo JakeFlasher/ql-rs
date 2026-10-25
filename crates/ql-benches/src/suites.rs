@@ -5,8 +5,8 @@ use ql_ad::{Dual, Dual2, Real, TapeVar};
 use ql_commodities as _;
 use ql_credit::asb_recursive_expected_tranche_loss;
 use ql_credit::{
-    BaseCorrelationTrancheQuote, CalibratedCreditCurve, CdsQuote, CreditDefaultSwap, IsdaCdsEngine,
-    ProtectionSide, SurvivalProbabilityCurve, bootstrap_base_correlation_curve,
+    BaseCorrelationTrancheQuote, CalibratedCreditCurve, CdsQuote, CreditDefaultSwap,
+    IsdaCdsEngine, ProtectionSide, SurvivalProbabilityCurve, bootstrap_base_correlation_curve,
     price_mezzanine_tranche_base_correlation,
 };
 use ql_curves::{
@@ -66,7 +66,7 @@ fn config(scale: usize) -> BenchConfig {
         // parallel.  `scale` changes only this repetition count; the domain
         // workload itself remains invariant across test and bench modes.
         // The short parity configuration intentionally uses one iteration so
-        // the complete 28-suite test remains a fast (<2s on CI) invariant
+        // the complete 29-suite test remains a fast (<2s on CI) invariant
         // check rather than a second timing benchmark.
         iters_per_sample: if samples <= 3 {
             scale.max(1)
@@ -3222,8 +3222,201 @@ pub fn benchmark_cheyette_cmo_qrh_basecorr_cdar_aad(scale: usize) -> ComparisonR
     )
 }
 
+fn phase17_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
+    let d = date(2024, 1, 1);
+    let curve = FlatForwardCurve::new(d, T::from_f64(0.03) + x[0] * 0.001);
+    let asw = ql_fixed_income::analyze_bond_asset_swap_and_z_spread(
+        &ql_fixed_income::BondAssetSwapSpec {
+            clean_price: T::from_f64(0.97) + x[1] * 0.001,
+            accrued_interest: T::from_f64(0.01),
+            coupon_rate: T::from_f64(0.04) + x[2] * 0.0005,
+            payment_times: vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            accrual_fractions: vec![1.0; 5],
+        },
+        &curve,
+    );
+    let mf = ql_rates::price_markov_functional_1f(
+        &ql_rates::MarkovFunctionalSwaptionSpec {
+            expiry: 1.0,
+            payment_times: vec![2.0, 3.0, 4.0, 5.0],
+            mean_reversion: T::from_f64(0.05) + x[2] * 0.001,
+            atm_normal_vol: T::from_f64(0.008) + x[3] * 0.0001,
+            sabr_rho: T::from_f64(-0.25),
+            sabr_nu: T::from_f64(0.35),
+            strike: T::from_f64(0.031) + x[1] * 0.0001,
+            notional: T::from_f64(100.0),
+            is_payer: true,
+        },
+        &curve,
+        12,
+    );
+
+    let bacva = ql_xva::compute_ba_cva_capital(&ql_xva::BaCvaPortfolioSpec {
+        counterparties: vec![ql_xva::BaCvaCounterpartySpec {
+            risk_weight: T::from_f64(0.05),
+            effective_maturity: T::from_f64(3.0),
+            ead: T::from_f64(100.0) + x[0] * 0.5,
+            single_name_hedges: vec![ql_xva::BaCvaSingleNameHedge {
+                notional: T::from_f64(35.0) + x[1] * 0.2,
+                maturity: T::from_f64(3.0),
+                hedge_correlation: 0.8,
+            }],
+        }],
+        index_hedges: vec![],
+        hurdle_rate: T::from_f64(0.10),
+        risk_free_rate: T::from_f64(0.03) + x[0] * 0.001,
+    })
+    .capital_charge;
+    let bcox = ql_credit::analyze_structural_credit_black_cox(&ql_credit::BlackCoxStructuralSpec {
+        asset_value: T::from_f64(140.0) + x[2] * 0.5,
+        debt_face_value: T::from_f64(100.0),
+        default_barrier: T::from_f64(85.0),
+        barrier_growth_rate: T::from_f64(0.02),
+        asset_vol: T::from_f64(0.25) + x[3] * 0.001,
+        risk_free_rate: T::from_f64(0.03) + x[0] * 0.001,
+        asset_payout_rate: T::from_f64(0.01),
+        maturity: T::from_f64(3.0),
+        recovery_rate: T::from_f64(0.40),
+    })
+    .black_cox_cds_spread;
+
+    let ah_slice = ql_models::solve_andreasen_huge_step(
+        &ql_models::AndreasenHugeGridSpec {
+            forward: T::from_f64(100.0) + x[0] * 0.1,
+            rate: T::from_f64(0.02),
+            dt: T::from_f64(0.5),
+            strike_min: T::from_f64(70.0),
+            strike_max: T::from_f64(130.0),
+            n_grid: 25,
+            local_vol_atm: T::from_f64(0.20) + x[1] * 0.001,
+            local_vol_skew: T::from_f64(-0.15) + x[2] * 0.001,
+            local_vol_smile: T::from_f64(0.10) + x[3] * 0.001,
+        },
+        None,
+    );
+    let ah_call = ql_models::interpolate_andreasen_huge_call(&ah_slice, T::from_f64(100.0));
+    let fx_acc = ql_fx::price_fx_accumulator_strip_no_ko(&ql_fx::FxAccumulatorSpec {
+        base_notional_per_fixing: T::from_f64(10.0),
+        spot: T::from_f64(1.10) + x[0] * 0.001,
+        strike: T::from_f64(1.06),
+        knockout_barrier: T::from_f64(1.20),
+        r_dom: T::from_f64(0.03),
+        r_for: T::from_f64(0.01),
+        vol: T::from_f64(0.12) + x[1] * 0.001,
+        fixing_times: vec![0.25, 0.50, 0.75, 1.0],
+        guaranteed_fixings: 1,
+        downside_gearing: T::from_f64(2.0),
+        is_accumulator: true,
+        smoothing_eps: 1e-2,
+    });
+
+    let p_curve = ql_commodities::CommodityFuturesCurve::new(
+        vec![0.25, 0.50, 0.75, 1.0],
+        vec![
+            T::from_f64(45.0) + x[0] * 0.1,
+            T::from_f64(58.0) + x[1] * 0.1,
+            T::from_f64(42.0),
+            T::from_f64(62.0),
+        ],
+    )
+    .unwrap();
+    let bess = ql_commodities::price_bess_arbitrage_dp(
+        &ql_commodities::BessSpec {
+            decision_times: vec![0.25, 0.50, 0.75, 1.0],
+            energy_capacity_mwh: 4.0,
+            initial_soc_mwh: 2.0,
+            max_charge_mw: 8.0,
+            max_discharge_mw: 8.0,
+            charge_efficiency: T::from_f64(0.92) + x[2] * 0.001,
+            discharge_efficiency: T::from_f64(0.92) + x[3] * 0.001,
+            cycle_degradation_cost: T::from_f64(1.5),
+            ancillary_reserve_rate: T::from_f64(2.0),
+            soc_grid_points: 3,
+        },
+        &p_curve,
+        T::from_f64(1.5),
+        T::from_f64(0.35),
+        T::from_f64(0.03),
+    )
+    .total_npv;
+    let idz = ql_portfolio::idzorek_black_litterman_posterior(&ql_portfolio::IdzorekBlackLittermanSpec {
+        covariance: vec![
+            vec![T::from_f64(0.04), T::from_f64(0.01)],
+            vec![T::from_f64(0.01), T::from_f64(0.09)],
+        ],
+        market_weights: vec![T::from_f64(0.6), T::from_f64(0.4)],
+        risk_aversion: T::from_f64(2.5),
+        tau: T::from_f64(0.05),
+        view_matrix: vec![vec![T::one(), -T::one()]],
+        view_returns: vec![T::from_f64(0.03) + x[2] * 0.0005],
+        view_confidences: vec![T::from_f64(0.65) + x[3] * 0.005],
+    })
+    .weights[0];
+    let dp_exec = ql_portfolio::optimal_dark_lit_execution(&ql_portfolio::DarkLitRoutingSpec {
+        initial_inventory: T::from_f64(100.0),
+        horizon: T::one(),
+        num_steps: 4,
+        volatility: T::from_f64(0.20) + x[1] * 0.001,
+        lit_temporary_impact: T::from_f64(1e-3),
+        lit_permanent_impact: T::from_f64(2e-4),
+        dark_fill_intensity: T::from_f64(1.5) + x[3] * 0.01,
+        risk_aversion: T::from_f64(0.25),
+    })
+    .expected_total_cost;
+
+    [
+        asw.z_spread + asw.par_asset_swap_spread + mf.swaption_npv + mf.cms_swaplet_rate,
+        bacva + bcox,
+        ah_call + fx_acc,
+        bess + idz + dp_exec,
+    ]
+}
+
+pub fn benchmark_asw_mf1f_ah_bess_ep_aad(scale: usize) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let h = 1e-5;
+    let baseline = || {
+        let base = phase17_workloads(x0);
+        let mut checksum: f64 = base.iter().sum();
+        for lane in 0..4 {
+            let mut up = x0;
+            let mut dn = x0;
+            up[lane] += h;
+            dn[lane] -= h;
+            let w_up = phase17_workloads(up);
+            let w_dn = phase17_workloads(dn);
+            for component in 0..4 {
+                checksum += (w_up[component] - w_dn[component]) / (2.0 * h);
+            }
+        }
+        checksum
+    };
+    let sota = || {
+        type D = Dual<4>;
+        let x = [
+            D::variable(x0[0], 0),
+            D::variable(x0[1], 1),
+            D::variable(x0[2], 2),
+            D::variable(x0[3], 3),
+        ];
+        phase17_workloads(x)
+            .iter()
+            .map(|y| y.val + y.d.iter().sum::<f64>())
+            .sum::<f64>()
+    };
+    run_comparison(
+        "29_asw_mf1f_ah_bess_ep_aad",
+        "ASW-Z/MF1F/AH-LV/BESS/Idzorek-DP single-pass AD",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
+}
+
 pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
-    // Keep all quantitative engine dependencies linked into the 28-suite
+    // Keep all quantitative engine dependencies linked into the 29-suite
     // benchmark binary, including engines used by the parity harness.
     let _ = ql_math::inv_norm_cdf(0.5);
     let _ = std::mem::size_of::<ql_pde::Fd2dHestonEngine>();
@@ -3260,6 +3453,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_phase14_double_heston_tarf_coco_hrp(scale),
         benchmark_phase15_jy_tba_bergomi_nco(scale),
         benchmark_cheyette_cmo_qrh_basecorr_cdar_aad(scale),
+        benchmark_asw_mf1f_ah_bess_ep_aad(scale),
     ]
 }
 

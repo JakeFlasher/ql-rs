@@ -584,3 +584,122 @@ impl CalibratedCreditCurve {
         sign * cds.notional * (1. - cds.recovery_rate) - current_npv
     }
 }
+
+#[derive(Copy, Clone, Debug)]
+pub struct BlackCoxStructuralSpec<T: Real = f64> {
+    pub asset_value: T,
+    pub debt_face_value: T,
+    pub default_barrier: T,
+    pub barrier_growth_rate: T,
+    pub asset_vol: T,
+    pub risk_free_rate: T,
+    pub asset_payout_rate: T,
+    pub maturity: T,
+    pub recovery_rate: T,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct StructuralCreditReport<T: Real> {
+    pub equity_value: T,
+    pub equity_vol: T,
+    pub merton_distance_to_default: T,
+    pub merton_survival_prob: T,
+    pub merton_credit_spread: T,
+    pub black_cox_survival_prob: T,
+    pub black_cox_cds_spread: T,
+}
+
+pub fn analyze_structural_credit_black_cox<T: Real>(
+    spec: &BlackCoxStructuralSpec<T>,
+) -> StructuralCreditReport<T> {
+    let v0 = spec.asset_value.max_val(T::from_f64(1e-8));
+    let d_face = spec.debt_face_value.max_val(T::from_f64(1e-8));
+    let t = spec.maturity.max_val(T::from_f64(1e-6));
+    let sig = spec.asset_vol.max_val(T::from_f64(1e-6));
+    let st = sig * t.sqrt();
+    let r = spec.risk_free_rate;
+    let q = spec.asset_payout_rate;
+
+    let d1 = ((v0 / d_face).ln() + (r - q + sig * sig * 0.5) * t) / st;
+    let d2 = d1 - st;
+    let v_disc = v0 * (-q * t).exp();
+    let d_disc = d_face * (-r * t).exp();
+    let eq_val = (v_disc * d1.norm_cdf() - d_disc * d2.norm_cdf()).max_val(T::from_f64(1e-8));
+    let eq_vol = sig * (v_disc * d1.norm_cdf()) / eq_val;
+    let debt_val = (v_disc - eq_val).max_val(T::from_f64(1e-8));
+    let merton_surv = d2.norm_cdf();
+    let merton_spread = -(debt_val / d_disc).min_val(T::one()).ln() / t;
+
+    let b0 = spec.default_barrier.max_val(T::from_f64(1e-8));
+    let bc_surv = if b0.val() >= v0.val() {
+        T::from_f64(1e-8)
+    } else {
+        let log_b = (b0 / v0).ln();
+        let mu_tilde = r - q - spec.barrier_growth_rate - sig * sig * 0.5;
+        let z1 = (-log_b + mu_tilde * t) / st;
+        let z2 = (log_b + mu_tilde * t) / st;
+        let exp_arg = (mu_tilde * log_b * 2.0 / (sig * sig)).min_val(T::from_f64(50.0));
+        (z1.norm_cdf() - exp_arg.exp() * z2.norm_cdf())
+            .max_val(T::from_f64(1e-8))
+            .min_val(T::one())
+    };
+    let lgd = (T::one() - spec.recovery_rate).max_val(T::zero());
+    let bc_spread = -lgd * bc_surv.ln() / t;
+
+    StructuralCreditReport {
+        equity_value: eq_val,
+        equity_vol: eq_vol,
+        merton_distance_to_default: d2,
+        merton_survival_prob: merton_surv,
+        merton_credit_spread: merton_spread,
+        black_cox_survival_prob: bc_surv,
+        black_cox_cds_spread: bc_spread,
+    }
+}
+
+#[cfg(test)]
+mod phase17_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn black_cox_first_passage_dominance_and_ad() {
+        let s = BlackCoxStructuralSpec {
+            asset_value: 140.0,
+            debt_face_value: 100.0,
+            default_barrier: 100.0 * (-0.02 * 3.0f64).exp(),
+            barrier_growth_rate: 0.02,
+            asset_vol: 0.25,
+            risk_free_rate: 0.03,
+            asset_payout_rate: 0.01,
+            maturity: 3.0,
+            recovery_rate: 0.40,
+        };
+        let rep = analyze_structural_credit_black_cox(&s);
+        assert!(rep.black_cox_survival_prob <= rep.merton_survival_prob + 1e-12);
+        assert!(rep.black_cox_cds_spread > 0.0);
+
+        let h = 1e-5;
+        let eval_v = |v: f64| {
+            let mut sp = s;
+            sp.asset_value = v;
+            analyze_structural_credit_black_cox(&sp).black_cox_cds_spread
+        };
+        let fd = (eval_v(140.0 + h) - eval_v(140.0 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let sd = BlackCoxStructuralSpec {
+            asset_value: D::variable(140.0, 0),
+            debt_face_value: D::from_value(100.0),
+            default_barrier: D::from_value(100.0 * (-0.02 * 3.0f64).exp()),
+            barrier_growth_rate: D::from_value(0.02),
+            asset_vol: D::from_value(0.25),
+            risk_free_rate: D::from_value(0.03),
+            asset_payout_rate: D::from_value(0.01),
+            maturity: D::from_value(3.0),
+            recovery_rate: D::from_value(0.40),
+        };
+        let ad = analyze_structural_credit_black_cox(&sd).black_cox_cds_spread;
+        assert!(ad.d[0] < 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}
