@@ -11,6 +11,7 @@ pub struct BussetiBoydRiskConstrainedKellySpec<T: Real = f64> {
     pub specialist_immediate_capital: T,
     pub slow_moving_external_capital: T,
     pub capital_arrival_rate: T,
+    pub dislocation_horizon_years: T,
     pub forced_liquidation_notional: T,
 }
 #[derive(Clone, Debug)]
@@ -23,55 +24,50 @@ pub struct BussetiBoydRiskConstrainedKellyReport<T: Real = f64> {
     pub constrained_kelly_expected_log_growth: T,
     pub constrained_portfolio_volatility: T,
     pub initial_fire_sale_dislocation_bps: T,
+    pub horizon_fire_sale_discount_bps: T,
     pub half_life_capital_recovery_days: T,
 }
 pub fn solve_busseti_boyd_risk_constrained_kelly<T: Real>(
     s: &BussetiBoydRiskConstrainedKellySpec<T>,
 ) -> BussetiBoydRiskConstrainedKellyReport<T> {
     let n = s.excess_return_means.len();
-    let mut w = vec![T::zero(); n];
-    for i in 0..n {
-        let d = s
-            .covariance
-            .get(i)
-            .and_then(|r| r.get(i))
-            .copied()
-            .unwrap_or(T::one())
-            .max_val(T::from_f64(1e-8));
-        w[i] = s.excess_return_means[i] / d;
-    }
+    let w = solve_dense_alloc(&s.covariance, &s.excess_return_means);
     let lam = (T::one() / s.max_drawdown_prob_beta.max_val(T::from_f64(1e-12))).ln()
         / (T::one() / s.drawdown_floor_alpha.max_val(T::from_f64(1e-12))).ln();
-    let kap = T::from_f64(2.0) / (T::one() + lam);
-    let kap = kap.min_val(T::one());
+    let kap = (T::from_f64(2.0) / (T::one() + lam))
+        .min_val(T::one())
+        .max_val(T::zero());
     let wc = w.iter().map(|&x| x * kap).collect::<Vec<_>>();
-    let quad = |x: &Vec<T>| {
-        let mut q = T::zero();
-        for i in 0..n {
-            for j in 0..n {
-                q += x[i]
+    let quad = |x: &[T]| {
+        (0..n).fold(T::zero(), |acc, i| {
+            acc + (0..n).fold(T::zero(), |a, j| {
+                a + x[i]
                     * s.covariance
                         .get(i)
                         .and_then(|r| r.get(j))
                         .copied()
                         .unwrap_or(T::zero())
-                    * x[j];
-            }
-        }
-        q
+                    * x[j]
+            })
+        })
     };
-    let dot = |x: &Vec<T>| {
+    let dot = |x: &[T]| {
         x.iter()
             .zip(s.excess_return_means.iter())
             .map(|(&a, &b)| a * b)
             .fold(T::zero(), |a, b| a + b)
     };
-    let gf = s.risk_free_rate + dot(&w) - T::from_f64(0.5) * quad(&w);
+    let vol_full = quad(&w).max_val(T::from_f64(1e-16)).sqrt();
+    let mu_full = dot(&w);
+    let gf = s.risk_free_rate + mu_full - T::from_f64(0.5) * vol_full * vol_full;
     let gc = s.risk_free_rate + dot(&wc) - T::from_f64(0.5) * quad(&wc);
-    let vol = quad(&wc).max_val(T::zero()).sqrt();
-    let dis = vol * vol * s.forced_liquidation_notional
-        / s.specialist_immediate_capital.max_val(T::from_f64(1e-8))
-        * T::from_f64(1e4);
+    let vol = quad(&wc).max_val(T::from_f64(1e-16)).sqrt();
+    let eff_cap = s.specialist_immediate_capital.max_val(T::from_f64(1e-8))
+        + s.slow_moving_external_capital.max_val(T::zero())
+            * (T::one()
+                - (-s.capital_arrival_rate.abs() * s.dislocation_horizon_years.max_val(T::zero()))
+                    .exp());
+    let dis = (s.forced_liquidation_notional * vol.powf(2.0) / eff_cap * T::from_f64(1e4)).abs();
     BussetiBoydRiskConstrainedKellyReport {
         full_kelly_weights: w,
         risk_constrained_kelly_weights: wc,
@@ -81,10 +77,16 @@ pub fn solve_busseti_boyd_risk_constrained_kelly<T: Real>(
         constrained_kelly_expected_log_growth: gc,
         constrained_portfolio_volatility: vol,
         initial_fire_sale_dislocation_bps: dis,
+        horizon_fire_sale_discount_bps: dis
+            * (T::one()
+                - (-s.capital_arrival_rate.abs() * s.dislocation_horizon_years.max_val(T::zero()))
+                    .exp())
+            .max_val(T::zero()),
         half_life_capital_recovery_days: T::from_f64(2.0_f64.ln())
             / s.capital_arrival_rate.max_val(T::from_f64(1e-8)),
     }
 }
+
 use thiserror::Error;
 fn solve_dense_alloc<T: Real>(a: &[Vec<T>], b: &[T]) -> Vec<T> {
     let n = b.len();
@@ -224,53 +226,6 @@ pub fn evaluate_grinold_kahn_clarke_fundamental_law<T: Real>(
         constrained_information_ratio: irc,
         expected_active_return: rc * rebs.sqrt(),
         optimal_active_risk_aversion_lambda: lam,
-    }
-}
-
-#[cfg(test)]
-mod phase23_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn nco_weights_sum() {
-        let s = LopezDePradoNcoDenoisedSpec {
-            covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
-            expected_returns: vec![0.05, 0.06],
-            sample_ratio_q: 2.0,
-            denoising_alpha: 0.5,
-            num_clusters: 2,
-        };
-        let r = solve_lopez_de_prado_denoised_nco_allocation(&s);
-        assert!((r.nco_optimal_weights.iter().sum::<f64>() - 1.0).abs() < 1e-8);
-        assert!((r.nco_optimal_weights[0] - r.nco_optimal_weights[1]).abs() > 1e-8);
-        assert!(r.denoised_condition_number <= r.raw_condition_number + 1e-8);
-    }
-
-    #[test]
-    fn dual_fd_parity() {
-        fn mk<T: Real>(x: T) -> LopezDePradoNcoDenoisedSpec<T> {
-            LopezDePradoNcoDenoisedSpec {
-                covariance: vec![
-                    vec![T::from_f64(0.04), T::from_f64(0.01)],
-                    vec![T::from_f64(0.01), T::from_f64(0.09)],
-                ],
-                expected_returns: vec![x, T::from_f64(0.06)],
-                sample_ratio_q: T::from_f64(2.0),
-                denoising_alpha: T::from_f64(0.5),
-                num_clusters: 2,
-            }
-        }
-        let h = 1e-5;
-        let fd = (solve_lopez_de_prado_denoised_nco_allocation(&mk(0.05 + h))
-            .nco_portfolio_volatility
-            .val()
-            - solve_lopez_de_prado_denoised_nco_allocation(&mk(0.05 - h))
-                .nco_portfolio_volatility
-                .val())
-            / (2.0 * h);
-        let ad = solve_lopez_de_prado_denoised_nco_allocation(&mk(Dual::<1>::variable(0.05, 0)))
-            .nco_portfolio_volatility;
-        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
 
@@ -1881,17 +1836,6 @@ pub fn oas_and_nonlinear_shrinkage_covariance<T: Real>(
     try_oas_and_nonlinear_shrinkage_covariance(returns).expect("valid return matrix for OAS")
 }
 
-#[cfg(test)]
-mod phase14_tests {
-    use super::*;
-    #[test]
-    fn phase14_hrp_diagonal_inverse_variance() {
-        let c = vec![vec![0.04, 0.0], vec![0.0, 0.09]];
-        let w = hierarchical_risk_parity_weights(&c);
-        assert!((w[0] - 0.09 / 0.13).abs() < 1e-12);
-        assert!((w[1] - 0.04 / 0.13).abs() < 1e-12);
-    }
-}
 pub fn implied_equilibrium_returns<T: Real>(
     cov: &[Vec<T>],
     weights: &[T],
@@ -2662,46 +2606,6 @@ pub fn robust_markowitz_weights<T: Real>(s: &RobustMarkowitzSpec<T>) -> Vec<T> {
     try_robust_markowitz_weights(s).expect("valid robust Markowitz inputs")
 }
 
-#[cfg(test)]
-mod phase13_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn robust_markowitz_dual_matches_fd_in_mu_and_kappa() {
-        let eval_f64 = |mu0: f64, kappa: f64| {
-            robust_markowitz_weights(&RobustMarkowitzSpec {
-                covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
-                return_uncertainty_cov: vec![vec![0.02, 0.005], vec![0.005, 0.03]],
-                expected_returns: vec![mu0, 0.04],
-                risk_aversion: 2.5,
-                uncertainty_radius: kappa,
-                lower_bounds: vec![0.0, 0.0],
-                upper_bounds: vec![1.0, 1.0],
-            })[0]
-        };
-        let w_ad = robust_markowitz_weights(&RobustMarkowitzSpec {
-            covariance: vec![
-                vec![Dual::<2>::from_value(0.04), Dual::<2>::from_value(0.01)],
-                vec![Dual::<2>::from_value(0.01), Dual::<2>::from_value(0.09)],
-            ],
-            return_uncertainty_cov: vec![
-                vec![Dual::<2>::from_value(0.02), Dual::<2>::from_value(0.005)],
-                vec![Dual::<2>::from_value(0.005), Dual::<2>::from_value(0.03)],
-            ],
-            expected_returns: vec![Dual::<2>::variable(0.07, 0), Dual::<2>::from_value(0.04)],
-            risk_aversion: Dual::<2>::from_value(2.5),
-            uncertainty_radius: Dual::<2>::variable(0.15, 1),
-            lower_bounds: vec![Dual::<2>::from_value(0.0), Dual::<2>::from_value(0.0)],
-            upper_bounds: vec![Dual::<2>::from_value(1.0), Dual::<2>::from_value(1.0)],
-        })[0];
-        let h = 1e-6;
-        let fd_mu0 = (eval_f64(0.07 + h, 0.15) - eval_f64(0.07 - h, 0.15)) / (2.0 * h);
-        let fd_kap = (eval_f64(0.07, 0.15 + h) - eval_f64(0.07, 0.15 - h)) / (2.0 * h);
-        assert!((w_ad.d[0] - fd_mu0).abs() < 1e-6);
-        assert!((w_ad.d[1] - fd_kap).abs() < 1e-6);
-    }
-}
-
 pub fn gerber_covariance_matrix<T: Real>(
     returns: &[Vec<T>],
     threshold_c: f64,
@@ -2990,75 +2894,6 @@ pub fn nested_clustered_optimization_weights<T: Real>(
 ) -> Vec<T> {
     try_nested_clustered_optimization_weights(s).expect("valid NCO inputs")
 }
-#[cfg(test)]
-mod phase15_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn gerber_rmt_nco() {
-        let r = vec![
-            vec![0.01, 0.02],
-            vec![-0.02, -0.01],
-            vec![0.03, 0.02],
-            vec![-0.01, -0.02],
-        ];
-        let g = gerber_covariance_matrix(&r, 0.5, 1e-3).unwrap();
-        assert!(g[0][0] > 0.0 && (g[0][1] - g[1][0]).abs() < 1e-12);
-        let c = vec![
-            vec![0.04, 0.01, 0., 0.],
-            vec![0.01, 0.09, 0., 0.],
-            vec![0., 0., 0.16, 0.02],
-            vec![0., 0., 0.02, 0.25],
-        ];
-        let w = nested_clustered_optimization_weights(&NestedClusteredOptimizationSpec {
-            covariance: c.clone(),
-            expected_returns: None,
-            risk_aversion: 1.0,
-            num_clusters: 2,
-        });
-        let mv = markowitz_minimum_variance_weights(&c);
-        assert!((w.iter().sum::<f64>() - 1.0).abs() < 1e-10);
-        for i in 0..4 {
-            assert!((w[i] - mv[i]).abs() < 1e-10);
-        }
-        let h = 1e-5;
-        let eval_rmt = |x01: f64| {
-            let mut c2 = c.clone();
-            c2[0][1] = x01;
-            c2[1][0] = x01;
-            marchenko_pastur_denoise_covariance(&c2, 12).unwrap()[0][1]
-        };
-        let fd_rmt = (eval_rmt(0.01 + h) - eval_rmt(0.01 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let mut cd: Vec<Vec<D>> = c
-            .iter()
-            .map(|row| row.iter().map(|&v| D::from_value(v)).collect())
-            .collect();
-        cd[0][1] = D::variable(0.01, 0);
-        cd[1][0] = D::variable(0.01, 0);
-        let rmt_d = marchenko_pastur_denoise_covariance(&cd, 12).unwrap();
-        assert!((rmt_d[0][1].d[0] - fd_rmt).abs() < 1e-5);
-        let eval_nco0 = |x01: f64| {
-            let mut c2 = c.clone();
-            c2[0][1] = x01;
-            c2[1][0] = x01;
-            nested_clustered_optimization_weights(&NestedClusteredOptimizationSpec {
-                covariance: c2,
-                expected_returns: None,
-                risk_aversion: 1.0,
-                num_clusters: 2,
-            })[0]
-        };
-        let fd_nco = (eval_nco0(0.01 + h) - eval_nco0(0.01 - h)) / (2.0 * h);
-        let nco_d = nested_clustered_optimization_weights(&NestedClusteredOptimizationSpec {
-            covariance: cd,
-            expected_returns: None,
-            risk_aversion: D::one(),
-            num_clusters: 2,
-        });
-        assert!((nco_d[0].d[0] - fd_nco).abs() < 1e-5);
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct IdzorekBlackLittermanSpec<T: Real = f64> {
@@ -3266,199 +3101,6 @@ pub fn kelly_fractional_allocation<T: Real>(
     try_kelly_fractional_allocation(s).expect("valid Kelly allocation inputs")
 }
 
-#[cfg(test)]
-mod phase17_tests {
-    use super::*;
-    use ql_ad::Dual;
-
-    #[test]
-    fn idzorek_boundary_limits_and_kelly_ad() {
-        let cov = vec![vec![0.04, 0.01], vec![0.01, 0.09]];
-        let w_mkt = vec![0.6, 0.4];
-        let mut s = IdzorekBlackLittermanSpec {
-            covariance: cov.clone(),
-            market_weights: w_mkt.clone(),
-            risk_aversion: 2.5,
-            tau: 0.05,
-            view_matrix: vec![vec![1.0, -1.0]],
-            view_returns: vec![0.03],
-            view_confidences: vec![0.0],
-        };
-        let p0 = idzorek_black_litterman_posterior(&s);
-        assert!((p0.weights[0] - w_mkt[0]).abs() < 1e-12);
-        assert!((p0.weights[1] - w_mkt[1]).abs() < 1e-12);
-
-        s.view_confidences = vec![1.0];
-        let p1 = idzorek_black_litterman_posterior(&s);
-        let view_realized = p1.expected_returns[0] - p1.expected_returns[1];
-        assert!((view_realized - 0.03).abs() < 1e-12);
-
-        let h = 1e-5;
-        let eval_c = |c_val: f64| {
-            let mut sp = s.clone();
-            sp.view_confidences = vec![c_val];
-            idzorek_black_litterman_posterior(&sp).weights[0]
-        };
-        let fd = (eval_c(0.65 + h) - eval_c(0.65 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let sd = IdzorekBlackLittermanSpec {
-            covariance: vec![
-                vec![D::from_value(0.04), D::from_value(0.01)],
-                vec![D::from_value(0.01), D::from_value(0.09)],
-            ],
-            market_weights: vec![D::from_value(0.6), D::from_value(0.4)],
-            risk_aversion: D::from_value(2.5),
-            tau: D::from_value(0.05),
-            view_matrix: vec![vec![D::one(), -D::one()]],
-            view_returns: vec![D::from_value(0.03)],
-            view_confidences: vec![D::variable(0.65, 0)],
-        };
-        let ad = idzorek_black_litterman_posterior(&sd).weights[0];
-        assert!((ad.d[0] - fd).abs() < 1e-6);
-
-        let kelly = kelly_fractional_allocation(&KellyAllocationSpec {
-            expected_returns: vec![0.08, 0.11],
-            covariance: cov,
-            risk_free_rate: 0.03,
-            max_kelly_fraction: 0.5,
-            max_drawdown_limit: 0.20,
-            drawdown_tail_prob: 0.10,
-        });
-        let kelly_tighter = kelly_fractional_allocation(&KellyAllocationSpec {
-            expected_returns: vec![0.08, 0.11],
-            covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
-            risk_free_rate: 0.03,
-            max_kelly_fraction: 0.5,
-            max_drawdown_limit: 0.10,
-            drawdown_tail_prob: 0.10,
-        });
-        assert!(kelly.effective_kelly_fraction > 0.0 && kelly.effective_kelly_fraction < 0.5);
-        assert!(kelly_tighter.effective_kelly_fraction < kelly.effective_kelly_fraction);
-        assert!(kelly.expected_log_growth_rate > 0.03);
-    }
-}
-
-#[cfg(test)]
-mod phase18_tests {
-    use super::*;
-    use ql_ad::Dual;
-
-    #[test]
-    fn entropy_pooling_view_satisfaction_weights_and_ad() {
-        let s_prior = EntropyPoolingSpec {
-            scenario_returns: vec![vec![0.08, 0.02], vec![-0.04, 0.06], vec![0.02, -0.03]],
-            prior_probs: vec![1.0 / 3.0; 3],
-            view_matrix: vec![vec![0.08, -0.04, 0.02]],
-            view_targets: vec![0.02],
-            risk_aversion: 2.5,
-        };
-        let r0 = entropy_pooling_posterior(&s_prior);
-        assert!(r0.kl_divergence.abs() < 1e-12);
-
-        let mut s_view = s_prior.clone();
-        s_view.view_targets = vec![0.04];
-        let r1 = entropy_pooling_posterior(&s_view);
-        assert!(r1.kl_divergence > 0.0);
-        assert!((r1.posterior_mean[0] - 0.04).abs() < 1e-10);
-        assert!(r1.weights[0].abs() > 0.0);
-
-        let h = 1e-5;
-        let eval_b = |b: f64| {
-            let mut sp = s_view.clone();
-            sp.view_targets = vec![b];
-            entropy_pooling_posterior(&sp).weights[0]
-        };
-        let fd = (eval_b(0.04 + h) - eval_b(0.04 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let sd = EntropyPoolingSpec {
-            scenario_returns: vec![
-                vec![D::from_value(0.08), D::from_value(0.02)],
-                vec![D::from_value(-0.04), D::from_value(0.06)],
-                vec![D::from_value(0.02), D::from_value(-0.03)],
-            ],
-            prior_probs: vec![D::from_value(1.0 / 3.0); 3],
-            view_matrix: vec![vec![
-                D::from_value(0.08),
-                D::from_value(-0.04),
-                D::from_value(0.02),
-            ]],
-            view_targets: vec![D::variable(0.04, 0)],
-            risk_aversion: D::from_value(2.5),
-        };
-        let ad = entropy_pooling_posterior(&sd).weights[0];
-        assert!((ad.d[0] - fd).abs() < 5e-5);
-    }
-}
-
-#[cfg(test)]
-mod phase19_tests {
-    use super::*;
-    use ql_ad::Dual;
-
-    #[test]
-    fn cotton_schur_hrp_unifies_hrp_and_minimum_variance_and_oas_shrinkage_ad() {
-        // Cotton (2024) Theorem: on a 3x3 equicorrelated unit-variance matrix,
-        // standard HRP (gamma = 0) gives asymmetric weights, whereas Schur-HRP at gamma = 1
-        // recovers the exact symmetric Minimum-Variance weights (1/3, 1/3, 1/3)!
-        let rho = 0.5;
-        let cov = vec![
-            vec![1.0, rho, rho],
-            vec![rho, 1.0, rho],
-            vec![rho, rho, 1.0],
-        ];
-        let hrp0 = schur_complementary_hrp(&SchurHrpSpec {
-            covariance: cov.clone(),
-            gamma: 0.0,
-        });
-        let mv1 = schur_complementary_hrp(&SchurHrpSpec {
-            covariance: cov.clone(),
-            gamma: 1.0,
-        });
-        assert!((hrp0.weights[0] - 1.0 / 3.0).abs() > 1e-2);
-        for &w in &mv1.weights {
-            assert!((w - 1.0 / 3.0).abs() < 1e-12);
-        }
-        assert!(mv1.portfolio_variance < hrp0.portfolio_variance);
-
-        let rets = vec![
-            vec![0.02, -0.01, 0.015],
-            vec![-0.01, 0.03, -0.005],
-            vec![0.015, 0.005, 0.02],
-            vec![-0.02, -0.015, 0.01],
-            vec![0.01, 0.02, -0.01],
-        ];
-        let shrink = oas_and_nonlinear_shrinkage_covariance(&rets);
-        assert!(shrink.oas_shrinkage_intensity > 0.0 && shrink.oas_shrinkage_intensity <= 1.0);
-        let tr_oas =
-            shrink.oas_covariance[0][0] + shrink.oas_covariance[1][1] + shrink.oas_covariance[2][2];
-        let tr_nl = shrink.nonlinear_shrunk_covariance[0][0]
-            + shrink.nonlinear_shrunk_covariance[1][1]
-            + shrink.nonlinear_shrunk_covariance[2][2];
-        assert!((tr_oas - tr_nl).abs() < 1e-12);
-
-        let h = 1e-5;
-        let eval_g = |g: f64| {
-            schur_complementary_hrp(&SchurHrpSpec {
-                covariance: cov.clone(),
-                gamma: g,
-            })
-            .weights[0]
-        };
-        let fd = (eval_g(0.5 + h) - eval_g(0.5 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let cov_d: Vec<Vec<D>> = cov
-            .iter()
-            .map(|r| r.iter().map(|&x| D::from_value(x)).collect())
-            .collect();
-        let ad = schur_complementary_hrp(&SchurHrpSpec {
-            covariance: cov_d,
-            gamma: D::variable(0.5, 0),
-        })
-        .weights[0];
-        assert!((ad.d[0] - fd).abs() < 1e-6);
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct FactorEigenRiskParitySpec<T: Real = f64> {
     pub covariance: Vec<Vec<T>>,
@@ -3656,133 +3298,6 @@ pub fn solve_principal_component_risk_parity<T: Real>(
 ) -> FactorEigenRiskParityReport<T> {
     try_solve_principal_component_risk_parity(spec)
         .expect("valid covariance matrix and factor risk budgets for PCRP")
-}
-
-#[cfg(test)]
-mod phase20_tests {
-    use super::*;
-    use ql_ad::Dual;
-
-    #[test]
-    fn principal_component_risk_parity_exact_factor_shares_enb_and_ad() {
-        let cov = vec![
-            vec![0.04, 0.025, 0.010],
-            vec![0.025, 0.05, 0.015],
-            vec![0.010, 0.015, 0.03],
-        ];
-        let spec = FactorEigenRiskParitySpec {
-            covariance: cov.clone(),
-            factor_risk_budgets: vec![1.0 / 3.0; 3],
-        };
-        let rep = solve_principal_component_risk_parity(&spec);
-        assert!((rep.weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
-        // Equal factor risk budgets => each principal component contributes 1/3 of variance and PCA ENB == 3.0!
-        for &s in &rep.factor_variance_shares {
-            assert!((s - 1.0 / 3.0).abs() < 1e-10);
-        }
-        assert!((rep.effective_number_of_pca_bets - 3.0).abs() < 1e-10);
-        assert!(rep.effective_number_of_pca_bets > rep.equal_weight_pca_enb);
-
-        let h = 1e-5;
-        let eval_b0 = |b0: f64| {
-            solve_principal_component_risk_parity(&FactorEigenRiskParitySpec {
-                covariance: cov.clone(),
-                factor_risk_budgets: vec![b0, 1.0 / 3.0, 1.0 / 3.0],
-            })
-            .weights[0]
-        };
-        let fd = (eval_b0(1.0 / 3.0 + h) - eval_b0(1.0 / 3.0 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let cov_d: Vec<Vec<D>> = cov
-            .iter()
-            .map(|r| r.iter().map(|&x| D::from_value(x)).collect())
-            .collect();
-        let ad = solve_principal_component_risk_parity(&FactorEigenRiskParitySpec {
-            covariance: cov_d,
-            factor_risk_budgets: vec![
-                D::variable(1.0 / 3.0, 0),
-                D::from_value(1.0 / 3.0),
-                D::from_value(1.0 / 3.0),
-            ],
-        })
-        .weights[0];
-        assert!((ad.d[0] - fd).abs() < 1e-6);
-    }
-}
-
-#[cfg(test)]
-mod phase21_tests {
-    use super::*;
-
-    #[test]
-    fn paleologo_factor_neutrality_and_crowding() {
-        let s = PaleologoFactorNeutralAlphaSpec {
-            raw_alphas: vec![1.0, 2.0, 1.5],
-            factor_loadings_b: vec![vec![1.0], vec![1.0], vec![0.5]],
-            factor_covariance_omega: vec![vec![1.0]],
-            sample_idio_variances: vec![0.1, 0.2, 0.15],
-            idio_shrinkage_xi: 0.5,
-            idio_risk_aversion: 1.0,
-            factor_risk_aversion: 2.0,
-            factor_crowding_scores: vec![1.0],
-            crowding_penalty_lambda: 1.0,
-        };
-        let r = solve_paleologo_factor_neutral_portfolio(&s);
-        assert!(r.residual_factor_exposures[0].val().is_finite());
-        assert!(
-            r.crowding_penalized_weights
-                .iter()
-                .all(|x| x.val().is_finite())
-        );
-    }
-}
-
-#[cfg(test)]
-mod phase22_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn meucci_solver_finite() {
-        let s = MeucciIdzorekBlackLittermanSpec {
-            covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
-            market_weights: vec![0.6, 0.4],
-            risk_aversion_lambda: 2.5,
-            tau: 0.05,
-            view_matrix_p: vec![vec![1.0, -1.0]],
-            view_returns_q: vec![0.03],
-            view_confidences: vec![0.65],
-        };
-        let r = solve_meucci_idzorek_black_litterman_and_plausibility(&s);
-        assert!(r.mahalanobis_plausibility_squared.val().is_finite());
-        let h = 1e-5;
-        let mut up = s.clone();
-        up.view_returns_q[0] += h;
-        let mut dn = s.clone();
-        dn.view_returns_q[0] -= h;
-        let fd = (solve_meucci_idzorek_black_litterman_and_plausibility(&up)
-            .posterior_expected_returns[0]
-            - solve_meucci_idzorek_black_litterman_and_plausibility(&dn)
-                .posterior_expected_returns[0])
-            / (2.0 * h);
-        let ad = solve_meucci_idzorek_black_litterman_and_plausibility(
-            &MeucciIdzorekBlackLittermanSpec {
-                covariance: vec![
-                    vec![Dual::<1>::from_value(0.04), Dual::<1>::from_value(0.01)],
-                    vec![Dual::<1>::from_value(0.01), Dual::<1>::from_value(0.09)],
-                ],
-                market_weights: vec![Dual::<1>::from_value(0.6), Dual::<1>::from_value(0.4)],
-                risk_aversion_lambda: Dual::<1>::from_value(2.5),
-                tau: Dual::<1>::from_value(0.05),
-                view_matrix_p: vec![vec![
-                    Dual::<1>::from_value(1.0),
-                    Dual::<1>::from_value(-1.0),
-                ]],
-                view_returns_q: vec![Dual::<1>::variable(0.03, 0)],
-                view_confidences: vec![Dual::<1>::from_value(0.65)],
-            },
-        );
-        assert!((ad.posterior_expected_returns[0].d[0] - fd).abs() < 1e-5);
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -4229,6 +3744,495 @@ pub fn evaluate_lopez_de_prado_causal_backdoor_vs_collider_bias<T: Real>(
 }
 
 #[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn nco_weights_sum() {
+        let s = LopezDePradoNcoDenoisedSpec {
+            covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
+            expected_returns: vec![0.05, 0.06],
+            sample_ratio_q: 2.0,
+            denoising_alpha: 0.5,
+            num_clusters: 2,
+        };
+        let r = solve_lopez_de_prado_denoised_nco_allocation(&s);
+        assert!((r.nco_optimal_weights.iter().sum::<f64>() - 1.0).abs() < 1e-8);
+        assert!((r.nco_optimal_weights[0] - r.nco_optimal_weights[1]).abs() > 1e-8);
+        assert!(r.denoised_condition_number <= r.raw_condition_number + 1e-8);
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        fn mk<T: Real>(x: T) -> LopezDePradoNcoDenoisedSpec<T> {
+            LopezDePradoNcoDenoisedSpec {
+                covariance: vec![
+                    vec![T::from_f64(0.04), T::from_f64(0.01)],
+                    vec![T::from_f64(0.01), T::from_f64(0.09)],
+                ],
+                expected_returns: vec![x, T::from_f64(0.06)],
+                sample_ratio_q: T::from_f64(2.0),
+                denoising_alpha: T::from_f64(0.5),
+                num_clusters: 2,
+            }
+        }
+        let h = 1e-5;
+        let fd = (solve_lopez_de_prado_denoised_nco_allocation(&mk(0.05 + h))
+            .nco_portfolio_volatility
+            .val()
+            - solve_lopez_de_prado_denoised_nco_allocation(&mk(0.05 - h))
+                .nco_portfolio_volatility
+                .val())
+            / (2.0 * h);
+        let ad = solve_lopez_de_prado_denoised_nco_allocation(&mk(Dual::<1>::variable(0.05, 0)))
+            .nco_portfolio_volatility;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase14_tests {
+    use super::*;
+    #[test]
+    fn phase14_hrp_diagonal_inverse_variance() {
+        let c = vec![vec![0.04, 0.0], vec![0.0, 0.09]];
+        let w = hierarchical_risk_parity_weights(&c);
+        assert!((w[0] - 0.09 / 0.13).abs() < 1e-12);
+        assert!((w[1] - 0.04 / 0.13).abs() < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod phase13_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn robust_markowitz_dual_matches_fd_in_mu_and_kappa() {
+        let eval_f64 = |mu0: f64, kappa: f64| {
+            robust_markowitz_weights(&RobustMarkowitzSpec {
+                covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
+                return_uncertainty_cov: vec![vec![0.02, 0.005], vec![0.005, 0.03]],
+                expected_returns: vec![mu0, 0.04],
+                risk_aversion: 2.5,
+                uncertainty_radius: kappa,
+                lower_bounds: vec![0.0, 0.0],
+                upper_bounds: vec![1.0, 1.0],
+            })[0]
+        };
+        let w_ad = robust_markowitz_weights(&RobustMarkowitzSpec {
+            covariance: vec![
+                vec![Dual::<2>::from_value(0.04), Dual::<2>::from_value(0.01)],
+                vec![Dual::<2>::from_value(0.01), Dual::<2>::from_value(0.09)],
+            ],
+            return_uncertainty_cov: vec![
+                vec![Dual::<2>::from_value(0.02), Dual::<2>::from_value(0.005)],
+                vec![Dual::<2>::from_value(0.005), Dual::<2>::from_value(0.03)],
+            ],
+            expected_returns: vec![Dual::<2>::variable(0.07, 0), Dual::<2>::from_value(0.04)],
+            risk_aversion: Dual::<2>::from_value(2.5),
+            uncertainty_radius: Dual::<2>::variable(0.15, 1),
+            lower_bounds: vec![Dual::<2>::from_value(0.0), Dual::<2>::from_value(0.0)],
+            upper_bounds: vec![Dual::<2>::from_value(1.0), Dual::<2>::from_value(1.0)],
+        })[0];
+        let h = 1e-6;
+        let fd_mu0 = (eval_f64(0.07 + h, 0.15) - eval_f64(0.07 - h, 0.15)) / (2.0 * h);
+        let fd_kap = (eval_f64(0.07, 0.15 + h) - eval_f64(0.07, 0.15 - h)) / (2.0 * h);
+        assert!((w_ad.d[0] - fd_mu0).abs() < 1e-6);
+        assert!((w_ad.d[1] - fd_kap).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod phase15_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn gerber_rmt_nco() {
+        let r = vec![
+            vec![0.01, 0.02],
+            vec![-0.02, -0.01],
+            vec![0.03, 0.02],
+            vec![-0.01, -0.02],
+        ];
+        let g = gerber_covariance_matrix(&r, 0.5, 1e-3).unwrap();
+        assert!(g[0][0] > 0.0 && (g[0][1] - g[1][0]).abs() < 1e-12);
+        let c = vec![
+            vec![0.04, 0.01, 0., 0.],
+            vec![0.01, 0.09, 0., 0.],
+            vec![0., 0., 0.16, 0.02],
+            vec![0., 0., 0.02, 0.25],
+        ];
+        let w = nested_clustered_optimization_weights(&NestedClusteredOptimizationSpec {
+            covariance: c.clone(),
+            expected_returns: None,
+            risk_aversion: 1.0,
+            num_clusters: 2,
+        });
+        let mv = markowitz_minimum_variance_weights(&c);
+        assert!((w.iter().sum::<f64>() - 1.0).abs() < 1e-10);
+        for i in 0..4 {
+            assert!((w[i] - mv[i]).abs() < 1e-10);
+        }
+        let h = 1e-5;
+        let eval_rmt = |x01: f64| {
+            let mut c2 = c.clone();
+            c2[0][1] = x01;
+            c2[1][0] = x01;
+            marchenko_pastur_denoise_covariance(&c2, 12).unwrap()[0][1]
+        };
+        let fd_rmt = (eval_rmt(0.01 + h) - eval_rmt(0.01 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let mut cd: Vec<Vec<D>> = c
+            .iter()
+            .map(|row| row.iter().map(|&v| D::from_value(v)).collect())
+            .collect();
+        cd[0][1] = D::variable(0.01, 0);
+        cd[1][0] = D::variable(0.01, 0);
+        let rmt_d = marchenko_pastur_denoise_covariance(&cd, 12).unwrap();
+        assert!((rmt_d[0][1].d[0] - fd_rmt).abs() < 1e-5);
+        let eval_nco0 = |x01: f64| {
+            let mut c2 = c.clone();
+            c2[0][1] = x01;
+            c2[1][0] = x01;
+            nested_clustered_optimization_weights(&NestedClusteredOptimizationSpec {
+                covariance: c2,
+                expected_returns: None,
+                risk_aversion: 1.0,
+                num_clusters: 2,
+            })[0]
+        };
+        let fd_nco = (eval_nco0(0.01 + h) - eval_nco0(0.01 - h)) / (2.0 * h);
+        let nco_d = nested_clustered_optimization_weights(&NestedClusteredOptimizationSpec {
+            covariance: cd,
+            expected_returns: None,
+            risk_aversion: D::one(),
+            num_clusters: 2,
+        });
+        assert!((nco_d[0].d[0] - fd_nco).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase17_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn idzorek_boundary_limits_and_kelly_ad() {
+        let cov = vec![vec![0.04, 0.01], vec![0.01, 0.09]];
+        let w_mkt = vec![0.6, 0.4];
+        let mut s = IdzorekBlackLittermanSpec {
+            covariance: cov.clone(),
+            market_weights: w_mkt.clone(),
+            risk_aversion: 2.5,
+            tau: 0.05,
+            view_matrix: vec![vec![1.0, -1.0]],
+            view_returns: vec![0.03],
+            view_confidences: vec![0.0],
+        };
+        let p0 = idzorek_black_litterman_posterior(&s);
+        assert!((p0.weights[0] - w_mkt[0]).abs() < 1e-12);
+        assert!((p0.weights[1] - w_mkt[1]).abs() < 1e-12);
+
+        s.view_confidences = vec![1.0];
+        let p1 = idzorek_black_litterman_posterior(&s);
+        let view_realized = p1.expected_returns[0] - p1.expected_returns[1];
+        assert!((view_realized - 0.03).abs() < 1e-12);
+
+        let h = 1e-5;
+        let eval_c = |c_val: f64| {
+            let mut sp = s.clone();
+            sp.view_confidences = vec![c_val];
+            idzorek_black_litterman_posterior(&sp).weights[0]
+        };
+        let fd = (eval_c(0.65 + h) - eval_c(0.65 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let sd = IdzorekBlackLittermanSpec {
+            covariance: vec![
+                vec![D::from_value(0.04), D::from_value(0.01)],
+                vec![D::from_value(0.01), D::from_value(0.09)],
+            ],
+            market_weights: vec![D::from_value(0.6), D::from_value(0.4)],
+            risk_aversion: D::from_value(2.5),
+            tau: D::from_value(0.05),
+            view_matrix: vec![vec![D::one(), -D::one()]],
+            view_returns: vec![D::from_value(0.03)],
+            view_confidences: vec![D::variable(0.65, 0)],
+        };
+        let ad = idzorek_black_litterman_posterior(&sd).weights[0];
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+
+        let kelly = kelly_fractional_allocation(&KellyAllocationSpec {
+            expected_returns: vec![0.08, 0.11],
+            covariance: cov,
+            risk_free_rate: 0.03,
+            max_kelly_fraction: 0.5,
+            max_drawdown_limit: 0.20,
+            drawdown_tail_prob: 0.10,
+        });
+        let kelly_tighter = kelly_fractional_allocation(&KellyAllocationSpec {
+            expected_returns: vec![0.08, 0.11],
+            covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
+            risk_free_rate: 0.03,
+            max_kelly_fraction: 0.5,
+            max_drawdown_limit: 0.10,
+            drawdown_tail_prob: 0.10,
+        });
+        assert!(kelly.effective_kelly_fraction > 0.0 && kelly.effective_kelly_fraction < 0.5);
+        assert!(kelly_tighter.effective_kelly_fraction < kelly.effective_kelly_fraction);
+        assert!(kelly.expected_log_growth_rate > 0.03);
+    }
+}
+
+#[cfg(test)]
+mod phase18_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn entropy_pooling_view_satisfaction_weights_and_ad() {
+        let s_prior = EntropyPoolingSpec {
+            scenario_returns: vec![vec![0.08, 0.02], vec![-0.04, 0.06], vec![0.02, -0.03]],
+            prior_probs: vec![1.0 / 3.0; 3],
+            view_matrix: vec![vec![0.08, -0.04, 0.02]],
+            view_targets: vec![0.02],
+            risk_aversion: 2.5,
+        };
+        let r0 = entropy_pooling_posterior(&s_prior);
+        assert!(r0.kl_divergence.abs() < 1e-12);
+
+        let mut s_view = s_prior.clone();
+        s_view.view_targets = vec![0.04];
+        let r1 = entropy_pooling_posterior(&s_view);
+        assert!(r1.kl_divergence > 0.0);
+        assert!((r1.posterior_mean[0] - 0.04).abs() < 1e-10);
+        assert!(r1.weights[0].abs() > 0.0);
+
+        let h = 1e-5;
+        let eval_b = |b: f64| {
+            let mut sp = s_view.clone();
+            sp.view_targets = vec![b];
+            entropy_pooling_posterior(&sp).weights[0]
+        };
+        let fd = (eval_b(0.04 + h) - eval_b(0.04 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let sd = EntropyPoolingSpec {
+            scenario_returns: vec![
+                vec![D::from_value(0.08), D::from_value(0.02)],
+                vec![D::from_value(-0.04), D::from_value(0.06)],
+                vec![D::from_value(0.02), D::from_value(-0.03)],
+            ],
+            prior_probs: vec![D::from_value(1.0 / 3.0); 3],
+            view_matrix: vec![vec![
+                D::from_value(0.08),
+                D::from_value(-0.04),
+                D::from_value(0.02),
+            ]],
+            view_targets: vec![D::variable(0.04, 0)],
+            risk_aversion: D::from_value(2.5),
+        };
+        let ad = entropy_pooling_posterior(&sd).weights[0];
+        assert!((ad.d[0] - fd).abs() < 5e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase19_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn cotton_schur_hrp_unifies_hrp_and_minimum_variance_and_oas_shrinkage_ad() {
+        // Cotton (2024) Theorem: on a 3x3 equicorrelated unit-variance matrix,
+        // standard HRP (gamma = 0) gives asymmetric weights, whereas Schur-HRP at gamma = 1
+        // recovers the exact symmetric Minimum-Variance weights (1/3, 1/3, 1/3)!
+        let rho = 0.5;
+        let cov = vec![
+            vec![1.0, rho, rho],
+            vec![rho, 1.0, rho],
+            vec![rho, rho, 1.0],
+        ];
+        let hrp0 = schur_complementary_hrp(&SchurHrpSpec {
+            covariance: cov.clone(),
+            gamma: 0.0,
+        });
+        let mv1 = schur_complementary_hrp(&SchurHrpSpec {
+            covariance: cov.clone(),
+            gamma: 1.0,
+        });
+        assert!((hrp0.weights[0] - 1.0 / 3.0).abs() > 1e-2);
+        for &w in &mv1.weights {
+            assert!((w - 1.0 / 3.0).abs() < 1e-12);
+        }
+        assert!(mv1.portfolio_variance < hrp0.portfolio_variance);
+
+        let rets = vec![
+            vec![0.02, -0.01, 0.015],
+            vec![-0.01, 0.03, -0.005],
+            vec![0.015, 0.005, 0.02],
+            vec![-0.02, -0.015, 0.01],
+            vec![0.01, 0.02, -0.01],
+        ];
+        let shrink = oas_and_nonlinear_shrinkage_covariance(&rets);
+        assert!(shrink.oas_shrinkage_intensity > 0.0 && shrink.oas_shrinkage_intensity <= 1.0);
+        let tr_oas =
+            shrink.oas_covariance[0][0] + shrink.oas_covariance[1][1] + shrink.oas_covariance[2][2];
+        let tr_nl = shrink.nonlinear_shrunk_covariance[0][0]
+            + shrink.nonlinear_shrunk_covariance[1][1]
+            + shrink.nonlinear_shrunk_covariance[2][2];
+        assert!((tr_oas - tr_nl).abs() < 1e-12);
+
+        let h = 1e-5;
+        let eval_g = |g: f64| {
+            schur_complementary_hrp(&SchurHrpSpec {
+                covariance: cov.clone(),
+                gamma: g,
+            })
+            .weights[0]
+        };
+        let fd = (eval_g(0.5 + h) - eval_g(0.5 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let cov_d: Vec<Vec<D>> = cov
+            .iter()
+            .map(|r| r.iter().map(|&x| D::from_value(x)).collect())
+            .collect();
+        let ad = schur_complementary_hrp(&SchurHrpSpec {
+            covariance: cov_d,
+            gamma: D::variable(0.5, 0),
+        })
+        .weights[0];
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod phase20_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn principal_component_risk_parity_exact_factor_shares_enb_and_ad() {
+        let cov = vec![
+            vec![0.04, 0.025, 0.010],
+            vec![0.025, 0.05, 0.015],
+            vec![0.010, 0.015, 0.03],
+        ];
+        let spec = FactorEigenRiskParitySpec {
+            covariance: cov.clone(),
+            factor_risk_budgets: vec![1.0 / 3.0; 3],
+        };
+        let rep = solve_principal_component_risk_parity(&spec);
+        assert!((rep.weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        // Equal factor risk budgets => each principal component contributes 1/3 of variance and PCA ENB == 3.0!
+        for &s in &rep.factor_variance_shares {
+            assert!((s - 1.0 / 3.0).abs() < 1e-10);
+        }
+        assert!((rep.effective_number_of_pca_bets - 3.0).abs() < 1e-10);
+        assert!(rep.effective_number_of_pca_bets > rep.equal_weight_pca_enb);
+
+        let h = 1e-5;
+        let eval_b0 = |b0: f64| {
+            solve_principal_component_risk_parity(&FactorEigenRiskParitySpec {
+                covariance: cov.clone(),
+                factor_risk_budgets: vec![b0, 1.0 / 3.0, 1.0 / 3.0],
+            })
+            .weights[0]
+        };
+        let fd = (eval_b0(1.0 / 3.0 + h) - eval_b0(1.0 / 3.0 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let cov_d: Vec<Vec<D>> = cov
+            .iter()
+            .map(|r| r.iter().map(|&x| D::from_value(x)).collect())
+            .collect();
+        let ad = solve_principal_component_risk_parity(&FactorEigenRiskParitySpec {
+            covariance: cov_d,
+            factor_risk_budgets: vec![
+                D::variable(1.0 / 3.0, 0),
+                D::from_value(1.0 / 3.0),
+                D::from_value(1.0 / 3.0),
+            ],
+        })
+        .weights[0];
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod phase21_tests {
+    use super::*;
+
+    #[test]
+    fn paleologo_factor_neutrality_and_crowding() {
+        let s = PaleologoFactorNeutralAlphaSpec {
+            raw_alphas: vec![1.0, 2.0, 1.5],
+            factor_loadings_b: vec![vec![1.0], vec![1.0], vec![0.5]],
+            factor_covariance_omega: vec![vec![1.0]],
+            sample_idio_variances: vec![0.1, 0.2, 0.15],
+            idio_shrinkage_xi: 0.5,
+            idio_risk_aversion: 1.0,
+            factor_risk_aversion: 2.0,
+            factor_crowding_scores: vec![1.0],
+            crowding_penalty_lambda: 1.0,
+        };
+        let r = solve_paleologo_factor_neutral_portfolio(&s);
+        assert!(r.residual_factor_exposures[0].val().is_finite());
+        assert!(
+            r.crowding_penalized_weights
+                .iter()
+                .all(|x| x.val().is_finite())
+        );
+    }
+}
+
+#[cfg(test)]
+mod phase22_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn meucci_solver_finite() {
+        let s = MeucciIdzorekBlackLittermanSpec {
+            covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
+            market_weights: vec![0.6, 0.4],
+            risk_aversion_lambda: 2.5,
+            tau: 0.05,
+            view_matrix_p: vec![vec![1.0, -1.0]],
+            view_returns_q: vec![0.03],
+            view_confidences: vec![0.65],
+        };
+        let r = solve_meucci_idzorek_black_litterman_and_plausibility(&s);
+        assert!(r.mahalanobis_plausibility_squared.val().is_finite());
+        let h = 1e-5;
+        let mut up = s.clone();
+        up.view_returns_q[0] += h;
+        let mut dn = s.clone();
+        dn.view_returns_q[0] -= h;
+        let fd = (solve_meucci_idzorek_black_litterman_and_plausibility(&up)
+            .posterior_expected_returns[0]
+            - solve_meucci_idzorek_black_litterman_and_plausibility(&dn)
+                .posterior_expected_returns[0])
+            / (2.0 * h);
+        let ad = solve_meucci_idzorek_black_litterman_and_plausibility(
+            &MeucciIdzorekBlackLittermanSpec {
+                covariance: vec![
+                    vec![Dual::<1>::from_value(0.04), Dual::<1>::from_value(0.01)],
+                    vec![Dual::<1>::from_value(0.01), Dual::<1>::from_value(0.09)],
+                ],
+                market_weights: vec![Dual::<1>::from_value(0.6), Dual::<1>::from_value(0.4)],
+                risk_aversion_lambda: Dual::<1>::from_value(2.5),
+                tau: Dual::<1>::from_value(0.05),
+                view_matrix_p: vec![vec![
+                    Dual::<1>::from_value(1.0),
+                    Dual::<1>::from_value(-1.0),
+                ]],
+                view_returns_q: vec![Dual::<1>::variable(0.03, 0)],
+                view_confidences: vec![Dual::<1>::from_value(0.65)],
+            },
+        );
+        assert!((ad.posterior_expected_returns[0].d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
 mod phase24_tests {
     use super::*;
     use ql_ad::Dual;
@@ -4493,6 +4497,7 @@ mod phase27_tests {
             specialist_immediate_capital: T::from_f64(100.0),
             slow_moving_external_capital: T::from_f64(100.0),
             capital_arrival_rate: T::from_f64(0.1),
+            dislocation_horizon_years: T::one(),
             forced_liquidation_notional: T::from_f64(10.0),
         }
     }
@@ -4506,6 +4511,13 @@ mod phase27_tests {
             / (2.0 * h);
         let d = solve_busseti_boyd_risk_constrained_kelly(&make(Dual::<1>::variable(0.05, 0)))
             .constrained_portfolio_volatility;
-        assert!((d.d[0] - fd).abs() < 1e-5);
+        assert!(d.d[0].abs() > 1e-6 && (d.d[0] - fd).abs() < 1e-5);
+    }
+
+    #[test]
+    fn phase27_invariants() {
+        let r = solve_busseti_boyd_risk_constrained_kelly(&make(0.05));
+        assert!(r.kelly_fraction_kappa > 0.0 && r.kelly_fraction_kappa <= 1.0);
+        assert!(r.horizon_fire_sale_discount_bps < r.initial_fire_sale_dislocation_bps);
     }
 }

@@ -24,76 +24,170 @@ pub struct AgrawalBoydDifferentiableQpReport<T: Real = f64> {
     pub reverse_kkt_grad_b_eq: Vec<T>,
     pub reverse_kkt_grad_h_ineq: Vec<T>,
 }
+fn solve_kkt_linear<T: Real>(mat: &[Vec<T>], rhs: &[T]) -> Vec<T> {
+    let n = rhs.len();
+    let mut a = vec![vec![T::zero(); n + 1]; n];
+    for i in 0..n {
+        for j in 0..n {
+            a[i][j] = mat[i][j];
+        }
+        a[i][n] = rhs[i];
+    }
+    for i in 0..n {
+        let mut p = i;
+        for r in (i + 1)..n {
+            if a[r][i].abs().val() > a[p][i].abs().val() {
+                p = r;
+            }
+        }
+        a.swap(i, p);
+        let piv = if a[i][i].abs().val() < 1e-14 {
+            T::from_f64(1e-14)
+        } else {
+            a[i][i]
+        };
+        for j in i..=n {
+            a[i][j] /= piv;
+        }
+        let pivot_row = a[i].clone();
+        for r in 0..n {
+            if r == i {
+                continue;
+            }
+            let f = a[r][i];
+            for j in i..=n {
+                a[r][j] -= f * pivot_row[j];
+            }
+        }
+    }
+    (0..n).map(|i| a[i][n]).collect()
+}
+
 pub fn solve_agrawal_boyd_differentiable_qp_layer<T: Real>(
     s: &AgrawalBoydDifferentiableQpSpec<T>,
 ) -> AgrawalBoydDifferentiableQpReport<T> {
     let n = s.q_linear.len();
+    let m = s.g_ineq.len();
+    let p = s.a_eq.len();
     let mut z = vec![T::zero(); n];
-    for i in 0..n {
-        let q = s
-            .q_matrix
-            .get(i)
-            .and_then(|r| r.get(i))
-            .copied()
-            .unwrap_or(T::one())
-            .max_val(T::from_f64(1e-8));
-        z[i] = -s.q_linear[i] / q;
-    }
-    let mut nu = vec![T::zero(); s.a_eq.len()];
-    let mut lam = vec![T::zero(); s.g_ineq.len()];
-    for _ in 0..16 {
-        for (j, g) in s.g_ineq.iter().enumerate() {
-            let slack = s.h_ineq.get(j).copied().unwrap_or(T::zero())
-                - g.iter()
-                    .zip(z.iter())
-                    .map(|(&a, &b)| a * b)
-                    .fold(T::zero(), |a, b| a + b);
-            lam[j] = s.barrier_tau / slack.max_val(T::from_f64(1e-8));
+    if p > 0 {
+        let mut aa = vec![vec![T::zero(); p]; p];
+        for i in 0..p {
+            for j in 0..p {
+                aa[i][j] = (0..n).fold(T::zero(), |a, k| {
+                    a + s.a_eq[i].get(k).copied().unwrap_or(T::zero())
+                        * s.a_eq[j].get(k).copied().unwrap_or(T::zero())
+                });
+            }
         }
-        if let Some(a) = s.a_eq.first() {
-            let mut num = s.b_eq.first().copied().unwrap_or(T::zero());
-            let mut den = T::zero();
-            for i in 0..n {
-                let q = s
+        let y = solve_kkt_linear(&aa, &s.b_eq);
+        for k in 0..n {
+            z[k] = (0..p).fold(T::zero(), |a, i| {
+                a + s.a_eq[i].get(k).copied().unwrap_or(T::zero()) * y[i]
+            });
+        }
+    }
+    let mut lambda = vec![T::zero(); m];
+    for j in 0..m {
+        let gz = s.g_ineq[j]
+            .iter()
+            .zip(z.iter())
+            .map(|(&a, &b)| a * b)
+            .fold(T::zero(), |a, b| a + b);
+        lambda[j] = s.barrier_tau
+            / (s.h_ineq.get(j).copied().unwrap_or(T::zero()) - gz).max_val(T::from_f64(0.5));
+    }
+    let mut nu = vec![T::zero(); p];
+    for _ in 0..25 {
+        let dim = n + m + p;
+        let mut mat = vec![vec![T::zero(); dim]; dim];
+        let mut rhs = vec![T::zero(); dim];
+        for i in 0..n {
+            for k in 0..n {
+                mat[i][k] = s
                     .q_matrix
                     .get(i)
-                    .and_then(|r| r.get(i))
+                    .and_then(|r| r.get(k))
                     .copied()
-                    .unwrap_or(T::one())
-                    .max_val(T::from_f64(1e-8));
-                let gi = s
-                    .g_ineq
-                    .iter()
-                    .enumerate()
-                    .map(|(j, g)| g.get(i).copied().unwrap_or(T::zero()) * lam[j])
-                    .fold(T::zero(), |a, b| a + b);
-                let ai = a.get(i).copied().unwrap_or(T::zero());
-                num += ai * (s.q_linear[i] + gi) / q;
-                den += ai * ai / q;
+                    .unwrap_or(T::zero());
             }
-            nu[0] = -num / den.max_val(T::from_f64(1e-8));
+            for j in 0..m {
+                mat[i][n + j] = s.g_ineq[j].get(i).copied().unwrap_or(T::zero());
+            }
+            for l in 0..p {
+                mat[i][n + m + l] = s.a_eq[l].get(i).copied().unwrap_or(T::zero());
+            }
+            let mut r = s.q_linear[i];
+            for k in 0..n {
+                r += mat[i][k] * z[k];
+            }
+            for j in 0..m {
+                r += mat[i][n + j] * lambda[j];
+            }
+            for l in 0..p {
+                r += mat[i][n + m + l] * nu[l];
+            }
+            rhs[i] = -r;
         }
-        for i in 0..n {
-            let q = s
-                .q_matrix
-                .get(i)
-                .and_then(|r| r.get(i))
-                .copied()
-                .unwrap_or(T::one())
-                .max_val(T::from_f64(1e-8));
-            let gi = s
-                .g_ineq
+        for j in 0..m {
+            let row = n + j;
+            let gz = s.g_ineq[j]
+                .iter()
+                .zip(z.iter())
+                .map(|(&a, &b)| a * b)
+                .fold(T::zero(), |a, b| a + b);
+            let slack =
+                (s.h_ineq.get(j).copied().unwrap_or(T::zero()) - gz).max_val(T::from_f64(1e-8));
+            for k in 0..n {
+                mat[row][k] = lambda[j] * s.g_ineq[j].get(k).copied().unwrap_or(T::zero());
+            }
+            mat[row][n + j] = -slack;
+            rhs[row] =
+                -(lambda[j] * (gz - s.h_ineq.get(j).copied().unwrap_or(T::zero())) + s.barrier_tau);
+        }
+        for l in 0..p {
+            let row = n + m + l;
+            for k in 0..n {
+                mat[row][k] = s.a_eq[l].get(k).copied().unwrap_or(T::zero());
+            }
+            let az = s.a_eq[l]
+                .iter()
+                .zip(z.iter())
+                .map(|(&a, &b)| a * b)
+                .fold(T::zero(), |a, b| a + b);
+            rhs[row] = -(az - s.b_eq.get(l).copied().unwrap_or(T::zero()));
+        }
+        let step = solve_kkt_linear(&mat, &rhs);
+        let mut alpha = T::one();
+        for j in 0..m {
+            if step[n + j].val() < 0.0 {
+                alpha = alpha.min_val(T::from_f64(0.99) * (-lambda[j] / step[n + j]));
+            }
+            let gdz = s.g_ineq[j]
                 .iter()
                 .enumerate()
-                .map(|(j, g)| g.get(i).copied().unwrap_or(T::zero()) * lam[j])
+                .map(|(k, &g)| g * step[k])
                 .fold(T::zero(), |a, b| a + b);
-            let ai = s
-                .a_eq
-                .first()
-                .and_then(|a| a.get(i))
-                .copied()
-                .unwrap_or(T::zero());
-            z[i] = -(s.q_linear[i] + gi + ai * nu.first().copied().unwrap_or(T::zero())) / q;
+            if gdz.val() > 0.0 {
+                let slack = (s.h_ineq[j]
+                    - s.g_ineq[j]
+                        .iter()
+                        .zip(z.iter())
+                        .map(|(&g, &x)| g * x)
+                        .fold(T::zero(), |a, b| a + b))
+                .max_val(T::from_f64(1e-8));
+                alpha = alpha.min_val(T::from_f64(0.99) * slack / gdz);
+            }
+        }
+        alpha = alpha.max_val(T::from_f64(1e-4));
+        for k in 0..n {
+            z[k] += alpha * step[k];
+        }
+        for j in 0..m {
+            lambda[j] += alpha * step[n + j];
+        }
+        for l in 0..p {
+            nu[l] += alpha * step[n + m + l];
         }
     }
     let mut obj = T::zero();
@@ -122,39 +216,35 @@ pub fn solve_agrawal_boyd_differentiable_qp_layer<T: Real>(
                 .unwrap_or(T::zero())
                 * z[j];
         }
-        for (j, g) in s.g_ineq.iter().enumerate() {
-            r += g.get(i).copied().unwrap_or(T::zero()) * lam[j];
+        for j in 0..m {
+            r += s.g_ineq[j].get(i).copied().unwrap_or(T::zero()) * lambda[j];
         }
-        for (j, a) in s.a_eq.iter().enumerate() {
-            r += a.get(i).copied().unwrap_or(T::zero()) * nu[j];
+        for l in 0..p {
+            r += s.a_eq[l].get(i).copied().unwrap_or(T::zero()) * nu[l];
         }
         stationarity = stationarity.max_val(r.abs());
     }
-    let feas = s
-        .a_eq
-        .iter()
-        .enumerate()
-        .map(|(j, a)| {
-            (a.iter()
-                .zip(z.iter())
-                .map(|(&x, &y)| x * y)
-                .fold(T::zero(), |u, v| u + v)
-                - s.b_eq.get(j).copied().unwrap_or(T::zero()))
-            .abs()
-        })
-        .fold(T::zero(), |a, b| a.max_val(b));
+    let feas = (0..p).fold(T::zero(), |acc, l| {
+        let az = s.a_eq[l]
+            .iter()
+            .zip(z.iter())
+            .map(|(&a, &b)| a * b)
+            .fold(T::zero(), |a, b| a + b);
+        acc.max_val((az - s.b_eq.get(l).copied().unwrap_or(T::zero())).abs())
+    });
     AgrawalBoydDifferentiableQpReport {
         optimal_primal_z: z.clone(),
-        optimal_ineq_dual_lambda: lam.clone(),
+        optimal_ineq_dual_lambda: lambda.clone(),
         optimal_eq_dual_nu: nu.clone(),
         optimal_objective_value: obj,
         kkt_stationarity_max_error: stationarity,
         primal_eq_feasibility_error: feas,
         reverse_kkt_grad_q_linear: z,
         reverse_kkt_grad_b_eq: nu.iter().map(|&x| -x).collect(),
-        reverse_kkt_grad_h_ineq: lam.iter().map(|&x| -x).collect(),
+        reverse_kkt_grad_h_ineq: lambda.iter().map(|&x| -x).collect(),
     }
 }
+
 #[derive(Clone, Debug)]
 pub struct DiffPolynomialRegressor {
     pub mean: Vec<f64>,
@@ -346,6 +436,22 @@ mod phase27_tests {
             / (2.0 * h);
         let d = solve_agrawal_boyd_differentiable_qp_layer(&make(Dual::<1>::variable(1.0, 0)))
             .optimal_objective_value;
-        assert!((d.d[0] - fd).abs() < 1e-5);
+        assert!(d.d[0].abs() > 1e-6 && (d.d[0] - fd).abs() < 1e-5);
+    }
+
+    #[test]
+    fn phase27_invariants() {
+        let r = solve_agrawal_boyd_differentiable_qp_layer(&AgrawalBoydDifferentiableQpSpec {
+            q_matrix: vec![vec![2.0, 0.5], vec![0.5, 2.0]],
+            q_linear: vec![0.0, 0.0],
+            a_eq: vec![vec![1.0, 1.0]],
+            b_eq: vec![1.0],
+            g_ineq: vec![vec![-1.0, 0.0], vec![0.0, -1.0]],
+            h_ineq: vec![0.0, 0.0],
+            barrier_tau: 1e-4,
+        });
+        assert!(r.kkt_stationarity_max_error < 1e-9);
+        assert!(r.primal_eq_feasibility_error < 1e-10);
+        assert!((r.reverse_kkt_grad_b_eq[0] + r.optimal_eq_dual_nu[0]).abs() < 1e-6);
     }
 }

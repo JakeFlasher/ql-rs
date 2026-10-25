@@ -41,31 +41,51 @@ pub fn analyze_harris_roll_corwin_schultz_microstructure<T: Real>(
             .windows(2)
             .map(|w| w[0] * w[1])
             .fold(T::zero(), |a, b| a + b)
-            / ((diffs.len() - 1) as f64)
+            / T::from_f64((diffs.len() - 1) as f64)
     } else {
         T::from_f64(-1e-8)
     };
     let roll = T::from_f64(2.0) * (-cov).max_val(T::from_f64(1e-16)).sqrt();
+    let d_len = s.daily_highs.len().min(s.daily_lows.len());
     let mut cs = T::zero();
-    let mut pv = T::zero();
-    for i in 1..s.daily_highs.len() {
-        let b = (s.daily_highs[i - 1] / s.daily_lows[i - 1]).ln().powf(2.0)
-            + (s.daily_highs[i] / s.daily_lows[i]).ln().powf(2.0);
-        let g = (s.daily_highs[i - 1].max_val(s.daily_highs[i])
-            / s.daily_lows[i - 1].min_val(s.daily_lows[i]))
-        .ln()
-        .powf(2.0);
-        let den = T::from_f64(3.0 - 2.0 * 2.0_f64.sqrt());
-        let al = (T::from_f64(2.0) * b.sqrt() - b.sqrt()) / den - (g / den).sqrt();
-        cs += T::from_f64(2.0) * (al.max_val(T::zero()).exp() - T::one())
-            / (al.max_val(T::zero()).exp() + T::one());
-        pv += (s.daily_highs[i] / s.daily_lows[i]).ln().powf(2.0);
+    if d_len > 1 {
+        for i in 1..d_len {
+            let b = (s.daily_highs[i - 1] / s.daily_lows[i - 1].max_val(T::from_f64(1e-8)))
+                .ln()
+                .powf(2.0)
+                + (s.daily_highs[i] / s.daily_lows[i].max_val(T::from_f64(1e-8)))
+                    .ln()
+                    .powf(2.0);
+            let g = (s.daily_highs[i - 1].max_val(s.daily_highs[i])
+                / s.daily_lows[i - 1]
+                    .min_val(s.daily_lows[i])
+                    .max_val(T::from_f64(1e-8)))
+            .ln()
+            .powf(2.0);
+            let den = T::from_f64(3.0 - 2.0 * 2.0_f64.sqrt());
+            let al = T::from_f64(2.0_f64.sqrt() - 1.0) * b.sqrt() / den - (g / den).sqrt();
+            let e = al.max_val(T::zero()).exp();
+            cs += T::from_f64(2.0) * (e - T::one()) / (e + T::one());
+        }
+        cs /= T::from_f64((d_len - 1) as f64);
     }
-    if s.daily_highs.len() > 1 {
-        cs /= T::from_f64((s.daily_highs.len() - 1) as f64);
-        pv = (pv / T::from_f64((s.daily_highs.len() - 1) as f64)).sqrt()
-            / T::from_f64(2.0 * 2.0_f64.sqrt());
+    let mut sum_hl2 = T::zero();
+    let mut amihud = T::zero();
+    for i in 0..d_len {
+        let hl = (s.daily_highs[i] / s.daily_lows[i].max_val(T::from_f64(1e-8)))
+            .ln()
+            .abs();
+        sum_hl2 += hl * hl;
+        let dv = s
+            .daily_dollar_volumes
+            .get(i)
+            .copied()
+            .unwrap_or(T::one())
+            .max_val(T::from_f64(1e-8));
+        amihud += hl / dv;
     }
+    let park = (sum_hl2 / T::from_f64(4.0 * d_len.max(1) as f64 * 2.0_f64.ln())).sqrt();
+    let amihud = amihud / T::from_f64(d_len.max(1) as f64);
     let qexec = s
         .child_fill_quantities
         .iter()
@@ -81,24 +101,29 @@ pub fn analyze_harris_roll_corwin_schultz_microstructure<T: Real>(
     let opp = (s.total_order_quantity - qexec) * (s.post_trade_benchmark_price - s.decision_price);
     let fees = s.explicit_commissions;
     let total = delay + impact + fees + opp;
+    let paper_ret = s.total_order_quantity * (s.post_trade_benchmark_price - s.decision_price);
+    let actual_ret = s
+        .child_fill_quantities
+        .iter()
+        .zip(s.child_fill_prices.iter())
+        .map(|(&q, &p)| q * (s.post_trade_benchmark_price - p))
+        .fold(T::zero(), |a, b| a + b)
+        - s.explicit_commissions;
+    let sum_parts = delay + impact + fees + opp;
     HarrisRollCorwinSchultzMicrostructureReport {
         roll_serial_cov_effective_spread: roll,
         corwin_schultz_high_low_spread: cs,
-        parkinson_high_low_volatility: pv,
-        amihud_illiquidity_ratio: impact.abs()
-            / s.daily_dollar_volumes
-                .iter()
-                .copied()
-                .fold(T::zero(), |a, b| a + b)
-                .max_val(T::from_f64(1e-8)),
+        parkinson_high_low_volatility: park,
+        amihud_illiquidity_ratio: amihud,
         perold_delay_cost: delay,
         perold_market_impact_cost: impact,
         perold_explicit_fee_cost: fees,
         perold_opportunity_cost: opp,
         perold_total_implementation_shortfall: total,
-        perold_identity_conservation_error: (total - (delay + impact + fees + opp)).abs(),
+        perold_identity_conservation_error: (paper_ret - actual_ret - sum_parts).abs(),
     }
 }
+
 #[derive(Clone, Debug)]
 pub struct EngleRussellAcdTradeDurationSpec<T: Real = f64> {
     pub inter_trade_durations: Vec<T>,
@@ -171,63 +196,6 @@ pub fn evaluate_engle_russell_acd_trade_duration_and_hazard<T: Real>(
         duration_adjusted_price_impact_bps: s.base_price_impact_bps
             * (pnext / s.elapsed_time_since_last_trade.max_val(T::from_f64(1e-8)))
                 .pow(s.duration_impact_elasticity),
-    }
-}
-
-#[cfg(test)]
-mod phase23_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn propagator_budget() {
-        let s = BouchaudWebsterPropagatorImpactSpec {
-            metaorder_size_q: 1.0,
-            daily_volume_vd: 10.0,
-            daily_volatility_sigma: 0.2,
-            y_prefactor: 1.0,
-            propagator_exponent_beta: 0.5,
-            propagator_scale_g0: 1.0,
-            regularization_tau0: 0.01,
-            temporary_impact_eta: 0.1,
-            risk_aversion_lambda: 0.1,
-            horizon: 1.0,
-            num_slices: 8,
-        };
-        let r = solve_bouchaud_webster_square_root_and_propagator_execution(&s);
-        assert!((r.optimal_u_shaped_trades.iter().sum::<f64>() - 1.0).abs() < 1e-8);
-        assert!(r.optimal_propagator_cost <= r.twap_propagator_cost + 1e-8);
-    }
-
-    #[test]
-    fn dual_fd_parity() {
-        fn mk<T: Real>(x: T) -> BouchaudWebsterPropagatorImpactSpec<T> {
-            BouchaudWebsterPropagatorImpactSpec {
-                metaorder_size_q: x,
-                daily_volume_vd: T::from_f64(10.0),
-                daily_volatility_sigma: T::from_f64(0.2),
-                y_prefactor: T::one(),
-                propagator_exponent_beta: T::from_f64(0.5),
-                propagator_scale_g0: T::one(),
-                regularization_tau0: T::from_f64(0.01),
-                temporary_impact_eta: T::from_f64(0.1),
-                risk_aversion_lambda: T::from_f64(0.1),
-                horizon: T::one(),
-                num_slices: 8,
-            }
-        }
-        let h = 1e-5;
-        let fd = (solve_bouchaud_webster_square_root_and_propagator_execution(&mk(1.0 + h))
-            .optimal_propagator_cost
-            .val()
-            - solve_bouchaud_webster_square_root_and_propagator_execution(&mk(1.0 - h))
-                .optimal_propagator_cost
-                .val())
-            / (2.0 * h);
-        let ad = solve_bouchaud_webster_square_root_and_propagator_execution(&mk(
-            Dual::<1>::variable(1.0, 0),
-        ))
-        .optimal_propagator_cost;
-        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
 
@@ -840,37 +808,6 @@ pub fn solve_avellaneda_stoikov_market_making<T: Real>(
     }
 }
 
-#[cfg(test)]
-mod phase14_tests {
-    use super::*;
-    #[test]
-    fn phase14_multi_asset_matches_1d_and_twap() {
-        let one_d = almgren_chriss_execution(&AlmgrenChrissSpec {
-            initial_inventory: 1000.0,
-            horizon: 1.0,
-            num_steps: 5,
-            volatility: 0.2,
-            temporary_impact: 1e-4,
-            permanent_impact: 5e-5,
-            risk_aversion: 1e-4,
-        });
-        let multi_1d = multi_asset_almgren_chriss_execution(&MultiAssetAlmgrenChrissSpec {
-            initial_inventory: vec![1000.0],
-            horizon: 1.0,
-            num_steps: 5,
-            covariance: vec![vec![0.04]],
-            temporary_impact: vec![vec![1e-4]],
-            permanent_impact: vec![vec![5e-5]],
-            risk_aversion: 1e-4,
-        });
-        for k in 0..=5 {
-            assert!((one_d.inventory_schedule[k] - multi_1d.inventory_schedule[k][0]).abs() < 1e-9);
-        }
-        assert!((one_d.expected_cost - multi_1d.expected_cost).abs() < 1e-9);
-        assert!((one_d.cost_variance - multi_1d.cost_variance).abs() < 1e-9);
-    }
-}
-
 #[derive(Copy, Clone, Debug)]
 pub struct DarkLitRoutingSpec<T: Real = f64> {
     pub initial_inventory: T,
@@ -982,122 +919,6 @@ pub fn try_optimal_dark_lit_execution<T: Real>(
 
 pub fn optimal_dark_lit_execution<T: Real>(s: &DarkLitRoutingSpec<T>) -> DarkLitRoutingReport<T> {
     try_optimal_dark_lit_execution(s).expect("valid dark-lit execution inputs")
-}
-
-#[cfg(test)]
-mod phase17_tests {
-    use super::*;
-    use ql_ad::Dual;
-
-    #[test]
-    fn kratz_schoeneborn_dark_pool_monotonicity_delay_and_ad() {
-        let mut s = DarkLitRoutingSpec {
-            initial_inventory: 100.0,
-            horizon: 1.0,
-            num_steps: 4,
-            volatility: 0.20,
-            lit_temporary_impact: 1e-3,
-            lit_permanent_impact: 2e-4,
-            dark_fill_intensity: 0.0,
-            risk_aversion: 0.0,
-        };
-        let no_dark = optimal_dark_lit_execution(&s);
-        s.dark_fill_intensity = 1.5;
-        let with_dark = optimal_dark_lit_execution(&s);
-        assert!(with_dark.expected_total_cost < no_dark.expected_total_cost);
-        assert!(with_dark.lit_trading_rate_schedule[0] < with_dark.lit_trading_rate_schedule[4]);
-
-        let h = 1e-5;
-        let eval_theta = |th: f64| {
-            let mut sp = s;
-            sp.dark_fill_intensity = th;
-            optimal_dark_lit_execution(&sp).expected_total_cost
-        };
-        let fd = (eval_theta(1.5 + h) - eval_theta(1.5 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let sd = DarkLitRoutingSpec {
-            initial_inventory: D::from_value(100.0),
-            horizon: D::one(),
-            num_steps: 4,
-            volatility: D::from_value(0.20),
-            lit_temporary_impact: D::from_value(1e-3),
-            lit_permanent_impact: D::from_value(2e-4),
-            dark_fill_intensity: D::variable(1.5, 0),
-            risk_aversion: D::from_value(0.25),
-        };
-        let eval_theta_ra = |th: f64| {
-            let mut sp = s;
-            sp.risk_aversion = 0.25;
-            sp.dark_fill_intensity = th;
-            optimal_dark_lit_execution(&sp).expected_total_cost
-        };
-        let fd_ra = (eval_theta_ra(1.5 + h) - eval_theta_ra(1.5 - h)) / (2.0 * h);
-        let ad = optimal_dark_lit_execution(&sd).expected_total_cost;
-        assert!(fd < 0.0 && ad.d[0] < 0.0);
-        assert!((ad.d[0] - fd_ra).abs() < 1e-6);
-    }
-}
-
-#[cfg(test)]
-mod phase19_tests {
-    use super::*;
-    use ql_ad::Dual;
-
-    #[test]
-    fn avellaneda_stoikov_inventory_skew_symmetry_and_ad() {
-        let zero_q = AvellanedaStoikovMmSpec {
-            mid_price: 100.0,
-            initial_inventory: 0.0,
-            horizon: 1.0,
-            num_steps: 10,
-            volatility: 0.20,
-            risk_aversion: 0.5,
-            order_book_kappa: 1.5,
-            base_arrival_intensity: 10.0,
-            alpha_drift: 0.0,
-        };
-        let rep0 = solve_avellaneda_stoikov_market_making(&zero_q);
-        assert!((rep0.reservation_price - 100.0).abs() < 1e-12);
-        assert!((rep0.bid_fill_intensity - rep0.ask_fill_intensity).abs() < 1e-12);
-
-        let mut long_q = zero_q;
-        long_q.initial_inventory = 5.0;
-        let rep_long = solve_avellaneda_stoikov_market_making(&long_q);
-        // Long inventory skews reservation price downward and increases ask fill intensity vs bid
-        assert!(rep_long.reservation_price < 100.0);
-        assert!(rep_long.ask_fill_intensity > rep_long.bid_fill_intensity);
-        assert!(
-            rep_long
-                .expected_inventory_trajectory
-                .last()
-                .copied()
-                .unwrap()
-                < 5.0
-        );
-
-        let h = 1e-5;
-        let eval_q = |q: f64| {
-            let mut s = long_q;
-            s.initial_inventory = q;
-            solve_avellaneda_stoikov_market_making(&s).optimal_bid_quote
-        };
-        let fd = (eval_q(5.0 + h) - eval_q(5.0 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let spec_d = AvellanedaStoikovMmSpec {
-            mid_price: D::from_value(100.0),
-            initial_inventory: D::variable(5.0, 0),
-            horizon: D::one(),
-            num_steps: 10,
-            volatility: D::from_value(0.20),
-            risk_aversion: D::from_value(0.5),
-            order_book_kappa: D::from_value(1.5),
-            base_arrival_intensity: D::from_value(10.0),
-            alpha_drift: D::zero(),
-        };
-        let ad = solve_avellaneda_stoikov_market_making(&spec_d).optimal_bid_quote;
-        assert!(ad.d[0] < 0.0);
-        assert!((ad.d[0] - fd).abs() < 1e-6);
-    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1263,95 +1084,6 @@ pub fn solve_alfonsi_fruth_schied_lob_execution<T: Real>(
     }
 }
 
-#[cfg(test)]
-mod phase20_tests {
-    use super::*;
-    use ql_ad::Dual;
-
-    #[test]
-    fn alfonsi_fruth_schied_block_collapse_twap_outperformance_and_ad() {
-        // When shape_exponent_alpha == 0.0 (Block LOB), Model 1 and Model 2 coincide and match Obizhaeva-Wang
-        let block_spec = AlfonsiFruthSchiedLobSpec {
-            total_order_size: 100.0,
-            horizon: 1.0,
-            num_intervals: 4,
-            lob_density_q: 50.0,
-            shape_exponent_alpha: 0.0,
-            resilience_rho: 1.2,
-        };
-        let r_block = solve_alfonsi_fruth_schied_lob_execution(&block_spec);
-        for k in 0..=4 {
-            assert!(
-                (r_block.volume_resilience_trades[k] - r_block.spread_resilience_trades[k]).abs()
-                    < 1e-10
-            );
-        }
-        assert!(
-            (r_block.volume_resilience_trades[0] - r_block.volume_resilience_trades[4]).abs()
-                < 1e-10
-        );
-
-        // Power-law decaying LOB (alpha = 0.5): strictly outperforms TWAP and satisfies volume conservation
-        let power_spec = AlfonsiFruthSchiedLobSpec {
-            shape_exponent_alpha: 0.5,
-            ..block_spec
-        };
-        let r_pow = solve_alfonsi_fruth_schied_lob_execution(&power_spec);
-        let sum_v: f64 = r_pow.volume_resilience_trades.iter().sum();
-        let sum_s: f64 = r_pow.spread_resilience_trades.iter().sum();
-        assert!((sum_v - 100.0).abs() < 1e-12);
-        assert!((sum_s - 100.0).abs() < 1e-12);
-        assert!(r_pow.cost_savings_vs_twap > 0.0);
-
-        let h = 1e-5;
-        let eval_rho = |rho: f64| {
-            let mut s = power_spec;
-            s.resilience_rho = rho;
-            solve_alfonsi_fruth_schied_lob_execution(&s).volume_resilience_cost
-        };
-        let fd = (eval_rho(1.2 + h) - eval_rho(1.2 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let spec_d = AlfonsiFruthSchiedLobSpec {
-            total_order_size: D::from_value(100.0),
-            horizon: D::one(),
-            num_intervals: 4,
-            lob_density_q: D::from_value(50.0),
-            shape_exponent_alpha: D::from_value(0.5),
-            resilience_rho: D::variable(1.2, 0),
-        };
-        let ad = solve_alfonsi_fruth_schied_lob_execution(&spec_d).volume_resilience_cost;
-        assert!(ad.d[0] < 0.0);
-        assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
-
-#[cfg(test)]
-mod phase21_tests {
-    use super::*;
-
-    #[test]
-    fn terminal_penalty_changes_inventory_smoothly() {
-        let base = CarteaJaimungalAlphaExecutionSpec {
-            initial_inventory: 1.0,
-            horizon: 1.0,
-            num_steps: 8,
-            temporary_impact_k: 1.0,
-            permanent_impact_b: 0.1,
-            inventory_penalty_phi: 0.2,
-            terminal_penalty_a: 0.0,
-            initial_alpha_signal: 0.1,
-            alpha_mean_reversion_kappa: 1.0,
-            alpha_volatility: 0.2,
-        };
-        let mut penalized = base;
-        penalized.terminal_penalty_a = 0.5;
-        let r0 = solve_cartea_jaimungal_alpha_execution(&base);
-        let r1 = solve_cartea_jaimungal_alpha_execution(&penalized);
-        assert!((r0.inventory_trajectory[1] - r1.inventory_trajectory[1]).abs() > 1e-10);
-        assert!(r0.inventory_trajectory.last().unwrap().val().is_finite());
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct GueantLehalleMarketMakingSpec<T: Real = f64> {
     pub max_inventory_q: usize,
@@ -1466,54 +1198,6 @@ pub fn solve_gueant_lehalle_bounded_market_making<T: Real>(
             + T::from_f64(2.0) * s.adverse_selection_zeta,
         logistic_rfq_optimal_bid_markup: lb,
         logistic_rfq_optimal_ask_markup: la,
-    }
-}
-
-#[cfg(test)]
-mod phase22_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn gueant_semi_implicit_values_positive() {
-        let s = GueantLehalleMarketMakingSpec {
-            max_inventory_q: 2,
-            current_inventory_q: 0,
-            horizon: 1.0,
-            num_time_steps: 8,
-            volatility: 0.2,
-            risk_aversion_gamma: 0.5,
-            intensity_decay_k: 1.2,
-            base_intensity_a: 2.0,
-            terminal_inventory_penalty: 0.1,
-            adverse_selection_zeta: 0.0,
-        };
-        let r = solve_gueant_lehalle_bounded_market_making(&s);
-        assert!(
-            r.value_function_theta_grid
-                .iter()
-                .all(|x| x.val().is_finite() && x.val() > 0.0)
-        );
-        let h = 1e-5;
-        let mut up = s;
-        up.volatility += h;
-        let mut dn = s;
-        dn.volatility -= h;
-        let fd = (solve_gueant_lehalle_bounded_market_making(&up).current_optimal_bid_offset
-            - solve_gueant_lehalle_bounded_market_making(&dn).current_optimal_bid_offset)
-            / (2.0 * h);
-        let ad = solve_gueant_lehalle_bounded_market_making(&GueantLehalleMarketMakingSpec {
-            max_inventory_q: 2,
-            current_inventory_q: 0,
-            horizon: Dual::<1>::from_value(1.0),
-            num_time_steps: 8,
-            volatility: Dual::<1>::variable(0.2, 0),
-            risk_aversion_gamma: Dual::<1>::from_value(0.5),
-            intensity_decay_k: Dual::<1>::from_value(1.2),
-            base_intensity_a: Dual::<1>::from_value(2.0),
-            terminal_inventory_penalty: Dual::<1>::from_value(0.1),
-            adverse_selection_zeta: Dual::<1>::from_value(0.0),
-        });
-        assert!((ad.current_optimal_bid_offset.d[0] - fd).abs() < 1e-5);
     }
 }
 
@@ -1658,6 +1342,347 @@ pub fn evaluate_hasbrouck_information_share_and_dssw_limits_to_arb<T: Real>(
         dssw_fundamental_price: fundamental,
         dssw_equilibrium_price: fundamental + sent - risk,
         dssw_noise_trader_risk_discount: risk,
+    }
+}
+
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn propagator_budget() {
+        let s = BouchaudWebsterPropagatorImpactSpec {
+            metaorder_size_q: 1.0,
+            daily_volume_vd: 10.0,
+            daily_volatility_sigma: 0.2,
+            y_prefactor: 1.0,
+            propagator_exponent_beta: 0.5,
+            propagator_scale_g0: 1.0,
+            regularization_tau0: 0.01,
+            temporary_impact_eta: 0.1,
+            risk_aversion_lambda: 0.1,
+            horizon: 1.0,
+            num_slices: 8,
+        };
+        let r = solve_bouchaud_webster_square_root_and_propagator_execution(&s);
+        assert!((r.optimal_u_shaped_trades.iter().sum::<f64>() - 1.0).abs() < 1e-8);
+        assert!(r.optimal_propagator_cost <= r.twap_propagator_cost + 1e-8);
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        fn mk<T: Real>(x: T) -> BouchaudWebsterPropagatorImpactSpec<T> {
+            BouchaudWebsterPropagatorImpactSpec {
+                metaorder_size_q: x,
+                daily_volume_vd: T::from_f64(10.0),
+                daily_volatility_sigma: T::from_f64(0.2),
+                y_prefactor: T::one(),
+                propagator_exponent_beta: T::from_f64(0.5),
+                propagator_scale_g0: T::one(),
+                regularization_tau0: T::from_f64(0.01),
+                temporary_impact_eta: T::from_f64(0.1),
+                risk_aversion_lambda: T::from_f64(0.1),
+                horizon: T::one(),
+                num_slices: 8,
+            }
+        }
+        let h = 1e-5;
+        let fd = (solve_bouchaud_webster_square_root_and_propagator_execution(&mk(1.0 + h))
+            .optimal_propagator_cost
+            .val()
+            - solve_bouchaud_webster_square_root_and_propagator_execution(&mk(1.0 - h))
+                .optimal_propagator_cost
+                .val())
+            / (2.0 * h);
+        let ad = solve_bouchaud_webster_square_root_and_propagator_execution(&mk(
+            Dual::<1>::variable(1.0, 0),
+        ))
+        .optimal_propagator_cost;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase14_tests {
+    use super::*;
+    #[test]
+    fn phase14_multi_asset_matches_1d_and_twap() {
+        let one_d = almgren_chriss_execution(&AlmgrenChrissSpec {
+            initial_inventory: 1000.0,
+            horizon: 1.0,
+            num_steps: 5,
+            volatility: 0.2,
+            temporary_impact: 1e-4,
+            permanent_impact: 5e-5,
+            risk_aversion: 1e-4,
+        });
+        let multi_1d = multi_asset_almgren_chriss_execution(&MultiAssetAlmgrenChrissSpec {
+            initial_inventory: vec![1000.0],
+            horizon: 1.0,
+            num_steps: 5,
+            covariance: vec![vec![0.04]],
+            temporary_impact: vec![vec![1e-4]],
+            permanent_impact: vec![vec![5e-5]],
+            risk_aversion: 1e-4,
+        });
+        for k in 0..=5 {
+            assert!((one_d.inventory_schedule[k] - multi_1d.inventory_schedule[k][0]).abs() < 1e-9);
+        }
+        assert!((one_d.expected_cost - multi_1d.expected_cost).abs() < 1e-9);
+        assert!((one_d.cost_variance - multi_1d.cost_variance).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod phase17_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn kratz_schoeneborn_dark_pool_monotonicity_delay_and_ad() {
+        let mut s = DarkLitRoutingSpec {
+            initial_inventory: 100.0,
+            horizon: 1.0,
+            num_steps: 4,
+            volatility: 0.20,
+            lit_temporary_impact: 1e-3,
+            lit_permanent_impact: 2e-4,
+            dark_fill_intensity: 0.0,
+            risk_aversion: 0.0,
+        };
+        let no_dark = optimal_dark_lit_execution(&s);
+        s.dark_fill_intensity = 1.5;
+        let with_dark = optimal_dark_lit_execution(&s);
+        assert!(with_dark.expected_total_cost < no_dark.expected_total_cost);
+        assert!(with_dark.lit_trading_rate_schedule[0] < with_dark.lit_trading_rate_schedule[4]);
+
+        let h = 1e-5;
+        let eval_theta = |th: f64| {
+            let mut sp = s;
+            sp.dark_fill_intensity = th;
+            optimal_dark_lit_execution(&sp).expected_total_cost
+        };
+        let fd = (eval_theta(1.5 + h) - eval_theta(1.5 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let sd = DarkLitRoutingSpec {
+            initial_inventory: D::from_value(100.0),
+            horizon: D::one(),
+            num_steps: 4,
+            volatility: D::from_value(0.20),
+            lit_temporary_impact: D::from_value(1e-3),
+            lit_permanent_impact: D::from_value(2e-4),
+            dark_fill_intensity: D::variable(1.5, 0),
+            risk_aversion: D::from_value(0.25),
+        };
+        let eval_theta_ra = |th: f64| {
+            let mut sp = s;
+            sp.risk_aversion = 0.25;
+            sp.dark_fill_intensity = th;
+            optimal_dark_lit_execution(&sp).expected_total_cost
+        };
+        let fd_ra = (eval_theta_ra(1.5 + h) - eval_theta_ra(1.5 - h)) / (2.0 * h);
+        let ad = optimal_dark_lit_execution(&sd).expected_total_cost;
+        assert!(fd < 0.0 && ad.d[0] < 0.0);
+        assert!((ad.d[0] - fd_ra).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod phase19_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn avellaneda_stoikov_inventory_skew_symmetry_and_ad() {
+        let zero_q = AvellanedaStoikovMmSpec {
+            mid_price: 100.0,
+            initial_inventory: 0.0,
+            horizon: 1.0,
+            num_steps: 10,
+            volatility: 0.20,
+            risk_aversion: 0.5,
+            order_book_kappa: 1.5,
+            base_arrival_intensity: 10.0,
+            alpha_drift: 0.0,
+        };
+        let rep0 = solve_avellaneda_stoikov_market_making(&zero_q);
+        assert!((rep0.reservation_price - 100.0).abs() < 1e-12);
+        assert!((rep0.bid_fill_intensity - rep0.ask_fill_intensity).abs() < 1e-12);
+
+        let mut long_q = zero_q;
+        long_q.initial_inventory = 5.0;
+        let rep_long = solve_avellaneda_stoikov_market_making(&long_q);
+        // Long inventory skews reservation price downward and increases ask fill intensity vs bid
+        assert!(rep_long.reservation_price < 100.0);
+        assert!(rep_long.ask_fill_intensity > rep_long.bid_fill_intensity);
+        assert!(
+            rep_long
+                .expected_inventory_trajectory
+                .last()
+                .copied()
+                .unwrap()
+                < 5.0
+        );
+
+        let h = 1e-5;
+        let eval_q = |q: f64| {
+            let mut s = long_q;
+            s.initial_inventory = q;
+            solve_avellaneda_stoikov_market_making(&s).optimal_bid_quote
+        };
+        let fd = (eval_q(5.0 + h) - eval_q(5.0 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let spec_d = AvellanedaStoikovMmSpec {
+            mid_price: D::from_value(100.0),
+            initial_inventory: D::variable(5.0, 0),
+            horizon: D::one(),
+            num_steps: 10,
+            volatility: D::from_value(0.20),
+            risk_aversion: D::from_value(0.5),
+            order_book_kappa: D::from_value(1.5),
+            base_arrival_intensity: D::from_value(10.0),
+            alpha_drift: D::zero(),
+        };
+        let ad = solve_avellaneda_stoikov_market_making(&spec_d).optimal_bid_quote;
+        assert!(ad.d[0] < 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod phase20_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn alfonsi_fruth_schied_block_collapse_twap_outperformance_and_ad() {
+        // When shape_exponent_alpha == 0.0 (Block LOB), Model 1 and Model 2 coincide and match Obizhaeva-Wang
+        let block_spec = AlfonsiFruthSchiedLobSpec {
+            total_order_size: 100.0,
+            horizon: 1.0,
+            num_intervals: 4,
+            lob_density_q: 50.0,
+            shape_exponent_alpha: 0.0,
+            resilience_rho: 1.2,
+        };
+        let r_block = solve_alfonsi_fruth_schied_lob_execution(&block_spec);
+        for k in 0..=4 {
+            assert!(
+                (r_block.volume_resilience_trades[k] - r_block.spread_resilience_trades[k]).abs()
+                    < 1e-10
+            );
+        }
+        assert!(
+            (r_block.volume_resilience_trades[0] - r_block.volume_resilience_trades[4]).abs()
+                < 1e-10
+        );
+
+        // Power-law decaying LOB (alpha = 0.5): strictly outperforms TWAP and satisfies volume conservation
+        let power_spec = AlfonsiFruthSchiedLobSpec {
+            shape_exponent_alpha: 0.5,
+            ..block_spec
+        };
+        let r_pow = solve_alfonsi_fruth_schied_lob_execution(&power_spec);
+        let sum_v: f64 = r_pow.volume_resilience_trades.iter().sum();
+        let sum_s: f64 = r_pow.spread_resilience_trades.iter().sum();
+        assert!((sum_v - 100.0).abs() < 1e-12);
+        assert!((sum_s - 100.0).abs() < 1e-12);
+        assert!(r_pow.cost_savings_vs_twap > 0.0);
+
+        let h = 1e-5;
+        let eval_rho = |rho: f64| {
+            let mut s = power_spec;
+            s.resilience_rho = rho;
+            solve_alfonsi_fruth_schied_lob_execution(&s).volume_resilience_cost
+        };
+        let fd = (eval_rho(1.2 + h) - eval_rho(1.2 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let spec_d = AlfonsiFruthSchiedLobSpec {
+            total_order_size: D::from_value(100.0),
+            horizon: D::one(),
+            num_intervals: 4,
+            lob_density_q: D::from_value(50.0),
+            shape_exponent_alpha: D::from_value(0.5),
+            resilience_rho: D::variable(1.2, 0),
+        };
+        let ad = solve_alfonsi_fruth_schied_lob_execution(&spec_d).volume_resilience_cost;
+        assert!(ad.d[0] < 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase21_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_penalty_changes_inventory_smoothly() {
+        let base = CarteaJaimungalAlphaExecutionSpec {
+            initial_inventory: 1.0,
+            horizon: 1.0,
+            num_steps: 8,
+            temporary_impact_k: 1.0,
+            permanent_impact_b: 0.1,
+            inventory_penalty_phi: 0.2,
+            terminal_penalty_a: 0.0,
+            initial_alpha_signal: 0.1,
+            alpha_mean_reversion_kappa: 1.0,
+            alpha_volatility: 0.2,
+        };
+        let mut penalized = base;
+        penalized.terminal_penalty_a = 0.5;
+        let r0 = solve_cartea_jaimungal_alpha_execution(&base);
+        let r1 = solve_cartea_jaimungal_alpha_execution(&penalized);
+        assert!((r0.inventory_trajectory[1] - r1.inventory_trajectory[1]).abs() > 1e-10);
+        assert!(r0.inventory_trajectory.last().unwrap().val().is_finite());
+    }
+}
+
+#[cfg(test)]
+mod phase22_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn gueant_semi_implicit_values_positive() {
+        let s = GueantLehalleMarketMakingSpec {
+            max_inventory_q: 2,
+            current_inventory_q: 0,
+            horizon: 1.0,
+            num_time_steps: 8,
+            volatility: 0.2,
+            risk_aversion_gamma: 0.5,
+            intensity_decay_k: 1.2,
+            base_intensity_a: 2.0,
+            terminal_inventory_penalty: 0.1,
+            adverse_selection_zeta: 0.0,
+        };
+        let r = solve_gueant_lehalle_bounded_market_making(&s);
+        assert!(
+            r.value_function_theta_grid
+                .iter()
+                .all(|x| x.val().is_finite() && x.val() > 0.0)
+        );
+        let h = 1e-5;
+        let mut up = s;
+        up.volatility += h;
+        let mut dn = s;
+        dn.volatility -= h;
+        let fd = (solve_gueant_lehalle_bounded_market_making(&up).current_optimal_bid_offset
+            - solve_gueant_lehalle_bounded_market_making(&dn).current_optimal_bid_offset)
+            / (2.0 * h);
+        let ad = solve_gueant_lehalle_bounded_market_making(&GueantLehalleMarketMakingSpec {
+            max_inventory_q: 2,
+            current_inventory_q: 0,
+            horizon: Dual::<1>::from_value(1.0),
+            num_time_steps: 8,
+            volatility: Dual::<1>::variable(0.2, 0),
+            risk_aversion_gamma: Dual::<1>::from_value(0.5),
+            intensity_decay_k: Dual::<1>::from_value(1.2),
+            base_intensity_a: Dual::<1>::from_value(2.0),
+            terminal_inventory_penalty: Dual::<1>::from_value(0.1),
+            adverse_selection_zeta: Dual::<1>::from_value(0.0),
+        });
+        assert!((ad.current_optimal_bid_offset.d[0] - fd).abs() < 1e-5);
     }
 }
 
@@ -1831,6 +1856,14 @@ mod phase27_tests {
         let d =
             analyze_harris_roll_corwin_schultz_microstructure(&make(Dual::<1>::variable(100.0, 0)))
                 .perold_total_implementation_shortfall;
-        assert!((d.d[0] - fd).abs() < 1e-5);
+        assert!(d.d[0].abs() > 1e-6 && (d.d[0] - fd).abs() < 1e-5);
+    }
+
+    #[test]
+    fn phase27_invariants() {
+        let r = analyze_harris_roll_corwin_schultz_microstructure(&make(100.0));
+        assert!(r.perold_identity_conservation_error < 1e-12);
+        assert!(r.corwin_schultz_high_low_spread >= 0.0);
+        assert!(r.parkinson_high_low_volatility > 0.0);
     }
 }

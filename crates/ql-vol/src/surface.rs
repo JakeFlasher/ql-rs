@@ -56,69 +56,81 @@ pub fn evaluate_mingone_global_arbitrage_free_essvi<T: Real>(
         prev_p = p;
     }
     let mut gmin = T::from_f64(1e9);
-    let mut vols0 = Vec::new();
-    let mut vols1 = Vec::new();
-    for (j, &k) in s.test_log_moneyness_grid.iter().enumerate() {
-        let eval = |i: usize| {
-            if i >= m {
-                return T::zero();
-            }
-            let theta = th[i];
-            let rho = rh[i];
-            let phi = ps[i] / theta.max_val(T::from_f64(1e-12));
-            let u = phi * k + rho;
-            theta * (T::one() + rho * phi * k + (u * u + T::one() - rho * rho).sqrt())
-                / T::from_f64(2.0)
+    let mut cmin = T::from_f64(1e9);
+    let mut vols0 = Vec::with_capacity(s.test_log_moneyness_grid.len());
+    let mut vols1 = Vec::with_capacity(s.test_log_moneyness_grid.len());
+    let eval = |i: usize, k: T| -> T {
+        if i >= m {
+            return T::zero();
+        }
+        let theta = th[i];
+        let rho = rh[i];
+        let phi = ps[i] / theta.max_val(T::from_f64(1e-12));
+        let u = phi * k + rho;
+        let q = (u * u + T::one() - rho * rho)
+            .max_val(T::from_f64(1e-16))
+            .sqrt();
+        theta * (T::one() + rho * phi * k + q) / T::from_f64(2.0)
+    };
+    for &k in &s.test_log_moneyness_grid {
+        let w0 = eval(0, k).max_val(T::from_f64(1e-12));
+        let w1 = if m > 1 {
+            eval(1, k).max_val(T::from_f64(1e-12))
+        } else {
+            w0
         };
-        let w0 = eval(0).max_val(T::from_f64(1e-12));
-        let w1 = if m > 1 { eval(1) } else { w0 };
-        let vol0 = (w0
-            / s.expiries
+        vols0.push(
+            (w0 / s
+                .expiries
                 .first()
                 .copied()
                 .unwrap_or(T::one())
                 .max_val(T::from_f64(1e-8)))
-        .sqrt();
-        let vol1 = (w1
-            / s.expiries
+            .sqrt(),
+        );
+        vols1.push(
+            (w1 / s
+                .expiries
                 .get(1)
                 .copied()
                 .unwrap_or(s.expiries.first().copied().unwrap_or(T::one()))
                 .max_val(T::from_f64(1e-8)))
-        .sqrt();
-        if j == 0 {
-            vols0.push(vol0);
-            vols1.push(vol1);
+            .sqrt(),
+        );
+        for i in 0..m {
+            let theta = th[i];
+            let rho = rh[i];
+            let phi = ps[i] / theta.max_val(T::from_f64(1e-12));
+            let u = phi * k + rho;
+            let q = (u * u + T::one() - rho * rho)
+                .max_val(T::from_f64(1e-16))
+                .sqrt();
+            let w = theta * (T::one() + rho * phi * k + q) / T::from_f64(2.0);
+            let wp = ps[i] / T::from_f64(2.0) * (rho + u / q);
+            let wpp = ps[i] * phi * (T::one() - rho * rho) / (T::from_f64(2.0) * q * q * q);
+            let g = (T::one() - k * wp / (T::from_f64(2.0) * w.max_val(T::from_f64(1e-12))))
+                .powf(2.0)
+                - wp * wp / T::from_f64(4.0)
+                    * (T::one() / w.max_val(T::from_f64(1e-12)) + T::from_f64(0.25))
+                + wpp / T::from_f64(2.0);
+            gmin = gmin.min_val(g);
+            if i > 0 {
+                cmin = cmin.min_val(w - eval(i - 1, k));
+            }
         }
-        let h = T::from_f64(1e-4);
-        let wm = eval(0);
-        let wp = {
-            let kk = k + h;
-            let theta = th[0];
-            let rho = rh[0];
-            let phi = ps[0] / theta.max_val(T::from_f64(1e-12));
-            let u = phi * kk + rho;
-            theta * (T::one() + rho * phi * kk + (u * u + T::one() - rho * rho).sqrt())
-                / T::from_f64(2.0)
-        };
-        let _ = wm;
-        let wp2 = wp;
-        let g = (T::one() - k * T::zero() / (T::from_f64(2.0) * w0)).powf(2.0) - T::zero()
-            + T::from_f64(1e-6);
-        gmin = gmin.min_val(g + wp2 * T::zero());
     }
-    let cal = if m > 1 {
-        (th[1] - th[0]).max_val(T::from_f64(1e-8))
-    } else {
-        T::one()
-    };
+
+    let cal = if m > 1 { cmin } else { T::one() };
     let skew = if m > 0 {
-        -rh[0] * ps[0] / T::from_f64(2.0)
+        T::from_f64(0.5) * rh[0] * ps[0] / (th[0] * s.expiries[0].max_val(T::from_f64(1e-8))).sqrt()
     } else {
         T::zero()
     };
-    let atm_err =
-        th.first().copied().unwrap_or(T::zero()) - th.first().copied().unwrap_or(T::zero());
+    let atm_err = if m > 0 {
+        (eval(0, T::zero()) - th[0]).abs()
+    } else {
+        T::zero()
+    };
     MingoneGlobalArbitrageFreeEssviReport {
         calibrated_thetas: th,
         calibrated_rhos: rh,
@@ -132,31 +144,6 @@ pub fn evaluate_mingone_global_arbitrage_free_essvi<T: Real>(
     }
 }
 
-#[cfg(test)]
-mod phase27_tests {
-    use super::*;
-    use ql_ad::Dual;
-    fn make<T: Real>(x: T) -> MingoneGlobalArbitrageFreeEssviSpec<T> {
-        MingoneGlobalArbitrageFreeEssviSpec {
-            expiries: vec![T::one(), T::from_f64(2.0)],
-            raw_theta_increments: vec![x, T::from_f64(0.1)],
-            raw_rho_params: vec![T::from_f64(-0.2), T::from_f64(-0.1)],
-            raw_psi_fractions: vec![T::from_f64(0.2), T::from_f64(0.3)],
-            test_log_moneyness_grid: vec![T::from_f64(-1.0), T::zero(), T::one()],
-        }
-    }
-    #[test]
-    fn dual_fd_parity() {
-        let h = 1e-5;
-        let fd = (evaluate_mingone_global_arbitrage_free_essvi(&make(0.1 + h)).calibrated_thetas
-            [0]
-            - evaluate_mingone_global_arbitrage_free_essvi(&make(0.1 - h)).calibrated_thetas[0])
-            / (2.0 * h);
-        let d = evaluate_mingone_global_arbitrage_free_essvi(&make(Dual::<1>::variable(0.1, 0)))
-            .calibrated_thetas[0];
-        assert!((d.d[0] - fd).abs() < 1e-5);
-    }
-}
 pub use volsurf::smile::{SabrSmile, SviSmile};
 pub use volsurf::surface::{EssviSurface, SsviSurface};
 pub use volsurf::{
@@ -278,73 +265,6 @@ pub fn evaluate_bergomi_forward_start_smile_and_napoleon_convexity<T: Real>(
         constant_vol_napoleon_coupon: const_coupon,
         bergomi_stoch_vol_napoleon_coupon: stoch,
         napoleon_vol_of_vol_convexity_value: (stoch - const_coupon).max_val(T::zero()),
-    }
-}
-
-#[cfg(test)]
-mod phase23_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn lsv_projection_positive() {
-        let s = GuyonMarkovianProjectionLsvSpec {
-            forward: 100.0,
-            strike: 105.0,
-            expiry: 1.0,
-            forward_start_t1: 0.25,
-            atm_vol: 0.2,
-            market_atm_skew: -0.1,
-            market_atm_curvature: 0.1,
-            sv_v0: 0.04,
-            sv_kappa: 1.0,
-            sv_eta: 0.3,
-            sv_rho: -0.5,
-            sv_mixing_weight_eta: 0.5,
-        };
-        let r = evaluate_guyon_markovian_projection_lsv_smile(&s);
-        assert!(r.dupire_local_vol_at_strike > 0.0);
-        assert!(r.conditional_expected_sv_at_strike > 0.0);
-    }
-
-    #[test]
-    fn dual_fd_parity() {
-        let mk = |k: f64| GuyonMarkovianProjectionLsvSpec {
-            forward: 100.0,
-            strike: k,
-            expiry: 1.0,
-            forward_start_t1: 0.25,
-            atm_vol: 0.2,
-            market_atm_skew: -0.1,
-            market_atm_curvature: 0.1,
-            sv_v0: 0.04,
-            sv_kappa: 1.0,
-            sv_eta: 0.3,
-            sv_rho: -0.5,
-            sv_mixing_weight_eta: 0.5,
-        };
-        let h = 1e-5;
-        let fd = (evaluate_guyon_markovian_projection_lsv_smile(&mk(100.0 + h))
-            .lsv_reconstructed_implied_vol
-            - evaluate_guyon_markovian_projection_lsv_smile(&mk(100.0 - h))
-                .lsv_reconstructed_implied_vol)
-            / (2.0 * h);
-        let x = Dual::<1>::variable(100.0, 0);
-        let ad = evaluate_guyon_markovian_projection_lsv_smile(&GuyonMarkovianProjectionLsvSpec {
-            forward: Dual::<1>::from_value(100.0),
-            strike: x,
-            expiry: Dual::<1>::one(),
-            forward_start_t1: Dual::<1>::from_value(0.25),
-            atm_vol: Dual::<1>::from_value(0.2),
-            market_atm_skew: Dual::<1>::from_value(-0.1),
-            market_atm_curvature: Dual::<1>::from_value(0.1),
-            sv_v0: Dual::<1>::from_value(0.04),
-            sv_kappa: Dual::<1>::one(),
-            sv_eta: Dual::<1>::from_value(0.3),
-            sv_rho: Dual::<1>::from_value(-0.5),
-            sv_mixing_weight_eta: Dual::<1>::from_value(0.5),
-        })
-        .lsv_reconstructed_implied_vol;
-        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
 
@@ -1626,70 +1546,6 @@ pub fn evaluate_gatheral_gyongy_lsv_leverage<T: Real>(
     }
 }
 
-#[cfg(test)]
-mod phase13_tests {
-    use super::*;
-    #[test]
-    fn essvi_three_slice_vega() {
-        let q = |v| {
-            vec![
-                SmileStrikeQuote {
-                    strike: 90.0,
-                    market_vol: v + 0.02,
-                    weight: 1.0,
-                },
-                SmileStrikeQuote {
-                    strike: 100.0,
-                    market_vol: v,
-                    weight: 1.0,
-                },
-                SmileStrikeQuote {
-                    strike: 110.0,
-                    market_vol: v - 0.01,
-                    weight: 1.0,
-                },
-            ]
-        };
-        let c = CalibratedEssviSurface::calibrate(&[
-            (0.25, 100., q(0.2)),
-            (0.5, 100., q(0.21)),
-            (1., 100., q(0.22)),
-        ])
-        .unwrap();
-        let (_, g) = c.vol_and_quote_vega(0.75, 100.);
-        assert!(g.len() == 9);
-    }
-}
-
-#[cfg(test)]
-mod phase21_tests {
-    use super::*;
-
-    #[test]
-    fn gatheral_atm_geodesic_collapse_and_skew_ratio() {
-        let s = GatheralLsvGyongyLeverageSpec {
-            forward: 100.0,
-            strike: 100.0,
-            expiry: 1.0,
-            svi_a: 0.04,
-            svi_b: 0.2,
-            svi_rho: -0.3,
-            svi_m: 0.0,
-            svi_sigma: 0.2,
-            dw_dt_atm: 0.04,
-            heston_v0: 0.04,
-            heston_theta: 0.04,
-            heston_kappa: 1.0,
-            heston_eta: 0.5,
-            heston_rho: -0.7,
-        };
-        let r = evaluate_gatheral_gyongy_lsv_leverage(&s);
-        assert!((r.geodesic_implied_vol - r.dupire_local_vol).abs() < 1e-10);
-        assert!((r.local_to_implied_atm_skew_ratio - 2.0).abs() < 1e-10);
-        assert!(r.durrleman_g.val() > 0.0);
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct HestonNandiTsayDccGarchSpec<T: Real = f64> {
     pub spot: T,
@@ -1961,6 +1817,172 @@ pub fn evaluate_heston_nandi_and_tsay_dcc_garch<T: Real>(
         terminal_dcc_correlation: term,
         max_dcc_correlation: max,
         min_dcc_correlation: min,
+    }
+}
+
+#[cfg(test)]
+mod phase27_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn make<T: Real>(x: T) -> MingoneGlobalArbitrageFreeEssviSpec<T> {
+        MingoneGlobalArbitrageFreeEssviSpec {
+            expiries: vec![T::one(), T::from_f64(2.0)],
+            raw_theta_increments: vec![x, T::from_f64(0.1)],
+            raw_rho_params: vec![T::from_f64(-0.2), T::from_f64(-0.1)],
+            raw_psi_fractions: vec![T::from_f64(0.2), T::from_f64(0.3)],
+            test_log_moneyness_grid: vec![T::from_f64(-1.0), T::zero(), T::one()],
+        }
+    }
+    #[test]
+    fn dual_fd_parity() {
+        let h = 1e-5;
+        let fd = (evaluate_mingone_global_arbitrage_free_essvi(&make(0.1 + h)).calibrated_thetas
+            [0]
+            - evaluate_mingone_global_arbitrage_free_essvi(&make(0.1 - h)).calibrated_thetas[0])
+            / (2.0 * h);
+        let d = evaluate_mingone_global_arbitrage_free_essvi(&make(Dual::<1>::variable(0.1, 0)))
+            .calibrated_thetas[0];
+        assert!(d.d[0].abs() > 1e-6 && (d.d[0] - fd).abs() < 1e-5);
+    }
+
+    #[test]
+    fn phase27_invariants() {
+        let s = make(0.1);
+        let r = evaluate_mingone_global_arbitrage_free_essvi(&s);
+        assert!(r.slice0_implied_vols.len() == s.test_log_moneyness_grid.len());
+        assert!(r.min_durrleman_butterfly_g > 0.0);
+        assert!(r.atm_total_var_error < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn lsv_projection_positive() {
+        let s = GuyonMarkovianProjectionLsvSpec {
+            forward: 100.0,
+            strike: 105.0,
+            expiry: 1.0,
+            forward_start_t1: 0.25,
+            atm_vol: 0.2,
+            market_atm_skew: -0.1,
+            market_atm_curvature: 0.1,
+            sv_v0: 0.04,
+            sv_kappa: 1.0,
+            sv_eta: 0.3,
+            sv_rho: -0.5,
+            sv_mixing_weight_eta: 0.5,
+        };
+        let r = evaluate_guyon_markovian_projection_lsv_smile(&s);
+        assert!(r.dupire_local_vol_at_strike > 0.0);
+        assert!(r.conditional_expected_sv_at_strike > 0.0);
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        let mk = |k: f64| GuyonMarkovianProjectionLsvSpec {
+            forward: 100.0,
+            strike: k,
+            expiry: 1.0,
+            forward_start_t1: 0.25,
+            atm_vol: 0.2,
+            market_atm_skew: -0.1,
+            market_atm_curvature: 0.1,
+            sv_v0: 0.04,
+            sv_kappa: 1.0,
+            sv_eta: 0.3,
+            sv_rho: -0.5,
+            sv_mixing_weight_eta: 0.5,
+        };
+        let h = 1e-5;
+        let fd = (evaluate_guyon_markovian_projection_lsv_smile(&mk(100.0 + h))
+            .lsv_reconstructed_implied_vol
+            - evaluate_guyon_markovian_projection_lsv_smile(&mk(100.0 - h))
+                .lsv_reconstructed_implied_vol)
+            / (2.0 * h);
+        let x = Dual::<1>::variable(100.0, 0);
+        let ad = evaluate_guyon_markovian_projection_lsv_smile(&GuyonMarkovianProjectionLsvSpec {
+            forward: Dual::<1>::from_value(100.0),
+            strike: x,
+            expiry: Dual::<1>::one(),
+            forward_start_t1: Dual::<1>::from_value(0.25),
+            atm_vol: Dual::<1>::from_value(0.2),
+            market_atm_skew: Dual::<1>::from_value(-0.1),
+            market_atm_curvature: Dual::<1>::from_value(0.1),
+            sv_v0: Dual::<1>::from_value(0.04),
+            sv_kappa: Dual::<1>::one(),
+            sv_eta: Dual::<1>::from_value(0.3),
+            sv_rho: Dual::<1>::from_value(-0.5),
+            sv_mixing_weight_eta: Dual::<1>::from_value(0.5),
+        })
+        .lsv_reconstructed_implied_vol;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase13_tests {
+    use super::*;
+    #[test]
+    fn essvi_three_slice_vega() {
+        let q = |v| {
+            vec![
+                SmileStrikeQuote {
+                    strike: 90.0,
+                    market_vol: v + 0.02,
+                    weight: 1.0,
+                },
+                SmileStrikeQuote {
+                    strike: 100.0,
+                    market_vol: v,
+                    weight: 1.0,
+                },
+                SmileStrikeQuote {
+                    strike: 110.0,
+                    market_vol: v - 0.01,
+                    weight: 1.0,
+                },
+            ]
+        };
+        let c = CalibratedEssviSurface::calibrate(&[
+            (0.25, 100., q(0.2)),
+            (0.5, 100., q(0.21)),
+            (1., 100., q(0.22)),
+        ])
+        .unwrap();
+        let (_, g) = c.vol_and_quote_vega(0.75, 100.);
+        assert!(g.len() == 9);
+    }
+}
+
+#[cfg(test)]
+mod phase21_tests {
+    use super::*;
+
+    #[test]
+    fn gatheral_atm_geodesic_collapse_and_skew_ratio() {
+        let s = GatheralLsvGyongyLeverageSpec {
+            forward: 100.0,
+            strike: 100.0,
+            expiry: 1.0,
+            svi_a: 0.04,
+            svi_b: 0.2,
+            svi_rho: -0.3,
+            svi_m: 0.0,
+            svi_sigma: 0.2,
+            dw_dt_atm: 0.04,
+            heston_v0: 0.04,
+            heston_theta: 0.04,
+            heston_kappa: 1.0,
+            heston_eta: 0.5,
+            heston_rho: -0.7,
+        };
+        let r = evaluate_gatheral_gyongy_lsv_leverage(&s);
+        assert!((r.geodesic_implied_vol - r.dupire_local_vol).abs() < 1e-10);
+        assert!((r.local_to_implied_atm_skew_ratio - 2.0).abs() < 1e-10);
+        assert!(r.durrleman_g.val() > 0.0);
     }
 }
 

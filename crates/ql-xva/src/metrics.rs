@@ -37,143 +37,81 @@ pub struct AlbaneseCrepeyMporBalanceSheetReport<T: Real = f64> {
 pub fn compute_albanese_crepey_mpor_and_balance_sheet_xva<T: Real>(
     s: &AlbaneseCrepeyMporBalanceSheetSpec<T>,
 ) -> AlbaneseCrepeyMporBalanceSheetReport<T> {
-    let mut cls = Vec::new();
-    let mut sty = Vec::new();
-    let mut cva = T::zero();
-    let mut scva = T::zero();
-    for i in 0..s.exposure_times.len() {
-        let sig = s.portfolio_vol_profile.get(i).copied().unwrap_or(T::zero())
-            * s.mpor_years.max_val(T::from_f64(0.0)).sqrt();
-        let mu = s.csa_threshold;
-        let z = mu / sig.max_val(T::from_f64(1e-8));
-        let e = mu * z.norm_cdf() + sig.norm_pdf();
-        let coupon = s
-            .scheduled_cashflows_in_mpor
+    let n = s.exposure_times.len();
+    let mut cls = Vec::with_capacity(n);
+    let mut sty = Vec::with_capacity(n);
+    let smooth_pos = |x: T| T::from_f64(0.5) * (x + (x * x + T::from_f64(1e-12)).sqrt());
+    for i in 0..n {
+        let sig = (s
+            .portfolio_vol_profile
             .get(i)
             .copied()
             .unwrap_or(T::zero())
-            .max_val(T::zero());
-        let es = (mu + coupon) * ((mu + coupon) / sig.max_val(T::from_f64(1e-8))).norm_cdf()
-            + sig.norm_pdf();
-        cls.push(e);
+            .abs()
+            * s.mpor_years.max_val(T::from_f64(1e-8)).sqrt())
+        .max_val(T::from_f64(1e-8));
+        let mtm = s.clean_mtm_profile.get(i).copied().unwrap_or_else(T::zero);
+        let mu_c = s.csa_threshold + T::from_f64(0.1) * (mtm - s.csa_threshold);
+        let zc = mu_c / sig;
+        let ec = mu_c * zc.norm_cdf() + sig * zc.norm_pdf();
+        cls.push(ec);
+        let cf = s
+            .scheduled_cashflows_in_mpor
+            .get(i)
+            .copied()
+            .unwrap_or_else(T::zero);
+        let mu_s = mu_c + smooth_pos(cf);
+        let zs = mu_s / sig;
+        let es = mu_s * zs.norm_cdf() + sig * zs.norm_pdf();
         sty.push(es);
-        let df = (-s.risk_free_rate * s.exposure_times[i]).exp();
-        cva += s.cpty_lgd * s.cpty_hazard_rate * df * e;
-        scva += s.cpty_lgd * s.cpty_hazard_rate * df * es;
     }
-    let mut fca = T::zero();
+    let mut cva = T::zero();
+    let mut scva = T::zero();
+    let mut fca_unadj = T::zero();
+    let mut fca_sh = T::zero();
     let mut kva = T::zero();
-    for i in 0..sty.len() {
-        let df = (-s.risk_free_rate * s.exposure_times[i]).exp();
+    let mut mva = T::zero();
+    let sf = s.bank_lgd * s.bank_hazard_rate;
+    let mut prev_t = T::zero();
+    for i in 0..n {
+        let ti = s.exposure_times[i];
+        let dt = (ti - prev_t).max_val(T::from_f64(1e-6));
+        prev_t = ti;
+        let df = (-s.risk_free_rate * ti).exp() * dt;
+        cva += s.cpty_lgd * s.cpty_hazard_rate * df * cls[i];
+        scva += s.cpty_lgd * s.cpty_hazard_rate * df * sty[i];
         let cap = s
             .economic_capital_profile
             .get(i)
             .copied()
-            .unwrap_or(T::zero());
-        fca += s.bank_lgd * s.bank_hazard_rate * df * sty[i];
-        fca -= s.bank_lgd * s.bank_hazard_rate * df * (sty[i] - cap).max_val(T::zero());
+            .unwrap_or_else(T::zero);
+        let im = s
+            .initial_margin_profile
+            .get(i)
+            .copied()
+            .unwrap_or_else(T::zero);
+        fca_unadj += sf * df * sty[i];
+        fca_sh += sf * df * smooth_pos(sty[i] - cap);
         kva += s.hurdle_rate * df * cap;
+        mva += s.im_funding_spread * df * im;
     }
-    let mva = s
-        .initial_margin_profile
-        .iter()
-        .enumerate()
-        .map(|(i, &im)| {
-            im * s.im_funding_spread
-                * (-s.risk_free_rate * s.exposure_times.get(i).copied().unwrap_or(T::zero())).exp()
-        })
-        .fold(T::zero(), |a, b| a + b);
+    let fda = (fca_unadj - fca_sh).max_val(T::zero());
     AlbaneseCrepeyMporBalanceSheetReport {
         classical_mpor_epe_profile: cls,
         sticky_mpor_epe_profile: sty,
         classical_mpor_cva: cva,
         sticky_mpor_cva: scva,
         mpor_coupon_spike_cva_amplification: scva / cva.max_val(T::from_f64(1e-12)) - T::one(),
-        unadjusted_fca_without_capital_offset: fca + kva,
-        albanese_crepey_shareholder_fca: fca,
-        creditor_fda_wealth_transfer: kva,
+        unadjusted_fca_without_capital_offset: fca_unadj,
+        albanese_crepey_shareholder_fca: fca_sh,
+        creditor_fda_wealth_transfer: fda,
         mva,
         kva,
-        shareholder_funds_transfer_price_ftp: fca + kva + mva,
+        shareholder_funds_transfer_price_ftp: scva + fca_sh + mva + kva,
     }
 }
-use ql_curves::YieldTermStructure;
-#[cfg(test)]
-mod phase23_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn ctd_bounds() {
-        let s = BrigoPallaviciniCtdCollateralXvaSpec {
-            notional_mtm: 1.0,
-            maturity: 1.0,
-            num_steps: 8,
-            base_ois_rate: 0.02,
-            csa_spread_ccy1: 0.001,
-            csa_spread_ccy2: 0.002,
-            csa_spread_ccy3: 0.003,
-            csa_mean_reversion: 1.0,
-            csa_vol_ccy1: 0.01,
-            csa_vol_ccy2: 0.01,
-            csa_vol_ccy3: 0.01,
-            csa_correlation: 0.2,
-            cpty_hazard_rate: 0.02,
-            cpty_lgd: 0.6,
-            own_hazard_rate: 0.01,
-            own_lgd: 0.6,
-            exposure_volatility: 0.1,
-        };
-        let r = compute_brigo_pallavicini_ctd_collateral_and_closeout_xva(&s);
-        assert!(r.ctd_stochastic_csa_discount_factor <= r.intrinsic_max_csa_discount_factor);
-        let same = BrigoPallaviciniCtdCollateralXvaSpec {
-            csa_spread_ccy1: 0.002,
-            csa_spread_ccy2: 0.002,
-            csa_spread_ccy3: 0.002,
-            csa_correlation: 0.999999,
-            ..s
-        };
-        let same_r = compute_brigo_pallavicini_ctd_collateral_and_closeout_xva(&same);
-        assert!(same_r.ctd_collateral_switch_option_value < 1e-5);
-    }
 
-    #[test]
-    fn dual_fd_parity() {
-        fn mk<T: Real>(x: T) -> BrigoPallaviciniCtdCollateralXvaSpec<T> {
-            BrigoPallaviciniCtdCollateralXvaSpec {
-                notional_mtm: T::one(),
-                maturity: T::one(),
-                num_steps: 8,
-                base_ois_rate: T::from_f64(0.02),
-                csa_spread_ccy1: T::from_f64(0.001),
-                csa_spread_ccy2: T::from_f64(0.002),
-                csa_spread_ccy3: T::from_f64(0.003),
-                csa_mean_reversion: T::one(),
-                csa_vol_ccy1: T::from_f64(0.01),
-                csa_vol_ccy2: T::from_f64(0.01),
-                csa_vol_ccy3: T::from_f64(0.01),
-                csa_correlation: T::from_f64(0.2),
-                cpty_hazard_rate: T::from_f64(0.02),
-                cpty_lgd: T::from_f64(0.6),
-                own_hazard_rate: T::from_f64(0.01),
-                own_lgd: T::from_f64(0.6),
-                exposure_volatility: x,
-            }
-        }
-        let h = 1e-5;
-        let fd = (compute_brigo_pallavicini_ctd_collateral_and_closeout_xva(&mk(0.1 + h))
-            .replacement_cost_closeout_bcva
-            .val()
-            - compute_brigo_pallavicini_ctd_collateral_and_closeout_xva(&mk(0.1 - h))
-                .replacement_cost_closeout_bcva
-                .val())
-            / (2.0 * h);
-        let ad = compute_brigo_pallavicini_ctd_collateral_and_closeout_xva(&mk(
-            Dual::<1>::variable(0.1, 0),
-        ))
-        .replacement_cost_closeout_bcva;
-        assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
+use ql_curves::YieldTermStructure;
 
 #[derive(Clone, Debug)]
 pub struct BrigoPallaviciniCtdCollateralXvaSpec<T: Real = f64> {
@@ -997,28 +935,6 @@ pub fn compute_turlakov_wwr_cva_fva<T: Real>(s: &TurlakovWwrSpec<T>) -> Turlakov
     }
 }
 
-#[cfg(test)]
-mod phase14_tests {
-    use super::*;
-    use crate::NpvCube;
-    use ql_curves::FlatForwardCurve;
-    use ql_time::Date;
-    #[test]
-    fn phase14_correlated_ftd_is_finite() {
-        let d = Date::from_ymd(2024, 1, 1).unwrap();
-        let curve = FlatForwardCurve::new(d, 0.02);
-        let mut cube = NpvCube::new(1, vec![0.5, 1.0], 2);
-        cube.set(0, 0, 0, 10.0);
-        cube.set(0, 0, 1, 12.0);
-        cube.set(0, 1, 0, 11.0);
-        cube.set(0, 1, 1, 13.0);
-        let r = compute_correlated_first_to_default_bilateral_xva(
-            &cube, &curve, None, 0.02, 0.6, 0.03, 0.6, 0.01, 0.0,
-        );
-        assert!(r.cva.is_finite() && r.dva.is_finite() && r.fva.is_finite());
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn compute_kva<T: Real>(
     cube: &NpvCube<T>,
@@ -1448,108 +1364,6 @@ pub fn price_contingent_cds<T: Real>(
     (prot, premium, fair)
 }
 
-#[cfg(test)]
-mod phase13_tests {
-    use super::*;
-    #[test]
-    fn contingent_empty_safe() {
-        let c = NpvCube::<f64>::new(0, vec![], 0);
-        let d = crate::price_contingent_cds(
-            &c,
-            0,
-            None,
-            &ql_curves::FlatForwardCurve::new(ql_time::Date(0), 0.02),
-            0.01,
-            1.,
-            0.01,
-        );
-        assert_eq!(d.0, 0.);
-    }
-}
-
-#[cfg(test)]
-mod phase18_tests {
-    use super::*;
-    use ql_ad::Dual;
-
-    #[test]
-    fn ctd_colva_clark_recursion_and_turlakov_wwr_ad() {
-        let c1 = compute_multicurrency_ctd_colva(&MultiCurrencyCsaSpec {
-            eligible_currency_spreads: vec![0.01, 0.01, 0.01],
-            spread_vols: vec![0.008, 0.008, 0.008],
-            cross_currency_corr: 0.2,
-            collateral_balance_profile: vec![100.0, 100.0],
-            payment_times: vec![0.5, 1.0],
-        });
-        let c2 = compute_multicurrency_ctd_colva(&MultiCurrencyCsaSpec {
-            eligible_currency_spreads: vec![0.01, 0.01],
-            spread_vols: vec![0.008, 0.008],
-            cross_currency_corr: 0.2,
-            collateral_balance_profile: vec![100.0, 100.0],
-            payment_times: vec![0.5, 1.0],
-        });
-        assert!(c2.switch_option_colva > 0.0);
-        assert!(c1.switch_option_colva > c2.switch_option_colva);
-
-        let wwr_spec = TurlakovWwrSpec {
-            times: vec![0.5, 1.0, 2.0],
-            base_epe: vec![10.0, 15.0, 12.0],
-            stressed_epe: vec![25.0, 35.0, 30.0],
-            base_mtm: vec![8.0, 10.0, 9.0],
-            stressed_mtm: vec![20.0, 25.0, 22.0],
-            sovereign_hazard_rate: 0.03,
-            counterparty_hazard_rate: 0.02,
-            crisis_prob_threshold: 0.08,
-            coupling_lambda: 0.5,
-            lgd: 0.6,
-            base_funding_spread: 0.01,
-            stressed_funding_spread: 0.025,
-            discount_rate: 0.03,
-        };
-        let rep = compute_turlakov_wwr_cva_fva(&wwr_spec);
-        assert!(rep.wwr_cva > rep.base_cva);
-        assert!(rep.wwr_fva > rep.base_fva);
-
-        let h = 1e-5;
-        let eval_lam = |lam: f64| {
-            let mut sp = wwr_spec.clone();
-            sp.coupling_lambda = lam;
-            compute_turlakov_wwr_cva_fva(&sp).wwr_cva
-        };
-        let fd = (eval_lam(0.5 + h) - eval_lam(0.5 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let sd = TurlakovWwrSpec {
-            times: vec![0.5, 1.0, 2.0],
-            base_epe: vec![
-                D::from_value(10.0),
-                D::from_value(15.0),
-                D::from_value(12.0),
-            ],
-            stressed_epe: vec![
-                D::from_value(25.0),
-                D::from_value(35.0),
-                D::from_value(30.0),
-            ],
-            base_mtm: vec![D::from_value(8.0), D::from_value(10.0), D::from_value(9.0)],
-            stressed_mtm: vec![
-                D::from_value(20.0),
-                D::from_value(25.0),
-                D::from_value(22.0),
-            ],
-            sovereign_hazard_rate: D::from_value(0.03),
-            counterparty_hazard_rate: D::from_value(0.02),
-            crisis_prob_threshold: D::from_value(0.08),
-            coupling_lambda: D::variable(0.5, 0),
-            lgd: D::from_value(0.6),
-            base_funding_spread: D::from_value(0.01),
-            stressed_funding_spread: D::from_value(0.025),
-            discount_rate: D::from_value(0.03),
-        };
-        let ad = compute_turlakov_wwr_cva_fva(&sd).wwr_cva;
-        assert!((ad.d[0] - fd).abs() < 1e-6);
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct BrigoVrinsWwmCvaSpec<T: Real = f64> {
     pub times: Vec<f64>,
@@ -1865,6 +1679,301 @@ pub fn compute_bichuch_capponi_sturm_xva_band<T: Real>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct CrepeyBieleckiMarshallOlkinBilateralXvaSpec<T: Real = f64> {
+    pub times: Vec<T>,
+    pub expected_positive_exposure: Vec<T>,
+    pub expected_negative_exposure: Vec<T>,
+    pub risk_free_rate: T,
+    pub lambda_institution_idio: T,
+    pub lambda_counterparty_idio: T,
+    pub lambda_common_shock_12: T,
+    pub recovery_institution: T,
+    pub recovery_counterparty: T,
+    pub recovery_counterparty_simultaneous: T,
+    pub gap_exposure_multiplier: T,
+    pub funding_borrowing_spread: T,
+    pub funding_lending_spread: T,
+}
+#[derive(Clone, Debug)]
+pub struct CrepeyBieleckiMarshallOlkinBilateralXvaReport<T: Real = f64> {
+    pub total_first_to_default_intensity: T,
+    pub kendall_tau_default_correlation: T,
+    pub simultaneous_default_prob_to_maturity: T,
+    pub cva_idiosyncratic: T,
+    pub cva_common_shock_contagion: T,
+    pub bilateral_cva_total: T,
+    pub bilateral_dva: T,
+    pub bilateral_fva: T,
+    pub total_bilateral_xva: T,
+    pub independent_copula_cva_bias: T,
+}
+pub fn compute_crepey_bielecki_marshall_olkin_bilateral_xva<T: Real>(
+    s: &CrepeyBieleckiMarshallOlkinBilateralXvaSpec<T>,
+) -> CrepeyBieleckiMarshallOlkinBilateralXvaReport<T> {
+    let lb = s.lambda_institution_idio.max_val(T::zero());
+    let lc = s.lambda_counterparty_idio.max_val(T::zero());
+    let l12 = s.lambda_common_shock_12.max_val(T::zero());
+    let lt = (lb + lc + l12).max_val(T::from_f64(1e-12));
+    let tau = l12 / lt;
+    let mut ci = T::zero();
+    let mut cc = T::zero();
+    let mut dva = T::zero();
+    let mut fva = T::zero();
+    let mut indep = T::zero();
+    let mut prev = T::zero();
+    let n = s
+        .times
+        .len()
+        .min(s.expected_positive_exposure.len())
+        .min(s.expected_negative_exposure.len());
+    for k in 0..n {
+        let t = s.times[k];
+        let dt = (t - prev).max_val(T::zero());
+        let sk = (-lt * t).exp();
+        let sp = (-lt * prev).exp();
+        let dp = sp - sk;
+        let d = (-s.risk_free_rate * t).exp();
+        let e = s.expected_positive_exposure[k];
+        let en = s.expected_negative_exposure[k];
+        ci += (T::one() - s.recovery_counterparty) * d * dp * (lc / lt) * e;
+        cc += (T::one() - s.recovery_counterparty_simultaneous)
+            * d
+            * dp
+            * (l12 / lt)
+            * (T::one() + s.gap_exposure_multiplier)
+            * e;
+        dva += (T::one() - s.recovery_institution) * d * dp * ((lb + l12) / lt) * en;
+        fva += d * sk * dt * (s.funding_borrowing_spread * e - s.funding_lending_spread * en);
+        let li = (lb + l12 + lc + l12).max_val(T::from_f64(1e-12));
+        let si = (-li * t).exp();
+        let spi = (-li * prev).exp();
+        indep += (T::one() - s.recovery_counterparty) * d * (spi - si) * ((lc + l12) / li) * e;
+        prev = t;
+    }
+    let ctot = ci + cc;
+    let indep_bias = ctot - indep;
+    let maturity = s.times.last().copied().unwrap_or(T::zero());
+    CrepeyBieleckiMarshallOlkinBilateralXvaReport {
+        total_first_to_default_intensity: lt,
+        kendall_tau_default_correlation: tau,
+        simultaneous_default_prob_to_maturity: (l12 / lt) * (T::one() - (-lt * maturity).exp()),
+        cva_idiosyncratic: ci,
+        cva_common_shock_contagion: cc,
+        bilateral_cva_total: ctot,
+        bilateral_dva: dva,
+        bilateral_fva: fva,
+        total_bilateral_xva: ctot - dva + fva,
+        independent_copula_cva_bias: indep_bias,
+    }
+}
+pub fn evaluate_crepey_bielecki_brigo_marshall_olkin_xva<T: Real>(
+    s: &CrepeyBieleckiMarshallOlkinBilateralXvaSpec<T>,
+) -> CrepeyBieleckiMarshallOlkinBilateralXvaReport<T> {
+    compute_crepey_bielecki_marshall_olkin_bilateral_xva(s)
+}
+
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn ctd_bounds() {
+        let s = BrigoPallaviciniCtdCollateralXvaSpec {
+            notional_mtm: 1.0,
+            maturity: 1.0,
+            num_steps: 8,
+            base_ois_rate: 0.02,
+            csa_spread_ccy1: 0.001,
+            csa_spread_ccy2: 0.002,
+            csa_spread_ccy3: 0.003,
+            csa_mean_reversion: 1.0,
+            csa_vol_ccy1: 0.01,
+            csa_vol_ccy2: 0.01,
+            csa_vol_ccy3: 0.01,
+            csa_correlation: 0.2,
+            cpty_hazard_rate: 0.02,
+            cpty_lgd: 0.6,
+            own_hazard_rate: 0.01,
+            own_lgd: 0.6,
+            exposure_volatility: 0.1,
+        };
+        let r = compute_brigo_pallavicini_ctd_collateral_and_closeout_xva(&s);
+        assert!(r.ctd_stochastic_csa_discount_factor <= r.intrinsic_max_csa_discount_factor);
+        let same = BrigoPallaviciniCtdCollateralXvaSpec {
+            csa_spread_ccy1: 0.002,
+            csa_spread_ccy2: 0.002,
+            csa_spread_ccy3: 0.002,
+            csa_correlation: 0.999999,
+            ..s
+        };
+        let same_r = compute_brigo_pallavicini_ctd_collateral_and_closeout_xva(&same);
+        assert!(same_r.ctd_collateral_switch_option_value < 1e-5);
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        fn mk<T: Real>(x: T) -> BrigoPallaviciniCtdCollateralXvaSpec<T> {
+            BrigoPallaviciniCtdCollateralXvaSpec {
+                notional_mtm: T::one(),
+                maturity: T::one(),
+                num_steps: 8,
+                base_ois_rate: T::from_f64(0.02),
+                csa_spread_ccy1: T::from_f64(0.001),
+                csa_spread_ccy2: T::from_f64(0.002),
+                csa_spread_ccy3: T::from_f64(0.003),
+                csa_mean_reversion: T::one(),
+                csa_vol_ccy1: T::from_f64(0.01),
+                csa_vol_ccy2: T::from_f64(0.01),
+                csa_vol_ccy3: T::from_f64(0.01),
+                csa_correlation: T::from_f64(0.2),
+                cpty_hazard_rate: T::from_f64(0.02),
+                cpty_lgd: T::from_f64(0.6),
+                own_hazard_rate: T::from_f64(0.01),
+                own_lgd: T::from_f64(0.6),
+                exposure_volatility: x,
+            }
+        }
+        let h = 1e-5;
+        let fd = (compute_brigo_pallavicini_ctd_collateral_and_closeout_xva(&mk(0.1 + h))
+            .replacement_cost_closeout_bcva
+            .val()
+            - compute_brigo_pallavicini_ctd_collateral_and_closeout_xva(&mk(0.1 - h))
+                .replacement_cost_closeout_bcva
+                .val())
+            / (2.0 * h);
+        let ad = compute_brigo_pallavicini_ctd_collateral_and_closeout_xva(&mk(
+            Dual::<1>::variable(0.1, 0),
+        ))
+        .replacement_cost_closeout_bcva;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase14_tests {
+    use super::*;
+    use crate::NpvCube;
+    use ql_curves::FlatForwardCurve;
+    use ql_time::Date;
+    #[test]
+    fn phase14_correlated_ftd_is_finite() {
+        let d = Date::from_ymd(2024, 1, 1).unwrap();
+        let curve = FlatForwardCurve::new(d, 0.02);
+        let mut cube = NpvCube::new(1, vec![0.5, 1.0], 2);
+        cube.set(0, 0, 0, 10.0);
+        cube.set(0, 0, 1, 12.0);
+        cube.set(0, 1, 0, 11.0);
+        cube.set(0, 1, 1, 13.0);
+        let r = compute_correlated_first_to_default_bilateral_xva(
+            &cube, &curve, None, 0.02, 0.6, 0.03, 0.6, 0.01, 0.0,
+        );
+        assert!(r.cva.is_finite() && r.dva.is_finite() && r.fva.is_finite());
+    }
+}
+
+#[cfg(test)]
+mod phase13_tests {
+    use super::*;
+    #[test]
+    fn contingent_empty_safe() {
+        let c = NpvCube::<f64>::new(0, vec![], 0);
+        let d = crate::price_contingent_cds(
+            &c,
+            0,
+            None,
+            &ql_curves::FlatForwardCurve::new(ql_time::Date(0), 0.02),
+            0.01,
+            1.,
+            0.01,
+        );
+        assert_eq!(d.0, 0.);
+    }
+}
+
+#[cfg(test)]
+mod phase18_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn ctd_colva_clark_recursion_and_turlakov_wwr_ad() {
+        let c1 = compute_multicurrency_ctd_colva(&MultiCurrencyCsaSpec {
+            eligible_currency_spreads: vec![0.01, 0.01, 0.01],
+            spread_vols: vec![0.008, 0.008, 0.008],
+            cross_currency_corr: 0.2,
+            collateral_balance_profile: vec![100.0, 100.0],
+            payment_times: vec![0.5, 1.0],
+        });
+        let c2 = compute_multicurrency_ctd_colva(&MultiCurrencyCsaSpec {
+            eligible_currency_spreads: vec![0.01, 0.01],
+            spread_vols: vec![0.008, 0.008],
+            cross_currency_corr: 0.2,
+            collateral_balance_profile: vec![100.0, 100.0],
+            payment_times: vec![0.5, 1.0],
+        });
+        assert!(c2.switch_option_colva > 0.0);
+        assert!(c1.switch_option_colva > c2.switch_option_colva);
+
+        let wwr_spec = TurlakovWwrSpec {
+            times: vec![0.5, 1.0, 2.0],
+            base_epe: vec![10.0, 15.0, 12.0],
+            stressed_epe: vec![25.0, 35.0, 30.0],
+            base_mtm: vec![8.0, 10.0, 9.0],
+            stressed_mtm: vec![20.0, 25.0, 22.0],
+            sovereign_hazard_rate: 0.03,
+            counterparty_hazard_rate: 0.02,
+            crisis_prob_threshold: 0.08,
+            coupling_lambda: 0.5,
+            lgd: 0.6,
+            base_funding_spread: 0.01,
+            stressed_funding_spread: 0.025,
+            discount_rate: 0.03,
+        };
+        let rep = compute_turlakov_wwr_cva_fva(&wwr_spec);
+        assert!(rep.wwr_cva > rep.base_cva);
+        assert!(rep.wwr_fva > rep.base_fva);
+
+        let h = 1e-5;
+        let eval_lam = |lam: f64| {
+            let mut sp = wwr_spec.clone();
+            sp.coupling_lambda = lam;
+            compute_turlakov_wwr_cva_fva(&sp).wwr_cva
+        };
+        let fd = (eval_lam(0.5 + h) - eval_lam(0.5 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let sd = TurlakovWwrSpec {
+            times: vec![0.5, 1.0, 2.0],
+            base_epe: vec![
+                D::from_value(10.0),
+                D::from_value(15.0),
+                D::from_value(12.0),
+            ],
+            stressed_epe: vec![
+                D::from_value(25.0),
+                D::from_value(35.0),
+                D::from_value(30.0),
+            ],
+            base_mtm: vec![D::from_value(8.0), D::from_value(10.0), D::from_value(9.0)],
+            stressed_mtm: vec![
+                D::from_value(20.0),
+                D::from_value(25.0),
+                D::from_value(22.0),
+            ],
+            sovereign_hazard_rate: D::from_value(0.03),
+            counterparty_hazard_rate: D::from_value(0.02),
+            crisis_prob_threshold: D::from_value(0.08),
+            coupling_lambda: D::variable(0.5, 0),
+            lgd: D::from_value(0.6),
+            base_funding_spread: D::from_value(0.01),
+            stressed_funding_spread: D::from_value(0.025),
+            discount_rate: D::from_value(0.03),
+        };
+        let ad = compute_turlakov_wwr_cva_fva(&sd).wwr_cva;
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}
+
 #[cfg(test)]
 mod phase20_tests {
     use super::*;
@@ -1996,100 +2105,6 @@ mod phase21_tests {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct CrepeyBieleckiMarshallOlkinBilateralXvaSpec<T: Real = f64> {
-    pub times: Vec<T>,
-    pub expected_positive_exposure: Vec<T>,
-    pub expected_negative_exposure: Vec<T>,
-    pub risk_free_rate: T,
-    pub lambda_institution_idio: T,
-    pub lambda_counterparty_idio: T,
-    pub lambda_common_shock_12: T,
-    pub recovery_institution: T,
-    pub recovery_counterparty: T,
-    pub recovery_counterparty_simultaneous: T,
-    pub gap_exposure_multiplier: T,
-    pub funding_borrowing_spread: T,
-    pub funding_lending_spread: T,
-}
-#[derive(Clone, Debug)]
-pub struct CrepeyBieleckiMarshallOlkinBilateralXvaReport<T: Real = f64> {
-    pub total_first_to_default_intensity: T,
-    pub kendall_tau_default_correlation: T,
-    pub simultaneous_default_prob_to_maturity: T,
-    pub cva_idiosyncratic: T,
-    pub cva_common_shock_contagion: T,
-    pub bilateral_cva_total: T,
-    pub bilateral_dva: T,
-    pub bilateral_fva: T,
-    pub total_bilateral_xva: T,
-    pub independent_copula_cva_bias: T,
-}
-pub fn compute_crepey_bielecki_marshall_olkin_bilateral_xva<T: Real>(
-    s: &CrepeyBieleckiMarshallOlkinBilateralXvaSpec<T>,
-) -> CrepeyBieleckiMarshallOlkinBilateralXvaReport<T> {
-    let lb = s.lambda_institution_idio.max_val(T::zero());
-    let lc = s.lambda_counterparty_idio.max_val(T::zero());
-    let l12 = s.lambda_common_shock_12.max_val(T::zero());
-    let lt = (lb + lc + l12).max_val(T::from_f64(1e-12));
-    let tau = l12 / lt;
-    let mut ci = T::zero();
-    let mut cc = T::zero();
-    let mut dva = T::zero();
-    let mut fva = T::zero();
-    let mut indep = T::zero();
-    let mut prev = T::zero();
-    let n = s
-        .times
-        .len()
-        .min(s.expected_positive_exposure.len())
-        .min(s.expected_negative_exposure.len());
-    for k in 0..n {
-        let t = s.times[k];
-        let dt = (t - prev).max_val(T::zero());
-        let sk = (-lt * t).exp();
-        let sp = (-lt * prev).exp();
-        let dp = sp - sk;
-        let d = (-s.risk_free_rate * t).exp();
-        let e = s.expected_positive_exposure[k];
-        let en = s.expected_negative_exposure[k];
-        ci += (T::one() - s.recovery_counterparty) * d * dp * (lc / lt) * e;
-        cc += (T::one() - s.recovery_counterparty_simultaneous)
-            * d
-            * dp
-            * (l12 / lt)
-            * (T::one() + s.gap_exposure_multiplier)
-            * e;
-        dva += (T::one() - s.recovery_institution) * d * dp * ((lb + l12) / lt) * en;
-        fva += d * sk * dt * (s.funding_borrowing_spread * e - s.funding_lending_spread * en);
-        let li = (lb + l12 + lc + l12).max_val(T::from_f64(1e-12));
-        let si = (-li * t).exp();
-        let spi = (-li * prev).exp();
-        indep += (T::one() - s.recovery_counterparty) * d * (spi - si) * ((lc + l12) / li) * e;
-        prev = t;
-    }
-    let ctot = ci + cc;
-    let indep_bias = ctot - indep;
-    let maturity = s.times.last().copied().unwrap_or(T::zero());
-    CrepeyBieleckiMarshallOlkinBilateralXvaReport {
-        total_first_to_default_intensity: lt,
-        kendall_tau_default_correlation: tau,
-        simultaneous_default_prob_to_maturity: (l12 / lt) * (T::one() - (-lt * maturity).exp()),
-        cva_idiosyncratic: ci,
-        cva_common_shock_contagion: cc,
-        bilateral_cva_total: ctot,
-        bilateral_dva: dva,
-        bilateral_fva: fva,
-        total_bilateral_xva: ctot - dva + fva,
-        independent_copula_cva_bias: indep_bias,
-    }
-}
-pub fn evaluate_crepey_bielecki_brigo_marshall_olkin_xva<T: Real>(
-    s: &CrepeyBieleckiMarshallOlkinBilateralXvaSpec<T>,
-) -> CrepeyBieleckiMarshallOlkinBilateralXvaReport<T> {
-    compute_crepey_bielecki_marshall_olkin_bilateral_xva(s)
-}
-
 #[cfg(test)]
 mod phase24_tests {
     use super::*;
@@ -2167,6 +2182,18 @@ mod phase27_tests {
         let d =
             compute_albanese_crepey_mpor_and_balance_sheet_xva(&make(Dual::<1>::variable(1.0, 0)))
                 .sticky_mpor_cva;
-        assert!((d.d[0] - fd).abs() < 1e-5);
+        assert!(d.d[0].abs() > 1e-6 && (d.d[0] - fd).abs() < 1e-5);
+    }
+
+    #[test]
+    fn phase27_invariants() {
+        let r = compute_albanese_crepey_mpor_and_balance_sheet_xva(&make(1.0));
+        assert!(r.sticky_mpor_cva > r.classical_mpor_cva);
+        assert!(
+            (r.albanese_crepey_shareholder_fca + r.creditor_fda_wealth_transfer
+                - r.unadjusted_fca_without_capital_offset)
+                .abs()
+                < 1e-12
+        );
     }
 }

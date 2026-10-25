@@ -48,59 +48,34 @@ pub fn analyze_acharya_feds_bank_run_and_optimal_coco<T: Real>(
     let kpre = (e0 - loss) / s.initial_securities_assets.max_val(T::from_f64(1e-8));
     let run_pre =
         T::one() / (T::one() + (-s.run_sensitivity_steepness * (T::from_f64(0.06) - kpre)).exp());
+    let dfv_run_pre = (s.insured_deposits + s.uninsured_deposits * (T::one() - run_pre)) * margin;
     let fire = s.uninsured_deposits * run_pre * s.fire_sale_liquidation_haircut;
-    let post_eq = e0 - loss + s.coco_write_down_efficiency * s.at1_coco_principal;
+    let eq_no_run = e0 - loss + dfv;
+    let eq_pre = e0 - loss + dfv_run_pre - fire;
+    let post_eq = eq_pre + s.coco_write_down_efficiency * s.at1_coco_principal;
     let kpost = post_eq / s.initial_securities_assets.max_val(T::from_f64(1e-8));
     let run_post =
         T::one() / (T::one() + (-s.run_sensitivity_steepness * (T::from_f64(0.06) - kpost)).exp());
+    let dfv_run_post = (s.insured_deposits + s.uninsured_deposits * (T::one() - run_post)) * margin;
+    let fire_post = s.uninsured_deposits * run_post * s.fire_sale_liquidation_haircut;
+    let eq_post = post_eq + dfv_run_post - fire_post;
+    let opt_trig = T::from_f64(0.045)
+        + (loss + s.uninsured_deposits * s.fire_sale_liquidation_haircut * T::from_f64(0.25))
+            / s.initial_securities_assets.max_val(T::from_f64(1e-8));
     AcharyaFedsBankRunAndCocoReport {
         unrecognized_htm_duration_loss: loss,
         deposit_franchise_value_no_run: dfv,
-        deposit_franchise_value_with_run: dfv * (T::one() - run_pre),
+        deposit_franchise_value_with_run: dfv_run_pre,
         endogenous_uninsured_run_fraction: run_pre,
         fire_sale_liquidation_loss: fire,
-        economic_equity_no_run: e0,
-        economic_equity_with_run_pre_coco: e0 - loss - fire,
-        economic_equity_post_coco_conversion: post_eq,
+        economic_equity_no_run: eq_no_run,
+        economic_equity_with_run_pre_coco: eq_pre,
+        economic_equity_post_coco_conversion: eq_post,
         post_coco_stabilized_run_fraction: run_post,
-        optimal_going_concern_cet1_trigger: T::from_f64(0.06),
+        optimal_going_concern_cet1_trigger: opt_trig,
     }
 }
 
-#[cfg(test)]
-mod phase27_tests {
-    use super::*;
-    use ql_ad::Dual;
-    fn make<T: Real>(x: T) -> AcharyaFedsBankRunAndCocoSpec<T> {
-        AcharyaFedsBankRunAndCocoSpec {
-            initial_securities_assets: x,
-            asset_effective_duration: T::from_f64(5.0),
-            insured_deposits: T::from_f64(40.0),
-            uninsured_deposits: T::from_f64(45.0),
-            deposit_rate_beta: T::from_f64(0.5),
-            deposit_operating_cost_rate: T::from_f64(0.005),
-            at1_coco_principal: T::from_f64(5.0),
-            initial_short_rate: T::from_f64(0.03),
-            parallel_rate_shock: T::from_f64(0.01),
-            run_sensitivity_steepness: T::from_f64(30.0),
-            fire_sale_liquidation_haircut: T::from_f64(0.1),
-            coco_write_down_efficiency: T::from_f64(0.9),
-        }
-    }
-    #[test]
-    fn dual_fd_parity() {
-        let h = 1e-5;
-        let fd = (analyze_acharya_feds_bank_run_and_optimal_coco(&make(100.0 + h))
-            .economic_equity_post_coco_conversion
-            - analyze_acharya_feds_bank_run_and_optimal_coco(&make(100.0 - h))
-                .economic_equity_post_coco_conversion)
-            / (2.0 * h);
-        let d =
-            analyze_acharya_feds_bank_run_and_optimal_coco(&make(Dual::<1>::variable(100.0, 0)))
-                .economic_equity_post_coco_conversion;
-        assert!((d.d[0] - fd).abs() < 1e-5);
-    }
-}
 use ql_vol::black_scholes_price;
 
 #[derive(Copy, Clone, Debug)]
@@ -363,6 +338,48 @@ pub fn price_despiegeleer_coco_and_mandatory_convertible<T: Real>(
         coco_cet1_trigger_probability: pc,
         coco_ponv_writedown_probability: pp,
         coco_implied_yield_spread_bps: spread,
+    }
+}
+
+#[cfg(test)]
+mod phase27_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn make<T: Real>(x: T) -> AcharyaFedsBankRunAndCocoSpec<T> {
+        AcharyaFedsBankRunAndCocoSpec {
+            initial_securities_assets: x,
+            asset_effective_duration: T::from_f64(5.0),
+            insured_deposits: T::from_f64(40.0),
+            uninsured_deposits: T::from_f64(45.0),
+            deposit_rate_beta: T::from_f64(0.5),
+            deposit_operating_cost_rate: T::from_f64(0.005),
+            at1_coco_principal: T::from_f64(5.0),
+            initial_short_rate: T::from_f64(0.03),
+            parallel_rate_shock: T::from_f64(0.01),
+            run_sensitivity_steepness: T::from_f64(30.0),
+            fire_sale_liquidation_haircut: T::from_f64(0.1),
+            coco_write_down_efficiency: T::from_f64(0.9),
+        }
+    }
+    #[test]
+    fn dual_fd_parity() {
+        let h = 1e-5;
+        let fd = (analyze_acharya_feds_bank_run_and_optimal_coco(&make(100.0 + h))
+            .economic_equity_post_coco_conversion
+            - analyze_acharya_feds_bank_run_and_optimal_coco(&make(100.0 - h))
+                .economic_equity_post_coco_conversion)
+            / (2.0 * h);
+        let d =
+            analyze_acharya_feds_bank_run_and_optimal_coco(&make(Dual::<1>::variable(100.0, 0)))
+                .economic_equity_post_coco_conversion;
+        assert!(d.d[0].abs() > 1e-6 && (d.d[0] - fd).abs() < 1e-5);
+    }
+
+    #[test]
+    fn phase27_invariants() {
+        let r = analyze_acharya_feds_bank_run_and_optimal_coco(&make(100.0));
+        assert!(r.post_coco_stabilized_run_fraction < r.endogenous_uninsured_run_fraction);
+        assert!(r.economic_equity_post_coco_conversion > r.economic_equity_with_run_pre_coco);
     }
 }
 

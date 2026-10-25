@@ -3479,194 +3479,239 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
 }
 
 pub fn phase27_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
-    let x = x.map(|v| v.to_f64());
     let ftpl = ql_inflation::evaluate_cochrane_ftpl_and_maturity_inflation_smoothing(
         &ql_inflation::CochraneFiscalTheoryPriceLevelSpec {
-            debt_maturities_years: vec![1.0, 5.0, 10.0],
-            nominal_debt_face_values: vec![30.0 + x[0], 30.0, 40.0],
-            nominal_zero_yields: vec![0.03 + x[1] * 0.01, 0.032, 0.035],
-            real_zero_yields: vec![0.01, 0.012, 0.015],
-            primary_real_surpluses: vec![5.0, 5.2, 5.4],
-            terminal_surplus_growth_rate: 0.02,
-            fiscal_surplus_shock_fraction: -0.05,
-            expected_future_inflation_rise: 0.01 + x[2] * 0.01,
-            inflation_risk_beta: 0.4,
-            inflation_volatility: 0.1 + x[3] * 0.01,
-            tips_liquidity_spread: 0.002,
+            debt_maturities_years: vec![T::from_f64(1.0), T::from_f64(5.0), T::from_f64(10.0)],
+            nominal_debt_face_values: vec![
+                T::from_f64(30.0) + x[0],
+                T::from_f64(30.0),
+                T::from_f64(40.0),
+            ],
+            nominal_zero_yields: vec![
+                T::from_f64(0.03) + x[1] * T::from_f64(0.01),
+                T::from_f64(0.032),
+                T::from_f64(0.035),
+            ],
+            real_zero_yields: vec![T::from_f64(0.01), T::from_f64(0.012), T::from_f64(0.015)],
+            primary_real_surpluses: vec![T::from_f64(5.0), T::from_f64(5.2), T::from_f64(5.4)],
+            terminal_surplus_growth_rate: T::from_f64(0.02),
+            fiscal_surplus_shock_fraction: T::from_f64(-0.05),
+            expected_future_inflation_rise: T::from_f64(0.01) + x[2] * T::from_f64(0.01),
+            inflation_risk_beta: T::from_f64(0.4),
+            inflation_volatility: T::from_f64(0.1) + x[3] * T::from_f64(0.01),
+            tips_liquidity_spread: T::from_f64(0.002),
         },
     );
     let g2 = ql_rates::price_brigo_mercurio_g2_twist_and_swaption(
         &ql_rates::BrigoMercurioG2TwistSwaptionSpec {
-            a: 0.1,
-            sigma: 0.01,
-            b: 0.3,
-            eta: 0.015,
-            rho: -0.4,
-            flat_zero_rate: 0.03 + x[0] * 0.001,
-            option_expiry: 1.0,
-            swap_payment_times: vec![1.0, 2.0, 3.0],
-            fixed_strike: 0.03,
-            notional: 1.0,
+            a: T::from_f64(0.1),
+            sigma: T::from_f64(0.01),
+            b: T::from_f64(0.3),
+            eta: T::from_f64(0.015),
+            rho: T::from_f64(-0.4),
+            flat_zero_rate: T::from_f64(0.03) + x[0] * T::from_f64(0.001),
+            option_expiry: T::from_f64(1.0),
+            swap_payment_times: vec![T::from_f64(1.0), T::from_f64(2.0), T::from_f64(3.0)],
+            fixed_strike: T::from_f64(0.03),
+            notional: T::from_f64(1.0),
         },
     );
     let ess = ql_vol::evaluate_mingone_global_arbitrage_free_essvi(
         &ql_vol::MingoneGlobalArbitrageFreeEssviSpec {
-            expiries: vec![1.0, 2.0],
+            expiries: vec![T::from_f64(1.0), T::from_f64(2.0)],
             raw_theta_increments: vec![x[0], x[1]],
-            raw_rho_params: vec![-0.2, -0.1],
+            raw_rho_params: vec![T::from_f64(-0.2), T::from_f64(-0.1)],
             raw_psi_fractions: vec![x[2], x[3]],
-            test_log_moneyness_grid: vec![-1.0, 0.0, 1.0],
+            test_log_moneyness_grid: vec![T::from_f64(-1.0), T::from_f64(0.0), T::from_f64(1.0)],
         },
     );
     let cb = ql_fx::price_cross_currency_convertible_and_warrant_bond(
         &ql_fx::CrossCurrencyConvertibleWarrantSpec {
-            domestic_stock_spot: 100.0 + x[0],
-            domestic_conversion_strike: 100.0,
-            spot_fx_for_per_dom: 1.1,
-            fixed_contractual_fx_for_per_dom: 1.1,
-            foreign_bond_par: 100.0,
-            foreign_coupon_rate: 0.03,
-            r_domestic: 0.03,
-            r_foreign: 0.02,
-            stock_dividend_yield: 0.01,
-            credit_spread: 0.02,
-            stock_vol: 0.2,
-            fx_vol: 0.1,
-            corr_stock_fx: 0.2,
-            maturity: 5.0,
+            domestic_stock_spot: T::from_f64(100.0) + x[0],
+            domestic_conversion_strike: T::from_f64(100.0),
+            spot_fx_for_per_dom: T::from_f64(1.1),
+            fixed_contractual_fx_for_per_dom: T::from_f64(1.1),
+            foreign_bond_par: T::from_f64(100.0),
+            foreign_coupon_rate: T::from_f64(0.03),
+            r_domestic: T::from_f64(0.03),
+            r_foreign: T::from_f64(0.02),
+            stock_dividend_yield: T::from_f64(0.01),
+            credit_spread: T::from_f64(0.02),
+            stock_vol: T::from_f64(0.2),
+            fx_vol: T::from_f64(0.1),
+            corr_stock_fx: T::from_f64(0.2),
+            maturity: T::from_f64(5.0),
         },
     );
     let bank = ql_fixed_income::analyze_acharya_feds_bank_run_and_optimal_coco(
         &ql_fixed_income::AcharyaFedsBankRunAndCocoSpec {
-            initial_securities_assets: 100.0,
-            asset_effective_duration: 5.0,
-            insured_deposits: 40.0,
-            uninsured_deposits: 45.0,
-            deposit_rate_beta: 0.5,
-            deposit_operating_cost_rate: 0.005,
-            at1_coco_principal: 5.0,
-            initial_short_rate: 0.03,
-            parallel_rate_shock: x[1].abs() * 0.01,
-            run_sensitivity_steepness: 30.0,
-            fire_sale_liquidation_haircut: 0.1,
-            coco_write_down_efficiency: 0.9,
+            initial_securities_assets: T::from_f64(100.0),
+            asset_effective_duration: T::from_f64(5.0),
+            insured_deposits: T::from_f64(40.0),
+            uninsured_deposits: T::from_f64(45.0),
+            deposit_rate_beta: T::from_f64(0.5),
+            deposit_operating_cost_rate: T::from_f64(0.005),
+            at1_coco_principal: T::from_f64(5.0),
+            initial_short_rate: T::from_f64(0.03),
+            parallel_rate_shock: x[1].abs() * T::from_f64(0.01),
+            run_sensitivity_steepness: T::from_f64(30.0),
+            fire_sale_liquidation_haircut: T::from_f64(0.1),
+            coco_write_down_efficiency: T::from_f64(0.9),
         },
     );
     let xva = ql_xva::compute_albanese_crepey_mpor_and_balance_sheet_xva(
         &ql_xva::AlbaneseCrepeyMporBalanceSheetSpec {
-            exposure_times: vec![1.0, 2.0],
-            clean_mtm_profile: vec![1.0, 2.0],
-            portfolio_vol_profile: vec![0.2, 0.2],
-            scheduled_cashflows_in_mpor: vec![0.01, 0.02],
-            mpor_years: 0.05,
-            csa_threshold: 0.1,
-            risk_free_rate: 0.03,
-            cpty_hazard_rate: 0.02,
-            cpty_lgd: 0.6,
-            bank_hazard_rate: 0.01,
-            bank_lgd: 0.6,
-            economic_capital_profile: vec![0.05, 0.05],
-            hurdle_rate: 0.1,
-            initial_margin_profile: vec![0.1, 0.1],
-            im_funding_spread: 0.01,
+            exposure_times: vec![T::from_f64(1.0), T::from_f64(2.0)],
+            clean_mtm_profile: vec![T::from_f64(1.0) + x[0], T::from_f64(2.0) + x[1]],
+            portfolio_vol_profile: vec![
+                T::from_f64(0.2) + x[2] * T::from_f64(0.01),
+                T::from_f64(0.2) + x[3] * T::from_f64(0.01),
+            ],
+            scheduled_cashflows_in_mpor: vec![
+                T::from_f64(0.01) + x[0] * T::from_f64(0.001),
+                T::from_f64(0.02) + x[1] * T::from_f64(0.001),
+            ],
+            mpor_years: T::from_f64(0.05) + x[2] * T::from_f64(0.001),
+            csa_threshold: T::from_f64(0.1) + x[3] * T::from_f64(0.01),
+            risk_free_rate: T::from_f64(0.03) + x[0] * T::from_f64(0.001),
+            cpty_hazard_rate: T::from_f64(0.02),
+            cpty_lgd: T::from_f64(0.6),
+            bank_hazard_rate: T::from_f64(0.01),
+            bank_lgd: T::from_f64(0.6),
+            economic_capital_profile: vec![T::from_f64(0.05), T::from_f64(0.05)],
+            hurdle_rate: T::from_f64(0.1),
+            initial_margin_profile: vec![T::from_f64(0.1), T::from_f64(0.1)],
+            im_funding_spread: T::from_f64(0.01),
         },
     );
     let dh = ql_models::evaluate_double_heston_cumulants_and_kernel_slv(
         &ql_models::DoubleHestonKernelSlvSpec {
-            spot: 100.0,
-            strike: 100.0,
-            maturity: 1.0,
-            risk_free_rate: 0.03,
-            dividend_yield: 0.0,
-            v1_0: 0.02,
-            kappa1: 2.0,
-            theta1: 0.02,
-            sigma1: 0.3,
-            rho1: -0.6,
-            v2_0: 0.01,
-            kappa2: 0.5,
-            theta2: 0.01,
-            sigma2: 0.2,
-            rho2: -0.3,
-            target_dupire_local_vol: 0.2 + x[0] * 0.01,
+            spot: T::from_f64(100.0),
+            strike: T::from_f64(100.0),
+            maturity: T::from_f64(1.0),
+            risk_free_rate: T::from_f64(0.03),
+            dividend_yield: T::from_f64(0.0),
+            v1_0: T::from_f64(0.02),
+            kappa1: T::from_f64(2.0),
+            theta1: T::from_f64(0.02),
+            sigma1: T::from_f64(0.3),
+            rho1: T::from_f64(-0.6),
+            v2_0: T::from_f64(0.01),
+            kappa2: T::from_f64(0.5),
+            theta2: T::from_f64(0.01),
+            sigma2: T::from_f64(0.2),
+            rho2: T::from_f64(-0.3),
+            target_dupire_local_vol: T::from_f64(0.2) + x[0] * T::from_f64(0.01),
         },
     );
     let asian = ql_exotics::price_curran_rogers_shi_arithmetic_asian(
         &ql_exotics::CurranRogersShiArithmeticAsianSpec {
-            spot: 100.0,
-            strike: 100.0 + x[1],
-            risk_free_rate: 0.03,
-            dividend_yield: 0.0,
-            vol: 0.2,
-            fixing_times: vec![0.25, 0.5, 0.75, 1.0],
+            spot: T::from_f64(100.0),
+            strike: T::from_f64(100.0) + x[1],
+            risk_free_rate: T::from_f64(0.03),
+            dividend_yield: T::from_f64(0.0),
+            vol: T::from_f64(0.2),
+            fixing_times: vec![
+                T::from_f64(0.25),
+                T::from_f64(0.5),
+                T::from_f64(0.75),
+                T::from_f64(1.0),
+            ],
         },
     );
     let storage = ql_commodities::evaluate_warin_baeuerle_storage_rolling_hedge(
         &ql_commodities::WarinBaeuerleStorageRollingHedgeSpec {
-            forward_curve: vec![3.0 + x[2], 3.1, 3.2],
-            decision_times: vec![0.5, 1.0, 1.5],
-            max_capacity: 10.0,
-            initial_inventory: 2.0,
-            max_injection_step: 1.0,
-            max_withdrawal_step: 1.0,
-            injection_loss_fraction: 0.02,
-            spot_ou_volatility: 0.3,
-            spot_ou_mean_reversion: 1.0,
-            discount_rate: 0.03,
+            forward_curve: vec![T::from_f64(3.0) + x[2], T::from_f64(3.1), T::from_f64(3.2)],
+            decision_times: vec![T::from_f64(0.5), T::from_f64(1.0), T::from_f64(1.5)],
+            max_capacity: T::from_f64(10.0),
+            initial_inventory: T::from_f64(2.0),
+            max_injection_step: T::from_f64(1.0),
+            max_withdrawal_step: T::from_f64(1.0),
+            injection_loss_fraction: T::from_f64(0.02),
+            spot_ou_volatility: T::from_f64(0.3),
+            spot_ou_mean_reversion: T::from_f64(1.0),
+            discount_rate: T::from_f64(0.03),
         },
     );
     let micro = ql_portfolio::analyze_harris_roll_corwin_schultz_microstructure(
         &ql_portfolio::HarrisRollCorwinSchultzMicrostructureSpec {
-            trade_prices: vec![100.0, 100.1, 99.9, 100.2],
-            daily_highs: vec![101.0, 102.0, 101.5],
-            daily_lows: vec![99.0, 98.0, 98.5],
-            daily_dollar_volumes: vec![1e6, 1.1e6, 0.9e6],
-            decision_price: 100.0,
-            arrival_price: 100.0,
-            child_fill_quantities: vec![10.0, 5.0],
-            child_fill_prices: vec![100.1, 100.2],
-            total_order_quantity: 20.0,
-            post_trade_benchmark_price: 100.3,
-            explicit_commissions: 0.1,
+            trade_prices: vec![
+                T::from_f64(100.0) + x[0],
+                T::from_f64(100.1) + x[1],
+                T::from_f64(99.9) + x[2],
+                T::from_f64(100.2) + x[3],
+            ],
+            daily_highs: vec![
+                T::from_f64(101.0) + x[0],
+                T::from_f64(102.0) + x[1],
+                T::from_f64(101.5) + x[2],
+            ],
+            daily_lows: vec![
+                T::from_f64(99.0) + x[3],
+                T::from_f64(98.0) + x[0],
+                T::from_f64(98.5) + x[1],
+            ],
+            daily_dollar_volumes: vec![
+                T::from_f64(1e6) * (T::one() + x[0] * T::from_f64(0.01)),
+                T::from_f64(1.1e6) * (T::one() + x[1] * T::from_f64(0.01)),
+                T::from_f64(0.9e6) * (T::one() + x[2] * T::from_f64(0.01)),
+            ],
+            decision_price: T::from_f64(100.0) + x[0],
+            arrival_price: T::from_f64(100.0) + x[1],
+            child_fill_quantities: vec![T::from_f64(10.0) + x[2], T::from_f64(5.0) + x[3]],
+            child_fill_prices: vec![T::from_f64(100.1) + x[0], T::from_f64(100.2) + x[1]],
+            total_order_quantity: T::from_f64(20.0) + x[2],
+            post_trade_benchmark_price: T::from_f64(100.3) + x[3],
+            explicit_commissions: T::from_f64(0.1) + x[0] * T::from_f64(0.001),
         },
     );
     let kelly = ql_portfolio::solve_busseti_boyd_risk_constrained_kelly(
         &ql_portfolio::BussetiBoydRiskConstrainedKellySpec {
-            excess_return_means: vec![0.05 + x[0] * 0.001, 0.03],
-            covariance: vec![vec![0.04, 0.01], vec![0.01, 0.03]],
-            risk_free_rate: 0.02,
-            drawdown_floor_alpha: 0.8,
-            max_drawdown_prob_beta: 0.5,
-            specialist_immediate_capital: 100.0,
-            slow_moving_external_capital: 100.0,
-            capital_arrival_rate: 0.1,
-            forced_liquidation_notional: 10.0,
+            excess_return_means: vec![
+                T::from_f64(0.05) + x[0] * T::from_f64(0.001),
+                T::from_f64(0.03),
+            ],
+            covariance: vec![
+                vec![T::from_f64(0.04), T::from_f64(0.01)],
+                vec![T::from_f64(0.01), T::from_f64(0.03)],
+            ],
+            risk_free_rate: T::from_f64(0.02),
+            drawdown_floor_alpha: T::from_f64(0.8),
+            max_drawdown_prob_beta: T::from_f64(0.5),
+            specialist_immediate_capital: T::from_f64(100.0),
+            slow_moving_external_capital: T::from_f64(100.0),
+            capital_arrival_rate: T::from_f64(0.1),
+            dislocation_horizon_years: T::one(),
+            forced_liquidation_notional: T::from_f64(10.0),
         },
     );
     let qp = ql_dml::solve_agrawal_boyd_differentiable_qp_layer(
         &ql_dml::AgrawalBoydDifferentiableQpSpec {
-            q_matrix: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
-            q_linear: vec![-1.0 - x[0], -0.5],
-            a_eq: vec![vec![1.0, 1.0]],
-            b_eq: vec![1.0],
-            g_ineq: vec![vec![-1.0, 0.0]],
-            h_ineq: vec![0.0],
-            barrier_tau: 1e-4,
+            q_matrix: vec![
+                vec![T::from_f64(1.0), T::from_f64(0.0)],
+                vec![T::from_f64(0.0), T::from_f64(1.0)],
+            ],
+            q_linear: vec![T::from_f64(-1.0) - x[0], T::from_f64(-0.5)],
+            a_eq: vec![vec![T::from_f64(1.0), T::from_f64(1.0)]],
+            b_eq: vec![T::from_f64(1.0)],
+            g_ineq: vec![vec![T::from_f64(-1.0), T::from_f64(0.0)]],
+            h_ineq: vec![T::from_f64(0.0)],
+            barrier_tau: T::from_f64(1e-4),
         },
     );
     [
-        T::from_f64(ftpl.equilibrium_price_level_p0),
-        T::from_f64(g2.payer_swaption_pv),
-        T::from_f64(ess.min_durrleman_butterfly_g),
-        T::from_f64(cb.embedded_cross_currency_cb_price),
-        T::from_f64(bank.economic_equity_post_coco_conversion),
-        T::from_f64(xva.sticky_mpor_cva),
-        T::from_f64(dh.double_heston_atm_vol),
-        T::from_f64(asian.curran_full_conditioned_price),
-        T::from_f64(storage.stochastic_total_storage_value),
-        T::from_f64(micro.perold_total_implementation_shortfall),
-        T::from_f64(kelly.constrained_portfolio_volatility),
-        T::from_f64(qp.optimal_objective_value),
+        ftpl.equilibrium_price_level_p0,
+        g2.payer_swaption_pv,
+        ess.min_durrleman_butterfly_g,
+        cb.embedded_cross_currency_cb_price,
+        bank.economic_equity_post_coco_conversion,
+        xva.sticky_mpor_cva,
+        dh.double_heston_atm_vol,
+        asian.curran_full_conditioned_price,
+        storage.stochastic_total_storage_value,
+        micro.perold_total_implementation_shortfall,
+        kelly.constrained_portfolio_volatility,
+        qp.optimal_objective_value,
     ]
 }
 
@@ -3677,13 +3722,32 @@ pub fn benchmark_phase27_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_achary
     let x0 = [0.02_f64, -0.01, 0.03, -0.01];
     let baseline = move || {
         let f = |x: [f64; 4]| phase27_workloads(x).iter().map(|v| v.val()).sum::<f64>();
-        let z = f(x0);
+        let mut z = f(x0);
+        for i in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[i] += 1e-5;
+            d[i] -= 1e-5;
+            z += (f(u) - f(d)) / (2e-5);
+        }
         for _ in 0..20 {
             std::hint::black_box(f(x0));
         }
         z
     };
-    let sota = move || phase27_workloads(x0).iter().map(|v| v.val()).sum::<f64>();
+    let sota = move || {
+        type D = ql_ad::Dual<4>;
+        let x = [
+            D::variable(x0[0], 0),
+            D::variable(x0[1], 1),
+            D::variable(x0[2], 2),
+            D::variable(x0[3], 3),
+        ];
+        phase27_workloads(x)
+            .iter()
+            .map(|v| v.val + v.d.iter().sum::<f64>())
+            .sum::<f64>()
+    };
     run_comparison(
         "39_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt",
         "Phase27 SOTA FTPL/G2/eSSVI/Offshore-CB/CoCo/MPOR/Double-Heston/Curran/Warin/Roll-Corwin/Busseti-Kelly/Diff-QP",

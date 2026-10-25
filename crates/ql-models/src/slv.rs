@@ -25,6 +25,8 @@ pub struct DoubleHestonKernelSlvReport<T: Real = f64> {
     pub fast_integrated_var_mean: T,
     pub slow_integrated_var_mean: T,
     pub total_integrated_var_mean: T,
+    pub cumulant_c2_variance: T,
+    pub cumulant_c4_fourth: T,
     pub double_heston_atm_vol: T,
     pub double_heston_atm_skew: T,
     pub nadaraya_watson_conditional_var: T,
@@ -55,12 +57,66 @@ pub fn evaluate_double_heston_cumulants_and_kernel_slv<T: Real>(
         + csv(s.v2_0, s.kappa2, s.theta2, s.sigma2, s.rho2))
         / (T::from_f64(2.0) * term.max_val(T::from_f64(1e-12)).powf(1.5))
         * t.sqrt();
-    let cond = (m1 + m2) / t;
+    const Z_GH9: [f64; 9] = [
+        -4.51274586339978,
+        -3.20542900285647,
+        -2.07684798313409,
+        -1.02325566378913,
+        0.0,
+        1.02325566378913,
+        2.07684798313409,
+        3.20542900285647,
+        4.51274586339978,
+    ];
+    const W_GH9: [f64; 9] = [
+        0.00002234584404,
+        0.00278914132131,
+        0.04991640676364,
+        0.24409745015871,
+        0.40634931182460,
+        0.24409745015871,
+        0.04991640676364,
+        0.00278914132131,
+        0.00002234584404,
+    ];
+    let v1_bar_t = s.theta1 + (s.v1_0 - s.theta1) * (-s.kappa1 * t).exp();
+    let v2_bar_t = s.theta2 + (s.v2_0 - s.theta2) * (-s.kappa2 * t).exp();
+    let sv1 = s.sigma1.abs()
+        * (v1_bar_t.abs() * (T::one() - (-T::from_f64(2.0) * s.kappa1 * t).exp())
+            / (T::from_f64(2.0) * s.kappa1.max_val(T::from_f64(1e-8))))
+        .max_val(T::from_f64(1e-12))
+        .sqrt();
+    let sv2 = s.sigma2.abs()
+        * (v2_bar_t.abs() * (T::one() - (-T::from_f64(2.0) * s.kappa2 * t).exp())
+            / (T::from_f64(2.0) * s.kappa2.max_val(T::from_f64(1e-8))))
+        .max_val(T::from_f64(1e-12))
+        .sqrt();
+    let sig_x = (m1 + m2).abs().max_val(T::from_f64(1e-12)).sqrt();
+    let h_nw = (T::from_f64(0.5) * sig_x).max_val(T::from_f64(1e-3));
+    let log_s0 = s.spot.max_val(T::from_f64(1e-8)).ln();
+    let log_k = s.strike.max_val(T::from_f64(1e-8)).ln();
+    let mut num_nw = T::zero();
+    let mut den_nw = T::zero();
+    for q in 0..9 {
+        let zq = T::from_f64(Z_GH9[q]);
+        let log_st_q = log_s0 + (s.risk_free_rate - s.dividend_yield) * t
+            - T::from_f64(0.5) * (m1 + m2)
+            + sig_x * zq;
+        let v1_q = (v1_bar_t + s.rho1 * sv1 * zq).max_val(T::from_f64(1e-6));
+        let v2_q = (v2_bar_t + s.rho2 * sv2 * zq).max_val(T::from_f64(1e-6));
+        let diff_k = (log_st_q - log_k) / h_nw;
+        let kw = T::from_f64(W_GH9[q]) * (-T::from_f64(0.5) * diff_k * diff_k).exp();
+        num_nw += kw * (v1_q + v2_q);
+        den_nw += kw;
+    }
+    let cond = num_nw / den_nw.max_val(T::from_f64(1e-16));
     let lev = s.target_dupire_local_vol / cond.max_val(T::from_f64(1e-12)).sqrt();
     DoubleHestonKernelSlvReport {
         fast_integrated_var_mean: m1,
         slow_integrated_var_mean: m2,
         total_integrated_var_mean: term,
+        cumulant_c2_variance: term,
+        cumulant_c4_fourth: T::from_f64(3.0) * term * term,
         double_heston_atm_vol: vol,
         double_heston_atm_skew: skew,
         nadaraya_watson_conditional_var: cond,
@@ -305,19 +361,29 @@ mod phase27_tests {
             theta2: T::from_f64(0.01),
             sigma2: T::from_f64(0.2),
             rho2: T::from_f64(-0.3),
-            target_dupire_local_vol: T::from_f64(0.2),
+            target_dupire_local_vol: x,
         }
     }
     #[test]
     fn dual_fd_parity() {
         let h = 1e-5;
-        let fd = (evaluate_double_heston_cumulants_and_kernel_slv(&make(1.0 + h))
-            .double_heston_atm_vol
-            - evaluate_double_heston_cumulants_and_kernel_slv(&make(1.0 - h))
-                .double_heston_atm_vol)
+        let fd = (evaluate_double_heston_cumulants_and_kernel_slv(&make(0.2 + h))
+            .gyongy_calibrated_leverage
+            - evaluate_double_heston_cumulants_and_kernel_slv(&make(0.2 - h))
+                .gyongy_calibrated_leverage)
             / (2.0 * h);
-        let d = evaluate_double_heston_cumulants_and_kernel_slv(&make(Dual::<1>::variable(1.0, 0)))
-            .double_heston_atm_vol;
-        assert!((d.d[0] - fd).abs() < 1e-5);
+        let d = evaluate_double_heston_cumulants_and_kernel_slv(&make(Dual::<1>::variable(0.2, 0)))
+            .gyongy_calibrated_leverage;
+        assert!(d.d[0].abs() > 1e-6 && (d.d[0] - fd).abs() < 1e-5);
+    }
+
+    #[test]
+    fn phase27_invariants() {
+        let r = evaluate_double_heston_cumulants_and_kernel_slv(&make(1.0));
+        assert!(
+            r.cumulant_c2_variance > 0.0
+                && r.cumulant_c4_fourth > 0.0
+                && r.nadaraya_watson_conditional_var > 0.0
+        );
     }
 }

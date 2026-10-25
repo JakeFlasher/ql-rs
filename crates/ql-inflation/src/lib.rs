@@ -91,41 +91,6 @@ pub fn evaluate_cochrane_ftpl_and_maturity_inflation_smoothing<T: Real>(
     }
 }
 
-#[cfg(test)]
-mod phase27_tests {
-    use super::*;
-    use ql_ad::Dual;
-    fn make<T: Real>(x: T) -> CochraneFiscalTheoryPriceLevelSpec<T> {
-        CochraneFiscalTheoryPriceLevelSpec {
-            debt_maturities_years: vec![T::one(), T::from_f64(5.0)],
-            nominal_debt_face_values: vec![x, T::from_f64(50.0)],
-            nominal_zero_yields: vec![T::from_f64(0.03), T::from_f64(0.04)],
-            real_zero_yields: vec![T::from_f64(0.01), T::from_f64(0.015)],
-            primary_real_surpluses: vec![T::from_f64(5.0), T::from_f64(5.2)],
-            terminal_surplus_growth_rate: T::from_f64(0.02),
-            fiscal_surplus_shock_fraction: T::from_f64(-0.05),
-            expected_future_inflation_rise: T::from_f64(0.01),
-            inflation_risk_beta: T::from_f64(0.4),
-            inflation_volatility: T::from_f64(0.1),
-            tips_liquidity_spread: T::from_f64(0.002),
-        }
-    }
-    #[test]
-    fn dual_fd_parity() {
-        let h = 1e-5;
-        let fd = (evaluate_cochrane_ftpl_and_maturity_inflation_smoothing(&make(100.0 + h))
-            .equilibrium_price_level_p0
-            - evaluate_cochrane_ftpl_and_maturity_inflation_smoothing(&make(100.0 - h))
-                .equilibrium_price_level_p0)
-            / (2.0 * h);
-        let d = evaluate_cochrane_ftpl_and_maturity_inflation_smoothing(&make(
-            Dual::<1>::variable(100.0, 0),
-        ))
-        .equilibrium_price_level_p0;
-        assert!((d.d[0] - fd).abs() < 1e-5);
-    }
-}
-
 #[derive(Debug, Error, Clone)]
 pub enum InflationError {
     #[error("invalid seasonality factors")]
@@ -1133,6 +1098,48 @@ pub fn price_zciis_capfloor_jarrow_yildirim<T: Real>(
         strike_growth_factor: k_tot,
         log_cpi_variance: var_cpi,
         implied_annual_inflation_forward: imp_ann,
+    }
+}
+
+#[cfg(test)]
+mod phase27_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn make<T: Real>(x: T) -> CochraneFiscalTheoryPriceLevelSpec<T> {
+        CochraneFiscalTheoryPriceLevelSpec {
+            debt_maturities_years: vec![T::one(), T::from_f64(5.0)],
+            nominal_debt_face_values: vec![x, T::from_f64(50.0)],
+            nominal_zero_yields: vec![T::from_f64(0.03), T::from_f64(0.04)],
+            real_zero_yields: vec![T::from_f64(0.01), T::from_f64(0.015)],
+            primary_real_surpluses: vec![T::from_f64(5.0), T::from_f64(5.2)],
+            terminal_surplus_growth_rate: T::from_f64(0.02),
+            fiscal_surplus_shock_fraction: T::from_f64(-0.05),
+            expected_future_inflation_rise: T::from_f64(0.01),
+            inflation_risk_beta: T::from_f64(0.4),
+            inflation_volatility: T::from_f64(0.1),
+            tips_liquidity_spread: T::from_f64(0.002),
+        }
+    }
+    #[test]
+    fn dual_fd_parity() {
+        let h = 1e-5;
+        let fd = (evaluate_cochrane_ftpl_and_maturity_inflation_smoothing(&make(100.0 + h))
+            .equilibrium_price_level_p0
+            - evaluate_cochrane_ftpl_and_maturity_inflation_smoothing(&make(100.0 - h))
+                .equilibrium_price_level_p0)
+            / (2.0 * h);
+        let d = evaluate_cochrane_ftpl_and_maturity_inflation_smoothing(&make(
+            Dual::<1>::variable(100.0, 0),
+        ))
+        .equilibrium_price_level_p0;
+        assert!(d.d[0].abs() > 1e-6 && (d.d[0] - fd).abs() < 1e-5);
+    }
+
+    #[test]
+    fn phase27_invariants() {
+        let r = evaluate_cochrane_ftpl_and_maturity_inflation_smoothing(&make(100.0));
+        assert!(r.fiscal_valuation_identity_error.abs() < 1e-12);
+        assert!(r.long_debt_smoothed_inflation_jump < r.short_debt_immediate_inflation_jump);
     }
 }
 

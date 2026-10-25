@@ -24,93 +24,203 @@ pub struct BrigoMercurioG2TwistSwaptionReport<T: Real = f64> {
     pub sigma_x_expiry: T,
     pub sigma_y_expiry: T,
     pub terminal_factor_correlation: T,
+    pub corr_xy_expiry: T,
     pub zero_rate_2y_10y_correlation: T,
+    pub yield_twist_correlation: T,
     pub critical_y_star_at_mean: T,
 }
 
 pub fn price_brigo_mercurio_g2_twist_and_swaption<T: Real>(
     s: &BrigoMercurioG2TwistSwaptionSpec<T>,
 ) -> BrigoMercurioG2TwistSwaptionReport<T> {
-    let t = s.option_expiry.max_val(T::from_f64(1e-8));
-    let a = s.a.abs().max_val(T::from_f64(1e-8));
-    let b = s.b.abs().max_val(T::from_f64(1e-8));
-    let sx = (s.sigma * s.sigma * (T::one() - (-T::from_f64(2.0) * a * t).exp())
-        / (T::from_f64(2.0) * a))
+    const Z_GH9: [f64; 9] = [
+        -4.51274586339978,
+        -3.20542900285647,
+        -2.07684798313409,
+        -1.02325566378913,
+        0.0,
+        1.02325566378913,
+        2.07684798313409,
+        3.20542900285647,
+        4.51274586339978,
+    ];
+    const W_GH9: [f64; 9] = [
+        0.00002234584404,
+        0.00278914132131,
+        0.04991640676364,
+        0.24409745015871,
+        0.40634931182460,
+        0.24409745015871,
+        0.04991640676364,
+        0.00278914132131,
+        0.00002234584404,
+    ];
+    let a = s.a.abs().max_val(T::from_f64(1e-6));
+    let b = s.b.abs().max_val(T::from_f64(1e-6));
+    let sig = s.sigma.abs().max_val(T::from_f64(1e-8));
+    let eta = s.eta.abs().max_val(T::from_f64(1e-8));
+    let rho = s
+        .rho
+        .max_val(T::from_f64(-0.999))
+        .min_val(T::from_f64(0.999));
+    let t0 = s.option_expiry.max_val(T::from_f64(1e-6));
+    let b_fn = |k: T, dt: T| (T::one() - (-k * dt).exp()) / k;
+    let v_fn = |u: T| -> T {
+        let e_au = (-a * u).exp();
+        let e_bu = (-b * u).exp();
+        let e_2au = (-T::from_f64(2.0) * a * u).exp();
+        let e_2bu = (-T::from_f64(2.0) * b * u).exp();
+        let e_abu = (-(a + b) * u).exp();
+        let t1 = (sig * sig / (a * a))
+            * (u + T::from_f64(2.0) / a * e_au
+                - T::one() / (T::from_f64(2.0) * a) * e_2au
+                - T::from_f64(1.5) / a);
+        let t2 = (eta * eta / (b * b))
+            * (u + T::from_f64(2.0) / b * e_bu
+                - T::one() / (T::from_f64(2.0) * b) * e_2bu
+                - T::from_f64(1.5) / b);
+        let t3 = (T::from_f64(2.0) * rho * sig * eta / (a * b))
+            * (u + (e_au - T::one()) / a + (e_bu - T::one()) / b - (e_abu - T::one()) / (a + b));
+        t1 + t2 + t3
+    };
+    let sx = (sig * sig * (T::one() - (-T::from_f64(2.0) * a * t0).exp()) / (T::from_f64(2.0) * a))
+        .max_val(T::from_f64(1e-16))
         .sqrt();
-    let sy = (s.eta * s.eta * (T::one() - (-T::from_f64(2.0) * b * t).exp())
-        / (T::from_f64(2.0) * b))
+    let sy = (eta * eta * (T::one() - (-T::from_f64(2.0) * b * t0).exp()) / (T::from_f64(2.0) * b))
+        .max_val(T::from_f64(1e-16))
         .sqrt();
-    let corr = s.rho * s.sigma * s.eta * (T::one() - (-(a + b) * t).exp())
-        / ((a + b) * sx.max_val(T::from_f64(1e-12)) * sy.max_val(T::from_f64(1e-12)));
-    let bfn = |z: T, tau: T| (T::one() - (-z * tau).exp()) / z.max_val(T::from_f64(1e-8));
-    let alpha = |tau: T| bfn(a, tau) / tau * sx;
-    let beta = |tau: T| bfn(b, tau) / tau * sy;
-    let a2 = alpha(T::from_f64(2.0));
-    let a10 = alpha(T::from_f64(10.0));
-    let b2 = beta(T::from_f64(2.0));
-    let b10 = beta(T::from_f64(10.0));
-    let num = a2 * a10 + b2 * b10 + corr * (a2 * b10 + a10 * b2);
-    let den = ((a2 * a2 + b2 * b2 + T::from_f64(2.0) * corr * a2 * b2)
-        * (a10 * a10 + b10 * b10 + T::from_f64(2.0) * corr * a10 * b10))
-        .sqrt()
-        .max_val(T::from_f64(1e-12));
-    let zr = s.flat_zero_rate;
-    let ann = s
-        .swap_payment_times
-        .iter()
-        .map(|&u| (-zr * u).exp())
-        .fold(T::zero(), |x, y| x + y);
-    let maturity = *s.swap_payment_times.last().unwrap_or(&T::one());
-    let fwd = (T::one() - (-zr * maturity).exp()) / (ann.max_val(T::from_f64(1e-12)));
-    let vol = (sx * sx + sy * sy + T::from_f64(2.0) * corr * sx * sy).sqrt() / t.sqrt();
-    let vsqrt = vol * t.sqrt();
-    let d1 = ((fwd / s.fixed_strike.max_val(T::from_f64(1e-12))).ln()
-        + T::from_f64(0.5) * vsqrt * vsqrt)
-        / vsqrt.max_val(T::from_f64(1e-12));
-    let d2 = d1 - vsqrt;
-    let payer = s.notional * ann * (fwd * d1.norm_cdf() - s.fixed_strike * d2.norm_cdf());
-    let receiver = s.notional * ann * (s.fixed_strike * (-d2).norm_cdf() - fwd * (-d1).norm_cdf());
-    let underlying = s.notional * ann * (fwd - s.fixed_strike);
+    let cxy = rho * sig * eta * (T::one() - (-(a + b) * t0).exp()) / (a + b);
+    let rxy = (cxy / (sx * sy).max_val(T::from_f64(1e-16)))
+        .max_val(T::from_f64(-0.999))
+        .min_val(T::from_f64(0.999));
+    let s1mr2 = (T::one() - rxy * rxy).max_val(T::from_f64(1e-12)).sqrt();
+    let mux = -((sig * sig / (a * a)) + rho * sig * eta / (a * b)) * (T::one() - (-a * t0).exp())
+        + (sig * sig / (T::from_f64(2.0) * a * a))
+            * (T::one() - (-T::from_f64(2.0) * a * t0).exp())
+        + (rho * sig * eta / (b * (a + b))) * (T::one() - (-(a + b) * t0).exp());
+    let muy = -((eta * eta / (b * b)) + rho * sig * eta / (a * b)) * (T::one() - (-b * t0).exp())
+        + (eta * eta / (T::from_f64(2.0) * b * b))
+            * (T::one() - (-T::from_f64(2.0) * b * t0).exp())
+        + (rho * sig * eta / (a * (a + b))) * (T::one() - (-(a + b) * t0).exp());
+    let p0_t0 = (-s.flat_zero_rate * t0).exp();
+    let n = s.swap_payment_times.len().max(1);
+    let mut c_vec = Vec::with_capacity(n);
+    let mut a_vec = Vec::with_capacity(n);
+    let mut ba_vec = Vec::with_capacity(n);
+    let mut bb_vec = Vec::with_capacity(n);
+    let mut swap_pv = p0_t0;
+    let mut prev_t = t0;
+    for (i, &ti) in s.swap_payment_times.iter().enumerate() {
+        let dt = (ti - prev_t).max_val(T::from_f64(1e-6));
+        prev_t = ti;
+        let tau = (ti - t0).max_val(T::from_f64(1e-6));
+        let p0_ti = (-s.flat_zero_rate * ti).exp();
+        let ci = if i + 1 == n {
+            T::one() + s.fixed_strike * dt
+        } else {
+            s.fixed_strike * dt
+        };
+        swap_pv -= ci * p0_ti;
+        let ai = (p0_ti / p0_t0) * (T::from_f64(0.5) * (v_fn(tau) - v_fn(ti) + v_fn(t0))).exp();
+        c_vec.push(ci);
+        a_vec.push(ai);
+        ba_vec.push(b_fn(a, tau));
+        bb_vec.push(b_fn(b, tau));
+    }
+    let solve_y_star = |xq: T| -> T {
+        let mut lo = -2.0_f64;
+        let mut hi = 2.0_f64;
+        for _ in 0..32 {
+            let mid = 0.5 * (lo + hi);
+            let mut sum = 0.0;
+            for i in 0..n {
+                sum += c_vec[i].val()
+                    * a_vec[i].val()
+                    * (-ba_vec[i].val() * xq.val() - bb_vec[i].val() * mid).exp();
+            }
+            if sum > 1.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let mut y = T::from_f64(0.5 * (lo + hi));
+        for _ in 0..3 {
+            let mut f_val = -T::one();
+            let mut df_val = T::zero();
+            for i in 0..n {
+                let term = c_vec[i] * a_vec[i] * (-ba_vec[i] * xq - bb_vec[i] * y).exp();
+                f_val += term;
+                df_val -= bb_vec[i] * term;
+            }
+            y -= f_val / df_val.min_val(T::from_f64(-1e-12));
+        }
+        y
+    };
+    let y_star_mean = solve_y_star(mux);
+    let mut payer = T::zero();
+    let mut receiver = T::zero();
+    for q in 0..9 {
+        let xq = mux + sx * T::from_f64(Z_GH9[q]);
+        let yq = solve_y_star(xq);
+        let h1 = (yq - muy) / (sy * s1mr2) - rxy * T::from_f64(Z_GH9[q]) / s1mr2;
+        let mut sum_pay = (-h1).norm_cdf();
+        let mut sum_rec = -h1.norm_cdf();
+        for i in 0..n {
+            let h2 = h1 + bb_vec[i] * sy * s1mr2;
+            let kappa_i = -bb_vec[i]
+                * (muy - T::from_f64(0.5) * (T::one() - rxy * rxy) * sy * sy * bb_vec[i]
+                    + rxy * sy * T::from_f64(Z_GH9[q]));
+            let coef = c_vec[i] * a_vec[i] * (-ba_vec[i] * xq + kappa_i).exp();
+            sum_pay -= coef * (-h2).norm_cdf();
+            sum_rec += coef * h2.norm_cdf();
+        }
+        payer += T::from_f64(W_GH9[q]) * sum_pay;
+        receiver += T::from_f64(W_GH9[q]) * sum_rec;
+    }
+    payer *= s.notional * p0_t0;
+    receiver *= s.notional * p0_t0;
+    let underlying = s.notional * swap_pv;
+    let ts = b_fn(a, s.swap_payment_times.first().copied().unwrap_or(T::one()))
+        / s.swap_payment_times
+            .first()
+            .copied()
+            .unwrap_or(T::one())
+            .max_val(T::from_f64(1e-6));
+    let tl = b_fn(a, s.swap_payment_times.last().copied().unwrap_or(T::one()))
+        / s.swap_payment_times
+            .last()
+            .copied()
+            .unwrap_or(T::one())
+            .max_val(T::from_f64(1e-6));
+    let us = b_fn(b, s.swap_payment_times.first().copied().unwrap_or(T::one()))
+        / s.swap_payment_times
+            .first()
+            .copied()
+            .unwrap_or(T::one())
+            .max_val(T::from_f64(1e-6));
+    let ul = b_fn(b, s.swap_payment_times.last().copied().unwrap_or(T::one()))
+        / s.swap_payment_times
+            .last()
+            .copied()
+            .unwrap_or(T::one())
+            .max_val(T::from_f64(1e-6));
+    let vs = ts * ts * sx * sx + us * us * sy * sy + T::from_f64(2.0) * ts * us * cxy;
+    let vl = tl * tl * sx * sx + ul * ul * sy * sy + T::from_f64(2.0) * tl * ul * cxy;
+    let cv = ts * tl * sx * sx + us * ul * sy * sy + (ts * ul + tl * us) * cxy;
+    let ycorr = cv / (vs.sqrt() * vl.sqrt()).max_val(T::from_f64(1e-12));
     BrigoMercurioG2TwistSwaptionReport {
+        sigma_x_expiry: sx,
+        sigma_y_expiry: sy,
+        terminal_factor_correlation: rxy,
+        corr_xy_expiry: rxy,
+        zero_rate_2y_10y_correlation: ycorr,
+        yield_twist_correlation: ycorr,
         payer_swaption_pv: payer,
         receiver_swaption_pv: receiver,
         underlying_swap_pv: underlying,
         payer_receiver_parity_error: (payer - receiver - underlying).abs(),
-        sigma_x_expiry: sx,
-        sigma_y_expiry: sy,
-        terminal_factor_correlation: corr,
-        zero_rate_2y_10y_correlation: num / den,
-        critical_y_star_at_mean: s.fixed_strike * T::from_f64(1e-12),
-    }
-}
-
-#[cfg(test)]
-mod phase27_tests {
-    use super::*;
-    use ql_ad::Dual;
-    fn make<T: Real>(x: T) -> BrigoMercurioG2TwistSwaptionSpec<T> {
-        BrigoMercurioG2TwistSwaptionSpec {
-            a: x * 0.1,
-            sigma: T::from_f64(0.01),
-            b: T::from_f64(0.3),
-            eta: T::from_f64(0.015),
-            rho: T::from_f64(-0.4),
-            flat_zero_rate: T::from_f64(0.03),
-            option_expiry: T::one(),
-            swap_payment_times: vec![T::one(), T::from_f64(2.0), T::from_f64(3.0)],
-            fixed_strike: T::from_f64(0.03),
-            notional: T::one(),
-        }
-    }
-    #[test]
-    fn dual_fd_parity() {
-        let h = 1e-5;
-        let fd = (price_brigo_mercurio_g2_twist_and_swaption(&make(1.0 + h)).payer_swaption_pv
-            - price_brigo_mercurio_g2_twist_and_swaption(&make(1.0 - h)).payer_swaption_pv)
-            / (2.0 * h);
-        let d = price_brigo_mercurio_g2_twist_and_swaption(&make(Dual::<1>::variable(1.0, 0)))
-            .payer_swaption_pv;
-        assert!((d.d[0] - fd).abs() < 1e-5);
+        critical_y_star_at_mean: y_star_mean,
     }
 }
 
@@ -866,6 +976,43 @@ pub fn evaluate_hunt_kennedy_markov_functional_range_accrual<T: Real>(
         non_callable_range_accrual_npv: noncall,
         callable_range_accrual_npv: callable,
         embedded_bermudan_call_value: (noncall - callable).max_val(T::zero()),
+    }
+}
+
+#[cfg(test)]
+mod phase27_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn make<T: Real>(x: T) -> BrigoMercurioG2TwistSwaptionSpec<T> {
+        BrigoMercurioG2TwistSwaptionSpec {
+            a: x * 0.1,
+            sigma: T::from_f64(0.01),
+            b: T::from_f64(0.3),
+            eta: T::from_f64(0.015),
+            rho: T::from_f64(-0.4),
+            flat_zero_rate: T::from_f64(0.03),
+            option_expiry: T::one(),
+            swap_payment_times: vec![T::one(), T::from_f64(2.0), T::from_f64(3.0)],
+            fixed_strike: T::from_f64(0.03),
+            notional: T::one(),
+        }
+    }
+    #[test]
+    fn dual_fd_parity() {
+        let h = 1e-5;
+        let fd = (price_brigo_mercurio_g2_twist_and_swaption(&make(1.0 + h)).payer_swaption_pv
+            - price_brigo_mercurio_g2_twist_and_swaption(&make(1.0 - h)).payer_swaption_pv)
+            / (2.0 * h);
+        let d = price_brigo_mercurio_g2_twist_and_swaption(&make(Dual::<1>::variable(1.0, 0)))
+            .payer_swaption_pv;
+        assert!(d.d[0].abs() > 1e-6 && (d.d[0] - fd).abs() < 1e-5);
+    }
+
+    #[test]
+    fn phase27_invariants() {
+        let r = price_brigo_mercurio_g2_twist_and_swaption(&make(1.0));
+        assert!(r.payer_receiver_parity_error.abs() < 1e-10);
+        assert!(r.payer_swaption_pv > 0.0 && r.receiver_swaption_pv > 0.0);
     }
 }
 

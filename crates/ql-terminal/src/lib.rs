@@ -4,13 +4,37 @@ pub mod prelude {
     pub use crate::TabId;
     pub use ql_ad::*;
     pub use ql_commodities::*;
+    pub use ql_commodities::{
+        WarinBaeuerleStorageRollingHedgeReport, WarinBaeuerleStorageRollingHedgeSpec,
+        evaluate_warin_baeuerle_storage_rolling_hedge,
+    };
     pub use ql_credit::*;
     pub use ql_curves::*;
     pub use ql_dml::*;
+    pub use ql_dml::{
+        AgrawalBoydDifferentiableQpReport, AgrawalBoydDifferentiableQpSpec,
+        solve_agrawal_boyd_differentiable_qp_layer,
+    };
     pub use ql_exotics::*;
+    pub use ql_exotics::{
+        CurranRogersShiArithmeticAsianReport, CurranRogersShiArithmeticAsianSpec,
+        price_curran_rogers_shi_arithmetic_asian,
+    };
     pub use ql_fixed_income::*;
+    pub use ql_fixed_income::{
+        AcharyaFedsBankRunAndCocoReport, AcharyaFedsBankRunAndCocoSpec,
+        analyze_acharya_feds_bank_run_and_optimal_coco,
+    };
     pub use ql_fx::*;
+    pub use ql_fx::{
+        CrossCurrencyConvertibleWarrantReport, CrossCurrencyConvertibleWarrantSpec,
+        price_cross_currency_convertible_and_warrant_bond,
+    };
     pub use ql_inflation::*;
+    pub use ql_inflation::{
+        CochraneFiscalTheoryPriceLevelReport, CochraneFiscalTheoryPriceLevelSpec,
+        evaluate_cochrane_ftpl_and_maturity_inflation_smoothing,
+    };
     pub use ql_instruments::*;
     pub use ql_levy::{
         CgmyFractionalFftAndPideReport, CgmyFractionalFftAndPideSpec, CgmyProcess,
@@ -41,13 +65,35 @@ pub mod prelude {
         rough::*,
         slv::*,
     };
+    pub use ql_models::{
+        DoubleHestonKernelSlvReport, DoubleHestonKernelSlvSpec,
+        evaluate_double_heston_cumulants_and_kernel_slv,
+    };
     pub use ql_pde::*;
     pub use ql_portfolio::*;
+    pub use ql_portfolio::{
+        BussetiBoydRiskConstrainedKellyReport, BussetiBoydRiskConstrainedKellySpec,
+        HarrisRollCorwinSchultzMicrostructureReport, HarrisRollCorwinSchultzMicrostructureSpec,
+        analyze_harris_roll_corwin_schultz_microstructure,
+        solve_busseti_boyd_risk_constrained_kelly,
+    };
     pub use ql_rates::*;
+    pub use ql_rates::{
+        BrigoMercurioG2TwistSwaptionReport, BrigoMercurioG2TwistSwaptionSpec,
+        price_brigo_mercurio_g2_twist_and_swaption,
+    };
     pub use ql_scripting::*;
     pub use ql_time::*;
     pub use ql_vol::*;
+    pub use ql_vol::{
+        MingoneGlobalArbitrageFreeEssviReport, MingoneGlobalArbitrageFreeEssviSpec,
+        evaluate_mingone_global_arbitrage_free_essvi,
+    };
     pub use ql_xva::*;
+    pub use ql_xva::{
+        AlbaneseCrepeyMporBalanceSheetReport, AlbaneseCrepeyMporBalanceSheetSpec,
+        compute_albanese_crepey_mpor_and_balance_sheet_xva,
+    };
 }
 
 use ql_ad::Real;
@@ -62,6 +108,11 @@ use ql_commodities::{
 use ql_commodities::{
     EydelandWolyniecRampOutageVtaReport, EydelandWolyniecRampOutageVtaSpec,
     evaluate_eydeland_wolyniec_ramp_outage_virtual_tolling,
+};
+#[allow(unused_imports)]
+use ql_commodities::{
+    WarinBaeuerleStorageRollingHedgeReport, WarinBaeuerleStorageRollingHedgeSpec,
+    evaluate_warin_baeuerle_storage_rolling_hedge,
 };
 use ql_credit::{
     BaseCorrelationTrancheQuote, BlackCoxStructuralSpec, CalibratedCreditCurve, CdsQuote,
@@ -79,6 +130,11 @@ use ql_credit::{
 use ql_curves::{DiscountCurve, FlatForwardCurve, MonotoneConvexZeroCurve, YieldTermStructure};
 #[allow(unused_imports)]
 use ql_dml::{
+    AgrawalBoydDifferentiableQpReport, AgrawalBoydDifferentiableQpSpec,
+    solve_agrawal_boyd_differentiable_qp_layer,
+};
+#[allow(unused_imports)]
+use ql_dml::{
     GilesCapriottiMultilevelMcAadReport, GilesCapriottiMultilevelMcAadSpec,
     evaluate_giles_capriotti_multilevel_mc_aad,
 };
@@ -92,8 +148,18 @@ use ql_exotics::{
 };
 #[allow(unused_imports)]
 use ql_exotics::{
+    CurranRogersShiArithmeticAsianReport, CurranRogersShiArithmeticAsianSpec,
+    price_curran_rogers_shi_arithmetic_asian,
+};
+#[allow(unused_imports)]
+use ql_exotics::{
     HeynenKatPartialFractionalLookbackReport, HeynenKatPartialFractionalLookbackSpec,
     evaluate_heynen_kat_partial_fractional_lookback_and_extreme_spread,
+};
+#[allow(unused_imports)]
+use ql_fixed_income::{
+    AcharyaFedsBankRunAndCocoReport, AcharyaFedsBankRunAndCocoSpec,
+    analyze_acharya_feds_bank_run_and_optimal_coco,
 };
 use ql_fixed_income::{
     AfvConvertibleBondSpec, BondAssetSwapSpec, CallableBondOasSpec, CmoTrancheSpec,
@@ -121,6 +187,11 @@ use ql_fx::{
 };
 #[allow(unused_imports)]
 use ql_fx::{
+    CrossCurrencyConvertibleWarrantReport, CrossCurrencyConvertibleWarrantSpec,
+    price_cross_currency_convertible_and_warrant_bond,
+};
+#[allow(unused_imports)]
+use ql_fx::{
     WystupPivotTarfCorridorReport, WystupPivotTarfCorridorSpec,
     evaluate_wystup_pivot_tarf_and_corridor_strip,
 };
@@ -129,6 +200,11 @@ use ql_inflation::{
     MultiplicativeSeasonality, YoYInflationCapFloor, YoYInflationCapFloorType, ZciisCapFloorSpec,
     ZeroCouponInflationSwap, ZeroInflationCurve, price_brigo_mercurio_yoy_and_lpi_market_model,
     price_yoy_capfloor_jarrow_yildirim, price_zciis_capfloor_jarrow_yildirim,
+};
+#[allow(unused_imports)]
+use ql_inflation::{
+    CochraneFiscalTheoryPriceLevelReport, CochraneFiscalTheoryPriceLevelSpec,
+    evaluate_cochrane_ftpl_and_maturity_inflation_smoothing,
 };
 use ql_instruments::{BaroneAdesiWhaleyEngine, OptionType, SwapType, VanillaSwapSpec};
 use ql_levy::{CgmyProcess, VarianceGamma, cos_levy_price, evaluate_cgmy_fractional_fft_and_pide};
@@ -145,6 +221,11 @@ use ql_models::{
     local_vol::{ZabrParams, evaluate_zabr_smile},
     rough::{GuyonPdvParams, pdv_implied_vol_expansion},
     solve_andreasen_huge_step,
+};
+#[allow(unused_imports)]
+use ql_models::{
+    DoubleHestonKernelSlvReport, DoubleHestonKernelSlvSpec,
+    evaluate_double_heston_cumulants_and_kernel_slv,
 };
 use ql_portfolio::{
     AlfonsiFruthSchiedLobSpec, BoxConstrainedMarkowitzSpec, DarkLitRoutingSpec, EntropyPoolingSpec,
@@ -165,6 +246,12 @@ use ql_portfolio::{
 };
 #[allow(unused_imports)]
 use ql_portfolio::{
+    BussetiBoydRiskConstrainedKellyReport, BussetiBoydRiskConstrainedKellySpec,
+    HarrisRollCorwinSchultzMicrostructureReport, HarrisRollCorwinSchultzMicrostructureSpec,
+    analyze_harris_roll_corwin_schultz_microstructure, solve_busseti_boyd_risk_constrained_kelly,
+};
+#[allow(unused_imports)]
+use ql_portfolio::{
     EngleRussellAcdTradeDurationReport, EngleRussellAcdTradeDurationSpec,
     GrinoldKahnClarkeFundamentalLawReport, GrinoldKahnClarkeFundamentalLawSpec,
     HarveyLiuZhuMultipleTestingSharpeReport, HarveyLiuZhuMultipleTestingSharpeSpec,
@@ -181,6 +268,11 @@ use ql_rates::{
 };
 #[allow(unused_imports)]
 use ql_rates::{
+    BrigoMercurioG2TwistSwaptionReport, BrigoMercurioG2TwistSwaptionSpec,
+    price_brigo_mercurio_g2_twist_and_swaption,
+};
+#[allow(unused_imports)]
+use ql_rates::{
     HuntKennedyMarkovFunctionalReport, HuntKennedyMarkovFunctionalSpec,
     evaluate_hunt_kennedy_markov_functional_range_accrual,
 };
@@ -193,6 +285,16 @@ use ql_vol::{
 use ql_vol::{
     CalibratedSabrSmile, FreeBoundarySabrParams, SmileStrikeQuote, ThirdOrderSpeedVolExpansionSpec,
     evaluate_free_boundary_sabr, evaluate_third_order_speed_vol_expansion, implied_black_vol,
+};
+#[allow(unused_imports)]
+use ql_vol::{
+    MingoneGlobalArbitrageFreeEssviReport, MingoneGlobalArbitrageFreeEssviSpec,
+    evaluate_mingone_global_arbitrage_free_essvi,
+};
+#[allow(unused_imports)]
+use ql_xva::{
+    AlbaneseCrepeyMporBalanceSheetReport, AlbaneseCrepeyMporBalanceSheetSpec,
+    compute_albanese_crepey_mpor_and_balance_sheet_xva,
 };
 use ql_xva::{
     BaCvaCounterpartySpec, BaCvaPortfolioSpec, BaCvaSingleNameHedge, DynamicSimmMvaSpec,
@@ -346,7 +448,9 @@ impl TabId {
             Self::Phase26Sota => {
                 "36 Phase 26 SOTA / MF-Rates / Wildcard / TARF / Bergomi / Schönbucher / FRTB-CVA / Lookback / VTA / FLAM / ACD / HLZ / MLMC"
             }
-            Self::Phase27Sota => "37:P27-SOTA",
+            Self::Phase27Sota => {
+                "37 Phase 27 SOTA / FTPL / G2++ / eSSVI / Offshore-CB / CoCo / MPOR / Double-Heston / Curran / Warin / Roll-Corwin / Busseti-Kelly / Diff-QP"
+            }
         }
     }
 }
@@ -2232,14 +2336,18 @@ impl DeskWorkstation {
         );
         let kelly = ql_portfolio::solve_busseti_boyd_risk_constrained_kelly(
             &ql_portfolio::BussetiBoydRiskConstrainedKellySpec {
-                excess_return_means: vec![0.05, 0.03],
-                covariance: vec![vec![0.04, 0.01], vec![0.01, 0.03]],
+                excess_return_means: vec![0.05 + spot * 1e-4 + inf * 0.1, 0.03 + r * 0.1],
+                covariance: vec![
+                    vec![vol * vol, vol * vol * 0.25],
+                    vec![vol * vol * 0.25, (vol * vol * 0.75).max(1e-6)],
+                ],
                 risk_free_rate: r,
                 drawdown_floor_alpha: 0.8,
                 max_drawdown_prob_beta: 0.5,
                 specialist_immediate_capital: 100.0,
                 slow_moving_external_capital: 100.0,
                 capital_arrival_rate: 0.1,
+                dislocation_horizon_years: 1.0,
                 forced_liquidation_notional: 10.0,
             },
         );
@@ -2267,6 +2375,16 @@ impl DeskWorkstation {
             + kelly.constrained_portfolio_volatility.val()
             + qp.optimal_objective_value.val()
             + inf
+    }
+
+    pub fn phase27_live_metric(&self) -> f64 {
+        let market = self.scenario_market();
+        let credit_bump = if self.scenario == ScenarioKind::CreditWideningPlus100Bp {
+            0.01
+        } else {
+            0.0
+        };
+        Self::phase27_live_metric_from_market(&market, credit_bump)
     }
 
     pub fn phase26_live_metric_from_market(m: &MarketSnapshot, credit_bump: f64) -> f64 {
@@ -4672,10 +4790,7 @@ impl DeskWorkstation {
                     .kalman_vecm_hj_ifrs9_cpt_hasbrouck_fv_lando_lppl_cbarb_causal_malliavin_metric
             ),
             format!("36 Phase26 SOTA live: {:.2}", frame.phase26_sota_metric),
-            format!(
-                "37:P27-SOTA (37 Phase27 SOTA) live: {:.2}",
-                frame.phase27_sota_metric
-            ),
+            format!("37 Phase 27 SOTA live: {:.2}", frame.phase27_sota_metric),
             format!(
                 "DAG recomputed: {}/{}",
                 frame.dag_recomputed_trades, frame.dag_total_trades
@@ -4703,7 +4818,7 @@ impl DeskWorkstation {
         right_bottom.push("34 Davidson-Levin MBS IO/PO/Duffie-Singleton RMV/MO-XVA/Sirbu-Shreve CB/PathSig/HN-DCC-GARCH/POT-GPD/RIE/PIN/GP-Aim/Brinson/IERP".to_string());
         right_bottom.push(format!("35 Phase25 SOTA Kalman/VECM/HJ/IFRS9/CPT/Hasbrouck/FV/Lando/LPPL/CB-Arb/Causal/Malliavin: {:.4}", self.phase25_live_metric()));
         right_bottom.push(format!("36 Phase26 SOTA MF-Rates/Wildcard/TARF/Bergomi/Schönbucher/FRTB-CVA/Lookback/VTA/FLAM/ACD/HLZ/MLMC: {:.4}", self.phase26_live_metric()));
-        right_bottom.push(format!("37:P27-SOTA (37 Phase27 SOTA) FTPL/G2/eSSVI/CB/CoCo/MPOR/Double-Heston/Curran/Warin/Roll/Busseti/KKT: {:.4}", DeskWorkstation::phase27_live_metric_from_market(&self.scenario_market(), 0.0)));
+        right_bottom.push(format!("37 Phase 27 SOTA FTPL/G2/eSSVI/CB/CoCo/MPOR/Double-Heston/Curran/Warin/Roll/Busseti/KKT: {:.4}", self.phase27_live_metric()));
         while right_bottom.len() < BOTTOM_ROWS {
             right_bottom.push(String::new());
         }
@@ -5227,7 +5342,7 @@ mod phase27_tests {
         assert!((stressed.phase27_sota_metric - normal.phase27_sota_metric).abs() > 1e-12);
         assert!(
             ws.render_dashboard(&stressed, false)
-                .contains("37 Phase27 SOTA")
+                .contains("37 Phase 27 SOTA")
         );
         assert_eq!(TabId::TAB_COUNT, 37);
         assert_eq!(TabId::ALL.len(), 37);
@@ -5258,6 +5373,6 @@ mod phase27_tests {
         let h = 1e-5;
         let fd = (eval(100.0 + h) - eval(100.0 - h)) / (2.0 * h);
         let d = eval(Dual::<1>::variable(100.0, 0));
-        assert!((d.d[0] - fd).abs() < 1e-5);
+        assert!(d.d[0].abs() > 1e-6 && (d.d[0] - fd).abs() < 1e-5);
     }
 }

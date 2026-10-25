@@ -65,7 +65,7 @@ fn phase25_suite37_and_invariants() {
 }
 
 #[test]
-fn phase26_suite39_and_invariants() {
+fn phase26_suite38_and_invariants() {
     let row = with_config_override(1, 3, || {
         ql_benches::benchmark_phase26_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_frtb_cva_lookback_vta_flam_acd_hlz_mlmc(1)
     });

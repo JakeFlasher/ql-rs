@@ -438,3 +438,18 @@ fn phase26_tab36_terminal_renders_and_reacts() {
     assert_eq!(TabId::TAB_COUNT, 37);
     assert!(TabId::ALL.contains(&TabId::Phase26Sota));
 }
+
+#[test]
+fn phase27_tab37_terminal_renders_and_reacts() {
+    let mut ws = DeskWorkstation::new();
+    let normal = ws.step_tick();
+    ws.set_scenario(ScenarioKind::StagflationPlus150Bp);
+    let stressed = ws.step_tick();
+    assert!(stressed.phase27_sota_metric.is_finite());
+    assert!((stressed.phase27_sota_metric - normal.phase27_sota_metric).abs() > 1e-12);
+    assert!(
+        ws.render_dashboard(&stressed, false)
+            .contains("37 Phase 27 SOTA")
+    );
+    assert_eq!(TabId::TAB_COUNT, 37);
+}

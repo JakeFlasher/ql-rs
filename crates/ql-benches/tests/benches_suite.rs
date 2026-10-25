@@ -78,6 +78,16 @@ fn phase25_suite37_workload_is_registered() {
 }
 
 #[test]
+fn phase26_suite38_workload_is_registered() {
+    let rows = run_all_benchmark_suites_with_config(1, 3);
+    let row = rows
+        .iter()
+        .find(|r| r.id.starts_with("38_"))
+        .expect("suite 38");
+    assert!(row.parity_ok && row.max_abs_diff < 1e-4 && row.speedup > 1.0);
+}
+
+#[test]
 fn phase27_suite39_workload_is_registered() {
     let rows = run_all_benchmark_suites_with_config(1, 3);
     let row = rows

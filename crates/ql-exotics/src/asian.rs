@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)]
 use ql_ad::Real;
 
 #[derive(Clone, Debug)]
@@ -23,36 +24,182 @@ pub struct CurranRogersShiArithmeticAsianReport<T: Real = f64> {
 pub fn price_curran_rogers_shi_arithmetic_asian<T: Real>(
     s: &CurranRogersShiArithmeticAsianSpec<T>,
 ) -> CurranRogersShiArithmeticAsianReport<T> {
-    let n = s.fixing_times.len().max(1) as f64;
-    let t = *s.fixing_times.last().unwrap_or(&T::one());
-    let avg_t = s.fixing_times.iter().copied().fold(T::zero(), |a, b| a + b) / n;
-    let vg = s.vol * s.vol * avg_t.max_val(T::from_f64(1e-8));
-    let vs = vg.sqrt();
-    let f = s.spot * ((s.risk_free_rate - s.dividend_yield) * avg_t).exp();
-    let d1 = ((f / s.strike.max_val(T::from_f64(1e-8))).ln() + T::from_f64(0.5) * vg)
-        / vs.max_val(T::from_f64(1e-8));
-    let d2 = d1 - vs;
-    let disc = (-s.risk_free_rate * t).exp();
-    let geo = disc * (f * d1.norm_cdf() - s.strike * d2.norm_cdf());
-    let price = geo.max_val(T::zero());
-    let delta = (-s.dividend_yield * avg_t).exp() * d1.norm_cdf();
-    let vega = disc * f * avg_t.sqrt() * d1.norm_pdf();
-    let spread = if n == 1.0 {
-        s.vol * T::zero()
-    } else {
-        s.vol.abs() * T::from_f64(1e-8)
-    };
+    const X_GL8: [f64; 8] = [
+        -0.960289856497536,
+        -0.796666477413627,
+        -0.525532409916329,
+        -0.183434642495650,
+        0.183434642495650,
+        0.525532409916329,
+        0.796666477413627,
+        0.960289856497536,
+    ];
+    const W_GL8: [f64; 8] = [
+        0.101228536290376,
+        0.222381034453374,
+        0.313706645877887,
+        0.362683783378362,
+        0.362683783378362,
+        0.313706645877887,
+        0.222381034453374,
+        0.101228536290376,
+    ];
+    let n = s.fixing_times.len().max(1);
+    let nf = T::from_f64(n as f64);
+    let t_end = *s.fixing_times.last().unwrap_or(&T::one());
+    let df = (-s.risk_free_rate * t_end).exp();
+    let sig = s.vol.abs().max_val(T::from_f64(1e-8));
+    let s0 = s.spot.max_val(T::from_f64(1e-8));
+    let k_strike = s.strike.max_val(T::from_f64(1e-8));
+    let mut mu_i = Vec::with_capacity(n);
+    let mut c_i = Vec::with_capacity(n);
+    let mut mu_g = T::zero();
+    let mut sig_g_sq = T::zero();
+    for i in 0..n {
+        let ti = s
+            .fixing_times
+            .get(i)
+            .copied()
+            .unwrap_or(T::one())
+            .max_val(T::from_f64(1e-8));
+        let mui =
+            s0.ln() + (s.risk_free_rate - s.dividend_yield - T::from_f64(0.5) * sig * sig) * ti;
+        let mut ci = T::zero();
+        for j in 0..n {
+            let tj = s
+                .fixing_times
+                .get(j)
+                .copied()
+                .unwrap_or(T::one())
+                .max_val(T::from_f64(1e-8));
+            ci += sig * sig * ti.min_val(tj);
+        }
+        ci /= nf;
+        mu_i.push(mui);
+        c_i.push(ci);
+        mu_g += mui / nf;
+        sig_g_sq += ci / nf;
+    }
+    let sig_g = sig_g_sq.max_val(T::from_f64(1e-16)).sqrt();
+    let mut beta_i = Vec::with_capacity(n);
+    let mut v_cond_sq = Vec::with_capacity(n);
+    for i in 0..n {
+        let bi = c_i[i] / sig_g_sq.max_val(T::from_f64(1e-16));
+        let ti = s
+            .fixing_times
+            .get(i)
+            .copied()
+            .unwrap_or(T::one())
+            .max_val(T::from_f64(1e-8));
+        beta_i.push(bi);
+        v_cond_sq.push((sig * sig * ti - bi * bi * sig_g_sq).max_val(T::zero()));
+    }
+    let fg = (mu_g + T::from_f64(0.5) * sig_g_sq).exp();
+    let d1_g = ((fg / k_strike).ln() + T::from_f64(0.5) * sig_g_sq) / sig_g;
+    let d2_g = d1_g - sig_g;
+    let c_geo = df * (fg * d1_g.norm_cdf() - k_strike * d2_g.norm_cdf()).max_val(T::zero());
+    let mut lo = -12.0_f64;
+    let mut hi = 12.0_f64;
+    for _ in 0..32 {
+        let mid = 0.5 * (lo + hi);
+        let mut m_val = 0.0;
+        for i in 0..n {
+            m_val +=
+                (mu_i[i].val() + beta_i[i].val() * sig_g.val() * mid + 0.5 * v_cond_sq[i].val())
+                    .exp()
+                    / n as f64;
+        }
+        if m_val < k_strike.val() {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let mut z_star = T::from_f64(0.5 * (lo + hi));
+    for _ in 0..3 {
+        let mut m_val = -k_strike;
+        let mut dm_val = T::zero();
+        for i in 0..n {
+            let term =
+                (mu_i[i] + beta_i[i] * sig_g * z_star + T::from_f64(0.5) * v_cond_sq[i]).exp() / nf;
+            m_val += term;
+            dm_val += beta_i[i] * sig_g * term;
+        }
+        z_star -= m_val / dm_val.max_val(T::from_f64(1e-12));
+    }
+    let mut sum_f_phi = T::zero();
+    let mut sum_f_dspot = T::zero();
+    let mut sum_f_dvega = T::zero();
+    for i in 0..n {
+        let ti = s
+            .fixing_times
+            .get(i)
+            .copied()
+            .unwrap_or(T::one())
+            .max_val(T::from_f64(1e-8));
+        let fi = s0 * ((s.risk_free_rate - s.dividend_yield) * ti).exp() / nf;
+        let arg = -z_star + beta_i[i] * sig_g;
+        sum_f_phi += fi * arg.norm_cdf();
+        sum_f_dspot += (fi / s0) * arg.norm_cdf();
+        sum_f_dvega += fi * arg.norm_pdf() * beta_i[i] * (sig_g / sig);
+    }
+    let i1 = df * (sum_f_phi - k_strike * (-z_star).norm_cdf()).max_val(c_geo);
+    let mut i2 = T::zero();
+    let mut delta_rs = T::zero();
+    if n > 1 {
+        let mid_z = z_star - T::from_f64(3.0);
+        for q in 0..8 {
+            let zq = mid_z + T::from_f64(3.0) * T::from_f64(X_GL8[q]);
+            let wq = T::from_f64(3.0) * T::from_f64(W_GL8[q]) * zq.norm_pdf();
+            let mut mz = T::zero();
+            let mut mi_vec = Vec::with_capacity(n);
+            for i in 0..n {
+                let mi =
+                    (mu_i[i] + beta_i[i] * sig_g * zq + T::from_f64(0.5) * v_cond_sq[i]).exp() / nf;
+                mz += mi;
+                mi_vec.push(mi);
+            }
+            let mut var_cond = T::zero();
+            for i in 0..n {
+                for j in 0..n {
+                    let ti = s
+                        .fixing_times
+                        .get(i)
+                        .copied()
+                        .unwrap_or(T::one())
+                        .max_val(T::from_f64(1e-8));
+                    let tj = s
+                        .fixing_times
+                        .get(j)
+                        .copied()
+                        .unwrap_or(T::one())
+                        .max_val(T::from_f64(1e-8));
+                    let cov_ij = (sig * sig * ti.min_val(tj) - beta_i[i] * beta_i[j] * sig_g_sq)
+                        .max_val(T::zero());
+                    var_cond += mi_vec[i] * mi_vec[j] * (cov_ij.exp() - T::one());
+                }
+            }
+            let sd_cond = var_cond.max_val(T::from_f64(1e-16)).sqrt();
+            let d_tail = (mz - k_strike) / sd_cond;
+            let call_cond = (mz - k_strike) * d_tail.norm_cdf() + sd_cond * d_tail.norm_pdf();
+            i2 += df * wq * call_cond.max_val(T::zero());
+            delta_rs += T::from_f64(0.5) * df * wq * sd_cond;
+        }
+    }
+    let full_price = i1 + i2;
+    let upper_bound = full_price + delta_rs;
     CurranRogersShiArithmeticAsianReport {
-        geometric_asian_call_price: price,
-        curran_jensen_lower_bound_i1: price,
-        curran_full_conditioned_price: price,
-        rogers_shi_upper_bound: price + spread,
-        rogers_shi_bound_spread: spread,
-        critical_conditioning_z_star: T::zero(),
-        delta,
-        vega,
+        geometric_asian_call_price: c_geo,
+        curran_jensen_lower_bound_i1: i1,
+        curran_full_conditioned_price: full_price,
+        rogers_shi_upper_bound: upper_bound,
+        rogers_shi_bound_spread: delta_rs,
+        critical_conditioning_z_star: z_star,
+        delta: df * sum_f_dspot,
+        vega: df * sum_f_dvega,
     }
 }
+
 use ql_instruments::OptionType;
 use ql_vol::black76_price;
 
@@ -202,6 +349,14 @@ mod phase27_tests {
             / (2.0 * h);
         let d = price_curran_rogers_shi_arithmetic_asian(&make(Dual::<1>::variable(100.0, 0)))
             .curran_full_conditioned_price;
-        assert!((d.d[0] - fd).abs() < 1e-5);
+        assert!(d.d[0].abs() > 1e-6 && (d.d[0] - fd).abs() < 1e-5);
+    }
+
+    #[test]
+    fn phase27_invariants() {
+        let r = price_curran_rogers_shi_arithmetic_asian(&make(100.0));
+        assert!(r.geometric_asian_call_price <= r.curran_jensen_lower_bound_i1);
+        assert!(r.curran_jensen_lower_bound_i1 <= r.curran_full_conditioned_price);
+        assert!(r.curran_full_conditioned_price <= r.rogers_shi_upper_bound);
     }
 }

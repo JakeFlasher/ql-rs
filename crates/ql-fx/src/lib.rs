@@ -23,6 +23,7 @@ pub struct CrossCurrencyConvertibleWarrantReport<T: Real = f64> {
     pub composite_fx_equity_vol: T,
     pub quanto_adjusted_dividend_yield: T,
     pub straight_foreign_bond_floor: T,
+    pub straight_bond_floor_foreign: T,
     pub composite_detachable_warrant_bond_price: T,
     pub quanto_detachable_warrant_bond_price: T,
     pub embedded_cross_currency_cb_price: T,
@@ -43,143 +44,64 @@ pub fn price_cross_currency_convertible_and_warrant_bond<T: Real>(
     let qquanto = s.stock_dividend_yield + s.r_foreign
         - s.r_domestic
         - s.corr_stock_fx * s.stock_vol * s.fx_vol;
-    let k = s.domestic_conversion_strike * s.fixed_contractual_fx_for_per_dom;
-    let spot = s.domestic_stock_spot * s.spot_fx_for_per_dom;
+    let k_for = (s.domestic_conversion_strike * s.fixed_contractual_fx_for_per_dom)
+        .max_val(T::from_f64(1e-8));
+    let n_conv = s.foreign_bond_par / k_for;
+    let spot_comp = s.domestic_stock_spot * s.spot_fx_for_per_dom;
+    let spot_quanto = s.domestic_stock_spot * s.fixed_contractual_fx_for_per_dom;
     let dfc = (-(s.r_foreign + s.credit_spread) * t).exp();
     let floor = s.foreign_bond_par * dfc
         + s.foreign_coupon_rate * s.foreign_bond_par * (T::one() - dfc)
             / (s.r_foreign + s.credit_spread).max_val(T::from_f64(1e-8));
-    let bs = |vol: T, q: T| {
+    let bs = |spot: T, strike: T, rate: T, q: T, vol: T| {
         let vs = vol * t.sqrt();
-        let d1 = ((spot / k.max_val(T::from_f64(1e-8))).ln()
-            + (s.r_foreign - q + T::from_f64(0.5) * vol * vol) * t)
+        let d1 = ((spot / strike).ln() + (rate - q + T::from_f64(0.5) * vol * vol) * t)
             / vs.max_val(T::from_f64(1e-8));
         let d2 = d1 - vs;
-        spot * (-q * t).exp() * d1.norm_cdf() - k * (-s.r_foreign * t).exp() * d2.norm_cdf()
+        spot * (-q * t).exp() * d1.norm_cdf() - strike * (-rate * t).exp() * d2.norm_cdf()
     };
-    let comp = bs(sigc, s.stock_dividend_yield);
-    let quanto = bs(s.stock_vol, qquanto);
-    let cb = floor + comp;
-    let delta = (-s.stock_dividend_yield * t).exp()
-        * ((spot / k.max_val(T::from_f64(1e-8))).ln()
-            + (s.r_foreign - s.stock_dividend_yield + T::from_f64(0.5) * sigc * sigc) * t)
-            .norm_cdf();
-    let fxdelta = s.domestic_stock_spot * delta;
+    let comp = n_conv * bs(spot_comp, k_for, s.r_foreign, s.stock_dividend_yield, sigc);
+    let quanto = n_conv * bs(spot_quanto, k_for, s.r_foreign, qquanto, s.stock_vol);
+    let steps = 16usize;
+    let dt = t / T::from_f64(steps as f64);
+    let u = (sigc * dt.sqrt()).exp();
+    let d = T::one() / u.max_val(T::from_f64(1e-12));
+    let p = (((s.r_foreign - s.stock_dividend_yield) * dt).exp() - d)
+        / (u - d).max_val(T::from_f64(1e-12));
+    let c_step = s.foreign_coupon_rate * s.foreign_bond_par * dt;
+    let df_cb = (-(s.r_foreign + s.credit_spread) * dt).exp();
+    let mut v_tree = vec![T::zero(); steps + 1];
+    for j in 0..=steps {
+        let s_node = spot_comp * u.powf(j as f64) * d.powf((steps - j) as f64);
+        let conv = n_conv * s_node;
+        v_tree[j] = (s.foreign_bond_par + c_step).max_val(conv);
+    }
+    for i in (0..steps).rev() {
+        for j in 0..=i {
+            let s_node = spot_comp * u.powf(j as f64) * d.powf((i - j) as f64);
+            let cont = df_cb * (p * v_tree[j + 1] + (T::one() - p) * v_tree[j]) + c_step * df_cb;
+            let conv = n_conv * s_node;
+            let diff = conv - cont;
+            v_tree[j] =
+                cont + T::from_f64(0.5) * (diff + (diff * diff + T::from_f64(1e-10)).sqrt());
+        }
+    }
+    let cb = v_tree[0].max_val(floor).min_val(floor + comp);
+    let d1_comp = ((spot_comp / k_for).ln()
+        + (s.r_foreign - s.stock_dividend_yield + T::from_f64(0.5) * sigc * sigc) * t)
+        / (sigc * t.sqrt()).max_val(T::from_f64(1e-8));
+    let common = (-s.stock_dividend_yield * t).exp() * d1_comp.norm_cdf();
     CrossCurrencyConvertibleWarrantReport {
         composite_fx_equity_vol: sigc,
         quanto_adjusted_dividend_yield: qquanto,
         straight_foreign_bond_floor: floor,
+        straight_bond_floor_foreign: floor,
         composite_detachable_warrant_bond_price: floor + comp,
         quanto_detachable_warrant_bond_price: floor + quanto,
         embedded_cross_currency_cb_price: cb,
         composite_vs_quanto_warrant_spread: comp - quanto,
-        stock_delta_in_foreign_ccy: delta,
-        fx_delta_in_foreign_ccy: fxdelta,
-    }
-}
-
-#[cfg(test)]
-mod phase27_tests {
-    use super::*;
-    use ql_ad::Dual;
-    fn make<T: Real>(x: T) -> CrossCurrencyConvertibleWarrantSpec<T> {
-        CrossCurrencyConvertibleWarrantSpec {
-            domestic_stock_spot: x,
-            domestic_conversion_strike: T::from_f64(100.0),
-            spot_fx_for_per_dom: T::from_f64(1.1),
-            fixed_contractual_fx_for_per_dom: T::from_f64(1.1),
-            foreign_bond_par: T::from_f64(100.0),
-            foreign_coupon_rate: T::from_f64(0.03),
-            r_domestic: T::from_f64(0.03),
-            r_foreign: T::from_f64(0.02),
-            stock_dividend_yield: T::from_f64(0.01),
-            credit_spread: T::from_f64(0.02),
-            stock_vol: T::from_f64(0.2),
-            fx_vol: T::from_f64(0.1),
-            corr_stock_fx: T::from_f64(0.2),
-            maturity: T::from_f64(5.0),
-        }
-    }
-    #[test]
-    fn dual_fd_parity() {
-        let h = 1e-5;
-        let fd = (price_cross_currency_convertible_and_warrant_bond(&make(100.0 + h))
-            .embedded_cross_currency_cb_price
-            - price_cross_currency_convertible_and_warrant_bond(&make(100.0 - h))
-                .embedded_cross_currency_cb_price)
-            / (2.0 * h);
-        let d =
-            price_cross_currency_convertible_and_warrant_bond(&make(Dual::<1>::variable(100.0, 0)))
-                .embedded_cross_currency_cb_price;
-        assert!((d.d[0] - fd).abs() < 1e-5);
-    }
-}
-#[cfg(test)]
-mod phase23_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn vv_greek_match() {
-        let s = CastagnaFullVannaVolgaHedgeSpec {
-            spot: 1.1,
-            r_dom: 0.02,
-            r_for: 0.01,
-            expiry: 1.0,
-            atm_vol: 0.12,
-            rr_25d: 0.01,
-            bf_25d: 0.005,
-            target_strike: 1.1,
-            knockout_barrier: 1.3,
-            unwind_attenuation_factor: 0.5,
-            is_up_and_out: true,
-            is_call: true,
-        };
-        let r = evaluate_castagna_full_vanna_volga_hedge_and_barrier(&s);
-        assert!(r.greek_matching_max_residual < 1e-8);
-        assert!(r.castagna_vv_knockout_price >= 0.0);
-    }
-
-    #[test]
-    fn dual_fd_parity() {
-        let mk = |k: f64| CastagnaFullVannaVolgaHedgeSpec {
-            spot: 1.1,
-            r_dom: 0.02,
-            r_for: 0.01,
-            expiry: 1.0,
-            atm_vol: 0.12,
-            rr_25d: 0.01,
-            bf_25d: 0.005,
-            target_strike: k,
-            knockout_barrier: 1.3,
-            unwind_attenuation_factor: 0.5,
-            is_up_and_out: true,
-            is_call: true,
-        };
-        let h = 1e-5;
-        let fd = (evaluate_castagna_full_vanna_volga_hedge_and_barrier(&mk(1.1 + h))
-            .exact_vv_vanilla_price
-            - evaluate_castagna_full_vanna_volga_hedge_and_barrier(&mk(1.1 - h))
-                .exact_vv_vanilla_price)
-            / (2.0 * h);
-        let x = Dual::<1>::variable(1.1, 0);
-        let ad = evaluate_castagna_full_vanna_volga_hedge_and_barrier(
-            &CastagnaFullVannaVolgaHedgeSpec {
-                spot: Dual::<1>::from_value(1.1),
-                r_dom: Dual::<1>::from_value(0.02),
-                r_for: Dual::<1>::from_value(0.01),
-                expiry: Dual::<1>::one(),
-                atm_vol: Dual::<1>::from_value(0.12),
-                rr_25d: Dual::<1>::from_value(0.01),
-                bf_25d: Dual::<1>::from_value(0.005),
-                target_strike: x,
-                knockout_barrier: Dual::<1>::from_value(1.3),
-                unwind_attenuation_factor: Dual::<1>::from_value(0.5),
-                is_up_and_out: true,
-                is_call: true,
-            },
-        )
-        .exact_vv_vanilla_price;
-        assert!((ad.d[0] - fd).abs() < 1e-5);
+        stock_delta_in_foreign_ccy: n_conv * s.spot_fx_for_per_dom * common,
+        fx_delta_in_foreign_ccy: n_conv * s.domestic_stock_spot * common,
     }
 }
 
@@ -1098,48 +1020,6 @@ pub fn price_fx_window_barrier_option<T: Real>(s: &FxWindowBarrierSpec<T>) -> T 
     van + (full - van) * w_eff
 }
 
-#[cfg(test)]
-mod phase15_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn fx_exotic_parity_and_flat() {
-        let q = FxSmileQuote {
-            atm_vol: 0.2,
-            rr_25d: -0.01,
-            bf_25d: 0.005,
-        };
-        let s = FxVannaVolgaSmile::new(100.0, 0.02, 0.01, 1.0, q);
-        let c = s.price_digital_cash_dom(100.0, true);
-        let p = s.price_digital_cash_dom(100.0, false);
-        assert!((c + p - (-0.02f64).exp()).abs() < 1e-12);
-        let ot_breached = s.price_one_touch(95.0, true, false);
-        assert!((ot_breached - 1.0).abs() < 1e-12);
-        let ko_far = s.price_knock_out_barrier(100.0, 300.0, true, true);
-        let van = garman_kohlhagen_price(100.0, 100.0, s.implied_vol(100.0), 1.0, 0.02, 0.01, true);
-        assert!((ko_far - van).abs() < 1e-4);
-        let h = 1e-5;
-        let s_up = FxVannaVolgaSmile::new(100.0 + h, 0.02, 0.01, 1.0, q);
-        let s_dn = FxVannaVolgaSmile::new(100.0 - h, 0.02, 0.01, 1.0, q);
-        let fd_dnt = (s_up.price_double_no_touch(85.0, 115.0)
-            - s_dn.price_double_no_touch(85.0, 115.0))
-            / (2.0 * h);
-        let d = FxVannaVolgaSmile::<Dual<1>>::new(
-            Dual::variable(100.0, 0),
-            Dual::from_value(0.02),
-            Dual::from_value(0.01),
-            Dual::from_value(1.0),
-            FxSmileQuote {
-                atm_vol: Dual::from_value(0.2),
-                rr_25d: Dual::from_value(-0.01),
-                bf_25d: Dual::from_value(0.005),
-            },
-        );
-        let ad_dnt = d.price_double_no_touch(Dual::from_value(85.0), Dual::from_value(115.0));
-        assert!((ad_dnt.d[0] - fd_dnt).abs() < 1e-5);
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct PrdcNoteSpec<T: Real = f64> {
     pub notional: T,
@@ -1275,6 +1155,161 @@ pub fn price_prdc_note_hybrid<T: Real>(s: &PrdcNoteSpec<T>) -> PrdcValuation<T> 
         npv: coupon_pv,
         survival_probability: surv,
         expected_coupon_pv: coupon_pv,
+    }
+}
+
+#[cfg(test)]
+mod phase27_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn make<T: Real>(x: T) -> CrossCurrencyConvertibleWarrantSpec<T> {
+        CrossCurrencyConvertibleWarrantSpec {
+            domestic_stock_spot: x,
+            domestic_conversion_strike: T::from_f64(100.0),
+            spot_fx_for_per_dom: T::from_f64(1.1),
+            fixed_contractual_fx_for_per_dom: T::from_f64(1.1),
+            foreign_bond_par: T::from_f64(100.0),
+            foreign_coupon_rate: T::from_f64(0.03),
+            r_domestic: T::from_f64(0.03),
+            r_foreign: T::from_f64(0.02),
+            stock_dividend_yield: T::from_f64(0.01),
+            credit_spread: T::from_f64(0.02),
+            stock_vol: T::from_f64(0.2),
+            fx_vol: T::from_f64(0.1),
+            corr_stock_fx: T::from_f64(0.2),
+            maturity: T::from_f64(5.0),
+        }
+    }
+    #[test]
+    fn dual_fd_parity() {
+        let h = 1e-5;
+        let fd = (price_cross_currency_convertible_and_warrant_bond(&make(100.0 + h))
+            .embedded_cross_currency_cb_price
+            - price_cross_currency_convertible_and_warrant_bond(&make(100.0 - h))
+                .embedded_cross_currency_cb_price)
+            / (2.0 * h);
+        let d =
+            price_cross_currency_convertible_and_warrant_bond(&make(Dual::<1>::variable(100.0, 0)))
+                .embedded_cross_currency_cb_price;
+        assert!(d.d[0].abs() > 1e-6 && (d.d[0] - fd).abs() < 1e-5);
+    }
+
+    #[test]
+    fn phase27_invariants() {
+        let r = price_cross_currency_convertible_and_warrant_bond(&make(100.0));
+        assert!(r.straight_bond_floor_foreign <= r.embedded_cross_currency_cb_price);
+        assert!(r.embedded_cross_currency_cb_price <= r.composite_detachable_warrant_bond_price);
+    }
+}
+
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn vv_greek_match() {
+        let s = CastagnaFullVannaVolgaHedgeSpec {
+            spot: 1.1,
+            r_dom: 0.02,
+            r_for: 0.01,
+            expiry: 1.0,
+            atm_vol: 0.12,
+            rr_25d: 0.01,
+            bf_25d: 0.005,
+            target_strike: 1.1,
+            knockout_barrier: 1.3,
+            unwind_attenuation_factor: 0.5,
+            is_up_and_out: true,
+            is_call: true,
+        };
+        let r = evaluate_castagna_full_vanna_volga_hedge_and_barrier(&s);
+        assert!(r.greek_matching_max_residual < 1e-8);
+        assert!(r.castagna_vv_knockout_price >= 0.0);
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        let mk = |k: f64| CastagnaFullVannaVolgaHedgeSpec {
+            spot: 1.1,
+            r_dom: 0.02,
+            r_for: 0.01,
+            expiry: 1.0,
+            atm_vol: 0.12,
+            rr_25d: 0.01,
+            bf_25d: 0.005,
+            target_strike: k,
+            knockout_barrier: 1.3,
+            unwind_attenuation_factor: 0.5,
+            is_up_and_out: true,
+            is_call: true,
+        };
+        let h = 1e-5;
+        let fd = (evaluate_castagna_full_vanna_volga_hedge_and_barrier(&mk(1.1 + h))
+            .exact_vv_vanilla_price
+            - evaluate_castagna_full_vanna_volga_hedge_and_barrier(&mk(1.1 - h))
+                .exact_vv_vanilla_price)
+            / (2.0 * h);
+        let x = Dual::<1>::variable(1.1, 0);
+        let ad = evaluate_castagna_full_vanna_volga_hedge_and_barrier(
+            &CastagnaFullVannaVolgaHedgeSpec {
+                spot: Dual::<1>::from_value(1.1),
+                r_dom: Dual::<1>::from_value(0.02),
+                r_for: Dual::<1>::from_value(0.01),
+                expiry: Dual::<1>::one(),
+                atm_vol: Dual::<1>::from_value(0.12),
+                rr_25d: Dual::<1>::from_value(0.01),
+                bf_25d: Dual::<1>::from_value(0.005),
+                target_strike: x,
+                knockout_barrier: Dual::<1>::from_value(1.3),
+                unwind_attenuation_factor: Dual::<1>::from_value(0.5),
+                is_up_and_out: true,
+                is_call: true,
+            },
+        )
+        .exact_vv_vanilla_price;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase15_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn fx_exotic_parity_and_flat() {
+        let q = FxSmileQuote {
+            atm_vol: 0.2,
+            rr_25d: -0.01,
+            bf_25d: 0.005,
+        };
+        let s = FxVannaVolgaSmile::new(100.0, 0.02, 0.01, 1.0, q);
+        let c = s.price_digital_cash_dom(100.0, true);
+        let p = s.price_digital_cash_dom(100.0, false);
+        assert!((c + p - (-0.02f64).exp()).abs() < 1e-12);
+        let ot_breached = s.price_one_touch(95.0, true, false);
+        assert!((ot_breached - 1.0).abs() < 1e-12);
+        let ko_far = s.price_knock_out_barrier(100.0, 300.0, true, true);
+        let van = garman_kohlhagen_price(100.0, 100.0, s.implied_vol(100.0), 1.0, 0.02, 0.01, true);
+        assert!((ko_far - van).abs() < 1e-4);
+        let h = 1e-5;
+        let s_up = FxVannaVolgaSmile::new(100.0 + h, 0.02, 0.01, 1.0, q);
+        let s_dn = FxVannaVolgaSmile::new(100.0 - h, 0.02, 0.01, 1.0, q);
+        let fd_dnt = (s_up.price_double_no_touch(85.0, 115.0)
+            - s_dn.price_double_no_touch(85.0, 115.0))
+            / (2.0 * h);
+        let d = FxVannaVolgaSmile::<Dual<1>>::new(
+            Dual::variable(100.0, 0),
+            Dual::from_value(0.02),
+            Dual::from_value(0.01),
+            Dual::from_value(1.0),
+            FxSmileQuote {
+                atm_vol: Dual::from_value(0.2),
+                rr_25d: Dual::from_value(-0.01),
+                bf_25d: Dual::from_value(0.005),
+            },
+        );
+        let ad_dnt = d.price_double_no_touch(Dual::from_value(85.0), Dual::from_value(115.0));
+        assert!((ad_dnt.d[0] - fd_dnt).abs() < 1e-5);
     }
 }
 

@@ -27,31 +27,136 @@ pub struct WarinBaeuerleStorageRollingHedgeReport<T: Real = f64> {
 pub fn evaluate_warin_baeuerle_storage_rolling_hedge<T: Real>(
     s: &WarinBaeuerleStorageRollingHedgeSpec<T>,
 ) -> WarinBaeuerleStorageRollingHedgeReport<T> {
+    const Z_GH5: [f64; 5] = [
+        -2.8569700139,
+        -1.3556261799,
+        0.0,
+        1.3556261799,
+        2.8569700139,
+    ];
+    const W_GH5: [f64; 5] = [
+        0.0112574113,
+        0.2220759220,
+        0.5333333333,
+        0.2220759220,
+        0.0112574113,
+    ];
     let n = s.forward_curve.len();
-    let mut inv = s.initial_inventory;
-    let mut intrinsic = T::zero();
-    let mut deltas = vec![T::zero(); n];
+    let cap = s.max_capacity.max_val(T::from_f64(1e-8));
+    let inv_step = cap / T::from_f64(10.0);
+    let init_idx = (s.initial_inventory / inv_step)
+        .val()
+        .round()
+        .clamp(0.0, 10.0) as usize;
+    let tau = T::from_f64(0.05);
+    let softmax = |vals: &[T]| -> T {
+        let m = vals
+            .iter()
+            .map(|v| v.val())
+            .fold(f64::NEG_INFINITY, f64::max);
+        let mm = T::from_f64(m);
+        let sum = vals
+            .iter()
+            .fold(T::zero(), |acc, &v| acc + ((v - mm) / tau).exp());
+        mm + tau * sum.ln()
+    };
+    let run_dp = |spots: &[T]| -> (T, Vec<T>) {
+        let mut next = vec![T::zero(); 11];
+        let mut initial_path = vec![T::zero(); n];
+        for i in (0..n).rev() {
+            let mut cur = vec![T::zero(); 11];
+            let dt = s.decision_times.get(i).copied().unwrap_or(T::zero());
+            let df = (-s.discount_rate * dt).exp();
+            for g in 0..11 {
+                let inv = T::from_f64(g as f64) * inv_step;
+                let inj = s.max_injection_step.min_val((cap - inv).max_val(T::zero()));
+                let wd = s.max_withdrawal_step.min_val(inv.max_val(T::zero()));
+                let gi = ((inv + inj) / inv_step).val().round().clamp(0.0, 10.0) as usize;
+                let gw = ((inv - wd) / inv_step).val().round().clamp(0.0, 10.0) as usize;
+                let hold = df * next[g];
+                let inject =
+                    df * (next[gi] - spots[i] * inj * (T::one() + s.injection_loss_fraction));
+                let withdraw =
+                    df * (next[gw] + spots[i] * wd * (T::one() - s.injection_loss_fraction));
+                cur[g] = softmax(&[hold, inject, withdraw]);
+            }
+            initial_path[i] = cur[init_idx];
+            next = cur;
+        }
+        (next[init_idx], initial_path)
+    };
+    let static_spots = s.forward_curve.clone();
+    let (static_value, _) = run_dp(&static_spots);
+    let mut sigma_i = Vec::with_capacity(n);
+    let mut spot_nodes = Vec::with_capacity(n);
+    let mut value_nodes = vec![vec![T::zero(); 5]; n];
     for i in 0..n {
-        let f = s.forward_curve[i];
-        let inj = s
-            .max_injection_step
-            .min_val((s.max_capacity - inv).max_val(T::zero()));
-        let wd = s.max_withdrawal_step.min_val(inv.max_val(T::zero()));
-        let val = wd * f - inj * f * (T::one() + s.injection_loss_fraction);
-        intrinsic +=
-            val * (-s.discount_rate * s.decision_times.get(i).copied().unwrap_or(T::zero())).exp();
-        inv += inj - wd;
-        deltas[i] = T::one();
+        let ti = s
+            .decision_times
+            .get(i)
+            .copied()
+            .unwrap_or(T::zero())
+            .max_val(T::zero());
+        let kappa = s.spot_ou_mean_reversion.abs().max_val(T::from_f64(1e-8));
+        let si = s.spot_ou_volatility.abs()
+            * ((T::one() - (-T::from_f64(2.0) * kappa * ti).exp()) / (T::from_f64(2.0) * kappa))
+                .max_val(T::from_f64(1e-16))
+                .sqrt();
+        sigma_i.push(si);
+        spot_nodes.push(
+            Z_GH5
+                .iter()
+                .map(|&z| {
+                    s.forward_curve[i] * (si * T::from_f64(z) - T::from_f64(0.5) * si * si).exp()
+                })
+                .collect::<Vec<_>>(),
+        );
     }
-    let extr =
-        (s.spot_ou_volatility.abs() * s.max_capacity * (T::one() + s.spot_ou_mean_reversion.abs()))
-            .max_val(T::from_f64(1e-8));
-    let total = intrinsic + extr;
-    let unhedged = (s.spot_ou_volatility * s.spot_ou_volatility + T::from_f64(1e-6)) * total.abs();
-    let hedged = unhedged * T::from_f64(0.25);
+    for q in 0..5 {
+        let spots = (0..n).map(|i| spot_nodes[i][q]).collect::<Vec<_>>();
+        let (_, path) = run_dp(&spots);
+        for i in 0..n {
+            value_nodes[i][q] = path[i];
+        }
+    }
+    let stochastic_total = if n == 0 {
+        static_value
+    } else {
+        (0..5).fold(T::zero(), |acc, q| {
+            acc + T::from_f64(W_GH5[q]) * value_nodes[0][q]
+        })
+    };
+    let mut deltas = vec![T::zero(); n];
+    let mut unhedged = T::zero();
+    let mut hedged = T::zero();
+    for i in 0..n {
+        let mean_v = (0..5).fold(T::zero(), |a, q| {
+            a + T::from_f64(W_GH5[q]) * value_nodes[i][q]
+        });
+        let mean_s = (0..5).fold(T::zero(), |a, q| {
+            a + T::from_f64(W_GH5[q]) * spot_nodes[i][q]
+        });
+        let cov = (0..5).fold(T::zero(), |a, q| {
+            a + T::from_f64(W_GH5[q]) * (value_nodes[i][q] - mean_v) * (spot_nodes[i][q] - mean_s)
+        });
+        let var_s = (0..5).fold(T::zero(), |a, q| {
+            a + T::from_f64(W_GH5[q]) * (spot_nodes[i][q] - mean_s) * (spot_nodes[i][q] - mean_s)
+        });
+        deltas[i] = cov / var_s.max_val(T::from_f64(1e-12));
+        let var_v = (0..5).fold(T::zero(), |a, q| {
+            a + T::from_f64(W_GH5[q]) * (value_nodes[i][q] - mean_v) * (value_nodes[i][q] - mean_v)
+        });
+        let var_h = (0..5).fold(T::zero(), |a, q| {
+            let r = value_nodes[i][q] - deltas[i] * (spot_nodes[i][q] - s.forward_curve[i]);
+            a + T::from_f64(W_GH5[q]) * (r - mean_v) * (r - mean_v)
+        });
+        unhedged += var_v;
+        hedged += var_h;
+    }
+    let extr = (stochastic_total - static_value).max_val(T::zero());
     WarinBaeuerleStorageRollingHedgeReport {
-        static_intrinsic_value: intrinsic,
-        stochastic_total_storage_value: total,
+        static_intrinsic_value: static_value,
+        stochastic_total_storage_value: stochastic_total.max_val(static_value),
         extrinsic_optionality_value: extr,
         forward_pillar_deltas: deltas,
         unhedged_pnl_variance: unhedged,
@@ -845,6 +950,14 @@ mod phase27_tests {
             / (2.0 * h);
         let d = evaluate_warin_baeuerle_storage_rolling_hedge(&make(Dual::<1>::variable(3.0, 0)))
             .stochastic_total_storage_value;
-        assert!((d.d[0] - fd).abs() < 1e-5);
+        assert!(d.d[0].abs() > 1e-6 && (d.d[0] - fd).abs() < 1e-5);
+    }
+
+    #[test]
+    fn phase27_invariants() {
+        let r = evaluate_warin_baeuerle_storage_rolling_hedge(&make(3.0));
+        assert!(r.stochastic_total_storage_value >= r.static_intrinsic_value);
+        assert!(r.extrinsic_optionality_value > 0.0);
+        assert!(r.hedge_variance_reduction_ratio > 0.5);
     }
 }

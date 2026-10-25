@@ -50,7 +50,7 @@ Date / Calendar / Convention
 
 ### 3.6 Delivery, measurements, and workstation
 
-`ql-benches` is an offline statistical harness with fixed workloads, warmups, medians, IQRs, speedups, and hard parity assertions across 39 suites (`01_calendar_popcnt` through `39_cochrane_ftpl_wildcard_ctd_pivot_tarf_bergomi_schonbucher_frtb_cva_lookback_vta_flam_acd_hlz_mlmc`). `ql-terminal` re-exports `ql_terminal::prelude::*` and renders a zero-dependency 37-tab risk workstation: a $2 \times 4$ sub-pixel `BrailleCanvas`, 24-bit ANSI TrueColor ladders, live blotter values, XVA/SIMM/MVA/SA-CCR/BA-CVA/KVA/FRTB, and calibrated chart series.
+`ql-benches` is an offline statistical harness with fixed workloads, warmups, medians, IQRs, speedups, and hard parity assertions across 39 suites (`01_calendar_popcnt` through `39_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt`). `ql-terminal` re-exports `ql_terminal::prelude::*` and renders a zero-dependency 37-tab risk workstation: a $2 \times 4$ sub-pixel `BrailleCanvas`, 24-bit ANSI TrueColor ladders, live blotter values, XVA/SIMM/MVA/SA-CCR/BA-CVA/KVA/FRTB, and calibrated chart series.
 
 ## 4. Subsystem Architecture Matrix
 
@@ -67,8 +67,12 @@ Date / Calendar / Convention
 
 
 ## Phase 18–19 Institutional Expansion
-The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB, entropy pooling, dynamic SIMM/MVA, Schur-HRP/OAS nonlinear shrinkage. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic OU SPX/VIX, AFV convertibles, Clewlow–Strickland swaptions, JLT rating migration, free-boundary SABR, gamma/variance swaps and Avellaneda–Stoikov/CDaR allocation. The workstation now exposes Tab 37 and the benchmark suite contains 38 AD parity workloads.
+The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB, entropy pooling, dynamic SIMM/MVA, Schur-HRP/OAS nonlinear shrinkage. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic OU SPX/VIX, AFV convertibles, Clewlow–Strickland swaptions, JLT rating migration, free-boundary SABR, gamma/variance swaps and Avellaneda–Stoikov/CDaR allocation. The workstation now exposes Tab 36 and the benchmark suite contains 38 AD parity workloads.
 
 Phase 20 and Phase 21 institutional engines are now integrated end-to-end: every workload is deterministic, differentiable through `Dual<N>`, covered by collapse/arbitrage invariants, and surfaced in the 37-tab terminal and synchronized 39-row benchmark suite.
 
-Phase 26 extends the release to 39 suites and 37 workstation tabs (Tab 37 Phase 26 SOTA; `BOTTOM_ROWS = 34`).
+Phase 26 extends the release to Suite 38 and workstation Tab 36 (Tab 36 Phase 26 SOTA; `BOTTOM_ROWS = 33`).
+
+
+## Phase 27 SOTA engines
+Phase 27 adds twelve book-backed SOTA engines in Suite 39 (`39_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt`) and workstation Tab 37; the layout uses `BOTTOM_ROWS = 34`.
