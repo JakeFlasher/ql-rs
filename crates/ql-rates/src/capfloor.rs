@@ -362,8 +362,7 @@ pub fn price_sticky_ratchet_capfloor_hw1f<
                 let z = rng.normal4(id, (k - 1) as u32)[0] * if anti { -1.0 } else { 1.0 };
                 let b_dt = hw_b(model.a, dt);
                 let var_dx = model.sigma * model.sigma * hw_b(model.a * 2.0, dt);
-                int_x +=
-                    x_ou * b_dt + var_dx.max_val(T::zero()).sqrt() * z * (dt - b_dt.val()) * 0.5;
+                int_x += x_ou * b_dt + var_dx.max_val(T::zero()).sqrt() * b_dt * (z * 0.5);
                 var_int += model.sigma * model.sigma * dt * dt * dt / 3.0;
                 x_ou = x_ou * (-model.a * dt).exp() + var_dx.max_val(T::zero()).sqrt() * z;
                 prev_t = t0;

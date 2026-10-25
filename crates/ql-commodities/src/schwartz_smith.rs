@@ -343,7 +343,7 @@ impl<T: Real> GibsonSchwartz2F<T> {
 }
 
 #[cfg(test)]
-mod phase15_tests_gibson {
+mod phase15_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]

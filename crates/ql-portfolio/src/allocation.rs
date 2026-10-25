@@ -1378,25 +1378,23 @@ pub fn marchenko_pastur_denoise_covariance<T: Real>(
         }
     }
     let sd: Vec<T> = (0..n).map(|i| cov[i][i].sqrt()).collect();
-    let mut ct = vec![vec![T::zero(); n]; n];
-    let mut c = vec![vec![0.0; n]; n];
+    let mut c = vec![vec![T::zero(); n]; n];
     for i in 0..n {
         for j in 0..n {
-            ct[i][j] = cov[i][j] / (sd[i] * sd[j]);
-            c[i][j] = ct[i][j].val();
+            c[i][j] = cov[i][j] / (sd[i] * sd[j]);
         }
     }
-    let mut v = vec![vec![0.0; n]; n];
+    let mut v = vec![vec![T::zero(); n]; n];
     for i in 0..n {
-        v[i][i] = 1.0;
+        v[i][i] = T::one();
     }
     for _ in 0..(32 * n * n).max(64) {
         let mut p = (0, 1);
         let mut mx = 0.0;
         for i in 0..n {
             for j in i + 1..n {
-                if c[i][j].abs() > mx {
-                    mx = c[i][j].abs();
+                if c[i][j].val().abs() > mx {
+                    mx = c[i][j].val().abs();
                     p = (i, j);
                 }
             }
@@ -1405,8 +1403,11 @@ pub fn marchenko_pastur_denoise_covariance<T: Real>(
             break;
         }
         let (i, j) = p;
-        let th = 0.5 * (2.0 * c[i][j]).atan2(c[i][i] - c[j][j]);
-        let (co, si) = (th.cos(), th.sin());
+        let tau = (c[j][j] - c[i][i]) / (c[i][j] * 2.0);
+        let sgn = if tau.val() >= 0.0 { 1.0 } else { -1.0 };
+        let t = T::from_f64(sgn) / (tau.abs() + (T::one() + tau * tau).sqrt());
+        let co = T::one() / (T::one() + t * t).sqrt();
+        let si = t * co;
         for k in 0..n {
             let a = c[k][i];
             let b = c[k][j];
@@ -1426,14 +1427,7 @@ pub fn marchenko_pastur_denoise_covariance<T: Real>(
             v[k][j] = si * a + co * b;
         }
     }
-    let mut eig = vec![T::zero(); n];
-    for k in 0..n {
-        for a in 0..n {
-            for b in 0..n {
-                eig[k] += ct[a][b] * (v[a][k] * v[b][k]);
-            }
-        }
-    }
+    let mut eig: Vec<T> = (0..n).map(|i| c[i][i]).collect();
     let lp = (1.0 + (n as f64 / num_observations as f64).sqrt()).powi(2);
     let mut ns = T::zero();
     let mut cnt = 0;

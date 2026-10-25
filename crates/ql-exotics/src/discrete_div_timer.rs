@@ -180,7 +180,8 @@ pub fn price_passport_option<T: Real>(s: &PassportOptionSpec<T>) -> T {
         * (-s.div_yield * s.expiry).exp()
         * ((T::one() + st * st * 0.5) * ((st * 0.5).norm_cdf() * 2.0 - 1.0)
             + st * T::from_f64((0.5 / std::f64::consts::PI).sqrt()) * (-st * st / 8.0).exp()
-            - st * st * 0.5);
+            - st * st * 0.5)
+        * 0.5;
     if s.initial_account.val().abs() <= 1e-12
         && (s.account_rate - s.div_yield).val().abs() <= 1e-12
         && (s.cost_of_carry_rate - s.div_yield).val().abs() <= 1e-12
@@ -213,29 +214,36 @@ pub fn price_passport_option<T: Real>(s: &PassportOptionSpec<T>) -> T {
         let a = (pos - i as f64).max_val(T::zero()).min_val(T::one());
         arr[i] * (T::one() - a) + arr[i + 1] * a
     };
-    let mut vals: Vec<T> = (0..m).map(|i| smooth(grid(i))).collect();
-    for _ in 0..n {
-        let mut next = vec![T::zero(); m];
-        for i in 0..m {
-            let w = grid(i);
-            let q = w / (w * w + 1e-4).sqrt();
-            let wu = (w * acc + q * (uf - carry)) / uf;
-            let wd = (w * acc + q * (df - carry)) / df;
-            next[i] =
-                dfs * (prob * uf * interp(&vals, wu) + (T::one() - prob) * df * interp(&vals, wd));
+    let eval_tree = |acc_step: T, carry_step: T| -> Vec<T> {
+        let mut vals: Vec<T> = (0..m).map(|i| smooth(grid(i))).collect();
+        for _ in 0..n {
+            let mut next = vec![T::zero(); m];
+            for i in 0..m {
+                let w = grid(i);
+                let wu_p = (w * acc_step + (uf - carry_step)) / uf;
+                let wd_p = (w * acc_step + (df - carry_step)) / df;
+                let cp = dfs
+                    * (prob * uf * interp(&vals, wu_p)
+                        + (T::one() - prob) * df * interp(&vals, wd_p));
+                let wu_m = (w * acc_step - (uf - carry_step)) / uf;
+                let wd_m = (w * acc_step - (df - carry_step)) / df;
+                let cm = dfs
+                    * (prob * uf * interp(&vals, wu_m)
+                        + (T::one() - prob) * df * interp(&vals, wd_m));
+                let diff = cp - cm;
+                next[i] = (cp + cm + (diff * diff + 1e-12).sqrt()) * 0.5;
+            }
+            vals = next;
         }
-        vals = next;
-    }
+        vals
+    };
+    let vals = eval_tree(acc, carry);
+    let sym_step = (s.div_yield * dt).exp();
+    let vals_sym = eval_tree(sym_step, gs);
     let w0 = s.initial_account / s.spot.max_val(T::from_f64(1e-8));
     let raw = s.spot * interp(&vals, w0);
-    let raw0 = s.spot * interp(&vals, T::zero());
-    let value = (raw - raw0 + sym).max_val(T::zero());
-    let atm_cap = black_scholes_price(s.spot, s.spot, s.vol, s.expiry, s.rate, s.div_yield, true);
-    if s.initial_account.val().abs() <= 1e-12 {
-        value.min_val(atm_cap * 0.999_999)
-    } else {
-        value
-    }
+    let raw0_sym = s.spot * interp(&vals_sym, T::zero());
+    (raw - raw0_sym + sym).max_val(T::zero())
 }
 
 #[cfg(test)]

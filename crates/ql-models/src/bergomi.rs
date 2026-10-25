@@ -211,7 +211,7 @@ pub fn bergomi_2f_mc_price<T: Real>(
     total / paths as f64
 }
 fn wgt<T: Real>(theta: T, rho: T) -> T {
-    (T::one() - theta).max_val(T::zero())
+    (T::one() - theta)
         / ((T::one() - theta) * (T::one() - theta)
             + theta * theta
             + rho * theta * (T::one() - theta) * 2.0)
@@ -219,7 +219,7 @@ fn wgt<T: Real>(theta: T, rho: T) -> T {
             .sqrt()
 }
 fn wgt2<T: Real>(theta: T, rho: T) -> T {
-    theta.max_val(T::zero())
+    theta
         / ((T::one() - theta) * (T::one() - theta)
             + theta * theta
             + rho * theta * (T::one() - theta) * 2.0)

@@ -82,4 +82,4 @@ The following is generated from the release tree by `cargo run -p ql-benches --r
 | 24_frtb_sbm_ima_and_cvar_execution_aad | FRTB/CVaR and optimal execution KKT sensitivities | 6596.73 (IQR 65.67) | 1399.62 (IQR 20.85) | 4.71x | 3.105e-7 |
 | 25_monotone_convex_vix_parisian_robust_aad | monotone-convex curve plus VIX/Parisian and robust Markowitz AD | 305248.35 (IQR 1204.30) | 46304.80 (IQR 278.58) | 6.59x | 1.502e-7 |
 | 26_double_heston_tarf_coco_hrp_aad | Double Heston/TARF/CoCo/HRP single-pass AD | 326510.30 (IQR 526.00) | 69702.23 (IQR 537.98) | 4.68x | 1.206e-5 |
-| 27_jy_inflation_tba_bergomi_nco_aad | JY-Inflation/TBA-Roll/Bergomi2F/NCO single-pass AD | 108244.52 (IQR 279.07) | 67539.48 (IQR 202.73) | 1.60x | 3.449e-5 |
+| 27_jy_inflation_tba_bergomi_nco_aad | JY-Inflation/TBA-Roll/Bergomi2F/NCO single-pass AD | 133648.48 (IQR 100.62) | 60215.62 (IQR 224.10) | 2.22x | 1.614e-7 |

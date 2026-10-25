@@ -2016,5 +2016,11 @@ mod phase15_tests {
             ws.render_dashboard(&frame, false)
                 .contains("25 JY-Inflation/TBA/Bergomi2F/NCO")
         );
+        ws.set_scenario(ScenarioKind::RatesPlus50Bp);
+        let stressed = ws.step_tick();
+        assert_ne!(
+            stressed.jy_tba_bergomi_nco_metric,
+            frame.jy_tba_bergomi_nco_metric
+        );
     }
 }
