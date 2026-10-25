@@ -11,18 +11,15 @@ if "--execute" in sys.argv[1:]:
 source = (root / "crates/ql-benches/BENCHMARK_RESULTS.md").read_text()
 header = "| Benchmark ID | Architectural Comparison | Legacy Baseline (ns/op) | ql-rs SOTA (ns/op) | Speedup (x) | Parity Diff |"
 a = source.index(header)
-r37 = source.index("| 37_", a)
-e = source.find("\n", r37)
-if e < 0:
-    e = len(source)
-table = source[a:e]
+table_end = source.index("\n\nSummary:", a)
+table = source[a:table_end]
 rows = [line for line in source.splitlines() if re.match(r"\| \d{2}_", line)]
 speedups = [float(line.split("|")[5].strip().rstrip("x")) for line in rows]
-parity37 = [line for line in rows if line.startswith("| 37_")][0].split("|")[-2].strip()
-summary = (f"Summary: 37 benchmark suites; speedups range from **{min(speedups):.2f}x** to "
+parity37 = [line for line in rows if line.startswith("| 38_")][0].split("|")[-2].strip()
+summary = (f"Summary: 38 benchmark suites; speedups range from **{min(speedups):.2f}x** to "
            f"**{max(speedups):.2f}x** (median **{sorted(speedups)[len(speedups)//2]:.2f}x**, "
            f"mean **{sum(speedups)/len(speedups):.2f}x**). All parity checks pass their domain tolerances; "
-           f"Suite 37 parity is **{parity37}**.")
+           f"Suite 38 parity is **{parity37}**.")
 for rel in ["README.md", "knowledge_base/07_BENCHMARK_METHODOLOGY_AND_STUDY.md",
             "knowledge_base/08_BENCHMARK_RESULTS.md", "knowledge_base/08_COMPETITIVE_BENCHMARK_SYNTHESIS.md"]:
     path = root / rel
@@ -31,11 +28,10 @@ for rel in ["README.md", "knowledge_base/07_BENCHMARK_METHODOLOGY_AND_STUDY.md",
     text = path.read_text()
     if header in text:
         begin = text.index(header)
-        row_end = text.index("| 37_", begin)
-        line_end = text.find("\n", row_end)
-        if line_end < 0:
-            line_end = len(text)
-        text = text[:begin] + table + text[line_end:]
+        summary_start = text.find("\n\nSummary:", begin)
+        if summary_start < 0:
+            summary_start = len(text)
+        text = text[:begin] + table + text[summary_start:]
     text = re.sub(r"Summary:.*", summary, text, count=1)
     if "Summary:" not in text:
         text += "\n\n" + summary + "\n"

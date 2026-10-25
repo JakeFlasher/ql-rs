@@ -1509,3 +1509,114 @@ mod phase24_tests {
         assert!((ad_po.d[0] - fd_po).abs() < 1e-5);
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct TuckmanBurghardtTreasuryWildcardBasisSpec<T: Real = f64> {
+    pub futures_settlement_price: T,
+    pub delivery_horizon_years: T,
+    pub general_collateral_repo_rate: T,
+    pub repo_specialness_spread: T,
+    pub bond1_clean_price: T,
+    pub bond1_conversion_factor: T,
+    pub bond1_modified_duration: T,
+    pub bond1_yield_beta: T,
+    pub bond2_clean_price: T,
+    pub bond2_conversion_factor: T,
+    pub bond2_modified_duration: T,
+    pub bond2_yield_beta: T,
+    pub afternoon_wildcard_vol_annual: T,
+    pub eom_delivery_window_days: usize,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct TuckmanBurghardtTreasuryWildcardBasisReport<T: Real = f64> {
+    pub bond1_cf_adjusted_forward: T,
+    pub bond2_cf_adjusted_forward: T,
+    pub special_repo_carry_pickup: T,
+    pub critical_yield_shift_ctd_switch_bps: T,
+    pub quality_switch_option_value: T,
+    pub afternoon_wildcard_option_value: T,
+    pub eom_timing_carry_option_value: T,
+    pub theoretical_net_basis_ctd: T,
+}
+pub fn evaluate_tuckman_burghardt_treasury_wildcard_and_ctd_switch<T: Real>(
+    s: &TuckmanBurghardtTreasuryWildcardBasisSpec<T>,
+) -> TuckmanBurghardtTreasuryWildcardBasisReport<T> {
+    let t = s.delivery_horizon_years.max_val(T::from_f64(1e-8));
+    let carry = (s.general_collateral_repo_rate - s.repo_specialness_spread) * t;
+    let f1 = s.bond1_clean_price * (T::one() + carry).exp()
+        / s.bond1_conversion_factor.max_val(T::from_f64(1e-8));
+    let f2 = s.bond2_clean_price * (T::one() + carry).exp()
+        / s.bond2_conversion_factor.max_val(T::from_f64(1e-8));
+    let b1 = f1 - s.futures_settlement_price;
+    let b2 = f2 - s.futures_settlement_price;
+    let den = (s.bond1_modified_duration * s.bond1_yield_beta
+        - s.bond2_modified_duration * s.bond2_yield_beta)
+        .abs()
+        .max_val(T::from_f64(1e-8));
+    let shift = ((f2 - f1) / den * T::from_f64(1e-4)).abs();
+    let qopt =
+        (b1 - b2).abs() * s.afternoon_wildcard_vol_annual.abs() * t.sqrt() * T::from_f64(0.4);
+    let wild = s.afternoon_wildcard_vol_annual.abs()
+        * t.sqrt()
+        * s.futures_settlement_price
+        * T::from_f64(0.01);
+    let eom = s.futures_settlement_price
+        * s.afternoon_wildcard_vol_annual.abs()
+        * T::from_f64(s.eom_delivery_window_days as f64 / 252.0).sqrt()
+        * T::from_f64(0.01);
+    TuckmanBurghardtTreasuryWildcardBasisReport {
+        bond1_cf_adjusted_forward: f1,
+        bond2_cf_adjusted_forward: f2,
+        special_repo_carry_pickup: s.repo_specialness_spread * t * s.futures_settlement_price,
+        critical_yield_shift_ctd_switch_bps: shift * T::from_f64(1e4),
+        quality_switch_option_value: qopt.max_val(T::zero()),
+        afternoon_wildcard_option_value: wild.max_val(T::zero()),
+        eom_timing_carry_option_value: eom.max_val(T::zero()),
+        theoretical_net_basis_ctd: b1.min_val(b2) - qopt - wild - eom,
+    }
+}
+
+#[cfg(test)]
+mod phase26_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn spec<T: Real>(p: T) -> TuckmanBurghardtTreasuryWildcardBasisSpec<T> {
+        TuckmanBurghardtTreasuryWildcardBasisSpec {
+            futures_settlement_price: p,
+            delivery_horizon_years: T::from_f64(0.25),
+            general_collateral_repo_rate: T::from_f64(0.03),
+            repo_specialness_spread: T::from_f64(0.002),
+            bond1_clean_price: T::from_f64(99.0),
+            bond1_conversion_factor: T::from_f64(0.85),
+            bond1_modified_duration: T::from_f64(6.0),
+            bond1_yield_beta: T::one(),
+            bond2_clean_price: T::from_f64(101.0),
+            bond2_conversion_factor: T::from_f64(0.9),
+            bond2_modified_duration: T::from_f64(7.0),
+            bond2_yield_beta: T::from_f64(1.1),
+            afternoon_wildcard_vol_annual: T::from_f64(0.1),
+            eom_delivery_window_days: 5,
+        }
+    }
+    #[test]
+    fn wildcard_invariants_and_dual_fd() {
+        let r = evaluate_tuckman_burghardt_treasury_wildcard_and_ctd_switch(&spec(100.0));
+        assert!(
+            r.quality_switch_option_value > 0.0
+                && r.afternoon_wildcard_option_value > 0.0
+                && r.eom_timing_carry_option_value > 0.0
+        );
+        assert!(r.special_repo_carry_pickup > 0.0);
+        let h = 1e-5;
+        let fd = (evaluate_tuckman_burghardt_treasury_wildcard_and_ctd_switch(&spec(100.0 + h))
+            .bond1_cf_adjusted_forward
+            - evaluate_tuckman_burghardt_treasury_wildcard_and_ctd_switch(&spec(100.0 - h))
+                .bond1_cf_adjusted_forward)
+            / (2.0 * h);
+        let ad = evaluate_tuckman_burghardt_treasury_wildcard_and_ctd_switch(&spec(
+            Dual::<1>::variable(100.0, 0),
+        ))
+        .bond1_cf_adjusted_forward;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

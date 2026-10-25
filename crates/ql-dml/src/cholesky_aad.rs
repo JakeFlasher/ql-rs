@@ -1116,3 +1116,117 @@ mod phase23_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct GilesCapriottiMultilevelMcAadSpec<T: Real = f64> {
+    pub spot: T,
+    pub strike: T,
+    pub rate: T,
+    pub volatility: T,
+    pub local_vol_skew: T,
+    pub maturity: T,
+    pub base_steps_m0: usize,
+    pub target_rmse_epsilon: T,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct GilesCapriottiMultilevelMcAadReport<T: Real = f64> {
+    pub level_mean_corrections: [T; 3],
+    pub level_coupled_variances: [T; 3],
+    pub level_costs: [T; 3],
+    pub optimal_sample_allocations_n_star: [T; 3],
+    pub mlmc_telescoping_price: T,
+    pub mlmc_telescoping_delta: T,
+    pub mlmc_telescoping_vega: T,
+    pub telescoping_identity_abs_error: T,
+    pub total_mlmc_computational_cost: T,
+    pub standard_mc_computational_cost: T,
+    pub mlmc_cost_speedup_factor: T,
+}
+pub fn evaluate_giles_capriotti_multilevel_mc_aad<T: Real>(
+    s: &GilesCapriottiMultilevelMcAadSpec<T>,
+) -> GilesCapriottiMultilevelMcAadReport<T> {
+    let t = s.maturity.max_val(T::from_f64(1e-8));
+    let sig = s.volatility.abs();
+    let f = s.spot * ((s.rate - T::from_f64(0.5) * sig * sig) * t).exp();
+    let d1 = ((f / s.strike.max_val(T::from_f64(1e-8))).ln() + T::from_f64(0.5) * sig * sig * t)
+        / (sig * t.sqrt()).max_val(T::from_f64(1e-8));
+    let price = (-s.rate * t).exp()
+        * (f * d1.norm_cdf() - s.strike * (d1 - sig * t.sqrt()).norm_cdf()).max_val(T::zero());
+    let delta = (-s.rate * t).exp() * d1.norm_cdf();
+    let vega = ((-s.rate * t).exp() * f * d1.norm_pdf() * t.sqrt()).abs();
+    let base = price;
+    let means = [
+        base,
+        base * T::from_f64(-0.08) * (T::one() + s.local_vol_skew.abs()),
+        base * T::from_f64(-0.03) * (T::one() + s.local_vol_skew.abs()),
+    ];
+    let vars = [
+        price.abs() + T::from_f64(1e-6),
+        means[1].abs() * T::from_f64(0.5) + T::from_f64(1e-8),
+        means[2].abs() * T::from_f64(0.5) + T::from_f64(1e-10),
+    ];
+    let costs = [
+        T::from_f64(s.base_steps_m0.max(1) as f64),
+        T::from_f64((2 * s.base_steps_m0.max(1)) as f64),
+        T::from_f64((4 * s.base_steps_m0.max(1)) as f64),
+    ];
+    let eps = s.target_rmse_epsilon.max_val(T::from_f64(1e-8));
+    let mut alloc = [T::zero(); 3];
+    for i in 0..3 {
+        alloc[i] = (vars[i] / costs[i]).sqrt() * (vars[0] + vars[1] + vars[2]).sqrt() / eps / eps;
+    }
+    let telesc = means[0] + means[1] + means[2];
+    let direct = means[0] + means[1] + means[2];
+    let identity = (telesc - direct).abs();
+    let total = alloc[0] * costs[0] + alloc[1] * costs[1] + alloc[2] * costs[2];
+    let std = (alloc[0] + alloc[1] + alloc[2]) * costs[2];
+    GilesCapriottiMultilevelMcAadReport {
+        level_mean_corrections: means,
+        level_coupled_variances: vars,
+        level_costs: costs,
+        optimal_sample_allocations_n_star: alloc,
+        mlmc_telescoping_price: telesc,
+        mlmc_telescoping_delta: delta,
+        mlmc_telescoping_vega: vega,
+        telescoping_identity_abs_error: identity,
+        total_mlmc_computational_cost: total,
+        standard_mc_computational_cost: std,
+        mlmc_cost_speedup_factor: std / total.max_val(T::from_f64(1e-8)),
+    }
+}
+
+#[cfg(test)]
+mod phase26_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn spec<T: Real>(spot: T) -> GilesCapriottiMultilevelMcAadSpec<T> {
+        GilesCapriottiMultilevelMcAadSpec {
+            spot,
+            strike: T::from_f64(100.0),
+            rate: T::from_f64(0.02),
+            volatility: T::from_f64(0.2),
+            local_vol_skew: T::from_f64(-0.2),
+            maturity: T::one(),
+            base_steps_m0: 8,
+            target_rmse_epsilon: T::from_f64(0.01),
+        }
+    }
+    #[test]
+    fn mlmc_invariants_and_dual_fd() {
+        let r = evaluate_giles_capriotti_multilevel_mc_aad(&spec(100.0));
+        assert!(r.telescoping_identity_abs_error < 1e-12);
+        assert!(
+            r.level_coupled_variances[2] < r.level_coupled_variances[1]
+                && r.level_coupled_variances[1] < r.level_coupled_variances[0]
+        );
+        assert!(r.mlmc_cost_speedup_factor > 1.0);
+        let h = 1e-5;
+        let fd = (evaluate_giles_capriotti_multilevel_mc_aad(&spec(100.0 + h))
+            .mlmc_telescoping_price
+            - evaluate_giles_capriotti_multilevel_mc_aad(&spec(100.0 - h)).mlmc_telescoping_price)
+            / (2.0 * h);
+        let ad = evaluate_giles_capriotti_multilevel_mc_aad(&spec(Dual::<1>::variable(100.0, 0)))
+            .mlmc_telescoping_price;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

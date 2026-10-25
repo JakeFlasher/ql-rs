@@ -1588,3 +1588,114 @@ mod phase25_tests {
         assert!((r0.hasbrouck_is_upper_venue1 - r0.hasbrouck_is_lower_venue1).abs() < 1e-12);
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct EngleRussellAcdTradeDurationSpec<T: Real = f64> {
+    pub inter_trade_durations: Vec<T>,
+    pub omega: T,
+    pub alpha: T,
+    pub beta: T,
+    pub weibull_shape_gamma: T,
+    pub initial_expected_duration: T,
+    pub elapsed_time_since_last_trade: T,
+    pub base_price_impact_bps: T,
+    pub duration_impact_elasticity: T,
+}
+#[derive(Clone, Debug)]
+pub struct EngleRussellAcdTradeDurationReport<T: Real = f64> {
+    pub conditional_durations_psi: Vec<T>,
+    pub standardized_durations: Vec<T>,
+    pub acd_persistence: T,
+    pub unconditional_mean_duration: T,
+    pub next_expected_duration_psi_n1: T,
+    pub eacd_log_likelihood: T,
+    pub wacd_instantaneous_hazard_rate: T,
+    pub duration_adjusted_price_impact_bps: T,
+}
+pub fn evaluate_engle_russell_acd_trade_duration_and_hazard<T: Real>(
+    s: &EngleRussellAcdTradeDurationSpec<T>,
+) -> EngleRussellAcdTradeDurationReport<T> {
+    let mut psi = Vec::with_capacity(s.inter_trade_durations.len());
+    let mut std = Vec::with_capacity(s.inter_trade_durations.len());
+    let mut prev = s.initial_expected_duration.max_val(T::from_f64(1e-8));
+    let mut ll = T::zero();
+    for (i, &x) in s.inter_trade_durations.iter().enumerate() {
+        let p = (s.omega
+            + s.alpha
+                * if i == 0 {
+                    s.initial_expected_duration
+                } else {
+                    s.inter_trade_durations[i - 1]
+                }
+            + s.beta * prev)
+            .max_val(T::from_f64(1e-8));
+        psi.push(p);
+        std.push(x / p);
+        let g = s.weibull_shape_gamma.max_val(T::from_f64(1e-8));
+        ll += g.ln() - g * p.ln() + (g - T::one()) * (x / p).ln() - (x / p).pow(g);
+        prev = p;
+    }
+    let pnext = (s.omega
+        + s.alpha
+            * s.inter_trade_durations
+                .last()
+                .copied()
+                .unwrap_or(s.initial_expected_duration)
+        + s.beta * prev)
+        .max_val(T::from_f64(1e-8));
+    let g = s.weibull_shape_gamma.max_val(T::from_f64(1e-8));
+    let hazard =
+        g / pnext * (s.elapsed_time_since_last_trade.max_val(T::zero()) / pnext).pow(g - T::one());
+    EngleRussellAcdTradeDurationReport {
+        conditional_durations_psi: psi,
+        standardized_durations: std,
+        acd_persistence: s.alpha + s.beta,
+        unconditional_mean_duration: s.omega
+            / (T::one() - s.alpha - s.beta).max_val(T::from_f64(1e-8)),
+        next_expected_duration_psi_n1: pnext,
+        eacd_log_likelihood: ll,
+        wacd_instantaneous_hazard_rate: hazard,
+        duration_adjusted_price_impact_bps: s.base_price_impact_bps
+            * (s.elapsed_time_since_last_trade.max_val(T::from_f64(1e-8)) / pnext)
+                .pow(s.duration_impact_elasticity),
+    }
+}
+
+#[cfg(test)]
+mod phase26_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn spec<T: Real>(omega: T) -> EngleRussellAcdTradeDurationSpec<T> {
+        EngleRussellAcdTradeDurationSpec {
+            inter_trade_durations: vec![T::one(), T::from_f64(1.2), T::from_f64(0.9)],
+            omega,
+            alpha: T::from_f64(0.2),
+            beta: T::from_f64(0.5),
+            weibull_shape_gamma: T::one(),
+            initial_expected_duration: T::one(),
+            elapsed_time_since_last_trade: T::from_f64(0.5),
+            base_price_impact_bps: T::from_f64(2.0),
+            duration_impact_elasticity: T::from_f64(0.5),
+        }
+    }
+    #[test]
+    fn acd_invariants_and_dual_fd() {
+        let r = evaluate_engle_russell_acd_trade_duration_and_hazard(&spec(0.2));
+        assert!(r.acd_persistence < 1.0);
+        assert!(
+            (r.wacd_instantaneous_hazard_rate - 1.0 / r.next_expected_duration_psi_n1).abs()
+                < 1e-12
+        );
+        let h = 1e-5;
+        let fd = (evaluate_engle_russell_acd_trade_duration_and_hazard(&spec(0.2 + h))
+            .next_expected_duration_psi_n1
+            - evaluate_engle_russell_acd_trade_duration_and_hazard(&spec(0.2 - h))
+                .next_expected_duration_psi_n1)
+            / (2.0 * h);
+        let ad = evaluate_engle_russell_acd_trade_duration_and_hazard(&spec(Dual::<1>::variable(
+            0.2, 0,
+        )))
+        .next_expected_duration_psi_n1;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

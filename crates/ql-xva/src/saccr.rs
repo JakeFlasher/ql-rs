@@ -557,3 +557,142 @@ mod phase21_tests {
         assert!(r.ead_profile.iter().all(|x| x.val() >= 0.0));
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct GreenFrtbCvaHedgeCapitalSpec<T: Real = f64> {
+    pub counterparty_sacr_eads: Vec<T>,
+    pub counterparty_effective_maturities: Vec<T>,
+    pub counterparty_risk_weights: Vec<T>,
+    pub single_name_hedge_notionals: Vec<T>,
+    pub single_name_hedge_maturities: Vec<T>,
+    pub hedge_reference_correlations_rhc: Vec<T>,
+    pub index_hedge_notional: T,
+    pub index_hedge_maturity: T,
+    pub index_risk_weight: T,
+    pub sa_cva_spread_deltas: Vec<T>,
+    pub sa_cva_vega_sensitivities: Vec<T>,
+    pub hurdle_rate_gamma_k: T,
+    pub hedge_margin_funding_spread: T,
+    pub discount_rate: T,
+}
+#[derive(Clone, Debug)]
+pub struct GreenFrtbCvaHedgeCapitalReport<T: Real = f64> {
+    pub ba_cva_k_reduced_unhedged: T,
+    pub ba_cva_k_hedged: T,
+    pub ba_cva_misalignment_basis_charge: T,
+    pub ba_cva_total_capital_charge: T,
+    pub sa_cva_delta_capital: T,
+    pub sa_cva_vega_capital: T,
+    pub sa_cva_total_capital_charge: T,
+    pub unhedged_lifetime_kva: T,
+    pub hedged_lifetime_kva: T,
+    pub net_kva_savings_after_hedge_mva: T,
+}
+pub fn evaluate_green_frtb_cva_hedge_relief_and_kva<T: Real>(
+    s: &GreenFrtbCvaHedgeCapitalSpec<T>,
+) -> GreenFrtbCvaHedgeCapitalReport<T> {
+    let n = s
+        .counterparty_sacr_eads
+        .len()
+        .min(s.counterparty_effective_maturities.len())
+        .min(s.counterparty_risk_weights.len());
+    let mut kr = T::zero();
+    let mut dur = T::zero();
+    for i in 0..n {
+        let x = s.counterparty_sacr_eads[i]
+            * s.counterparty_effective_maturities[i]
+                .sqrt()
+                .max_val(T::from_f64(1e-8))
+            * s.counterparty_risk_weights[i];
+        kr += x * x;
+        dur += x;
+    }
+    let kr = kr.sqrt();
+    let mut hedge = T::zero();
+    for i in 0..s.single_name_hedge_notionals.len() {
+        let corr = s
+            .hedge_reference_correlations_rhc
+            .get(i)
+            .copied()
+            .unwrap_or_else(T::zero)
+            .abs()
+            .min_val(T::one());
+        let mat = s
+            .single_name_hedge_maturities
+            .get(i)
+            .copied()
+            .unwrap_or_else(T::zero);
+        hedge += s.single_name_hedge_notionals[i].abs() * mat.sqrt() * corr;
+    }
+    hedge +=
+        s.index_hedge_notional.abs() * s.index_hedge_maturity.sqrt() * s.index_risk_weight.abs();
+    let kh = (kr - hedge).max_val(T::zero());
+    let mis = (kr - kh) * T::from_f64(0.25);
+    let total = T::from_f64(0.65) * kh + mis;
+    let mut sd = T::zero();
+    for x in &s.sa_cva_spread_deltas {
+        sd += *x * *x;
+    }
+    let mut sv = T::zero();
+    for x in &s.sa_cva_vega_sensitivities {
+        sv += *x * *x;
+    }
+    let sd = sd.sqrt();
+    let sv = sv.sqrt();
+    let sa = sd + sv;
+    let un =
+        kr * s.hurdle_rate_gamma_k.max_val(T::zero()) / s.discount_rate.max_val(T::from_f64(1e-8));
+    let hed =
+        kh * s.hurdle_rate_gamma_k.max_val(T::zero()) / s.discount_rate.max_val(T::from_f64(1e-8));
+    let mva = hedge * s.hedge_margin_funding_spread.max_val(T::zero());
+    GreenFrtbCvaHedgeCapitalReport {
+        ba_cva_k_reduced_unhedged: kr,
+        ba_cva_k_hedged: kh,
+        ba_cva_misalignment_basis_charge: mis,
+        ba_cva_total_capital_charge: total,
+        sa_cva_delta_capital: sd,
+        sa_cva_vega_capital: sv,
+        sa_cva_total_capital_charge: sa,
+        unhedged_lifetime_kva: un,
+        hedged_lifetime_kva: hed,
+        net_kva_savings_after_hedge_mva: (un - hed - mva).max_val(T::zero()),
+    }
+}
+
+#[cfg(test)]
+mod phase26_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn spec<T: Real>(ead: T) -> GreenFrtbCvaHedgeCapitalSpec<T> {
+        GreenFrtbCvaHedgeCapitalSpec {
+            counterparty_sacr_eads: vec![ead, T::from_f64(80.0)],
+            counterparty_effective_maturities: vec![T::from_f64(3.0), T::from_f64(5.0)],
+            counterparty_risk_weights: vec![T::from_f64(0.02), T::from_f64(0.03)],
+            single_name_hedge_notionals: vec![],
+            single_name_hedge_maturities: vec![],
+            hedge_reference_correlations_rhc: vec![],
+            index_hedge_notional: T::zero(),
+            index_hedge_maturity: T::from_f64(5.0),
+            index_risk_weight: T::from_f64(0.02),
+            sa_cva_spread_deltas: vec![T::one()],
+            sa_cva_vega_sensitivities: vec![T::from_f64(0.5)],
+            hurdle_rate_gamma_k: T::from_f64(0.1),
+            hedge_margin_funding_spread: T::from_f64(0.01),
+            discount_rate: T::from_f64(0.03),
+        }
+    }
+    #[test]
+    fn frtb_cva_invariants_and_dual_fd() {
+        let r = evaluate_green_frtb_cva_hedge_relief_and_kva(&spec(100.0));
+        assert!((r.ba_cva_total_capital_charge - 0.65 * r.ba_cva_k_reduced_unhedged).abs() < 1e-12);
+        let h = 1e-5;
+        let fd = (evaluate_green_frtb_cva_hedge_relief_and_kva(&spec(100.0 + h))
+            .ba_cva_k_reduced_unhedged
+            - evaluate_green_frtb_cva_hedge_relief_and_kva(&spec(100.0 - h))
+                .ba_cva_k_reduced_unhedged)
+            / (2.0 * h);
+        let ad = evaluate_green_frtb_cva_hedge_relief_and_kva(&spec(Dual::<1>::variable(100.0, 0)))
+            .ba_cva_k_reduced_unhedged;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

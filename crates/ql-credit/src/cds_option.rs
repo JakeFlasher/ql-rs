@@ -794,3 +794,131 @@ mod phase20_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct SchonbucherDefaultableRangeAccrualCapSpec<T: Real = f64> {
+    pub notional: T,
+    pub payment_times: Vec<T>,
+    pub risk_free_rate: T,
+    pub initial_hazard_rates: Vec<T>,
+    pub base_recovery_rate: T,
+    pub spread_volatilities: Vec<T>,
+    pub spread_cap_strike: T,
+    pub accrual_spread_lower: T,
+    pub accrual_spread_upper: T,
+    pub range_accrual_coupon_rate: T,
+    pub recovery_spread_correlation: T,
+}
+#[derive(Clone, Debug)]
+pub struct SchonbucherDefaultableRangeAccrualCapReport<T: Real = f64> {
+    pub forward_credit_spreads: Vec<T>,
+    pub survival_discount_factors: Vec<T>,
+    pub credit_spread_cap_npv: T,
+    pub credit_spread_floor_npv: T,
+    pub survival_range_accrual_probabilities: Vec<T>,
+    pub defaultable_range_accrual_note_npv: T,
+    pub stochastic_recovery_markdown_pv: T,
+}
+pub fn evaluate_schonbucher_defaultable_range_accrual_and_spread_cap<T: Real>(
+    s: &SchonbucherDefaultableRangeAccrualCapSpec<T>,
+) -> SchonbucherDefaultableRangeAccrualCapReport<T> {
+    let n = s.payment_times.len().min(s.initial_hazard_rates.len());
+    let mut spreads = Vec::with_capacity(n);
+    let mut dfs = Vec::with_capacity(n);
+    let mut probs = Vec::with_capacity(n);
+    let mut cap = T::zero();
+    let mut floor = T::zero();
+    let mut note = T::zero();
+    let mut markdown = T::zero();
+    let mut prev = T::zero();
+    for i in 0..n {
+        let t = s.payment_times[i];
+        let dt = (t - prev).max_val(T::from_f64(1e-8));
+        prev = t;
+        let hz = s.initial_hazard_rates[i].max_val(T::from_f64(1e-10));
+        let rec = s.base_recovery_rate.max_val(T::zero()).min_val(T::one());
+        let sp = hz * (T::one() - rec).max_val(T::from_f64(1e-8));
+        let df = (-s.risk_free_rate * t).exp();
+        let surv = (-hz * t).exp();
+        let vol = s
+            .spread_volatilities
+            .get(i)
+            .copied()
+            .unwrap_or_else(T::zero)
+            .abs();
+        let st = vol * t.sqrt().max_val(T::from_f64(1e-8));
+        let d1 = ((sp / s.spread_cap_strike.max_val(T::from_f64(1e-8))).ln()
+            + T::from_f64(0.5) * st * st)
+            / st;
+        let d2 = d1 - st;
+        let ann = df * surv * dt;
+        cap += ann * (sp * d1.norm_cdf() - s.spread_cap_strike * d2.norm_cdf());
+        floor += ann * (s.spread_cap_strike * (-d2).norm_cdf() - sp * (-d1).norm_cdf());
+        let zlow = (s.accrual_spread_lower - sp) / (st.max_val(T::from_f64(1e-8)));
+        let zhigh = (s.accrual_spread_upper - sp) / (st.max_val(T::from_f64(1e-8)));
+        let pr = (zhigh.norm_cdf() - zlow.norm_cdf())
+            .max_val(T::from_f64(1e-12))
+            .min_val(T::one() - T::from_f64(1e-12));
+        spreads.push(sp);
+        dfs.push(df * surv);
+        probs.push(pr);
+        note += s.notional * s.range_accrual_coupon_rate * dt * df * surv * pr;
+        markdown += s.notional
+            * (T::one() - rec)
+            * df
+            * (T::one() - surv)
+            * (T::one() + s.recovery_spread_correlation * vol).abs()
+            * T::from_f64(0.01);
+    }
+    SchonbucherDefaultableRangeAccrualCapReport {
+        forward_credit_spreads: spreads,
+        survival_discount_factors: dfs,
+        credit_spread_cap_npv: cap,
+        credit_spread_floor_npv: floor,
+        survival_range_accrual_probabilities: probs,
+        defaultable_range_accrual_note_npv: note,
+        stochastic_recovery_markdown_pv: markdown,
+    }
+}
+
+#[cfg(test)]
+mod phase26_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn spec<T: Real>(notional: T) -> SchonbucherDefaultableRangeAccrualCapSpec<T> {
+        SchonbucherDefaultableRangeAccrualCapSpec {
+            notional,
+            payment_times: vec![T::from_f64(0.5), T::one(), T::from_f64(1.5)],
+            risk_free_rate: T::from_f64(0.02),
+            initial_hazard_rates: vec![T::from_f64(0.02); 3],
+            base_recovery_rate: T::from_f64(0.4),
+            spread_volatilities: vec![T::from_f64(0.3); 3],
+            spread_cap_strike: T::from_f64(0.03),
+            accrual_spread_lower: T::from_f64(0.0),
+            accrual_spread_upper: T::from_f64(0.06),
+            range_accrual_coupon_rate: T::from_f64(0.02),
+            recovery_spread_correlation: T::from_f64(-0.2),
+        }
+    }
+    #[test]
+    fn schonbucher_invariants_and_dual_fd() {
+        let r = evaluate_schonbucher_defaultable_range_accrual_and_spread_cap(&spec(100.0));
+        assert!(r.credit_spread_cap_npv >= 0.0 && r.credit_spread_floor_npv >= 0.0);
+        assert!(
+            r.survival_range_accrual_probabilities
+                .iter()
+                .all(|p| *p > 0.0 && *p < 1.0)
+        );
+        let h = 1e-5;
+        let fd = (evaluate_schonbucher_defaultable_range_accrual_and_spread_cap(&spec(100.0 + h))
+            .defaultable_range_accrual_note_npv
+            - evaluate_schonbucher_defaultable_range_accrual_and_spread_cap(&spec(100.0 - h))
+                .defaultable_range_accrual_note_npv)
+            / (2.0 * h);
+        let ad = evaluate_schonbucher_defaultable_range_accrual_and_spread_cap(&spec(
+            Dual::<1>::variable(100.0, 0),
+        ))
+        .defaultable_range_accrual_note_npv;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

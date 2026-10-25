@@ -1,7 +1,7 @@
 pub mod harness;
 pub mod suites;
 /// Number of registered benchmark suites in the current release.
-pub const SUITE_COUNT: usize = 37;
+pub const SUITE_COUNT: usize = 38;
 pub const SUITE_NAMES: [&str; SUITE_COUNT] = [
     "01_calendar_popcnt",
     "02_leg_simd_soa",
@@ -40,6 +40,7 @@ pub const SUITE_NAMES: [&str; SUITE_COUNT] = [
     "35_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml",
     "36_mbs_io_po_rmv_mo_xva_dilution_sig_garch_pot_rie_pin_gp_brinson_ierp",
     "37_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin",
+    "38_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_frtb_cva_lookback_vta_flam_acd_hlz_mlmc",
 ];
 /// Stable alias used by benchmark orchestration and documentation.
 pub const ALL_SUITES: [&str; SUITE_COUNT] = SUITE_NAMES;
@@ -48,7 +49,8 @@ pub use suites::{
     benchmark_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad,
     benchmark_phase24_mbs_io_po_rmv_mo_xva_dilution_sig_garch_pot_rie_pin_gp_brinson_ierp,
     benchmark_phase25_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin,
+    benchmark_phase26_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_frtb_cva_lookback_vta_flam_acd_hlz_mlmc,
     benchmark_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml, phase24_workloads,
-    phase25_workloads, run_all_benchmark_suites_with_Config, run_all_benchmark_suites_with_config,
-    run_all_benchmarks, run_all_suites,
+    phase25_workloads, phase26_workloads, run_all_benchmark_suites_with_Config,
+    run_all_benchmark_suites_with_config, run_all_benchmarks, run_all_suites,
 };

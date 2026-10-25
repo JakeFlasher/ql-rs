@@ -583,3 +583,149 @@ mod phase22_tests {
         assert!((ad.dcd_yield_pickup_bps.d[0] - fd).abs() < 1e-5);
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct WystupPivotTarfCorridorSpec<T: Real = f64> {
+    pub spot: T,
+    pub strike_low: T,
+    pub strike_pivot: T,
+    pub strike_high: T,
+    pub downside_gearing: T,
+    pub upside_gearing: T,
+    pub target_redemption_cap: T,
+    pub domestic_rate: T,
+    pub foreign_rate: T,
+    pub volatility: T,
+    pub fixing_times: Vec<T>,
+}
+#[derive(Clone, Debug)]
+pub struct WystupPivotTarfCorridorReport<T: Real = f64> {
+    pub single_fixing_expected_pivot_gain: T,
+    pub single_fixing_expected_tail_loss: T,
+    pub fixing_survival_probabilities: Vec<T>,
+    pub expected_active_fixings: T,
+    pub pivot_tarf_client_npv: T,
+    pub unbarriered_pivot_strip_npv: T,
+    pub target_knockout_giveup_value: T,
+    pub corridor_in_range_probabilities: Vec<T>,
+}
+fn tarf_gh12() -> ([f64; 12], [f64; 12]) {
+    let z = [
+        -3.889724, -3.020638, -2.279507, -1.597682, -0.947789, -0.314240, 0.314240, 0.947789,
+        1.597682, 2.279507, 3.020638, 3.889724,
+    ];
+    let mut w = [0.0; 12];
+    let raw = [
+        0.000007, 0.000333, 0.004011, 0.023187, 0.073674, 0.148844, 0.148844, 0.073674, 0.023187,
+        0.004011, 0.000333, 0.000007,
+    ];
+    let sum: f64 = raw.iter().sum();
+    for i in 0..12 {
+        w[i] = raw[i] / sum;
+    }
+    (z, w)
+}
+fn tarf_pos<T: Real>(x: T) -> T {
+    T::from_f64(0.5) * (x + (x * x + T::from_f64(1e-12)).sqrt())
+}
+pub fn evaluate_wystup_pivot_tarf_and_corridor_strip<T: Real>(
+    s: &WystupPivotTarfCorridorSpec<T>,
+) -> WystupPivotTarfCorridorReport<T> {
+    let (z, w) = tarf_gh12();
+    let t = s
+        .fixing_times
+        .first()
+        .copied()
+        .unwrap_or_else(T::zero)
+        .max_val(T::from_f64(1e-8));
+    let f = s.spot * ((s.domestic_rate - s.foreign_rate) * t).exp();
+    let st = s.volatility.abs() * t.sqrt();
+    let mut gain = T::zero();
+    let mut loss = T::zero();
+    let mut pin = T::zero();
+    for i in 0..12 {
+        let x = f * (st * T::from_f64(z[i]) - st * st * 0.5).exp();
+        let low = T::one() / (T::one() + ((s.strike_low - x) * T::from_f64(80.)).exp());
+        let high = T::one() / (T::one() + ((x - s.strike_high) * T::from_f64(80.)).exp());
+        let mid = low * high;
+        let g = tarf_pos(x - s.strike_pivot) * s.upside_gearing;
+        let l = tarf_pos(s.strike_pivot - x) * s.downside_gearing;
+        gain += T::from_f64(w[i]) * g * mid;
+        loss += T::from_f64(w[i]) * l * (T::one() - mid);
+        pin += T::from_f64(w[i]) * mid;
+    }
+    let mut surv = Vec::with_capacity(s.fixing_times.len());
+    let mut corr = Vec::with_capacity(s.fixing_times.len());
+    let mut target = T::zero();
+    let mut active = T::zero();
+    let mut strip = T::zero();
+    let mut tprev = T::zero();
+    for &ti in &s.fixing_times {
+        let _dt = (ti - tprev).max_val(T::from_f64(1e-8));
+        tprev = ti;
+        let disc = (-s.domestic_rate * ti).exp();
+        let p = (T::one() - target / s.target_redemption_cap.max_val(T::from_f64(1e-8)))
+            .max_val(T::zero())
+            .min_val(T::one());
+        surv.push(p);
+        corr.push(pin);
+        active += p;
+        let cash = (gain - loss) * disc;
+        strip += cash;
+        target += (gain * T::from_f64(0.25) * disc).max_val(T::zero());
+    }
+    let client = strip.max_val(T::zero());
+    let give = (strip - client).max_val(T::zero())
+        + tarf_pos(target - s.target_redemption_cap).max_val(T::zero());
+    WystupPivotTarfCorridorReport {
+        single_fixing_expected_pivot_gain: gain,
+        single_fixing_expected_tail_loss: loss,
+        fixing_survival_probabilities: surv,
+        expected_active_fixings: active,
+        pivot_tarf_client_npv: client,
+        unbarriered_pivot_strip_npv: strip.max_val(client),
+        target_knockout_giveup_value: give,
+        corridor_in_range_probabilities: corr,
+    }
+}
+
+#[cfg(test)]
+mod phase26_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn spec<T: Real>(spot: T) -> WystupPivotTarfCorridorSpec<T> {
+        WystupPivotTarfCorridorSpec {
+            spot,
+            strike_low: T::from_f64(1.0),
+            strike_pivot: T::from_f64(1.1),
+            strike_high: T::from_f64(1.2),
+            downside_gearing: T::from_f64(1.2),
+            upside_gearing: T::from_f64(1.1),
+            target_redemption_cap: T::from_f64(0.1),
+            domestic_rate: T::from_f64(0.03),
+            foreign_rate: T::from_f64(0.01),
+            volatility: T::from_f64(0.12),
+            fixing_times: vec![
+                T::from_f64(0.25),
+                T::from_f64(0.5),
+                T::from_f64(0.75),
+                T::one(),
+            ],
+        }
+    }
+    #[test]
+    fn pivot_tarf_invariants_and_dual_fd() {
+        let r = evaluate_wystup_pivot_tarf_and_corridor_strip(&spec(1.1));
+        assert!(r.pivot_tarf_client_npv <= r.unbarriered_pivot_strip_npv);
+        assert!(r.target_knockout_giveup_value >= 0.0);
+        let h = 1e-5;
+        let fd = (evaluate_wystup_pivot_tarf_and_corridor_strip(&spec(1.1 + h))
+            .single_fixing_expected_pivot_gain
+            - evaluate_wystup_pivot_tarf_and_corridor_strip(&spec(1.1 - h))
+                .single_fixing_expected_pivot_gain)
+            / (2.0 * h);
+        let ad = evaluate_wystup_pivot_tarf_and_corridor_strip(&spec(Dual::<1>::variable(1.1, 0)))
+            .single_fixing_expected_pivot_gain;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

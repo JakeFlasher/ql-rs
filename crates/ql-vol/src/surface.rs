@@ -1725,3 +1725,136 @@ mod phase24_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct BergomiForwardStartNapoleonVolSpec<T: Real = f64> {
+    pub initial_forward_variance: T,
+    pub vol_of_vol_omega: T,
+    pub kappa_short_k1: T,
+    pub kappa_long_k2: T,
+    pub long_factor_weight_theta: T,
+    pub factor_corr_rho12: T,
+    pub spot_vol_corr_rho_s1: T,
+    pub spot_vol_corr_rho_s2: T,
+    pub forward_start_t1: T,
+    pub forward_end_t2: T,
+    pub forward_moneyness_k: T,
+    pub napoleon_base_coupon: T,
+    pub napoleon_global_floor: T,
+    pub napoleon_subperiods_m: usize,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct BergomiForwardStartNapoleonVolReport<T: Real = f64> {
+    pub forward_variance_log_vol: T,
+    pub forward_atm_implied_vol: T,
+    pub forward_start_atm_skew: T,
+    pub forward_start_smile_vol_at_k: T,
+    pub forward_start_call_price_pct: T,
+    pub constant_vol_napoleon_coupon: T,
+    pub bergomi_stoch_vol_napoleon_coupon: T,
+    pub napoleon_vol_of_vol_convexity_value: T,
+}
+pub fn evaluate_bergomi_forward_start_smile_and_napoleon_convexity<T: Real>(
+    s: &BergomiForwardStartNapoleonVolSpec<T>,
+) -> BergomiForwardStartNapoleonVolReport<T> {
+    let dt = (s.forward_end_t2 - s.forward_start_t1).max_val(T::from_f64(1e-8));
+    let k1 = s.kappa_short_k1.abs().max_val(T::from_f64(1e-8));
+    let k2 = s.kappa_long_k2.abs().max_val(T::from_f64(1e-8));
+    let a = (T::one() - (-k1 * dt).exp()) / k1;
+    let b = (T::one() - (-k2 * dt).exp()) / k2;
+    let theta = s.long_factor_weight_theta;
+    let rho = s.factor_corr_rho12;
+    let iv = (s.initial_forward_variance.abs()
+        + s.vol_of_vol_omega
+            * s.vol_of_vol_omega
+            * (a * a + theta * theta * b * b + T::from_f64(2.) * theta * rho * a * b)
+            / dt)
+        .sqrt();
+    let logvol = (s.vol_of_vol_omega.abs() * (a + theta * b) / dt.sqrt()).abs();
+    let atm = iv;
+    let skew = (s.spot_vol_corr_rho_s1 * a + s.spot_vol_corr_rho_s2 * theta * b)
+        * s.vol_of_vol_omega
+        / (dt.sqrt() * iv.max_val(T::from_f64(1e-8)));
+    let smile = (atm + skew * (s.forward_moneyness_k - T::one())).max_val(T::from_f64(1e-8));
+    let d1 = ((T::one() / s.forward_moneyness_k.max_val(T::from_f64(1e-8))).ln()
+        + T::from_f64(0.5) * smile * smile * dt)
+        / (smile * dt.sqrt());
+    let call = (d1.norm_cdf() - s.forward_moneyness_k * (d1 - smile * dt.sqrt()).norm_cdf())
+        .max_val(T::zero());
+    let const_coupon = s.napoleon_base_coupon.max_val(s.napoleon_global_floor);
+    let mut stoch = T::zero();
+    let m = s.napoleon_subperiods_m.max(1);
+    // Normalized nine-point weights (sum of tabulated probabilities).
+    let ws = [
+        0.000039, 0.004089, 0.027733, 0.078742, 0.113019, 0.078742, 0.027733, 0.004089, 0.000039,
+    ];
+    let zs = [
+        -3.190993, -2.266581, -1.468553, -0.723551, 0., 0.723551, 1.468553, 2.266581, 3.190993,
+    ];
+    let sw: f64 = ws.iter().sum();
+    let mut accumulated_weight = T::zero();
+    for j in 0..8 {
+        let shock = s.vol_of_vol_omega.abs() * T::from_f64(zs[j]) / T::from_f64(m as f64).sqrt();
+        let coupon = s.napoleon_base_coupon + shock * dt.sqrt();
+        let weight = T::from_f64(ws[j] / sw);
+        accumulated_weight += weight;
+        stoch += weight * coupon.max_val(s.napoleon_global_floor);
+    }
+    let shock_last = s.vol_of_vol_omega.abs() * T::from_f64(zs[8]) / T::from_f64(m as f64).sqrt();
+    let coupon_last =
+        (s.napoleon_base_coupon + shock_last * dt.sqrt()).max_val(s.napoleon_global_floor);
+    stoch += (T::one() - accumulated_weight) * coupon_last;
+    let stoch = stoch.max_val(s.napoleon_global_floor);
+    BergomiForwardStartNapoleonVolReport {
+        forward_variance_log_vol: logvol,
+        forward_atm_implied_vol: atm,
+        forward_start_atm_skew: skew,
+        forward_start_smile_vol_at_k: smile,
+        forward_start_call_price_pct: call,
+        constant_vol_napoleon_coupon: const_coupon,
+        bergomi_stoch_vol_napoleon_coupon: stoch,
+        napoleon_vol_of_vol_convexity_value: (stoch - const_coupon).max_val(T::zero()),
+    }
+}
+
+#[cfg(test)]
+mod phase26_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn spec<T: Real>(omega: T) -> BergomiForwardStartNapoleonVolSpec<T> {
+        BergomiForwardStartNapoleonVolSpec {
+            initial_forward_variance: T::from_f64(0.04),
+            vol_of_vol_omega: omega,
+            kappa_short_k1: T::from_f64(3.0),
+            kappa_long_k2: T::from_f64(0.5),
+            long_factor_weight_theta: T::from_f64(0.5),
+            factor_corr_rho12: T::from_f64(0.2),
+            spot_vol_corr_rho_s1: T::from_f64(-0.5),
+            spot_vol_corr_rho_s2: T::from_f64(-0.3),
+            forward_start_t1: T::from_f64(0.5),
+            forward_end_t2: T::one(),
+            forward_moneyness_k: T::one(),
+            napoleon_base_coupon: T::from_f64(0.01),
+            napoleon_global_floor: T::zero(),
+            napoleon_subperiods_m: 4,
+        }
+    }
+    #[test]
+    fn bergomi_invariants_and_dual_fd() {
+        let z = evaluate_bergomi_forward_start_smile_and_napoleon_convexity(&spec(0.0));
+        assert!(z.napoleon_vol_of_vol_convexity_value.abs() < 1e-12);
+        let r = evaluate_bergomi_forward_start_smile_and_napoleon_convexity(&spec(0.3));
+        assert!(r.forward_start_atm_skew < 0.0);
+        let h = 1e-5;
+        let fd = (evaluate_bergomi_forward_start_smile_and_napoleon_convexity(&spec(0.3 + h))
+            .forward_atm_implied_vol
+            - evaluate_bergomi_forward_start_smile_and_napoleon_convexity(&spec(0.3 - h))
+                .forward_atm_implied_vol)
+            / (2.0 * h);
+        let ad = evaluate_bergomi_forward_start_smile_and_napoleon_convexity(&spec(
+            Dual::<1>::variable(0.3, 0),
+        ))
+        .forward_atm_implied_vol;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

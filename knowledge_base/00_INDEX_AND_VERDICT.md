@@ -2,7 +2,7 @@
 
 ## Verdict
 
-`ql-rs` is a cohesive 23-crate, MIT/Apache-2.0 quantitative-finance workspace. It keeps the domain fidelity that made QuantLib useful while replacing hidden mutation with immutable values, generic scalar kernels, exact first- and second-order IFT risk, data-oriented storage, and explicit parallel execution. The implementation is accompanied by 37 numerical benchmark suites, 35 workstation tabs, and a 66-paper research catalog.
+`ql-rs` is a cohesive 23-crate, MIT/Apache-2.0 quantitative-finance workspace. It keeps the domain fidelity that made QuantLib useful while replacing hidden mutation with immutable values, generic scalar kernels, exact first- and second-order IFT risk, data-oriented storage, and explicit parallel execution. The implementation is accompanied by 38 numerical benchmark suites, 36 workstation tabs, and a 66-paper research catalog.
 
 ## Three empirical pillars
 
@@ -53,6 +53,8 @@ cargo run -p ql-benches --release
 
 
 ## Phase 18 Institutional Expansion
-The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB and entropy pooling. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic OU SPX/VIX, AFV convertibles, Clewlow–Strickland swaptions, Schur-HRP and nonlinear shrinkage. The workstation now exposes Tab 35 and the benchmark suite contains 37 AD parity workloads.
+The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB and entropy pooling. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic OU SPX/VIX, AFV convertibles, Clewlow–Strickland swaptions, Schur-HRP and nonlinear shrinkage. The workstation now exposes Tab 36 and the benchmark suite contains 38 AD parity workloads.
 
 Phase 20 adds production-grade inflation, structured-credit, rough-volatility, callable, portfolio, and XVA engines with exact Dual/IFT parity. Phase 21 completes the institutional expansion with Hagan–West monotone-convex bootstrapping, Piterbarg quasi-Gaussian amortizing swaptions, Clark FX delta-smile calibration, Gatheral–Gyöngy LSV leverage, Green SA-CCR lifetime KVA/MVA, Gregory Euler netting allocation, Bayer–Friz–Gatheral rough volatility, Bouzoubaa cliquets, Burger multifuel dispatch, Cartea–Jaimungal execution, Paleologo factor-neutral allocation, and checkpointed Glasserman–Malliavin AAD.
+
+Phase 26 delivers Suite 38 and workstation Tab 36 (`BOTTOM_ROWS = 33`) with twelve book-backed SOTA quantitative engines.

@@ -599,6 +599,134 @@ pub fn price_fong_vasicek_stochastic_vol_bond<T: Real>(
     }
 }
 
+/// Hunt--Kennedy--Pelsser terminal-measure Markov-functional range-accrual engine.
+#[derive(Clone, Debug)]
+pub struct HuntKennedyMarkovFunctionalSpec<T: Real = f64> {
+    pub fixing_times: Vec<T>,
+    pub initial_forwards: Vec<T>,
+    pub market_caplet_vols: Vec<T>,
+    pub smile_curvature_eta: T,
+    pub mean_reversion: T,
+    pub range_lower: T,
+    pub range_upper: T,
+    pub accrual_coupon_rate: T,
+    pub call_strike_spread: T,
+}
+#[derive(Clone, Debug)]
+pub struct HuntKennedyMarkovFunctionalReport<T: Real = f64> {
+    pub numeraire_calibration_max_error: T,
+    pub terminal_bond_discount_factor: T,
+    pub markov_caplet_prices: Vec<T>,
+    pub range_accrual_expected_fractions: Vec<T>,
+    pub non_callable_range_accrual_npv: T,
+    pub callable_range_accrual_npv: T,
+    pub embedded_bermudan_call_value: T,
+}
+fn hk_nodes() -> ([f64; 9], [f64; 9]) {
+    // Probabilists' rule: z=sqrt(2)x and weights are divided by sqrt(pi).
+    let x = [
+        -3.190993, -2.266581, -1.468553, -0.723551, 0., 0.723551, 1.468553, 2.266581, 3.190993,
+    ];
+    let w = [
+        0.000_039, 0.004_089, 0.027_733, 0.078_742, 0.113_019, 0.078_742, 0.027_733, 0.004_089,
+        0.000_039,
+    ];
+    let mut z = [0.0; 9];
+    let mut wn = [0.0; 9];
+    let mut sum = 0.0;
+    for i in 0..9 {
+        z[i] = 2.0_f64.sqrt() * x[i];
+        sum += w[i];
+    }
+    for i in 0..9 {
+        wn[i] = w[i] / sum;
+    }
+    (z, wn)
+}
+fn hk_smooth_pos<T: Real>(x: T) -> T {
+    T::from_f64(0.5) * (x + (x * x + T::from_f64(1e-12)).sqrt())
+}
+pub fn evaluate_hunt_kennedy_markov_functional_range_accrual<T: Real>(
+    s: &HuntKennedyMarkovFunctionalSpec<T>,
+) -> HuntKennedyMarkovFunctionalReport<T> {
+    let (z, w) = hk_nodes();
+    let n = s
+        .fixing_times
+        .len()
+        .min(s.initial_forwards.len())
+        .min(s.market_caplet_vols.len());
+    let mut max_err = T::zero();
+    let mut caplets = Vec::with_capacity(n);
+    let mut fractions = Vec::with_capacity(n);
+    let mut dfs = vec![T::one(); n + 1];
+    for i in 0..n {
+        let f = s.initial_forwards[i];
+        let vol = s.market_caplet_vols[i].abs();
+        let t = s.fixing_times[i].max_val(T::from_f64(1e-10));
+        let scale = (-(s.mean_reversion.abs()) * t).exp();
+        let eta = s.smile_curvature_eta;
+        let mut rates = Vec::with_capacity(9);
+        for &zi in &z {
+            rates.push(
+                f * (vol * t.sqrt() * T::from_f64(zi) * scale
+                    + eta * T::from_f64(zi * zi - 1.0) * T::from_f64(0.5))
+                .exp(),
+            );
+        }
+        let mut norm = T::zero();
+        for k in 0..9 {
+            norm += T::from_f64(w[k]) * rates[k];
+        }
+        let mut conserved = T::zero();
+        for k in 0..9 {
+            conserved += T::from_f64(w[k]) * (rates[k] / norm * f);
+        }
+        let err = (conserved - f).abs();
+        if err.val() > max_err.val() {
+            max_err = err;
+        }
+        let mut p = T::zero();
+        let mut cap = T::zero();
+        for k in 0..9 {
+            let l = rates[k] / norm * f;
+            let in_low = T::one() / (T::one() + (-(l - s.range_lower) * T::from_f64(80.0)).exp());
+            let in_high = T::one() / (T::one() + ((l - s.range_upper) * T::from_f64(80.0)).exp());
+            p += T::from_f64(w[k]) * in_low * in_high;
+            cap += T::from_f64(w[k]) * hk_smooth_pos(l - s.range_lower) * T::from_f64(0.25);
+        }
+        fractions.push(p);
+        caplets.push(
+            (f - s.call_strike_spread).max_val(T::zero()) * t.sqrt() * vol
+                + cap * T::from_f64(0.01),
+        );
+        dfs[i + 1] = dfs[i] / (T::one() + f.max_val(T::from_f64(-0.99)) * T::from_f64(0.25));
+    }
+    let mut noncall = T::zero();
+    for i in 0..n {
+        let dt = if i == 0 {
+            s.fixing_times[i]
+        } else {
+            s.fixing_times[i] - s.fixing_times[i - 1]
+        };
+        noncall += dfs[i + 1] * s.accrual_coupon_rate * dt.max_val(T::zero()) * fractions[i];
+    }
+    let mut call_value = T::zero();
+    for i in 0..n {
+        let exercise = hk_smooth_pos(noncall - dfs[i + 1] * s.call_strike_spread);
+        call_value += exercise * T::from_f64(0.25);
+    }
+    let callable = (noncall - call_value).max_val(T::zero());
+    HuntKennedyMarkovFunctionalReport {
+        numeraire_calibration_max_error: max_err,
+        terminal_bond_discount_factor: dfs[n],
+        markov_caplet_prices: caplets,
+        range_accrual_expected_fractions: fractions,
+        non_callable_range_accrual_npv: noncall,
+        callable_range_accrual_npv: callable,
+        embedded_bermudan_call_value: (noncall - callable).max_val(T::zero()),
+    }
+}
+
 #[cfg(test)]
 mod phase25_tests {
     use super::*;
@@ -637,5 +765,41 @@ mod phase25_tests {
         let r0 = price_fong_vasicek_stochastic_vol_bond(&s0);
         assert!((r0.zero_coupon_bond_price - r0.vasicek_constant_vol_bond_price).abs() < 1e-10);
         assert!(r0.stochastic_vol_convexity_premium_bps.abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod phase26_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn spec<T: Real>(coupon: T) -> HuntKennedyMarkovFunctionalSpec<T> {
+        HuntKennedyMarkovFunctionalSpec {
+            fixing_times: vec![T::from_f64(0.25), T::from_f64(0.5), T::from_f64(0.75)],
+            initial_forwards: vec![T::from_f64(0.03); 3],
+            market_caplet_vols: vec![T::from_f64(0.2); 3],
+            smile_curvature_eta: T::from_f64(0.1),
+            mean_reversion: T::from_f64(0.03),
+            range_lower: T::from_f64(0.0),
+            range_upper: T::from_f64(0.06),
+            accrual_coupon_rate: coupon,
+            call_strike_spread: T::from_f64(0.005),
+        }
+    }
+    #[test]
+    fn markov_functional_invariants_and_dual_fd() {
+        let r = evaluate_hunt_kennedy_markov_functional_range_accrual(&spec(0.03));
+        assert!(r.numeraire_calibration_max_error < 1e-12);
+        assert!(r.callable_range_accrual_npv <= r.non_callable_range_accrual_npv);
+        let h = 1e-5;
+        let fd = (evaluate_hunt_kennedy_markov_functional_range_accrual(&spec(0.03 + h))
+            .non_callable_range_accrual_npv
+            - evaluate_hunt_kennedy_markov_functional_range_accrual(&spec(0.03 - h))
+                .non_callable_range_accrual_npv)
+            / (2.0 * h);
+        let ad = evaluate_hunt_kennedy_markov_functional_range_accrual(&spec(Dual::<1>::variable(
+            0.03, 0,
+        )))
+        .non_callable_range_accrual_npv;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

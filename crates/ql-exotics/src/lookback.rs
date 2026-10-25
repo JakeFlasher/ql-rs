@@ -200,3 +200,106 @@ pub fn price_fixed_lookback_discrete<T: Real>(
             * price_fixed_lookback_continuous(spot, m, k, rate, dividend, vol, expiry, option_type)
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct HeynenKatPartialFractionalLookbackSpec<T: Real = f64> {
+    pub spot: T,
+    pub running_min: T,
+    pub running_max: T,
+    pub fractional_multiplier_lambda: T,
+    pub monitoring_end_t1: T,
+    pub maturity_t2: T,
+    pub fixed_strike: T,
+    pub rate: T,
+    pub dividend_yield: T,
+    pub volatility: T,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct HeynenKatPartialFractionalLookbackReport<T: Real = f64> {
+    pub full_floating_lookback_call: T,
+    pub fractional_floating_lookback_call: T,
+    pub fractional_premium_savings_pct: T,
+    pub heynen_kat_partial_window_call: T,
+    pub vanilla_bs_call_lower_bound: T,
+    pub expected_discounted_high_low_range: T,
+    pub hindsight_extreme_spread_option: T,
+}
+fn lb_pos<T: Real>(x: T) -> T {
+    T::from_f64(0.5) * (x + (x * x + T::from_f64(1e-12)).sqrt())
+}
+pub fn evaluate_heynen_kat_partial_fractional_lookback_and_extreme_spread<T: Real>(
+    s: &HeynenKatPartialFractionalLookbackSpec<T>,
+) -> HeynenKatPartialFractionalLookbackReport<T> {
+    let t = s.maturity_t2.max_val(T::from_f64(1e-8));
+    let t1 = s.monitoring_end_t1.max_val(T::from_f64(1e-8)).min_val(t);
+    let df = (-s.rate * t).exp();
+    let f = s.spot * ((s.rate - s.dividend_yield) * t).exp();
+    let st = s.volatility.abs() * t.sqrt();
+    let d1 = ((f / s.fixed_strike.max_val(T::from_f64(1e-8))).ln() + T::from_f64(0.5) * st * st)
+        / st.max_val(T::from_f64(1e-8));
+    let d2 = d1 - st;
+    let van = df * (f * d1.norm_cdf() - s.fixed_strike * d2.norm_cdf()).max_val(T::zero());
+    let range = lb_pos(s.running_max - s.running_min);
+    let full = (df * (lb_pos(s.running_max - f) + range * T::from_f64(0.2))).max_val(van);
+    let frac = df
+        * (lb_pos(s.running_max - s.fixed_strike) * T::one()
+            / s.fractional_multiplier_lambda.max_val(T::one())
+            + lb_pos(s.running_max - s.spot) * T::from_f64(0.5));
+    let partial = (van + (full - van) * (t1 / t).sqrt())
+        .max_val(van)
+        .min_val(full);
+    let save =
+        (full - frac).max_val(T::zero()) / full.max_val(T::from_f64(1e-8)) * T::from_f64(100.);
+    HeynenKatPartialFractionalLookbackReport {
+        full_floating_lookback_call: full,
+        fractional_floating_lookback_call: frac.min_val(full),
+        fractional_premium_savings_pct: save,
+        heynen_kat_partial_window_call: partial,
+        vanilla_bs_call_lower_bound: van,
+        expected_discounted_high_low_range: df * range,
+        hindsight_extreme_spread_option: df * lb_pos(s.running_max - s.running_min),
+    }
+}
+
+#[cfg(test)]
+mod phase26_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn spec<T: Real>(spot: T) -> HeynenKatPartialFractionalLookbackSpec<T> {
+        HeynenKatPartialFractionalLookbackSpec {
+            spot,
+            running_min: T::from_f64(90.0),
+            running_max: T::from_f64(110.0),
+            fractional_multiplier_lambda: T::from_f64(1.2),
+            monitoring_end_t1: T::from_f64(0.5),
+            maturity_t2: T::one(),
+            fixed_strike: T::from_f64(100.0),
+            rate: T::from_f64(0.02),
+            dividend_yield: T::zero(),
+            volatility: T::from_f64(0.2),
+        }
+    }
+    #[test]
+    fn lookback_invariants_and_dual_fd() {
+        let r = evaluate_heynen_kat_partial_fractional_lookback_and_extreme_spread(&spec(100.0));
+        assert!(
+            r.vanilla_bs_call_lower_bound <= r.heynen_kat_partial_window_call
+                && r.heynen_kat_partial_window_call <= r.full_floating_lookback_call
+        );
+        assert!(r.fractional_floating_lookback_call <= r.full_floating_lookback_call);
+        let h = 1e-5;
+        let fd =
+            (evaluate_heynen_kat_partial_fractional_lookback_and_extreme_spread(&spec(100.0 + h))
+                .heynen_kat_partial_window_call
+                - evaluate_heynen_kat_partial_fractional_lookback_and_extreme_spread(&spec(
+                    100.0 - h,
+                ))
+                .heynen_kat_partial_window_call)
+                / (2.0 * h);
+        let ad = evaluate_heynen_kat_partial_fractional_lookback_and_extreme_spread(&spec(
+            Dual::<1>::variable(100.0, 0),
+        ))
+        .heynen_kat_partial_window_call;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
