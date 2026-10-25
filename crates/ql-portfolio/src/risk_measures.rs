@@ -238,3 +238,227 @@ impl EmpiricalRiskStatistics {
         empirical_expected_shortfall(x, confidence)
     }
 }
+
+pub fn parametric_gaussian_evar<T: Real>(mean: T, std_dev: T, confidence: f64) -> T {
+    let alpha = validate_confidence(confidence);
+    -mean + std_dev * (-2.0 * alpha.ln()).sqrt()
+}
+
+pub fn entropic_value_at_risk<T: Real>(returns: &[T], confidence: f64) -> T {
+    assert!(!returns.is_empty());
+    let alpha = validate_confidence(confidence);
+    let losses: Vec<T> = returns.iter().map(|&r| -r).collect();
+    let max_idx = losses
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.val().total_cmp(&b.val()))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let l_max_t = losses[max_idx];
+    let l_max = l_max_t.val();
+    let min_idx = losses
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| a.val().total_cmp(&b.val()))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let l_min_t = losses[min_idx];
+    let l_min = l_min_t.val();
+    if (l_max - l_min).abs() < 1e-14 {
+        return losses[0];
+    }
+    let n_f = losses.len() as f64;
+    let obj_f64 = |z: f64| -> f64 {
+        let sum_e: f64 = losses.iter().map(|l| (z * (l.val() - l_max)).exp()).sum();
+        l_max + ((sum_e / n_f).ln() - alpha.ln()) / z
+    };
+    let mut a = T::from_f64(1e-4);
+    let mut b = T::from_f64(500.0) / (l_max_t - l_min_t).max_val(T::from_f64(1e-4));
+    let gr = T::from_f64(0.5 * (5.0f64.sqrt() - 1.0));
+    let mut c = b - gr * (b - a);
+    let mut d = a + gr * (b - a);
+    let mut fc = obj_f64(c.val());
+    let mut fd = obj_f64(d.val());
+    for _ in 0..64 {
+        if fc < fd {
+            b = d;
+            d = c;
+            fd = fc;
+            c = b - gr * (b - a);
+            fc = obj_f64(c.val());
+        } else {
+            a = c;
+            c = d;
+            fc = fd;
+            d = a + gr * (b - a);
+            fd = obj_f64(d.val());
+        }
+    }
+    let z_star = (a + b) * 0.5;
+    let mut sum_exp = T::zero();
+    for &l in &losses {
+        sum_exp += (z_star * (l - l_max_t)).exp();
+    }
+    l_max_t + ((sum_exp / n_f).ln() - alpha.ln()) / z_star
+}
+
+#[derive(Clone, Debug)]
+pub struct DrawdownRiskMetrics<T: Real> {
+    pub cdar: T,
+    pub max_drawdown: T,
+    pub average_drawdown: T,
+    pub drawdowns: Vec<T>,
+}
+
+pub fn conditional_drawdown_at_risk<T: Real>(
+    period_returns: &[T],
+    confidence: f64,
+) -> DrawdownRiskMetrics<T> {
+    assert!(!period_returns.is_empty());
+    let alpha = validate_confidence(confidence);
+    let n = period_returns.len();
+    let mut cum = Vec::with_capacity(n + 1);
+    cum.push(T::zero());
+    let mut acc = T::zero();
+    for &r in period_returns {
+        acc += r;
+        cum.push(acc);
+    }
+    let mut drawdowns = Vec::with_capacity(n);
+    let mut avg_dd = T::zero();
+    let mut max_idx = 0usize;
+    for t in 1..=n {
+        let mut peak_idx = 0usize;
+        let mut peak_val = f64::NEG_INFINITY;
+        for (s, w_s) in cum.iter().enumerate().take(t + 1) {
+            if w_s.val() > peak_val {
+                peak_val = w_s.val();
+                peak_idx = s;
+            }
+        }
+        let dd = (cum[peak_idx] - cum[t]).max_val(T::zero());
+        if dd.val() > drawdowns.get(max_idx).map(|x: &T| x.val()).unwrap_or(-1.0) {
+            max_idx = t - 1;
+        }
+        avg_dd += dd;
+        drawdowns.push(dd);
+    }
+    let max_dd = drawdowns[max_idx];
+    avg_dd /= T::from_f64(n as f64);
+    let mut indexed: Vec<(f64, usize)> = drawdowns
+        .iter()
+        .enumerate()
+        .map(|(i, d)| (d.val(), i))
+        .collect();
+    indexed.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mass = alpha * n as f64;
+    let whole = mass.floor() as usize;
+    let rem = mass - whole as f64;
+    let mut tail_sum = T::zero();
+    for &(_, idx) in indexed.iter().take(whole) {
+        tail_sum += drawdowns[idx];
+    }
+    if whole < indexed.len() {
+        tail_sum += drawdowns[indexed[whole].1] * rem;
+    }
+    DrawdownRiskMetrics {
+        cdar: tail_sum / mass,
+        max_drawdown: max_dd,
+        average_drawdown: avg_dd,
+        drawdowns,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct FactorRiskAttribution<T: Real> {
+    pub total_volatility: T,
+    pub systematic_volatility: T,
+    pub idiosyncratic_volatility: T,
+    pub portfolio_betas: Vec<T>,
+    pub factor_risk_contributions: Vec<T>,
+    pub idiosyncratic_risk_contribution: T,
+    pub r_squared: T,
+}
+
+#[allow(clippy::needless_range_loop)]
+pub fn factor_risk_attribution<T: Real>(
+    weights: &[T],
+    factor_loadings: &[Vec<T>],
+    factor_covariance: &[Vec<T>],
+    idiosyncratic_vars: &[T],
+) -> FactorRiskAttribution<T> {
+    let n = weights
+        .len()
+        .min(factor_loadings.len())
+        .min(idiosyncratic_vars.len());
+    let k = factor_covariance.len();
+    let mut betas = vec![T::zero(); k];
+    for i in 0..n {
+        for f in 0..k.min(factor_loadings[i].len()) {
+            betas[f] += weights[i] * factor_loadings[i][f];
+        }
+    }
+    let mut sigma_f_beta = vec![T::zero(); k];
+    let mut sys_var = T::zero();
+    for a in 0..k {
+        for b in 0..k.min(factor_covariance[a].len()) {
+            sigma_f_beta[a] += factor_covariance[a][b] * betas[b];
+        }
+        sys_var += betas[a] * sigma_f_beta[a];
+    }
+    let mut idio_var = T::zero();
+    for i in 0..n {
+        idio_var += weights[i] * weights[i] * idiosyncratic_vars[i];
+    }
+    let tot_var = (sys_var + idio_var).max_val(T::from_f64(1e-16));
+    let tot_vol = tot_var.sqrt();
+    let frc: Vec<T> = (0..k)
+        .map(|a| betas[a] * sigma_f_beta[a] / tot_vol)
+        .collect();
+    let irc = idio_var / tot_vol;
+    FactorRiskAttribution {
+        total_volatility: tot_vol,
+        systematic_volatility: sys_var.max_val(T::zero()).sqrt(),
+        idiosyncratic_volatility: idio_var.max_val(T::zero()).sqrt(),
+        portfolio_betas: betas,
+        factor_risk_contributions: frc,
+        idiosyncratic_risk_contribution: irc,
+        r_squared: sys_var / tot_var,
+    }
+}
+
+#[cfg(test)]
+mod phase16_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn evar_cdar_and_factor_euler_invariants() {
+        let rets = vec![-0.05, -0.02, -0.01, 0.0, 0.01, 0.02, 0.03, 0.04];
+        let var90 = empirical_var(&rets, 0.90);
+        let es90 = empirical_expected_shortfall(&rets, 0.90);
+        let evar90 = entropic_value_at_risk(&rets, 0.90);
+        assert!(var90 <= es90 + 1e-12 && es90 <= evar90 + 1e-12);
+        let dd = conditional_drawdown_at_risk(&rets, 0.75);
+        assert!(dd.average_drawdown <= dd.cdar + 1e-12 && dd.cdar <= dd.max_drawdown + 1e-12);
+        let w = vec![0.4, 0.6];
+        let b = vec![vec![1.1, 0.3], vec![0.8, 0.9]];
+        let fc = vec![vec![0.04, 0.005], vec![0.005, 0.02]];
+        let idio = vec![0.01, 0.015];
+        let attr = factor_risk_attribution(&w, &b, &fc, &idio);
+        let sum_rc = attr.factor_risk_contributions.iter().sum::<f64>()
+            + attr.idiosyncratic_risk_contribution;
+        assert!((sum_rc - attr.total_volatility).abs() < 1e-12);
+        let h = 1e-5;
+        let eval_r0 = |r0: f64| {
+            let mut r = rets.clone();
+            r[0] = r0;
+            entropic_value_at_risk(&r, 0.90)
+        };
+        let fd = (eval_r0(-0.05 + h) - eval_r0(-0.05 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let mut rd: Vec<D> = rets.iter().map(|&x| D::from_value(x)).collect();
+        rd[0] = D::variable(-0.05, 0);
+        let ad = entropic_value_at_risk(&rd, 0.90);
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

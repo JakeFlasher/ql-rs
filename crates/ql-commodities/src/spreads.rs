@@ -239,3 +239,146 @@ mod phase14_tests {
         assert!((v.d[0] - fd).abs() < 1e-6);
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct CommodityApoSpec<T: Real = f64> {
+    pub forward_prices: Vec<T>,
+    pub fixing_times: Vec<f64>,
+    pub vols: Vec<T>,
+    pub weights: Vec<f64>,
+    pub decorrelation_decay: T,
+    pub strike: T,
+    pub rate: T,
+    pub pay_time: f64,
+    pub notional: T,
+    pub option_type: OptionType,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct CommodityApoValuation<T: Real> {
+    pub npv: T,
+    pub first_moment: T,
+    pub second_moment: T,
+    pub effective_vol: T,
+}
+
+pub fn price_commodity_apo_moment_matching<T: Real>(
+    s: &CommodityApoSpec<T>,
+) -> CommodityApoValuation<T> {
+    let n = s
+        .forward_prices
+        .len()
+        .min(s.fixing_times.len())
+        .min(s.vols.len())
+        .min(s.weights.len());
+    if n == 0 || s.pay_time <= 0.0 {
+        return CommodityApoValuation {
+            npv: T::zero(),
+            first_moment: T::zero(),
+            second_moment: T::zero(),
+            effective_vol: T::zero(),
+        };
+    }
+    let w_sum = s.weights[..n].iter().sum::<f64>().max(1e-12);
+    let mut m1 = T::zero();
+    for i in 0..n {
+        m1 += s.forward_prices[i] * (s.weights[i] / w_sum);
+    }
+    let mut m2 = T::zero();
+    for i in 0..n {
+        let wi = s.weights[i] / w_sum;
+        for j in 0..n {
+            let wj = s.weights[j] / w_sum;
+            let dt_ij = (s.fixing_times[i] - s.fixing_times[j]).abs();
+            let t_min = s.fixing_times[i].min(s.fixing_times[j]).max(0.0);
+            let rho_ij = (-s.decorrelation_decay * dt_ij).exp();
+            let cov = rho_ij * s.vols[i] * s.vols[j] * t_min;
+            m2 += s.forward_prices[i] * s.forward_prices[j] * cov.exp() * (wi * wj);
+        }
+    }
+    let v2 = (m2 / (m1 * m1).max_val(T::from_f64(1e-14)))
+        .max_val(T::one())
+        .ln();
+    let eff_vol = (v2 / s.pay_time).max_val(T::zero()).sqrt();
+    let df = (-s.rate * s.pay_time).exp();
+    let unit = ql_vol::black76_price(
+        m1,
+        s.strike,
+        eff_vol,
+        T::from_f64(s.pay_time),
+        df,
+        s.option_type.is_call(),
+    );
+    CommodityApoValuation {
+        npv: s.notional * unit,
+        first_moment: m1,
+        second_moment: m2,
+        effective_vol: eff_vol,
+    }
+}
+
+#[cfg(test)]
+mod phase16_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn commodity_apo_single_fixing_and_ad() {
+        let s1 = CommodityApoSpec {
+            forward_prices: vec![80.0],
+            fixing_times: vec![1.0],
+            vols: vec![0.25],
+            weights: vec![1.0],
+            decorrelation_decay: 0.2,
+            strike: 82.0,
+            rate: 0.03,
+            pay_time: 1.0,
+            notional: 10.0,
+            option_type: OptionType::Call,
+        };
+        let v1 = price_commodity_apo_moment_matching(&s1);
+        let b76 = 10.0 * ql_vol::black76_price(80.0, 82.0, 0.25, 1.0, (-0.03f64).exp(), true);
+        assert!((v1.npv - b76).abs() < 1e-12);
+        let s = CommodityApoSpec {
+            forward_prices: vec![78.0, 80.0, 82.0],
+            fixing_times: vec![0.25, 0.5, 1.0],
+            vols: vec![0.28, 0.25, 0.22],
+            weights: vec![1.0, 1.0, 1.0],
+            decorrelation_decay: 0.3,
+            strike: 80.0,
+            rate: 0.03,
+            pay_time: 1.0,
+            notional: 10.0,
+            option_type: OptionType::Call,
+        };
+        let h = 1e-5;
+        let eval_f0 = |f0: f64| {
+            let mut sp = s.clone();
+            sp.forward_prices[0] = f0;
+            price_commodity_apo_moment_matching(&sp).npv
+        };
+        let fd = (eval_f0(78.0 + h) - eval_f0(78.0 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let sd = CommodityApoSpec {
+            forward_prices: vec![
+                D::variable(78.0, 0),
+                D::from_value(80.0),
+                D::from_value(82.0),
+            ],
+            fixing_times: vec![0.25, 0.5, 1.0],
+            vols: vec![
+                D::from_value(0.28),
+                D::from_value(0.25),
+                D::from_value(0.22),
+            ],
+            weights: vec![1.0, 1.0, 1.0],
+            decorrelation_decay: D::from_value(0.3),
+            strike: D::from_value(80.0),
+            rate: D::from_value(0.03),
+            pay_time: 1.0,
+            notional: D::from_value(10.0),
+            option_type: OptionType::Call,
+        };
+        let ad = price_commodity_apo_moment_matching(&sd).npv;
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}

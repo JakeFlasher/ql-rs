@@ -299,3 +299,169 @@ mod phase13_tests {
         assert!(x.2.d[0].abs() > 1e-4);
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct CheyetteSwaptionSpec<T: Real = f64> {
+    pub notional: T,
+    pub strike: T,
+    pub option_expiry: f64,
+    pub payment_times: Vec<f64>,
+    pub mean_reversion: T,
+    pub sigma0: T,
+    pub skew_b: T,
+    pub is_payer: bool,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct CheyetteSwaptionValuation<T: Real> {
+    pub npv: T,
+    pub forward_swap_rate: T,
+    pub annuity: T,
+    pub effective_normal_vol: T,
+    pub effective_skew: T,
+    pub implied_normal_vol: T,
+}
+
+pub fn price_cheyette_swaption_markov_projection<T: Real, C: YieldTermStructure<T>>(
+    s: &CheyetteSwaptionSpec<T>,
+    curve: &C,
+) -> CheyetteSwaptionValuation<T> {
+    let te = s.option_expiry.max(0.0);
+    if te <= 0.0 || s.payment_times.is_empty() {
+        return CheyetteSwaptionValuation {
+            npv: T::zero(),
+            forward_swap_rate: T::zero(),
+            annuity: T::zero(),
+            effective_normal_vol: T::zero(),
+            effective_skew: T::zero(),
+            implied_normal_vol: T::zero(),
+        };
+    }
+    let chey = Cheyette1F {
+        mu: s.mean_reversion,
+    };
+    let mut ann = T::zero();
+    let mut prev_t = te;
+    let mut last_t = te;
+    for &t in &s.payment_times {
+        if t <= te {
+            continue;
+        }
+        let tau = (t - prev_t).max(0.0);
+        ann += curve.discount_factor(t) * tau;
+        prev_t = t;
+        last_t = t;
+    }
+    if ann.val() <= 1e-14 || last_t <= te {
+        return CheyetteSwaptionValuation {
+            npv: T::zero(),
+            forward_swap_rate: T::zero(),
+            annuity: T::zero(),
+            effective_normal_vol: T::zero(),
+            effective_skew: T::zero(),
+            implied_normal_vol: T::zero(),
+        };
+    }
+    let p_te = curve.discount_factor(te);
+    let p_tm = curve.discount_factor(last_t);
+    let s0 = (p_te - p_tm) / ann;
+    let mut wg_sum = T::zero();
+    let mut wg2_sum = T::zero();
+    prev_t = te;
+    for &t in &s.payment_times {
+        if t <= te {
+            continue;
+        }
+        let tau = (t - prev_t).max(0.0);
+        let wj = curve.discount_factor(t) * tau / ann;
+        let gj = chey.g_fn(te, t);
+        wg_sum += wj * gj;
+        wg2_sum += wj * gj * gj;
+        prev_t = t;
+    }
+    let g_tm = chey.g_fn(te, last_t);
+    let q0 = (p_tm / ann * g_tm + s0 * wg_sum).max_val(T::from_f64(1e-10));
+    let k2_te = Cheyette1F::g(s.mean_reversion * 2.0, te);
+    let var_n = s.sigma0 * s.sigma0 * q0 * q0 * k2_te;
+    let eff_vol = (var_n / te).max_val(T::from_f64(1e-16)).sqrt();
+    let kt = s.mean_reversion * te;
+    let time_weight = if kt.val().abs() < 1e-4 {
+        T::one() + kt * 0.5
+    } else {
+        let e1 = (-kt).exp();
+        let e2 = e1 * e1;
+        let e3 = e2 * e1;
+        let num = (T::one() - e3) / 3.0 - e2 * (T::one() - e1);
+        let den = (T::one() - e2) * (T::one() - e2);
+        num * 2.0 / den.max_val(T::from_f64(1e-12))
+    };
+    let gamma_bond = ((p_tm / ann * g_tm * g_tm - s0 * wg2_sum) / q0 + wg_sum * 2.0) / q0;
+    let eff_skew = -s.skew_b * time_weight / q0 + gamma_bond * 0.25;
+    let dk = s.strike - s0;
+    let imp_vol = (eff_vol
+        * (T::one() + eff_skew * dk * 0.5 + eff_skew * eff_skew * dk * dk / 12.0))
+        .max_val(T::from_f64(1e-8));
+    let st = imp_vol * te.sqrt();
+    let omega = if s.is_payer { 1.0 } else { -1.0 };
+    let d = (s0 - s.strike) / st;
+    let unit = T::from_f64(omega) * (s0 - s.strike) * (T::from_f64(omega) * d).norm_cdf()
+        + st * d.norm_pdf();
+    CheyetteSwaptionValuation {
+        npv: s.notional * ann * unit,
+        forward_swap_rate: s0,
+        annuity: ann,
+        effective_normal_vol: eff_vol,
+        effective_skew: eff_skew,
+        implied_normal_vol: imp_vol,
+    }
+}
+
+#[cfg(test)]
+mod phase16_tests {
+    use super::*;
+    use ql_ad::Dual;
+    use ql_curves::FlatForwardCurve;
+    use ql_time::Date;
+    #[test]
+    fn cheyette_swaption_parity_and_ad() {
+        let d = Date::from_ymd(2024, 1, 1).unwrap();
+        let c = FlatForwardCurve::new(d, 0.03);
+        let mut s = CheyetteSwaptionSpec {
+            notional: 100.0,
+            strike: 0.032,
+            option_expiry: 1.0,
+            payment_times: vec![2.0, 3.0, 4.0, 5.0],
+            mean_reversion: 0.05,
+            sigma0: 0.008,
+            skew_b: -1.5,
+            is_payer: true,
+        };
+        let pay = price_cheyette_swaption_markov_projection(&s, &c);
+        s.is_payer = false;
+        let rec = price_cheyette_swaption_markov_projection(&s, &c);
+        let intrinsic = s.notional * pay.annuity * (pay.forward_swap_rate - s.strike);
+        assert!((pay.npv - rec.npv - intrinsic).abs() < 1e-10);
+        let h = 1e-5;
+        let eval_s = |sig: f64| {
+            let mut sp = s.clone();
+            sp.is_payer = true;
+            sp.sigma0 = sig;
+            price_cheyette_swaption_markov_projection(&sp, &c).npv
+        };
+        let fd = (eval_s(0.008 + h) - eval_s(0.008 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let cd = FlatForwardCurve::new(d, D::from_value(0.03));
+        let sd = CheyetteSwaptionSpec {
+            notional: D::from_value(100.0),
+            strike: D::from_value(0.032),
+            option_expiry: 1.0,
+            payment_times: vec![2.0, 3.0, 4.0, 5.0],
+            mean_reversion: D::from_value(0.05),
+            sigma0: D::variable(0.008, 0),
+            skew_b: D::from_value(-1.5),
+            is_payer: true,
+        };
+        let ad = price_cheyette_swaption_markov_projection(&sd, &cd).npv;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

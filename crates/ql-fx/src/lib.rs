@@ -489,3 +489,189 @@ mod phase15_tests {
         assert!((ad_dnt.d[0] - fd_dnt).abs() < 1e-5);
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct PrdcNoteSpec<T: Real = f64> {
+    pub notional: T,
+    pub spot_fx: T,
+    pub r_dom: T,
+    pub r_for: T,
+    pub a_dom: T,
+    pub sigma_dom: T,
+    pub a_for: T,
+    pub sigma_for: T,
+    pub sigma_fx: T,
+    pub rho_fx_dom: T,
+    pub rho_fx_for: T,
+    pub rho_dom_for: T,
+    pub coupon_times: Vec<f64>,
+    pub foreign_gearing: T,
+    pub domestic_gearing: T,
+    pub coupon_cap: T,
+    pub fx_knockout_barrier: Option<T>,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct PrdcValuation<T: Real> {
+    pub npv: T,
+    pub survival_probability: T,
+    pub expected_coupon_pv: T,
+}
+
+pub fn price_prdc_note_hybrid<T: Real>(s: &PrdcNoteSpec<T>) -> PrdcValuation<T> {
+    if s.coupon_times.is_empty() || s.spot_fx.val() <= 0.0 {
+        return PrdcValuation {
+            npv: T::zero(),
+            survival_probability: T::one(),
+            expected_coupon_pv: T::zero(),
+        };
+    }
+    let hw_b = |a: T, t: f64| -> T {
+        let tau = T::from_f64(t.max(0.0));
+        let at = a * tau;
+        if at.val().abs() < 1e-5 {
+            tau * (T::one() - at * 0.5 + at * at / 6.0)
+        } else {
+            (T::one() - (-at).exp()) / a
+        }
+    };
+    let nodes = [
+        -0.9602898565,
+        -0.7966664774,
+        -0.5255324099,
+        -0.1834346425,
+        0.1834346425,
+        0.5255324099,
+        0.7966664774,
+        0.9602898565,
+    ];
+    let weights = [
+        0.1012285363,
+        0.2223810345,
+        0.3137066459,
+        0.3626837834,
+        0.3626837834,
+        0.3137066459,
+        0.2223810345,
+        0.1012285363,
+    ];
+    let mut coupon_pv = T::zero();
+    let mut surv = T::one();
+    let mut prev_t = 0.0;
+    let gf = s.foreign_gearing.max_val(T::from_f64(1e-8));
+    let k1 = s.spot_fx * (s.domestic_gearing / gf);
+    let k2 = s.spot_fx * ((s.domestic_gearing + s.coupon_cap) / gf);
+    for &tk in &s.coupon_times {
+        if tk <= prev_t {
+            continue;
+        }
+        let tau = tk - prev_t;
+        let mut var_fx = T::zero();
+        for (&x, &w) in nodes.iter().zip(weights.iter()) {
+            let u = 0.5 * tk * (x + 1.0);
+            let bd = hw_b(s.a_dom, tk - u);
+            let bf = hw_b(s.a_for, tk - u);
+            let inst = s.sigma_fx * s.sigma_fx
+                + s.sigma_dom * s.sigma_dom * bd * bd
+                + s.sigma_for * s.sigma_for * bf * bf
+                + s.rho_fx_dom * s.sigma_fx * s.sigma_dom * bd * 2.0
+                - s.rho_fx_for * s.sigma_fx * s.sigma_for * bf * 2.0
+                - s.rho_dom_for * s.sigma_dom * s.sigma_for * bd * bf * 2.0;
+            var_fx += inst * (0.5 * tk * w);
+        }
+        let sig_eff = (var_fx.max_val(T::from_f64(1e-12)) / tk).sqrt();
+        let c1 = garman_kohlhagen_price(
+            s.spot_fx,
+            k1,
+            sig_eff,
+            T::from_f64(tk),
+            s.r_dom,
+            s.r_for,
+            true,
+        );
+        let c2 = garman_kohlhagen_price(
+            s.spot_fx,
+            k2,
+            sig_eff,
+            T::from_f64(tk),
+            s.r_dom,
+            s.r_for,
+            true,
+        );
+        let step_pv = s.notional * tau * (gf / s.spot_fx) * (c1 - c2).max_val(T::zero()) * surv;
+        coupon_pv += step_pv;
+        if let Some(h_ko) = s.fx_knockout_barrier {
+            let fwd_fx = s.spot_fx * ((s.r_dom - s.r_for) * tk).exp();
+            let st = sig_eff * tk.sqrt();
+            let p_stay = ((h_ko / fwd_fx).ln() / st.max_val(T::from_f64(1e-8))).norm_cdf();
+            surv *= p_stay.max_val(T::zero()).min_val(T::one());
+        }
+        prev_t = tk;
+    }
+    PrdcValuation {
+        npv: coupon_pv,
+        survival_probability: surv,
+        expected_coupon_pv: coupon_pv,
+    }
+}
+
+#[cfg(test)]
+mod phase16_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn prdc_correlation_monotonicity_and_ad() {
+        let mut s = PrdcNoteSpec {
+            notional: 100.0,
+            spot_fx: 150.0,
+            r_dom: 0.01,
+            r_for: 0.04,
+            a_dom: 0.05,
+            sigma_dom: 0.008,
+            a_for: 0.08,
+            sigma_for: 0.01,
+            sigma_fx: 0.12,
+            rho_fx_dom: 0.3,
+            rho_fx_for: -0.2,
+            rho_dom_for: 0.25,
+            coupon_times: vec![1.0, 2.0, 3.0],
+            foreign_gearing: 0.15,
+            domestic_gearing: 0.10,
+            coupon_cap: 0.08,
+            fx_knockout_barrier: Some(180.0),
+        };
+        let v_pos = price_prdc_note_hybrid(&s).npv;
+        s.rho_fx_dom = -0.3;
+        let v_neg = price_prdc_note_hybrid(&s).npv;
+        assert!(v_pos != v_neg && v_pos > 0.0);
+        let h = 1e-5;
+        let eval_s = |fx: f64| {
+            let mut sp = s.clone();
+            sp.spot_fx = fx;
+            price_prdc_note_hybrid(&sp).npv
+        };
+        let fd = (eval_s(150.0 + h) - eval_s(150.0 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let sd = PrdcNoteSpec {
+            notional: D::from_value(100.0),
+            spot_fx: D::variable(150.0, 0),
+            r_dom: D::from_value(0.01),
+            r_for: D::from_value(0.04),
+            a_dom: D::from_value(0.05),
+            sigma_dom: D::from_value(0.008),
+            a_for: D::from_value(0.08),
+            sigma_for: D::from_value(0.01),
+            sigma_fx: D::from_value(0.12),
+            rho_fx_dom: D::from_value(-0.3),
+            rho_fx_for: D::from_value(-0.2),
+            rho_dom_for: D::from_value(0.25),
+            coupon_times: vec![1.0, 2.0, 3.0],
+            foreign_gearing: D::from_value(0.15),
+            domestic_gearing: D::from_value(0.10),
+            coupon_cap: D::from_value(0.08),
+            fx_knockout_barrier: Some(D::from_value(180.0)),
+        };
+        let ad = price_prdc_note_hybrid(&sd).npv;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

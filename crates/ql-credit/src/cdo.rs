@@ -530,3 +530,251 @@ mod phase13_tests {
         assert!((sum_prot - single_sum).abs() < 1e-10);
     }
 }
+
+#[derive(Copy, Clone, Debug)]
+pub struct BaseCorrelationTrancheQuote<T: Real = f64> {
+    pub attachment: f64,
+    pub detachment: f64,
+    pub running_spread: T,
+    pub upfront: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct BaseCorrelationCurve<T: Real = f64> {
+    pub detachments: Vec<f64>,
+    pub base_correlations: Vec<T>,
+    pub hazard_rate: T,
+    pub recovery_rate: T,
+    pub risk_free_rate: T,
+    pub payment_times: Vec<f64>,
+}
+
+impl<T: Real> BaseCorrelationCurve<T> {
+    pub fn interpolate(&self, detachment: f64) -> T {
+        if self.detachments.is_empty() {
+            return T::from_f64(0.3);
+        }
+        if detachment <= self.detachments[0] {
+            return self.base_correlations[0];
+        }
+        let last = self.detachments.len() - 1;
+        if detachment >= self.detachments[last] {
+            return self.base_correlations[last];
+        }
+        for i in 0..last {
+            if detachment >= self.detachments[i] && detachment <= self.detachments[i + 1] {
+                let w = (detachment - self.detachments[i])
+                    / (self.detachments[i + 1] - self.detachments[i]).max(1e-12);
+                return self.base_correlations[i] * (1.0 - w) + self.base_correlations[i + 1] * w;
+            }
+        }
+        self.base_correlations[last]
+    }
+}
+
+fn base_tranche_legs<T: Real>(
+    detachment: f64,
+    rho: T,
+    hazard_rate: T,
+    recovery_rate: T,
+    risk_free_rate: T,
+    payment_times: &[f64],
+) -> (T, T) {
+    let k_d = T::from_f64(detachment);
+    let mut prot = T::zero();
+    let mut ann = T::zero();
+    let mut prev_el = T::zero();
+    let mut prev_t = 0.0;
+    for &t in payment_times {
+        if t <= prev_t {
+            continue;
+        }
+        let dt = t - prev_t;
+        let pd = (T::one() - (-hazard_rate * t).exp())
+            .max_val(T::from_f64(1e-12))
+            .min_val(T::from_f64(1.0 - 1e-12));
+        let el = gaussian_lhp_expected_tranche_loss(pd, recovery_rate, rho, T::zero(), k_d);
+        let df = (-risk_free_rate * t).exp();
+        prot += df * (el - prev_el).max_val(T::zero());
+        ann += df * dt * (k_d - (el + prev_el) * 0.5).max_val(T::zero());
+        prev_el = el;
+        prev_t = t;
+    }
+    (prot, ann)
+}
+
+pub fn bootstrap_base_correlation_curve<T: Real>(
+    quotes: &[BaseCorrelationTrancheQuote<T>],
+    hazard_rate: T,
+    recovery_rate: T,
+    risk_free_rate: T,
+    payment_times: &[f64],
+) -> BaseCorrelationCurve<T> {
+    let mut detachments = Vec::with_capacity(quotes.len());
+    let mut base_corrs = Vec::with_capacity(quotes.len());
+    let mut prev_prot = T::zero();
+    let mut prev_ann = T::zero();
+    for q in quotes {
+        let width = (q.detachment - q.attachment).max(1e-8);
+        let target_fn = |rho_f: f64| -> f64 {
+            let (p_d, a_d) = base_tranche_legs(
+                q.detachment,
+                rho_f,
+                hazard_rate.val(),
+                recovery_rate.val(),
+                risk_free_rate.val(),
+                payment_times,
+            );
+            let tr_prot = p_d - prev_prot.val();
+            let tr_ann = a_d - prev_ann.val();
+            tr_prot - q.upfront.val() * width - q.running_spread.val() * tr_ann
+        };
+        let mut lo = 0.02f64;
+        let mut hi = 0.92f64;
+        let f_lo = target_fn(lo);
+        for _ in 0..42 {
+            let mid = 0.5 * (lo + hi);
+            let f_mid = target_fn(mid);
+            if (f_mid >= 0.0) == (f_lo >= 0.0) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let root_f64 = 0.5 * (lo + hi);
+        let h_rho = 1e-5;
+        let residual_at = |r: T| {
+            let (p_d, a_d) = base_tranche_legs(
+                q.detachment,
+                r,
+                hazard_rate,
+                recovery_rate,
+                risk_free_rate,
+                payment_times,
+            );
+            (p_d - prev_prot) - q.upfront * width - q.running_spread * (a_d - prev_ann)
+        };
+        let f_x = (residual_at(T::from_f64(root_f64 + h_rho))
+            - residual_at(T::from_f64(root_f64 - h_rho)))
+            / (2.0 * h_rho);
+        let rho_t = ql_ad::ift_lift_1d(root_f64, residual_at, f_x, 0.0);
+        let (p_d, a_d) = base_tranche_legs(
+            q.detachment,
+            rho_t,
+            hazard_rate,
+            recovery_rate,
+            risk_free_rate,
+            payment_times,
+        );
+        prev_prot = p_d;
+        prev_ann = a_d;
+        detachments.push(q.detachment);
+        base_corrs.push(rho_t);
+    }
+    BaseCorrelationCurve {
+        detachments,
+        base_correlations: base_corrs,
+        hazard_rate,
+        recovery_rate,
+        risk_free_rate,
+        payment_times: payment_times.to_vec(),
+    }
+}
+
+pub fn price_mezzanine_tranche_base_correlation<T: Real>(
+    curve: &BaseCorrelationCurve<T>,
+    attachment: f64,
+    detachment: f64,
+    running_spread: T,
+    notional: T,
+) -> (T, T, T) {
+    let width = (detachment - attachment).max(1e-8);
+    let (prot_d, ann_d) = base_tranche_legs(
+        detachment,
+        curve.interpolate(detachment),
+        curve.hazard_rate,
+        curve.recovery_rate,
+        curve.risk_free_rate,
+        &curve.payment_times,
+    );
+    let (prot_a, ann_a) = if attachment <= 1e-12 {
+        (T::zero(), T::zero())
+    } else {
+        base_tranche_legs(
+            attachment,
+            curve.interpolate(attachment),
+            curve.hazard_rate,
+            curve.recovery_rate,
+            curve.risk_free_rate,
+            &curve.payment_times,
+        )
+    };
+    let tr_prot = (prot_d - prot_a).max_val(T::zero()) / width * notional;
+    let tr_ann = (ann_d - ann_a).max_val(T::from_f64(1e-12)) / width * notional;
+    let fair = tr_prot / tr_ann;
+    let npv_buyer = tr_prot - running_spread * tr_ann;
+    (npv_buyer, fair, tr_ann)
+}
+
+#[cfg(test)]
+mod phase16_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn base_correlation_reprices_tranches_and_matches_fd() {
+        let times = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let (p1, a1) = base_tranche_legs(0.03, 0.20, 0.02, 0.4, 0.03, &times);
+        let (p2, a2) = base_tranche_legs(0.07, 0.32, 0.02, 0.4, 0.03, &times);
+        let s1 = p1 / a1;
+        let s2 = (p2 - p1) / (a2 - a1);
+        let quotes = vec![
+            BaseCorrelationTrancheQuote {
+                attachment: 0.0,
+                detachment: 0.03,
+                running_spread: s1,
+                upfront: 0.0,
+            },
+            BaseCorrelationTrancheQuote {
+                attachment: 0.03,
+                detachment: 0.07,
+                running_spread: s2,
+                upfront: 0.0,
+            },
+        ];
+        let bc = bootstrap_base_correlation_curve(&quotes, 0.02, 0.4, 0.03, &times);
+        assert!((bc.base_correlations[0] - 0.20).abs() < 1e-4);
+        assert!((bc.base_correlations[1] - 0.32).abs() < 1e-4);
+        let (npv2, fair2, _) = price_mezzanine_tranche_base_correlation(&bc, 0.03, 0.07, s2, 100.0);
+        assert!(npv2.abs() < 1e-4 && (fair2 - s2).abs() < 1e-5);
+        let h = 1e-5;
+        let eval_s1 = |sp: f64| {
+            let mut q = quotes.clone();
+            q[0].running_spread = sp;
+            bootstrap_base_correlation_curve(&q, 0.02, 0.4, 0.03, &times).base_correlations[0]
+        };
+        let fd = (eval_s1(s1 + h) - eval_s1(s1 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let qd = vec![
+            BaseCorrelationTrancheQuote {
+                attachment: 0.0,
+                detachment: 0.03,
+                running_spread: D::variable(s1, 0),
+                upfront: D::zero(),
+            },
+            BaseCorrelationTrancheQuote {
+                attachment: 0.03,
+                detachment: 0.07,
+                running_spread: D::from_value(s2),
+                upfront: D::zero(),
+            },
+        ];
+        let bcd = bootstrap_base_correlation_curve(
+            &qd,
+            D::from_value(0.02),
+            D::from_value(0.4),
+            D::from_value(0.03),
+            &times,
+        );
+        assert!((bcd.base_correlations[0].d[0] - fd).abs() < 1e-4);
+    }
+}

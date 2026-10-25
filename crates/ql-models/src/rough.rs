@@ -269,3 +269,166 @@ pub fn rbergomi_hybrid_mc_price<T: Real>(
         .fold(T::zero(), |a, z| a + z);
     sum / n_paths.max(2) as f64
 }
+
+#[derive(Copy, Clone, Debug)]
+pub struct QuadraticRoughHestonParams<T: Real = f64> {
+    pub hurst: f64,
+    pub nu: T,
+    pub lambda: T,
+    pub a: T,
+    pub b: T,
+    pub c: T,
+    pub z0: T,
+}
+
+pub fn qrh_implied_vol_expansion<T: Real>(
+    p: &QuadraticRoughHestonParams<T>,
+    forward: T,
+    strike: T,
+    expiry: T,
+) -> T {
+    let h = p.hurst.clamp(0.02, 0.49);
+    let t = expiry.max_val(T::from_f64(1e-8));
+    let zb = p.z0 - p.b;
+    let v0 = (p.a * zb * zb + p.c).max_val(T::from_f64(1e-10));
+    let gh = libm::tgamma(h + 1.5);
+    let th = t.powf(h);
+    let eta_h = p.nu * th / (T::from_f64(gh) + p.lambda * t.powf(h + 0.5));
+    let atm_var = v0 + p.a * eta_h * eta_h * v0 * (2.0 * h / (2.0 * h + 1.0)) * 0.5;
+    let atm = atm_var.max_val(T::from_f64(1e-10)).sqrt();
+    let k = (strike / forward).ln();
+    let skew = p.a * zb * eta_h / (atm * atm * t.sqrt());
+    let curv = eta_h * eta_h / (atm * atm * atm * t)
+        * (p.a + p.a * p.a * zb * zb * 2.0 / (atm * atm) * ((1.0 - 2.0 * h) / (1.0 + 2.0 * h)));
+    let total =
+        (T::one() + skew * k * 2.0 + (curv + skew * skew) * k * k).max_val(T::from_f64(0.04));
+    atm * total.sqrt()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn qrh_mc_price<T: Real>(
+    p: &QuadraticRoughHestonParams<T>,
+    spot: T,
+    strike: T,
+    rate: T,
+    div: T,
+    expiry: T,
+    n_steps: usize,
+    n_paths: usize,
+    is_call: bool,
+    seed: u64,
+) -> T {
+    let h = p.hurst.clamp(0.02, 0.49);
+    let steps = n_steps.max(4);
+    let paths = n_paths.max(2);
+    let dt = expiry / steps as f64;
+    let sqrt_dt = dt.sqrt();
+    let gh = libm::tgamma(h + 1.5);
+    let dt_h = dt.powf(h + 0.5);
+    let mut w_k = Vec::with_capacity(steps + 1);
+    w_k.push(T::zero());
+    for k in 1..=steps {
+        let diff = (k as f64).powf(h + 0.5) - ((k - 1) as f64).powf(h + 0.5);
+        w_k.push(dt_h * (diff / gh));
+    }
+    let rng = ql_math::PhiloxRng::new(seed);
+    let mut sum_call = T::zero();
+    let mut sum_put = T::zero();
+    for path in 0..paths {
+        let anti = path % 2 == 1;
+        let id = (path / 2) as u64;
+        let mut log_s = spot.ln();
+        let mut z = p.z0;
+        let mut dz_hist = vec![T::zero(); steps];
+        for i in 0..steps {
+            let zb = z - p.b;
+            let v = (p.a * zb * zb + p.c).max_val(T::from_f64(1e-10));
+            let eps = rng.normal4(id, i as u32)[0] * if anti { -1.0 } else { 1.0 };
+            let dw = sqrt_dt * eps;
+            log_s += (rate - div - v * 0.5) * dt + v.sqrt() * dw;
+            dz_hist[i] = -p.lambda * (z * dt + p.nu * v.sqrt() * dw);
+            let mut conv = T::zero();
+            for (j, &dz_j) in dz_hist.iter().enumerate().take(i + 1) {
+                conv += w_k[i + 1 - j] * dz_j / dt;
+            }
+            z = p.z0 + conv;
+        }
+        let s_t = log_s.exp();
+        let call_diff = s_t - strike;
+        let put_diff = -call_diff;
+        let call_payoff = (call_diff + (call_diff * call_diff + 1e-8).sqrt()) * 0.5;
+        let put_payoff = (put_diff + (put_diff * put_diff + 1e-8).sqrt()) * 0.5;
+        let df = (-rate * expiry).exp();
+        sum_call += call_payoff * df;
+        sum_put += put_payoff * df;
+    }
+    let raw_call = sum_call / paths as f64;
+    let raw_put = sum_put / paths as f64;
+    let parity = spot * (-div * expiry).exp() - strike * (-rate * expiry).exp();
+    let correction = raw_call - raw_put - parity;
+    if is_call {
+        raw_call - correction * 0.5
+    } else {
+        raw_put + correction * 0.5
+    }
+}
+
+#[cfg(test)]
+mod phase16_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn qrh_flat_limit_and_ad() {
+        let p_flat = QuadraticRoughHestonParams {
+            hurst: 0.1,
+            nu: 0.3,
+            lambda: 1.0,
+            a: 0.0,
+            b: 0.2,
+            c: 0.04,
+            z0: 0.0,
+        };
+        let iv = qrh_implied_vol_expansion(&p_flat, 100.0, 95.0, 1.0);
+        assert!((iv - 0.2).abs() < 1e-12);
+        let p = QuadraticRoughHestonParams {
+            hurst: 0.1,
+            nu: 0.4,
+            lambda: 1.2,
+            a: 0.5,
+            b: 0.25,
+            c: 0.02,
+            z0: 0.0,
+        };
+        let iv_put = qrh_implied_vol_expansion(&p, 100.0, 90.0, 1.0);
+        let iv_call = qrh_implied_vol_expansion(&p, 100.0, 110.0, 1.0);
+        assert!(iv_put > iv_call);
+        let mc_c = qrh_mc_price(&p, 100.0, 100.0, 0.02, 0.01, 1.0, 16, 128, true, 7);
+        let mc_p = qrh_mc_price(&p, 100.0, 100.0, 0.02, 0.01, 1.0, 16, 128, false, 7);
+        let parity = 100.0 * (-0.01f64).exp() - 100.0 * (-0.02f64).exp();
+        assert!((mc_c - mc_p - parity).abs() < 0.35);
+        let h = 1e-5;
+        let eval_b = |b_val: f64| {
+            let mut p2 = p;
+            p2.b = b_val;
+            qrh_implied_vol_expansion(&p2, 100.0, 92.0, 1.0)
+        };
+        let fd = (eval_b(0.25 + h) - eval_b(0.25 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let pd = QuadraticRoughHestonParams {
+            hurst: 0.1,
+            nu: D::from_value(0.4),
+            lambda: D::from_value(1.2),
+            a: D::from_value(0.5),
+            b: D::variable(0.25, 0),
+            c: D::from_value(0.02),
+            z0: D::zero(),
+        };
+        let ad = qrh_implied_vol_expansion(
+            &pd,
+            D::from_value(100.0),
+            D::from_value(92.0),
+            D::from_value(1.0),
+        );
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}

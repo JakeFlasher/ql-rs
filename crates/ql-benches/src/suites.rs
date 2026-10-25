@@ -5,8 +5,9 @@ use ql_ad::{Dual, Dual2, Real, TapeVar};
 use ql_commodities as _;
 use ql_credit::asb_recursive_expected_tranche_loss;
 use ql_credit::{
-    CalibratedCreditCurve, CdsQuote, CreditDefaultSwap, IsdaCdsEngine, ProtectionSide,
-    SurvivalProbabilityCurve,
+    BaseCorrelationTrancheQuote, CalibratedCreditCurve, CdsQuote, CreditDefaultSwap, IsdaCdsEngine,
+    ProtectionSide, SurvivalProbabilityCurve, bootstrap_base_correlation_curve,
+    price_mezzanine_tranche_base_correlation,
 };
 use ql_curves::{
     CalibratedCurveSystem, DiscountCurve, FlatForwardCurve, MonotoneConvexZeroCurve,
@@ -18,7 +19,8 @@ use ql_exotics::{
     ParisianBarrierOptionSpec, price_barrier_option, price_parisian_option_mc_ad,
 };
 use ql_fixed_income::{
-    SpecifiedPoolMbsSpec, TbaDollarRollSpec, analyze_tba_dollar_roll, price_specified_pool_mbs,
+    CmoTrancheSpec, CmoWaterfallSpec, SpecifiedPoolMbsSpec, TbaDollarRollSpec,
+    analyze_tba_dollar_roll, price_cmo_waterfall, price_specified_pool_mbs,
 };
 use ql_fx::{CalibratedXccsCurve, ConstNotionalXccs, XccsQuote};
 use ql_fx::{FxSmileQuote, FxVannaVolgaSmile};
@@ -30,16 +32,19 @@ use ql_instruments::{FixedRateLeg, OptionType, ResolvedCouponLeg};
 use ql_levy::{VarianceGamma, cos_levy_price_strip};
 use ql_mc::{GbmSoaSimulator, PhiloxRng, price_asian_arithmetic_rqmc};
 use ql_models::HullWhite1F;
-use ql_models::{Bergomi2FParams, HestonParams, bergomi_2f_implied_vol_bg, heston_cos_price};
+use ql_models::{
+    Bergomi2FParams, HestonParams, QuadraticRoughHestonParams, bergomi_2f_implied_vol_bg,
+    heston_cos_price, qrh_implied_vol_expansion,
+};
 use ql_portfolio::{
     BoxConstrainedMarkowitzSpec, MarketSnapshot, NestedClusteredOptimizationSpec, PortfolioDag,
-    PortfolioTrade, box_constrained_markowitz_weights, gerber_covariance_matrix,
-    nested_clustered_optimization_weights, risk_budgeting_weights,
+    PortfolioTrade, box_constrained_markowitz_weights, conditional_drawdown_at_risk,
+    gerber_covariance_matrix, nested_clustered_optimization_weights, risk_budgeting_weights,
 };
 use ql_rates as _;
 use ql_rates::{
-    RfrCapletSpec, RfrRateType, willems_backward_sabr_caplet_price,
-    willems_backward_sabr_caplet_strip,
+    CheyetteSwaptionSpec, RfrCapletSpec, RfrRateType, price_cheyette_swaption_markov_projection,
+    willems_backward_sabr_caplet_price, willems_backward_sabr_caplet_strip,
 };
 use ql_scripting::{BytecodeProgram, ScriptMcEngine, ScriptedProduct};
 use ql_time::{BitsetCalendar, Date, DayCounter, Frequency};
@@ -60,7 +65,7 @@ fn config(scale: usize) -> BenchConfig {
         // parallel.  `scale` changes only this repetition count; the domain
         // workload itself remains invariant across test and bench modes.
         // The short parity configuration intentionally uses one iteration so
-        // the complete 20-suite test remains a fast (<2s on CI) invariant
+        // the complete 28-suite test remains a fast (<2s on CI) invariant
         // check rather than a second timing benchmark.
         iters_per_sample: if samples <= 3 {
             scale.max(1)
@@ -3015,8 +3020,140 @@ pub fn benchmark_phase15_jy_tba_bergomi_nco(scale: usize) -> ComparisonRow {
     )
 }
 
+fn phase16_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
+    let d = date(2024, 1, 1);
+    let curve = FlatForwardCurve::new(d, T::from_f64(0.03) + x[0] * 0.001);
+    let chey = price_cheyette_swaption_markov_projection(
+        &CheyetteSwaptionSpec {
+            notional: T::from_f64(100.0),
+            strike: T::from_f64(0.032) + x[1] * 0.0001,
+            option_expiry: 1.0,
+            payment_times: vec![2.0, 3.0, 4.0, 5.0],
+            mean_reversion: T::from_f64(0.05) + x[2] * 0.001,
+            sigma0: T::from_f64(0.008) + x[3] * 0.0001,
+            skew_b: T::from_f64(-1.5),
+            is_payer: true,
+        },
+        &curve,
+    )
+    .npv;
+    let cmo = price_cmo_waterfall(
+        &CmoWaterfallSpec {
+            original_balance: T::from_f64(100.0),
+            wac: T::from_f64(0.04),
+            pass_through_rate: T::from_f64(0.035),
+            term_months: 24,
+            psa_speed: T::from_f64(1.0) + x[0] * 0.01,
+            pac_collar_psa: Some((T::from_f64(0.5), T::from_f64(2.0))),
+            tranches: vec![
+                CmoTrancheSpec {
+                    initial_balance: T::from_f64(60.0),
+                    coupon_rate: T::from_f64(0.035),
+                    is_pac: true,
+                },
+                CmoTrancheSpec {
+                    initial_balance: T::from_f64(40.0),
+                    coupon_rate: T::from_f64(0.045),
+                    is_pac: false,
+                },
+            ],
+        },
+        &curve,
+        T::from_f64(0.005) + x[1] * 0.0001,
+    )
+    .total_structure_pv;
+    let qrh = qrh_implied_vol_expansion(
+        &QuadraticRoughHestonParams {
+            hurst: 0.1,
+            nu: T::from_f64(0.35) + x[0] * 0.001,
+            lambda: T::from_f64(1.2),
+            a: T::from_f64(0.45) + x[1] * 0.001,
+            b: T::from_f64(0.2) + x[2] * 0.001,
+            c: T::from_f64(0.04) + x[3] * 0.001,
+            z0: T::zero(),
+        },
+        T::from_f64(100.0),
+        T::from_f64(100.0),
+        T::from_f64(1.0),
+    );
+    let times = [1.0, 2.0, 3.0, 4.0, 5.0];
+    let q1 = BaseCorrelationTrancheQuote {
+        attachment: 0.0,
+        detachment: 0.03,
+        running_spread: T::from_f64(0.015) + x[0] * 0.0001,
+        upfront: T::zero(),
+    };
+    let q2 = BaseCorrelationTrancheQuote {
+        attachment: 0.03,
+        detachment: 0.07,
+        running_spread: T::from_f64(0.02) + x[1] * 0.0001,
+        upfront: T::zero(),
+    };
+    let bc = bootstrap_base_correlation_curve(
+        &[q1, q2],
+        T::from_f64(0.02) + x[2] * 0.0001,
+        T::from_f64(0.4),
+        T::from_f64(0.03) + x[3] * 0.0001,
+        &times,
+    );
+    let (_, fair, _) = price_mezzanine_tranche_base_correlation(
+        &bc,
+        0.03,
+        0.07,
+        T::from_f64(0.02) + x[1] * 0.0001,
+        T::from_f64(100.0),
+    );
+    let rets = (0..12)
+        .map(|i| T::from_f64(0.01 * ((i % 5) as f64 - 2.0)) + x[3] * 0.0001)
+        .collect::<Vec<_>>();
+    let cdar = conditional_drawdown_at_risk(&rets, 0.75).cdar;
+    [chey, cmo, qrh, fair + cdar]
+}
+
+pub fn benchmark_cheyette_cmo_qrh_basecorr_cdar_aad(scale: usize) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let h = 1e-5;
+    let baseline = || {
+        let mut checksum = 0.0;
+        for component in 0..4 {
+            checksum += phase16_workloads(x0)[component];
+            for lane in 0..4 {
+                let mut up = x0;
+                let mut dn = x0;
+                up[lane] += h;
+                dn[lane] -= h;
+                checksum += (phase16_workloads(up)[component] - phase16_workloads(dn)[component])
+                    / (2.0 * h);
+            }
+        }
+        checksum
+    };
+    let sota = || {
+        type D = Dual<4>;
+        let x = [
+            D::variable(x0[0], 0),
+            D::variable(x0[1], 1),
+            D::variable(x0[2], 2),
+            D::variable(x0[3], 3),
+        ];
+        phase16_workloads(x)
+            .iter()
+            .map(|y| y.val + y.d.iter().sum::<f64>())
+            .sum::<f64>()
+    };
+    run_comparison(
+        "28_cheyette_cmo_qrh_basecorr_cdar_aad",
+        "Cheyette/CMO/QRH/BaseCorr/EVaR single-pass AD",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
+}
+
 pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
-    // Keep all quantitative engine dependencies linked into the 27-suite
+    // Keep all quantitative engine dependencies linked into the 28-suite
     // benchmark binary, including engines used by the parity harness.
     let _ = ql_math::inv_norm_cdf(0.5);
     let _ = std::mem::size_of::<ql_pde::Fd2dHestonEngine>();
@@ -3052,6 +3189,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_phase13_vix_parisian_robust(scale),
         benchmark_phase14_double_heston_tarf_coco_hrp(scale),
         benchmark_phase15_jy_tba_bergomi_nco(scale),
+        benchmark_cheyette_cmo_qrh_basecorr_cdar_aad(scale),
     ]
 }
 

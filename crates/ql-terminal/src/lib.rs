@@ -44,7 +44,8 @@ use ql_commodities::{
     price_gas_storage, price_swing_option,
 };
 use ql_credit::{
-    CalibratedCreditCurve, CdsQuote, CreditDefaultSwap, IsdaCdsEngine, ProtectionSide,
+    BaseCorrelationTrancheQuote, CalibratedCreditCurve, CdsQuote, CreditDefaultSwap, IsdaCdsEngine,
+    ProtectionSide, bootstrap_base_correlation_curve,
 };
 use ql_curves::{DiscountCurve, FlatForwardCurve, MonotoneConvexZeroCurve, YieldTermStructure};
 use ql_exotics::{
@@ -53,9 +54,9 @@ use ql_exotics::{
     price_parisian_option_mc_ad, price_worst_of_autocallable,
 };
 use ql_fixed_income::{
-    CocoBondSpec, CocoTriggerPayoff, ConvertibleBondSpec, SpecifiedPoolMbsSpec, TbaDollarRollSpec,
-    analyze_tba_dollar_roll, price_coco_bond_ds, price_convertible_bond_tf,
-    price_specified_pool_mbs,
+    CmoTrancheSpec, CmoWaterfallSpec, CocoBondSpec, CocoTriggerPayoff, ConvertibleBondSpec,
+    SpecifiedPoolMbsSpec, TbaDollarRollSpec, analyze_tba_dollar_roll, price_cmo_waterfall,
+    price_coco_bond_ds, price_convertible_bond_tf, price_specified_pool_mbs,
 };
 use ql_fx::ConstNotionalXccs;
 use ql_fx::{
@@ -69,22 +70,26 @@ use ql_inflation::{
 };
 use ql_instruments::{BaroneAdesiWhaleyEngine, SwapType, VanillaSwapSpec};
 use ql_levy::{VarianceGamma, cos_levy_price};
-use ql_models::rough::{RoughBergomiParams, rbergomi_hybrid_mc_price};
+use ql_models::rough::{
+    QuadraticRoughHestonParams, RoughBergomiParams, qrh_implied_vol_expansion,
+    rbergomi_hybrid_mc_price,
+};
 use ql_models::{
     BatesParams, Bergomi2FParams, DoubleHestonParams, HestonParams, HullWhite1F,
     LiftedHestonParams, bergomi_2f_implied_vol_bg, double_heston_cos_price,
     heston_bates_vix_future_and_option_price, lifted_heston_cos_price,
 };
-use ql_portfolio::gaussian_expected_shortfall;
 use ql_portfolio::{
     BoxConstrainedMarkowitzSpec, MarketSnapshot, ObizhaevaWangSpec, PortfolioDag,
     PortfolioRiskSummary, PortfolioTrade, RobustMarkowitzSpec, box_constrained_markowitz_weights,
     equal_risk_contribution_weights, gerber_covariance_matrix, hierarchical_risk_parity_weights,
     nested_clustered_optimization_weights, obizhaeva_wang_execution, robust_markowitz_weights,
 };
+use ql_portfolio::{conditional_drawdown_at_risk, gaussian_expected_shortfall};
 use ql_rates::{
-    BermudanSwaption, EuropeanSwaption, G2PlusPlus, HullWhiteBermudanTreeEngine, RfrCapletSpec,
-    RfrRateType, SwaptionSettlement, willems_backward_sabr_caplet_price,
+    BermudanSwaption, CheyetteSwaptionSpec, EuropeanSwaption, G2PlusPlus,
+    HullWhiteBermudanTreeEngine, RfrCapletSpec, RfrRateType, SwaptionSettlement,
+    price_cheyette_swaption_markov_projection, willems_backward_sabr_caplet_price,
 };
 use ql_time::{BitsetCalendar, BusinessDayConvention, Date, DayCounter, Period};
 use ql_vol::{CalibratedSabrSmile, SmileStrikeQuote, implied_black_vol};
@@ -128,9 +133,10 @@ pub enum TabId {
     MonotoneConvexVixParisianRobust,
     Phase14Sota,
     Phase15Sota,
+    Phase16Sota,
 }
 impl TabId {
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 26] = [
         Self::Market,
         Self::Rates,
         Self::Credit,
@@ -156,6 +162,7 @@ impl TabId {
         Self::MonotoneConvexVixParisianRobust,
         Self::Phase14Sota,
         Self::Phase15Sota,
+        Self::Phase16Sota,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -184,6 +191,7 @@ impl TabId {
             Self::MonotoneConvexVixParisianRobust => "23 Monotone Convex / VIX / Parisian / Robust",
             Self::Phase14Sota => "24 Double Heston / TARF / CoCo / HRP",
             Self::Phase15Sota => "25 JY-Inflation / TBA-Roll / Bergomi2F / NCO",
+            Self::Phase16Sota => "26 Cheyette / CMO / QRH / BaseCorr / EVaR",
         }
     }
 }
@@ -500,6 +508,7 @@ pub struct WorkstationFrameData {
     pub vix_parisian_robust_metric: f64,
     pub double_heston_tarf_coco_hrp_metric: f64,
     pub jy_tba_bergomi_nco_metric: f64,
+    pub cheyette_cmo_qrh_evar_metric: f64,
     pub blotter_rows: Vec<(String, f64, String)>,
 }
 
@@ -1598,6 +1607,94 @@ impl DeskWorkstation {
             + pool.pv.val() * 1e-3
             + bg
             + nco.iter().sum::<f64>();
+        let cheyette = price_cheyette_swaption_markov_projection(
+            &CheyetteSwaptionSpec {
+                notional: 100.0,
+                strike: 0.032,
+                option_expiry: 1.0,
+                payment_times: vec![2.0, 3.0, 4.0, 5.0],
+                mean_reversion: 0.05,
+                sigma0: 0.008,
+                skew_b: -1.5,
+                is_payer: true,
+            },
+            &active_curves.curves[0],
+        );
+        let cmo = price_cmo_waterfall(
+            &CmoWaterfallSpec {
+                original_balance: 100.0,
+                wac: 0.04,
+                pass_through_rate: 0.035,
+                term_months: 24,
+                psa_speed: 1.0,
+                pac_collar_psa: Some((0.5, 2.0)),
+                tranches: vec![
+                    CmoTrancheSpec {
+                        initial_balance: 60.0,
+                        coupon_rate: 0.035,
+                        is_pac: true,
+                    },
+                    CmoTrancheSpec {
+                        initial_balance: 40.0,
+                        coupon_rate: 0.045,
+                        is_pac: false,
+                    },
+                ],
+            },
+            &active_curves.curves[0],
+            0.0,
+        );
+        let qrh = qrh_implied_vol_expansion(
+            &QuadraticRoughHestonParams {
+                hurst: 0.1,
+                nu: 0.35,
+                lambda: 1.2,
+                a: 0.45,
+                b: 0.2,
+                c: market.eq_vol * market.eq_vol,
+                z0: 0.0,
+            },
+            market.eq_spot,
+            market.eq_spot,
+            1.0,
+        );
+        let dd_returns = (0..12)
+            .map(|i| 0.01 * ((i % 5) as f64 - 2.0) - 0.002 * rate)
+            .collect::<Vec<_>>();
+        let evar_cdar = conditional_drawdown_at_risk(&dd_returns, 0.75).cdar;
+        let base_quotes = vec![
+            BaseCorrelationTrancheQuote {
+                attachment: 0.0,
+                detachment: 0.03,
+                running_spread: 0.015 + rate,
+                upfront: 0.0,
+            },
+            BaseCorrelationTrancheQuote {
+                attachment: 0.03,
+                detachment: 0.07,
+                running_spread: 0.02 + rate,
+                upfront: 0.0,
+            },
+        ];
+        let base_corr = bootstrap_base_correlation_curve(
+            &base_quotes,
+            0.02 + rate * 0.1,
+            0.4,
+            rate,
+            &[1.0, 2.0, 3.0, 4.0, 5.0],
+        );
+        let (_, base_fair, _) = ql_credit::price_mezzanine_tranche_base_correlation(
+            &base_corr,
+            0.03,
+            0.07,
+            0.02 + rate,
+            100.0,
+        );
+        let cheyette_cmo_qrh_evar_metric = cheyette.npv.val()
+            + cmo.total_structure_pv.val()
+            + qrh.val()
+            + evar_cdar
+            + base_fair.val();
         let blotter_rows = vec![
             ("IRS 5Y PayFix".to_string(), irs_npv, "IFT".to_string()),
             ("Heston Call 1Y".to_string(), heston_npv, "COS".to_string()),
@@ -1697,6 +1794,7 @@ impl DeskWorkstation {
             vix_parisian_robust_metric,
             double_heston_tarf_coco_hrp_metric,
             jy_tba_bergomi_nco_metric,
+            cheyette_cmo_qrh_evar_metric,
             blotter_rows,
         }
     }
@@ -1921,6 +2019,10 @@ impl DeskWorkstation {
                 frame.jy_tba_bergomi_nco_metric
             ),
             format!(
+                "26 Cheyette/CMO/QRH/BaseCorr/EVaR: {:.2}",
+                frame.cheyette_cmo_qrh_evar_metric
+            ),
+            format!(
                 "DAG recomputed: {}/{}",
                 frame.dag_recomputed_trades, frame.dag_total_trades
             ),
@@ -1931,7 +2033,7 @@ impl DeskWorkstation {
         // There are six IR buckets, five credit buckets and ten telemetry
         // lines (including Tab 23).  Render all 21 rows instead of silently
         // dropping the final BL/Risk-Parity line.
-        const BOTTOM_ROWS: usize = 23;
+        const BOTTOM_ROWS: usize = 24;
         while left_bottom.len() < BOTTOM_ROWS {
             left_bottom.push(String::new());
         }
@@ -1990,7 +2092,7 @@ mod phase14_tests {
     use super::*;
     #[test]
     fn phase14_tab_is_registered() {
-        assert_eq!(TabId::ALL.len(), 25);
+        assert_eq!(TabId::ALL.len(), 26);
         assert!(TabId::ALL.contains(&TabId::Phase14Sota));
         assert!(TabId::ALL.contains(&TabId::Phase15Sota));
         let mut ws = DeskWorkstation::new();
@@ -2021,6 +2123,30 @@ mod phase15_tests {
         assert_ne!(
             stressed.jy_tba_bergomi_nco_metric,
             frame.jy_tba_bergomi_nco_metric
+        );
+    }
+}
+
+#[cfg(test)]
+mod phase16_tests {
+    use super::*;
+
+    #[test]
+    fn phase16_tab_and_metric_are_live() {
+        assert_eq!(TabId::ALL.len(), 26);
+        assert!(TabId::ALL.contains(&TabId::Phase16Sota));
+        let mut ws = DeskWorkstation::new();
+        let frame = ws.step_tick();
+        assert!(frame.cheyette_cmo_qrh_evar_metric.is_finite());
+        assert!(
+            ws.render_dashboard(&frame, false)
+                .contains("26 Cheyette/CMO/QRH/BaseCorr/EVaR")
+        );
+        ws.set_scenario(ScenarioKind::RatesPlus50Bp);
+        let stressed = ws.step_tick();
+        assert_ne!(
+            stressed.cheyette_cmo_qrh_evar_metric,
+            frame.cheyette_cmo_qrh_evar_metric
         );
     }
 }

@@ -439,3 +439,393 @@ mod phase15_tests {
         assert!(val.pv > 90.0 && val.wal > 0.4 && val.wal <= 1.0);
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct TreasuryFutureDeliverable<T: Real = f64> {
+    pub clean_price: T,
+    pub coupon_rate: T,
+    pub remaining_semiannual_periods: usize,
+    pub accrued_interest_spot: T,
+    pub accrued_interest_delivery: T,
+    pub interim_coupon: T,
+    pub yield_vol: T,
+    pub modified_duration: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct TreasuryFuturesBasketSpec<T: Real = f64> {
+    pub futures_price: T,
+    pub delivery_time: f64,
+    pub repo_rate: T,
+    pub notional_standard_yield: f64,
+    pub deliverables: Vec<TreasuryFutureDeliverable<T>>,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct DeliverableBondMetrics<T: Real> {
+    pub conversion_factor: T,
+    pub invoice_price: T,
+    pub gross_basis: T,
+    pub carry: T,
+    pub net_basis: T,
+    pub implied_repo_rate: T,
+    pub forward_cf_adjusted_price: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct TreasuryFuturesCtdAnalysis<T: Real> {
+    pub ctd_index: usize,
+    pub ctd_conversion_factor: T,
+    pub ctd_invoice_price: T,
+    pub ctd_net_basis: T,
+    pub ctd_implied_repo_rate: T,
+    pub switch_option_value: T,
+    pub option_adjusted_futures_price: T,
+    pub bond_metrics: Vec<DeliverableBondMetrics<T>>,
+}
+
+pub fn analyze_treasury_futures_ctd<T: Real>(
+    spec: &TreasuryFuturesBasketSpec<T>,
+) -> TreasuryFuturesCtdAnalysis<T> {
+    if spec.deliverables.is_empty() {
+        return TreasuryFuturesCtdAnalysis {
+            ctd_index: 0,
+            ctd_conversion_factor: T::one(),
+            ctd_invoice_price: T::zero(),
+            ctd_net_basis: T::zero(),
+            ctd_implied_repo_rate: T::zero(),
+            switch_option_value: T::zero(),
+            option_adjusted_futures_price: T::zero(),
+            bond_metrics: Vec::new(),
+        };
+    }
+    let dt = spec.delivery_time.max(1e-6);
+    let y_semi = (spec.notional_standard_yield.max(1e-6)) * 0.5;
+    let disc_semi = 1.0 / (1.0 + y_semi);
+    let mut metrics = Vec::with_capacity(spec.deliverables.len());
+    let mut best_idx = 0usize;
+    let mut best_irr = f64::NEG_INFINITY;
+    for (idx, b) in spec.deliverables.iter().enumerate() {
+        let m_per = b.remaining_semiannual_periods.max(1);
+        let df_n = disc_semi.powi(m_per as i32);
+        let ann_n = (1.0 - df_n) / y_semi;
+        let cf = b.coupon_rate * 0.5 * ann_n + df_n;
+        let invoice = spec.futures_price * cf + b.accrued_interest_delivery;
+        let dirty = b.clean_price + b.accrued_interest_spot;
+        let gross_basis = b.clean_price - spec.futures_price * cf;
+        let carry = (b.accrued_interest_delivery - b.accrued_interest_spot + b.interim_coupon)
+            * 100.0
+            - dirty * spec.repo_rate * dt;
+        let net_basis = gross_basis - carry;
+        let irr =
+            (invoice + b.interim_coupon * 100.0 - dirty) / (dirty.max_val(T::from_f64(1e-8)) * dt);
+        let fwd_clean = b.clean_price - carry;
+        let fwd_adj = fwd_clean / cf.max_val(T::from_f64(1e-8));
+        if irr.val() > best_irr {
+            best_irr = irr.val();
+            best_idx = idx;
+        }
+        metrics.push(DeliverableBondMetrics {
+            conversion_factor: cf,
+            invoice_price: invoice,
+            gross_basis,
+            carry,
+            net_basis,
+            implied_repo_rate: irr,
+            forward_cf_adjusted_price: fwd_adj,
+        });
+    }
+    let ctd = metrics[best_idx];
+    let switch_val = if metrics.len() >= 2 {
+        let mut runner_idx = if best_idx == 0 { 1 } else { 0 };
+        for i in 0..metrics.len() {
+            if i != best_idx
+                && metrics[i].forward_cf_adjusted_price.val()
+                    < metrics[runner_idx].forward_cf_adjusted_price.val()
+            {
+                runner_idx = i;
+            }
+        }
+        let b1 = &spec.deliverables[best_idx];
+        let b2 = &spec.deliverables[runner_idx];
+        let m1 = ctd.forward_cf_adjusted_price;
+        let m2 = metrics[runner_idx].forward_cf_adjusted_price;
+        let s1 = m1 * b1.modified_duration * b1.yield_vol;
+        let s2 = m2 * b2.modified_duration * b2.yield_vol;
+        let sig_sp =
+            ((s1 * s1 + s2 * s2 - s1 * s2 * 1.8).max_val(T::from_f64(1e-12))).sqrt() * dt.sqrt();
+        let d = (m1 - m2) / sig_sp;
+        ((m1 - m2) * d.norm_cdf() + sig_sp * d.norm_pdf()).max_val(T::zero())
+    } else {
+        T::zero()
+    };
+    TreasuryFuturesCtdAnalysis {
+        ctd_index: best_idx,
+        ctd_conversion_factor: ctd.conversion_factor,
+        ctd_invoice_price: ctd.invoice_price,
+        ctd_net_basis: ctd.net_basis,
+        ctd_implied_repo_rate: ctd.implied_repo_rate,
+        switch_option_value: switch_val,
+        option_adjusted_futures_price: ctd.forward_cf_adjusted_price - switch_val,
+        bond_metrics: metrics,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CmoTrancheSpec<T: Real = f64> {
+    pub initial_balance: T,
+    pub coupon_rate: T,
+    pub is_pac: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct CmoWaterfallSpec<T: Real = f64> {
+    pub original_balance: T,
+    pub wac: T,
+    pub pass_through_rate: T,
+    pub term_months: usize,
+    pub psa_speed: T,
+    pub pac_collar_psa: Option<(T, T)>,
+    pub tranches: Vec<CmoTrancheSpec<T>>,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct CmoTrancheValuation<T: Real> {
+    pub pv: T,
+    pub wal: T,
+    pub total_principal: T,
+    pub total_interest: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct CmoWaterfallValuation<T: Real> {
+    pub pool_pv: T,
+    pub pool_wal: T,
+    pub tranches: Vec<CmoTrancheValuation<T>>,
+    pub io_strip_pv: T,
+    pub total_structure_pv: T,
+}
+
+pub fn price_cmo_waterfall<T: Real>(
+    s: &CmoWaterfallSpec<T>,
+    curve: &impl YieldTermStructure<T>,
+    oas: T,
+) -> CmoWaterfallValuation<T> {
+    let n_m = s.term_months.max(1);
+    let rw = s.wac / 12.0;
+    let sim_pool_prin = |psa_mult: T| -> Vec<T> {
+        let mut bal = s.original_balance;
+        let mut flows = Vec::with_capacity(n_m);
+        for m in 1..=n_m {
+            let rem = (n_m - m + 1) as f64;
+            let pmt = if rw.val().abs() < 1e-14 {
+                bal / rem
+            } else {
+                bal * rw / (T::one() - (T::one() + rw).powf(-rem))
+            };
+            let sched = (pmt - bal * rw).max_val(T::zero()).min_val(bal);
+            let base_cpr = (0.002 * m as f64).min(0.06);
+            let cpr = (psa_mult * (base_cpr / 100.0))
+                .max_val(T::zero())
+                .min_val(T::from_f64(0.99));
+            let smm = T::one() - (T::one() - cpr).powf(1.0 / 12.0);
+            let pre = smm * (bal - sched).max_val(T::zero());
+            let prin = (sched + pre).min_val(bal);
+            flows.push(prin);
+            bal = (bal - prin).max_val(T::zero());
+        }
+        flows
+    };
+    let pac_sched = if let Some((psa_lo, psa_hi)) = s.pac_collar_psa {
+        let f_lo = sim_pool_prin(psa_lo);
+        let f_hi = sim_pool_prin(psa_hi);
+        f_lo.into_iter()
+            .zip(f_hi)
+            .map(|(a, b)| a.min_val(b))
+            .collect::<Vec<_>>()
+    } else {
+        vec![T::zero(); n_m]
+    };
+    let pool_prin = sim_pool_prin(s.psa_speed);
+    let k_tr = s.tranches.len();
+    let mut tr_bal: Vec<T> = s.tranches.iter().map(|t| t.initial_balance).collect();
+    let mut tr_pv = vec![T::zero(); k_tr];
+    let mut tr_wal_num = vec![T::zero(); k_tr];
+    let mut tr_prin_tot = vec![T::zero(); k_tr];
+    let mut tr_int_tot = vec![T::zero(); k_tr];
+    let mut io_pv = T::zero();
+    let mut pool_pv = T::zero();
+    let mut pool_wal_num = T::zero();
+    let mut pool_bal = s.original_balance;
+    for m in 1..=n_m {
+        let t = m as f64 / 12.0;
+        let df = curve.discount_factor(t) * (-oas * t).exp();
+        let p_tot = pool_prin[m - 1];
+        let pool_int = pool_bal * s.pass_through_rate / 12.0;
+        pool_pv += (p_tot + pool_int) * df;
+        pool_wal_num += p_tot * t;
+        let mut tr_int_sum = T::zero();
+        for i in 0..k_tr {
+            let icf = tr_bal[i] * s.tranches[i].coupon_rate / 12.0;
+            tr_int_tot[i] += icf;
+            tr_pv[i] += icf * df;
+            tr_int_sum += icf;
+        }
+        io_pv += (pool_int - tr_int_sum).max_val(T::zero()) * df;
+        let mut rem_p = p_tot;
+        if s.pac_collar_psa.is_some() {
+            let target = pac_sched[m - 1];
+            for i in 0..k_tr {
+                if s.tranches[i].is_pac {
+                    let alloc = rem_p.min_val(target).min_val(tr_bal[i]);
+                    tr_bal[i] = (tr_bal[i] - alloc).max_val(T::zero());
+                    rem_p = (rem_p - alloc).max_val(T::zero());
+                    tr_pv[i] += alloc * df;
+                    tr_wal_num[i] += alloc * t;
+                    tr_prin_tot[i] += alloc;
+                }
+            }
+            for i in 0..k_tr {
+                if !s.tranches[i].is_pac {
+                    let alloc = rem_p.min_val(tr_bal[i]);
+                    tr_bal[i] = (tr_bal[i] - alloc).max_val(T::zero());
+                    rem_p = (rem_p - alloc).max_val(T::zero());
+                    tr_pv[i] += alloc * df;
+                    tr_wal_num[i] += alloc * t;
+                    tr_prin_tot[i] += alloc;
+                }
+            }
+        }
+        for i in 0..k_tr {
+            if rem_p.val() <= 1e-14 {
+                break;
+            }
+            let alloc = rem_p.min_val(tr_bal[i]);
+            tr_bal[i] = (tr_bal[i] - alloc).max_val(T::zero());
+            rem_p = (rem_p - alloc).max_val(T::zero());
+            tr_pv[i] += alloc * df;
+            tr_wal_num[i] += alloc * t;
+            tr_prin_tot[i] += alloc;
+        }
+        pool_bal = (pool_bal - p_tot).max_val(T::zero());
+    }
+    let mut tranches = Vec::with_capacity(k_tr);
+    let mut sum_tr_pv = io_pv;
+    for i in 0..k_tr {
+        sum_tr_pv += tr_pv[i];
+        tranches.push(CmoTrancheValuation {
+            pv: tr_pv[i],
+            wal: tr_wal_num[i] / tr_prin_tot[i].max_val(T::from_f64(1e-12)),
+            total_principal: tr_prin_tot[i],
+            total_interest: tr_int_tot[i],
+        });
+    }
+    CmoWaterfallValuation {
+        pool_pv,
+        pool_wal: pool_wal_num / s.original_balance.max_val(T::from_f64(1e-12)),
+        tranches,
+        io_strip_pv: io_pv,
+        total_structure_pv: sum_tr_pv,
+    }
+}
+
+#[cfg(test)]
+mod phase16_tests {
+    use super::*;
+    use ql_ad::Dual;
+    use ql_curves::FlatForwardCurve;
+    use ql_time::Date;
+    #[test]
+    fn treasury_ctd_and_cmo_waterfall_conservation() {
+        let d = Date::from_ymd(2024, 1, 1).unwrap();
+        let c = FlatForwardCurve::new(d, 0.035);
+        let basket = TreasuryFuturesBasketSpec {
+            futures_price: 98.5,
+            delivery_time: 0.25,
+            repo_rate: 0.03,
+            notional_standard_yield: 0.06,
+            deliverables: vec![
+                TreasuryFutureDeliverable {
+                    clean_price: 99.2,
+                    coupon_rate: 0.06,
+                    remaining_semiannual_periods: 16,
+                    accrued_interest_spot: 0.5,
+                    accrued_interest_delivery: 1.0,
+                    interim_coupon: 0.0,
+                    yield_vol: 0.008,
+                    modified_duration: 6.5,
+                },
+                TreasuryFutureDeliverable {
+                    clean_price: 92.0,
+                    coupon_rate: 0.045,
+                    remaining_semiannual_periods: 18,
+                    accrued_interest_spot: 0.4,
+                    accrued_interest_delivery: 0.8,
+                    interim_coupon: 0.0,
+                    yield_vol: 0.008,
+                    modified_duration: 7.2,
+                },
+            ],
+        };
+        let ctd = analyze_treasury_futures_ctd(&basket);
+        assert!((ctd.bond_metrics[0].conversion_factor - 1.0).abs() < 1e-12);
+        assert!(ctd.switch_option_value > 0.0);
+        let cmo = CmoWaterfallSpec {
+            original_balance: 100.0,
+            wac: 0.055,
+            pass_through_rate: 0.05,
+            term_months: 60,
+            psa_speed: 150.0,
+            pac_collar_psa: Some((100.0, 300.0)),
+            tranches: vec![
+                CmoTrancheSpec {
+                    initial_balance: 60.0,
+                    coupon_rate: 0.045,
+                    is_pac: true,
+                },
+                CmoTrancheSpec {
+                    initial_balance: 40.0,
+                    coupon_rate: 0.045,
+                    is_pac: false,
+                },
+            ],
+        };
+        let w1 = price_cmo_waterfall(&cmo, &c, 0.0);
+        let mut cmo2 = cmo.clone();
+        cmo2.psa_speed = 250.0;
+        let w2 = price_cmo_waterfall(&cmo2, &c, 0.0);
+        assert!((w1.total_structure_pv - w1.pool_pv).abs() < 1e-10);
+        assert!((w1.tranches[0].wal - w2.tranches[0].wal).abs() < 1e-10);
+        let h = 1e-5;
+        let mut b_up = basket.clone();
+        let mut b_dn = basket.clone();
+        b_up.futures_price += h;
+        b_dn.futures_price -= h;
+        let fd = (analyze_treasury_futures_ctd(&b_up).ctd_implied_repo_rate
+            - analyze_treasury_futures_ctd(&b_dn).ctd_implied_repo_rate)
+            / (2.0 * h);
+        type D = Dual<1>;
+        let bd = TreasuryFuturesBasketSpec {
+            futures_price: D::variable(98.5, 0),
+            delivery_time: 0.25,
+            repo_rate: D::from_value(0.03),
+            notional_standard_yield: 0.06,
+            deliverables: basket
+                .deliverables
+                .iter()
+                .map(|x| TreasuryFutureDeliverable {
+                    clean_price: D::from_value(x.clean_price),
+                    coupon_rate: D::from_value(x.coupon_rate),
+                    remaining_semiannual_periods: x.remaining_semiannual_periods,
+                    accrued_interest_spot: D::from_value(x.accrued_interest_spot),
+                    accrued_interest_delivery: D::from_value(x.accrued_interest_delivery),
+                    interim_coupon: D::from_value(x.interim_coupon),
+                    yield_vol: D::from_value(x.yield_vol),
+                    modified_duration: D::from_value(x.modified_duration),
+                })
+                .collect(),
+        };
+        let ad = analyze_treasury_futures_ctd(&bd).ctd_implied_repo_rate;
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}
