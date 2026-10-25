@@ -9,6 +9,7 @@ fn snapshot() -> MarketSnapshot {
         ref_date: Date::from_ymd(2024, 1, 1).unwrap(),
         ois_quotes: [0.02, 0.021, 0.022],
         fwd_quotes: [0.025, 0.026, 0.027],
+        inflation_quotes: vec![("CPI".to_string(), 0.023)],
         heston_params: HestonParams {
             v0: 0.04,
             kappa: 1.5,

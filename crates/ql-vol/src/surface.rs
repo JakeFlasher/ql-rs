@@ -1417,9 +1417,311 @@ mod phase21_tests {
 }
 
 #[derive(Clone, Debug)]
-pub struct HestonNandiTsayDccGarchSpec<T: Real = f64> { pub spot:T,pub strike:T,pub daily_risk_free_rate:T,pub days_to_maturity:usize,pub initial_daily_variance:T,pub omega:T,pub alpha:T,pub beta:T,pub gamma_asymmetry:T,pub asset1_returns:Vec<T>,pub asset2_returns:Vec<T>,pub dcc_a:T,pub dcc_b:T }
+pub struct HestonNandiTsayDccGarchSpec<T: Real = f64> {
+    pub spot: T,
+    pub strike: T,
+    pub daily_risk_free_rate: T,
+    pub days_to_maturity: usize,
+    pub initial_daily_variance: T,
+    pub omega: T,
+    pub alpha: T,
+    pub beta: T,
+    pub gamma_asymmetry: T,
+    pub asset1_returns: Vec<T>,
+    pub asset2_returns: Vec<T>,
+    pub dcc_a: T,
+    pub dcc_b: T,
+}
 #[derive(Clone, Debug)]
-pub struct HestonNandiTsayDccGarchReport<T: Real = f64> { pub garch_persistence:T,pub long_run_annualized_vol:T,pub martingale_mgf_error:T,pub heston_nandi_call_price:T,pub heston_nandi_put_price:T,pub symmetric_garch_call_price:T,pub leverage_skew_impact:T,pub terminal_dcc_correlation:T,pub max_dcc_correlation:T,pub min_dcc_correlation:T }
-fn hn_call<T:Real>(s:&HestonNandiTsayDccGarchSpec<T>,gamma:T)->T{let n=s.days_to_maturity.max(1) as f64;let pers=s.beta+s.alpha*gamma*gamma;let var=(s.initial_daily_variance+(s.omega+s.alpha)/(T::one()-pers).max_val(T::from_f64(1e-8)))*T::from_f64(n);let vol=var.max_val(T::from_f64(1e-12)).sqrt();let t=T::from_f64(n/252.0);let d1=((s.spot/s.strike).ln()+(s.daily_risk_free_rate+T::from_f64(0.5)*vol*vol)*t)/((vol*t.sqrt()).max_val(T::from_f64(1e-12)));let d2=d1-vol*t.sqrt();s.spot*d1.norm_cdf()-s.strike*(-s.daily_risk_free_rate*t).exp()*d2.norm_cdf()}
-pub fn evaluate_heston_nandi_and_tsay_dcc_garch<T:Real>(s:&HestonNandiTsayDccGarchSpec<T>)->HestonNandiTsayDccGarchReport<T>{let n=s.days_to_maturity.max(1);let pers=s.beta+s.alpha*s.gamma_asymmetry*s.gamma_asymmetry;let lr=(T::from_f64(252.0)*(s.omega+s.alpha)/(T::one()-pers).max_val(T::from_f64(1e-8))).sqrt();let call=hn_call(s,s.gamma_asymmetry);let sym=hn_call(s,T::zero());let t=T::from_f64(n as f64/252.0);let put=call-s.spot+s.strike*(-s.daily_risk_free_rate*t).exp();let mut h1=s.initial_daily_variance;let mut h2=s.initial_daily_variance;let mut q11=T::one();let mut q22=T::one();let mut q12=T::zero();let mut max=T::from_f64(-1.);let mut min=T::from_f64(1.);let a=s.dcc_a.max_val(T::zero());let b=s.dcc_b.max_val(T::zero());let m=s.asset1_returns.len().min(s.asset2_returns.len());for i in 0..m{let e1=s.asset1_returns[i]/h1.max_val(T::from_f64(1e-12)).sqrt();let e2=s.asset2_returns[i]/h2.max_val(T::from_f64(1e-12)).sqrt();q11=(T::one()-a-b)+a*e1*e1+b*q11;q22=(T::one()-a-b)+a*e2*e2+b*q22;q12=a*e1*e2+b*q12;let rho=(q12/(q11*q22).max_val(T::from_f64(1e-12)).sqrt()).max_val(T::from_f64(-0.999999)).min_val(T::from_f64(0.999999));max=max.max_val(rho);min=min.min_val(rho);h1=s.omega+s.alpha*(s.asset1_returns[i]-s.gamma_asymmetry*h1.sqrt())*(s.asset1_returns[i]-s.gamma_asymmetry*h1.sqrt())+s.beta*h1;h2=s.omega+s.alpha*(s.asset2_returns[i]-s.gamma_asymmetry*h2.sqrt())*(s.asset2_returns[i]-s.gamma_asymmetry*h2.sqrt())+s.beta*h2;}let term=if m>0{q12/(q11*q22).max_val(T::from_f64(1e-12)).sqrt()}else{T::zero()};HestonNandiTsayDccGarchReport{garch_persistence:pers,long_run_annualized_vol:lr,martingale_mgf_error:T::zero(),heston_nandi_call_price:call,heston_nandi_put_price:put,symmetric_garch_call_price:sym,leverage_skew_impact:call-sym,terminal_dcc_correlation:term,max_dcc_correlation:max,min_dcc_correlation:min}}
-#[cfg(test)]mod phase24_hn_tests{use super::*;use ql_ad::Dual;fn mk<T:Real>(x:T)->HestonNandiTsayDccGarchSpec<T>{HestonNandiTsayDccGarchSpec{spot:x,strike:T::from_f64(100.),daily_risk_free_rate:T::from_f64(0.0001),days_to_maturity:30,initial_daily_variance:T::from_f64(0.0002),omega:T::from_f64(0.00001),alpha:T::from_f64(0.05),beta:T::from_f64(0.9),gamma_asymmetry:T::from_f64(0.2),asset1_returns:vec![T::from_f64(0.01),T::from_f64(-0.005),T::from_f64(0.002)],asset2_returns:vec![T::from_f64(0.008),T::from_f64(-0.004),T::from_f64(0.003)],dcc_a:T::from_f64(0.02),dcc_b:T::from_f64(0.95)}}#[test]fn phase24(){let r=evaluate_heston_nandi_and_tsay_dcc_garch(&mk(100.));assert!(r.martingale_mgf_error.val()<1e-12);assert!(r.terminal_dcc_correlation.val().abs()<1.);let h=1e-5;let fd=(evaluate_heston_nandi_and_tsay_dcc_garch(&mk(100.+h)).heston_nandi_call_price-evaluate_heston_nandi_and_tsay_dcc_garch(&mk(100.-h)).heston_nandi_call_price)/(2.*h);let ad=evaluate_heston_nandi_and_tsay_dcc_garch(&mk(Dual::<1>::variable(100.,0))).heston_nandi_call_price;assert!((ad.d[0]-fd).abs()<1e-5);}}
+pub struct HestonNandiTsayDccGarchReport<T: Real = f64> {
+    pub garch_persistence: T,
+    pub long_run_annualized_vol: T,
+    pub martingale_mgf_error: T,
+    pub heston_nandi_call_price: T,
+    pub heston_nandi_put_price: T,
+    pub symmetric_garch_call_price: T,
+    pub leverage_skew_impact: T,
+    pub terminal_dcc_correlation: T,
+    pub max_dcc_correlation: T,
+    pub min_dcc_correlation: T,
+}
+type C<T> = (T, T);
+fn c_add<T: Real>(a: C<T>, b: C<T>) -> C<T> {
+    (a.0 + b.0, a.1 + b.1)
+}
+fn c_sub<T: Real>(a: C<T>, b: C<T>) -> C<T> {
+    (a.0 - b.0, a.1 - b.1)
+}
+fn c_mul<T: Real>(a: C<T>, b: C<T>) -> C<T> {
+    (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0)
+}
+fn c_scale<T: Real>(a: C<T>, x: T) -> C<T> {
+    (a.0 * x, a.1 * x)
+}
+fn c_div<T: Real>(a: C<T>, b: C<T>) -> C<T> {
+    let den = (b.0 * b.0 + b.1 * b.1).max_val(T::from_f64(1e-18));
+    ((a.0 * b.0 + a.1 * b.1) / den, (a.1 * b.0 - a.0 * b.1) / den)
+}
+fn c_ln<T: Real>(z: C<T>) -> C<T> {
+    let mag = (z.0 * z.0 + z.1 * z.1)
+        .max_val(T::from_f64(1e-24))
+        .sqrt()
+        .ln();
+    let arg = if z.0.val() > 0.0 {
+        (z.1 / z.0).atan()
+    } else if z.1.val() >= 0.0 {
+        z.1.abs().atan() + T::from_f64(std::f64::consts::FRAC_PI_2)
+    } else {
+        -(z.1.abs().atan() + T::from_f64(std::f64::consts::FRAC_PI_2))
+    };
+    (mag, arg)
+}
+fn c_exp<T: Real>(z: C<T>) -> C<T> {
+    let e = z.0.exp();
+    (e * z.1.cos(), e * z.1.sin())
+}
+
+fn heston_nandi_ab<T: Real>(
+    s: &HestonNandiTsayDccGarchSpec<T>,
+    gamma_star: T,
+    phi: C<T>,
+) -> (C<T>, C<T>) {
+    let mut a = (T::zero(), T::zero());
+    let mut b = (T::zero(), T::zero());
+    let one = (T::one(), T::zero());
+    for _ in 0..s.days_to_maturity.max(1) {
+        let den = c_sub(one, c_scale(b, T::from_f64(2.0) * s.alpha));
+        let term = c_div(
+            c_scale(
+                c_mul(
+                    c_sub(phi, (gamma_star, T::zero())),
+                    c_sub(phi, (gamma_star, T::zero())),
+                ),
+                T::from_f64(0.5),
+            ),
+            den,
+        );
+        // The first term is phi*(gamma* - 1/2) - gamma*^2/2.
+        let first = c_sub(
+            c_scale(phi, gamma_star - T::from_f64(0.5)),
+            (T::from_f64(0.5) * gamma_star * gamma_star, T::zero()),
+        );
+        let b_next = c_add(c_add(first, c_scale(b, s.beta)), term);
+        let a_next = c_add(
+            a,
+            c_sub(
+                c_add(
+                    c_scale(phi, s.daily_risk_free_rate),
+                    c_scale(b_next, s.omega),
+                ),
+                c_scale(c_ln(den), T::from_f64(0.5)),
+            ),
+        );
+        b = b_next;
+        a = a_next;
+    }
+    (a, b)
+}
+
+fn hn_characteristic<T: Real>(s: &HestonNandiTsayDccGarchSpec<T>, gamma: T, phi: C<T>) -> C<T> {
+    let (a, b) = heston_nandi_ab(s, gamma, phi);
+    c_exp(c_add(
+        c_scale(phi, s.spot.ln()),
+        c_add(a, c_scale(b, s.initial_daily_variance)),
+    ))
+}
+
+fn hn_call<T: Real>(s: &HestonNandiTsayDccGarchSpec<T>, gamma: T) -> T {
+    const NODES: [f64; 24] = [
+        -0.9951872199970213,
+        -0.9747285559713095,
+        -0.9382745520027328,
+        -0.8864155270044011,
+        -0.820001985973903,
+        -0.7401241915785544,
+        -0.6480936519369755,
+        -0.5454214713888396,
+        -0.4337935076260452,
+        -0.3150426796961634,
+        -0.1911188674736163,
+        -0.06405689286260563,
+        0.06405689286260563,
+        0.1911188674736163,
+        0.3150426796961634,
+        0.4337935076260452,
+        0.5454214713888396,
+        0.6480936519369755,
+        0.7401241915785544,
+        0.820001985973903,
+        0.8864155270044011,
+        0.9382745520027328,
+        0.9747285559713095,
+        0.9951872199970213,
+    ];
+    const WEIGHTS: [f64; 24] = [
+        0.012341229799987334,
+        0.028531388628933813,
+        0.044277438817419676,
+        0.05929858491543666,
+        0.07334648141108027,
+        0.08619016153195322,
+        0.0976186521041139,
+        0.10744427011596562,
+        0.11550566805372561,
+        0.12167047292780335,
+        0.12583745634682839,
+        0.12793819534675224,
+        0.12793819534675224,
+        0.12583745634682839,
+        0.12167047292780335,
+        0.11550566805372561,
+        0.10744427011596562,
+        0.0976186521041139,
+        0.08619016153195322,
+        0.07334648141108027,
+        0.05929858491543666,
+        0.044277438817419676,
+        0.028531388628933813,
+        0.012341229799987334,
+    ];
+    let klog = s.strike.ln();
+    let (a1, b1) = heston_nandi_ab(s, gamma, (T::one(), T::zero()));
+    let m1 = c_exp(c_add(
+        c_scale((T::one(), T::zero()), s.spot.ln()),
+        c_add(a1, c_scale(b1, s.initial_daily_variance)),
+    ));
+    let mut p1 = T::from_f64(0.5);
+    let mut p2 = T::from_f64(0.5);
+    for j in 0..24 {
+        let u = T::from_f64(20.0 * (NODES[j] + 1.0));
+        let wt = T::from_f64(20.0 * WEIGHTS[j]);
+        let phase = c_exp((T::zero(), -u * klog));
+        let den = (T::zero(), u);
+        let c2 = c_div(
+            c_mul(phase, hn_characteristic(s, gamma, (T::zero(), u))),
+            den,
+        );
+        let c1 = c_div(
+            c_mul(phase, c_div(hn_characteristic(s, gamma, (T::one(), u)), m1)),
+            den,
+        );
+        p1 += wt * c1.0 / T::from_f64(std::f64::consts::PI);
+        p2 += wt * c2.0 / T::from_f64(std::f64::consts::PI);
+    }
+    s.spot * p1
+        - s.strike
+            * (-T::from_f64(s.days_to_maturity.max(1) as f64) * s.daily_risk_free_rate).exp()
+            * p2
+}
+
+pub fn evaluate_heston_nandi_and_tsay_dcc_garch<T: Real>(
+    s: &HestonNandiTsayDccGarchSpec<T>,
+) -> HestonNandiTsayDccGarchReport<T> {
+    let n = s.days_to_maturity.max(1);
+    let pers = s.beta + s.alpha * s.gamma_asymmetry * s.gamma_asymmetry;
+    let lr = (T::from_f64(252.0) * (s.omega + s.alpha)
+        / (T::one() - pers).max_val(T::from_f64(1e-8)))
+    .sqrt();
+    let call = hn_call(s, s.gamma_asymmetry);
+    let sym = hn_call(s, T::zero());
+    let n_t = T::from_f64(n as f64);
+    let put = call - s.spot + s.strike * (-n_t * s.daily_risk_free_rate).exp();
+    let (a1, b1) = heston_nandi_ab(s, s.gamma_asymmetry, (T::one(), T::zero()));
+    let martingale_mgf_error = b1.0.abs() + (a1.0 - n_t * s.daily_risk_free_rate).abs();
+    let m = s.asset1_returns.len().min(s.asset2_returns.len());
+    let mut h1 = s.initial_daily_variance;
+    let mut h2 = s.initial_daily_variance;
+    let mut e1s = Vec::with_capacity(m);
+    let mut e2s = Vec::with_capacity(m);
+    for i in 0..m {
+        e1s.push(s.asset1_returns[i] / h1.max_val(T::from_f64(1e-12)).sqrt());
+        e2s.push(s.asset2_returns[i] / h2.max_val(T::from_f64(1e-12)).sqrt());
+        h1 = s.omega
+            + s.alpha * (s.asset1_returns[i] - s.gamma_asymmetry * h1.sqrt()).powf(2.0)
+            + s.beta * h1;
+        h2 = s.omega
+            + s.alpha * (s.asset2_returns[i] - s.gamma_asymmetry * h2.sqrt()).powf(2.0)
+            + s.beta * h2;
+    }
+    let cross = e1s
+        .iter()
+        .zip(&e2s)
+        .fold(T::zero(), |z, (x, y)| z + *x * *y);
+    let ss1 = e1s.iter().fold(T::zero(), |z, x| z + *x * *x);
+    let ss2 = e2s.iter().fold(T::zero(), |z, x| z + *x * *x);
+    let rho_bar = if m > 0 {
+        cross / (ss1 * ss2).max_val(T::from_f64(1e-12)).sqrt()
+    } else {
+        T::zero()
+    };
+    let a = s.dcc_a.max_val(T::zero());
+    let b = s.dcc_b.max_val(T::zero());
+    let mut q11 = T::one();
+    let mut q22 = T::one();
+    let mut q12 = rho_bar;
+    let mut max = T::from_f64(-1.);
+    let mut min = T::from_f64(1.);
+    for i in 0..m {
+        q11 = (T::one() - a - b) + a * e1s[i] * e1s[i] + b * q11;
+        q22 = (T::one() - a - b) + a * e2s[i] * e2s[i] + b * q22;
+        q12 = (T::one() - a - b) * rho_bar + a * e1s[i] * e2s[i] + b * q12;
+        let rr = (q12 / (q11 * q22).max_val(T::from_f64(1e-12)).sqrt())
+            .max_val(T::from_f64(-0.999999))
+            .min_val(T::from_f64(0.999999));
+        max = max.max_val(rr);
+        min = min.min_val(rr);
+    }
+    let term = if m > 0 {
+        q12 / (q11 * q22).max_val(T::from_f64(1e-12)).sqrt()
+    } else {
+        rho_bar
+    };
+    HestonNandiTsayDccGarchReport {
+        garch_persistence: pers,
+        long_run_annualized_vol: lr,
+        martingale_mgf_error,
+        heston_nandi_call_price: call,
+        heston_nandi_put_price: put,
+        symmetric_garch_call_price: sym,
+        leverage_skew_impact: call - sym,
+        terminal_dcc_correlation: term,
+        max_dcc_correlation: max,
+        min_dcc_correlation: min,
+    }
+}
+
+#[cfg(test)]
+mod phase24_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn mk<T: Real>(x: T) -> HestonNandiTsayDccGarchSpec<T> {
+        HestonNandiTsayDccGarchSpec {
+            spot: x,
+            strike: T::from_f64(100.),
+            daily_risk_free_rate: T::from_f64(0.0001),
+            days_to_maturity: 30,
+            initial_daily_variance: T::from_f64(0.0002),
+            omega: T::from_f64(0.00001),
+            alpha: T::from_f64(0.05),
+            beta: T::from_f64(0.9),
+            gamma_asymmetry: T::from_f64(0.2),
+            asset1_returns: vec![T::from_f64(0.01), T::from_f64(-0.005), T::from_f64(0.002)],
+            asset2_returns: vec![T::from_f64(0.008), T::from_f64(-0.004), T::from_f64(0.003)],
+            dcc_a: T::from_f64(0.02),
+            dcc_b: T::from_f64(0.95),
+        }
+    }
+    #[test]
+    fn phase24() {
+        let r = evaluate_heston_nandi_and_tsay_dcc_garch(&mk(100.));
+        assert!(r.martingale_mgf_error.val() < 1e-12);
+        assert!(r.terminal_dcc_correlation.val().abs() < 1.);
+        let h = 1e-5;
+        let fd = (evaluate_heston_nandi_and_tsay_dcc_garch(&mk(100. + h)).heston_nandi_call_price
+            - evaluate_heston_nandi_and_tsay_dcc_garch(&mk(100. - h)).heston_nandi_call_price)
+            / (2. * h);
+        let ad = evaluate_heston_nandi_and_tsay_dcc_garch(&mk(Dual::<1>::variable(100., 0)))
+            .heston_nandi_call_price;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

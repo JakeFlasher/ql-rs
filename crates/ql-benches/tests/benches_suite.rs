@@ -56,3 +56,14 @@ fn phase23_suite35_workload_is_registered() {
         .expect("suite 35");
     assert!(row.parity_ok);
 }
+
+#[test]
+fn phase24_suite36_workload_is_registered() {
+    let rows = run_all_benchmark_suites_with_config(1, 3);
+    let row = rows
+        .iter()
+        .find(|r| r.id.starts_with("36_"))
+        .expect("suite 36");
+    assert!(row.parity_ok);
+    assert!(row.max_abs_diff < 1e-4);
+}

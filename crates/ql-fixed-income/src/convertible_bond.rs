@@ -339,11 +339,179 @@ mod phase19_tests {
 }
 
 #[derive(Clone, Debug)]
-pub struct SirbuShreveDilutionMakeWholeConvertibleSpec<T: Real = f64> { pub spot:T,pub volatility:T,pub risk_free_rate:T,pub dividend_yield:T,pub credit_spread:T,pub maturity_years:T,pub par_value:T,pub coupon_rate_annual:T,pub conversion_ratio:T,pub existing_shares_millions:T,pub convertible_issue_count_millions:T,pub debt_relief_retention_fraction:T,pub call_price:T,pub soft_call_trigger_spot:T,pub make_whole_max_bonus_shares:T,pub make_whole_time_decay:T,pub make_whole_moneyness_decay:T,pub tree_steps:usize }
+pub struct SirbuShreveDilutionMakeWholeConvertibleSpec<T: Real = f64> {
+    pub spot: T,
+    pub volatility: T,
+    pub risk_free_rate: T,
+    pub dividend_yield: T,
+    pub credit_spread: T,
+    pub maturity_years: T,
+    pub par_value: T,
+    pub coupon_rate_annual: T,
+    pub conversion_ratio: T,
+    pub existing_shares_millions: T,
+    pub convertible_issue_count_millions: T,
+    pub debt_relief_retention_fraction: T,
+    pub call_price: T,
+    pub soft_call_trigger_spot: T,
+    pub make_whole_max_bonus_shares: T,
+    pub make_whole_time_decay: T,
+    pub make_whole_moneyness_decay: T,
+    pub tree_steps: usize,
+}
 #[derive(Clone, Debug)]
-pub struct SirbuShreveDilutionMakeWholeConvertibleReport<T: Real = f64> { pub dilution_factor_q:T,pub diluted_convertible_price:T,pub undiluted_convertible_price:T,pub dilution_price_discount:T,pub make_whole_enhanced_price:T,pub make_whole_option_value:T,pub effective_conversion_ratio_t0:T,pub diluted_parity_t0:T,pub equity_delta:T }
-fn smooth_pos<T:Real>(x:T)->T { (x+(x*x+T::from_f64(1e-8)).sqrt())/T::from_f64(2.0) }
-fn cb_tree<T:Real>(s:&SirbuShreveDilutionMakeWholeConvertibleSpec<T>, q:T, mw:bool)->T { let n=s.tree_steps.max(1); let dt=s.maturity_years/T::from_f64(n as f64); let u=(s.volatility*dt.sqrt()).exp(); let d=T::one()/u; let den=(u-d).max_val(T::from_f64(1e-12)); let p=(((s.risk_free_rate-s.dividend_yield)*dt).exp()-d)/den; let disc=(-(s.risk_free_rate+s.credit_spread*T::from_f64(0.5))*dt).exp(); let coup=s.par_value*s.coupon_rate_annual*dt; let mut v=vec![T::zero();n+1]; for i in 0..=n { let sp=s.spot*u.powf((n-i) as f64)*d.powf(i as f64); let g=if mw {s.conversion_ratio+smooth_pos(sp-s.soft_call_trigger_spot)*s.make_whole_max_bonus_shares*((-s.make_whole_time_decay).exp())*((-s.make_whole_moneyness_decay*smooth_pos(sp-s.soft_call_trigger_spot)/s.soft_call_trigger_spot.max_val(T::from_f64(1e-12))).exp())} else {s.conversion_ratio}; let parity=(T::one()-q)*g*sp+q*s.par_value*s.debt_relief_retention_fraction; v[i]=parity.max_val(s.par_value); }
- for k in (0..n).rev(){for i in 0..=k {let sp=s.spot*u.powf((k-i) as f64)*d.powf(i as f64); let ev=disc*(p*v[i]+(T::one()-p)*v[i+1]+coup); let g=if mw {s.conversion_ratio+smooth_pos(sp-s.soft_call_trigger_spot)*s.make_whole_max_bonus_shares*((-s.make_whole_time_decay*T::from_f64(k as f64)/s.maturity_years.max_val(T::from_f64(1e-12))).exp())*((-s.make_whole_moneyness_decay*smooth_pos(sp-s.soft_call_trigger_spot)/s.soft_call_trigger_spot.max_val(T::from_f64(1e-12))).exp())} else {s.conversion_ratio}; let parity=(T::one()-q)*g*sp+q*s.par_value*s.debt_relief_retention_fraction; let w=T::one()/(T::one()+(-(sp-s.soft_call_trigger_spot)/(T::from_f64(0.05)*s.soft_call_trigger_spot.max_val(T::from_f64(1e-12)))).exp()); let call=s.call_price.max_val(parity); v[i]=(ev*(T::one()-w)+call*w).max_val(parity); }} v[0] }
-pub fn price_sirbu_shreve_dilution_and_makewhole_convertible<T:Real>(s:&SirbuShreveDilutionMakeWholeConvertibleSpec<T>)->SirbuShreveDilutionMakeWholeConvertibleReport<T>{ let q=(s.convertible_issue_count_millions*s.conversion_ratio)/(s.existing_shares_millions+s.convertible_issue_count_millions*s.conversion_ratio).max_val(T::from_f64(1e-12)); let und=cb_tree(s,T::zero(),false); let dil=cb_tree(s,q,false); let enh=cb_tree(s,q,true).max_val(dil); let h=T::from_f64(1e-4); let up= s.clone(); let mut su=up.clone(); su.spot+=h; let mut sd=up; sd.spot-=h; let delta=(cb_tree(&su,q,true)-cb_tree(&sd,q,true))/(T::from_f64(2.0)*h); let er=s.conversion_ratio+smooth_pos(s.spot-s.soft_call_trigger_spot)*s.make_whole_max_bonus_shares; SirbuShreveDilutionMakeWholeConvertibleReport{dilution_factor_q:q,diluted_convertible_price:dil,undiluted_convertible_price:und,dilution_price_discount:und-dil,make_whole_enhanced_price:enh,make_whole_option_value:(enh-dil).max_val(T::zero()),effective_conversion_ratio_t0:er,diluted_parity_t0:(T::one()-q)*er*s.spot+q*s.par_value*s.debt_relief_retention_fraction,equity_delta:delta} }
-#[cfg(test)] mod phase24_cb_tests {use super::*;use ql_ad::Dual;fn mk<T:Real>(x:T)->SirbuShreveDilutionMakeWholeConvertibleSpec<T>{SirbuShreveDilutionMakeWholeConvertibleSpec{spot:x,volatility:T::from_f64(0.2),risk_free_rate:T::from_f64(0.03),dividend_yield:T::zero(),credit_spread:T::from_f64(0.02),maturity_years:T::from_f64(3.),par_value:T::from_f64(100.),coupon_rate_annual:T::from_f64(0.03),conversion_ratio:T::from_f64(0.8),existing_shares_millions:T::from_f64(100.),convertible_issue_count_millions:T::from_f64(10.),debt_relief_retention_fraction:T::zero(),call_price:T::from_f64(105.),soft_call_trigger_spot:T::from_f64(110.),make_whole_max_bonus_shares:T::from_f64(0.2),make_whole_time_decay:T::from_f64(0.2),make_whole_moneyness_decay:T::from_f64(0.3),tree_steps:16}}#[test]fn phase24(){let r=price_sirbu_shreve_dilution_and_makewhole_convertible(&mk(100.));assert!(r.undiluted_convertible_price>r.diluted_convertible_price);assert!(r.make_whole_enhanced_price>=r.diluted_convertible_price);let h=1e-5;let fd=(price_sirbu_shreve_dilution_and_makewhole_convertible(&mk(100.+h)).make_whole_enhanced_price-price_sirbu_shreve_dilution_and_makewhole_convertible(&mk(100.-h)).make_whole_enhanced_price)/(2.*h);let ad=price_sirbu_shreve_dilution_and_makewhole_convertible(&mk(Dual::<1>::variable(100.,0))).make_whole_enhanced_price;assert!((ad.d[0]-fd).abs()<1e-5);}}
+pub struct SirbuShreveDilutionMakeWholeConvertibleReport<T: Real = f64> {
+    pub dilution_factor_q: T,
+    pub diluted_convertible_price: T,
+    pub undiluted_convertible_price: T,
+    pub dilution_price_discount: T,
+    pub make_whole_enhanced_price: T,
+    pub make_whole_option_value: T,
+    pub effective_conversion_ratio_t0: T,
+    pub diluted_parity_t0: T,
+    pub equity_delta: T,
+}
+fn smooth_pos<T: Real>(x: T) -> T {
+    (x + (x * x + T::from_f64(1e-8)).sqrt()) / T::from_f64(2.0)
+}
+fn smooth_max<T: Real>(a: T, b: T) -> T {
+    a + smooth_pos(b - a)
+}
+
+fn mw_bonus_shares<T: Real>(
+    s: &SirbuShreveDilutionMakeWholeConvertibleSpec<T>,
+    sp: T,
+    t_frac: T,
+) -> T {
+    let s_soft = s.soft_call_trigger_spot.max_val(T::from_f64(1e-12));
+    let excess = smooth_pos(sp - s.soft_call_trigger_spot) / s_soft;
+    s.make_whole_max_bonus_shares
+        * (-s.make_whole_time_decay * t_frac).exp()
+        * (-s.make_whole_moneyness_decay * excess).exp()
+}
+
+fn cb_tree<T: Real>(s: &SirbuShreveDilutionMakeWholeConvertibleSpec<T>, q: T, mw: bool) -> (T, T) {
+    let n = s.tree_steps.max(1);
+    let dt = s.maturity_years / T::from_f64(n as f64);
+    let u = (s.volatility * dt.sqrt()).exp();
+    let d = T::one() / u;
+    let den = (u - d).max_val(T::from_f64(1e-12));
+    let p = (((s.risk_free_rate - s.dividend_yield) * dt).exp() - d) / den;
+    let disc = (-(s.risk_free_rate + s.credit_spread * T::from_f64(0.5)) * dt).exp();
+    let coup = s.par_value * s.coupon_rate_annual * dt;
+    let mut v = vec![T::zero(); n + 1];
+    for i in 0..=n {
+        let sp = s.spot * u.powf((n - i) as f64) * d.powf(i as f64);
+        let g = s.conversion_ratio
+            + if mw {
+                mw_bonus_shares(s, sp, T::one())
+            } else {
+                T::zero()
+            };
+        let parity = (T::one() - q) * g * sp + q * s.par_value * s.debt_relief_retention_fraction;
+        v[i] = parity.max_val(s.par_value);
+    }
+    let mut delta_t0 = T::zero();
+    for k in (0..n).rev() {
+        let mut next = vec![T::zero(); k + 1];
+        let t_frac = T::from_f64(k as f64 / n as f64);
+        for i in 0..=k {
+            let sp = s.spot * u.powf((k - i) as f64) * d.powf(i as f64);
+            let ev = disc * (p * v[i] + (T::one() - p) * v[i + 1] + coup);
+            let g = s.conversion_ratio
+                + if mw {
+                    mw_bonus_shares(s, sp, t_frac)
+                } else {
+                    T::zero()
+                };
+            let parity =
+                (T::one() - q) * g * sp + q * s.par_value * s.debt_relief_retention_fraction;
+            let w = T::one()
+                / (T::one()
+                    + (-(sp - s.soft_call_trigger_spot)
+                        / (T::from_f64(0.05)
+                            * s.soft_call_trigger_spot.max_val(T::from_f64(1e-12))))
+                    .exp());
+            let call = smooth_max(s.call_price, parity);
+            next[i] = (ev * (T::one() - w) + call * w).max_val(parity);
+        }
+        if k == 1 {
+            let sp_up = s.spot * u;
+            let sp_dn = s.spot * d;
+            delta_t0 = (next[0] - next[1]) / (s.spot * (u - d)).max_val(T::from_f64(1e-12));
+            let _ = (sp_up, sp_dn);
+        }
+        v = next;
+    }
+    (v[0], delta_t0)
+}
+
+pub fn price_sirbu_shreve_dilution_and_makewhole_convertible<T: Real>(
+    s: &SirbuShreveDilutionMakeWholeConvertibleSpec<T>,
+) -> SirbuShreveDilutionMakeWholeConvertibleReport<T> {
+    let q = (s.convertible_issue_count_millions * s.conversion_ratio)
+        / (s.existing_shares_millions + s.convertible_issue_count_millions * s.conversion_ratio)
+            .max_val(T::from_f64(1e-12));
+    let (und, _) = cb_tree(s, T::zero(), false);
+    let (dil, _) = cb_tree(s, q, false);
+    let (enh_raw, delta) = cb_tree(s, q, true);
+    let enh = enh_raw.max_val(dil);
+    let er = s.conversion_ratio + mw_bonus_shares(s, s.spot, T::zero());
+    SirbuShreveDilutionMakeWholeConvertibleReport {
+        dilution_factor_q: q,
+        diluted_convertible_price: dil,
+        undiluted_convertible_price: und,
+        dilution_price_discount: und - dil,
+        make_whole_enhanced_price: enh,
+        make_whole_option_value: (enh - dil).max_val(T::zero()),
+        effective_conversion_ratio_t0: er,
+        diluted_parity_t0: (T::one() - q) * er * s.spot
+            + q * s.par_value * s.debt_relief_retention_fraction,
+        equity_delta: delta,
+    }
+}
+
+#[cfg(test)]
+mod phase24_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn mk<T: Real>(x: T) -> SirbuShreveDilutionMakeWholeConvertibleSpec<T> {
+        SirbuShreveDilutionMakeWholeConvertibleSpec {
+            spot: x,
+            volatility: T::from_f64(0.2),
+            risk_free_rate: T::from_f64(0.03),
+            dividend_yield: T::zero(),
+            credit_spread: T::from_f64(0.02),
+            maturity_years: T::from_f64(3.),
+            par_value: T::from_f64(100.),
+            coupon_rate_annual: T::from_f64(0.03),
+            conversion_ratio: T::from_f64(0.8),
+            existing_shares_millions: T::from_f64(100.),
+            convertible_issue_count_millions: T::from_f64(10.),
+            debt_relief_retention_fraction: T::zero(),
+            call_price: T::from_f64(105.),
+            soft_call_trigger_spot: T::from_f64(110.),
+            make_whole_max_bonus_shares: T::from_f64(0.2),
+            make_whole_time_decay: T::from_f64(0.2),
+            make_whole_moneyness_decay: T::from_f64(0.3),
+            tree_steps: 16,
+        }
+    }
+    #[test]
+    fn phase24() {
+        let r = price_sirbu_shreve_dilution_and_makewhole_convertible(&mk(100.));
+        assert!(r.undiluted_convertible_price > r.diluted_convertible_price);
+        assert!(r.make_whole_enhanced_price >= r.diluted_convertible_price);
+        let h = 1e-5;
+        let fd = (price_sirbu_shreve_dilution_and_makewhole_convertible(&mk(100. + h))
+            .make_whole_enhanced_price
+            - price_sirbu_shreve_dilution_and_makewhole_convertible(&mk(100. - h))
+                .make_whole_enhanced_price)
+            / (2. * h);
+        let ad = price_sirbu_shreve_dilution_and_makewhole_convertible(&mk(Dual::<1>::variable(
+            100., 0,
+        )))
+        .make_whole_enhanced_price;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

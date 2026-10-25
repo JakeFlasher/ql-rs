@@ -19,6 +19,7 @@ pub struct ComparisonRow {
     pub sota_iqr_ns: f64,
     pub speedup: f64,
     pub max_abs_diff: f64,
+    pub parity_diff: f64,
     /// Numerical parity status is explicit so test harnesses never infer it
     /// from a wall-clock metric.
     pub parity_ok: bool,
@@ -112,6 +113,7 @@ where
         sota_iqr_ns: sota_iqr,
         speedup: base_median / sota_median.max(1e-9),
         max_abs_diff: diff,
+        parity_diff: diff,
         parity_ok,
         parity_tol: tol,
         category: id.split('_').next().unwrap_or_default().to_string(),

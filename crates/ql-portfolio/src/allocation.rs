@@ -3601,15 +3601,329 @@ mod phase22_tests {
 }
 
 #[derive(Clone, Debug)]
-pub struct PottersBouchaudRieCovarianceSpec<T: Real = f64> { pub sample_covariance:Vec<Vec<T>>,pub num_observations_t:usize }
+pub struct PottersBouchaudRieCovarianceSpec<T: Real = f64> {
+    pub sample_covariance: Vec<Vec<T>>,
+    pub num_observations_t: usize,
+}
 #[derive(Clone, Debug)]
-pub struct PottersBouchaudRieCovarianceReport<T: Real = f64> { pub aspect_ratio_q:T,pub raw_eigenvalues:Vec<T>,pub rie_cleaned_eigenvalues:Vec<T>,pub raw_condition_number:T,pub rie_condition_number:T,pub cleaned_covariance:Vec<Vec<T>>,pub rie_min_variance_weights:Vec<T>,pub raw_min_variance_weights:Vec<T>,pub rie_portfolio_variance:T }
-fn mvw<T:Real>(cov:&[Vec<T>])->Vec<T>{let inv=invm(cov);let n=cov.len();let mut z=vec![T::zero();n];for i in 0..n{for j in 0..n{z[i]+=inv[i][j];}}let d=z.iter().copied().fold(T::zero(),|a,x|a+x);z.into_iter().map(|x|x/d.max_val(T::from_f64(1e-12))).collect()}
-pub fn solve_potters_bouchaud_rie_nonlinear_shrinkage<T:Real>(s:&PottersBouchaudRieCovarianceSpec<T>)->PottersBouchaudRieCovarianceReport<T>{let n=s.sample_covariance.len();let raw=(0..n).map(|i|s.sample_covariance[i][i]).collect::<Vec<_>>();let mean=raw.iter().copied().fold(T::zero(),|a,x|a+x)/T::from_f64(n.max(1)as f64);let clean=raw.iter().map(|x|(*x+mean)/T::from_f64(2.0)).collect::<Vec<_>>();let mut cov=vec![vec![T::zero();n];n];for i in 0..n{cov[i][i]=clean[i];}let rawmin=raw.iter().copied().fold(T::from_f64(1e12),|a,x|a.min_val(x));let rawmax=raw.iter().copied().fold(T::zero(),|a,x|a.max_val(x));let cmin=clean.iter().copied().fold(T::from_f64(1e12),|a,x|a.min_val(x));let cmax=clean.iter().copied().fold(T::zero(),|a,x|a.max_val(x));let w=mvw(&cov);let mut pv=T::zero();for i in 0..n{for j in 0..n{pv+=w[i]*cov[i][j]*w[j];}}PottersBouchaudRieCovarianceReport{aspect_ratio_q:T::from_f64(n.max(1)as f64/s.num_observations_t.max(1)as f64),raw_eigenvalues:raw,rie_cleaned_eigenvalues:clean,raw_condition_number:rawmax/rawmin.max_val(T::from_f64(1e-12)),rie_condition_number:cmax/cmin.max_val(T::from_f64(1e-12)),cleaned_covariance:cov,rie_min_variance_weights:w,raw_min_variance_weights:mvw(&s.sample_covariance),rie_portfolio_variance:pv}}
+pub struct PottersBouchaudRieCovarianceReport<T: Real = f64> {
+    pub aspect_ratio_q: T,
+    pub raw_eigenvalues: Vec<T>,
+    pub rie_cleaned_eigenvalues: Vec<T>,
+    pub raw_condition_number: T,
+    pub rie_condition_number: T,
+    pub cleaned_covariance: Vec<Vec<T>>,
+    pub rie_min_variance_weights: Vec<T>,
+    pub raw_min_variance_weights: Vec<T>,
+    pub rie_portfolio_variance: T,
+}
+fn mvw<T: Real>(cov: &[Vec<T>]) -> Vec<T> {
+    let inv = invm(cov);
+    let n = cov.len();
+    let mut z = vec![T::zero(); n];
+    for i in 0..n {
+        for j in 0..n {
+            z[i] += inv[i][j];
+        }
+    }
+    let d = z.iter().copied().fold(T::zero(), |a, x| a + x);
+    z.into_iter()
+        .map(|x| x / d.max_val(T::from_f64(1e-12)))
+        .collect()
+}
+pub fn solve_potters_bouchaud_rie_nonlinear_shrinkage<T: Real>(
+    s: &PottersBouchaudRieCovarianceSpec<T>,
+) -> PottersBouchaudRieCovarianceReport<T> {
+    let n = s.sample_covariance.len();
+    if n == 0 {
+        return PottersBouchaudRieCovarianceReport {
+            aspect_ratio_q: T::zero(),
+            raw_eigenvalues: vec![],
+            rie_cleaned_eigenvalues: vec![],
+            raw_condition_number: T::zero(),
+            rie_condition_number: T::zero(),
+            cleaned_covariance: vec![],
+            rie_min_variance_weights: vec![],
+            raw_min_variance_weights: vec![],
+            rie_portfolio_variance: T::zero(),
+        };
+    }
+    let (desc_vals, desc_vecs) = jacobi_eigen_spd(&s.sample_covariance);
+    let lambda = desc_vals.into_iter().rev().collect::<Vec<_>>();
+    let mut u = vec![vec![T::zero(); n]; n];
+    for col in 0..n {
+        for row in 0..n {
+            u[row][col] = desc_vecs[row][n - 1 - col];
+        }
+    }
+    let q = T::from_f64(n as f64 / s.num_observations_t.max(1) as f64);
+    let sqrt_n = T::from_f64(n as f64).sqrt();
+    let mut tilde = vec![T::zero(); n];
+    for k in 0..n {
+        let eta = lambda[k] / sqrt_n;
+        let mut gr = T::zero();
+        let mut gi = T::zero();
+        for j in 0..n {
+            let diff = lambda[k] - lambda[j];
+            let den = diff * diff + eta * eta;
+            gi += eta / den.max_val(T::from_f64(1e-18));
+            if j != k {
+                gr += diff / den.max_val(T::from_f64(1e-18));
+            }
+        }
+        gr /= T::from_f64(n as f64);
+        gi /= T::from_f64(n as f64);
+        let re = T::one() - q + q * (lambda[k] * gr + eta * gi);
+        let im = q * (lambda[k] * gi - eta * gr);
+        tilde[k] = lambda[k] / (re * re + im * im).max_val(T::from_f64(1e-18));
+    }
+    let trace = lambda.iter().copied().fold(T::zero(), |a, x| a + x);
+    let tsum = tilde
+        .iter()
+        .copied()
+        .fold(T::zero(), |a, x| a + x)
+        .max_val(T::from_f64(1e-18));
+    let clean = tilde
+        .iter()
+        .map(|x| (*x * trace / tsum).max_val(T::from_f64(1e-12)))
+        .collect::<Vec<_>>();
+    let mut cov = vec![vec![T::zero(); n]; n];
+    for k in 0..n {
+        for i in 0..n {
+            for j in 0..n {
+                cov[i][j] += clean[k] * u[i][k] * u[j][k];
+            }
+        }
+    }
+    let raw_min = lambda
+        .iter()
+        .copied()
+        .fold(T::from_f64(1e12), |a, x| a.min_val(x));
+    let raw_max = lambda.iter().copied().fold(T::zero(), |a, x| a.max_val(x));
+    let cmin = clean
+        .iter()
+        .copied()
+        .fold(T::from_f64(1e12), |a, x| a.min_val(x));
+    let cmax = clean.iter().copied().fold(T::zero(), |a, x| a.max_val(x));
+    let w = mvw(&cov);
+    let mut pv = T::zero();
+    for i in 0..n {
+        for j in 0..n {
+            pv += w[i] * cov[i][j] * w[j];
+        }
+    }
+    PottersBouchaudRieCovarianceReport {
+        aspect_ratio_q: q,
+        raw_eigenvalues: lambda,
+        rie_cleaned_eigenvalues: clean,
+        raw_condition_number: raw_max / raw_min.max_val(T::from_f64(1e-12)),
+        rie_condition_number: cmax / cmin.max_val(T::from_f64(1e-12)),
+        cleaned_covariance: cov,
+        rie_min_variance_weights: w,
+        raw_min_variance_weights: mvw(&s.sample_covariance),
+        rie_portfolio_variance: pv,
+    }
+}
 
 #[derive(Clone, Debug)]
-pub struct GarleanuPedersenDynamicAimPortfolioSpec<T: Real = f64> { pub covariance:Vec<Vec<T>>,pub current_weights:Vec<T>,pub slow_alpha_vector:Vec<T>,pub fast_alpha_vector:Vec<T>,pub slow_mean_reversion_phi:T,pub fast_mean_reversion_phi:T,pub risk_aversion_gamma:T,pub transaction_cost_kappa:T,pub discount_rate_r:T }
+pub struct GarleanuPedersenDynamicAimPortfolioSpec<T: Real = f64> {
+    pub covariance: Vec<Vec<T>>,
+    pub current_weights: Vec<T>,
+    pub slow_alpha_vector: Vec<T>,
+    pub fast_alpha_vector: Vec<T>,
+    pub slow_mean_reversion_phi: T,
+    pub fast_mean_reversion_phi: T,
+    pub risk_aversion_gamma: T,
+    pub transaction_cost_kappa: T,
+    pub discount_rate_r: T,
+}
 #[derive(Clone, Debug)]
-pub struct GarleanuPedersenDynamicAimPortfolioReport<T: Real = f64> { pub optimal_trading_rate_a:T,pub slow_alpha_aim_attenuation:T,pub fast_alpha_aim_attenuation:T,pub markowitz_target_weights:Vec<T>,pub aim_portfolio_weights:Vec<T>,pub next_period_optimal_weights:Vec<T>,pub turnover_l1_saved_vs_markowitz:T,pub quadratic_transaction_cost:T }
-pub fn solve_garleanu_pedersen_dynamic_aim_portfolio<T:Real>(s:&GarleanuPedersenDynamicAimPortfolioSpec<T>)->GarleanuPedersenDynamicAimPortfolioReport<T>{let rho=T::one()/(T::one()+s.discount_rate_r.max_val(T::zero()));let g=s.risk_aversion_gamma.max_val(T::from_f64(1e-8));let k=s.transaction_cost_kappa.max_val(T::from_f64(1e-8));let b=g+k*(T::one()-rho);let a=((b*b+T::from_f64(4.0)*g*k*rho).sqrt()-b)/(T::from_f64(2.0)*k*rho).max_val(T::from_f64(1e-12));let ps=T::one()/(T::one()+s.slow_mean_reversion_phi*k*a/g);let pf=T::one()/(T::one()+s.fast_mean_reversion_phi*k*a/g);let inv=invm(&s.covariance);let n=s.current_weights.len();let mut mw=vec![T::zero();n];let mut aim=vec![T::zero();n];for i in 0..n{for j in 0..n{mw[i]+=inv[i][j]*(s.slow_alpha_vector[j]+s.fast_alpha_vector[j])/g;aim[i]+=inv[i][j]*(ps*s.slow_alpha_vector[j]+pf*s.fast_alpha_vector[j])/g;}}let next=s.current_weights.iter().zip(&aim).map(|(x,y)|(T::one()-a)**x+a**y).collect::<Vec<_>>();let saved=mw.iter().zip(&next).map(|(x,y)|(*x-*y).abs()).fold(T::zero(),|a,x|a+x);let tc=next.iter().zip(&s.current_weights).map(|(x,y)|k*(*x-*y)*(*x-*y)).fold(T::zero(),|a,x|a+x);GarleanuPedersenDynamicAimPortfolioReport{optimal_trading_rate_a:a,slow_alpha_aim_attenuation:ps,fast_alpha_aim_attenuation:pf,markowitz_target_weights:mw,aim_portfolio_weights:aim,next_period_optimal_weights:next,turnover_l1_saved_vs_markowitz:saved,quadratic_transaction_cost:tc}}
-#[cfg(test)] mod phase24_tests { use super::*; use ql_ad::Dual; #[test] fn rie_and_gp_phase24(){let r=solve_potters_bouchaud_rie_nonlinear_shrinkage(&PottersBouchaudRieCovarianceSpec{sample_covariance:vec![vec![0.04,0.01],vec![0.01,0.09]],num_observations_t:100});assert!((r.rie_cleaned_eigenvalues.iter().copied().fold(0.0,|a,x|a+x)-r.raw_eigenvalues.iter().copied().fold(0.0,|a,x|a+x)).abs()<1e-11);assert!(r.rie_condition_number<r.raw_condition_number);fn mk<T:Real>(x:T)->PottersBouchaudRieCovarianceSpec<T>{PottersBouchaudRieCovarianceSpec{sample_covariance:vec![vec![x,T::from_f64(0.01)],vec![T::from_f64(0.01),T::from_f64(0.09)]],num_observations_t:100}}let h=1e-5;let fd=(solve_potters_bouchaud_rie_nonlinear_shrinkage(&mk(0.04+h)).rie_portfolio_variance-solve_potters_bouchaud_rie_nonlinear_shrinkage(&mk(0.04-h)).rie_portfolio_variance)/(2.0*h);let ad=solve_potters_bouchaud_rie_nonlinear_shrinkage(&mk(Dual::<1>::variable(0.04,0))).rie_portfolio_variance;assert!((ad.d[0]-fd).abs()<1e-5);let g=solve_garleanu_pedersen_dynamic_aim_portfolio(&GarleanuPedersenDynamicAimPortfolioSpec{covariance:vec![vec![Dual::<1>::from_value(0.04),Dual::<1>::from_value(0.01)],vec![Dual::<1>::from_value(0.01),Dual::<1>::from_value(0.09)]],current_weights:vec![Dual::<1>::from_value(0.5),Dual::<1>::from_value(0.5)],slow_alpha_vector:vec![Dual::<1>::from_value(0.03),Dual::<1>::from_value(0.02)],fast_alpha_vector:vec![Dual::<1>::from_value(0.01),Dual::<1>::from_value(0.02)],slow_mean_reversion_phi:Dual::<1>::from_value(0.1),fast_mean_reversion_phi:Dual::<1>::from_value(0.5),risk_aversion_gamma:Dual::<1>::from_value(2.0),transaction_cost_kappa:Dual::<1>::variable(0.1,0),discount_rate_r:Dual::<1>::from_value(0.02)});assert!(g.optimal_trading_rate_a.val()>0.0&&g.optimal_trading_rate_a.val()<1.0);}}
+pub struct GarleanuPedersenDynamicAimPortfolioReport<T: Real = f64> {
+    pub optimal_trading_rate_a: T,
+    pub slow_alpha_aim_attenuation: T,
+    pub fast_alpha_aim_attenuation: T,
+    pub markowitz_target_weights: Vec<T>,
+    pub aim_portfolio_weights: Vec<T>,
+    pub next_period_optimal_weights: Vec<T>,
+    pub turnover_l1_saved_vs_markowitz: T,
+    pub quadratic_transaction_cost: T,
+}
+pub fn solve_garleanu_pedersen_dynamic_aim_portfolio<T: Real>(
+    s: &GarleanuPedersenDynamicAimPortfolioSpec<T>,
+) -> GarleanuPedersenDynamicAimPortfolioReport<T> {
+    let rho = T::one() / (T::one() + s.discount_rate_r.max_val(T::zero()));
+    let g = s.risk_aversion_gamma.max_val(T::from_f64(1e-8));
+    let k = s.transaction_cost_kappa.max_val(T::from_f64(1e-8));
+    let b = g + k * (T::one() - rho);
+    let a = ((b * b + T::from_f64(4.0) * g * k * rho).sqrt() - b)
+        / (T::from_f64(2.0) * k * rho).max_val(T::from_f64(1e-12));
+    let ps = T::one() / (T::one() + s.slow_mean_reversion_phi * k * a / g);
+    let pf = T::one() / (T::one() + s.fast_mean_reversion_phi * k * a / g);
+    let inv = invm(&s.covariance);
+    let n = s.current_weights.len();
+    let mut mw = vec![T::zero(); n];
+    let mut aim = vec![T::zero(); n];
+    for i in 0..n {
+        for j in 0..n {
+            mw[i] += inv[i][j] * (s.slow_alpha_vector[j] + s.fast_alpha_vector[j]) / g;
+            aim[i] += inv[i][j] * (ps * s.slow_alpha_vector[j] + pf * s.fast_alpha_vector[j]) / g;
+        }
+    }
+    let next = s
+        .current_weights
+        .iter()
+        .zip(&aim)
+        .map(|(x, y)| (T::one() - a) * *x + a * *y)
+        .collect::<Vec<_>>();
+    let markowitz_turnover = mw
+        .iter()
+        .zip(&s.current_weights)
+        .map(|(x, y)| (*x - *y).abs())
+        .fold(T::zero(), |z, x| z + x);
+    let actual_turnover = next
+        .iter()
+        .zip(&s.current_weights)
+        .map(|(x, y)| (*x - *y).abs())
+        .fold(T::zero(), |z, x| z + x);
+    let saved = (markowitz_turnover - actual_turnover).max_val(T::zero());
+    let tc = next
+        .iter()
+        .zip(&s.current_weights)
+        .map(|(x, y)| T::from_f64(0.5) * k * (*x - *y) * (*x - *y))
+        .fold(T::zero(), |z, x| z + x);
+    GarleanuPedersenDynamicAimPortfolioReport {
+        optimal_trading_rate_a: a,
+        slow_alpha_aim_attenuation: ps,
+        fast_alpha_aim_attenuation: pf,
+        markowitz_target_weights: mw,
+        aim_portfolio_weights: aim,
+        next_period_optimal_weights: next,
+        turnover_l1_saved_vs_markowitz: saved,
+        quadratic_transaction_cost: tc,
+    }
+}
+
+#[cfg(test)]
+mod phase24_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn rie_and_gp_phase24() {
+        let r = solve_potters_bouchaud_rie_nonlinear_shrinkage(&PottersBouchaudRieCovarianceSpec {
+            sample_covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
+            num_observations_t: 100,
+        });
+        assert!(
+            (r.rie_cleaned_eigenvalues
+                .iter()
+                .copied()
+                .fold(0.0, |a, x| a + x)
+                - r.raw_eigenvalues.iter().copied().fold(0.0, |a, x| a + x))
+            .abs()
+                < 1e-11
+        );
+        assert!(r.rie_condition_number < r.raw_condition_number);
+        fn mk<T: Real>(x: T) -> PottersBouchaudRieCovarianceSpec<T> {
+            PottersBouchaudRieCovarianceSpec {
+                sample_covariance: vec![
+                    vec![x, T::from_f64(0.01)],
+                    vec![T::from_f64(0.01), T::from_f64(0.09)],
+                ],
+                num_observations_t: 100,
+            }
+        }
+        let h = 1e-5;
+        let fd = (solve_potters_bouchaud_rie_nonlinear_shrinkage(&mk(0.04 + h))
+            .rie_portfolio_variance
+            - solve_potters_bouchaud_rie_nonlinear_shrinkage(&mk(0.04 - h)).rie_portfolio_variance)
+            / (2.0 * h);
+        let ad = solve_potters_bouchaud_rie_nonlinear_shrinkage(&mk(Dual::<1>::variable(0.04, 0)))
+            .rie_portfolio_variance;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+        let g = solve_garleanu_pedersen_dynamic_aim_portfolio(
+            &GarleanuPedersenDynamicAimPortfolioSpec {
+                covariance: vec![
+                    vec![Dual::<1>::from_value(0.04), Dual::<1>::from_value(0.01)],
+                    vec![Dual::<1>::from_value(0.01), Dual::<1>::from_value(0.09)],
+                ],
+                current_weights: vec![Dual::<1>::from_value(0.5), Dual::<1>::from_value(0.5)],
+                slow_alpha_vector: vec![Dual::<1>::from_value(0.03), Dual::<1>::from_value(0.02)],
+                fast_alpha_vector: vec![Dual::<1>::from_value(0.01), Dual::<1>::from_value(0.02)],
+                slow_mean_reversion_phi: Dual::<1>::from_value(0.1),
+                fast_mean_reversion_phi: Dual::<1>::from_value(0.5),
+                risk_aversion_gamma: Dual::<1>::from_value(2.0),
+                transaction_cost_kappa: Dual::<1>::variable(0.1, 0),
+                discount_rate_r: Dual::<1>::from_value(0.02),
+            },
+        );
+        assert!(g.optimal_trading_rate_a.val() > 0.0 && g.optimal_trading_rate_a.val() < 1.0);
+        assert!(g.fast_alpha_aim_attenuation < g.slow_alpha_aim_attenuation);
+        assert!(g.turnover_l1_saved_vs_markowitz >= Dual::<1>::zero());
+        let fd_a = (solve_garleanu_pedersen_dynamic_aim_portfolio(
+            &GarleanuPedersenDynamicAimPortfolioSpec {
+                covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
+                current_weights: vec![0.5, 0.5],
+                slow_alpha_vector: vec![0.03, 0.02],
+                fast_alpha_vector: vec![0.01, 0.02],
+                slow_mean_reversion_phi: 0.1,
+                fast_mean_reversion_phi: 0.5,
+                risk_aversion_gamma: 2.0,
+                transaction_cost_kappa: 0.1 + 1e-5,
+                discount_rate_r: 0.02,
+            },
+        )
+        .optimal_trading_rate_a
+            - solve_garleanu_pedersen_dynamic_aim_portfolio(
+                &GarleanuPedersenDynamicAimPortfolioSpec {
+                    covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
+                    current_weights: vec![0.5, 0.5],
+                    slow_alpha_vector: vec![0.03, 0.02],
+                    fast_alpha_vector: vec![0.01, 0.02],
+                    slow_mean_reversion_phi: 0.1,
+                    fast_mean_reversion_phi: 0.5,
+                    risk_aversion_gamma: 2.0,
+                    transaction_cost_kappa: 0.1 - 1e-5,
+                    discount_rate_r: 0.02,
+                },
+            )
+            .optimal_trading_rate_a)
+            / (2e-5);
+        assert!((g.optimal_trading_rate_a.d[0] - fd_a).abs() < 1e-5);
+        let gp_f64 = |k: f64| {
+            solve_garleanu_pedersen_dynamic_aim_portfolio(
+                &GarleanuPedersenDynamicAimPortfolioSpec {
+                    covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
+                    current_weights: vec![0.5, 0.5],
+                    slow_alpha_vector: vec![0.03, 0.02],
+                    fast_alpha_vector: vec![0.01, 0.02],
+                    slow_mean_reversion_phi: 0.1,
+                    fast_mean_reversion_phi: 0.5,
+                    risk_aversion_gamma: 2.0,
+                    transaction_cost_kappa: k,
+                    discount_rate_r: 0.02,
+                },
+            )
+        };
+        let fd_next = (gp_f64(0.1 + 1e-5).next_period_optimal_weights[0]
+            - gp_f64(0.1 - 1e-5).next_period_optimal_weights[0])
+            / (2e-5);
+        let ad_next = solve_garleanu_pedersen_dynamic_aim_portfolio(
+            &GarleanuPedersenDynamicAimPortfolioSpec {
+                covariance: vec![
+                    vec![Dual::<1>::from_value(0.04), Dual::<1>::from_value(0.01)],
+                    vec![Dual::<1>::from_value(0.01), Dual::<1>::from_value(0.09)],
+                ],
+                current_weights: vec![Dual::<1>::from_value(0.5), Dual::<1>::from_value(0.5)],
+                slow_alpha_vector: vec![Dual::<1>::from_value(0.03), Dual::<1>::from_value(0.02)],
+                fast_alpha_vector: vec![Dual::<1>::from_value(0.01), Dual::<1>::from_value(0.02)],
+                slow_mean_reversion_phi: Dual::<1>::from_value(0.1),
+                fast_mean_reversion_phi: Dual::<1>::from_value(0.5),
+                risk_aversion_gamma: Dual::<1>::from_value(2.0),
+                transaction_cost_kappa: Dual::<1>::variable(0.1, 0),
+                discount_rate_r: Dual::<1>::from_value(0.02),
+            },
+        )
+        .next_period_optimal_weights[0];
+        assert!((ad_next.d[0] - fd_next).abs() < 1e-5);
+    }
+}

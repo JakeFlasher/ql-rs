@@ -43,9 +43,8 @@ pub const SUITE_NAMES: [&str; SUITE_COUNT] = [
 pub use harness::{BenchConfig, ComparisonRow, format_markdown_table, run_comparison};
 pub use suites::{
     benchmark_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad,
-    benchmark_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml,
     benchmark_phase24_mbs_io_po_rmv_mo_xva_dilution_sig_garch_pot_rie_pin_gp_brinson_ierp,
-    phase24_workloads,
+    benchmark_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml, phase24_workloads,
     run_all_benchmark_suites_with_Config, run_all_benchmark_suites_with_config, run_all_benchmarks,
     run_all_suites,
 };

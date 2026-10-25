@@ -1148,16 +1148,327 @@ mod phase20_tests {
 }
 
 #[derive(Clone, Debug)]
-pub struct McNeilEmbrechtsPotGpdBacktestSpec<T: Real = f64> { pub historical_losses:Vec<T>,pub threshold_u:T,pub confidence_alpha:T,pub spectral_risk_aversion_k:T,pub backtest_var_threshold:T }
+pub struct McNeilEmbrechtsPotGpdBacktestSpec<T: Real = f64> {
+    pub historical_losses: Vec<T>,
+    pub threshold_u: T,
+    pub confidence_alpha: T,
+    pub spectral_risk_aversion_k: T,
+    pub backtest_var_threshold: T,
+}
 #[derive(Clone, Debug)]
-pub struct McNeilEmbrechtsPotGpdBacktestReport<T: Real = f64> { pub exceedance_count:usize,pub fitted_gpd_xi:T,pub fitted_gpd_beta:T,pub pot_gpd_var:T,pub pot_gpd_expected_shortfall:T,pub spectral_risk_measure:T,pub kupiec_lr_uc:T,pub christoffersen_lr_ind:T,pub christoffersen_lr_cc:T,pub transition_counts_n00_n01_n10_n11:[usize;4] }
-pub fn evaluate_mcneil_embrechts_pot_gpd_and_christoffersen_backtest<T:Real>(s:&McNeilEmbrechtsPotGpdBacktestSpec<T>)->McNeilEmbrechtsPotGpdBacktestReport<T>{let mut ex=s.historical_losses.iter().copied().filter(|x|x.val()>s.threshold_u.val()).map(|x|x-s.threshold_u).collect::<Vec<_>>();ex.sort_by(|a,b|a.val().partial_cmp(&b.val()).unwrap());let n=ex.len();let mut m0=T::zero();let mut m1=T::zero();for(j,y)in ex.iter().enumerate(){m0+=*y/T::from_f64(n.max(1) as f64);if n>1{m1+=T::from_f64((n-j-1) as f64/(n-1) as f64)* *y/T::from_f64(n as f64);}}let den=m0-T::from_f64(2.0)*m1;let xi=(T::from_f64(2.0)-m0/den.max_val(T::from_f64(1e-12))).max_val(T::from_f64(-0.45)).min_val(T::from_f64(0.85));let beta=(T::from_f64(2.0)*m0*m1/den.max_val(T::from_f64(1e-12))).max_val(T::from_f64(1e-12));let nn=s.historical_losses.len().max(1) as f64;let tail=(T::from_f64(nn/n.max(1) as f64)*(T::one()-s.confidence_alpha)).max_val(T::from_f64(1e-12));let var=s.threshold_u+if xi.val().abs()<1e-10{beta*(-tail.ln())}else{beta/xi*(tail.powf(-xi.val())-T::one())};let es=(var+beta-xi*s.threshold_u)/(T::one()-xi).max_val(T::from_f64(1e-12));let mut sorted=s.historical_losses.clone();sorted.sort_by(|a,b|a.val().partial_cmp(&b.val()).unwrap());let k=s.spectral_risk_aversion_k;let mut spec=T::zero();for(i,x)in sorted.iter().enumerate(){let i0=i as f64/nn;let i1=(i+1) as f64/nn;let w=if k.val().abs()<1e-12{T::from_f64(1.0/nn)}else{((-k*(T::one()-T::from_f64(i1))).exp()-(-k*(T::one()-T::from_f64(i0))).exp())/(T::one()-(-k).exp())};spec+=w**x;}let mut c=[0usize;4];let mut prev=false;for x in &s.historical_losses{let cur=x.val()>s.backtest_var_threshold.val();if !s.historical_losses.is_empty(){c[(prev as usize)*2+cur as usize]+=1;}prev=cur;}let n0=(c[0]+c[1]).max(1)as f64;let n1=(c[2]+c[3]).max(1)as f64;let p=(c[1]+c[3])as f64/(s.historical_losses.len().max(1) as f64);let pi0=c[1]as f64/n0;let pi1=c[3]as f64/n1;let lruc=2.0*((c[1]+c[3])as f64*((((c[1]+c[3])as f64/(s.historical_losses.len().max(1)as f64)).max(1e-14)).ln())+(c[0]+c[2])as f64*((1.0-p).max(1e-14).ln())-c[1]as f64*pi0.max(1e-14).ln()-c[0]as f64*(1.0-pi0).max(1e-14).ln()-c[3]as f64*pi1.max(1e-14).ln()-c[2]as f64*(1.0-pi1).max(1e-14).ln());McNeilEmbrechtsPotGpdBacktestReport{exceedance_count:n,fitted_gpd_xi:xi,fitted_gpd_beta:beta,pot_gpd_var:var,pot_gpd_expected_shortfall:es,spectral_risk_measure:spec,kupiec_lr_uc:T::from_f64(lruc.max(0.0)),christoffersen_lr_ind:T::zero(),christoffersen_lr_cc:T::from_f64(lruc.max(0.0)),transition_counts_n00_n01_n10_n11:c}}
+pub struct McNeilEmbrechtsPotGpdBacktestReport<T: Real = f64> {
+    pub exceedance_count: usize,
+    pub fitted_gpd_xi: T,
+    pub fitted_gpd_beta: T,
+    pub pot_gpd_var: T,
+    pub pot_gpd_expected_shortfall: T,
+    pub spectral_risk_measure: T,
+    pub kupiec_lr_uc: T,
+    pub christoffersen_lr_ind: T,
+    pub christoffersen_lr_cc: T,
+    pub transition_counts_n00_n01_n10_n11: [usize; 4],
+}
+pub fn evaluate_mcneil_embrechts_pot_gpd_and_christoffersen_backtest<T: Real>(
+    s: &McNeilEmbrechtsPotGpdBacktestSpec<T>,
+) -> McNeilEmbrechtsPotGpdBacktestReport<T> {
+    let mut ex = s
+        .historical_losses
+        .iter()
+        .copied()
+        .filter(|x| x.val() > s.threshold_u.val())
+        .map(|x| x - s.threshold_u)
+        .collect::<Vec<_>>();
+    ex.sort_by(|a, b| a.val().partial_cmp(&b.val()).unwrap());
+    let n = ex.len();
+    let mut m0 = T::zero();
+    let mut m1 = T::zero();
+    for (j, y) in ex.iter().enumerate() {
+        m0 += *y / T::from_f64(n.max(1) as f64);
+        if n > 1 {
+            m1 += T::from_f64((n - j - 1) as f64 / (n - 1) as f64) * *y / T::from_f64(n as f64);
+        }
+    }
+    let den = m0 - T::from_f64(2.0) * m1;
+    let xi = (T::from_f64(2.0) - m0 / den.max_val(T::from_f64(1e-12)))
+        .max_val(T::from_f64(-0.45))
+        .min_val(T::from_f64(0.85));
+    let beta =
+        (T::from_f64(2.0) * m0 * m1 / den.max_val(T::from_f64(1e-12))).max_val(T::from_f64(1e-12));
+    let nn = s.historical_losses.len().max(1) as f64;
+    let tail = (T::from_f64(nn / n.max(1) as f64) * (T::one() - s.confidence_alpha))
+        .max_val(T::from_f64(1e-12));
+    let var = s.threshold_u
+        + if xi.val().abs() < 1e-10 {
+            beta * (-tail.ln())
+        } else {
+            beta / xi * ((-xi * tail.ln()).exp() - T::one())
+        };
+    let es = (var + beta - xi * s.threshold_u) / (T::one() - xi).max_val(T::from_f64(1e-12));
+    let mut sorted = s.historical_losses.clone();
+    sorted.sort_by(|a, b| a.val().partial_cmp(&b.val()).unwrap());
+    let k = s.spectral_risk_aversion_k;
+    let mut spec = T::zero();
+    for (i, x) in sorted.iter().enumerate() {
+        let i0 = i as f64 / nn;
+        let i1 = (i + 1) as f64 / nn;
+        let w = if k.val().abs() < 1e-12 {
+            T::from_f64(1.0 / nn)
+        } else {
+            ((-k * (T::one() - T::from_f64(i1))).exp() - (-k * (T::one() - T::from_f64(i0))).exp())
+                / (T::one() - (-k).exp())
+        };
+        spec += w * *x;
+    }
+    let mut c = [0usize; 4];
+    for w in s.historical_losses.windows(2) {
+        let prev = w[0].val() > s.backtest_var_threshold.val();
+        let cur = w[1].val() > s.backtest_var_threshold.val();
+        c[(prev as usize) * 2 + (cur as usize)] += 1;
+    }
+    let nt = c.iter().sum::<usize>().max(1);
+    let n_ex = c[1] + c[3];
+    let p0 = (T::one() - s.confidence_alpha)
+        .max_val(T::from_f64(1e-12))
+        .min_val(T::one() - T::from_f64(1e-12));
+    let ph = T::from_f64(n_ex as f64 / nt as f64)
+        .max_val(T::from_f64(1e-12))
+        .min_val(T::one() - T::from_f64(1e-12));
+    let ll = |n0: usize, n1: usize, p: T| {
+        T::from_f64(n0 as f64) * (T::one() - p).ln() + T::from_f64(n1 as f64) * p.ln()
+    };
+    let kupiec = T::from_f64(2.0) * (ll(nt - n_ex, n_ex, ph) - ll(nt - n_ex, n_ex, p0));
+    let pi0 = T::from_f64(c[1] as f64 / (c[0] + c[1]).max(1) as f64)
+        .max_val(T::from_f64(1e-12))
+        .min_val(T::one() - T::from_f64(1e-12));
+    let pi1 = T::from_f64(c[3] as f64 / (c[2] + c[3]).max(1) as f64)
+        .max_val(T::from_f64(1e-12))
+        .min_val(T::one() - T::from_f64(1e-12));
+    let pall = T::from_f64((c[1] + c[3]) as f64 / nt as f64)
+        .max_val(T::from_f64(1e-12))
+        .min_val(T::one() - T::from_f64(1e-12));
+    let ind = T::from_f64(2.0)
+        * (ll(c[0], c[1], pi0) + ll(c[2], c[3], pi1) - ll(c[0] + c[2], c[1] + c[3], pall));
+    McNeilEmbrechtsPotGpdBacktestReport {
+        exceedance_count: n,
+        fitted_gpd_xi: xi,
+        fitted_gpd_beta: beta,
+        pot_gpd_var: var,
+        pot_gpd_expected_shortfall: es,
+        spectral_risk_measure: spec,
+        kupiec_lr_uc: kupiec.max_val(T::zero()),
+        christoffersen_lr_ind: ind.max_val(T::zero()),
+        christoffersen_lr_cc: (kupiec + ind).max_val(T::zero()),
+        transition_counts_n00_n01_n10_n11: c,
+    }
+}
 
 #[derive(Clone, Debug)]
-pub struct BaconCarinoMultiPeriodBrinsonSpec<T: Real = f64> { pub portfolio_weights_by_period:Vec<Vec<T>>,pub benchmark_weights_by_period:Vec<Vec<T>>,pub portfolio_returns_by_period:Vec<Vec<T>>,pub benchmark_returns_by_period:Vec<Vec<T>>,pub fx_spot_returns_by_sector:Vec<T>,pub foreign_cash_rates_by_sector:Vec<T>,pub domestic_cash_rate:T }
+pub struct BaconCarinoMultiPeriodBrinsonSpec<T: Real = f64> {
+    pub portfolio_weights_by_period: Vec<Vec<T>>,
+    pub benchmark_weights_by_period: Vec<Vec<T>>,
+    pub portfolio_returns_by_period: Vec<Vec<T>>,
+    pub benchmark_returns_by_period: Vec<Vec<T>>,
+    pub fx_spot_returns_by_sector: Vec<T>,
+    pub foreign_cash_rates_by_sector: Vec<T>,
+    pub domestic_cash_rate: T,
+}
 #[derive(Clone, Debug)]
-pub struct BaconCarinoMultiPeriodBrinsonReport<T: Real = f64> { pub cumulative_portfolio_return:T,pub cumulative_benchmark_return:T,pub total_geometric_active_return:T,pub carino_linked_allocation_total:T,pub carino_linked_selection_total:T,pub carino_linked_interaction_total:T,pub multi_period_linking_residual:T,pub karnosky_singer_currency_allocation:T,pub karnosky_singer_local_excess_allocation:T }
-fn psi_bc<T:Real>(x:T,y:T)->T{let d=x-y;let m=(T::from_f64(2.0)+x+y)/T::from_f64(2.0);if d.val().abs()>1e-7{((T::one()+x).ln()-(T::one()+y).ln())/d}else{(T::one()+d*d/(T::from_f64(12.0)*m*m))/m}}
-pub fn evaluate_bacon_carino_brinson_and_karnosky_singer_attribution<T:Real>(s:&BaconCarinoMultiPeriodBrinsonSpec<T>)->BaconCarinoMultiPeriodBrinsonReport<T>{let m=s.portfolio_weights_by_period.len();let mut rp=T::one();let mut rb=T::one();let mut aa=T::zero();let mut ss=T::zero();let mut ii=T::zero();for t in 0..m{let mut p=T::zero();let mut b=T::zero();for r in &s.portfolio_returns_by_period[t]{p+=*r;}for r in &s.benchmark_returns_by_period[t]{b+=*r;}let wp=&s.portfolio_weights_by_period[t];let wb=&s.benchmark_weights_by_period[t];let rp_t=wp.iter().zip(&s.portfolio_returns_by_period[t]).map(|(w,r)|*w**r).fold(T::zero(),|a,x|a+x);let rb_t=wb.iter().zip(&s.benchmark_returns_by_period[t]).map(|(w,r)|*w**r).fold(T::zero(),|a,x|a+x);rp*=T::one()+rp_t;rb*=T::one()+rb_t;let k=psi_bc(rp_t,rb_t);for i in 0..wp.len().min(wb.len()){aa+=(wp[i]-wb[i])*(s.benchmark_returns_by_period[t][i]-rb_t)*k;ss+=wb[i]*(s.portfolio_returns_by_period[t][i]-s.benchmark_returns_by_period[t][i])*k;ii+=(wp[i]-wb[i])*(s.portfolio_returns_by_period[t][i]-s.benchmark_returns_by_period[t][i])*k;}}
-let a=rp-T::one();let b=rb-T::one();let active=a-b;let fx=s.fx_spot_returns_by_sector.iter().zip(&s.foreign_cash_rates_by_sector).map(|(x,r)|*x-*r).fold(T::zero(),|u,x|u+x);BaconCarinoMultiPeriodBrinsonReport{cumulative_portfolio_return:a,cumulative_benchmark_return:b,total_geometric_active_return:active,carino_linked_allocation_total:aa,carino_linked_selection_total:ss,carino_linked_interaction_total:ii,multi_period_linking_residual:T::zero(),karnosky_singer_currency_allocation:fx*s.domestic_cash_rate,karnosky_singer_local_excess_allocation:fx}}
-#[cfg(test)] mod phase24_tests { use super::*; use ql_ad::Dual; fn mk<T:Real>(a:T)->McNeilEmbrechtsPotGpdBacktestSpec<T>{McNeilEmbrechtsPotGpdBacktestSpec{historical_losses:vec![T::from_f64(1.0),T::from_f64(2.0),T::from_f64(3.0)+a,T::from_f64(4.0),T::from_f64(5.0)],threshold_u:T::from_f64(1.0),confidence_alpha:T::from_f64(0.95),spectral_risk_aversion_k:T::from_f64(2.0),backtest_var_threshold:T::from_f64(3.0)}} #[test] fn pot_gpd_phase24(){let r=evaluate_mcneil_embrechts_pot_gpd_and_christoffersen_backtest(&mk(0.0));assert!(r.pot_gpd_expected_shortfall>r.pot_gpd_var&&r.pot_gpd_var>1.0);assert!((r.christoffersen_lr_cc-(r.kupiec_lr_uc+r.christoffersen_lr_ind)).abs()<1e-12);let h=1e-5;let fd=(evaluate_mcneil_embrechts_pot_gpd_and_christoffersen_backtest(&McNeilEmbrechtsPotGpdBacktestSpec{confidence_alpha:0.95+h,..mk(0.0)}).pot_gpd_expected_shortfall-evaluate_mcneil_embrechts_pot_gpd_and_christoffersen_backtest(&McNeilEmbrechtsPotGpdBacktestSpec{confidence_alpha:0.95-h,..mk(0.0)}).pot_gpd_expected_shortfall)/(2.0*h);let ad=evaluate_mcneil_embrechts_pot_gpd_and_christoffersen_backtest(&McNeilEmbrechtsPotGpdBacktestSpec{confidence_alpha:Dual::<1>::variable(0.95,0),..mk(Dual::zero())}).pot_gpd_expected_shortfall;assert!((ad.d[0]-fd).abs()<1e-5);}}
+pub struct BaconCarinoMultiPeriodBrinsonReport<T: Real = f64> {
+    pub cumulative_portfolio_return: T,
+    pub cumulative_benchmark_return: T,
+    pub total_geometric_active_return: T,
+    pub carino_linked_allocation_total: T,
+    pub carino_linked_selection_total: T,
+    pub carino_linked_interaction_total: T,
+    pub multi_period_linking_residual: T,
+    pub karnosky_singer_currency_allocation: T,
+    pub karnosky_singer_local_excess_allocation: T,
+}
+fn psi_bc<T: Real>(x: T, y: T) -> T {
+    let d = x - y;
+    let m = (T::from_f64(2.0) + x + y) / T::from_f64(2.0);
+    if d.val().abs() > 1e-7 {
+        ((T::one() + x).ln() - (T::one() + y).ln()) / d
+    } else {
+        (T::one() + d * d / (T::from_f64(12.0) * m * m)) / m
+    }
+}
+pub fn evaluate_bacon_carino_brinson_and_karnosky_singer_attribution<T: Real>(
+    s: &BaconCarinoMultiPeriodBrinsonSpec<T>,
+) -> BaconCarinoMultiPeriodBrinsonReport<T> {
+    let m = s.portfolio_weights_by_period.len();
+    let mut rp = T::one();
+    let mut rb = T::one();
+    let mut aa = T::zero();
+    let mut ss = T::zero();
+    let mut ii = T::zero();
+    for t in 0..m {
+        let wp = &s.portfolio_weights_by_period[t];
+        let wb = &s.benchmark_weights_by_period[t];
+        let rp_t = wp
+            .iter()
+            .zip(&s.portfolio_returns_by_period[t])
+            .map(|(w, r)| *w * *r)
+            .fold(T::zero(), |a, x| a + x);
+        let rb_t = wb
+            .iter()
+            .zip(&s.benchmark_returns_by_period[t])
+            .map(|(w, r)| *w * *r)
+            .fold(T::zero(), |a, x| a + x);
+        rp *= T::one() + rp_t;
+        rb *= T::one() + rb_t;
+        let k = psi_bc(rp_t, rb_t);
+        for i in 0..wp.len().min(wb.len()) {
+            let rb_i = s.benchmark_returns_by_period[t][i];
+            let active_i = s.portfolio_returns_by_period[t][i] - rb_i;
+            aa += (wp[i] - wb[i]) * (rb_i - rb_t) * k;
+            ss += wb[i] * active_i * k;
+            ii += (wp[i] - wb[i]) * active_i * k;
+        }
+    }
+    let a = rp - T::one();
+    let b = rb - T::one();
+    let active = a - b;
+    let k_total = psi_bc(a, b).max_val(T::from_f64(1e-12));
+    let alloc = aa / k_total;
+    let sel = ss / k_total;
+    let inter = ii / k_total;
+    let residual = active - (alloc + sel + inter);
+    let mut rc = Vec::new();
+    let mut rl = Vec::new();
+    for i in 0..s.fx_spot_returns_by_sector.len() {
+        let foreign = s
+            .foreign_cash_rates_by_sector
+            .get(i)
+            .copied()
+            .unwrap_or(T::zero());
+        rc.push(s.fx_spot_returns_by_sector[i] + foreign - s.domestic_cash_rate);
+        let br = s
+            .benchmark_returns_by_period
+            .first()
+            .and_then(|v| v.get(i))
+            .copied()
+            .unwrap_or(T::zero());
+        rl.push(br - foreign);
+    }
+    let wb0 = s
+        .benchmark_weights_by_period
+        .first()
+        .cloned()
+        .unwrap_or_default();
+    let wp0 = s
+        .portfolio_weights_by_period
+        .first()
+        .cloned()
+        .unwrap_or_default();
+    let mut rcb = T::zero();
+    let mut rlb = T::zero();
+    for i in 0..rc.len().min(wb0.len()) {
+        rcb += wb0[i] * rc[i];
+        rlb += wb0[i] * rl[i];
+    }
+    let mut kcur = T::zero();
+    let mut kloc = T::zero();
+    for i in 0..rc.len().min(wp0.len()).min(wb0.len()) {
+        let dw = wp0[i] - wb0[i];
+        kcur += dw * (rc[i] - rcb);
+        kloc += dw * (rl[i] - rlb);
+    }
+    BaconCarinoMultiPeriodBrinsonReport {
+        cumulative_portfolio_return: a,
+        cumulative_benchmark_return: b,
+        total_geometric_active_return: active,
+        carino_linked_allocation_total: alloc,
+        carino_linked_selection_total: sel,
+        carino_linked_interaction_total: inter,
+        multi_period_linking_residual: residual,
+        karnosky_singer_currency_allocation: kcur,
+        karnosky_singer_local_excess_allocation: kloc,
+    }
+}
+
+#[cfg(test)]
+mod phase24_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn mk<T: Real>(a: T) -> McNeilEmbrechtsPotGpdBacktestSpec<T> {
+        McNeilEmbrechtsPotGpdBacktestSpec {
+            historical_losses: vec![
+                T::from_f64(1.0),
+                T::from_f64(2.0),
+                T::from_f64(3.0) + a,
+                T::from_f64(4.0),
+                T::from_f64(5.0),
+            ],
+            threshold_u: T::from_f64(1.0),
+            confidence_alpha: T::from_f64(0.95),
+            spectral_risk_aversion_k: T::from_f64(2.0),
+            backtest_var_threshold: T::from_f64(3.0),
+        }
+    }
+    #[test]
+    fn pot_gpd_phase24() {
+        let r = evaluate_mcneil_embrechts_pot_gpd_and_christoffersen_backtest(&mk(0.0));
+        assert!(r.pot_gpd_expected_shortfall > r.pot_gpd_var && r.pot_gpd_var > 1.0);
+        assert!(
+            (r.christoffersen_lr_cc - (r.kupiec_lr_uc + r.christoffersen_lr_ind)).abs() < 1e-12
+        );
+        let h = 1e-5;
+        let fd = (evaluate_mcneil_embrechts_pot_gpd_and_christoffersen_backtest(
+            &McNeilEmbrechtsPotGpdBacktestSpec {
+                confidence_alpha: 0.95 + h,
+                ..mk(0.0)
+            },
+        )
+        .pot_gpd_expected_shortfall
+            - evaluate_mcneil_embrechts_pot_gpd_and_christoffersen_backtest(
+                &McNeilEmbrechtsPotGpdBacktestSpec {
+                    confidence_alpha: 0.95 - h,
+                    ..mk(0.0)
+                },
+            )
+            .pot_gpd_expected_shortfall)
+            / (2.0 * h);
+        let ad = evaluate_mcneil_embrechts_pot_gpd_and_christoffersen_backtest(
+            &McNeilEmbrechtsPotGpdBacktestSpec {
+                confidence_alpha: Dual::<1>::variable(0.95, 0),
+                ..mk(Dual::zero())
+            },
+        )
+        .pot_gpd_expected_shortfall;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+    fn br_spec<T: Real>(x: T) -> BaconCarinoMultiPeriodBrinsonSpec<T> {
+        BaconCarinoMultiPeriodBrinsonSpec {
+            portfolio_weights_by_period: vec![vec![T::from_f64(0.6), T::from_f64(0.4)]; 2],
+            benchmark_weights_by_period: vec![vec![T::from_f64(0.5), T::from_f64(0.5)]; 2],
+            portfolio_returns_by_period: vec![
+                vec![T::from_f64(0.10) + x, T::from_f64(0.02)],
+                vec![T::from_f64(0.04), T::from_f64(0.01)],
+            ],
+            benchmark_returns_by_period: vec![
+                vec![T::from_f64(0.08), T::from_f64(0.01)],
+                vec![T::from_f64(0.03), T::from_f64(0.015)],
+            ],
+            fx_spot_returns_by_sector: vec![T::from_f64(0.01), T::from_f64(-0.005)],
+            foreign_cash_rates_by_sector: vec![T::from_f64(0.02), T::from_f64(0.01)],
+            domestic_cash_rate: T::from_f64(0.03),
+        }
+    }
+    #[test]
+    fn brinson_carino_phase24() {
+        let r = evaluate_bacon_carino_brinson_and_karnosky_singer_attribution(&br_spec(0.0));
+        assert!(r.multi_period_linking_residual.abs() < 1e-12);
+        let h = 1e-5;
+        let fd = (evaluate_bacon_carino_brinson_and_karnosky_singer_attribution(&br_spec(h))
+            .carino_linked_selection_total
+            - evaluate_bacon_carino_brinson_and_karnosky_singer_attribution(&br_spec(-h))
+                .carino_linked_selection_total)
+            / (2.0 * h);
+        let ad = evaluate_bacon_carino_brinson_and_karnosky_singer_attribution(&br_spec(
+            Dual::<1>::variable(0.0, 0),
+        ))
+        .carino_linked_selection_total;
+        assert!((ad.d[0] - fd).abs() < 1e-9);
+    }
+}

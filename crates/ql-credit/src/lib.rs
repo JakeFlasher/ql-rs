@@ -1199,14 +1199,169 @@ mod phase19_tests {
 }
 
 #[derive(Clone, Debug)]
-pub struct DuffieSingletonRecoveryAndCdsBasisSpec<T: Real = f64> { pub face_value:T,pub coupon_rate_annual:T,pub payment_freq_per_year:usize,pub maturity_years:T,pub risk_free_rate:T,pub hazard_rate:T,pub recovery_rate:T,pub market_bond_price:T,pub repo_funding_spread:T }
-#[derive(Clone, Debug)]
-pub struct DuffieSingletonRecoveryAndCdsBasisReport<T: Real = f64> { pub rmv_bond_price:T,pub rfv_bond_price:T,pub rt_bond_price:T,pub risk_free_bond_price:T,pub duffie_singleton_spread:T,pub par_cds_spread:T,pub bond_z_spread:T,pub raw_cds_bond_basis:T,pub funding_adjusted_net_basis:T,pub rmv_minus_rfv_premium_bias:T }
-pub fn analyze_duffie_singleton_rmv_rfv_and_cds_basis<T:Real>(s:&DuffieSingletonRecoveryAndCdsBasisSpec<T>)->DuffieSingletonRecoveryAndCdsBasisReport<T>{
- let f=s.payment_freq_per_year.max(1); let m=(s.maturity_years.val()*f as f64).round().max(1.0) as usize; let dt=s.maturity_years/T::from_f64(m as f64); let c=s.face_value*s.coupon_rate_annual*dt; let l=T::one()-s.recovery_rate; let ds=s.hazard_rate*l; let mut rmv=T::zero(); let mut rfv=T::zero(); let mut rt=T::zero(); let mut ust=T::zero(); let mut rec=T::zero(); let mut ann=T::zero();
- for j in 1..=m { let t=dt*T::from_f64(j as f64); let t0=dt*T::from_f64((j-1) as f64); let d=(-s.risk_free_rate*t).exp(); let surv=(-s.hazard_rate*t).exp(); let surv0=(-s.hazard_rate*t0).exp(); let cdf=surv0-surv; rmv+=c*(-(s.risk_free_rate+ds)*t).exp(); rfv+=c*(-(s.risk_free_rate+s.hazard_rate)*t).exp(); rfv+=s.recovery_rate*s.face_value*(-s.risk_free_rate*(t-dt/T::from_f64(2.0))).exp()*cdf; let q=surv+s.recovery_rate*(T::one()-surv); rt+=c*d*q; ust+=c*d; rec+=(-s.risk_free_rate*(t-dt/T::from_f64(2.0))).exp()*cdf; ann+=dt*d*(surv+T::from_f64(0.5)*cdf); }
- let t=s.maturity_years; let surv=(-s.hazard_rate*t).exp(); rmv+=s.face_value*(-(s.risk_free_rate+ds)*t).exp(); rfv+=s.face_value*(-(s.risk_free_rate+s.hazard_rate)*t).exp(); rt+=s.face_value*(-s.risk_free_rate*t).exp()*(surv+s.recovery_rate*(T::one()-surv)); ust+=s.face_value*(-s.risk_free_rate*t).exp();
- let mut z=ds; for _ in 0..12 { let mut pv=T::zero(); let mut dp=T::zero(); for j in 1..=m { let tt=dt*T::from_f64(j as f64); let cf=if j==m {c+s.face_value} else {c}; let e=(-(s.risk_free_rate+z)*tt).exp(); pv+=cf*e; dp+=-tt*cf*e; } let den=if dp.val().abs()<1e-12 {T::from_f64(-1e-12)} else {dp}; z-=(pv-s.market_bond_price)/den; }
- let cds=l*rec/ann.max_val(T::from_f64(1e-12)); let basis=cds-z; DuffieSingletonRecoveryAndCdsBasisReport{rmv_bond_price:rmv,rfv_bond_price:rfv,rt_bond_price:rt,risk_free_bond_price:ust,duffie_singleton_spread:ds,par_cds_spread:cds,bond_z_spread:z,raw_cds_bond_basis:basis,funding_adjusted_net_basis:basis-s.repo_funding_spread,rmv_minus_rfv_premium_bias:rmv-rfv}
+pub struct DuffieSingletonRecoveryAndCdsBasisSpec<T: Real = f64> {
+    pub face_value: T,
+    pub coupon_rate_annual: T,
+    pub payment_freq_per_year: usize,
+    pub maturity_years: T,
+    pub risk_free_rate: T,
+    pub hazard_rate: T,
+    pub recovery_rate: T,
+    pub market_bond_price: T,
+    pub repo_funding_spread: T,
 }
-#[cfg(test)] mod phase24_ds_tests { use super::*; use ql_ad::Dual; fn mk<T:Real>(h:T,c:T,r:T)->DuffieSingletonRecoveryAndCdsBasisSpec<T>{DuffieSingletonRecoveryAndCdsBasisSpec{face_value:T::from_f64(100.0),coupon_rate_annual:c,payment_freq_per_year:2,maturity_years:T::from_f64(3.0),risk_free_rate:r,hazard_rate:h,recovery_rate:T::from_f64(0.4),market_bond_price:T::from_f64(98.0),repo_funding_spread:T::from_f64(0.005)}} #[test] fn phase24(){let s=mk(0.02,0.1,0.02); let r=analyze_duffie_singleton_rmv_rfv_and_cds_basis(&s); assert!(r.rmv_bond_price>r.rfv_bond_price); let z=mk(0.02,0.0,0.02); let rz=analyze_duffie_singleton_rmv_rfv_and_cds_basis(&z); assert!(rz.rmv_bond_price<rz.rfv_bond_price); let h=1e-5; let fd=(analyze_duffie_singleton_rmv_rfv_and_cds_basis(&mk(0.02+h,0.03,0.02)).rmv_bond_price-analyze_duffie_singleton_rmv_rfv_and_cds_basis(&mk(0.02-h,0.03,0.02)).rmv_bond_price)/(2.0*h); let ad=analyze_duffie_singleton_rmv_rfv_and_cds_basis(&mk(Dual::<1>::variable(0.02,0),Dual::from_value(0.03),Dual::from_value(0.02))).rmv_bond_price; assert!((ad.d[0]-fd).abs()<1e-5);}}
+#[derive(Clone, Debug)]
+pub struct DuffieSingletonRecoveryAndCdsBasisReport<T: Real = f64> {
+    pub rmv_bond_price: T,
+    pub rfv_bond_price: T,
+    pub rt_bond_price: T,
+    pub risk_free_bond_price: T,
+    pub duffie_singleton_spread: T,
+    pub par_cds_spread: T,
+    pub bond_z_spread: T,
+    pub raw_cds_bond_basis: T,
+    pub funding_adjusted_net_basis: T,
+    pub rmv_minus_rfv_premium_bias: T,
+}
+pub type DuffieSingletonLarixRecoveryAndBasisSpec<T = f64> =
+    DuffieSingletonRecoveryAndCdsBasisSpec<T>;
+pub type DuffieSingletonLarixRecoveryAndBasisReport<T = f64> =
+    DuffieSingletonRecoveryAndCdsBasisReport<T>;
+pub fn analyze_duffie_singleton_rmv_rfv_and_cds_basis<T: Real>(
+    s: &DuffieSingletonRecoveryAndCdsBasisSpec<T>,
+) -> DuffieSingletonRecoveryAndCdsBasisReport<T> {
+    let f = s.payment_freq_per_year.max(1);
+    let m = (s.maturity_years.val() * f as f64).round().max(1.0) as usize;
+    let dt = s.maturity_years / T::from_f64(m as f64);
+    let c = s.face_value * s.coupon_rate_annual * dt;
+    let l = T::one() - s.recovery_rate;
+    let ds = s.hazard_rate * l;
+    let mut rmv = T::zero();
+    let mut rfv = T::zero();
+    let mut rt = T::zero();
+    let mut ust = T::zero();
+    let mut rec = T::zero();
+    let mut ann = T::zero();
+    for j in 1..=m {
+        let t = dt * T::from_f64(j as f64);
+        let t0 = dt * T::from_f64((j - 1) as f64);
+        let d = (-s.risk_free_rate * t).exp();
+        let surv = (-s.hazard_rate * t).exp();
+        let surv0 = (-s.hazard_rate * t0).exp();
+        let cdf = surv0 - surv;
+        rmv += c * (-(s.risk_free_rate + ds) * t).exp();
+        rfv += c * (-(s.risk_free_rate + s.hazard_rate) * t).exp();
+        rfv += s.recovery_rate
+            * s.face_value
+            * (-s.risk_free_rate * (t - dt / T::from_f64(2.0))).exp()
+            * cdf;
+        let q = surv + s.recovery_rate * (T::one() - surv);
+        rt += c * d * q;
+        ust += c * d;
+        rec += (-s.risk_free_rate * (t - dt / T::from_f64(2.0))).exp() * cdf;
+        ann += dt * d * (surv + T::from_f64(0.5) * cdf);
+    }
+    let t = s.maturity_years;
+    let surv = (-s.hazard_rate * t).exp();
+    rmv += s.face_value * (-(s.risk_free_rate + ds) * t).exp();
+    rfv += s.face_value * (-(s.risk_free_rate + s.hazard_rate) * t).exp();
+    rt +=
+        s.face_value * (-s.risk_free_rate * t).exp() * (surv + s.recovery_rate * (T::one() - surv));
+    ust += s.face_value * (-s.risk_free_rate * t).exp();
+    let mut z = ds;
+    for _ in 0..12 {
+        let mut pv = T::zero();
+        let mut dp = T::zero();
+        for j in 1..=m {
+            let tt = dt * T::from_f64(j as f64);
+            let cf = if j == m { c + s.face_value } else { c };
+            let e = (-(s.risk_free_rate + z) * tt).exp();
+            pv += cf * e;
+            dp += -tt * cf * e;
+        }
+        let den = if dp.val().abs() < 1e-12 {
+            T::from_f64(-1e-12)
+        } else {
+            dp
+        };
+        z -= (pv - s.market_bond_price) / den;
+    }
+    let cds = l * rec / ann.max_val(T::from_f64(1e-12));
+    let basis = cds - z;
+    DuffieSingletonRecoveryAndCdsBasisReport {
+        rmv_bond_price: rmv,
+        rfv_bond_price: rfv,
+        rt_bond_price: rt,
+        risk_free_bond_price: ust,
+        duffie_singleton_spread: ds,
+        par_cds_spread: cds,
+        bond_z_spread: z,
+        raw_cds_bond_basis: basis,
+        funding_adjusted_net_basis: basis - s.repo_funding_spread,
+        rmv_minus_rfv_premium_bias: rmv - rfv,
+    }
+}
+/// Compatibility entry point using the Phase 24 engine's descriptive name.
+pub fn evaluate_duffie_singleton_larix_recovery_and_basis<T: Real>(
+    s: &DuffieSingletonRecoveryAndCdsBasisSpec<T>,
+) -> DuffieSingletonRecoveryAndCdsBasisReport<T> {
+    analyze_duffie_singleton_rmv_rfv_and_cds_basis(s)
+}
+
+#[cfg(test)]
+mod phase24_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn mk<T: Real>(h: T, c: T, r: T) -> DuffieSingletonRecoveryAndCdsBasisSpec<T> {
+        DuffieSingletonRecoveryAndCdsBasisSpec {
+            face_value: T::from_f64(100.0),
+            coupon_rate_annual: c,
+            payment_freq_per_year: 2,
+            maturity_years: T::from_f64(3.0),
+            risk_free_rate: r,
+            hazard_rate: h,
+            recovery_rate: T::from_f64(0.4),
+            market_bond_price: T::from_f64(98.0),
+            repo_funding_spread: T::from_f64(0.005),
+        }
+    }
+    #[test]
+    fn phase24() {
+        let s = mk(0.02, 0.1, 0.02);
+        let r = analyze_duffie_singleton_rmv_rfv_and_cds_basis(&s);
+        assert!(r.rmv_bond_price > r.rfv_bond_price);
+        let z = mk(0.02, 0.0, 0.02);
+        let rz = analyze_duffie_singleton_rmv_rfv_and_cds_basis(&z);
+        assert!(rz.rmv_bond_price < rz.rfv_bond_price);
+        let h = 1e-5;
+        let fd = (analyze_duffie_singleton_rmv_rfv_and_cds_basis(&mk(0.02 + h, 0.03, 0.02))
+            .rmv_bond_price
+            - analyze_duffie_singleton_rmv_rfv_and_cds_basis(&mk(0.02 - h, 0.03, 0.02))
+                .rmv_bond_price)
+            / (2.0 * h);
+        let ad = analyze_duffie_singleton_rmv_rfv_and_cds_basis(&mk(
+            Dual::<1>::variable(0.02, 0),
+            Dual::from_value(0.03),
+            Dual::from_value(0.02),
+        ))
+        .rmv_bond_price;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+        let mut r0s = mk(0.02, 0.03, 0.02);
+        r0s.recovery_rate = 0.0;
+        let r0 = analyze_duffie_singleton_rmv_rfv_and_cds_basis(&r0s);
+        assert!((r0.rmv_bond_price - r0.rfv_bond_price).abs() < 1e-12);
+        assert!((r0.rmv_bond_price - r0.rt_bond_price).abs() < 1e-12);
+        let fd_basis = (analyze_duffie_singleton_rmv_rfv_and_cds_basis(&mk(0.02 + h, 0.03, 0.02))
+            .raw_cds_bond_basis
+            - analyze_duffie_singleton_rmv_rfv_and_cds_basis(&mk(0.02 - h, 0.03, 0.02))
+                .raw_cds_bond_basis)
+            / (2.0 * h);
+        let ad_basis = analyze_duffie_singleton_rmv_rfv_and_cds_basis(&mk(
+            Dual::<1>::variable(0.02, 0),
+            Dual::from_value(0.03),
+            Dual::from_value(0.02),
+        ))
+        .raw_cds_bond_basis;
+        assert!((ad_basis.d[0] - fd_basis).abs() < 1e-5);
+    }
+}

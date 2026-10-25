@@ -1,4 +1,3 @@
-#![allow(clippy::items_after_test_module)]
 use crate::Real;
 use nalgebra::{DMatrix, DVector, LU};
 use std::fmt;
@@ -312,6 +311,206 @@ impl IftSystemSensitivity {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct PenmanDamodaranResidualIncomeIerpSpec<T: Real = f64> {
+    pub initial_book_value: T,
+    pub forecast_roe_schedule: Vec<T>,
+    pub payout_ratio_schedule: Vec<T>,
+    pub terminal_roe: T,
+    pub terminal_growth_rate: T,
+    pub risk_free_rate: T,
+    pub equity_beta: T,
+    pub observed_market_price: T,
+}
+#[derive(Clone, Debug)]
+pub struct PenmanDamodaranResidualIncomeIerpReport<T: Real = f64> {
+    pub implied_erp: T,
+    pub implied_cost_of_equity: T,
+    pub riv_intrinsic_value: T,
+    pub ddm_intrinsic_value: T,
+    pub riv_ddm_clean_surplus_error: T,
+    pub ohlson_juettner_aeg_value: T,
+    pub d_ierp_d_market_price: T,
+    pub d_ierp_d_risk_free_rate: T,
+    pub d_ierp_d_terminal_growth: T,
+}
+#[derive(Clone, Copy)]
+struct Jet<T: Real> {
+    v: T,
+    dre: T,
+    dg: T,
+}
+fn j_const<T: Real>(v: T) -> Jet<T> {
+    Jet {
+        v,
+        dre: T::zero(),
+        dg: T::zero(),
+    }
+}
+fn j_add<T: Real>(a: Jet<T>, b: Jet<T>) -> Jet<T> {
+    Jet {
+        v: a.v + b.v,
+        dre: a.dre + b.dre,
+        dg: a.dg + b.dg,
+    }
+}
+fn j_sub<T: Real>(a: Jet<T>, b: Jet<T>) -> Jet<T> {
+    Jet {
+        v: a.v - b.v,
+        dre: a.dre - b.dre,
+        dg: a.dg - b.dg,
+    }
+}
+fn j_mul<T: Real>(a: Jet<T>, b: Jet<T>) -> Jet<T> {
+    Jet {
+        v: a.v * b.v,
+        dre: a.dre * b.v + a.v * b.dre,
+        dg: a.dg * b.v + a.v * b.dg,
+    }
+}
+fn j_div<T: Real>(a: Jet<T>, b: Jet<T>) -> Jet<T> {
+    let q = b.v * b.v;
+    Jet {
+        v: a.v / b.v,
+        dre: (a.dre * b.v - a.v * b.dre) / q,
+        dg: (a.dg * b.v - a.v * b.dg) / q,
+    }
+}
+fn j_exp<T: Real>(a: Jet<T>) -> Jet<T> {
+    let e = a.v.exp();
+    Jet {
+        v: e,
+        dre: e * a.dre,
+        dg: e * a.dg,
+    }
+}
+fn j_pow_neg<T: Real>(a: Jet<T>, n: usize) -> Jet<T> {
+    j_exp(j_const(T::from_f64(-(n as f64))).mul_ln(a))
+}
+trait JetLn<T: Real> {
+    fn mul_ln(self, a: Jet<T>) -> Jet<T>;
+}
+impl<T: Real> JetLn<T> for Jet<T> {
+    fn mul_ln(self, a: Jet<T>) -> Jet<T> {
+        let l = Jet {
+            v: a.v.ln(),
+            dre: a.dre / a.v,
+            dg: a.dg / a.v,
+        };
+        j_mul(self, l)
+    }
+}
+
+fn riv_val<T: Real>(s: &PenmanDamodaranResidualIncomeIerpSpec<T>, re: T) -> (T, T, T, T, T) {
+    let h = s.forecast_roe_schedule.len().max(1);
+    let re_j = Jet {
+        v: re,
+        dre: T::one(),
+        dg: T::zero(),
+    };
+    let g_j = Jet {
+        v: s.terminal_growth_rate,
+        dre: T::zero(),
+        dg: T::one(),
+    };
+    let one = j_const(T::one());
+    let mut book = j_const(s.initial_book_value);
+    let mut riv = j_const(s.initial_book_value);
+    let mut ddm = j_const(T::zero());
+    let mut aeg_sum = j_const(T::zero());
+    let mut eprev = j_const(T::zero());
+    let mut dprev = j_const(T::zero());
+    let mut e1 = j_const(T::zero());
+    for i in 0..h {
+        let roe = j_const(
+            s.forecast_roe_schedule
+                .get(i)
+                .copied()
+                .unwrap_or(s.terminal_roe),
+        );
+        let pay = j_const(
+            s.payout_ratio_schedule
+                .get(i)
+                .copied()
+                .unwrap_or(T::from_f64(0.5)),
+        );
+        let e = j_mul(roe, book);
+        let d = j_mul(pay, e);
+        let ri = j_sub(e, j_mul(re_j, book));
+        let df = j_pow_neg(j_add(one, re_j), i + 1);
+        riv = j_add(riv, j_mul(ri, df));
+        ddm = j_add(ddm, j_mul(d, df));
+        if i == 0 {
+            e1 = e;
+        } else {
+            let g_h = j_sub(j_add(e, j_mul(re_j, dprev)), j_mul(j_add(one, re_j), eprev));
+            aeg_sum = j_add(aeg_sum, j_mul(g_h, j_pow_neg(j_add(one, re_j), i)));
+        }
+        book = j_add(book, j_sub(e, d));
+        eprev = e;
+        dprev = d;
+    }
+    let e_t = j_mul(j_const(s.terminal_roe), book);
+    let d_t = j_sub(e_t, j_mul(g_j, book));
+    let ri_t = j_sub(e_t, j_mul(re_j, book));
+    let den = j_sub(re_j, g_j);
+    let df_h = j_pow_neg(j_add(one, re_j), h);
+    let term = j_div(ri_t, den);
+    riv = j_add(riv, j_mul(term, df_h));
+    ddm = j_add(ddm, j_mul(j_div(d_t, den), df_h));
+    let g_h1 = j_sub(
+        j_add(e_t, j_mul(re_j, dprev)),
+        j_mul(j_add(one, re_j), eprev),
+    );
+    let term_aeg = j_add(j_mul(g_h1, df_h), j_mul(j_div(j_mul(g_j, ri_t), den), df_h));
+    let aeg = j_div(j_add(e1, j_add(aeg_sum, term_aeg)), re_j);
+    (riv.v, ddm.v, aeg.v, riv.dre, riv.dg)
+}
+
+pub fn solve_penman_damodaran_riv_aeg_and_implied_erp_ift<T: Real>(
+    s: &PenmanDamodaranResidualIncomeIerpSpec<T>,
+) -> PenmanDamodaranResidualIncomeIerpReport<T> {
+    let mut erp = T::from_f64(0.055);
+    for _ in 0..24 {
+        let re = s.risk_free_rate + s.equity_beta * erp;
+        let (v, _, _, dv, _) = riv_val(s, re);
+        let den = s.equity_beta * dv;
+        let den = if den.val().abs() < 1e-12 {
+            if den.val() < 0.0 {
+                T::from_f64(-1e-12)
+            } else {
+                T::from_f64(1e-12)
+            }
+        } else {
+            den
+        };
+        erp -= (v - s.observed_market_price) / den;
+    }
+    let re = s.risk_free_rate + s.equity_beta * erp;
+    let (riv, ddm, aeg, dv, dg) = riv_val(s, re);
+    let den = s.equity_beta * dv;
+    let den = if den.val().abs() < 1e-12 {
+        if den.val() < 0.0 {
+            T::from_f64(-1e-12)
+        } else {
+            T::from_f64(1e-12)
+        }
+    } else {
+        den
+    };
+    PenmanDamodaranResidualIncomeIerpReport {
+        implied_erp: erp,
+        implied_cost_of_equity: re,
+        riv_intrinsic_value: riv,
+        ddm_intrinsic_value: ddm,
+        riv_ddm_clean_surplus_error: (riv - ddm).abs(),
+        ohlson_juettner_aeg_value: aeg,
+        d_ierp_d_market_price: T::one() / den,
+        d_ierp_d_risk_free_rate: -T::one() / s.equity_beta,
+        d_ierp_d_terminal_growth: -dg / den,
+    }
+}
+
 #[cfg(test)]
 mod phase22_tests {
     use super::*;
@@ -356,10 +555,65 @@ mod phase22_tests {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct PenmanDamodaranResidualIncomeIerpSpec<T: Real = f64> { pub initial_book_value:T,pub forecast_roe_schedule:Vec<T>,pub payout_ratio_schedule:Vec<T>,pub terminal_roe:T,pub terminal_growth_rate:T,pub risk_free_rate:T,pub equity_beta:T,pub observed_market_price:T }
-#[derive(Clone, Debug)]
-pub struct PenmanDamodaranResidualIncomeIerpReport<T: Real = f64> { pub implied_erp:T,pub implied_cost_of_equity:T,pub riv_intrinsic_value:T,pub ddm_intrinsic_value:T,pub riv_ddm_clean_surplus_error:T,pub ohlson_juettner_aeg_value:T,pub d_ierp_d_market_price:T,pub d_ierp_d_risk_free_rate:T,pub d_ierp_d_terminal_growth:T }
-fn riv_val<T:Real>(s:&PenmanDamodaranResidualIncomeIerpSpec<T>,re:T)->(T,T,T){let h=s.forecast_roe_schedule.len().max(1);let mut book=s.initial_book_value;let mut pv=s.initial_book_value;let mut ddm=T::zero();let mut eprev=T::zero();let mut aeg=T::zero();let mut e1=T::zero();for i in 0..h{let roe=s.forecast_roe_schedule.get(i).copied().unwrap_or(s.terminal_roe);let pay=s.payout_ratio_schedule.get(i).copied().unwrap_or(T::from_f64(0.5));let e=roe*book;let d=pay*e;let ri=e-re*book;let df=(T::one()+re).powf(-((i+1)as f64));pv+=ri*df;ddm+=d*df;if i==0{e1=e;}else{let g=e+re*(s.payout_ratio_schedule.get(i-1).copied().unwrap_or(T::from_f64(0.5))*eprev)-(T::one()+re)*eprev;aeg+=g/(T::one()+re).powf(i as f64);}book+=e-d;eprev=e;}let e_t=s.terminal_roe*book;let d_t=e_t-s.terminal_growth_rate*book;let ri_t=e_t-re*book;let den=(re-s.terminal_growth_rate).max_val(T::from_f64(1e-8));pv+=ri_t/(den*(T::one()+re).powf(h as f64));ddm+=d_t/(den*(T::one()+re).powf(h as f64));let g_t=e_t+re*(s.payout_ratio_schedule.last().copied().unwrap_or(T::from_f64(0.5))*eprev)-(T::one()+re)*eprev;aeg=(e1+aeg+g_t/(den*(T::one()+re).powf((h.saturating_sub(1))as f64)))/re.max_val(T::from_f64(1e-8));(pv,ddm,aeg)}
-pub fn solve_penman_damodaran_riv_aeg_and_implied_erp_ift<T:Real>(s:&PenmanDamodaranResidualIncomeIerpSpec<T>)->PenmanDamodaranResidualIncomeIerpReport<T>{let mut erp=T::from_f64(0.055);for _ in 0..16{let re=s.risk_free_rate+s.equity_beta*erp;let v=riv_val(s,re).0;let hp=T::from_f64(1e-5);let vp=riv_val(s,re+hp).0;let vm=riv_val(s,re-hp).0;let dv=(vp-vm)/(T::from_f64(2e-5));let den=if (s.equity_beta*dv).val().abs()<1e-10{T::from_f64(1e-10)}else{s.equity_beta*dv};erp-=(v-s.observed_market_price)/den;}let re=s.risk_free_rate+s.equity_beta*erp;let riv=riv_val(s,re).0;let hp=T::from_f64(1e-5);let dv=(riv_val(s,re+hp).0-riv_val(s,re-hp).0)/(T::from_f64(2e-5));let den=if (s.equity_beta*dv).val().abs()<1e-10{T::from_f64(1e-10)}else{s.equity_beta*dv};let mut su=s.clone();let mut sd=s.clone();su.terminal_growth_rate+=hp;sd.terminal_growth_rate-=hp;let dvg=(riv_val(&su,re).0-riv_val(&sd,re).0)/(T::from_f64(2e-5));let dmp=T::one()/den;PenmanDamodaranResidualIncomeIerpReport{implied_erp:erp,implied_cost_of_equity:re,riv_intrinsic_value:riv,ddm_intrinsic_value:riv,riv_ddm_clean_surplus_error:T::zero(),ohlson_juettner_aeg_value:riv,d_ierp_d_market_price:dmp,d_ierp_d_risk_free_rate:-T::one()/s.equity_beta,d_ierp_d_terminal_growth:-dvg/den}}
-#[cfg(test)] mod phase24_tests { use super::*; use crate::Dual; fn mk<T:Real>(p:T)->PenmanDamodaranResidualIncomeIerpSpec<T>{PenmanDamodaranResidualIncomeIerpSpec{initial_book_value:T::from_f64(100.0),forecast_roe_schedule:vec![T::from_f64(0.12),T::from_f64(0.11)],payout_ratio_schedule:vec![T::from_f64(0.4),T::from_f64(0.4)],terminal_roe:T::from_f64(0.1),terminal_growth_rate:T::from_f64(0.03),risk_free_rate:T::from_f64(0.03),equity_beta:T::from_f64(1.1),observed_market_price:p}} #[test] fn ier_phase24(){let r=solve_penman_damodaran_riv_aeg_and_implied_erp_ift(&mk(110.0));assert!(r.riv_ddm_clean_surplus_error.abs()<1e-11);assert!((r.riv_intrinsic_value-110.0).abs()<1e-10);assert!(r.d_ierp_d_market_price<0.0);let h=1e-5;let fd=(solve_penman_damodaran_riv_aeg_and_implied_erp_ift(&mk(110.0+h)).implied_erp-solve_penman_damodaran_riv_aeg_and_implied_erp_ift(&mk(110.0-h)).implied_erp)/(2.0*h);let ad=solve_penman_damodaran_riv_aeg_and_implied_erp_ift(&mk(Dual::<1>::variable(110.0,0))).implied_erp;assert!((ad.d[0]-fd).abs()<1e-6);}}
+#[cfg(test)]
+mod phase24_tests {
+    use super::*;
+    use crate::Dual;
+    fn mk<T: Real>(p: T) -> PenmanDamodaranResidualIncomeIerpSpec<T> {
+        PenmanDamodaranResidualIncomeIerpSpec {
+            initial_book_value: T::from_f64(100.0),
+            forecast_roe_schedule: vec![T::from_f64(0.12), T::from_f64(0.11)],
+            payout_ratio_schedule: vec![T::from_f64(0.4), T::from_f64(0.4)],
+            terminal_roe: T::from_f64(0.1),
+            terminal_growth_rate: T::from_f64(0.03),
+            risk_free_rate: T::from_f64(0.03),
+            equity_beta: T::from_f64(1.1),
+            observed_market_price: p,
+        }
+    }
+    #[test]
+    fn ier_phase24() {
+        let r = solve_penman_damodaran_riv_aeg_and_implied_erp_ift(&mk(110.0));
+        assert!(r.riv_ddm_clean_surplus_error.abs() < 1e-11);
+        assert!((r.riv_intrinsic_value - 110.0).abs() < 1e-10);
+        assert!(r.d_ierp_d_market_price < 0.0);
+        let h = 1e-5;
+        let fd = (solve_penman_damodaran_riv_aeg_and_implied_erp_ift(&mk(110.0 + h)).implied_erp
+            - solve_penman_damodaran_riv_aeg_and_implied_erp_ift(&mk(110.0 - h)).implied_erp)
+            / (2.0 * h);
+        let ad =
+            solve_penman_damodaran_riv_aeg_and_implied_erp_ift(&mk(Dual::<1>::variable(110.0, 0)))
+                .implied_erp;
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+        let sf = mk(110.0 + 0.0);
+        let h = 1e-5;
+        let mut up = sf.clone();
+        let mut dn = sf.clone();
+        up.risk_free_rate += h;
+        dn.risk_free_rate -= h;
+        let fd_rf = (solve_penman_damodaran_riv_aeg_and_implied_erp_ift(&up).implied_erp
+            - solve_penman_damodaran_riv_aeg_and_implied_erp_ift(&dn).implied_erp)
+            / (2.0 * h);
+        let mut sd = mk(Dual::<1>::from_value(110.0));
+        sd.risk_free_rate = Dual::variable(0.03, 0);
+        let ad_rf = solve_penman_damodaran_riv_aeg_and_implied_erp_ift(&sd).implied_erp;
+        assert!(
+            (ad_rf.d[0] - fd_rf).abs() < 1e-9
+                && (ad_rf.d[0] - r.d_ierp_d_risk_free_rate).abs() < 1e-9
+        );
+        up = sf.clone();
+        dn = sf.clone();
+        up.terminal_growth_rate += h;
+        dn.terminal_growth_rate -= h;
+        let fd_g = (solve_penman_damodaran_riv_aeg_and_implied_erp_ift(&up).implied_erp
+            - solve_penman_damodaran_riv_aeg_and_implied_erp_ift(&dn).implied_erp)
+            / (2.0 * h);
+        let mut sg = mk(Dual::<1>::from_value(110.0));
+        sg.terminal_growth_rate = Dual::variable(0.03, 0);
+        let ad_g = solve_penman_damodaran_riv_aeg_and_implied_erp_ift(&sg).implied_erp;
+        assert!(
+            (ad_g.d[0] - fd_g).abs() < 1e-9
+                && (ad_g.d[0] - r.d_ierp_d_terminal_growth).abs() < 1e-9
+        );
+    }
+}

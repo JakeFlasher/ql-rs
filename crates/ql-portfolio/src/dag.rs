@@ -159,6 +159,7 @@ pub struct MarketSnapshot {
     pub ref_date: Date,
     pub ois_quotes: [f64; 3],
     pub fwd_quotes: [f64; 3],
+    pub inflation_quotes: Vec<(String, f64)>,
     pub heston_params: HestonParams<f64>,
     pub eq_spot: f64,
     pub eq_vol: f64,

@@ -371,3 +371,28 @@ fn phase23_tab33_terminal_renders_and_reacts() {
         );
     }
 }
+
+#[test]
+fn phase24_tab34_terminal_renders_and_reacts() {
+    assert_eq!(
+        TabId::Phase24Sota.label(),
+        "34 Phase 24 SOTA / MBS-IO-PO / RMV / MO-XVA / Dilution / Sig / GARCH / POT / RIE / PIN / GP / Brinson / IERP"
+    );
+    let mut ws = DeskWorkstation::new();
+    let mut values = Vec::new();
+    for scenario in [
+        ScenarioKind::RatesParallelPlus50Bp,
+        ScenarioKind::VolShockPlus5Pts,
+        ScenarioKind::CreditSpreadWidening100Bp,
+        ScenarioKind::EquityCrashMinus15Pct,
+        ScenarioKind::StagflationPlus150Bp,
+    ] {
+        ws.set_scenario(scenario);
+        let f = ws.step_tick();
+        values.push(f.mbs_rmv_mo_sig_garch_rie_gp_ierp_metric);
+        let frame = ws.render_dashboard(&f, true);
+        assert!(frame.contains("34 MBS/RMV/MO/CB/Sig/HN/POT/RIE/PIN/GP/BC/IERP"));
+    }
+    assert!(values.iter().all(|v| v.is_finite()));
+    assert!(values.windows(2).any(|w| (w[1] - w[0]).abs() > 1e-12));
+}

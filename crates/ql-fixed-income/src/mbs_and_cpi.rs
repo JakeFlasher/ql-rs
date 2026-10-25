@@ -226,48 +226,119 @@ pub fn price_agency_mbs<T: Real>(
 /// Davidson--Levin four-factor agency MBS strip analytics.
 #[derive(Clone, Debug)]
 pub struct DavidsonLevinIoPoStripMbsSpec<T: Real = f64> {
-    pub notional: T, pub wac_annual: T, pub pass_through_coupon_annual: T,
-    pub current_mortgage_rate: T, pub discount_rate_annual: T, pub remaining_months: usize,
-    pub loan_age_months: usize, pub turnover_base_cpr: T, pub max_refi_cpr: T,
-    pub refi_slope: T, pub refi_threshold_spread: T, pub burnout_exponent: T, pub rate_bump_bps: T,
+    pub notional: T,
+    pub wac_annual: T,
+    pub pass_through_coupon_annual: T,
+    pub current_mortgage_rate: T,
+    pub discount_rate_annual: T,
+    pub remaining_months: usize,
+    pub loan_age_months: usize,
+    pub turnover_base_cpr: T,
+    pub max_refi_cpr: T,
+    pub refi_slope: T,
+    pub refi_threshold_spread: T,
+    pub burnout_exponent: T,
+    pub rate_bump_bps: T,
 }
 #[derive(Clone, Debug)]
 pub struct DavidsonLevinIoPoStripMbsReport<T: Real = f64> {
-    pub io_strip_price:T, pub po_strip_price:T, pub pass_through_price:T, pub strip_replication_error:T,
-    pub io_effective_duration:T, pub po_effective_duration:T, pub pass_through_effective_duration:T,
-    pub io_effective_convexity:T, pub po_effective_convexity:T, pub initial_cpr:T, pub weighted_average_life_years:T,
+    pub io_strip_price: T,
+    pub po_strip_price: T,
+    pub pass_through_price: T,
+    pub strip_replication_error: T,
+    pub io_effective_duration: T,
+    pub po_effective_duration: T,
+    pub pass_through_effective_duration: T,
+    pub io_effective_convexity: T,
+    pub po_effective_convexity: T,
+    pub initial_cpr: T,
+    pub weighted_average_life_years: T,
 }
-fn price_davidson_levin_at<T: Real>(s:&DavidsonLevinIoPoStripMbsSpec<T>, dr:T)->(T,T,T,T,T) {
-    let n=s.remaining_months.max(1); let cg=s.wac_annual/12.0; let cn=s.pass_through_coupon_annual/12.0;
-    let rm=s.current_mortgage_rate+dr; let yd=(s.discount_rate_annual+dr)/12.0;
-    let seas=[0.94,0.92,0.96,1.0,1.05,1.10,1.12,1.10,1.04,0.98,0.91,0.88];
-    let mut b=T::one(); let mut io=T::zero(); let mut po=T::zero(); let mut pt=T::zero(); let mut wal=T::zero(); let mut cpr0=T::zero();
-    for m in 1..=n { let age=(s.loan_age_months+m) as f64; let a=T::from_f64((age/30.0).min(1.0));
-        let dc=s.wac_annual-rm-s.refi_threshold_spread; let sig=(T::one()+(-s.refi_slope*dc).exp()).powf(-1.0);
-        let w=b.powf(s.burnout_exponent.val().max(0.0));
-        let cpr=((s.turnover_base_cpr+s.max_refi_cpr*sig*w)*a*T::from_f64(seas[(m-1)%12])).min_val(T::from_f64(0.95));
-        if m==1 { cpr0=cpr; }
-        let smm=T::one()-(T::one()-cpr).powf(1.0/12.0); let p=s.notional*b; let k=(n-m+1) as f64;
-        let pay=if cg.val().abs()<1e-14 { p/T::from_f64(k) } else { p*cg/(T::one()-(T::one()+cg).powf(-k)) };
-        let intr=p*cg; let io_cf=p*cn; let sched=pay-intr; let pre=(p-sched)*smm; let po_cf=sched+pre;
-        let df=(T::one()+yd).powf(-(m as f64)); io+=io_cf*df; po+=po_cf*df; pt+=(io_cf+po_cf)*df; wal+=T::from_f64(m as f64/12.0)*po_cf/s.notional.max_val(T::from_f64(1e-12)); b*=T::one()-smm;
+fn price_davidson_levin_at<T: Real>(
+    s: &DavidsonLevinIoPoStripMbsSpec<T>,
+    dr: T,
+) -> (T, T, T, T, T) {
+    let n = s.remaining_months.max(1);
+    let cg = s.wac_annual / 12.0;
+    let cn = s.pass_through_coupon_annual / 12.0;
+    let rm = s.current_mortgage_rate + dr;
+    let yd = (s.discount_rate_annual + dr) / 12.0;
+    let seas = [
+        0.94, 0.92, 0.96, 1.0, 1.05, 1.10, 1.12, 1.10, 1.04, 0.98, 0.91, 0.88,
+    ];
+    let mut b = T::one();
+    let mut p = s.notional;
+    let mut io = T::zero();
+    let mut po = T::zero();
+    let mut pt = T::zero();
+    let mut wal = T::zero();
+    let mut cpr0 = T::zero();
+    for m in 1..=n {
+        let age = (s.loan_age_months + m) as f64;
+        let a = T::from_f64((age / 30.0).min(1.0));
+        let dc = s.wac_annual - rm - s.refi_threshold_spread;
+        let sig = (T::one() + (-s.refi_slope * dc).exp()).powf(-1.0);
+        let w = if m == 1 {
+            T::one()
+        } else {
+            (s.burnout_exponent.max_val(T::zero()) * b.max_val(T::from_f64(1e-12)).ln()).exp()
+        };
+        let cpr = ((s.turnover_base_cpr + s.max_refi_cpr * sig * w)
+            * a
+            * T::from_f64(seas[(m - 1) % 12]))
+        .min_val(T::from_f64(0.95));
+        if m == 1 {
+            cpr0 = cpr;
+        }
+        let smm = T::one() - (T::one() - cpr).powf(1.0 / 12.0);
+        let rem = (n - m + 1) as f64;
+        let payment = if cg.val().abs() < 1e-14 {
+            p / T::from_f64(rem)
+        } else {
+            let growth = (T::one() + cg).powf(rem);
+            p * cg * growth / (growth - T::one())
+        };
+        let interest = p * cg;
+        let sched = (payment - interest).max_val(T::zero());
+        let prepay = (p - sched).max_val(T::zero()) * smm;
+        let po_cf = sched + prepay;
+        let io_cf = p * cn;
+        let df = (T::one() + yd).powf(-(m as f64));
+        io += io_cf * df;
+        po += po_cf * df;
+        pt += (io_cf + po_cf) * df;
+        wal += T::from_f64(m as f64 / 12.0) * po_cf / s.notional.max_val(T::from_f64(1e-12));
+        p = (p - po_cf).max_val(T::zero());
+        b *= T::one() - smm;
     }
-    (io,po,pt,cpr0,wal)
+    (io, po, pt, cpr0, wal)
 }
-pub fn analyze_davidson_levin_mbs_io_po_strips<T: Real>(s:&DavidsonLevinIoPoStripMbsSpec<T>)->DavidsonLevinIoPoStripMbsReport<T>{
-    let h=s.rate_bump_bps.max_val(T::one())*1e-4; let z=price_davidson_levin_at(s,T::zero()); let up=price_davidson_levin_at(s,h); let dn=price_davidson_levin_at(s,-h);
-    let dur=|u:T,d:T,v:T| (d-u)/(T::from_f64(2.0)*h*v.max_val(T::from_f64(1e-12))); let conv=|u:T,d:T,v:T| (u-T::from_f64(2.0)*v+d)/(h*h*v.max_val(T::from_f64(1e-12)));
-    let pt_d=dur(up.2,dn.2,z.2).abs();
-    DavidsonLevinIoPoStripMbsReport{io_strip_price:z.0,po_strip_price:z.1,pass_through_price:z.2,strip_replication_error:z.0+z.1-z.2,
-      io_effective_duration:-dur(up.0,dn.0,z.0).abs(),po_effective_duration:pt_d+dur(up.1,dn.1,z.1).abs()*0.01+T::from_f64(1e-12),pass_through_effective_duration:pt_d,
-      io_effective_convexity:conv(up.0,dn.0,z.0),po_effective_convexity:conv(up.1,dn.1,z.1),initial_cpr:z.3,weighted_average_life_years:z.4}
-}
-
-#[cfg(test)]
-mod phase24_tests {
-    use super::*; use ql_ad::Dual;
-    fn mk<T:Real>(r:T)->DavidsonLevinIoPoStripMbsSpec<T>{ DavidsonLevinIoPoStripMbsSpec{notional:T::from_f64(100.0),wac_annual:T::from_f64(0.065),pass_through_coupon_annual:T::from_f64(0.06),current_mortgage_rate:r,discount_rate_annual:T::from_f64(0.04),remaining_months:24,loan_age_months:12,turnover_base_cpr:T::from_f64(0.04),max_refi_cpr:T::from_f64(0.45),refi_slope:T::from_f64(80.0),refi_threshold_spread:T::from_f64(0.005),burnout_exponent:T::from_f64(1.0),rate_bump_bps:T::from_f64(1.0)} }
-    #[test] fn phase24_mbs_invariants_and_ad(){ let s=mk(0.055); let r=analyze_davidson_levin_mbs_io_po_strips(&s); assert!(r.strip_replication_error.abs()<1e-11); assert!(r.io_effective_duration<0.); assert!(r.po_effective_duration>r.pass_through_effective_duration && r.pass_through_effective_duration>0.); let h=1e-5; let fd=(analyze_davidson_levin_mbs_io_po_strips(&mk(0.055+h)).io_strip_price-analyze_davidson_levin_mbs_io_po_strips(&mk(0.055-h)).io_strip_price)/(2.0*h); let ad=analyze_davidson_levin_mbs_io_po_strips(&mk(Dual::<1>::variable(0.055,0))).io_strip_price; assert!((ad.d[0]-fd).abs()<1e-5); }
+pub fn analyze_davidson_levin_mbs_io_po_strips<T: Real>(
+    s: &DavidsonLevinIoPoStripMbsSpec<T>,
+) -> DavidsonLevinIoPoStripMbsReport<T> {
+    let h = s.rate_bump_bps.max_val(T::one()) * 1e-4;
+    let z = price_davidson_levin_at(s, T::zero());
+    let up = price_davidson_levin_at(s, h);
+    let dn = price_davidson_levin_at(s, -h);
+    let dur = |u: T, d: T, v: T| (d - u) / (T::from_f64(2.0) * h * v.max_val(T::from_f64(1e-12)));
+    let conv =
+        |u: T, d: T, v: T| (u - T::from_f64(2.0) * v + d) / (h * h * v.max_val(T::from_f64(1e-12)));
+    let io_d = dur(up.0, dn.0, z.0);
+    let po_d = dur(up.1, dn.1, z.1);
+    let pt_d = dur(up.2, dn.2, z.2);
+    DavidsonLevinIoPoStripMbsReport {
+        io_strip_price: z.0,
+        po_strip_price: z.1,
+        pass_through_price: z.2,
+        strip_replication_error: z.0 + z.1 - z.2,
+        io_effective_duration: io_d,
+        po_effective_duration: po_d,
+        pass_through_effective_duration: pt_d,
+        io_effective_convexity: conv(up.0, dn.0, z.0),
+        po_effective_convexity: conv(up.1, dn.1, z.1),
+        initial_cpr: z.3,
+        weighted_average_life_years: z.4,
+    }
 }
 
 pub fn solve_mbs_oas(
@@ -1388,5 +1459,53 @@ mod phase19_tests {
         let ad = analyze_mbs_burnout_oas_ad(&spec_d, &curve_d).oas;
         assert!(ad.d[0] < 0.0);
         assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase24_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn mk<T: Real>(r: T) -> DavidsonLevinIoPoStripMbsSpec<T> {
+        DavidsonLevinIoPoStripMbsSpec {
+            notional: T::from_f64(100.0),
+            wac_annual: T::from_f64(0.065),
+            pass_through_coupon_annual: T::from_f64(0.06),
+            current_mortgage_rate: r,
+            discount_rate_annual: T::from_f64(0.04),
+            remaining_months: 24,
+            loan_age_months: 12,
+            turnover_base_cpr: T::from_f64(0.04),
+            max_refi_cpr: T::from_f64(0.45),
+            refi_slope: T::from_f64(80.0),
+            refi_threshold_spread: T::from_f64(0.005),
+            burnout_exponent: T::from_f64(1.0),
+            rate_bump_bps: T::from_f64(1.0),
+        }
+    }
+    #[test]
+    fn phase24_mbs_invariants_and_ad() {
+        let s = mk(0.055);
+        let r = analyze_davidson_levin_mbs_io_po_strips(&s);
+        assert!(r.strip_replication_error.abs() < 1e-11);
+        assert!(r.io_effective_duration < 0.);
+        assert!(
+            r.po_effective_duration > r.pass_through_effective_duration
+                && r.pass_through_effective_duration > 0.
+        );
+        let h = 1e-5;
+        let fd = (analyze_davidson_levin_mbs_io_po_strips(&mk(0.055 + h)).io_strip_price
+            - analyze_davidson_levin_mbs_io_po_strips(&mk(0.055 - h)).io_strip_price)
+            / (2.0 * h);
+        let ad = analyze_davidson_levin_mbs_io_po_strips(&mk(Dual::<1>::variable(0.055, 0)))
+            .io_strip_price;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+        assert!((r.io_strip_price + r.po_strip_price - r.pass_through_price).abs() < 1e-10);
+        let fd_po = (analyze_davidson_levin_mbs_io_po_strips(&mk(0.055 + h)).po_strip_price
+            - analyze_davidson_levin_mbs_io_po_strips(&mk(0.055 - h)).po_strip_price)
+            / (2.0 * h);
+        let ad_po = analyze_davidson_levin_mbs_io_po_strips(&mk(Dual::<1>::variable(0.055, 0)))
+            .po_strip_price;
+        assert!((ad_po.d[0] - fd_po).abs() < 1e-5);
     }
 }
