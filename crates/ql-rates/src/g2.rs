@@ -623,25 +623,30 @@ pub struct HuntKennedyMarkovFunctionalReport<T: Real = f64> {
     pub embedded_bermudan_call_value: T,
 }
 fn hk_nodes() -> ([f64; 9], [f64; 9]) {
-    // Probabilists' rule: z=sqrt(2)x and weights are divided by sqrt(pi).
-    let x = [
-        -3.190993, -2.266581, -1.468553, -0.723551, 0., 0.723551, 1.468553, 2.266581, 3.190993,
-    ];
-    let w = [
-        0.000_039, 0.004_089, 0.027_733, 0.078_742, 0.113_019, 0.078_742, 0.027_733, 0.004_089,
-        0.000_039,
-    ];
-    let mut z = [0.0; 9];
-    let mut wn = [0.0; 9];
-    let mut sum = 0.0;
-    for i in 0..9 {
-        z[i] = 2.0_f64.sqrt() * x[i];
-        sum += w[i];
-    }
-    for i in 0..9 {
-        wn[i] = w[i] / sum;
-    }
-    (z, wn)
+    (
+        [
+            -4.51274586339978,
+            -3.20542900285647,
+            -2.07684798313409,
+            -1.02325566378913,
+            0.0,
+            1.02325566378913,
+            2.07684798313409,
+            3.20542900285647,
+            4.51274586339978,
+        ],
+        [
+            0.00002234584404,
+            0.00278914132131,
+            0.04991640676364,
+            0.24409745015871,
+            0.40634931182460,
+            0.24409745015871,
+            0.04991640676364,
+            0.00278914132131,
+            0.00002234584404,
+        ],
+    )
 }
 fn hk_smooth_pos<T: Real>(x: T) -> T {
     T::from_f64(0.5) * (x + (x * x + T::from_f64(1e-12)).sqrt())
@@ -659,19 +664,26 @@ pub fn evaluate_hunt_kennedy_markov_functional_range_accrual<T: Real>(
     let mut caplets = Vec::with_capacity(n);
     let mut fractions = Vec::with_capacity(n);
     let mut dfs = vec![T::one(); n + 1];
+    let mut node_fracs: Vec<[T; 9]> = Vec::new();
     for i in 0..n {
         let f = s.initial_forwards[i];
         let vol = s.market_caplet_vols[i].abs();
-        let t = s.fixing_times[i].max_val(T::from_f64(1e-10));
-        let scale = (-(s.mean_reversion.abs()) * t).exp();
+        let ti = s.fixing_times[i].max_val(T::from_f64(1e-10));
+        let tprev = if i == 0 {
+            T::zero()
+        } else {
+            s.fixing_times[i - 1]
+        };
+        let dt = (ti - tprev).max_val(T::from_f64(1e-8));
+        let scale = (-(s.mean_reversion.abs()) * ti).exp();
         let eta = s.smile_curvature_eta;
-        let mut rates = Vec::with_capacity(9);
-        for &zi in &z {
-            rates.push(
-                f * (vol * t.sqrt() * T::from_f64(zi) * scale
+        let mut rates = [T::zero(); 9];
+        for k in 0..9 {
+            let zi = z[k];
+            rates[k] = f
+                * (vol * ti.sqrt() * T::from_f64(zi) * scale
                     + eta * T::from_f64(zi * zi - 1.0) * T::from_f64(0.5))
-                .exp(),
-            );
+                .exp();
         }
         let mut norm = T::zero();
         for k in 0..9 {
@@ -681,41 +693,59 @@ pub fn evaluate_hunt_kennedy_markov_functional_range_accrual<T: Real>(
         for k in 0..9 {
             conserved += T::from_f64(w[k]) * (rates[k] / norm * f);
         }
-        let err = (conserved - f).abs();
-        if err.val() > max_err.val() {
-            max_err = err;
-        }
+        max_err = max_err.max_val((conserved - f).abs());
         let mut p = T::zero();
         let mut cap = T::zero();
+        let mut fracs = [T::zero(); 9];
         for k in 0..9 {
             let l = rates[k] / norm * f;
             let in_low = T::one() / (T::one() + (-(l - s.range_lower) * T::from_f64(80.0)).exp());
             let in_high = T::one() / (T::one() + ((l - s.range_upper) * T::from_f64(80.0)).exp());
-            p += T::from_f64(w[k]) * in_low * in_high;
-            cap += T::from_f64(w[k]) * hk_smooth_pos(l - s.range_lower) * T::from_f64(0.25);
+            let frac_k = in_low * in_high;
+            fracs[k] = frac_k;
+            p += T::from_f64(w[k]) * frac_k;
+            cap += T::from_f64(w[k]) * hk_smooth_pos(l - f);
         }
         fractions.push(p);
-        caplets.push(
-            (f - s.call_strike_spread).max_val(T::zero()) * t.sqrt() * vol
-                + cap * T::from_f64(0.01),
-        );
-        dfs[i + 1] = dfs[i] / (T::one() + f.max_val(T::from_f64(-0.99)) * T::from_f64(0.25));
+        node_fracs.push(fracs);
+        dfs[i + 1] = dfs[i] / (T::one() + f.max_val(T::from_f64(-0.99)) * dt);
+        caplets.push(dfs[i + 1] * dt * cap);
     }
     let mut noncall = T::zero();
     for i in 0..n {
         let dt = if i == 0 {
-            s.fixing_times[i]
+            s.fixing_times[i].max_val(T::from_f64(1e-8))
         } else {
-            s.fixing_times[i] - s.fixing_times[i - 1]
+            (s.fixing_times[i] - s.fixing_times[i - 1]).max_val(T::from_f64(1e-8))
         };
-        noncall += dfs[i + 1] * s.accrual_coupon_rate * dt.max_val(T::zero()) * fractions[i];
+        noncall += dfs[i + 1] * s.accrual_coupon_rate * dt * fractions[i];
     }
-    let mut call_value = T::zero();
-    for i in 0..n {
-        let exercise = hk_smooth_pos(noncall - dfs[i + 1] * s.call_strike_spread);
-        call_value += exercise * T::from_f64(0.25);
+    let mut next = [T::zero(); 9];
+    for i in (0..n).rev() {
+        let dt = if i == 0 {
+            s.fixing_times[i].max_val(T::from_f64(1e-8))
+        } else {
+            (s.fixing_times[i] - s.fixing_times[i - 1]).max_val(T::from_f64(1e-8))
+        };
+        let mut avg = T::zero();
+        for k in 0..9 {
+            avg += T::from_f64(w[k]) * next[k];
+        }
+        let rho = (-(s.mean_reversion.abs()) * dt).exp();
+        let mut cur = [T::zero(); 9];
+        for k in 0..9 {
+            let coupon = dfs[i + 1] * dt * s.accrual_coupon_rate * node_fracs[i][k];
+            let cont = coupon + rho * next[k] + (T::one() - rho) * avg;
+            let strike = coupon + dfs[i + 1] * dt * s.call_strike_spread.max_val(T::zero());
+            cur[k] = cont - hk_smooth_pos(cont - strike);
+        }
+        next = cur;
     }
-    let callable = (noncall - call_value).max_val(T::zero());
+    let mut callable = T::zero();
+    for k in 0..9 {
+        callable += T::from_f64(w[k]) * next[k];
+    }
+    callable = callable.min_val(noncall).max_val(T::zero());
     HuntKennedyMarkovFunctionalReport {
         numeraire_calibration_max_error: max_err,
         terminal_bond_discount_factor: dfs[n],

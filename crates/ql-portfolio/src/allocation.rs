@@ -42,6 +42,106 @@ fn solve_dense_alloc<T: Real>(a: &[Vec<T>], b: &[T]) -> Vec<T> {
     }
     (0..n).map(|i| m[i][n]).collect()
 }
+#[derive(Clone, Debug)]
+pub struct GrinoldKahnClarkeFundamentalLawSpec<T: Real = f64> {
+    pub standardized_scores_z: Vec<T>,
+    pub residual_volatilities: Vec<T>,
+    pub benchmark_weights: Vec<T>,
+    pub information_coefficient_ic: T,
+    pub rebalances_per_year: usize,
+    pub signal_autocorrelation_rho: T,
+    pub target_tracking_error: T,
+    pub max_active_weight_bound: T,
+}
+#[derive(Clone, Debug)]
+pub struct GrinoldKahnClarkeFundamentalLawReport<T: Real = f64> {
+    pub nominal_breadth_br: T,
+    pub autocorrelation_adjusted_breadth_br_eff: T,
+    pub refined_alphas: Vec<T>,
+    pub unconstrained_active_weights: Vec<T>,
+    pub constrained_active_weights: Vec<T>,
+    pub transfer_coefficient_tc: T,
+    pub unconstrained_information_ratio: T,
+    pub constrained_information_ratio: T,
+    pub expected_active_return: T,
+    pub optimal_active_risk_aversion_lambda: T,
+}
+pub fn evaluate_grinold_kahn_clarke_fundamental_law<T: Real>(
+    s: &GrinoldKahnClarkeFundamentalLawSpec<T>,
+) -> GrinoldKahnClarkeFundamentalLawReport<T> {
+    let n = s
+        .standardized_scores_z
+        .len()
+        .min(s.residual_volatilities.len())
+        .min(s.benchmark_weights.len());
+    let rebs = T::from_f64(s.rebalances_per_year.max(1) as f64);
+    let br = T::from_f64(n as f64) * rebs;
+    let rho = s.signal_autocorrelation_rho;
+    let bre = br * (T::one() - rho) / (T::one() + rho).max_val(T::from_f64(1e-8));
+    let mut alpha = Vec::with_capacity(n);
+    let mut wu = Vec::with_capacity(n);
+    let mut var_raw = T::zero();
+    for i in 0..n {
+        let sig = s.residual_volatilities[i].abs().max_val(T::from_f64(1e-8));
+        let a = s.information_coefficient_ic * sig * s.standardized_scores_z[i];
+        alpha.push(a);
+        let w = a / (sig * sig);
+        wu.push(w);
+        var_raw += w * w * sig * sig;
+    }
+    let te_target = s.target_tracking_error.max_val(T::from_f64(1e-8));
+    let norm_u = var_raw.sqrt().max_val(T::from_f64(1e-8));
+    let scale = te_target / norm_u;
+    for x in &mut wu {
+        *x *= scale;
+    }
+    let bound = s.max_active_weight_bound.abs().max_val(T::from_f64(1e-8));
+    let smooth_pos = |v: T| T::from_f64(0.5) * (v + (v * v + T::from_f64(1e-24)).sqrt());
+    let mut wc = Vec::with_capacity(n);
+    let mut vc = T::zero();
+    for i in 0..n {
+        let lo = -s.benchmark_weights[i].abs().min_val(bound);
+        let hi = bound;
+        let clamped = lo + smooth_pos(wu[i] - lo) - smooth_pos(wu[i] - hi);
+        let sig = s.residual_volatilities[i].abs().max_val(T::from_f64(1e-8));
+        wc.push(clamped);
+        vc += clamped * clamped * sig * sig;
+    }
+    let scale_c = te_target / vc.sqrt().max_val(T::from_f64(1e-8));
+    let mut num_tc = T::zero();
+    let mut den_a = T::zero();
+    let mut den_w = T::zero();
+    let mut rc = T::zero();
+    for i in 0..n {
+        wc[i] *= scale_c;
+        let sig = s.residual_volatilities[i].abs().max_val(T::from_f64(1e-8));
+        let ai_std = alpha[i] / sig;
+        let wi_std = wc[i] * sig;
+        num_tc += ai_std * wi_std;
+        den_a += ai_std * ai_std;
+        den_w += wi_std * wi_std;
+        rc += alpha[i] * wc[i];
+    }
+    let tc = (num_tc / (den_a.sqrt() * den_w.sqrt()).max_val(T::from_f64(1e-12)))
+        .max_val(T::zero())
+        .min_val(T::one());
+    let iru = s.information_coefficient_ic * bre.sqrt();
+    let irc = tc * iru;
+    let lam = norm_u / (T::from_f64(2.0) * te_target);
+    GrinoldKahnClarkeFundamentalLawReport {
+        nominal_breadth_br: br,
+        autocorrelation_adjusted_breadth_br_eff: bre,
+        refined_alphas: alpha,
+        unconstrained_active_weights: wu,
+        constrained_active_weights: wc,
+        transfer_coefficient_tc: tc,
+        unconstrained_information_ratio: iru,
+        constrained_information_ratio: irc,
+        expected_active_return: rc * rebs.sqrt(),
+        optimal_active_risk_aversion_lambda: lam,
+    }
+}
+
 #[cfg(test)]
 mod phase23_tests {
     use super::*;
@@ -4250,98 +4350,6 @@ mod phase25_tests {
         let ad = solve_johansen_tsay_vecm_cointegration_basket(&vecm(Dual::<1>::variable(0.0, 0)))
             .terminal_spread_z_score;
         assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct GrinoldKahnClarkeFundamentalLawSpec<T: Real = f64> {
-    pub standardized_scores_z: Vec<T>,
-    pub residual_volatilities: Vec<T>,
-    pub benchmark_weights: Vec<T>,
-    pub information_coefficient_ic: T,
-    pub rebalances_per_year: usize,
-    pub signal_autocorrelation_rho: T,
-    pub target_tracking_error: T,
-    pub max_active_weight_bound: T,
-}
-#[derive(Clone, Debug)]
-pub struct GrinoldKahnClarkeFundamentalLawReport<T: Real = f64> {
-    pub nominal_breadth_br: T,
-    pub autocorrelation_adjusted_breadth_br_eff: T,
-    pub refined_alphas: Vec<T>,
-    pub unconstrained_active_weights: Vec<T>,
-    pub constrained_active_weights: Vec<T>,
-    pub transfer_coefficient_tc: T,
-    pub unconstrained_information_ratio: T,
-    pub constrained_information_ratio: T,
-    pub expected_active_return: T,
-    pub optimal_active_risk_aversion_lambda: T,
-}
-pub fn evaluate_grinold_kahn_clarke_fundamental_law<T: Real>(
-    s: &GrinoldKahnClarkeFundamentalLawSpec<T>,
-) -> GrinoldKahnClarkeFundamentalLawReport<T> {
-    let n = s
-        .standardized_scores_z
-        .len()
-        .min(s.residual_volatilities.len())
-        .min(s.benchmark_weights.len());
-    let rebs = T::from_f64(s.rebalances_per_year.max(1) as f64);
-    let br = T::from_f64(n as f64) * rebs;
-    let rho = s.signal_autocorrelation_rho;
-    let bre = br * (T::one() - rho) / (T::one() + rho).max_val(T::from_f64(1e-8));
-    let mut alpha = Vec::with_capacity(n);
-    let mut wu = Vec::with_capacity(n);
-    let mut wc = Vec::with_capacity(n);
-    let mut var = T::zero();
-    let mut ret = T::zero();
-    for i in 0..n {
-        let a =
-            s.information_coefficient_ic * s.residual_volatilities[i] * s.standardized_scores_z[i];
-        alpha.push(a);
-        let w = a / (s.residual_volatilities[i] * s.residual_volatilities[i] + T::from_f64(1e-8));
-        wu.push(w);
-        var += w * w * s.residual_volatilities[i] * s.residual_volatilities[i];
-        ret += a * w * s.benchmark_weights[i];
-    }
-    let scale =
-        s.target_tracking_error.max_val(T::from_f64(1e-8)) / var.sqrt().max_val(T::from_f64(1e-8));
-    for x in &mut wu {
-        *x *= scale;
-    }
-    let mut vuc = T::zero();
-    let mut vc = T::zero();
-    let mut rc = T::zero();
-    for i in 0..n {
-        let bound = s.max_active_weight_bound.abs().max_val(T::from_f64(1e-8));
-        let x = wu[i];
-        let y = x / (T::one() + (x / bound) * (x / bound)).sqrt();
-        wc.push(y);
-        vuc += wu[i] * wu[i] * s.residual_volatilities[i] * s.residual_volatilities[i];
-        vc += y * y * s.residual_volatilities[i] * s.residual_volatilities[i];
-        rc += alpha[i] * y * s.benchmark_weights[i];
-    }
-    let iru = ret / vuc.sqrt().max_val(T::from_f64(1e-8));
-    let ratio = rc / (ret.max_val(T::from_f64(1e-12)));
-    let unbound = wu
-        .iter()
-        .all(|x| x.abs().val() <= s.max_active_weight_bound.abs().val());
-    let tc = if unbound || s.max_active_weight_bound.val() > 100.0 {
-        T::one()
-    } else {
-        ratio.max_val(T::zero()).min_val(T::one())
-    };
-    GrinoldKahnClarkeFundamentalLawReport {
-        nominal_breadth_br: br,
-        autocorrelation_adjusted_breadth_br_eff: bre,
-        refined_alphas: alpha,
-        unconstrained_active_weights: wu,
-        constrained_active_weights: wc,
-        transfer_coefficient_tc: tc,
-        unconstrained_information_ratio: iru,
-        constrained_information_ratio: tc * iru,
-        expected_active_return: rc,
-        optimal_active_risk_aversion_lambda: s.target_tracking_error.max_val(T::from_f64(1e-8))
-            / (ret.abs() + T::from_f64(1e-8)),
     }
 }
 

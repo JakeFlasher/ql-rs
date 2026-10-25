@@ -71,4 +71,5 @@ fn phase26_suite38_and_invariants() {
     });
     assert!(row.parity_ok);
     assert!(row.max_abs_diff < 1e-4);
+    assert!(row.speedup > 1.0);
 }

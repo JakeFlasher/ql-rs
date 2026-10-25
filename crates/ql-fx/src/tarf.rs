@@ -294,6 +294,111 @@ pub fn evaluate_wystup_fx_accumulator_and_dcd<T: Real>(
     }
 }
 
+fn tarf_gh12() -> ([f64; 12], [f64; 12]) {
+    let roots = [
+        -3.889724, -3.020638, -2.279507, -1.597682, -0.947789, -0.314240, 0.314240, 0.947789,
+        1.597682, 2.279507, 3.020638, 3.889724,
+    ];
+    let z = roots.map(|x| x * 2.0_f64.sqrt());
+    let raw = [
+        0.000007, 0.000333, 0.004011, 0.023187, 0.073674, 0.148844, 0.148844, 0.073674, 0.023187,
+        0.004011, 0.000333, 0.000007,
+    ];
+    let sum: f64 = raw.iter().sum();
+    let mut w = [0.0; 12];
+    for i in 0..12 {
+        w[i] = raw[i] / sum;
+    }
+    (z, w)
+}
+fn tarf_pos<T: Real>(x: T) -> T {
+    T::from_f64(0.5) * (x + (x * x + T::from_f64(1e-12)).sqrt())
+}
+pub fn evaluate_wystup_pivot_tarf_and_corridor_strip<T: Real>(
+    s: &WystupPivotTarfCorridorSpec<T>,
+) -> WystupPivotTarfCorridorReport<T> {
+    let (z, w) = tarf_gh12();
+    let mut first_gain = T::zero();
+    let mut first_loss = T::zero();
+    let mut surv = Vec::with_capacity(s.fixing_times.len());
+    let mut corr = Vec::with_capacity(s.fixing_times.len());
+    let mut target = T::zero();
+    let mut active = T::zero();
+    let mut strip = T::zero();
+    let mut unbarriered = T::zero();
+    for (j, &ti_raw) in s.fixing_times.iter().enumerate() {
+        let ti = ti_raw.max_val(T::from_f64(1e-8));
+        let f = s.spot * ((s.domestic_rate - s.foreign_rate) * ti).exp();
+        let st = s.volatility.abs() * ti.sqrt();
+        let mut gain = T::zero();
+        let mut loss = T::zero();
+        let mut pin = T::zero();
+        for k in 0..12 {
+            let x = f * (st * T::from_f64(z[k]) - T::from_f64(0.5) * st * st).exp();
+            let low = T::one() / (T::one() + ((s.strike_low - x) * T::from_f64(80.0)).exp());
+            let high = T::one() / (T::one() + ((x - s.strike_high) * T::from_f64(80.0)).exp());
+            let mid = low * high;
+            gain += T::from_f64(w[k]) * tarf_pos(x - s.strike_pivot) * s.upside_gearing * mid;
+            loss += T::from_f64(w[k])
+                * tarf_pos(s.strike_pivot - x)
+                * s.downside_gearing
+                * (T::one() - mid);
+            pin += T::from_f64(w[k]) * mid;
+        }
+        if j == 0 {
+            first_gain = gain;
+            first_loss = loss;
+        }
+        let disc = (-s.domestic_rate * ti).exp();
+        let p = (-target / s.target_redemption_cap.max_val(T::from_f64(1e-8))).exp();
+        surv.push(p);
+        corr.push(pin);
+        active += p;
+        let cash = (gain - loss) * disc;
+        unbarriered += cash;
+        strip += p * cash;
+        target += gain * T::from_f64(0.25) * disc;
+    }
+    let client = strip.max_val(T::zero());
+    let give = tarf_pos(unbarriered - client);
+    WystupPivotTarfCorridorReport {
+        single_fixing_expected_pivot_gain: first_gain,
+        single_fixing_expected_tail_loss: first_loss,
+        fixing_survival_probabilities: surv,
+        expected_active_fixings: active,
+        pivot_tarf_client_npv: client,
+        unbarriered_pivot_strip_npv: unbarriered.max_val(client),
+        target_knockout_giveup_value: give,
+        corridor_in_range_probabilities: corr,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct WystupPivotTarfCorridorSpec<T: Real = f64> {
+    pub spot: T,
+    pub strike_low: T,
+    pub strike_pivot: T,
+    pub strike_high: T,
+    pub downside_gearing: T,
+    pub upside_gearing: T,
+    pub target_redemption_cap: T,
+    pub domestic_rate: T,
+    pub foreign_rate: T,
+    pub volatility: T,
+    pub fixing_times: Vec<T>,
+}
+#[derive(Clone, Debug)]
+pub struct WystupPivotTarfCorridorReport<T: Real = f64> {
+    pub single_fixing_expected_pivot_gain: T,
+    pub single_fixing_expected_tail_loss: T,
+    pub fixing_survival_probabilities: Vec<T>,
+    pub expected_active_fixings: T,
+    pub pivot_tarf_client_npv: T,
+    pub unbarriered_pivot_strip_npv: T,
+    pub target_knockout_giveup_value: T,
+    pub corridor_in_range_probabilities: Vec<T>,
+}
+
 #[cfg(test)]
 mod phase14_tests {
     use super::*;
@@ -581,111 +686,6 @@ mod phase22_tests {
                 < 1e-9
         );
         assert!((ad.dcd_yield_pickup_bps.d[0] - fd).abs() < 1e-5);
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct WystupPivotTarfCorridorSpec<T: Real = f64> {
-    pub spot: T,
-    pub strike_low: T,
-    pub strike_pivot: T,
-    pub strike_high: T,
-    pub downside_gearing: T,
-    pub upside_gearing: T,
-    pub target_redemption_cap: T,
-    pub domestic_rate: T,
-    pub foreign_rate: T,
-    pub volatility: T,
-    pub fixing_times: Vec<T>,
-}
-#[derive(Clone, Debug)]
-pub struct WystupPivotTarfCorridorReport<T: Real = f64> {
-    pub single_fixing_expected_pivot_gain: T,
-    pub single_fixing_expected_tail_loss: T,
-    pub fixing_survival_probabilities: Vec<T>,
-    pub expected_active_fixings: T,
-    pub pivot_tarf_client_npv: T,
-    pub unbarriered_pivot_strip_npv: T,
-    pub target_knockout_giveup_value: T,
-    pub corridor_in_range_probabilities: Vec<T>,
-}
-fn tarf_gh12() -> ([f64; 12], [f64; 12]) {
-    let z = [
-        -3.889724, -3.020638, -2.279507, -1.597682, -0.947789, -0.314240, 0.314240, 0.947789,
-        1.597682, 2.279507, 3.020638, 3.889724,
-    ];
-    let mut w = [0.0; 12];
-    let raw = [
-        0.000007, 0.000333, 0.004011, 0.023187, 0.073674, 0.148844, 0.148844, 0.073674, 0.023187,
-        0.004011, 0.000333, 0.000007,
-    ];
-    let sum: f64 = raw.iter().sum();
-    for i in 0..12 {
-        w[i] = raw[i] / sum;
-    }
-    (z, w)
-}
-fn tarf_pos<T: Real>(x: T) -> T {
-    T::from_f64(0.5) * (x + (x * x + T::from_f64(1e-12)).sqrt())
-}
-pub fn evaluate_wystup_pivot_tarf_and_corridor_strip<T: Real>(
-    s: &WystupPivotTarfCorridorSpec<T>,
-) -> WystupPivotTarfCorridorReport<T> {
-    let (z, w) = tarf_gh12();
-    let t = s
-        .fixing_times
-        .first()
-        .copied()
-        .unwrap_or_else(T::zero)
-        .max_val(T::from_f64(1e-8));
-    let f = s.spot * ((s.domestic_rate - s.foreign_rate) * t).exp();
-    let st = s.volatility.abs() * t.sqrt();
-    let mut gain = T::zero();
-    let mut loss = T::zero();
-    let mut pin = T::zero();
-    for i in 0..12 {
-        let x = f * (st * T::from_f64(z[i]) - st * st * 0.5).exp();
-        let low = T::one() / (T::one() + ((s.strike_low - x) * T::from_f64(80.)).exp());
-        let high = T::one() / (T::one() + ((x - s.strike_high) * T::from_f64(80.)).exp());
-        let mid = low * high;
-        let g = tarf_pos(x - s.strike_pivot) * s.upside_gearing;
-        let l = tarf_pos(s.strike_pivot - x) * s.downside_gearing;
-        gain += T::from_f64(w[i]) * g * mid;
-        loss += T::from_f64(w[i]) * l * (T::one() - mid);
-        pin += T::from_f64(w[i]) * mid;
-    }
-    let mut surv = Vec::with_capacity(s.fixing_times.len());
-    let mut corr = Vec::with_capacity(s.fixing_times.len());
-    let mut target = T::zero();
-    let mut active = T::zero();
-    let mut strip = T::zero();
-    let mut tprev = T::zero();
-    for &ti in &s.fixing_times {
-        let _dt = (ti - tprev).max_val(T::from_f64(1e-8));
-        tprev = ti;
-        let disc = (-s.domestic_rate * ti).exp();
-        let p = (T::one() - target / s.target_redemption_cap.max_val(T::from_f64(1e-8)))
-            .max_val(T::zero())
-            .min_val(T::one());
-        surv.push(p);
-        corr.push(pin);
-        active += p;
-        let cash = (gain - loss) * disc;
-        strip += cash;
-        target += (gain * T::from_f64(0.25) * disc).max_val(T::zero());
-    }
-    let client = strip.max_val(T::zero());
-    let give = (strip - client).max_val(T::zero())
-        + tarf_pos(target - s.target_redemption_cap).max_val(T::zero());
-    WystupPivotTarfCorridorReport {
-        single_fixing_expected_pivot_gain: gain,
-        single_fixing_expected_tail_loss: loss,
-        fixing_survival_probabilities: surv,
-        expected_active_fixings: active,
-        pivot_tarf_client_npv: client,
-        unbarriered_pivot_strip_npv: strip.max_val(client),
-        target_knockout_giveup_value: give,
-        corridor_in_range_probabilities: corr,
     }
 }
 

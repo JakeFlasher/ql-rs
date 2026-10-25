@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 fn main() {
     let rows = run_all_benchmarks(5);
-    assert_eq!(rows.len(), 38, "Phase 25 benchmark suite registration");
+    assert_eq!(rows.len(), 38, "Phase 26 benchmark suite registration");
     let mut speedups: Vec<f64> = rows.iter().map(|r| r.speedup).collect();
     speedups.sort_by(f64::total_cmp);
     let median = speedups[speedups.len() / 2];

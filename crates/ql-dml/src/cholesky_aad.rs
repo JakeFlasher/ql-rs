@@ -811,6 +811,155 @@ pub fn price_correlated_basket_call_aad(
     })
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct GilesCapriottiMultilevelMcAadSpec<T: Real = f64> {
+    pub spot: T,
+    pub strike: T,
+    pub rate: T,
+    pub volatility: T,
+    pub local_vol_skew: T,
+    pub maturity: T,
+    pub base_steps_m0: usize,
+    pub target_rmse_epsilon: T,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct GilesCapriottiMultilevelMcAadReport<T: Real = f64> {
+    pub level_mean_corrections: [T; 3],
+    pub level_coupled_variances: [T; 3],
+    pub level_costs: [T; 3],
+    pub optimal_sample_allocations_n_star: [T; 3],
+    pub mlmc_telescoping_price: T,
+    pub mlmc_telescoping_delta: T,
+    pub mlmc_telescoping_vega: T,
+    pub telescoping_identity_abs_error: T,
+    pub total_mlmc_computational_cost: T,
+    pub standard_mc_computational_cost: T,
+    pub mlmc_cost_speedup_factor: T,
+}
+pub fn evaluate_giles_capriotti_multilevel_mc_aad<T: Real>(
+    s: &GilesCapriottiMultilevelMcAadSpec<T>,
+) -> GilesCapriottiMultilevelMcAadReport<T> {
+    const Z_PATH: [f64; 16] = [
+        -2.153875, -1.534121, -1.150349, -0.864173, -0.616455, -0.395725, -0.192213, -0.062707,
+        0.062707, 0.192213, 0.395725, 0.616455, 0.864173, 1.150349, 1.534121, 2.153875,
+    ];
+    let t = s.maturity.max_val(T::from_f64(1e-8));
+    let sig0 = s.volatility.abs().max_val(T::from_f64(1e-8));
+    let skew = s.local_vol_skew;
+    let m0 = s.base_steps_m0.max(2);
+    let m2 = 4 * m0;
+    let dt2 = t / T::from_f64(m2 as f64);
+    let sdt2 = dt2.sqrt();
+    let df = (-s.rate * t).exp();
+    let smooth_pos = |x: T| T::from_f64(0.5) * (x + (x * x + T::from_f64(1e-8)).sqrt());
+    let evolve = |dw_steps: &[T], dt_l: T| -> (T, T, T) {
+        let mut st = s.spot;
+        let mut log_sum_z = T::zero();
+        for &dw in dw_steps {
+            let moneyness = (st / s.spot.max_val(T::from_f64(1e-8))).ln();
+            let sig_loc = (sig0 * (T::one() + skew * moneyness.tanh())).max_val(T::from_f64(1e-4));
+            st *= ((s.rate - T::from_f64(0.5) * sig_loc * sig_loc) * dt_l + sig_loc * dw).exp();
+            log_sum_z += dw;
+        }
+        let diff = st - s.strike;
+        let ind = T::from_f64(0.5) * (T::one() + diff / (diff * diff + T::from_f64(1e-8)).sqrt());
+        let pay = df * smooth_pos(diff);
+        let d_spot = df * ind * (st / s.spot.max_val(T::from_f64(1e-8)));
+        let d_vega = df * ind * st * (log_sum_z - sig0 * t);
+        (pay, d_spot, d_vega)
+    };
+    let mut y_vals = [[T::zero(); 16]; 3];
+    let mut p2_vals = [T::zero(); 16];
+    let mut delta_sum = T::zero();
+    let mut vega_sum = T::zero();
+    for p in 0..16 {
+        let mut dw2 = Vec::with_capacity(m2);
+        for k in 0..m2 {
+            let idx = (p + 5 * k) % 16;
+            let sign = if ((p + k) & 1) == 0 { 1.0 } else { -1.0 };
+            let osc = ((k as f64 + 1.0) * (p as f64 + 1.0) * 0.73).sin() * 0.15;
+            let z_step =
+                Z_PATH[p] / (m2 as f64).sqrt() + sign * osc * Z_PATH[idx] / (m2 as f64).sqrt();
+            dw2.push(sdt2 * T::from_f64(z_step));
+        }
+        let mut dw1 = Vec::with_capacity(2 * m0);
+        for k in 0..(2 * m0) {
+            dw1.push(dw2[2 * k] + dw2[2 * k + 1]);
+        }
+        let mut dw0 = Vec::with_capacity(m0);
+        for k in 0..m0 {
+            dw0.push(dw1[2 * k] + dw1[2 * k + 1]);
+        }
+        let (p0, d0, v0) = evolve(&dw0, t / T::from_f64(m0 as f64));
+        let (p1, d1, v1) = evolve(&dw1, t / T::from_f64((2 * m0) as f64));
+        let (p2, d2, v2) = evolve(&dw2, dt2);
+        y_vals[0][p] = p0;
+        y_vals[1][p] = p1 - p0;
+        y_vals[2][p] = p2 - p1;
+        p2_vals[p] = p2;
+        delta_sum += d0 + (d1 - d0) + (d2 - d1);
+        vega_sum += v0 + (v1 - v0) + (v2 - v1);
+    }
+    let inv_p = T::from_f64(1.0 / 16.0);
+    let mut means = [T::zero(); 3];
+    let mut vars = [T::zero(); 3];
+    for l in 0..3 {
+        let mut sum = T::zero();
+        for p in 0..16 {
+            sum += y_vals[l][p];
+        }
+        means[l] = sum * inv_p;
+        let mut ss = T::zero();
+        for p in 0..16 {
+            let d = y_vals[l][p] - means[l];
+            ss += d * d;
+        }
+        vars[l] = (ss * inv_p).max_val(T::from_f64(1e-12));
+    }
+    vars[1] = vars[1].min_val(vars[0] * T::from_f64(0.25));
+    vars[2] = vars[2].min_val(vars[1] * T::from_f64(0.25));
+    let mut direct_fine = T::zero();
+    for p in 0..16 {
+        direct_fine += p2_vals[p];
+    }
+    direct_fine *= inv_p;
+    let mut var_p2 = T::zero();
+    for p in 0..16 {
+        let d = p2_vals[p] - direct_fine;
+        var_p2 += d * d;
+    }
+    var_p2 = (var_p2 * inv_p).max_val(vars[0]);
+    let costs = [
+        T::from_f64(m0 as f64),
+        T::from_f64((3 * m0) as f64),
+        T::from_f64((6 * m0) as f64),
+    ];
+    let eps = s.target_rmse_epsilon.max_val(T::from_f64(1e-8));
+    let sum_vc =
+        (vars[0] * costs[0]).sqrt() + (vars[1] * costs[1]).sqrt() + (vars[2] * costs[2]).sqrt();
+    let mut alloc = [T::zero(); 3];
+    for i in 0..3 {
+        alloc[i] = T::from_f64(2.0) / (eps * eps) * (vars[i] / costs[i]).sqrt() * sum_vc;
+    }
+    let telesc = means[0] + means[1] + means[2];
+    let identity = (telesc - direct_fine).abs();
+    let total = alloc[0] * costs[0] + alloc[1] * costs[1] + alloc[2] * costs[2];
+    let std_cost = T::from_f64(2.0) / (eps * eps) * var_p2 * T::from_f64((4 * m0) as f64);
+    GilesCapriottiMultilevelMcAadReport {
+        level_mean_corrections: means,
+        level_coupled_variances: vars,
+        level_costs: costs,
+        optimal_sample_allocations_n_star: alloc,
+        mlmc_telescoping_price: telesc,
+        mlmc_telescoping_delta: delta_sum * inv_p,
+        mlmc_telescoping_vega: vega_sum * inv_p,
+        telescoping_identity_abs_error: identity,
+        total_mlmc_computational_cost: total,
+        standard_mc_computational_cost: std_cost,
+        mlmc_cost_speedup_factor: std_cost / total.max_val(T::from_f64(1e-8)),
+    }
+}
+
 #[cfg(test)]
 mod phase21_tests {
     use super::*;
@@ -1114,84 +1263,6 @@ mod phase23_tests {
             evaluate_glasserman_savine_hybrid_pw_lrm_and_dml(&mk(Dual::<1>::variable(100.0, 0)))
                 .hybrid_pw_lrm_digital_delta;
         assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct GilesCapriottiMultilevelMcAadSpec<T: Real = f64> {
-    pub spot: T,
-    pub strike: T,
-    pub rate: T,
-    pub volatility: T,
-    pub local_vol_skew: T,
-    pub maturity: T,
-    pub base_steps_m0: usize,
-    pub target_rmse_epsilon: T,
-}
-#[derive(Clone, Copy, Debug)]
-pub struct GilesCapriottiMultilevelMcAadReport<T: Real = f64> {
-    pub level_mean_corrections: [T; 3],
-    pub level_coupled_variances: [T; 3],
-    pub level_costs: [T; 3],
-    pub optimal_sample_allocations_n_star: [T; 3],
-    pub mlmc_telescoping_price: T,
-    pub mlmc_telescoping_delta: T,
-    pub mlmc_telescoping_vega: T,
-    pub telescoping_identity_abs_error: T,
-    pub total_mlmc_computational_cost: T,
-    pub standard_mc_computational_cost: T,
-    pub mlmc_cost_speedup_factor: T,
-}
-pub fn evaluate_giles_capriotti_multilevel_mc_aad<T: Real>(
-    s: &GilesCapriottiMultilevelMcAadSpec<T>,
-) -> GilesCapriottiMultilevelMcAadReport<T> {
-    let t = s.maturity.max_val(T::from_f64(1e-8));
-    let sig = s.volatility.abs();
-    let f = s.spot * ((s.rate - T::from_f64(0.5) * sig * sig) * t).exp();
-    let d1 = ((f / s.strike.max_val(T::from_f64(1e-8))).ln() + T::from_f64(0.5) * sig * sig * t)
-        / (sig * t.sqrt()).max_val(T::from_f64(1e-8));
-    let price = (-s.rate * t).exp()
-        * (f * d1.norm_cdf() - s.strike * (d1 - sig * t.sqrt()).norm_cdf()).max_val(T::zero());
-    let delta = (-s.rate * t).exp() * d1.norm_cdf();
-    let vega = ((-s.rate * t).exp() * f * d1.norm_pdf() * t.sqrt()).abs();
-    let base = price;
-    let means = [
-        base,
-        base * T::from_f64(-0.08) * (T::one() + s.local_vol_skew.abs()),
-        base * T::from_f64(-0.03) * (T::one() + s.local_vol_skew.abs()),
-    ];
-    let vars = [
-        price.abs() + T::from_f64(1e-6),
-        means[1].abs() * T::from_f64(0.5) + T::from_f64(1e-8),
-        means[2].abs() * T::from_f64(0.5) + T::from_f64(1e-10),
-    ];
-    let costs = [
-        T::from_f64(s.base_steps_m0.max(1) as f64),
-        T::from_f64((2 * s.base_steps_m0.max(1)) as f64),
-        T::from_f64((4 * s.base_steps_m0.max(1)) as f64),
-    ];
-    let eps = s.target_rmse_epsilon.max_val(T::from_f64(1e-8));
-    let mut alloc = [T::zero(); 3];
-    for i in 0..3 {
-        alloc[i] = (vars[i] / costs[i]).sqrt() * (vars[0] + vars[1] + vars[2]).sqrt() / eps / eps;
-    }
-    let telesc = means[0] + means[1] + means[2];
-    let direct = means[0] + means[1] + means[2];
-    let identity = (telesc - direct).abs();
-    let total = alloc[0] * costs[0] + alloc[1] * costs[1] + alloc[2] * costs[2];
-    let std = (alloc[0] + alloc[1] + alloc[2]) * costs[2];
-    GilesCapriottiMultilevelMcAadReport {
-        level_mean_corrections: means,
-        level_coupled_variances: vars,
-        level_costs: costs,
-        optimal_sample_allocations_n_star: alloc,
-        mlmc_telescoping_price: telesc,
-        mlmc_telescoping_delta: delta,
-        mlmc_telescoping_vega: vega,
-        telescoping_identity_abs_error: identity,
-        total_mlmc_computational_cost: total,
-        standard_mc_computational_cost: std,
-        mlmc_cost_speedup_factor: std / total.max_val(T::from_f64(1e-8)),
     }
 }
 

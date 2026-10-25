@@ -1,4 +1,109 @@
 use ql_ad::Real;
+#[derive(Clone, Debug)]
+pub struct EydelandWolyniecRampOutageVtaSpec<T: Real = f64> {
+    pub power_forwards: Vec<T>,
+    pub gas_forwards: Vec<T>,
+    pub spinning_reserve_prices: Vec<T>,
+    pub dispatch_times: Vec<T>,
+    pub capacity_mw: T,
+    pub block_hours: T,
+    pub full_load_heat_rate: T,
+    pub part_load_heat_rate: T,
+    pub min_stable_load_fraction: T,
+    pub vom_cost_per_mwh: T,
+    pub startup_cost: T,
+    pub fast_ramp_penalty_cost: T,
+    pub outage_failure_rate_lambda: T,
+    pub outage_repair_rate_mu: T,
+    pub spread_volatility: T,
+    pub risk_free_rate: T,
+}
+#[derive(Clone, Debug)]
+pub struct EydelandWolyniecRampOutageVtaReport<T: Real = f64> {
+    pub steady_state_availability: T,
+    pub frictionless_spark_spread_npv: T,
+    pub reliability_derated_vta_npv: T,
+    pub forced_outage_penalty_cost: T,
+    pub ramp_and_startup_constrained_vta_npv: T,
+    pub ancillary_spinning_reserve_uplift: T,
+    pub optimal_part_load_reserve_periods: usize,
+}
+pub fn evaluate_eydeland_wolyniec_ramp_outage_virtual_tolling<T: Real>(
+    s: &EydelandWolyniecRampOutageVtaSpec<T>,
+) -> EydelandWolyniecRampOutageVtaReport<T> {
+    let lam = s.outage_failure_rate_lambda.max_val(T::from_f64(1e-8));
+    let mu = s.outage_repair_rate_mu.max_val(T::from_f64(1e-8));
+    let avail = mu / (lam + mu);
+    let n = s.power_forwards.len().min(s.gas_forwards.len());
+    let mut friction = T::zero();
+    let mut derated = T::zero();
+    let mut reserve = T::zero();
+    let mut opt = 0usize;
+    let mut v_dp = [T::zero(); 3];
+    for i in (0..n).rev() {
+        let t = s
+            .dispatch_times
+            .get(i)
+            .copied()
+            .unwrap_or_else(|| T::from_f64((i + 1) as f64 * 0.25))
+            .max_val(T::from_f64(1e-8));
+        let p_avail_t = avail + (lam / (lam + mu)) * (-(lam + mu) * t).exp();
+        let df = (-s.risk_free_rate * t).exp();
+        let mwh = s.capacity_mw * s.block_hours;
+        let s_full =
+            s.power_forwards[i] - s.gas_forwards[i] * s.full_load_heat_rate - s.vom_cost_per_mwh;
+        let sig_t = (s.spread_volatility.abs() * s.power_forwards[i].abs() * t.sqrt())
+            .max_val(T::from_f64(1e-6));
+        let d_full = s_full / sig_t;
+        let call_full = s_full * d_full.norm_cdf() + sig_t * d_full.norm_pdf();
+        friction += call_full * mwh * df;
+        derated += call_full * mwh * p_avail_t * df;
+        let s_part =
+            s.power_forwards[i] - s.gas_forwards[i] * s.part_load_heat_rate - s.vom_cost_per_mwh;
+        let d_part = s_part / sig_t;
+        let call_part = s_part * d_part.norm_cdf() + sig_t * d_part.norm_pdf();
+        let res_price = s
+            .spinning_reserve_prices
+            .get(i)
+            .copied()
+            .unwrap_or_else(T::zero);
+        let f_min = s
+            .min_stable_load_fraction
+            .max_val(T::zero())
+            .min_val(T::one());
+        let uplift_i = res_price * mwh * (T::one() - f_min) * p_avail_t * df;
+        reserve += uplift_i;
+        let pay_part = (f_min * call_part + (T::one() - f_min) * res_price) * mwh * p_avail_t * df;
+        let pay_full = call_full * mwh * p_avail_t * df;
+        if pay_part.val() >= pay_full.val() {
+            opt += 1;
+        }
+        let c_start = s.startup_cost * s.capacity_mw * df;
+        let c_ramp = s.fast_ramp_penalty_cost * s.capacity_mw * df;
+        let next_0 = v_dp[0]
+            .max_val(pay_part - c_start + v_dp[1])
+            .max_val(pay_full - c_start - c_ramp + v_dp[2]);
+        let next_1 = v_dp[0]
+            .max_val(pay_part + v_dp[1])
+            .max_val(pay_full - c_ramp + v_dp[2]);
+        let next_2 = v_dp[0]
+            .max_val(pay_part + v_dp[1])
+            .max_val(pay_full + v_dp[2]);
+        v_dp = [next_0, next_1, next_2];
+    }
+    let penalty = (friction - derated).max_val(T::zero());
+    let constrained = v_dp[0].min_val(derated + reserve);
+    EydelandWolyniecRampOutageVtaReport {
+        steady_state_availability: avail,
+        frictionless_spark_spread_npv: friction,
+        reliability_derated_vta_npv: derated.min_val(friction),
+        forced_outage_penalty_cost: penalty,
+        ramp_and_startup_constrained_vta_npv: constrained,
+        ancillary_spinning_reserve_uplift: reserve.max_val(T::zero()),
+        optimal_part_load_reserve_periods: opt,
+    }
+}
+
 #[cfg(test)]
 mod phase23_tests {
     use super::*;
@@ -1022,95 +1127,6 @@ mod phase21_tests {
         assert!(low.fuel_switching_option_value >= 0.0);
         assert!(low.fuel_switching_option_value >= high.fuel_switching_option_value - 1e-10);
         assert!(low.startup_friction_cost >= 0.0);
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct EydelandWolyniecRampOutageVtaSpec<T: Real = f64> {
-    pub power_forwards: Vec<T>,
-    pub gas_forwards: Vec<T>,
-    pub spinning_reserve_prices: Vec<T>,
-    pub dispatch_times: Vec<T>,
-    pub capacity_mw: T,
-    pub block_hours: T,
-    pub full_load_heat_rate: T,
-    pub part_load_heat_rate: T,
-    pub min_stable_load_fraction: T,
-    pub vom_cost_per_mwh: T,
-    pub startup_cost: T,
-    pub fast_ramp_penalty_cost: T,
-    pub outage_failure_rate_lambda: T,
-    pub outage_repair_rate_mu: T,
-    pub spread_volatility: T,
-    pub risk_free_rate: T,
-}
-#[derive(Clone, Debug)]
-pub struct EydelandWolyniecRampOutageVtaReport<T: Real = f64> {
-    pub steady_state_availability: T,
-    pub frictionless_spark_spread_npv: T,
-    pub reliability_derated_vta_npv: T,
-    pub forced_outage_penalty_cost: T,
-    pub ramp_and_startup_constrained_vta_npv: T,
-    pub ancillary_spinning_reserve_uplift: T,
-    pub optimal_part_load_reserve_periods: usize,
-}
-pub fn evaluate_eydeland_wolyniec_ramp_outage_virtual_tolling<T: Real>(
-    s: &EydelandWolyniecRampOutageVtaSpec<T>,
-) -> EydelandWolyniecRampOutageVtaReport<T> {
-    let lam = s.outage_failure_rate_lambda.max_val(T::from_f64(1e-8));
-    let mu = s.outage_repair_rate_mu.max_val(T::from_f64(1e-8));
-    let avail = mu / (lam + mu);
-    let mut friction = T::zero();
-    let mut derated = T::zero();
-    let mut constrained = T::zero();
-    let mut reserve = T::zero();
-    let mut prev = T::zero();
-    let mut opt = 0usize;
-    for i in 0..s.power_forwards.len().min(s.gas_forwards.len()) {
-        let t = s
-            .dispatch_times
-            .get(i)
-            .copied()
-            .unwrap_or_else(|| T::from_f64(i as f64));
-        let dt = (t - prev).max_val(T::from_f64(1e-8));
-        prev = t;
-        let spark =
-            s.power_forwards[i] - s.gas_forwards[i] * s.full_load_heat_rate - s.vom_cost_per_mwh;
-        let risk_adjustment =
-            (-T::from_f64(0.5) * s.spread_volatility * s.spread_volatility * dt).exp();
-        let spark = spark * risk_adjustment;
-        let df = (-s.risk_free_rate * t).exp();
-        friction += spark * s.capacity_mw * s.block_hours * df;
-        derated += spark * s.capacity_mw * s.block_hours * avail * df;
-        let part =
-            s.power_forwards[i] - s.gas_forwards[i] * s.part_load_heat_rate - s.vom_cost_per_mwh;
-        let reserve_price = s
-            .spinning_reserve_prices
-            .get(i)
-            .copied()
-            .unwrap_or_else(T::zero);
-        let uplift = reserve_price
-            * s.capacity_mw
-            * s.min_stable_load_fraction.max_val(T::zero())
-            * avail
-            * df;
-        reserve += uplift;
-        let penalty = (s.startup_cost + s.fast_ramp_penalty_cost) * avail * df;
-        constrained +=
-            (spark.max_val(T::zero()) * avail - penalty) * s.capacity_mw * s.block_hours * df;
-        if part > spark {
-            opt += 1;
-        }
-    }
-    let penalty = (friction - derated).max_val(T::zero());
-    EydelandWolyniecRampOutageVtaReport {
-        steady_state_availability: avail,
-        frictionless_spark_spread_npv: friction,
-        reliability_derated_vta_npv: derated.min_val(friction),
-        forced_outage_penalty_cost: penalty,
-        ramp_and_startup_constrained_vta_npv: constrained.min_val(derated),
-        ancillary_spinning_reserve_uplift: reserve.max_val(T::zero()),
-        optimal_part_load_reserve_periods: opt,
     }
 }
 

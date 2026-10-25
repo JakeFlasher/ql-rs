@@ -736,6 +736,198 @@ pub fn optimize_mean_cdar_portfolio<T: Real>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct HarveyLiuZhuMultipleTestingSharpeSpec<T: Real = f64> {
+    pub focal_sharpe_ratio: T,
+    pub benchmark_sharpe_sr0: T,
+    pub sample_length_t: usize,
+    pub return_skewness: T,
+    pub return_kurtosis_pearson: T,
+    pub num_independent_trials_m: usize,
+    pub cross_sectional_sharpe_std: T,
+    pub confidence_z_alpha: T,
+    pub candidate_t_stats: Vec<T>,
+}
+#[derive(Clone, Debug)]
+pub struct HarveyLiuZhuMultipleTestingSharpeReport<T: Real = f64> {
+    pub sharpe_standard_error: T,
+    pub probabilistic_sharpe_ratio_psr: T,
+    pub minimum_track_record_length_mintrl: T,
+    pub expected_max_false_sharpe_sr0_star: T,
+    pub deflated_sharpe_ratio_dsr: T,
+    pub raw_two_sided_p_values: Vec<T>,
+    pub bonferroni_adjusted_p_values: Vec<T>,
+    pub holm_adjusted_p_values: Vec<T>,
+    pub bhy_fdr_adjusted_p_values: Vec<T>,
+    pub bhy_haircut_sharpe_ratios: Vec<T>,
+}
+fn hlz_p<T: Real>(z: T) -> T {
+    T::from_f64(2.) * (T::one() - z.abs().norm_cdf())
+}
+fn norm_inv<T: Real>(p: T) -> T {
+    // Acklam's rational approximation followed by Newton refinement in T.
+    let pp = p
+        .max_val(T::from_f64(1e-15))
+        .min_val(T::one() - T::from_f64(1e-15));
+    let a = [
+        -39.6968302866538,
+        220.946098424521,
+        -275.928510446969,
+        138.357751867269,
+        -30.6647980661472,
+        2.50662827745924,
+    ];
+    let b = [
+        -54.4760987982241,
+        161.585836858041,
+        -155.698979859887,
+        66.8013118877197,
+        -13.2806815528857,
+    ];
+    let c = [
+        -0.00778489400243029,
+        -0.322396458041136,
+        -2.40075827716184,
+        -2.54973253934373,
+        4.37466414146497,
+        2.93816398269878,
+    ];
+    let d = [
+        0.00778469570904146,
+        0.32246712907004,
+        2.445134137143,
+        3.75440866190742,
+    ];
+    let mut x;
+    if pp.val() < 0.02425 {
+        let q = (-T::from_f64(2.0) * pp.ln()).sqrt();
+        x = (((((T::from_f64(c[0]) * q + T::from_f64(c[1])) * q + T::from_f64(c[2])) * q
+            + T::from_f64(c[3]))
+            * q
+            + T::from_f64(c[4]))
+            * q
+            + T::from_f64(c[5]))
+            / ((((T::from_f64(d[0]) * q + T::from_f64(d[1])) * q + T::from_f64(d[2])) * q
+                + T::from_f64(d[3]))
+                * q
+                + T::one());
+    } else if pp.val() > 0.97575 {
+        let q = (-T::from_f64(2.0) * (T::one() - pp).ln()).sqrt();
+        x = -(((((T::from_f64(c[0]) * q + T::from_f64(c[1])) * q + T::from_f64(c[2])) * q
+            + T::from_f64(c[3]))
+            * q
+            + T::from_f64(c[4]))
+            * q
+            + T::from_f64(c[5]))
+            / ((((T::from_f64(d[0]) * q + T::from_f64(d[1])) * q + T::from_f64(d[2])) * q
+                + T::from_f64(d[3]))
+                * q
+                + T::one());
+    } else {
+        let q = pp - T::from_f64(0.5);
+        let r = q * q;
+        x = (((((T::from_f64(a[0]) * r + T::from_f64(a[1])) * r + T::from_f64(a[2])) * r
+            + T::from_f64(a[3]))
+            * r
+            + T::from_f64(a[4]))
+            * r
+            + T::from_f64(a[5]))
+            * q
+            / (((((T::from_f64(b[0]) * r + T::from_f64(b[1])) * r + T::from_f64(b[2])) * r
+                + T::from_f64(b[3]))
+                * r
+                + T::from_f64(b[4]))
+                * r
+                + T::one());
+    }
+    for _ in 0..2 {
+        x -= (x.norm_cdf() - pp) / x.norm_pdf().max_val(T::from_f64(1e-15));
+    }
+    x
+}
+pub fn evaluate_harvey_liu_zhu_multiple_testing_and_mintrl<T: Real>(
+    s: &HarveyLiuZhuMultipleTestingSharpeSpec<T>,
+) -> HarveyLiuZhuMultipleTestingSharpeReport<T> {
+    let t = T::from_f64(s.sample_length_t.max(1) as f64);
+    let se = ((T::one() - s.return_skewness * s.focal_sharpe_ratio
+        + ((s.return_kurtosis_pearson - T::from_f64(3.0)) * T::from_f64(0.25))
+            * s.focal_sharpe_ratio
+            * s.focal_sharpe_ratio)
+        / t)
+        .abs()
+        .sqrt();
+    let psr = ((s.focal_sharpe_ratio - s.benchmark_sharpe_sr0) / se.max_val(T::from_f64(1e-12)))
+        .norm_cdf();
+    let mintrl = ((s.confidence_z_alpha * se.max_val(T::from_f64(1e-12))
+        / (s.focal_sharpe_ratio - s.benchmark_sharpe_sr0).max_val(T::from_f64(1e-8)))
+    .powf(2.0)
+        * t)
+        .max_val(T::one());
+    let k_len = s.candidate_t_stats.len().max(1);
+    let m = s.num_independent_trials_m.max(k_len);
+    let maxfalse = if m <= 1 {
+        s.benchmark_sharpe_sr0
+    } else {
+        let gamma_em = std::f64::consts::EULER_GAMMA;
+        let m_f = m as f64;
+        let z1 = norm_inv(T::from_f64(1.0 - 1.0 / m_f));
+        let z2 = norm_inv(T::from_f64(1.0 - 1.0 / (m_f * std::f64::consts::E)));
+        s.benchmark_sharpe_sr0
+            + s.cross_sectional_sharpe_std
+                * (T::from_f64(1.0 - gamma_em) * z1 + T::from_f64(gamma_em) * z2)
+    };
+    let dsr = ((s.focal_sharpe_ratio - maxfalse) / se.max_val(T::from_f64(1e-12))).norm_cdf();
+    let mut raw = Vec::with_capacity(s.candidate_t_stats.len());
+    for z in &s.candidate_t_stats {
+        raw.push(hlz_p(*z).min_val(T::one()).max_val(T::from_f64(1e-15)));
+    }
+    let n = raw.len();
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| {
+        raw[a]
+            .val()
+            .partial_cmp(&raw[b].val())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let c_m: f64 = (1..=m).map(|j| 1.0 / j as f64).sum();
+    let mut bon = vec![T::zero(); n];
+    let mut holm = vec![T::zero(); n];
+    let mut bhy = vec![T::zero(); n];
+    let mut hair = vec![T::zero(); n];
+    let mut running_holm = T::zero();
+    for (rank, &idx) in order.iter().enumerate() {
+        bon[idx] = (raw[idx] * T::from_f64(m as f64)).min_val(T::one());
+        let cand = (raw[idx] * T::from_f64((m - rank) as f64)).min_val(T::one());
+        running_holm = running_holm.max_val(cand);
+        holm[idx] = running_holm;
+    }
+    let mut running_bhy = T::one();
+    for (rank, &idx) in order.iter().enumerate().rev() {
+        let denom = (rank + 1 + m - n) as f64;
+        let cand = (raw[idx] * T::from_f64((m as f64) * c_m / denom)).min_val(T::one());
+        running_bhy = running_bhy.min_val(cand);
+        bhy[idx] = running_bhy;
+        let u_prob = (T::one() - T::from_f64(0.5) * bhy[idx])
+            .min_val(T::from_f64(1.0 - 1e-12))
+            .max_val(T::from_f64(0.5 + 1e-12));
+        let t_adj = norm_inv(u_prob);
+        let t_orig = s.candidate_t_stats[idx].abs().max_val(T::from_f64(1e-8));
+        hair[idx] = s.focal_sharpe_ratio * (t_adj / t_orig).min_val(T::one());
+    }
+    HarveyLiuZhuMultipleTestingSharpeReport {
+        sharpe_standard_error: se,
+        probabilistic_sharpe_ratio_psr: psr,
+        minimum_track_record_length_mintrl: mintrl,
+        expected_max_false_sharpe_sr0_star: maxfalse,
+        deflated_sharpe_ratio_dsr: dsr,
+        raw_two_sided_p_values: raw,
+        bonferroni_adjusted_p_values: bon,
+        holm_adjusted_p_values: holm,
+        bhy_fdr_adjusted_p_values: bhy,
+        bhy_haircut_sharpe_ratios: hair,
+    }
+}
+
 #[cfg(test)]
 mod phase16_tests {
     use super::*;
@@ -1890,93 +2082,6 @@ mod phase25_tests {
         ))
         .terminal_crash_hazard_rate;
         assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct HarveyLiuZhuMultipleTestingSharpeSpec<T: Real = f64> {
-    pub focal_sharpe_ratio: T,
-    pub benchmark_sharpe_sr0: T,
-    pub sample_length_t: usize,
-    pub return_skewness: T,
-    pub return_kurtosis_pearson: T,
-    pub num_independent_trials_m: usize,
-    pub cross_sectional_sharpe_std: T,
-    pub confidence_z_alpha: T,
-    pub candidate_t_stats: Vec<T>,
-}
-#[derive(Clone, Debug)]
-pub struct HarveyLiuZhuMultipleTestingSharpeReport<T: Real = f64> {
-    pub sharpe_standard_error: T,
-    pub probabilistic_sharpe_ratio_psr: T,
-    pub minimum_track_record_length_mintrl: T,
-    pub expected_max_false_sharpe_sr0_star: T,
-    pub deflated_sharpe_ratio_dsr: T,
-    pub raw_two_sided_p_values: Vec<T>,
-    pub bonferroni_adjusted_p_values: Vec<T>,
-    pub holm_adjusted_p_values: Vec<T>,
-    pub bhy_fdr_adjusted_p_values: Vec<T>,
-    pub bhy_haircut_sharpe_ratios: Vec<T>,
-}
-fn hlz_p<T: Real>(z: T) -> T {
-    T::from_f64(2.) * (T::one() - z.abs().norm_cdf())
-}
-pub fn evaluate_harvey_liu_zhu_multiple_testing_and_mintrl<T: Real>(
-    s: &HarveyLiuZhuMultipleTestingSharpeSpec<T>,
-) -> HarveyLiuZhuMultipleTestingSharpeReport<T> {
-    let t = T::from_f64(s.sample_length_t.max(1) as f64);
-    let se = ((T::one() - s.return_skewness * s.focal_sharpe_ratio
-        + ((s.return_kurtosis_pearson - T::from_f64(3.)) * T::from_f64(0.25))
-            * s.focal_sharpe_ratio
-            * s.focal_sharpe_ratio)
-        / t)
-        .abs()
-        .sqrt();
-    let psr = ((s.focal_sharpe_ratio - s.benchmark_sharpe_sr0) / se.max_val(T::from_f64(1e-12)))
-        .norm_cdf();
-    let mintrl = ((s.confidence_z_alpha * se.max_val(T::from_f64(1e-12))
-        / (s.focal_sharpe_ratio - s.benchmark_sharpe_sr0).max_val(T::from_f64(1e-8)))
-    .powf(2.0)
-        * t)
-        .max_val(T::one());
-    let m = s.num_independent_trials_m.max(1);
-    let maxfalse = s.benchmark_sharpe_sr0
-        + s.cross_sectional_sharpe_std * (T::from_f64((2.0 * (m as f64).ln()).sqrt()));
-    let dsr = ((s.focal_sharpe_ratio - maxfalse) / se.max_val(T::from_f64(1e-12))).norm_cdf();
-    let mut raw = Vec::with_capacity(s.candidate_t_stats.len());
-    for z in &s.candidate_t_stats {
-        raw.push(hlz_p(*z).min_val(T::one()));
-    }
-    let mut bon = Vec::with_capacity(raw.len());
-    let mut holm = Vec::with_capacity(raw.len());
-    let mut bhy = Vec::with_capacity(raw.len());
-    let mut hair = Vec::with_capacity(raw.len());
-    let n = raw.len().max(1);
-    for (i, p) in raw.iter().enumerate() {
-        bon.push((*p * T::from_f64(n as f64)).min_val(T::one()));
-        holm.push((*p * T::from_f64((n - i) as f64)).min_val(T::one()));
-        bhy.push(if m == 1 {
-            *p
-        } else {
-            (*p * T::from_f64((n as f64) * ((n as f64).ln() + 1.0))).min_val(T::one())
-        });
-        hair.push(if m == 1 {
-            s.focal_sharpe_ratio
-        } else {
-            s.focal_sharpe_ratio * (T::one() - bhy[i])
-        });
-    }
-    HarveyLiuZhuMultipleTestingSharpeReport {
-        sharpe_standard_error: se,
-        probabilistic_sharpe_ratio_psr: psr,
-        minimum_track_record_length_mintrl: mintrl,
-        expected_max_false_sharpe_sr0_star: maxfalse,
-        deflated_sharpe_ratio_dsr: dsr,
-        raw_two_sided_p_values: raw,
-        bonferroni_adjusted_p_values: bon,
-        holm_adjusted_p_values: holm,
-        bhy_fdr_adjusted_p_values: bhy,
-        bhy_haircut_sharpe_ratios: hair,
     }
 }
 

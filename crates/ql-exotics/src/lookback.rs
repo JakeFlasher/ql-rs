@@ -224,9 +224,6 @@ pub struct HeynenKatPartialFractionalLookbackReport<T: Real = f64> {
     pub expected_discounted_high_low_range: T,
     pub hindsight_extreme_spread_option: T,
 }
-fn lb_pos<T: Real>(x: T) -> T {
-    T::from_f64(0.5) * (x + (x * x + T::from_f64(1e-12)).sqrt())
-}
 pub fn evaluate_heynen_kat_partial_fractional_lookback_and_extreme_spread<T: Real>(
     s: &HeynenKatPartialFractionalLookbackSpec<T>,
 ) -> HeynenKatPartialFractionalLookbackReport<T> {
@@ -234,30 +231,65 @@ pub fn evaluate_heynen_kat_partial_fractional_lookback_and_extreme_spread<T: Rea
     let t1 = s.monitoring_end_t1.max_val(T::from_f64(1e-8)).min_val(t);
     let df = (-s.rate * t).exp();
     let f = s.spot * ((s.rate - s.dividend_yield) * t).exp();
-    let st = s.volatility.abs() * t.sqrt();
-    let d1 = ((f / s.fixed_strike.max_val(T::from_f64(1e-8))).ln() + T::from_f64(0.5) * st * st)
-        / st.max_val(T::from_f64(1e-8));
+    let sig = s.volatility.abs().max_val(T::from_f64(1e-8));
+    let st = sig * t.sqrt();
+    let k_fix = s.fixed_strike.max_val(T::from_f64(1e-8));
+    let d1 = ((f / k_fix).ln() + T::from_f64(0.5) * st * st) / st;
     let d2 = d1 - st;
-    let van = df * (f * d1.norm_cdf() - s.fixed_strike * d2.norm_cdf()).max_val(T::zero());
-    let range = lb_pos(s.running_max - s.running_min);
-    let full = (df * (lb_pos(s.running_max - f) + range * T::from_f64(0.2))).max_val(van);
-    let frac = df
-        * (lb_pos(s.running_max - s.fixed_strike) * T::one()
-            / s.fractional_multiplier_lambda.max_val(T::one())
-            + lb_pos(s.running_max - s.spot) * T::from_f64(0.5));
-    let partial = (van + (full - van) * (t1 / t).sqrt())
-        .max_val(van)
-        .min_val(full);
+    let van = df * (f * d1.norm_cdf() - k_fix * d2.norm_cdf()).max_val(T::zero());
+    let m_min = s.running_min.min_val(s.spot).max_val(T::from_f64(1e-8));
+    let m_max = s.running_max.max_val(s.spot);
+    let full = price_floating_lookback_continuous(
+        s.spot,
+        m_min,
+        s.rate,
+        s.dividend_yield,
+        sig,
+        t,
+        OptionType::Call,
+    )
+    .max_val(van);
+    let lam = s.fractional_multiplier_lambda.max_val(T::one());
+    let k_frac = lam * m_min;
+    let d1_f = ((f / k_frac).ln() + T::from_f64(0.5) * st * st) / st;
+    let d2_f = d1_f - st;
+    let van_frac = df * (f * d1_f.norm_cdf() - k_frac * d2_f.norm_cdf()).max_val(T::zero());
+    let reflection_bonus = (full - van).max_val(T::zero()) / (lam * lam);
+    let frac = (van_frac + reflection_bonus).min_val(full);
+    let w_part = (t1 / t).sqrt();
+    let partial = van + w_part * (full - van);
     let save =
-        (full - frac).max_val(T::zero()) / full.max_val(T::from_f64(1e-8)) * T::from_f64(100.);
+        (full - frac).max_val(T::zero()) / full.max_val(T::from_f64(1e-8)) * T::from_f64(100.0);
+    let float_put = price_floating_lookback_continuous(
+        s.spot,
+        m_max,
+        s.rate,
+        s.dividend_yield,
+        sig,
+        t,
+        OptionType::Put,
+    );
+    let exp_range = full + float_put;
+    let fixed_call = price_fixed_lookback_continuous(
+        s.spot,
+        m_max,
+        k_fix,
+        s.rate,
+        s.dividend_yield,
+        sig,
+        t,
+        OptionType::Call,
+    );
+    let spread_opt =
+        (fixed_call + float_put * (-k_fix / (s.spot + k_fix)).exp()).min_val(exp_range);
     HeynenKatPartialFractionalLookbackReport {
         full_floating_lookback_call: full,
-        fractional_floating_lookback_call: frac.min_val(full),
+        fractional_floating_lookback_call: frac,
         fractional_premium_savings_pct: save,
         heynen_kat_partial_window_call: partial,
         vanilla_bs_call_lower_bound: van,
-        expected_discounted_high_low_range: df * range,
-        hindsight_extreme_spread_option: df * lb_pos(s.running_max - s.running_min),
+        expected_discounted_high_low_range: exp_range,
+        hindsight_extreme_spread_option: spread_opt,
     }
 }
 
