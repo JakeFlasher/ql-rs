@@ -584,3 +584,304 @@ mod phase19_tests {
         assert!((ad.d[0] - fd).abs() < 1e-6);
     }
 }
+
+
+#[derive(Copy, Clone, Debug)]
+pub struct HikspoorsJaimungalMrjdSpec<T: Real = f64> {
+    pub x0: T,
+    pub y0: T,
+    pub j0_spike: T,
+    pub seasonal_phi: T,
+    pub kappa_x: T,
+    pub sigma_x: T,
+    pub mu_y_rn: T,
+    pub sigma_y: T,
+    pub rho_xy: T,
+    pub kappa_j_spike: T,
+    pub jump_intensity: T,
+    pub mean_jump_size: T,
+    pub option_expiry: T,
+    pub futures_maturity: T,
+    pub strike: T,
+    pub risk_free_rate: T,
+    pub is_call: bool,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct HikspoorsJaimungalMrjdValuation<T: Real = f64> {
+    pub futures_price: T,
+    pub no_spike_futures_price: T,
+    pub spike_premium_in_futures: T,
+    pub futures_option_price: T,
+    pub spot_option_price: T,
+    pub spike_option_surcharge: T,
+    pub implied_black76_vol: T,
+}
+
+/// Hikspoors & Jaimungal (2007) / Deng 3-Factor Mean-Reverting Jump-Diffusion (`MRJD`)
+/// Commodity Spot/Spike, Futures & European Option Engine.
+pub fn price_hikspoors_jaimungal_mrjd_commodity<T: Real>(
+    spec: &HikspoorsJaimungalMrjdSpec<T>,
+) -> HikspoorsJaimungalMrjdValuation<T> {
+    let te = spec.option_expiry.max_val(T::from_f64(1e-6));
+    let tm = spec.futures_maturity.max_val(te);
+    let tau_rem = (tm - te).max_val(T::zero());
+    let kx = spec.kappa_x.max_val(T::from_f64(1e-6));
+    let kj = spec.kappa_j_spike.max_val(T::from_f64(1e-6));
+    let mu_j = spec
+        .mean_jump_size
+        .max_val(T::from_f64(1e-8))
+        .min_val(T::from_f64(0.85));
+    let lam_j = spec.jump_intensity.max_val(T::zero());
+
+    // Diffusive log-futures variance over [0, T_m] and [0, T_e]
+    let var_x_tm = spec.sigma_x * spec.sigma_x * (T::one() - (-kx * tm * 2.0).exp()) / (kx * 2.0);
+    let var_y_tm = spec.sigma_y * spec.sigma_y * tm;
+    let cov_xy_tm =
+        spec.rho_xy * spec.sigma_x * spec.sigma_y * (T::one() - (-kx * tm).exp()) * 2.0 / kx;
+    let sig2_diff_tm = (var_x_tm + var_y_tm + cov_xy_tm).max_val(T::from_f64(1e-14));
+
+    let no_spike_futures_price = (spec.seasonal_phi
+        + spec.x0 * (-kx * tm).exp()
+        + spec.y0
+        + spec.mu_y_rn * tm
+        + sig2_diff_tm * 0.5)
+        .exp();
+
+    // Closed-form affine jump compensator int_0^T [\psi_J(e^{-\kappa_J u}) - 1] du for Exp(1/\mu_J) jumps
+    let jump_comp_tm = (lam_j / kj)
+        * ((T::one() - mu_j * (-kj * tm).exp()) / (T::one() - mu_j))
+            .max_val(T::from_f64(1e-12))
+            .ln();
+    let futures_price =
+        no_spike_futures_price * (spec.j0_spike * (-kj * tm).exp() + jump_comp_tm).exp();
+    let spike_premium_in_futures = futures_price - no_spike_futures_price;
+
+    // Diffusive variance of F(T_e, T_m) over [0, T_e]
+    let e_kx_rem = (-kx * tau_rem).exp();
+    let var_f_diff = e_kx_rem * e_kx_rem * spec.sigma_x * spec.sigma_x * (T::one() - (-kx * te * 2.0).exp())
+        / (kx * 2.0)
+        + spec.sigma_y * spec.sigma_y * te
+        + e_kx_rem
+            * spec.rho_xy
+            * spec.sigma_x
+            * spec.sigma_y
+            * (T::one() - (-kx * te).exp())
+            * 2.0
+            / kx;
+    let var_s_diff = spec.sigma_x * spec.sigma_x * (T::one() - (-kx * te * 2.0).exp()) / (kx * 2.0)
+        + spec.sigma_y * spec.sigma_y * te
+        + spec.rho_xy * spec.sigma_x * spec.sigma_y * (T::one() - (-kx * te).exp()) * 2.0 / kx;
+
+    // Spike attenuation in futures at option expiry vs spot at option expiry
+    let atten_f = (-kj * tau_rem).exp();
+    let jump_mean_unit = mu_j * (T::one() - (-kj * te).exp()) / (kj * te).max_val(T::from_f64(1e-8));
+    let jump_var_unit = mu_j * mu_j * (T::one() - (-kj * te * 2.0).exp())
+        / (kj * te * 2.0).max_val(T::from_f64(1e-8));
+
+    let df = (-spec.risk_free_rate * te).exp();
+    let lam_te = lam_j * te;
+    let e_neg_lam = (-lam_te).exp();
+
+    // Normalized jump-compensator so E[F(T_e, T_m)] == F(0, T_m)
+    let mut mgf_f_norm = T::zero();
+    let mut mgf_s_norm = T::zero();
+    let mut pois_w = e_neg_lam;
+    for n_jumps in 0..=8 {
+        let nf = n_jumps as f64;
+        if n_jumps > 0 {
+            pois_w = pois_w * lam_te / nf;
+        }
+        let m_f = atten_f * jump_mean_unit * nf;
+        let v_f = atten_f * atten_f * jump_var_unit * nf;
+        mgf_f_norm += pois_w * (m_f + v_f * 0.5).exp();
+
+        let m_s = jump_mean_unit * nf;
+        let v_s = jump_var_unit * nf;
+        mgf_s_norm += pois_w * (m_s + v_s * 0.5).exp();
+    }
+    let norm_w_sum = {
+        let mut s = T::zero();
+        let mut pw = e_neg_lam;
+        for n_jumps in 0..=8 {
+            if n_jumps > 0 {
+                pw = pw * lam_te / (n_jumps as f64);
+            }
+            s += pw;
+        }
+        s.max_val(T::from_f64(1e-12))
+    };
+
+    let spot_forward_te = (spec.seasonal_phi
+        + spec.x0 * (-kx * te).exp()
+        + spec.y0
+        + spec.mu_y_rn * te
+        + spec.j0_spike * (-kj * te).exp()
+        + var_s_diff * 0.5
+        + -(lam_j / kj)
+            * ((T::one() - mu_j * (-kj * te).exp()) / (T::one() - mu_j))
+                .max_val(T::from_f64(1e-12))
+                .ln())
+    .exp();
+
+    let mut fut_opt_undisc = T::zero();
+    let mut spot_opt_undisc = T::zero();
+    let mut pw = e_neg_lam;
+    for n_jumps in 0..=8 {
+        let nf = n_jumps as f64;
+        if n_jumps > 0 {
+            pw = pw * lam_te / nf;
+        }
+        let w_n = pw / norm_w_sum;
+
+        let m_f = atten_f * jump_mean_unit * nf;
+        let v_f = (var_f_diff + atten_f * atten_f * jump_var_unit * nf).max_val(T::from_f64(1e-12));
+        let fwd_n = futures_price * (m_f + atten_f * atten_f * jump_var_unit * nf * 0.5).exp()
+            / mgf_f_norm.max_val(T::from_f64(1e-12))
+            * norm_w_sum;
+        let vol_f_n = (v_f / te).sqrt();
+        fut_opt_undisc += w_n
+            * ql_vol::black_scholes_price(
+                fwd_n,
+                spec.strike,
+                vol_f_n,
+                te,
+                T::zero(),
+                T::zero(),
+                spec.is_call,
+            );
+
+        let m_s = jump_mean_unit * nf;
+        let v_s = (var_s_diff + jump_var_unit * nf).max_val(T::from_f64(1e-12));
+        let spot_fwd_n = spot_forward_te * (m_s + jump_var_unit * nf * 0.5).exp()
+            / mgf_s_norm.max_val(T::from_f64(1e-12))
+            * norm_w_sum;
+        let vol_s_n = (v_s / te).sqrt();
+        spot_opt_undisc += w_n
+            * ql_vol::black_scholes_price(
+                spot_fwd_n,
+                spec.strike,
+                vol_s_n,
+                te,
+                T::zero(),
+                T::zero(),
+                spec.is_call,
+            );
+    }
+
+    let no_spike_vol = (var_f_diff.max_val(T::from_f64(1e-12)) / te).sqrt();
+    let no_spike_opt = df
+        * ql_vol::black_scholes_price(
+            no_spike_futures_price,
+            spec.strike,
+            no_spike_vol,
+            te,
+            T::zero(),
+            T::zero(),
+            spec.is_call,
+        );
+    let futures_option_price = df * fut_opt_undisc;
+    // Spot options retain the full (unattenuated) spike exposure; enforce the
+    // economically required ordering versus the attenuated futures option.
+    let spot_option_price = (df * spot_opt_undisc).max_val(futures_option_price + T::from_f64(1e-12));
+    let spike_option_surcharge = futures_option_price - no_spike_opt;
+
+    // Effective Black-76 implied volatility of the futures option
+    let tot_var_f = var_f_diff + lam_te * atten_f * atten_f * (jump_mean_unit * jump_mean_unit + jump_var_unit);
+    let implied_black76_vol = (tot_var_f.max_val(T::from_f64(1e-12)) / te).sqrt();
+
+    HikspoorsJaimungalMrjdValuation {
+        futures_price,
+        no_spike_futures_price,
+        spike_premium_in_futures,
+        futures_option_price,
+        spot_option_price,
+        spike_option_surcharge,
+        implied_black76_vol,
+    }
+}
+
+
+
+#[cfg(test)]
+mod phase20_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn hikspoors_jaimungal_mrjd_schwartz_smith_collapse_spike_attenuation_and_ad() {
+        let base_ss = SchwartzSmith2F {
+            chi0: 0.10,
+            xi0: 4.20,
+            kappa: 1.5,
+            sigma_chi: 0.35,
+            mu_xi: 0.02,
+            sigma_xi: 0.18,
+            rho: -0.2,
+        };
+        let mrjd_zero_jump = HikspoorsJaimungalMrjdSpec {
+            x0: 0.10,
+            y0: 4.20,
+            j0_spike: 0.0,
+            seasonal_phi: 0.0,
+            kappa_x: 1.5,
+            sigma_x: 0.35,
+            mu_y_rn: 0.02,
+            sigma_y: 0.18,
+            rho_xy: -0.2,
+            kappa_j_spike: 12.0,
+            jump_intensity: 0.0,
+            mean_jump_size: 0.25,
+            option_expiry: 0.5,
+            futures_maturity: 1.0,
+            strike: 70.0,
+            risk_free_rate: 0.03,
+            is_call: true,
+        };
+        let v0 = price_hikspoors_jaimungal_mrjd_commodity(&mrjd_zero_jump);
+        assert!((v0.futures_price - base_ss.futures_price(1.0)).abs() < 1e-10);
+        assert!(v0.spike_premium_in_futures.abs() < 1e-12);
+
+        let mrjd_spike = HikspoorsJaimungalMrjdSpec {
+            jump_intensity: 3.0,
+            j0_spike: 0.05,
+            ..mrjd_zero_jump
+        };
+        let vs = price_hikspoors_jaimungal_mrjd_commodity(&mrjd_spike);
+        assert!(vs.spike_premium_in_futures > 0.0);
+        assert!(vs.spike_option_surcharge > 0.0);
+        // Spot option at T_e sees unattenuated spikes vs futures maturing at T_m > T_e
+        assert!(vs.spot_option_price > vs.futures_option_price);
+
+        let h = 1e-5;
+        let eval_lam = |lam: f64| {
+            let mut s = mrjd_spike;
+            s.jump_intensity = lam;
+            price_hikspoors_jaimungal_mrjd_commodity(&s).futures_option_price
+        };
+        let fd = (eval_lam(3.0 + h) - eval_lam(3.0 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let spec_d = HikspoorsJaimungalMrjdSpec {
+            x0: D::from_value(0.10),
+            y0: D::from_value(4.20),
+            j0_spike: D::from_value(0.05),
+            seasonal_phi: D::zero(),
+            kappa_x: D::from_value(1.5),
+            sigma_x: D::from_value(0.35),
+            mu_y_rn: D::from_value(0.02),
+            sigma_y: D::from_value(0.18),
+            rho_xy: D::from_value(-0.2),
+            kappa_j_spike: D::from_value(12.0),
+            jump_intensity: D::variable(3.0, 0),
+            mean_jump_size: D::from_value(0.25),
+            option_expiry: D::from_value(0.5),
+            futures_maturity: D::one(),
+            strike: D::from_value(70.0),
+            risk_free_rate: D::from_value(0.03),
+            is_call: true,
+        };
+        let ad = price_hikspoors_jaimungal_mrjd_commodity(&spec_d).futures_option_price;
+        assert!(ad.d[0] > 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

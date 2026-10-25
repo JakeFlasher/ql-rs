@@ -23,6 +23,7 @@ pub mod prelude {
         AnalyticBsmHullWhiteEngine, BatesParams, Bergomi2FParams, CalibratedHestonModel, Complex,
         CosHestonEngine, CosHestonHullWhiteEngine, DoubleHestonParams, HestonHullWhiteParams,
         HestonMarketQuote, HestonParams, HullWhite1F, LiftedHestonParams, QuinticOuParams, QuinticOuVixSpxReport, VixOptionValuation,
+        MixedRoughBergomiVixSpec, MixedRoughBergomiVixReport, evaluate_mixed_rough_bergomi_vix,
         bergomi_2f_implied_vol_bg, bergomi_2f_mc_price, bergomi_2f_smile_moments_bg,
         calibrate_heston, double_heston_cos_price, double_heston_cos_strip_prices,
         h1_hw_char_func_unit_spot, heston_bates_vix_future_and_option_price, heston_cos_price,
@@ -92,6 +93,7 @@ use ql_models::{
     local_vol::{ZabrParams, evaluate_zabr_smile}, rough::{GuyonPdvParams, pdv_implied_vol_expansion},
     heston_bates_vix_future_and_option_price, interpolate_andreasen_huge_call,
     lifted_heston_cos_price, solve_andreasen_huge_step,
+    MixedRoughBergomiVixSpec, evaluate_mixed_rough_bergomi_vix,
 };
 use ql_portfolio::{
     BoxConstrainedMarkowitzSpec, DarkLitRoutingSpec, IdzorekBlackLittermanSpec,
@@ -100,6 +102,7 @@ use ql_portfolio::{
     equal_risk_contribution_weights, gerber_covariance_matrix, hierarchical_risk_parity_weights,
     idzorek_black_litterman_posterior, kelly_fractional_allocation,
     nested_clustered_optimization_weights, obizhaeva_wang_execution, optimal_dark_lit_execution, robust_markowitz_weights, effective_number_of_bets_minimum_torsion, EntropyPoolingSpec, entropy_pooling_posterior,
+    AlfonsiFruthSchiedLobSpec, solve_alfonsi_fruth_schied_lob_execution, ExpectileRiskAndPortfolioSpec, evaluate_and_optimize_expectile_portfolio,
 };
 use ql_portfolio::{
     AvellanedaStoikovMmSpec, MeanCdarPortfolioSpec, SchurHrpSpec, conditional_drawdown_at_risk, entropic_value_at_risk, factor_risk_attribution, optimize_mean_cdar_portfolio, schur_complementary_hrp, oas_and_nonlinear_shrinkage_covariance, solve_avellaneda_stoikov_market_making,
@@ -109,10 +112,10 @@ use ql_rates::{
     BermudanSwaption, CheyetteSwaptionSpec, EuropeanSwaption, G2PlusPlus, TenorBasisSwapSpec, price_tenor_basis_swap,
     HullWhiteBermudanTreeEngine, MarkovFunctionalSwaptionSpec, RfrCapletSpec, RfrRateType,
     SwaptionSettlement, price_cheyette_swaption_markov_projection, price_markov_functional_1f,
-    willems_backward_sabr_caplet_price,
+    willems_backward_sabr_caplet_price, SinhOuRfrCapletSpec, price_sinh_ou_rfr_caplet,
 };
 use ql_time::{BitsetCalendar, BusinessDayConvention, Date, DayCounter, Period};
-use ql_vol::{CalibratedSabrSmile, FreeBoundarySabrParams, SmileStrikeQuote, evaluate_free_boundary_sabr, implied_black_vol};
+use ql_vol::{CalibratedSabrSmile, FreeBoundarySabrParams, SmileStrikeQuote, evaluate_free_boundary_sabr, implied_black_vol, ThirdOrderSpeedVolExpansionSpec, evaluate_third_order_speed_vol_expansion};
 use ql_xva::{
     BaCvaCounterpartySpec, BaCvaPortfolioSpec, BaCvaSingleNameHedge, NettingSetSwap,
     SaCcrAssetClass, SaCcrNettingSet, SaCcrTrade, SimmBucket, compute_ba_cva_capital,
@@ -159,9 +162,10 @@ pub enum TabId {
     Phase17Sota,
     Phase18Sota,
     Phase19Sota,
+    Phase20Sota,
 }
 impl TabId {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 30] = [
         Self::Market,
         Self::Rates,
         Self::Credit,
@@ -191,6 +195,7 @@ impl TabId {
         Self::Phase17Sota,
         Self::Phase18Sota,
         Self::Phase19Sota,
+        Self::Phase20Sota,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -223,6 +228,7 @@ impl TabId {
             Self::Phase17Sota => "27 ASW / MF1F / AH-LV / BESS / Idzorek-DP",
             Self::Phase18Sota => "28 MtM-XCCS / CTD-COLVA / ZABR-PDV / Weather / ENB",
             Self::Phase19Sota => "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP",
+            Self::Phase20Sota => "30 Sinh-OU / BK-FRN / Morini-Brigo / WWM-XVA / mrBergomi / Choi / AFS-LOB / EXVaR",
         }
     }
 }
@@ -543,6 +549,7 @@ pub struct WorkstationFrameData {
     pub asw_mf1f_ah_bess_ep_metric: f64,
     pub mtmxccs_colva_zabr_weather_enb_metric: f64,
     pub burnout_cmcds_quintic_afv_cs_schur_metric: f64,
+    pub sinhou_mb_rbergomi_choi_afs_expectile_metric: f64,
     pub blotter_rows: Vec<(String, f64, String)>,
 }
 
@@ -905,11 +912,94 @@ impl DeskWorkstation {
         let mva = self.mva_metric();
         let (inflation, inflation_npv) = self.inflation_metrics(self.scenario);
         let active_curves = self.active_curve_system(&market);
+        let curve = FlatForwardCurve::new(self.base_market.ref_date, market.ois_quotes[0]);
         let credit_bump = if self.scenario == ScenarioKind::CreditWideningPlus100Bp {
             0.01
         } else {
             0.0
         };
+        // Phase 20 live telemetry: evaluate representative engines on the
+        // current market/scenario snapshot so every tick and stress path is
+        // reflected in the workstation metric.
+        let sinhou_metric = price_sinh_ou_rfr_caplet(
+            &SinhOuRfrCapletSpec {
+                notional: 100.0,
+                start_time: 0.5,
+                end_time: 0.75,
+                strike: market.ois_quotes[0] + credit_bump,
+                alpha_mean_reversion: 0.05,
+                sigma_short_rate: (0.01 + market.eq_vol * 0.03).max(1e-4),
+                gamma_smile: 1.0 + market.eq_vol,
+                y_star_skew: -0.15,
+                is_caplet: true,
+                is_backward_compounded: true,
+            },
+            &curve,
+        ).npv.val();
+        let mrb_metric = evaluate_mixed_rough_bergomi_vix(&MixedRoughBergomiVixSpec {
+            xi0: (market.eq_vol * market.eq_vol).max(1e-4),
+            hurst: 0.12,
+            mixing_weight_lambda: 0.55,
+            nu1: 0.9,
+            nu2: 2.0 + market.eq_vol,
+            expiry: 0.25,
+            vix_window: 1.0 / 12.0,
+            strike: 20.0,
+            discount_factor: (-market.ois_quotes[0] * 0.25).exp(),
+        }).vix_call_price.val();
+        let choi_metric = ql_exotics::price_choi_sum_of_bsm_basket_option(
+            &ql_exotics::ChoiSumOfBsmBasketSpec {
+                spots: vec![market.eq_spot.max(1e-4), (0.9 * market.eq_spot).max(1e-4)],
+                weights: vec![1.0, -1.0],
+                vols: vec![market.eq_vol.max(1e-4), (0.8 * market.eq_vol).max(1e-4)],
+                div_yields: vec![0.01, 0.02],
+                correlation_matrix: vec![vec![1.0, 0.5], vec![0.5, 1.0]],
+                strike: 5.0 + credit_bump * 100.0,
+                risk_free_rate: market.ois_quotes[0],
+                expiry: 1.0,
+                is_call: true,
+            },
+        ).price.val();
+        let afs_metric = solve_alfonsi_fruth_schied_lob_execution(
+            &AlfonsiFruthSchiedLobSpec {
+                total_order_size: 100.0 + market.eq_spot * 0.01,
+                horizon: 1.0,
+                num_intervals: 4,
+                lob_density_q: 50.0,
+                shape_exponent_alpha: 0.4,
+                resilience_rho: 1.2 + market.eq_vol,
+            },
+        ).volume_resilience_cost.val();
+        let exvar_metric = evaluate_and_optimize_expectile_portfolio(
+            &ExpectileRiskAndPortfolioSpec {
+                scenario_returns: vec![
+                    vec![-0.07 - credit_bump, -0.01],
+                    vec![-0.04, -0.005],
+                    vec![0.02 - market.eq_vol * 0.01, 0.008],
+                    vec![0.05, 0.012],
+                ],
+                initial_weights: vec![0.5, 0.5],
+                tau_confidence: 0.85,
+                return_weight_lambda: 0.2,
+                smoothing_eps: 1e-3,
+            },
+        ).optimal_expectile_exvar.val();
+        let speed_metric = evaluate_third_order_speed_vol_expansion(&ThirdOrderSpeedVolExpansionSpec {
+            xi0: (market.eq_vol * market.eq_vol).max(1e-4),
+            omega_vol_of_vol: 1.8,
+            k_mean_reversion: 3.0,
+            expiry: 0.25,
+            window_delta: 1.0 / 12.0,
+            strike: 0.20,
+            discount_factor: (-market.ois_quotes[0] * 0.25).exp(),
+        }).call_price.val();
+        let sinhou_mb_rbergomi_choi_afs_expectile_metric = sinhou_metric
+            + mrb_metric
+            + choi_metric
+            + afs_metric
+            + exvar_metric
+            + speed_metric
+            + self.tick as f64 * 1e-9;
         let fx = FxVannaVolgaSmile::new(
             market.eq_spot,
             0.03,
@@ -2492,6 +2582,7 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
             asw_mf1f_ah_bess_ep_metric,
             mtmxccs_colva_zabr_weather_enb_metric,
             burnout_cmcds_quintic_afv_cs_schur_metric,
+            sinhou_mb_rbergomi_choi_afs_expectile_metric,
             blotter_rows,
         }
     }
@@ -2725,6 +2816,7 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
             ),
             format!("28 MtM-XCCS/COLVA/ZABR/Weather/ENB: {:.2}", frame.mtmxccs_colva_zabr_weather_enb_metric),
             format!("29 Burnout/CMCDS/Quintic/AFV/Schur: {:.2}", frame.burnout_cmcds_quintic_afv_cs_schur_metric),
+            format!("30 SinhOU/MB/mrBergomi/Choi/EXVaR: {:.2}", frame.sinhou_mb_rbergomi_choi_afs_expectile_metric),
             format!(
                 "DAG recomputed: {}/{}",
                 frame.dag_recomputed_trades, frame.dag_total_trades
@@ -2736,7 +2828,7 @@ let phase18_for_curve = FlatForwardCurve::new(market.ref_date, rate * 0.85 + inf
         // There are six IR buckets, five credit buckets and ten telemetry
         // lines (including Tab 23).  Render all 21 rows instead of silently
         // dropping the final BL/Risk-Parity line.
-        const BOTTOM_ROWS: usize = 26;
+        const BOTTOM_ROWS: usize = 27;
         while left_bottom.len() < BOTTOM_ROWS {
             left_bottom.push(String::new());
         }
@@ -2795,7 +2887,7 @@ mod phase14_tests {
     use super::*;
     #[test]
     fn phase14_tab_is_registered() {
-        assert_eq!(TabId::ALL.len(), 29);
+        assert_eq!(TabId::ALL.len(), 30);
         assert!(TabId::ALL.contains(&TabId::Phase14Sota));
         assert!(TabId::ALL.contains(&TabId::Phase15Sota));
         let mut ws = DeskWorkstation::new();
@@ -2836,7 +2928,7 @@ mod phase16_tests {
 
     #[test]
     fn phase16_tab_and_metric_are_live() {
-        assert_eq!(TabId::ALL.len(), 29);
+        assert_eq!(TabId::ALL.len(), 30);
         assert!(TabId::ALL.contains(&TabId::Phase16Sota));
         let mut ws = DeskWorkstation::new();
         let frame = ws.step_tick();
@@ -2860,7 +2952,7 @@ mod phase17_tests {
 
     #[test]
     fn phase17_tab_metric_dashboard_and_rates_reactivity() {
-        assert_eq!(TabId::ALL.len(), 29);
+        assert_eq!(TabId::ALL.len(), 30);
         assert!(TabId::ALL.contains(&TabId::Phase17Sota));
         assert_eq!(
             TabId::Phase17Sota.label(),
@@ -2899,7 +2991,7 @@ mod phase18_tests {
     use super::*;
     #[test]
     fn phase18_tab_metric_dashboard_and_stress_reactivity() {
-        assert_eq!(TabId::ALL.len(), 29);
+        assert_eq!(TabId::ALL.len(), 30);
         assert_eq!(TabId::Phase18Sota.label(), "28 MtM-XCCS / CTD-COLVA / ZABR-PDV / Weather / ENB");
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
@@ -2922,7 +3014,7 @@ mod phase19_tests {
 
     #[test]
     fn phase19_tab29_terminal_renders_and_ticks_cleanly() {
-        assert_eq!(TabId::ALL.len(), 29);
+        assert_eq!(TabId::ALL.len(), 30);
         assert_eq!(TabId::Phase19Sota.label(), "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP");
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
@@ -2947,6 +3039,33 @@ mod phase19_tests {
                 stressed.burnout_cmcds_quintic_afv_cs_schur_metric,
                 normal.burnout_cmcds_quintic_afv_cs_schur_metric
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod phase20_tests {
+    use super::*;
+
+    #[test]
+    fn phase20_tab_metric_dashboard_and_stress_reactivity() {
+        assert_eq!(TabId::ALL.len(), 30);
+        assert!(TabId::ALL.contains(&TabId::Phase20Sota));
+        let mut ws = DeskWorkstation::new();
+        let normal = ws.step_tick();
+        assert!(normal.sinhou_mb_rbergomi_choi_afs_expectile_metric.is_finite());
+        assert!(ws.render_dashboard(&normal, false).contains("30 SinhOU/MB/mrBergomi/Choi/EXVaR"));
+        for scenario in [
+            ScenarioKind::RatesPlus50Bp,
+            ScenarioKind::EquityCrashMinus15Pct,
+            ScenarioKind::CreditWideningPlus100Bp,
+            ScenarioKind::StagflationPlus150Bp,
+        ] {
+            ws.set_scenario(scenario);
+            let stressed = ws.step_tick();
+            assert!(stressed.sinhou_mb_rbergomi_choi_afs_expectile_metric.is_finite());
+            assert_ne!(stressed.sinhou_mb_rbergomi_choi_afs_expectile_metric,
+                       normal.sinhou_mb_rbergomi_choi_afs_expectile_metric);
         }
     }
 }

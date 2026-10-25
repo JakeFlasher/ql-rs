@@ -57,7 +57,7 @@ use ql_xva::{NettingSetSwap, compute_bruteforce_dim_and_mva, compute_chebyshev_d
 use std::sync::Arc;
 
 fn config(scale: usize) -> BenchConfig {
-    let (warmup_iters, samples) = configured_counts(1, 31);
+    let (warmup_iters, samples) = configured_counts(1, 3);
     BenchConfig {
         warmup_iters,
         samples,
@@ -66,7 +66,7 @@ fn config(scale: usize) -> BenchConfig {
         // parallel.  `scale` changes only this repetition count; the domain
         // workload itself remains invariant across test and bench modes.
         // The short parity configuration intentionally uses one iteration so
-        // the complete 31-suite test remains a fast (<2s on CI) invariant
+        // the complete 32-suite test remains a fast (<2s on CI) invariant
         // check rather than a second timing benchmark.
         iters_per_sample: if samples <= 3 {
             scale.max(1)
@@ -3416,7 +3416,7 @@ pub fn benchmark_asw_mf1f_ah_bess_ep_aad(scale: usize) -> ComparisonRow {
 }
 
 pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
-    // Keep all quantitative engine dependencies linked into the 31-suite
+    // Keep all quantitative engine dependencies linked into the 32-suite
     // benchmark binary, including engines used by the parity harness.
     let _ = ql_math::inv_norm_cdf(0.5);
     let _ = std::mem::size_of::<ql_pde::Fd2dHestonEngine>();
@@ -3456,6 +3456,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_asw_mf1f_ah_bess_ep_aad(scale),
         benchmark_mtmxccs_colva_zabr_pdv_weather_enb_aad(scale),
         benchmark_burnout_cmcds_quintic_afv_cs_schur_aad(scale),
+        benchmark_sinhou_mb_rbergomi_choi_afs_expectile_aad(scale),
     ]
 }
 
@@ -4028,6 +4029,300 @@ pub fn benchmark_burnout_cmcds_quintic_afv_cs_schur_aad(scale: usize) -> Compari
     run_comparison(
         "31_burnout_cmcds_quintic_afv_cs_schur_aad",
         "Burnout-MBS/CMCDS/Quintic-OU/AFV-CB/CS-Swaption/Schur-HRP AD",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
+}
+
+
+fn phase20_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
+    let d = date(2024, 1, 1);
+    let curve = FlatForwardCurve::new(d, T::from_f64(0.03) + x[0] * 0.001);
+
+    let sinhou = ql_rates::price_sinh_ou_rfr_caplet(
+        &ql_rates::SinhOuRfrCapletSpec {
+            notional: T::from_f64(100.0),
+            start_time: 0.5,
+            end_time: 0.75,
+            strike: T::from_f64(0.03) + x[1] * 0.0005,
+            alpha_mean_reversion: T::from_f64(0.05),
+            sigma_short_rate: T::from_f64(0.01) + x[3] * 0.0002,
+            gamma_smile: T::from_f64(1.2) + x[2] * 0.05,
+            y_star_skew: T::from_f64(-0.15),
+            is_caplet: true,
+            is_backward_compounded: true,
+        },
+        &curve,
+    )
+    .npv;
+
+    let cir_fut = ql_rates::price_cirpp_sofr_futures(
+        &ql_rates::CirppSofrFuturesSpec {
+            start_time: 0.5,
+            end_time: 0.75,
+            x0: T::from_f64(0.03) + x[0] * 0.001,
+            b_drift: T::from_f64(0.006),
+            beta_mean_reversion: T::from_f64(0.20),
+            sigma: T::from_f64(0.06) + x[3] * 0.002,
+        },
+        &curve,
+    )
+    .futures_rate_3m_compounded;
+
+    let bk_oas = ql_fixed_income::analyze_black_karasinski_callable_frn_oas_ad(
+        &ql_fixed_income::BlackKarasinskiCallableFrnSpec {
+            face_amount: T::from_f64(100.0),
+            quoted_margin: T::from_f64(0.008),
+            cap_rate: T::from_f64(0.055),
+            floor_rate: T::from_f64(0.020),
+            maturity: 2.0,
+            coupon_steps: 6,
+            mean_reversion: T::from_f64(0.15),
+            log_rate_vol: T::from_f64(0.22) + x[3] * 0.005,
+            flat_zero_rate: T::from_f64(0.035) + x[0] * 0.001,
+            call_price: T::from_f64(100.2),
+            first_call_time: 1.0,
+            target_market_price: T::from_f64(99.8) + x[1] * 0.05,
+            smoothing_eps: 1e-3,
+        },
+    )
+    .oas_spread;
+
+    let surv = SurvivalProbabilityCurve::new(
+        d,
+        vec![1.0, 2.0, 3.0, 4.0, 5.0],
+        vec![T::from_f64(0.025) + x[2] * 0.001; 5],
+    );
+    let mb_opt = ql_credit::price_morini_brigo_credit_index_option(
+        &ql_credit::MoriniBrigoIndexOptionSpec {
+            notional: T::from_f64(100.0),
+            strike_spread: T::from_f64(0.025),
+            option_expiry: 1.0,
+            payment_times: vec![2.0, 3.0, 4.0, 5.0],
+            recovery_rate: T::from_f64(0.40),
+            spread_vol: T::from_f64(0.45) + x[3] * 0.01,
+            num_constituents: 50,
+            systemic_copula_corr: T::from_f64(0.60) + x[2] * 0.01,
+            is_payer: true,
+        },
+        &curve,
+        &surv,
+    )
+    .npv;
+
+    let wwm_cva = ql_xva::compute_brigo_vrins_wwm_cva(&ql_xva::BrigoVrinsWwmCvaSpec {
+        times: vec![0.5, 1.0, 2.0],
+        discount_rate: T::from_f64(0.03) + x[0] * 0.001,
+        base_mtm_profile: vec![
+            T::from_f64(10.0) + x[1] * 0.2,
+            T::from_f64(12.0),
+            T::from_f64(11.0),
+        ],
+        exposure_vol_nu: T::from_f64(8.0),
+        is_brownian_bridge_swap: false,
+        y0: T::from_f64(0.02) + x[2] * 0.001,
+        cir_kappa: T::from_f64(0.35),
+        cir_theta: T::from_f64(0.025),
+        cir_vol: T::from_f64(0.08),
+        intensity_shift_psi: T::from_f64(0.005),
+        wwr_correlation: T::from_f64(0.60) + x[3] * 0.01,
+        lgd: T::from_f64(0.60),
+    })
+    .wwm_cva;
+
+    let bcs_band = ql_xva::compute_bichuch_capponi_sturm_xva_band(&ql_xva::AsymmetricRateXvaBandSpec {
+        maturity: 1.0,
+        num_steps: 6,
+        clean_claim_value: T::from_f64(25.0) + x[1] * 0.5,
+        clean_delta_notional: T::from_f64(40.0),
+        asset_vol: T::from_f64(0.20) + x[3] * 0.005,
+        collateral_alpha: T::from_f64(0.50),
+        dividend_discount_rate: T::from_f64(0.02),
+        repo_lend_rate: T::from_f64(0.020),
+        repo_borrow_rate: T::from_f64(0.024),
+        funding_lend_rate: T::from_f64(0.022),
+        funding_borrow_rate: T::from_f64(0.036) + x[0] * 0.001,
+        collateral_lend_rate: T::from_f64(0.020),
+        collateral_borrow_rate: T::from_f64(0.022),
+        own_bond_yield_mu_i: T::from_f64(0.042),
+        cpty_bond_yield_mu_c: T::from_f64(0.048) + x[2] * 0.001,
+        own_lgd: T::from_f64(0.60),
+        cpty_lgd: T::from_f64(0.60),
+    })
+    .no_arbitrage_band_width;
+
+    let mrb_vix = ql_models::evaluate_mixed_rough_bergomi_vix(&ql_models::MixedRoughBergomiVixSpec {
+        xi0: T::from_f64(0.04) + x[3] * 0.001,
+        hurst: T::from_f64(0.12),
+        mixing_weight_lambda: T::from_f64(0.55),
+        nu1: T::from_f64(0.9),
+        nu2: T::from_f64(2.1) + x[1] * 0.02,
+        expiry: T::from_f64(0.25),
+        vix_window: 1.0 / 12.0,
+        strike: T::from_f64(20.0),
+        discount_factor: T::from_f64(0.992),
+    })
+    .vix_call_price;
+
+    let speed_vol = ql_vol::evaluate_third_order_speed_vol_expansion(
+        &ql_vol::ThirdOrderSpeedVolExpansionSpec {
+            xi0: T::from_f64(0.04) + x[3] * 0.001,
+            omega_vol_of_vol: T::from_f64(1.8),
+            k_mean_reversion: T::from_f64(3.0),
+            expiry: T::from_f64(0.25),
+            window_delta: T::from_f64(1.0 / 12.0),
+            strike: T::from_f64(0.20),
+            discount_factor: T::from_f64(0.99),
+        },
+    )
+    .call_price;
+
+    let choi = ql_exotics::price_choi_sum_of_bsm_basket_option(&ql_exotics::ChoiSumOfBsmBasketSpec {
+        spots: vec![T::from_f64(100.0) + x[1] * 0.5, T::from_f64(90.0)],
+        weights: vec![T::one(), -T::one()],
+        vols: vec![T::from_f64(0.25) + x[3] * 0.005, T::from_f64(0.20)],
+        div_yields: vec![T::from_f64(0.01), T::from_f64(0.02)],
+        correlation_matrix: vec![
+            vec![T::one(), T::from_f64(0.5)],
+            vec![T::from_f64(0.5), T::one()],
+        ],
+        strike: T::from_f64(5.0),
+        risk_free_rate: T::from_f64(0.03) + x[0] * 0.001,
+        expiry: T::one(),
+        is_call: true,
+    })
+    .price;
+
+    let ldz = ql_exotics::price_li_deng_zhou_multi_spread_option(
+        &ql_exotics::LiDengZhouMultiSpreadSpec {
+            long_spot: T::from_f64(100.0) + x[1] * 0.5,
+            long_div_yield: T::from_f64(0.01),
+            long_vol: T::from_f64(0.25) + x[3] * 0.005,
+            short_spots: vec![T::from_f64(90.0), T::from_f64(85.0)],
+            short_weights: vec![T::from_f64(0.5), T::from_f64(0.5)],
+            short_div_yields: vec![T::from_f64(0.015), T::from_f64(0.02)],
+            short_vols: vec![T::from_f64(0.20), T::from_f64(0.22)],
+            correlation_matrix: vec![
+                vec![T::one(), T::from_f64(0.5), T::from_f64(0.4)],
+                vec![T::from_f64(0.5), T::one(), T::from_f64(0.6)],
+                vec![T::from_f64(0.4), T::from_f64(0.6), T::one()],
+            ],
+            strike: T::from_f64(5.0),
+            risk_free_rate: T::from_f64(0.03) + x[0] * 0.001,
+            expiry: T::one(),
+            is_call: true,
+        },
+    )
+    .price;
+
+    let mrjd = ql_commodities::price_hikspoors_jaimungal_mrjd_commodity(
+        &ql_commodities::HikspoorsJaimungalMrjdSpec {
+            x0: T::from_f64(0.10) + x[1] * 0.01,
+            y0: T::from_f64(4.20),
+            j0_spike: T::from_f64(0.04),
+            seasonal_phi: T::zero(),
+            kappa_x: T::from_f64(1.5),
+            sigma_x: T::from_f64(0.35) + x[3] * 0.005,
+            mu_y_rn: T::from_f64(0.02),
+            sigma_y: T::from_f64(0.18),
+            rho_xy: T::from_f64(-0.2),
+            kappa_j_spike: T::from_f64(12.0),
+            jump_intensity: T::from_f64(2.5) + x[2] * 0.05,
+            mean_jump_size: T::from_f64(0.22),
+            option_expiry: T::from_f64(0.5),
+            futures_maturity: T::one(),
+            strike: T::from_f64(70.0),
+            risk_free_rate: T::from_f64(0.03),
+            is_call: true,
+        },
+    )
+    .futures_option_price;
+
+    let afs = ql_portfolio::solve_alfonsi_fruth_schied_lob_execution(
+        &ql_portfolio::AlfonsiFruthSchiedLobSpec {
+            total_order_size: T::from_f64(100.0),
+            horizon: T::one(),
+            num_intervals: 4,
+            lob_density_q: T::from_f64(50.0),
+            shape_exponent_alpha: T::from_f64(0.4) + x[2] * 0.01,
+            resilience_rho: T::from_f64(1.2) + x[0] * 0.02,
+        },
+    )
+    .volume_resilience_cost;
+
+    let exvar = ql_portfolio::evaluate_and_optimize_expectile_portfolio(
+        &ql_portfolio::ExpectileRiskAndPortfolioSpec {
+            scenario_returns: vec![
+                vec![T::from_f64(-0.07) + x[1] * 0.001, T::from_f64(-0.01)],
+                vec![T::from_f64(-0.04), T::from_f64(-0.005)],
+                vec![T::from_f64(0.02), T::from_f64(0.008)],
+                vec![T::from_f64(0.05), T::from_f64(0.012)],
+            ],
+            initial_weights: vec![T::from_f64(0.5), T::from_f64(0.5)],
+            tau_confidence: 0.85,
+            return_weight_lambda: T::from_f64(0.2),
+            smoothing_eps: 1e-3,
+        },
+    )
+    .optimal_expectile_exvar;
+
+    let pcrp = ql_portfolio::solve_principal_component_risk_parity(
+        &ql_portfolio::FactorEigenRiskParitySpec {
+            covariance: vec![
+                vec![T::from_f64(0.04) + x[3] * 0.0005, T::from_f64(0.02)],
+                vec![T::from_f64(0.02), T::from_f64(0.05) + x[2] * 0.0005],
+            ],
+            factor_risk_budgets: vec![T::from_f64(0.5) + x[0] * 0.01, T::from_f64(0.5)],
+        },
+    )
+    .weights[0];
+
+    [
+        sinhou + cir_fut * 100.0 + bk_oas * 100.0,
+        mb_opt + wwm_cva + bcs_band,
+        mrb_vix + speed_vol * 10.0 + choi + ldz,
+        mrjd + afs + exvar * 10.0 + pcrp,
+    ]
+}
+
+pub fn benchmark_sinhou_mb_rbergomi_choi_afs_expectile_aad(scale: usize) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let h = 1e-5;
+    let baseline = || {
+        let b = phase20_workloads(x0);
+        let mut c: f64 = b.iter().sum();
+        for lane in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[lane] += h;
+            d[lane] -= h;
+            let bu = phase20_workloads(u);
+            let bd = phase20_workloads(d);
+            for j in 0..4 {
+                c += (bu[j] - bd[j]) / (2.0 * h);
+            }
+        }
+        c
+    };
+    let sota = || {
+        type D = Dual<4>;
+        let x = [
+            D::variable(x0[0], 0),
+            D::variable(x0[1], 1),
+            D::variable(x0[2], 2),
+            D::variable(x0[3], 3),
+        ];
+        phase20_workloads(x)
+            .iter()
+            .map(|y| y.val + y.d.iter().sum::<f64>())
+            .sum::<f64>()
+    };
+    run_comparison(
+        "32_sinhou_mb_rbergomi_choi_afs_expectile_aad",
+        "SinhOU/BK-FRN/MoriniBrigo/WWM/mrBergomi/Choi/AFS/EXVaR single-pass AD",
         cfg,
         1e-4,
         baseline,

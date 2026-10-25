@@ -871,3 +871,295 @@ mod phase19_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
+
+
+#[derive(Clone, Debug)]
+pub struct ExpectileRiskAndPortfolioSpec<T: Real = f64> {
+    pub scenario_returns: Vec<Vec<T>>,
+    pub initial_weights: Vec<T>,
+    pub tau_confidence: f64,
+    pub return_weight_lambda: T,
+    pub smoothing_eps: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExpectileRiskAndPortfolioReport<T: Real = f64> {
+    pub initial_expectile_exvar: T,
+    pub initial_component_exvar: Vec<T>,
+    pub optimal_weights: Vec<T>,
+    pub optimal_expectile_exvar: T,
+    pub optimal_component_exvar: Vec<T>,
+    pub optimal_expected_return: T,
+    pub omega_gain_loss_ratio: T,
+}
+
+fn project_unit_simplex_cdar<T: Real>(x: &[T]) -> Vec<T> {
+    if x.is_empty() { return Vec::new(); }
+    let mut y: Vec<T> = x.iter().map(|&v| v.max_val(T::zero())).collect();
+    let s = y.iter().fold(T::zero(), |a, &v| a + v);
+    if s.val() <= 1e-14 { return vec![T::from_f64(1.0 / x.len() as f64); x.len()]; }
+    for v in &mut y { *v /= s; }
+    y
+}
+
+fn solve_expectile_and_grad<T: Real>(
+    scenario_returns: &[Vec<T>],
+    weights: &[T],
+    tau: f64,
+    eps_f64: f64,
+) -> (T, Vec<T>, T) {
+    let s_cnt = scenario_returns.len();
+    let n = weights.len();
+    if s_cnt == 0 || n == 0 {
+        return (T::zero(), vec![T::zero(); n], T::one());
+    }
+    let tau_c = tau.clamp(0.5, 0.995);
+    let eps = T::from_f64(eps_f64.max(1e-5));
+    let losses: Vec<T> = scenario_returns
+        .iter()
+        .map(|row| {
+            -row.iter()
+                .zip(weights)
+                .fold(T::zero(), |acc, (&r, &w)| acc + r * w)
+        })
+        .collect();
+
+    // 32-step f64 bisection + 6-step T: Real Newton root solve on the asymmetric expectile balance
+    let mut lo = losses
+        .iter()
+        .map(|l| l.val())
+        .fold(f64::INFINITY, f64::min)
+        - 1.0;
+    let mut hi = losses
+        .iter()
+        .map(|l| l.val())
+        .fold(f64::NEG_INFINITY, f64::max)
+        + 1.0;
+    let eval_f64 = |e: f64| -> f64 {
+        let mut s = 0.0_f64;
+        for l in &losses {
+            let u = l.val() - e;
+            let ind = 0.5 * (1.0 + u / (u * u + eps_f64 * eps_f64).sqrt());
+            let w_asym = (1.0 - tau_c) + (2.0 * tau_c - 1.0) * ind;
+            s += w_asym * u;
+        }
+        s
+    };
+    for _ in 0..32 {
+        let mid = 0.5 * (lo + hi);
+        if eval_f64(mid) > 0.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let mut e_star = T::from_f64(0.5 * (lo + hi));
+    for _ in 0..6 {
+        let mut f = T::zero();
+        let mut df_de = T::zero();
+        for &l in &losses {
+            let u = l - e_star;
+            let rad = (u * u + eps * eps).sqrt();
+            let ind = (T::one() + u / rad) * 0.5;
+            let dind_du = eps * eps / (rad * rad * rad) * 0.5;
+            let w_asym = T::from_f64(1.0 - tau_c) + ind * (2.0 * tau_c - 1.0);
+            let dw_du = dind_du * (2.0 * tau_c - 1.0);
+            f += w_asym * u;
+            df_de -= w_asym + dw_du * u;
+        }
+        e_star -= f / df_de.min_val(T::from_f64(-1e-12));
+    }
+
+    // Exact Euler marginal expectile sensitivities d e_tau / d w_j
+    let mut denom = T::zero();
+    let mut asym_weights = Vec::with_capacity(s_cnt);
+    let mut pos_sum = T::zero();
+    let mut neg_sum = T::zero();
+    for &l in &losses {
+        let u = l - e_star;
+        let rad = (u * u + eps * eps).sqrt();
+        let ind = (T::one() + u / rad) * 0.5;
+        let dind_du = eps * eps / (rad * rad * rad) * 0.5;
+        let w_asym = T::from_f64(1.0 - tau_c) + ind * (2.0 * tau_c - 1.0);
+        let dw_du = dind_du * (2.0 * tau_c - 1.0);
+        let eff_w = w_asym + dw_du * u;
+        asym_weights.push(eff_w);
+        denom += eff_w;
+        pos_sum += (u + rad) * 0.5;
+        neg_sum += (-u + rad) * 0.5;
+    }
+    let denom_safe = denom.max_val(T::from_f64(1e-12));
+    let mut grad = vec![T::zero(); n];
+    for j in 0..n {
+        let mut num = T::zero();
+        for s in 0..s_cnt {
+            num -= asym_weights[s] * scenario_returns[s][j];
+        }
+        grad[j] = num / denom_safe;
+    }
+    let omega = neg_sum / pos_sum.max_val(T::from_f64(1e-12));
+    (e_star, grad, omega)
+}
+
+/// Bellini & Bignozzi (2015) / Ziegel (2016) Coherent & Elicitable Expectile Value-at-Risk
+/// ($\mathrm{EXVaR}_\tau$), Euler Risk Decomposition, and Mean-Expectile Portfolio Optimization.
+pub fn evaluate_and_optimize_expectile_portfolio<T: Real>(
+    spec: &ExpectileRiskAndPortfolioSpec<T>,
+) -> ExpectileRiskAndPortfolioReport<T> {
+    let s_cnt = spec.scenario_returns.len();
+    let n = spec.initial_weights.len();
+    if s_cnt == 0 || n == 0 {
+        return ExpectileRiskAndPortfolioReport {
+            initial_expectile_exvar: T::zero(),
+            initial_component_exvar: Vec::new(),
+            optimal_weights: Vec::new(),
+            optimal_expectile_exvar: T::zero(),
+            optimal_component_exvar: Vec::new(),
+            optimal_expected_return: T::zero(),
+            omega_gain_loss_ratio: T::one(),
+        };
+    }
+    let eps_f64 = spec.smoothing_eps.max(1e-4);
+    let (init_exvar, init_grad, _) = solve_expectile_and_grad(
+        &spec.scenario_returns,
+        &spec.initial_weights,
+        spec.tau_confidence,
+        eps_f64,
+    );
+    let init_comp: Vec<T> = (0..n)
+        .map(|j| spec.initial_weights[j] * init_grad[j])
+        .collect();
+
+    let mean_rets: Vec<T> = (0..n)
+        .map(|j| {
+            spec.scenario_returns
+                .iter()
+                .fold(T::zero(), |acc, r| acc + r[j])
+                / (s_cnt as f64)
+        })
+        .collect();
+
+    let mut w = project_unit_simplex_cdar(&spec.initial_weights);
+    for iter in 0..32 {
+        let (exv, g_exv, _) =
+            solve_expectile_and_grad(&spec.scenario_returns, &w, spec.tau_confidence, eps_f64);
+        let base_obj = exv
+            - spec.return_weight_lambda
+                * w.iter()
+                    .zip(&mean_rets)
+                    .fold(T::zero(), |acc, (&wj, &mj)| acc + wj * mj);
+        let grad: Vec<T> = (0..n)
+            .map(|j| g_exv[j] - spec.return_weight_lambda * mean_rets[j])
+            .collect();
+        let g_norm = grad
+            .iter()
+            .map(|g| g.val() * g.val())
+            .sum::<f64>()
+            .sqrt()
+            .max(1e-12);
+        let mut step = 0.35 / (g_norm * (1.0 + 0.08 * iter as f64));
+        for _ in 0..6 {
+            let trial: Vec<T> = (0..n).map(|j| w[j] - grad[j] * step).collect();
+            let cand = project_unit_simplex_cdar(&trial);
+            let (cand_exv, _, _) = solve_expectile_and_grad(
+                &spec.scenario_returns,
+                &cand,
+                spec.tau_confidence,
+                eps_f64,
+            );
+            let cand_obj = cand_exv
+                - spec.return_weight_lambda
+                    * cand
+                        .iter()
+                        .zip(&mean_rets)
+                        .fold(T::zero(), |acc, (&wj, &mj)| acc + wj * mj);
+            if cand_obj.val() <= base_obj.val() + 1e-12 {
+                w = cand;
+                break;
+            }
+            step *= 0.5;
+        }
+    }
+
+    let (opt_exvar, opt_grad, omega) =
+        solve_expectile_and_grad(&spec.scenario_returns, &w, spec.tau_confidence, eps_f64);
+    let opt_comp: Vec<T> = (0..n).map(|j| w[j] * opt_grad[j]).collect();
+    let opt_ret = w
+        .iter()
+        .zip(&mean_rets)
+        .fold(T::zero(), |acc, (&wj, &mj)| acc + wj * mj);
+
+    ExpectileRiskAndPortfolioReport {
+        initial_expectile_exvar: init_exvar,
+        initial_component_exvar: init_comp,
+        optimal_weights: w,
+        optimal_expectile_exvar: opt_exvar,
+        optimal_component_exvar: opt_comp,
+        optimal_expected_return: opt_ret,
+        omega_gain_loss_ratio: omega,
+    }
+}
+
+
+
+#[cfg(test)]
+mod phase20_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn expectile_exvar_euler_additivity_tau_monotonicity_and_ad() {
+        let scen = vec![
+            vec![-0.07, -0.01],
+            vec![-0.05, -0.008],
+            vec![-0.02, 0.005],
+            vec![0.01, 0.009],
+            vec![0.04, 0.012],
+            vec![0.06, 0.015],
+        ];
+        let spec50 = ExpectileRiskAndPortfolioSpec {
+            scenario_returns: scen.clone(),
+            initial_weights: vec![0.5, 0.5],
+            tau_confidence: 0.50,
+            return_weight_lambda: 0.2,
+            smoothing_eps: 1e-4,
+        };
+        let spec90 = ExpectileRiskAndPortfolioSpec {
+            tau_confidence: 0.90,
+            ..spec50.clone()
+        };
+        let r50 = evaluate_and_optimize_expectile_portfolio(&spec50);
+        let r90 = evaluate_and_optimize_expectile_portfolio(&spec90);
+        // Higher confidence tau_confidence = 0.90 increases Expectile EXVaR
+        assert!(r90.initial_expectile_exvar > r50.initial_expectile_exvar);
+        // Exact Euler homogeneity: sum of component EXVaR == total EXVaR
+        let sum_init: f64 = r90.initial_component_exvar.iter().sum();
+        let sum_opt: f64 = r90.optimal_component_exvar.iter().sum();
+        assert!((sum_init - r90.initial_expectile_exvar).abs() < 1e-4);
+        assert!((sum_opt - r90.optimal_expectile_exvar).abs() < 1e-4);
+
+        let h = 1e-5;
+        let eval_w0 = |w0: f64| {
+            let mut s = spec90.clone();
+            s.initial_weights = vec![w0, 1.0 - w0];
+            evaluate_and_optimize_expectile_portfolio(&s).initial_expectile_exvar
+        };
+        let fd = (eval_w0(0.5 + h) - eval_w0(0.5 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let scen_d: Vec<Vec<D>> = scen
+            .iter()
+            .map(|r| r.iter().map(|&x| D::from_value(x)).collect())
+            .collect();
+        let w0_d = D::variable(0.5, 0);
+        let spec_d = ExpectileRiskAndPortfolioSpec {
+            scenario_returns: scen_d,
+            initial_weights: vec![w0_d, D::one() - w0_d],
+            tau_confidence: 0.90,
+            return_weight_lambda: D::from_value(0.2),
+            smoothing_eps: 1e-4,
+        };
+        let ad = evaluate_and_optimize_expectile_portfolio(&spec_d).initial_expectile_exvar;
+        assert!(ad.d[0] > 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

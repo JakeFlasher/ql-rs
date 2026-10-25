@@ -102,7 +102,7 @@ fn dashboard_renders_all_quadrants_and_chart_modes() {
 
 #[test]
 fn phase11_tabs_and_live_telemetry_are_present() {
-    assert_eq!(TabId::ALL.len(), 29);
+    assert_eq!(TabId::ALL.len(), 30);
     assert_eq!(TabId::ALL[18], TabId::BermudanVolIft);
     assert_eq!(TabId::ALL[19], TabId::SaCcrSwingQp);
     assert_eq!(TabId::ALL[22], TabId::MonotoneConvexVixParisianRobust);
@@ -125,7 +125,7 @@ fn phase11_tabs_and_live_telemetry_are_present() {
 
 #[test]
 fn phase17_tab_metric_and_rates_scenario_are_live() {
-    assert_eq!(TabId::ALL.len(), 29);
+    assert_eq!(TabId::ALL.len(), 30);
     assert!(TabId::ALL.contains(&TabId::Phase17Sota));
     let mut ws = DeskWorkstation::new();
     let frame = ws.step_tick();
@@ -175,7 +175,7 @@ fn phase18_tab28_terminal_renders_and_ticks_cleanly() {
 
 #[test]
 fn phase19_tab29_terminal_renders_and_ticks_cleanly() {
-    assert_eq!(TabId::ALL.len(), 29);
+    assert_eq!(TabId::ALL.len(), 30);
     assert_eq!(TabId::Phase19Sota.label(), "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP");
     let mut ws = DeskWorkstation::new();
     let normal = ws.step_tick();

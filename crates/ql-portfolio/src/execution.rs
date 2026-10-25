@@ -648,3 +648,225 @@ mod phase19_tests {
         assert!((ad.d[0] - fd).abs() < 1e-6);
     }
 }
+
+
+#[derive(Copy, Clone, Debug)]
+pub struct AlfonsiFruthSchiedLobSpec<T: Real = f64> {
+    pub total_order_size: T,
+    pub horizon: T,
+    pub num_intervals: usize,
+    pub lob_density_q: T,
+    /// Power-law shape exponent $\alpha \le 0.95$ in $f(x) = q / (|x| + 1)^\alpha$ ($\alpha = 0$ is flat Block LOB).
+    pub shape_exponent_alpha: T,
+    pub resilience_rho: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct AlfonsiFruthSchiedLobReport<T: Real = f64> {
+    pub volume_resilience_trades: Vec<T>,
+    pub spread_resilience_trades: Vec<T>,
+    pub volume_resilience_cost: T,
+    pub spread_resilience_cost: T,
+    pub twap_cost_volume_model: T,
+    pub cost_savings_vs_twap: T,
+    pub initial_extra_spread_d0: T,
+}
+
+fn afs_f_density<T: Real>(q: T, alpha: T, x: T) -> T {
+    let xp1 = (x + T::one()).max_val(T::from_f64(1e-8));
+    q / xp1.pow(alpha)
+}
+
+fn afs_f_cum<T: Real>(q: T, alpha: T, x: T) -> T {
+    let xp1 = (x + T::one()).max_val(T::from_f64(1e-8));
+    let oma = T::one() - alpha;
+    if oma.val().abs() < 1e-6 {
+        q * xp1.ln()
+    } else {
+        q * (xp1.pow(oma) - T::one()) / oma
+    }
+}
+
+fn afs_f_inv<T: Real>(q: T, alpha: T, y: T) -> T {
+    let y_pos = y.max_val(T::zero());
+    let oma = T::one() - alpha;
+    if oma.val().abs() < 1e-6 {
+        (y_pos / q).exp() - T::one()
+    } else {
+        let base = (T::one() + oma * y_pos / q).max_val(T::from_f64(1e-12));
+        base.pow(T::one() / oma) - T::one()
+    }
+}
+
+fn afs_f_tilde_cost<T: Real>(q: T, alpha: T, x: T) -> T {
+    let xp1 = (x + T::one()).max_val(T::from_f64(1e-8));
+    let oma = T::one() - alpha;
+    let tma = T::from_f64(2.0) - alpha;
+    if oma.val().abs() < 1e-6 {
+        q * (x - xp1.ln())
+    } else {
+        q * ((xp1.pow(tma) - T::one()) / tma - (xp1.pow(oma) - T::one()) / oma)
+    }
+}
+
+fn afs_g_cost<T: Real>(q: T, alpha: T, y: T) -> T {
+    afs_f_tilde_cost(q, alpha, afs_f_inv(q, alpha, y))
+}
+
+/// Alfonsi, Fruth & Schied (2010) Optimal Execution in Limit Order Books with General
+/// Power-Law Shape Functions $f(x) = q / (|x| + 1)^\alpha$ (`papers/55_Alfonsi_Fruth_Schied_2010_Optimal_Execution_Transient_Impact.pdf`, Theorems 4.1 & 5.1).
+pub fn solve_alfonsi_fruth_schied_lob_execution<T: Real>(
+    spec: &AlfonsiFruthSchiedLobSpec<T>,
+) -> AlfonsiFruthSchiedLobReport<T> {
+    let n_int = spec.num_intervals.max(1);
+    let n_f = n_int as f64;
+    let tau = spec.horizon.max_val(T::from_f64(1e-6)) / n_f;
+    let a = (-spec.resilience_rho.max_val(T::from_f64(1e-6)) * tau).exp();
+    let one_m_a = (T::one() - a).max_val(T::from_f64(1e-8));
+    let q = spec.lob_density_q.max_val(T::from_f64(1e-6));
+    let alpha = spec.shape_exponent_alpha.min_val(T::from_f64(0.95));
+    let x0 = spec.total_order_size.max_val(T::from_f64(1e-8));
+
+    // Block-LOB exact solution (Corollary 6.1) used as starting point for Newton
+    let xi0_block = x0 / (one_m_a * (n_f - 1.0) + T::from_f64(2.0));
+
+    // Model 1 (Volume Resilience): solve h_1(y) = F^{-1}(y) - a F^{-1}(a y) - (1-a) F^{-1}(X_0 - N(1-a)y) = 0
+    let mut y1 = xi0_block;
+    for _ in 0..8 {
+        let rem_vol = (x0 - one_m_a * y1 * n_f).max_val(T::from_f64(1e-8));
+        let inv_y = afs_f_inv(q, alpha, y1);
+        let inv_ay = afs_f_inv(q, alpha, a * y1);
+        let inv_rem = afs_f_inv(q, alpha, rem_vol);
+        let h1 = inv_y - a * inv_ay - one_m_a * inv_rem;
+        let dh1 = T::one() / afs_f_density(q, alpha, inv_y)
+            - (a * a) / afs_f_density(q, alpha, inv_ay)
+            + (one_m_a * one_m_a * n_f) / afs_f_density(q, alpha, inv_rem);
+        y1 = (y1 - h1 / dh1.max_val(T::from_f64(1e-12)))
+            .max_val(x0 * 0.01)
+            .min_val(x0 / (one_m_a * n_f + T::from_f64(0.05)));
+    }
+    let mut vol_trades = Vec::with_capacity(n_int + 1);
+    vol_trades.push(y1);
+    for _ in 1..n_int {
+        vol_trades.push(one_m_a * y1);
+    }
+    let xi_n1 = x0 - y1 - one_m_a * y1 * (n_f - 1.0);
+    vol_trades.push(xi_n1);
+    let vol_cost = (afs_g_cost(q, alpha, y1) - afs_g_cost(q, alpha, a * y1)) * n_f
+        + afs_g_cost(q, alpha, x0 - one_m_a * y1 * n_f);
+
+    // Model 2 (Spread Resilience): solve h_2(d_0) = d_0 (f(d_0) - a^2 f(a d_0))/(f(d_0) - a f(a d_0)) - F^{-1}(X_0 - N(F(d_0) - F(a d_0))) = 0
+    let mut d0 = afs_f_inv(q, alpha, xi0_block);
+    let h_fd = 1e-6;
+    for _ in 0..8 {
+        let eval_h2 = |d: T| -> T {
+            let fd = afs_f_density(q, alpha, d);
+            let fad = afs_f_density(q, alpha, a * d);
+            let num = d * (fd - a * a * fad);
+            let den = (fd - a * fad).max_val(T::from_f64(1e-12));
+            let step_vol = afs_f_cum(q, alpha, d) - afs_f_cum(q, alpha, a * d);
+            let rem = (x0 - step_vol * n_f).max_val(T::from_f64(1e-8));
+            num / den - afs_f_inv(q, alpha, rem)
+        };
+        let r0 = eval_h2(d0);
+        let dr = (eval_h2(d0 + T::from_f64(h_fd)) - eval_h2(d0 - T::from_f64(h_fd))) / (2.0 * h_fd);
+        d0 = (d0 - r0 / dr.max_val(T::from_f64(1e-12))).max_val(T::from_f64(1e-6));
+    }
+    let f_d0 = afs_f_cum(q, alpha, d0);
+    let f_ad0 = afs_f_cum(q, alpha, a * d0);
+    let mid_trade2 = f_d0 - f_ad0;
+    let mut spread_trades = Vec::with_capacity(n_int + 1);
+    spread_trades.push(f_d0);
+    for _ in 1..n_int {
+        spread_trades.push(mid_trade2);
+    }
+    spread_trades.push(x0 - f_d0 - mid_trade2 * (n_f - 1.0));
+    let spread_cost = (afs_f_tilde_cost(q, alpha, d0) - afs_f_tilde_cost(q, alpha, a * d0)) * n_f
+        + afs_g_cost(q, alpha, x0 - mid_trade2 * n_f);
+
+    // TWAP benchmark cost under Volume Resilience
+    let twap_slice = x0 / (n_f + 1.0);
+    let mut e_twap = T::zero();
+    let mut twap_cost = T::zero();
+    for k in 0..=n_int {
+        let e_after = e_twap + twap_slice;
+        twap_cost += afs_g_cost(q, alpha, e_after) - afs_g_cost(q, alpha, e_twap);
+        if k < n_int {
+            e_twap = a * e_after;
+        }
+    }
+
+    AlfonsiFruthSchiedLobReport {
+        volume_resilience_trades: vol_trades,
+        spread_resilience_trades: spread_trades,
+        volume_resilience_cost: vol_cost,
+        spread_resilience_cost: spread_cost,
+        twap_cost_volume_model: twap_cost,
+        cost_savings_vs_twap: twap_cost - vol_cost,
+        initial_extra_spread_d0: d0,
+    }
+}
+
+
+
+#[cfg(test)]
+mod phase20_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn alfonsi_fruth_schied_block_collapse_twap_outperformance_and_ad() {
+        // When shape_exponent_alpha == 0.0 (Block LOB), Model 1 and Model 2 coincide and match Obizhaeva-Wang
+        let block_spec = AlfonsiFruthSchiedLobSpec {
+            total_order_size: 100.0,
+            horizon: 1.0,
+            num_intervals: 4,
+            lob_density_q: 50.0,
+            shape_exponent_alpha: 0.0,
+            resilience_rho: 1.2,
+        };
+        let r_block = solve_alfonsi_fruth_schied_lob_execution(&block_spec);
+        for k in 0..=4 {
+            assert!(
+                (r_block.volume_resilience_trades[k] - r_block.spread_resilience_trades[k]).abs()
+                    < 1e-10
+            );
+        }
+        assert!(
+            (r_block.volume_resilience_trades[0] - r_block.volume_resilience_trades[4]).abs()
+                < 1e-10
+        );
+
+        // Power-law decaying LOB (alpha = 0.5): strictly outperforms TWAP and satisfies volume conservation
+        let power_spec = AlfonsiFruthSchiedLobSpec {
+            shape_exponent_alpha: 0.5,
+            ..block_spec
+        };
+        let r_pow = solve_alfonsi_fruth_schied_lob_execution(&power_spec);
+        let sum_v: f64 = r_pow.volume_resilience_trades.iter().sum();
+        let sum_s: f64 = r_pow.spread_resilience_trades.iter().sum();
+        assert!((sum_v - 100.0).abs() < 1e-12);
+        assert!((sum_s - 100.0).abs() < 1e-12);
+        assert!(r_pow.cost_savings_vs_twap > 0.0);
+
+        let h = 1e-5;
+        let eval_rho = |rho: f64| {
+            let mut s = power_spec;
+            s.resilience_rho = rho;
+            solve_alfonsi_fruth_schied_lob_execution(&s).volume_resilience_cost
+        };
+        let fd = (eval_rho(1.2 + h) - eval_rho(1.2 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let spec_d = AlfonsiFruthSchiedLobSpec {
+            total_order_size: D::from_value(100.0),
+            horizon: D::one(),
+            num_intervals: 4,
+            lob_density_q: D::from_value(50.0),
+            shape_exponent_alpha: D::from_value(0.5),
+            resilience_rho: D::variable(1.2, 0),
+        };
+        let ad = solve_alfonsi_fruth_schied_lob_execution(&spec_d).volume_resilience_cost;
+        assert!(ad.d[0] < 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

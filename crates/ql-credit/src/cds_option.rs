@@ -1,6 +1,9 @@
 //! Black's option on a forward CDS spread, including front-end protection.
+#![allow(clippy::excessive_precision)]
 
 use ql_ad::Real;
+use ql_curves::YieldTermStructure;
+use crate::SurvivalProbabilityCurve;
 
 /// Black (1976) CDS option.  `risky_annuity` is the PV of one unit of
 /// running spread, `default_prob_to_expiry` is the cumulative default
@@ -556,5 +559,242 @@ mod phase19_tests {
         let ad = price_cmcds_market_model(&spec_d, &disc_d, &credit_d).fair_participation_rate;
         assert!(ad.d[0] < 0.0);
         assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}
+
+
+#[derive(Clone, Debug)]
+pub struct MoriniBrigoIndexOptionSpec<T: Real = f64> {
+    pub notional: T,
+    pub strike_spread: T,
+    pub option_expiry: f64,
+    pub payment_times: Vec<f64>,
+    pub recovery_rate: T,
+    pub spread_vol: T,
+    pub num_constituents: usize,
+    pub systemic_copula_corr: T,
+    pub is_payer: bool,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct MoriniBrigoIndexOptionValuation<T: Real = f64> {
+    pub npv: T,
+    pub standard_market_npv: T,
+    pub armageddon_probability: T,
+    pub armageddon_pv_term_o2: T,
+    pub loss_adjusted_forward_spread: T,
+    pub no_armageddon_forward_spread: T,
+    pub risky_annuity: T,
+}
+
+const GH16_X: [f64; 16] = [
+    -4.688_738_939_305_818,
+    -3.869_447_904_860_122_7,
+    -3.176_999_161_979_956,
+    -2.546_202_157_847_481_4,
+    -1.951_787_990_916_254,
+    -1.380_258_539_198_880_8,
+    -0.822_951_449_144_655_9,
+    -0.273_481_046_138_152_45,
+    0.273_481_046_138_152_45,
+    0.822_951_449_144_655_9,
+    1.380_258_539_198_880_8,
+    1.951_787_990_916_254,
+    2.546_202_157_847_481_4,
+    3.176_999_161_979_956,
+    3.869_447_904_860_122_7,
+    4.688_738_939_305_818,
+];
+const GH16_W: [f64; 16] = [
+    2.654_807_474_011_182e-10,
+    2.320_980_844_865_211e-7,
+    2.711_860_092_537_881_5e-5,
+    9.322_840_086_241_805e-4,
+    0.012_880_311_535_509_974,
+    0.083_810_041_398_985_83,
+    0.280_647_458_528_533_7,
+    0.507_929_479_016_613_7,
+    0.507_929_479_016_613_7,
+    0.280_647_458_528_533_7,
+    0.083_810_041_398_985_83,
+    0.012_880_311_535_509_974,
+    9.322_840_086_241_805e-4,
+    2.711_860_092_537_881_5e-5,
+    2.320_980_844_865_211e-7,
+    2.654_807_474_011_182e-10,
+];
+
+fn inv_norm_cdf_generic<T: Real>(p: T) -> T {
+    let p_clamped = p.val().clamp(1e-12, 1.0 - 1e-12);
+    let x0 = ql_math::inv_norm_cdf(p_clamped);
+    let mut x = T::from_f64(x0);
+    for _ in 0..3 {
+        let err = x.norm_cdf() - p;
+        let pdf = x.norm_pdf().max_val(T::from_f64(1e-14));
+        x -= err / pdf;
+    }
+    x
+}
+
+/// Morini & Brigo (2008 / 2011) Arbitrage-Free "No-Armageddon" Credit Index Option engine
+/// (Eqs. 3-4, 8, 21, 22, 25).
+pub fn price_morini_brigo_credit_index_option<T: Real>(
+    spec: &MoriniBrigoIndexOptionSpec<T>,
+    discount_curve: &impl YieldTermStructure<T>,
+    survival_curve: &SurvivalProbabilityCurve<T>,
+) -> MoriniBrigoIndexOptionValuation<T> {
+    let ta = spec.option_expiry.max(1e-6);
+    let lgd = (T::one() - spec.recovery_rate).max_val(T::from_f64(1e-8));
+    let n_names = spec.num_constituents.max(1);
+    let rho = spec
+        .systemic_copula_corr
+        .max_val(T::zero())
+        .min_val(T::from_f64(0.999_9));
+
+    let mut annuity = T::zero();
+    let mut prot_leg = T::zero();
+    let mut prev_t = ta;
+    let mut prev_q = survival_curve.survival_probability(ta);
+    for &tj in &spec.payment_times {
+        if tj <= ta + 1e-8 {
+            continue;
+        }
+        let dt = tj - prev_t;
+        let df = discount_curve.discount_factor(tj);
+        let qj = survival_curve.survival_probability(tj);
+        annuity += df * qj * dt;
+        prot_leg += df * lgd * (prev_q - qj);
+        prev_t = tj;
+        prev_q = qj;
+    }
+    let annuity_safe = annuity.max_val(T::from_f64(1e-12));
+    let df_ta = discount_curve.discount_factor(ta);
+    let q_ta = survival_curve.survival_probability(ta);
+    let def_prob_ta = (T::one() - q_ta)
+        .max_val(T::from_f64(1e-12))
+        .min_val(T::from_f64(1.0 - 1e-12));
+    let fep_pv = lgd * df_ta * def_prob_ta;
+    let s_tilde = (prot_leg + fep_pv) / annuity_safe;
+
+    // 1-Factor Gaussian copula Armageddon probability P(tau_hat <= T_A) via 16-pt Gauss-Hermite
+    let c_thresh = inv_norm_cdf_generic(def_prob_ta);
+    let sqrt_rho = (rho + T::from_f64(1e-16)).sqrt();
+    let sqrt_1m_rho = (T::one() - rho).max_val(T::from_f64(1e-12)).sqrt();
+    let inv_sqrt_pi = 1.0 / std::f64::consts::PI.sqrt();
+    let mut p_arm = T::zero();
+    for m in 0..16 {
+        let z = T::from_f64(GH16_X[m] * std::f64::consts::SQRT_2);
+        let cond_p = ((c_thresh - sqrt_rho * z) / sqrt_1m_rho)
+            .norm_cdf()
+            .max_val(T::from_f64(1e-15));
+        let prod_n = (cond_p.ln() * (n_names as f64)).exp();
+        p_arm += prod_n * (GH16_W[m] * inv_sqrt_pi);
+    }
+    p_arm = p_arm.min_val(def_prob_ta).max_val(T::zero());
+
+    let o2_arm = lgd * df_ta * p_arm;
+    let s_hat = ((prot_leg + fep_pv - o2_arm) / annuity_safe).max_val(T::from_f64(1e-10));
+    let k = spec.strike_spread.max_val(T::from_f64(1e-10));
+    let st = (spec.spread_vol * ta.sqrt()).max_val(T::from_f64(1e-8));
+
+    let d1_hat = (s_hat / k).ln() / st + st * 0.5;
+    let d2_hat = d1_hat - st;
+    let npv = if spec.is_payer {
+        spec.notional * (annuity_safe * (s_hat * d1_hat.norm_cdf() - k * d2_hat.norm_cdf()) + o2_arm)
+    } else {
+        spec.notional * annuity_safe * (k * (-d2_hat).norm_cdf() - s_hat * (-d1_hat).norm_cdf())
+    };
+
+    let d1_std = (s_tilde / k).ln() / st + st * 0.5;
+    let d2_std = d1_std - st;
+    let standard_market_npv = if spec.is_payer {
+        spec.notional * annuity_safe * (s_tilde * d1_std.norm_cdf() - k * d2_std.norm_cdf())
+    } else {
+        spec.notional * annuity_safe * (k * (-d2_std).norm_cdf() - s_tilde * (-d1_std).norm_cdf())
+    };
+
+    MoriniBrigoIndexOptionValuation {
+        npv,
+        standard_market_npv,
+        armageddon_probability: p_arm,
+        armageddon_pv_term_o2: o2_arm,
+        loss_adjusted_forward_spread: s_tilde,
+        no_armageddon_forward_spread: s_hat,
+        risky_annuity: annuity_safe,
+    }
+}
+
+
+
+#[cfg(test)]
+mod phase20_tests {
+    use super::*;
+    use crate::SurvivalProbabilityCurve;
+    use ql_ad::Dual;
+    use ql_curves::FlatForwardCurve;
+    use ql_time::Date;
+
+    #[test]
+    fn morini_brigo_no_armageddon_put_call_parity_copula_limits_and_ad() {
+        let d = Date::from_ymd(2024, 1, 1).unwrap();
+        let disc = FlatForwardCurve::new(d, 0.03);
+        let surv = SurvivalProbabilityCurve::new(
+            d,
+            vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            vec![0.025; 5],
+        );
+        let payer_spec = MoriniBrigoIndexOptionSpec {
+            notional: 100.0,
+            strike_spread: 0.025,
+            option_expiry: 1.0,
+            payment_times: vec![2.0, 3.0, 4.0, 5.0],
+            recovery_rate: 0.40,
+            spread_vol: 0.45,
+            num_constituents: 50,
+            systemic_copula_corr: 0.65,
+            is_payer: true,
+        };
+        let rec_spec = MoriniBrigoIndexOptionSpec {
+            is_payer: false,
+            ..payer_spec.clone()
+        };
+        let payer = price_morini_brigo_credit_index_option(&payer_spec, &disc, &surv);
+        let rec = price_morini_brigo_credit_index_option(&rec_spec, &disc, &surv);
+        assert!(payer.armageddon_probability > 0.0);
+        assert!(payer.no_armageddon_forward_spread < payer.loss_adjusted_forward_spread);
+        // Exact Morini-Brigo (2008) Eq. 25 Put-Call Parity:
+        // Payer - Receiver == Notional * Annuity * (S_tilde - K)
+        let fwd_pv = payer_spec.notional
+            * payer.risky_annuity
+            * (payer.loss_adjusted_forward_spread - payer_spec.strike_spread);
+        assert!((payer.npv - rec.npv - fwd_pv).abs() < 1e-10);
+
+        let h = 1e-5;
+        let eval_rho = |rho: f64| {
+            let mut s = payer_spec.clone();
+            s.systemic_copula_corr = rho;
+            price_morini_brigo_credit_index_option(&s, &disc, &surv).npv
+        };
+        let fd = (eval_rho(0.65 + h) - eval_rho(0.65 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let disc_d = FlatForwardCurve::new(d, D::from_value(0.03));
+        let surv_d = SurvivalProbabilityCurve::new(
+            d,
+            vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            vec![D::from_value(0.025); 5],
+        );
+        let spec_d = MoriniBrigoIndexOptionSpec {
+            notional: D::from_value(100.0),
+            strike_spread: D::from_value(0.025),
+            option_expiry: 1.0,
+            payment_times: vec![2.0, 3.0, 4.0, 5.0],
+            recovery_rate: D::from_value(0.40),
+            spread_vol: D::from_value(0.45),
+            num_constituents: 50,
+            systemic_copula_corr: D::variable(0.65, 0),
+            is_payer: true,
+        };
+        let ad = price_morini_brigo_credit_index_option(&spec_d, &disc_d, &surv_d).npv;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

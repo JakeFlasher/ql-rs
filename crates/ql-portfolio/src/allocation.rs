@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)]
 use ql_ad::Real;
 use thiserror::Error;
 
@@ -2540,6 +2541,260 @@ mod phase19_tests {
         let ad = schur_complementary_hrp(&SchurHrpSpec {
             covariance: cov_d,
             gamma: D::variable(0.5, 0),
+        })
+        .weights[0];
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}
+
+
+#[derive(Clone, Debug)]
+pub struct FactorEigenRiskParitySpec<T: Real = f64> {
+    pub covariance: Vec<Vec<T>>,
+    pub factor_risk_budgets: Vec<T>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FactorEigenRiskParityReport<T: Real = f64> {
+    pub weights: Vec<T>,
+    pub eigenvalues: Vec<T>,
+    pub factor_exposures: Vec<T>,
+    pub factor_variance_shares: Vec<T>,
+    pub effective_number_of_pca_bets: T,
+    pub equal_weight_pca_enb: T,
+    pub portfolio_volatility: T,
+}
+
+fn jacobi_eigen_spd<T: Real>(a_in: &[Vec<T>]) -> (Vec<T>, Vec<Vec<T>>) {
+    let n = a_in.len();
+    let mut a = a_in.to_vec();
+    let mut v = vec![vec![T::zero(); n]; n];
+    for i in 0..n {
+        v[i][i] = T::one();
+    }
+    for _sweep in 0..24 {
+        let mut off_norm = 0.0_f64;
+        for p in 0..n {
+            for q in (p + 1)..n {
+                off_norm += a[p][q].val() * a[p][q].val();
+            }
+        }
+        if off_norm.sqrt() < 1e-14 {
+            break;
+        }
+        for p in 0..n {
+            for q in (p + 1)..n {
+                let apq = a[p][q];
+                if apq.val().abs() < 1e-15 {
+                    continue;
+                }
+                let diff = a[q][q] - a[p][p];
+                let tau = diff / (apq * 2.0);
+                let sign_tau = if tau.val() >= 0.0 {
+                    T::one()
+                } else {
+                    -T::one()
+                };
+                let t = sign_tau / (tau.abs() + (T::one() + tau * tau).sqrt());
+                let c = T::one() / (T::one() + t * t).sqrt();
+                let s = t * c;
+
+                let app = a[p][p] - t * apq;
+                let aqq = a[q][q] + t * apq;
+                a[p][p] = app;
+                a[q][q] = aqq;
+                a[p][q] = T::zero();
+                a[q][p] = T::zero();
+
+                for k in 0..n {
+                    if k != p && k != q {
+                        let akp = a[k][p];
+                        let akq = a[k][q];
+                        a[k][p] = c * akp - s * akq;
+                        a[p][k] = a[k][p];
+                        a[k][q] = s * akp + c * akq;
+                        a[q][k] = a[k][q];
+                    }
+                    let vkp = v[k][p];
+                    let vkq = v[k][q];
+                    v[k][p] = c * vkp - s * vkq;
+                    v[k][q] = s * vkp + c * vkq;
+                }
+            }
+        }
+    }
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&i, &j| a[j][j].val().total_cmp(&a[i][i].val()));
+    let mut evals = Vec::with_capacity(n);
+    let mut evecs = vec![vec![T::zero(); n]; n];
+    for (col_out, &col_in) in order.iter().enumerate() {
+        evals.push(a[col_in][col_in].max_val(T::from_f64(1e-12)));
+        let mut col_sum = T::zero();
+        for row in 0..n {
+            col_sum += v[row][col_in];
+        }
+        let orient = if col_sum.val() >= 0.0 {
+            T::one()
+        } else {
+            -T::one()
+        };
+        for row in 0..n {
+            evecs[row][col_out] = v[row][col_in] * orient;
+        }
+    }
+    (evals, evecs)
+}
+
+/// Roncalli (2013) / Lohre-Opfer-Schiereck (2012) Principal Component Risk Parity
+/// (Eigen-Portfolio Factor Risk Budgeting) with Meucci (2009) PCA Diversification Entropy.
+pub fn try_solve_principal_component_risk_parity<T: Real>(
+    spec: &FactorEigenRiskParitySpec<T>,
+) -> Result<FactorEigenRiskParityReport<T>, AllocationError> {
+    let n = spec.covariance.len();
+    if n == 0
+        || spec.factor_risk_budgets.len() != n
+        || spec.covariance.iter().any(|r| r.len() != n)
+        || spec
+            .factor_risk_budgets
+            .iter()
+            .any(|b| !b.val().is_finite() || b.val() <= 0.0)
+    {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    let b_sum = spec
+        .factor_risk_budgets
+        .iter()
+        .fold(T::zero(), |acc, &b| acc + b)
+        .max_val(T::from_f64(1e-12));
+    let budgets: Vec<T> = spec
+        .factor_risk_budgets
+        .iter()
+        .map(|&b| b / b_sum)
+        .collect();
+
+    let (evals, evecs) = jacobi_eigen_spd(&spec.covariance);
+
+    // Closed-form eigen-factor risk budgeting exposures w_tilde_k = sqrt(b_k / lambda_k)
+    let w_tilde_raw: Vec<T> = (0..n)
+        .map(|k| (budgets[k] / evals[k]).max_val(T::from_f64(1e-14)).sqrt())
+        .collect();
+    let mut w_raw = vec![T::zero(); n];
+    for i in 0..n {
+        let mut s = T::zero();
+        for k in 0..n {
+            s += evecs[i][k] * w_tilde_raw[k];
+        }
+        w_raw[i] = s;
+    }
+    let raw_sum = w_raw.iter().fold(T::zero(), |acc, &x| acc + x);
+    let weights: Vec<T> = if raw_sum.val().abs() > 1e-8 {
+        w_raw.into_iter().map(|x| x / raw_sum).collect()
+    } else {
+        vec![T::from_f64(1.0 / n as f64); n]
+    };
+
+    let factor_exposures: Vec<T> = (0..n)
+        .map(|k| {
+            (0..n).fold(T::zero(), |acc, i| acc + evecs[i][k] * weights[i])
+        })
+        .collect();
+    let factor_vars: Vec<T> = (0..n)
+        .map(|k| (evals[k] * factor_exposures[k] * factor_exposures[k]).max_val(T::from_f64(1e-16)))
+        .collect();
+    let tot_var = factor_vars
+        .iter()
+        .fold(T::zero(), |acc, &v| acc + v)
+        .max_val(T::from_f64(1e-14));
+    let factor_variance_shares: Vec<T> = factor_vars.iter().map(|&v| v / tot_var).collect();
+    let entropy = factor_variance_shares
+        .iter()
+        .fold(T::zero(), |acc, &p| acc - p * p.max_val(T::from_f64(1e-14)).ln());
+    let enb = entropy.exp();
+
+    // Equal-weight portfolio PCA ENB for comparison
+    let ew = T::from_f64(1.0 / n as f64);
+    let ew_vars: Vec<T> = (0..n)
+        .map(|k| {
+            let exp_k = (0..n).fold(T::zero(), |acc, i| acc + evecs[i][k] * ew);
+            (evals[k] * exp_k * exp_k).max_val(T::from_f64(1e-16))
+        })
+        .collect();
+    let ew_tot = ew_vars
+        .iter()
+        .fold(T::zero(), |acc, &v| acc + v)
+        .max_val(T::from_f64(1e-14));
+    let ew_enb = ew_vars
+        .iter()
+        .map(|&v| v / ew_tot)
+        .fold(T::zero(), |acc, p| acc - p * p.max_val(T::from_f64(1e-14)).ln())
+        .exp();
+
+    Ok(FactorEigenRiskParityReport {
+        weights,
+        eigenvalues: evals,
+        factor_exposures,
+        factor_variance_shares,
+        effective_number_of_pca_bets: enb,
+        equal_weight_pca_enb: ew_enb,
+        portfolio_volatility: tot_var.sqrt(),
+    })
+}
+
+pub fn solve_principal_component_risk_parity<T: Real>(
+    spec: &FactorEigenRiskParitySpec<T>,
+) -> FactorEigenRiskParityReport<T> {
+    try_solve_principal_component_risk_parity(spec)
+        .expect("valid covariance matrix and factor risk budgets for PCRP")
+}
+
+
+
+#[cfg(test)]
+mod phase20_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn principal_component_risk_parity_exact_factor_shares_enb_and_ad() {
+        let cov = vec![
+            vec![0.04, 0.025, 0.010],
+            vec![0.025, 0.05, 0.015],
+            vec![0.010, 0.015, 0.03],
+        ];
+        let spec = FactorEigenRiskParitySpec {
+            covariance: cov.clone(),
+            factor_risk_budgets: vec![1.0 / 3.0; 3],
+        };
+        let rep = solve_principal_component_risk_parity(&spec);
+        assert!((rep.weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        // Equal factor risk budgets => each principal component contributes 1/3 of variance and PCA ENB == 3.0!
+        for &s in &rep.factor_variance_shares {
+            assert!((s - 1.0 / 3.0).abs() < 1e-10);
+        }
+        assert!((rep.effective_number_of_pca_bets - 3.0).abs() < 1e-10);
+        assert!(rep.effective_number_of_pca_bets > rep.equal_weight_pca_enb);
+
+        let h = 1e-5;
+        let eval_b0 = |b0: f64| {
+            solve_principal_component_risk_parity(&FactorEigenRiskParitySpec {
+                covariance: cov.clone(),
+                factor_risk_budgets: vec![b0, 1.0 / 3.0, 1.0 / 3.0],
+            })
+            .weights[0]
+        };
+        let fd = (eval_b0(1.0 / 3.0 + h) - eval_b0(1.0 / 3.0 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let cov_d: Vec<Vec<D>> = cov
+            .iter()
+            .map(|r| r.iter().map(|&x| D::from_value(x)).collect())
+            .collect();
+        let ad = solve_principal_component_risk_parity(&FactorEigenRiskParitySpec {
+            covariance: cov_d,
+            factor_risk_budgets: vec![
+                D::variable(1.0 / 3.0, 0),
+                D::from_value(1.0 / 3.0),
+                D::from_value(1.0 / 3.0),
+            ],
         })
         .weights[0];
         assert!((ad.d[0] - fd).abs() < 1e-6);

@@ -1,3 +1,4 @@
+#![allow(clippy::excessive_precision, clippy::needless_range_loop)]
 use ql_ad::Real;
 use ql_vol::black76_price;
 #[derive(Clone, Copy, Debug)]
@@ -494,6 +495,311 @@ mod phase18_tests {
         };
         let ad = analyze_callable_bond_oas_ad(&sd).oas;
         assert!(ad.d[0] < 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-4);
+    }
+}
+
+
+#[derive(Clone, Debug)]
+pub struct BlackKarasinskiCallableFrnSpec<T: Real = f64> {
+    pub face_amount: T,
+    pub quoted_margin: T,
+    pub cap_rate: T,
+    pub floor_rate: T,
+    pub maturity: f64,
+    pub coupon_steps: usize,
+    pub mean_reversion: T,
+    pub log_rate_vol: T,
+    pub flat_zero_rate: T,
+    pub call_price: T,
+    pub first_call_time: f64,
+    pub target_market_price: T,
+    pub smoothing_eps: f64,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct BlackKarasinskiCallableFrnReport<T: Real = f64> {
+    pub oas_spread: T,
+    pub model_price_at_oas: T,
+    pub straight_frn_price: T,
+    pub capped_floored_no_call_price: T,
+    pub embedded_collar_value: T,
+    pub embedded_call_option_value: T,
+    pub effective_duration: T,
+    pub effective_convexity: T,
+}
+
+fn bk_tree_frn_prices<T: Real>(
+    s: &BlackKarasinskiCallableFrnSpec<T>,
+    oas: T,
+) -> (T, T, T) {
+    let n = s.coupon_steps.max(2);
+    let dt = s.maturity.max(0.25) / n as f64;
+    let a = s.mean_reversion.max_val(T::from_f64(1e-6));
+    let sigma = s.log_rate_vol.max_val(T::from_f64(1e-6));
+    let r0 = s.flat_zero_rate.max_val(T::from_f64(1e-4));
+    let dx = sigma * (3.0 * dt).sqrt();
+    let j_max = ((0.184 / (a.val() * dt).max(1e-4)).ceil() as isize)
+        .max(2)
+        .min(n as isize);
+    let eps = T::from_f64(s.smoothing_eps.max(1e-4));
+
+    let idx_of = |j: isize, m: isize| -> usize { (j + m) as usize };
+    let branch_probs = |j: isize, m: isize| -> (isize, T, T, T) {
+        let aj = a * (j as f64 * dt);
+        if j >= m && m > 0 {
+            let pu = T::from_f64(7.0 / 6.0) + (aj * aj - aj * 3.0) * 0.5;
+            let pm = T::from_f64(-1.0 / 3.0) - aj * aj + aj * 2.0;
+            let pd = T::from_f64(1.0 / 6.0) + (aj * aj - aj) * 0.5;
+            (j - 1, pu, pm, pd)
+        } else if j <= -m && m > 0 {
+            let pu = T::from_f64(1.0 / 6.0) + (aj * aj + aj) * 0.5;
+            let pm = T::from_f64(-1.0 / 3.0) - aj * aj - aj * 2.0;
+            let pd = T::from_f64(7.0 / 6.0) + (aj * aj + aj * 3.0) * 0.5;
+            (j + 1, pu, pm, pd)
+        } else {
+            let pu = T::from_f64(1.0 / 6.0) + (aj * aj - aj) * 0.5;
+            let pm = T::from_f64(2.0 / 3.0) - aj * aj;
+            let pd = T::from_f64(1.0 / 6.0) + (aj * aj + aj) * 0.5;
+            (j, pu, pm, pd)
+        }
+    };
+
+    // Forward Arrow-Debreu calibration of Black-Karasinski median rate r*(t_i) = exp(alpha_i)
+    let mut r_star = vec![r0; n];
+    let mut q_state = vec![T::one()];
+    for i in 0..n {
+        let m = (i as isize).min(j_max);
+        let p_target = (-r0 * ((i + 1) as f64 * dt)).exp();
+        let mut alpha = r0.ln();
+        for _ in 0..6 {
+            let mut f = -p_target;
+            let mut df = T::zero();
+            for j in -m..=m {
+                let qj = q_state[idx_of(j, m)];
+                let r_ij = (alpha + dx * (j as f64)).exp();
+                let disc = (-r_ij * dt).exp();
+                f += qj * disc;
+                df -= qj * disc * r_ij * dt;
+            }
+            alpha -= f / df.min_val(T::from_f64(-1e-12));
+        }
+        r_star[i] = alpha.exp();
+        if i + 1 < n {
+            let m_next = ((i + 1) as isize).min(j_max);
+            let mut q_next = vec![T::zero(); (2 * m_next + 1) as usize];
+            for j in -m..=m {
+                let qj = q_state[idx_of(j, m)];
+                let r_ij = r_star[i] * (dx * (j as f64)).exp();
+                let disc = (-r_ij * dt).exp();
+                let (k_mid, pu, pm, pd) = branch_probs(j, m);
+                q_next[idx_of(k_mid + 1, m_next)] += qj * disc * pu;
+                q_next[idx_of(k_mid, m_next)] += qj * disc * pm;
+                q_next[idx_of(k_mid - 1, m_next)] += qj * disc * pd;
+            }
+            q_state = q_next;
+        }
+    }
+
+    let m_last = ((n - 1) as isize).min(j_max);
+    let mut v_call = vec![s.face_amount; (2 * m_last + 1) as usize];
+    let mut v_cap = vec![s.face_amount; (2 * m_last + 1) as usize];
+    let mut v_str = vec![s.face_amount; (2 * m_last + 1) as usize];
+
+    for i in (0..n).rev() {
+        let t_i = i as f64 * dt;
+        let m = (i as isize).min(j_max);
+        let m_next = if i + 1 < n {
+            ((i + 1) as isize).min(j_max)
+        } else {
+            m
+        };
+        let mut next_call = vec![T::zero(); (2 * m + 1) as usize];
+        let mut next_cap = vec![T::zero(); (2 * m + 1) as usize];
+        let mut next_str = vec![T::zero(); (2 * m + 1) as usize];
+        for j in -m..=m {
+            let idx = idx_of(j, m);
+            let r_ij = r_star[i] * (dx * (j as f64)).exp();
+            let disc_oas = (-(r_ij + oas) * dt).exp();
+            let raw_rate = r_ij + s.quoted_margin;
+            let floor_diff = raw_rate - s.floor_rate;
+            let floored =
+                (raw_rate + s.floor_rate + (floor_diff * floor_diff + eps * eps).sqrt()) * 0.5;
+            let cap_diff = floored - s.cap_rate;
+            let capped_rate =
+                (floored + s.cap_rate - (cap_diff * cap_diff + eps * eps).sqrt()) * 0.5;
+
+            let cpn_str = s.face_amount * raw_rate * dt;
+            let cpn_cap = s.face_amount * capped_rate * dt;
+
+            let (ev_call, ev_cap, ev_str) = if i + 1 == n {
+                (s.face_amount, s.face_amount, s.face_amount)
+            } else {
+                let (k_mid, pu, pm, pd) = branch_probs(j, m);
+                let iu = idx_of(k_mid + 1, m_next);
+                let im = idx_of(k_mid, m_next);
+                let id = idx_of(k_mid - 1, m_next);
+                (
+                    pu * v_call[iu] + pm * v_call[im] + pd * v_call[id],
+                    pu * v_cap[iu] + pm * v_cap[im] + pd * v_cap[id],
+                    pu * v_str[iu] + pm * v_str[im] + pd * v_str[id],
+                )
+            };
+            let cont_str = (ev_str + cpn_str) * disc_oas;
+            let cont_cap = (ev_cap + cpn_cap) * disc_oas;
+            let cont_ex_cpn = ev_call * disc_oas;
+            let called_ex_cpn = if i > 0 && t_i + 1e-9 >= s.first_call_time {
+                let d_call = cont_ex_cpn - s.call_price;
+                (cont_ex_cpn + s.call_price - (d_call * d_call + eps * eps).sqrt()) * 0.5
+            } else {
+                cont_ex_cpn
+            };
+            next_str[idx] = cont_str;
+            next_cap[idx] = cont_cap;
+            next_call[idx] = called_ex_cpn + cpn_cap * disc_oas;
+        }
+        v_str = next_str;
+        v_cap = next_cap;
+        v_call = next_call;
+    }
+    (v_call[0], v_cap[0], v_str[0])
+}
+
+/// Black-Karasinski (1991) lognormal short-rate trinomial tree OAS, collar decomposition,
+/// and effective duration/convexity engine with single-graph `ift_lift_1d` AD.
+pub fn analyze_black_karasinski_callable_frn_oas_ad<T: Real>(
+    s: &BlackKarasinskiCallableFrnSpec<T>,
+) -> BlackKarasinskiCallableFrnReport<T> {
+    let s_f64 = BlackKarasinskiCallableFrnSpec::<f64> {
+        face_amount: s.face_amount.val(),
+        quoted_margin: s.quoted_margin.val(),
+        cap_rate: s.cap_rate.val(),
+        floor_rate: s.floor_rate.val(),
+        maturity: s.maturity,
+        coupon_steps: s.coupon_steps,
+        mean_reversion: s.mean_reversion.val(),
+        log_rate_vol: s.log_rate_vol.val(),
+        flat_zero_rate: s.flat_zero_rate.val(),
+        call_price: s.call_price.val(),
+        first_call_time: s.first_call_time,
+        target_market_price: s.target_market_price.val(),
+        smoothing_eps: s.smoothing_eps,
+    };
+    let eval_f64 = |oas: f64| -> f64 { bk_tree_frn_prices(&s_f64, oas).0 - s_f64.target_market_price };
+    let mut lo = -0.08_f64;
+    let mut hi = 0.25_f64;
+    let f_lo = eval_f64(lo);
+    for _ in 0..32 {
+        let mid = 0.5 * (lo + hi);
+        if (eval_f64(mid) >= 0.0) == (f_lo >= 0.0) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let mut oas_root = 0.5 * (lo + hi);
+    let h = 1e-5;
+    for _ in 0..5 {
+        let r0 = eval_f64(oas_root);
+        let dr = (eval_f64(oas_root + h) - eval_f64(oas_root - h)) / (2.0 * h);
+        if dr.abs() > 1e-12 {
+            oas_root = (oas_root - r0 / dr).clamp(-0.08, 0.25);
+        }
+    }
+    let r_up = eval_f64(oas_root + h);
+    let r_0 = eval_f64(oas_root);
+    let r_dn = eval_f64(oas_root - h);
+    let f_xx = (r_up - 2.0 * r_0 + r_dn) / (h * h);
+    let oas_t0 = T::from_f64(oas_root);
+    let h_t = T::from_f64(h);
+    let f_x = (bk_tree_frn_prices(s, oas_t0 + h_t).0 - bk_tree_frn_prices(s, oas_t0 - h_t).0)
+        / (2.0 * h);
+    let oas_spread = ql_ad::ift_lift_1d(
+        oas_root,
+        |z| bk_tree_frn_prices(s, z).0 - s.target_market_price,
+        f_x,
+        f_xx,
+    );
+    let (model_price_at_oas, capped_floored_no_call_price, straight_frn_price) =
+        bk_tree_frn_prices(s, oas_spread);
+    let embedded_collar_value = capped_floored_no_call_price - straight_frn_price;
+    let embedded_call_option_value = capped_floored_no_call_price - model_price_at_oas;
+
+    let dr = 1e-4;
+    let mut s_up = s.clone();
+    s_up.flat_zero_rate += T::from_f64(dr);
+    let mut s_dn = s.clone();
+    s_dn.flat_zero_rate -= T::from_f64(dr);
+    let p_up = bk_tree_frn_prices(&s_up, oas_spread).0;
+    let p_dn = bk_tree_frn_prices(&s_dn, oas_spread).0;
+    let p_safe = model_price_at_oas.max_val(T::from_f64(1e-12));
+    let effective_duration = -(p_up - p_dn) / (p_safe * (2.0 * dr));
+    let effective_convexity = (p_up + p_dn - model_price_at_oas * 2.0) / (p_safe * (dr * dr));
+
+    BlackKarasinskiCallableFrnReport {
+        oas_spread,
+        model_price_at_oas,
+        straight_frn_price,
+        capped_floored_no_call_price,
+        embedded_collar_value,
+        embedded_call_option_value,
+        effective_duration,
+        effective_convexity,
+    }
+}
+
+
+
+#[cfg(test)]
+mod phase20_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn black_karasinski_callable_frn_call_option_oas_and_ad() {
+        let base = BlackKarasinskiCallableFrnSpec {
+            face_amount: 100.0,
+            quoted_margin: 0.008,
+            cap_rate: 0.055,
+            floor_rate: 0.020,
+            maturity: 3.0,
+            coupon_steps: 9,
+            mean_reversion: 0.15,
+            log_rate_vol: 0.22,
+            flat_zero_rate: 0.035,
+            call_price: 100.2,
+            first_call_time: 1.0,
+            target_market_price: 99.8,
+            smoothing_eps: 1e-3,
+        };
+        let rep = analyze_black_karasinski_callable_frn_oas_ad(&base);
+        assert!((rep.model_price_at_oas - 99.8).abs() < 1e-6);
+        assert!(rep.embedded_call_option_value > 0.0);
+
+        let h = 1e-5;
+        let eval_v = |v: f64| {
+            let mut s = base.clone();
+            s.log_rate_vol = v;
+            analyze_black_karasinski_callable_frn_oas_ad(&s).oas_spread
+        };
+        let fd = (eval_v(0.22 + h) - eval_v(0.22 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let spec_d = BlackKarasinskiCallableFrnSpec {
+            face_amount: D::from_value(100.0),
+            quoted_margin: D::from_value(0.008),
+            cap_rate: D::from_value(0.055),
+            floor_rate: D::from_value(0.020),
+            maturity: 3.0,
+            coupon_steps: 9,
+            mean_reversion: D::from_value(0.15),
+            log_rate_vol: D::variable(0.22, 0),
+            flat_zero_rate: D::from_value(0.035),
+            call_price: D::from_value(100.2),
+            first_call_time: 1.0,
+            target_market_price: D::from_value(99.8),
+            smoothing_eps: 1e-3,
+        };
+        let ad = analyze_black_karasinski_callable_frn_oas_ad(&spec_d).oas_spread;
         assert!((ad.d[0] - fd).abs() < 1e-4);
     }
 }

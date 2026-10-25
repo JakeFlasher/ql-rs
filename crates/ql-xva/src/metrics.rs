@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)]
 use crate::NpvCube;
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
@@ -1033,5 +1034,428 @@ mod phase18_tests {
         };
         let ad = compute_turlakov_wwr_cva_fva(&sd).wwr_cva;
         assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}
+
+
+#[derive(Clone, Debug)]
+pub struct BrigoVrinsWwmCvaSpec<T: Real = f64> {
+    pub times: Vec<f64>,
+    pub discount_rate: T,
+    pub base_mtm_profile: Vec<T>,
+    pub exposure_vol_nu: T,
+    pub is_brownian_bridge_swap: bool,
+    pub y0: T,
+    pub cir_kappa: T,
+    pub cir_theta: T,
+    pub cir_vol: T,
+    pub intensity_shift_psi: T,
+    pub wwr_correlation: T,
+    pub lgd: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct BrigoVrinsWwmCvaReport<T: Real = f64> {
+    pub wwm_cva: T,
+    pub independent_cva: T,
+    pub wwr_cva_surcharge: T,
+    pub survival_probabilities: Vec<T>,
+    pub wwm_drift_shifts: Vec<T>,
+    pub wwm_epe_profile: Vec<T>,
+}
+
+fn brigo_vrins_cir_survival<T: Real>(y0: T, kappa: T, theta: T, sigma: T, psi: T, t: f64) -> T {
+    if t <= 1e-12 {
+        return T::one();
+    }
+    let s2 = (sigma * sigma).max_val(T::from_f64(1e-14));
+    let h = (kappa * kappa + s2 * 2.0).sqrt();
+    let e_ht = (h * t).exp();
+    let denom = h + (kappa + h) * (e_ht - T::one()) * 0.5;
+    let b_t = (e_ht - T::one()) / denom;
+    let log_a = (kappa * theta * 2.0 / s2)
+        * (h * ((kappa + h) * (0.5 * t)).exp() / denom)
+            .max_val(T::from_f64(1e-14))
+            .ln();
+    (log_a - b_t * y0 - psi * t).exp()
+}
+
+fn brigo_vrins_theta_drift<T: Real>(
+    y0: T,
+    kappa: T,
+    theta: T,
+    sigma_lam: T,
+    psi: T,
+    rho: T,
+    nu_exp: T,
+    s: f64,
+    t: f64,
+) -> T {
+    let tau = (t - s).max(0.0);
+    let s2 = (sigma_lam * sigma_lam).max_val(T::from_f64(1e-14));
+    let h = (kappa * kappa + s2 * 2.0).sqrt();
+    let e_ht = (h * tau).exp();
+    let denom = h + (kappa + h) * (e_ht - T::one()) * 0.5;
+    let b_cir = (e_ht - T::one()) / denom;
+    let h_over_d = h / denom;
+    let bt_cir = e_ht * h_over_d * h_over_d;
+    let e_ks = (-kappa * s).exp();
+    let lam_bar = (psi + y0 * e_ks + theta * (T::one() - e_ks)).max_val(T::from_f64(1e-8));
+    let denom_wwm =
+        (bt_cir * lam_bar - psi + bt_cir * psi + kappa * theta * b_cir).max_val(T::from_f64(1e-12));
+    rho * nu_exp * sigma_lam * lam_bar.sqrt() * (bt_cir / denom_wwm - b_cir)
+}
+
+/// Brigo & Vrins (2018) Wrong-Way Measure (`WWM`) CIR++ drift-adjusted analytical CVA
+/// without Monte Carlo (`papers/48_Brigo_Vrins_2018_Disentangling_Wrong_Way_Risk_CVA.pdf`, Eqs. 16-21).
+pub fn compute_brigo_vrins_wwm_cva<T: Real>(
+    spec: &BrigoVrinsWwmCvaSpec<T>,
+) -> BrigoVrinsWwmCvaReport<T> {
+    const GL4_X: [f64; 4] = [
+        -0.861_136_311_594_052_6,
+        -0.339_981_043_584_856_3,
+        0.339_981_043_584_856_3,
+        0.861_136_311_594_052_6,
+    ];
+    const GL4_W: [f64; 4] = [
+        0.347_854_845_137_453_8,
+        0.652_145_154_862_546_1,
+        0.652_145_154_862_546_1,
+        0.347_854_845_137_453_8,
+    ];
+    let n = spec.times.len().min(spec.base_mtm_profile.len());
+    if n == 0 {
+        return BrigoVrinsWwmCvaReport {
+            wwm_cva: T::zero(),
+            independent_cva: T::zero(),
+            wwr_cva_surcharge: T::zero(),
+            survival_probabilities: Vec::new(),
+            wwm_drift_shifts: Vec::new(),
+            wwm_epe_profile: Vec::new(),
+        };
+    }
+    let t_max = (spec.times[n - 1] + 0.5).max(1.0);
+    let mut wwm_cva = T::zero();
+    let mut ind_cva = T::zero();
+    let mut surv_probs = Vec::with_capacity(n);
+    let mut drift_shifts = Vec::with_capacity(n);
+    let mut wwm_epe = Vec::with_capacity(n);
+    let mut prev_g = T::one();
+
+    for k in 0..n {
+        let tk = spec.times[k].max(1e-4);
+        let g_k = brigo_vrins_cir_survival(
+            spec.y0,
+            spec.cir_kappa,
+            spec.cir_theta,
+            spec.cir_vol,
+            spec.intensity_shift_psi,
+            tk,
+        );
+        let mid = 0.5 * tk;
+        let half = 0.5 * tk;
+        let mut shift = T::zero();
+        for m in 0..4 {
+            let u = mid + half * GL4_X[m];
+            let th_u = brigo_vrins_theta_drift(
+                spec.y0,
+                spec.cir_kappa,
+                spec.cir_theta,
+                spec.cir_vol,
+                spec.intensity_shift_psi,
+                spec.wwr_correlation,
+                spec.exposure_vol_nu,
+                u,
+                tk,
+            );
+            if spec.is_brownian_bridge_swap {
+                let bridge_factor = (t_max - tk) / (t_max - u).max(1e-6);
+                shift += th_u * ( bridge_factor * half * GL4_W[m]);
+            } else {
+                shift += th_u * (half * GL4_W[m]);
+            }
+        }
+        let sig_v = if spec.is_brownian_bridge_swap {
+            (spec.exposure_vol_nu * (tk * (1.0 - tk / t_max).max(0.05)).sqrt())
+                .max_val(T::from_f64(1e-8))
+        } else {
+            (spec.exposure_vol_nu * tk.sqrt()).max_val(T::from_f64(1e-8))
+        };
+        let mu_ind = spec.base_mtm_profile[k];
+        let mu_wwm = mu_ind + shift;
+        let d_ind = mu_ind / sig_v;
+        let d_wwm = mu_wwm / sig_v;
+        let epe_ind = mu_ind * d_ind.norm_cdf() + sig_v * d_ind.norm_pdf();
+        let epe_w = mu_wwm * d_wwm.norm_cdf() + sig_v * d_wwm.norm_pdf();
+        let df = (-spec.discount_rate * tk).exp();
+        let dg = (prev_g - g_k).max_val(T::zero());
+        ind_cva += spec.lgd * df * epe_ind * dg;
+        wwm_cva += spec.lgd * df * epe_w * dg;
+
+        surv_probs.push(g_k);
+        drift_shifts.push(shift);
+        wwm_epe.push(epe_w);
+        prev_g = g_k;
+    }
+
+    BrigoVrinsWwmCvaReport {
+        wwm_cva,
+        independent_cva: ind_cva,
+        wwr_cva_surcharge: wwm_cva - ind_cva,
+        survival_probabilities: surv_probs,
+        wwm_drift_shifts: drift_shifts,
+        wwm_epe_profile: wwm_epe,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AsymmetricRateXvaBandSpec<T: Real = f64> {
+    pub maturity: f64,
+    pub num_steps: usize,
+    pub clean_claim_value: T,
+    pub clean_delta_notional: T,
+    pub asset_vol: T,
+    pub collateral_alpha: T,
+    pub dividend_discount_rate: T,
+    pub repo_lend_rate: T,
+    pub repo_borrow_rate: T,
+    pub funding_lend_rate: T,
+    pub funding_borrow_rate: T,
+    pub collateral_lend_rate: T,
+    pub collateral_borrow_rate: T,
+    pub own_bond_yield_mu_i: T,
+    pub cpty_bond_yield_mu_c: T,
+    pub own_lgd: T,
+    pub cpty_lgd: T,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct AsymmetricRateXvaBandReport<T: Real = f64> {
+    pub buyer_sub_hedging_xva: T,
+    pub seller_super_hedging_xva: T,
+    pub symmetric_benchmark_xva: T,
+    pub buyer_reservation_price: T,
+    pub seller_reservation_price: T,
+    pub no_arbitrage_band_width: T,
+    pub replicating_stock_delta_adj: T,
+    pub replicating_own_bond_units: T,
+    pub replicating_cpty_bond_units: T,
+    pub no_arbitrage_satisfied: bool,
+}
+
+fn smooth_pos<T: Real>(x: T) -> T {
+    let eps = T::from_f64(1e-6);
+    (x + (x * x + eps * eps).sqrt()) * 0.5
+}
+
+/// Bichuch, Capponi & Sturm (2018) Arbitrage-Free Bilateral XVA Band $[V^-, V^+]$ & Risky-Bond
+/// Replication (`papers/56_Bichuch_Capponi_Sturm_2018_Arbitrage_Free_XVA_Funding.pdf`, Theorems 4.7, 4.10 & Prop. 5.3).
+pub fn compute_bichuch_capponi_sturm_xva_band<T: Real>(
+    s: &AsymmetricRateXvaBandSpec<T>,
+) -> AsymmetricRateXvaBandReport<T> {
+    let t_mat = s.maturity.max(1e-4);
+    let n_steps = s.num_steps.max(4);
+    let dt = t_mat / n_steps as f64;
+    let v_hat = s.clean_claim_value;
+    let z_hat = s.clean_delta_notional * s.asset_vol;
+    let alpha = s.collateral_alpha.max_val(T::zero()).min_val(T::one());
+    let one_m_alpha = T::one() - alpha;
+
+    let rf_plus = s.funding_lend_rate;
+    let rf_minus = s.funding_borrow_rate;
+    let rr_plus = s.repo_lend_rate;
+    let rr_minus = s.repo_borrow_rate;
+    let rc_plus = s.collateral_lend_rate;
+    let rc_minus = s.collateral_borrow_rate;
+    let r_d = s.dividend_discount_rate;
+    let mu_i = s.own_bond_yield_mu_i;
+    let mu_c = s.cpty_bond_yield_mu_c;
+    let h_i = (mu_i - r_d).max_val(T::zero());
+    let h_c = (mu_c - r_d).max_val(T::zero());
+
+    let no_arbitrage_satisfied = rr_plus.val() <= rr_minus.val() + 1e-12
+        && rf_plus.val() <= rf_minus.val() + 1e-12
+        && rf_minus.val() <= mu_i.val().min(mu_c.val()) + 1e-12;
+
+    // Proposition 5.3 Symmetric-Rate Closed-Form Benchmark & Replicating Portfolio
+    let rf_mid = (rf_plus + rf_minus) * 0.5;
+    let rr_mid = (rr_plus + rr_minus) * 0.5;
+    let rc_mid = (rc_plus + rc_minus) * 0.5;
+    let eta = mu_i + mu_c - rf_mid;
+    let rate_diff = (eta - rr_mid).max_val(T::from_f64(1e-8));
+    let a_factor = (T::one() - (-rate_diff * t_mat).exp()) / rate_diff;
+    let uncoll_pos = smooth_pos(one_m_alpha * v_hat);
+    let uncoll_neg = smooth_pos(-one_m_alpha * v_hat);
+    let sym_xva = a_factor
+        * (((rr_mid - rf_mid) + alpha * (rf_mid - rc_mid)) * v_hat
+            + (mu_c - rf_mid) * s.cpty_lgd * uncoll_neg
+            - (mu_i - rf_mid) * s.own_lgd * uncoll_pos);
+
+    let ind_pos = smooth_pos(v_hat) / (v_hat.abs() + T::from_f64(1e-6));
+    let ind_neg = smooth_pos(-v_hat) / (v_hat.abs() + T::from_f64(1e-6));
+    let xi_stock = a_factor
+        * ((rr_mid - rf_mid)
+            + alpha * (rf_mid - rc_mid)
+            + (mu_c - rf_mid) * s.cpty_lgd * one_m_alpha * ind_neg
+            - (mu_i - rf_mid) * s.own_lgd * one_m_alpha * ind_pos)
+        * s.clean_delta_notional;
+    let xi_own_bond = (sym_xva + s.own_lgd * uncoll_pos) / (-mu_i * t_mat).exp();
+    let xi_cpty_bond = (sym_xva - s.cpty_lgd * uncoll_neg) / (-mu_c * t_mat).exp();
+
+    // Theorem 4.7 Reduced BSDE Driver g^+(u) & g^-(u) integrated via 8-step Picard Iteration
+    let driver_plus = |u: T, v: T, z: T| -> T {
+        let theta_c = s.cpty_lgd * smooth_pos(-one_m_alpha * v);
+        let theta_i = -s.own_lgd * smooth_pos(one_m_alpha * v);
+        let gamma_fund = theta_i + theta_c - u + one_m_alpha * v;
+        let fund_term = rf_plus * smooth_pos(gamma_fund) - rf_minus * smooth_pos(-gamma_fund);
+        let repo_term = (r_d - rr_minus) * smooth_pos(z) / s.asset_vol.max_val(T::from_f64(1e-6))
+            - (r_d - rr_plus) * smooth_pos(-z) / s.asset_vol.max_val(T::from_f64(1e-6));
+        let coll_term = rc_plus * smooth_pos(alpha * v) - rc_minus * smooth_pos(-alpha * v);
+        h_i * (theta_i - u) + h_c * (theta_c - u)
+            - (fund_term + repo_term - r_d * (theta_i + theta_c - u * 2.0) + coll_term)
+            + r_d * v
+    };
+
+    let mut u_plus = T::zero();
+    let mut u_minus = T::zero();
+    for _ in 0..n_steps {
+        let mut next_p = u_plus;
+        let mut next_m = u_minus;
+        for _ in 0..6 {
+            next_p = u_plus + driver_plus(next_p, v_hat, z_hat) * dt;
+            let gm = -driver_plus(-next_m, -v_hat, -z_hat);
+            next_m = u_minus + gm * dt;
+        }
+        u_plus = next_p;
+        u_minus = next_m;
+    }
+
+    let symmetric_rates = (rf_plus.val() - rf_minus.val()).abs() < 1e-12
+        && (rr_plus.val() - rr_minus.val()).abs() < 1e-12
+        && (rc_plus.val() - rc_minus.val()).abs() < 1e-12;
+    if symmetric_rates {
+        u_plus = sym_xva;
+        u_minus = sym_xva;
+    }
+
+    let seller_super = u_plus.max_val(u_minus);
+    let buyer_sub = u_minus.min_val(u_plus);
+    let width = (seller_super - buyer_sub).max_val(T::zero());
+
+    AsymmetricRateXvaBandReport {
+        buyer_sub_hedging_xva: buyer_sub,
+        seller_super_hedging_xva: seller_super,
+        symmetric_benchmark_xva: sym_xva,
+        buyer_reservation_price: v_hat + buyer_sub,
+        seller_reservation_price: v_hat + seller_super,
+        no_arbitrage_band_width: width,
+        replicating_stock_delta_adj: xi_stock,
+        replicating_own_bond_units: xi_own_bond,
+        replicating_cpty_bond_units: xi_cpty_bond,
+        no_arbitrage_satisfied,
+    }
+}
+
+
+
+#[cfg(test)]
+mod phase20_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn brigo_vrins_wwm_zero_corr_collapse_and_bichuch_capponi_sturm_band_ad() {
+        let base_wwm = BrigoVrinsWwmCvaSpec {
+            times: vec![0.5, 1.0, 2.0, 3.0],
+            discount_rate: 0.03,
+            base_mtm_profile: vec![10.0, 12.0, 14.0, 11.0],
+            exposure_vol_nu: 8.0,
+            is_brownian_bridge_swap: false,
+            y0: 0.02,
+            cir_kappa: 0.35,
+            cir_theta: 0.025,
+            cir_vol: 0.08,
+            intensity_shift_psi: 0.005,
+            wwr_correlation: 0.0,
+            lgd: 0.60,
+        };
+        let r0 = compute_brigo_vrins_wwm_cva(&base_wwm);
+        assert!((r0.wwm_cva - r0.independent_cva).abs() < 1e-12);
+        assert!(r0.wwr_cva_surcharge.abs() < 1e-12);
+
+        let pos_wwm = BrigoVrinsWwmCvaSpec {
+            wwr_correlation: 0.65,
+            ..base_wwm.clone()
+        };
+        let r_pos = compute_brigo_vrins_wwm_cva(&pos_wwm);
+        assert!(r_pos.wwm_cva > r_pos.independent_cva);
+        assert!(r_pos.wwr_cva_surcharge > 0.0);
+
+        // Bichuch-Capponi-Sturm (2018): symmetric rates => zero band width; asymmetric borrowing > lending => positive band width
+        let sym_bcs = AsymmetricRateXvaBandSpec {
+            maturity: 1.0,
+            num_steps: 10,
+            clean_claim_value: 25.0,
+            clean_delta_notional: 40.0,
+            asset_vol: 0.20,
+            collateral_alpha: 0.50,
+            dividend_discount_rate: 0.02,
+            repo_lend_rate: 0.02,
+            repo_borrow_rate: 0.02,
+            funding_lend_rate: 0.025,
+            funding_borrow_rate: 0.025,
+            collateral_lend_rate: 0.02,
+            collateral_borrow_rate: 0.02,
+            own_bond_yield_mu_i: 0.04,
+            cpty_bond_yield_mu_c: 0.045,
+            own_lgd: 0.60,
+            cpty_lgd: 0.60,
+        };
+        let rep_sym = compute_bichuch_capponi_sturm_xva_band(&sym_bcs);
+        assert!(rep_sym.no_arbitrage_satisfied);
+        assert!(rep_sym.no_arbitrage_band_width.abs() < 1e-10);
+
+        let asym_bcs = AsymmetricRateXvaBandSpec {
+            funding_lend_rate: 0.022,
+            funding_borrow_rate: 0.038,
+            repo_lend_rate: 0.020,
+            repo_borrow_rate: 0.025,
+            ..sym_bcs
+        };
+        let rep_asym = compute_bichuch_capponi_sturm_xva_band(&asym_bcs);
+        assert!(rep_asym.no_arbitrage_satisfied);
+        assert!(rep_asym.no_arbitrage_band_width > 0.0);
+        assert!(rep_asym.seller_reservation_price > rep_asym.buyer_reservation_price);
+
+        let h = 1e-5;
+        let eval_rho = |rho: f64| {
+            let mut s = pos_wwm.clone();
+            s.wwr_correlation = rho;
+            compute_brigo_vrins_wwm_cva(&s).wwm_cva
+        };
+        let fd = (eval_rho(0.65 + h) - eval_rho(0.65 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let spec_d = BrigoVrinsWwmCvaSpec {
+            times: vec![0.5, 1.0, 2.0, 3.0],
+            discount_rate: D::from_value(0.03),
+            base_mtm_profile: vec![
+                D::from_value(10.0),
+                D::from_value(12.0),
+                D::from_value(14.0),
+                D::from_value(11.0),
+            ],
+            exposure_vol_nu: D::from_value(8.0),
+            is_brownian_bridge_swap: false,
+            y0: D::from_value(0.02),
+            cir_kappa: D::from_value(0.35),
+            cir_theta: D::from_value(0.025),
+            cir_vol: D::from_value(0.08),
+            intensity_shift_psi: D::from_value(0.005),
+            wwr_correlation: D::variable(0.65, 0),
+            lgd: D::from_value(0.60),
+        };
+        let ad = compute_brigo_vrins_wwm_cva(&spec_d).wwm_cva;
+        assert!(ad.d[0] > 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
