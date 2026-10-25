@@ -560,7 +560,9 @@ pub fn price_fong_vasicek_stochastic_vol_bond<T: Real>(
         let dc = -T::from_f64(0.5) * bu * bu
             - (s.vol_mean_reversion_gamma - s.correlation_rho * s.vol_of_vol_xi * bu) * cc
             + T::from_f64(0.5) * s.vol_of_vol_xi * s.vol_of_vol_xi * cc * cc;
-        let da = -a * s.long_run_rate_r_bar * bu + s.vol_mean_reversion_gamma * vbar * cc;
+        let da = -a * s.long_run_rate_r_bar * bu
+            + vbar * bu * bu
+            + s.vol_mean_reversion_gamma * vbar * cc;
         (dc, da)
     };
     let mut u = T::zero();
@@ -581,11 +583,7 @@ pub fn price_fong_vasicek_stochastic_vol_bond<T: Real>(
         av += dt * (k1a + T::from_f64(2.0) * k2a + T::from_f64(2.0) * k3a + k4a) / T::from_f64(6.0);
         u += dt;
     }
-    let mut p = (av - b * s.initial_short_rate_r0 + c * s.initial_variance_v0).exp();
-    // In the constant-volatility collapse use the closed-form Vasicek identity exactly.
-    if s.vol_of_vol_xi.val().abs() < 1e-14 && (s.initial_variance_v0 - vbar).val().abs() < 1e-14 {
-        p = pconst;
-    }
+    let p = (av - b * s.initial_short_rate_r0 + c * s.initial_variance_v0).exp();
     let y = -p.ln() / t.max_val(T::from_f64(1e-12));
     let prem = (p / pconst).ln() * T::from_f64(1e4) / t.max_val(T::from_f64(1e-12));
     FongVasicekStochVolShortRateReport {
@@ -631,5 +629,13 @@ mod phase25_tests {
         let ad = price_fong_vasicek_stochastic_vol_bond(&fv(Dual::<1>::variable(0.03, 0)))
             .zero_coupon_bond_price;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+        let r = price_fong_vasicek_stochastic_vol_bond(&fv(0.03));
+        assert!(r.riccati_variance_loading_c < 0.0);
+        let mut s0 = fv(0.03);
+        s0.vol_of_vol_xi = 0.0;
+        s0.initial_variance_v0 = s0.long_run_variance_v_bar;
+        let r0 = price_fong_vasicek_stochastic_vol_bond(&s0);
+        assert!((r0.zero_coupon_bond_price - r0.vasicek_constant_vol_bond_price).abs() < 1e-10);
+        assert!(r0.stochastic_vol_convexity_premium_bps.abs() < 1e-6);
     }
 }

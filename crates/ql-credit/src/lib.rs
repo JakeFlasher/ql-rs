@@ -1608,8 +1608,7 @@ pub fn evaluate_lando_cox_affine_default_and_liquidity_decomposition<T: Real>(
             s.initial_liquidity_intensity_z0,
             u,
         );
-        let hz = s.base_default_hazard
-            + s.credit_kappa * s.credit_theta * b
+        let hz = s.base_default_hazard - s.credit_kappa * s.credit_theta * b
             + bp * s.initial_credit_intensity_y0;
         let q = s.recovery_rate * (-s.risk_free_rate * u).exp() * sd * sl * hz;
         rec += q * t * T::from_f64(0.5 * W[i]);
@@ -1726,6 +1725,12 @@ mod phase25_tests {
             compute_ifrs9_cecl_multistage_expected_credit_loss(&ecl(Dual::<1>::variable(0.02, 0)))
                 .stage1_12m_ecl;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+        let r = compute_ifrs9_cecl_multistage_expected_credit_loss(&ecl(0.02));
+        assert!(r.stage1_12m_ecl <= r.stage2_lifetime_ecl);
+        assert!(r.stage1_12m_ecl <= r.blended_ifrs9_ecl_provision);
+        assert!(r.blended_ifrs9_ecl_provision <= r.stage2_lifetime_ecl);
+        assert!(r.stage2_lifetime_ecl <= r.stage3_credit_impaired_ecl);
+        assert!(r.stage3_net_eir_interest_income < r.stage1_gross_interest_income);
     }
     fn lando<T: Real>(x: T) -> LandoCoxAffineDefaultSpec<T> {
         LandoCoxAffineDefaultSpec {

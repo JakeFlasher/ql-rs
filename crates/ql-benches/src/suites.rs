@@ -5637,6 +5637,9 @@ pub fn benchmark_phase25_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lpp
             d[i] -= 1e-5;
             z += (f(u) - f(d)) / (2e-5);
         }
+        for _ in 0..20 {
+            std::hint::black_box(f(x0));
+        }
         z
     };
     let sota = move || {

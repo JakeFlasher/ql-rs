@@ -4187,6 +4187,9 @@ mod phase25_tests {
     }
     #[test]
     fn causal_backdoor_dual_fd() {
+        let r0 = evaluate_lopez_de_prado_causal_backdoor_vs_collider_bias(&causal(0.0));
+        assert!(r0.backdoor_recovery_abs_error < 1e-12);
+        assert!(r0.collider_stratification_bias < 0.0);
         let h = 1e-5;
         let fd = (evaluate_lopez_de_prado_causal_backdoor_vs_collider_bias(&causal(0.5 + h))
             .unadjusted_observational_beta
@@ -4195,19 +4198,34 @@ mod phase25_tests {
                 .unadjusted_observational_beta
                 .val())
             / (2.0 * h);
-        let ad = evaluate_lopez_de_prado_causal_backdoor_vs_collider_bias(&causal(
+        let ad_naive = evaluate_lopez_de_prado_causal_backdoor_vs_collider_bias(&causal(
             Dual::<1>::variable(0.5, 0),
         ))
         .unadjusted_observational_beta;
-        assert!((ad.d[0] - fd).abs() < 1e-5);
+        assert!((ad_naive.d[0] - fd).abs() < 1e-5);
+        let ad = evaluate_lopez_de_prado_causal_backdoor_vs_collider_bias(&causal(
+            Dual::<1>::variable(0.5, 0),
+        ))
+        .kitchen_sink_collider_conditioned_beta;
+        let fd_collider =
+            (evaluate_lopez_de_prado_causal_backdoor_vs_collider_bias(&causal(0.5 + h))
+                .kitchen_sink_collider_conditioned_beta
+                .val()
+                - evaluate_lopez_de_prado_causal_backdoor_vs_collider_bias(&causal(0.5 - h))
+                    .kitchen_sink_collider_conditioned_beta
+                    .val())
+                / (2.0 * h);
+        assert!((ad.d[0] - fd_collider).abs() < 1e-5);
     }
     fn vecm<T: Real>(x: T) -> JohansenTsayVecmCointegrationSpec<T> {
         JohansenTsayVecmCointegrationSpec {
             price_series: vec![
-                [T::from_f64(100.0), T::from_f64(101.0) + x],
-                [T::from_f64(101.0), T::from_f64(102.0) + x],
-                [T::from_f64(102.0), T::from_f64(103.0) + x],
-                [T::from_f64(103.0), T::from_f64(104.0) + x],
+                [T::from_f64(100.0), T::from_f64(100.5) + x],
+                [T::from_f64(101.0), T::from_f64(100.8) + x],
+                [T::from_f64(99.5), T::from_f64(100.2) + x],
+                [T::from_f64(100.8), T::from_f64(100.4) + x],
+                [T::from_f64(100.2), T::from_f64(100.6) + x],
+                [T::from_f64(101.2), T::from_f64(100.9) + x],
             ],
         }
     }
@@ -4219,6 +4237,8 @@ mod phase25_tests {
                 .abs()
                 < 1e-12
         );
+        assert!(r.ou_mean_reversion_kappa > 0.0);
+        assert!(r.ou_half_life_periods > 0.0);
         let h = 1e-5;
         let fd = (solve_johansen_tsay_vecm_cointegration_basket(&vecm(h))
             .terminal_spread_z_score

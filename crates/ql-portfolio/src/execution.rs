@@ -1582,5 +1582,9 @@ mod phase25_tests {
         ))
         .efficient_price_innovation_var;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+        let mut s0 = hs(0.2);
+        s0.venue_innovation_corr = 0.0;
+        let r0 = evaluate_hasbrouck_information_share_and_dssw_limits_to_arb(&s0);
+        assert!((r0.hasbrouck_is_upper_venue1 - r0.hasbrouck_is_lower_venue1).abs() < 1e-12);
     }
 }

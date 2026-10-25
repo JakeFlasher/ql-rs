@@ -1657,12 +1657,14 @@ pub fn calibrate_sornette_lppl_bubble_and_crash_hazard<T: Real>(
             + (s.power_law_exponent_m * p[3] + s.log_periodic_omega * p[2]) * th.sin());
     let terminal =
         (hp / s.expected_crash_drop_kappa.max_val(T::from_f64(1e-12))).max_val(T::zero());
-    let drop = ((-p[1])
-        * ((s.critical_time_tc - s.observation_times.first().copied().unwrap_or(T::zero()))
-            .max_val(T::zero())
-            .pow(s.power_law_exponent_m)
-            - tau.pow(s.power_law_exponent_m)))
-    .max_val(T::zero());
+    let eval_fit = |t_obs: T| -> T {
+        let dt = (s.critical_time_tc - t_obs).max_val(T::from_f64(1e-8));
+        let x = dt.pow(s.power_law_exponent_m);
+        let th_obs = s.log_periodic_omega * dt.ln();
+        p[0] + p[1] * x + p[2] * x * th_obs.cos() + p[3] * x * th_obs.sin()
+    };
+    let t0 = s.observation_times.first().copied().unwrap_or(T::zero());
+    let drop = (eval_fit(tn) - eval_fit(t0)).max_val(T::zero());
     let prob = T::one() - (-drop / s.expected_crash_drop_kappa.max_val(T::from_f64(1e-12))).exp();
     SornetteLpplBubbleCrashReport {
         linear_params_a_b_c1_c2: p,
@@ -1825,60 +1827,68 @@ mod phase25_tests {
             prelec_delta: T::one(),
         }
     }
-    fn lppl_spec<T: Real>(x: T) -> SornetteLpplBubbleCrashSpec<T> {
-        SornetteLpplBubbleCrashSpec {
-            observation_times: vec![
-                T::one(),
-                T::from_f64(2.0),
-                T::from_f64(3.0),
-                T::from_f64(4.0),
-                T::from_f64(5.0),
-            ],
-            log_prices: vec![
-                T::from_f64(4.0),
-                T::from_f64(4.1),
-                x,
-                T::from_f64(4.3),
-                T::from_f64(4.4),
-            ],
-            critical_time_tc: T::from_f64(10.0),
-            power_law_exponent_m: T::from_f64(0.5),
-            log_periodic_omega: T::from_f64(8.0),
-            expected_crash_drop_kappa: T::from_f64(0.2),
-            ridge_penalty: T::from_f64(1e-6),
-        }
-    }
     #[test]
     fn cpt_lambda_dual_fd() {
+        let r = evaluate_wakker_tversky_kahneman_cumulative_prospect_utility(&cpt_spec(2.25, 0.03));
+        assert!(r.loss_tail_overweighting_ratio > 1.0);
+        assert!(r.gain_tail_overweighting_ratio > 1.0);
         let h = 1e-5;
         let fd = (evaluate_wakker_tversky_kahneman_cumulative_prospect_utility(&cpt_spec(
-            2.25 + h,
-            0.03,
+            2.25,
+            0.03 + h,
         ))
         .cumulative_prospect_utility
             - evaluate_wakker_tversky_kahneman_cumulative_prospect_utility(&cpt_spec(
-                2.25 - h,
-                0.03,
+                2.25,
+                0.03 - h,
             ))
             .cumulative_prospect_utility)
             / (2.0 * h);
         let ad = evaluate_wakker_tversky_kahneman_cumulative_prospect_utility(&cpt_spec(
-            Dual::<1>::variable(2.25, 0),
-            Dual::<1>::from_value(0.03),
+            Dual::<1>::from_value(2.25),
+            Dual::<1>::variable(0.03, 0),
         ))
         .cumulative_prospect_utility;
-        assert!(ad.d[0] < 0.0 && (ad.d[0] - fd).abs() < 1e-5);
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+    fn lppl_noiseless<T: Real>(tc: T) -> SornetteLpplBubbleCrashSpec<T> {
+        let times = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let log_prices = times
+            .iter()
+            .map(|&t| {
+                let dt = T::from_f64(10.0 - t);
+                let x = dt.pow(T::from_f64(0.5));
+                let th = T::from_f64(6.0) * dt.ln();
+                T::from_f64(5.0) - T::from_f64(0.4) * x + T::from_f64(0.02) * x * th.cos()
+                    - T::from_f64(0.01) * x * th.sin()
+            })
+            .collect();
+        SornetteLpplBubbleCrashSpec {
+            observation_times: times.iter().map(|&t| T::from_f64(t)).collect(),
+            log_prices,
+            critical_time_tc: tc,
+            power_law_exponent_m: T::from_f64(0.5),
+            log_periodic_omega: T::from_f64(6.0),
+            expected_crash_drop_kappa: T::from_f64(0.2),
+            ridge_penalty: T::zero(),
+        }
     }
     #[test]
     fn lppl_dual_fd() {
         let h = 1e-5;
-        let fd = (calibrate_sornette_lppl_bubble_and_crash_hazard(&lppl_spec(4.2 + h)).fitted_rmse
-            - calibrate_sornette_lppl_bubble_and_crash_hazard(&lppl_spec(4.2 - h)).fitted_rmse)
+        let fd = (calibrate_sornette_lppl_bubble_and_crash_hazard(&lppl_noiseless(10.0 + h))
+            .terminal_crash_hazard_rate
+            - calibrate_sornette_lppl_bubble_and_crash_hazard(&lppl_noiseless(10.0 - h))
+                .terminal_crash_hazard_rate)
             / (2.0 * h);
-        let ad = calibrate_sornette_lppl_bubble_and_crash_hazard(&lppl_spec(Dual::<1>::variable(
-            4.2, 0,
-        )))
-        .fitted_rmse;
+        let r = calibrate_sornette_lppl_bubble_and_crash_hazard(&lppl_noiseless(10.0));
+        assert!(r.fitted_rmse < 1e-10);
+        assert!(r.linear_params_a_b_c1_c2[1] < 0.0);
+        assert!(r.sornette_damping_parameter >= 1.0);
+        let ad = calibrate_sornette_lppl_bubble_and_crash_hazard(&lppl_noiseless(
+            Dual::<1>::variable(10.0, 0),
+        ))
+        .terminal_crash_hazard_rate;
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

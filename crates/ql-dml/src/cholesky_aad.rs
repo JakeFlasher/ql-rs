@@ -874,7 +874,6 @@ pub fn evaluate_fournie_lasry_lions_malliavin_bel_greeks<T: Real>(
     let call_gamma = df_q * d1.norm_pdf() / (st * vs);
     let call_vega = st * df_q * d1.norm_pdf() * rt;
     let dig_delta = df_r * d2.norm_pdf() / (st * vs);
-    let dig_gamma = -df_r * d1 * d2.norm_pdf() / (st * st * v * v * t);
     const X: [f64; 16] = [
         0.095012509837637,
         0.281603550779259,
@@ -916,44 +915,48 @@ pub fn evaluate_fournie_lasry_lions_malliavin_bel_greeks<T: Real>(
     let mut qv = T::zero();
     let mut qdd = T::zero();
     let mut qdg = T::zero();
+    let mut ld_mean = T::zero();
     let mut u2 = T::zero();
     let mut l2 = T::zero();
-    let delta_loc = s.localization_bandwidth.abs().max_val(T::from_f64(1e-3)) * st * vs;
+    let z_star = -d2;
+    let z_max = z_star + T::from_f64(8.0);
+    let half = T::from_f64(0.5) * (z_max - z_star);
+    let mid = T::from_f64(0.5) * (z_max + z_star);
+    let b_loc = s.localization_bandwidth.abs().max_val(T::from_f64(0.05)) * st * vs;
     for i in 0..16 {
-        let z = T::from_f64(5.5 * X[i]);
-        let wg = T::from_f64(5.5 * W[i]) * z.norm_pdf();
+        let z = mid + half * T::from_f64(X[i]);
+        let wg = half * T::from_f64(W[i]) * z.norm_pdf();
         let stz = st * ((s.rate - s.div_yield - T::from_f64(0.5) * v * v) * t + vs * z).exp();
         let disc = df_r;
-        let pay = (stz - s.strike).max_val(T::zero());
-        let ind = (stz - s.strike).smooth_heaviside(T::zero(), delta_loc.val());
+        let pay = stz - s.strike;
         let pd = z / (st * vs);
         let pg = (z * z - T::one() - vs * z) / (st * st * v * v * t);
         let pv = (z * z - T::one()) / v - rt * z;
         let ud = disc * pay * pd;
-        let ld = disc * (stz - s.strike) * ind * pd;
+        let u_loc = pay / b_loc;
+        let h_loc = T::one() - (-u_loc).exp();
+        let ld = disc * h_loc * stz / st + disc * pay * (T::one() - h_loc) * pd;
         qd += wg * ud;
         qg += wg * disc * pay * pg;
         qv += wg * disc * pay * pv;
-        qdd += wg * disc * ind * pd;
-        qdg += wg * disc * ind * pg;
+        qdd += wg * disc * pd;
+        qdg += wg * disc * pg;
+        ld_mean += wg * ld;
         u2 += wg * ud * ud;
         l2 += wg * ld * ld;
     }
-    let ratio = ((u2 - call_delta * call_delta)
-        / (l2 - call_delta * call_delta).max_val(T::from_f64(1e-14)))
-    .max_val(T::from_f64(1.000001));
-    // The finite-domain quadrature is used for the BEL estimators and variance moments;
-    // analytic values provide the exact smooth-payoff limit at the kink.
-    let _ = (qd, qg, qv, qdd, qdg);
+    let var_unloc = (u2 - qd * qd).max_val(T::from_f64(1e-14));
+    let var_loc = (l2 - ld_mean * ld_mean).max_val(T::from_f64(1e-14));
+    let ratio = var_unloc / var_loc;
     FournieLasryLionsMalliavinBelReport {
-        call_malliavin_delta: call_delta,
-        call_malliavin_gamma: call_gamma,
-        call_malliavin_vega: call_vega,
+        call_malliavin_delta: qd,
+        call_malliavin_gamma: qg,
+        call_malliavin_vega: qv,
         call_analytic_delta: call_delta,
         call_analytic_gamma: call_gamma,
         call_analytic_vega: call_vega,
-        digital_malliavin_delta: dig_delta,
-        digital_malliavin_gamma: dig_gamma,
+        digital_malliavin_delta: qdd,
+        digital_malliavin_gamma: qdg,
         digital_analytic_delta: dig_delta,
         localization_variance_reduction_ratio: ratio,
     }
@@ -1029,6 +1032,34 @@ mod phase25_tests {
             evaluate_fournie_lasry_lions_malliavin_bel_greeks(&bel(Dual::<1>::variable(100.0, 0)))
                 .call_malliavin_delta;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+        let r = evaluate_fournie_lasry_lions_malliavin_bel_greeks(&bel(100.0));
+        assert!((r.call_malliavin_delta - r.call_analytic_delta).abs() < 1e-4);
+        assert!((r.call_malliavin_gamma - r.call_analytic_gamma).abs() < 1e-4);
+        assert!((r.call_malliavin_vega - r.call_analytic_vega).abs() < 1e-3);
+        assert!((r.digital_malliavin_delta - r.digital_analytic_delta).abs() < 1e-4);
+        assert!(r.localization_variance_reduction_ratio > 1.0);
+        let fd_ratio = (evaluate_fournie_lasry_lions_malliavin_bel_greeks(
+            &FournieLasryLionsMalliavinBelSpec {
+                localization_bandwidth: 0.5 + h,
+                ..bel(100.0_f64)
+            },
+        )
+        .localization_variance_reduction_ratio
+            - evaluate_fournie_lasry_lions_malliavin_bel_greeks(
+                &FournieLasryLionsMalliavinBelSpec {
+                    localization_bandwidth: 0.5 - h,
+                    ..bel(100.0_f64)
+                },
+            )
+            .localization_variance_reduction_ratio)
+            / (2.0 * h);
+        let ad_ratio =
+            evaluate_fournie_lasry_lions_malliavin_bel_greeks(&FournieLasryLionsMalliavinBelSpec {
+                localization_bandwidth: Dual::<1>::variable(0.5, 0),
+                ..bel(Dual::<1>::from_value(100.0))
+            })
+            .localization_variance_reduction_ratio;
+        assert!((ad_ratio.d[0] - fd_ratio).abs() < 1e-5);
     }
 }
 
