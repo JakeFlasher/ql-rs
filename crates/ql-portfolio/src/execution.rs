@@ -1002,3 +1002,123 @@ mod phase21_tests {
         assert!(r0.inventory_trajectory.last().unwrap().val().is_finite());
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct GueantLehalleMarketMakingSpec<T: Real = f64> {
+    pub max_inventory_q: usize,
+    pub current_inventory_q: isize,
+    pub horizon: T,
+    pub num_time_steps: usize,
+    pub volatility: T,
+    pub risk_aversion_gamma: T,
+    pub intensity_decay_k: T,
+    pub base_intensity_a: T,
+    pub terminal_inventory_penalty: T,
+    pub adverse_selection_zeta: T,
+}
+#[derive(Clone, Debug)]
+pub struct GueantLehalleMarketMakingReport<T: Real = f64> {
+    pub value_function_theta_grid: Vec<T>,
+    pub optimal_bid_half_spreads_by_q: Vec<T>,
+    pub optimal_ask_half_spreads_by_q: Vec<T>,
+    pub current_optimal_bid_offset: T,
+    pub current_optimal_ask_offset: T,
+    pub current_reservation_price_skew: T,
+    pub asymptotic_stationary_spread: T,
+    pub logistic_rfq_optimal_bid_markup: T,
+    pub logistic_rfq_optimal_ask_markup: T,
+}
+pub fn solve_gueant_lehalle_bounded_market_making<T: Real>(
+    s: &GueantLehalleMarketMakingSpec<T>,
+) -> GueantLehalleMarketMakingReport<T> {
+    let q = s.max_inventory_q.max(1);
+    let m = 2 * q + 1;
+    let mut v = vec![T::zero(); m];
+    for (i, vi) in v.iter_mut().enumerate() {
+        let qi = i as isize - (q as isize);
+        let q2 = (qi * qi) as f64;
+        *vi = (-s.intensity_decay_k * s.terminal_inventory_penalty * q2).exp();
+    }
+    let ratio = s.risk_aversion_gamma / s.intensity_decay_k.max_val(T::from_f64(1e-12));
+    let eta = s.base_intensity_a
+        * (T::one() + ratio).powf(
+            -(1.0
+                + s.intensity_decay_k.val()
+                    / s.risk_aversion_gamma.max_val(T::from_f64(1e-12)).val()),
+        );
+    let dt = s.horizon / T::from_f64(s.num_time_steps.max(1) as f64);
+    for _ in 0..s.num_time_steps.max(1) {
+        let old = v.clone();
+        for i in 0..m {
+            let qi = i as isize - (q as isize);
+            let q2 = (qi * qi) as f64;
+            let mut rhs = old[i]
+                - T::from_f64(0.5)
+                    * s.intensity_decay_k
+                    * s.risk_aversion_gamma
+                    * s.volatility
+                    * s.volatility
+                    * q2
+                    * old[i]
+                    * dt;
+            if i > 0 {
+                rhs += eta * old[i - 1] * dt;
+            }
+            if i + 1 < m {
+                rhs += eta * old[i + 1] * dt;
+            }
+            v[i] = rhs.max_val(T::from_f64(1e-14));
+        }
+    }
+    let theta = v
+        .iter()
+        .map(|x| x.ln() / s.intensity_decay_k.max_val(T::from_f64(1e-12)))
+        .collect::<Vec<_>>();
+    let base = (T::one() + ratio).ln() / s.risk_aversion_gamma.max_val(T::from_f64(1e-12));
+    let mut bid = vec![T::zero(); m];
+    let mut ask = vec![T::zero(); m];
+    for i in 0..m {
+        if i + 1 < m {
+            bid[i] = base + (v[i] / v[i + 1]).ln() / s.intensity_decay_k + s.adverse_selection_zeta;
+        }
+        if i > 0 {
+            ask[i] = base + (v[i] / v[i - 1]).ln() / s.intensity_decay_k + s.adverse_selection_zeta;
+        }
+    }
+    let idx = (s.current_inventory_q.clamp(-(q as isize), q as isize) + q as isize) as usize;
+    let pb = T::from_f64(0.5)
+        * s.risk_aversion_gamma
+        * s.volatility
+        * s.volatility
+        * s.horizon
+        * T::from_f64((2 * s.current_inventory_q + 1) as f64);
+    let pa = T::from_f64(0.5)
+        * s.risk_aversion_gamma
+        * s.volatility
+        * s.volatility
+        * s.horizon
+        * T::from_f64((-2 * s.current_inventory_q + 1) as f64);
+    let solve = |mut x: T, p: T| {
+        for _ in 0..8 {
+            let z = (T::one() - s.intensity_decay_k * x).exp();
+            let f = s.intensity_decay_k * (x - p) - T::one() - z;
+            let fp = s.intensity_decay_k * (T::one() + z);
+            x -= f / fp;
+        }
+        x
+    };
+    let lb = solve(T::zero(), pb);
+    let la = solve(T::zero(), pa);
+    GueantLehalleMarketMakingReport {
+        value_function_theta_grid: theta,
+        optimal_bid_half_spreads_by_q: bid.clone(),
+        optimal_ask_half_spreads_by_q: ask.clone(),
+        current_optimal_bid_offset: bid[idx],
+        current_optimal_ask_offset: ask[idx],
+        current_reservation_price_skew: T::from_f64(0.5) * (ask[idx] - bid[idx]),
+        asymptotic_stationary_spread: T::from_f64(2.0) * base
+            + T::from_f64(2.0) * s.adverse_selection_zeta,
+        logistic_rfq_optimal_bid_markup: lb,
+        logistic_rfq_optimal_ask_markup: la,
+    }
+}

@@ -1,4 +1,5 @@
 use ql_ad::Real;
+use ql_ad::ift_lift_1d;
 use ql_mc::PhiloxRng;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -97,6 +98,194 @@ pub fn price_fx_tarf_mc_ad<T: Real>(
         npv: pv * inv,
         expected_knockout_time: kt * inv,
         expected_accumulated_profit: ap * inv,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct WystupFxStructuredProductSpec<T: Real = f64> {
+    pub spot: T,
+    pub accumulator_strike: T,
+    pub knockout_barrier: T,
+    pub downside_gearing: T,
+    pub domestic_rate: T,
+    pub foreign_rate: T,
+    pub volatility: T,
+    pub fixing_times: Vec<T>,
+    pub guaranteed_fixings: usize,
+    pub dcd_conversion_strike: T,
+    pub dcd_tenor: T,
+}
+#[derive(Clone, Debug)]
+pub struct WystupFxStructuredProductReport<T: Real = f64> {
+    pub bgk_shifted_barrier: T,
+    pub guaranteed_period_npv: T,
+    pub ko_protected_strip_npv: T,
+    pub total_accumulator_npv: T,
+    pub unbarriered_strip_npv: T,
+    pub fair_zero_cost_accumulator_strike: T,
+    pub dcd_embedded_put_premium_pct: T,
+    pub dcd_enhanced_yield_rate: T,
+    pub dcd_yield_pickup_bps: T,
+}
+pub fn evaluate_wystup_fx_accumulator_and_dcd<T: Real>(
+    s: &WystupFxStructuredProductSpec<T>,
+) -> WystupFxStructuredProductReport<T> {
+    let m = s.fixing_times.len();
+    if m == 0 {
+        return WystupFxStructuredProductReport {
+            bgk_shifted_barrier: s.knockout_barrier,
+            guaranteed_period_npv: T::zero(),
+            ko_protected_strip_npv: T::zero(),
+            total_accumulator_npv: T::zero(),
+            unbarriered_strip_npv: T::zero(),
+            fair_zero_cost_accumulator_strike: s.accumulator_strike,
+            dcd_embedded_put_premium_pct: T::zero(),
+            dcd_enhanced_yield_rate: s.domestic_rate,
+            dcd_yield_pickup_bps: T::zero(),
+        };
+    }
+    let dt = s.fixing_times.last().copied().unwrap_or(T::one()) / m as f64;
+    let beta = T::from_f64(0.5825971579390107);
+    let be = s.knockout_barrier * (beta * s.volatility * dt.sqrt()).exp();
+    let strip = |k: T| {
+        let mut u = T::zero();
+        for (i, &t) in s.fixing_times.iter().enumerate() {
+            let c = crate::garman_kohlhagen_price(
+                s.spot,
+                k,
+                s.volatility,
+                t,
+                s.domestic_rate,
+                s.foreign_rate,
+                true,
+            );
+            let p = crate::garman_kohlhagen_price(
+                s.spot,
+                k,
+                s.volatility,
+                t,
+                s.domestic_rate,
+                s.foreign_rate,
+                false,
+            );
+            let v = c - s.downside_gearing * p;
+            let vv = if i < s.guaranteed_fixings {
+                v
+            } else {
+                let sm = crate::FxVannaVolgaSmile::new(
+                    s.spot,
+                    s.domestic_rate,
+                    s.foreign_rate,
+                    t,
+                    crate::FxSmileQuote {
+                        atm_vol: s.volatility,
+                        rr_25d: T::zero(),
+                        bf_25d: T::zero(),
+                    },
+                );
+                sm.price_knock_out_barrier(k, be, true, true)
+                    - s.downside_gearing * sm.price_knock_out_barrier(k, be, true, false)
+            };
+            u += (-s.domestic_rate * t).exp() * vv;
+        }
+        u
+    };
+    let unbarriered = |k: T| {
+        s.fixing_times
+            .iter()
+            .map(|&t| {
+                let c = crate::garman_kohlhagen_price(
+                    s.spot,
+                    k,
+                    s.volatility,
+                    t,
+                    s.domestic_rate,
+                    s.foreign_rate,
+                    true,
+                );
+                let p = crate::garman_kohlhagen_price(
+                    s.spot,
+                    k,
+                    s.volatility,
+                    t,
+                    s.domestic_rate,
+                    s.foreign_rate,
+                    false,
+                );
+                (-s.domestic_rate * t).exp() * (c - s.downside_gearing * p)
+            })
+            .fold(T::zero(), |a, b| a + b)
+    };
+    // Solve the primal root in f64, then lift its quote sensitivities with IFT.
+    let mut k_star = s.spot.val() * 0.96;
+    for _ in 0..16 {
+        let h = s.spot.val().abs().max(1.0) * 1e-5;
+        let f = strip(T::from_f64(k_star)).val();
+        let der = (strip(T::from_f64(k_star + h)).val() - strip(T::from_f64(k_star - h)).val())
+            / (2.0 * h);
+        if der.abs() > 1e-12 {
+            k_star -= f / der;
+        }
+    }
+    let mut kf = T::from_f64(k_star);
+    let h_lift = s.spot * T::from_f64(1e-5);
+    let d_lift = (strip(kf + h_lift) - strip(kf - h_lift)) / (T::from_f64(2.0) * h_lift);
+    if d_lift.val().abs() > 1e-12 {
+        kf = ift_lift_1d(kf.val(), strip, d_lift, 0.0);
+    }
+    let g = strip(s.accumulator_strike);
+    let guar = if s.guaranteed_fixings > 0 {
+        let mut x = T::zero();
+        for &t in s.fixing_times.iter().take(s.guaranteed_fixings) {
+            x += (-s.domestic_rate * t).exp()
+                * (crate::garman_kohlhagen_price(
+                    s.spot,
+                    s.accumulator_strike,
+                    s.volatility,
+                    t,
+                    s.domestic_rate,
+                    s.foreign_rate,
+                    true,
+                ) - s.downside_gearing
+                    * crate::garman_kohlhagen_price(
+                        s.spot,
+                        s.accumulator_strike,
+                        s.volatility,
+                        t,
+                        s.domestic_rate,
+                        s.foreign_rate,
+                        false,
+                    ));
+        }
+        x
+    } else {
+        T::zero()
+    };
+    let total = g;
+    let unbar = unbarriered(s.accumulator_strike);
+    let ko = total - guar;
+    let put = crate::garman_kohlhagen_price(
+        s.spot,
+        s.dcd_conversion_strike,
+        s.volatility,
+        s.dcd_tenor,
+        s.domestic_rate,
+        s.foreign_rate,
+        false,
+    );
+    let prem = put / s.dcd_conversion_strike;
+    let pickup =
+        (s.domestic_rate * s.dcd_tenor).exp() / s.dcd_tenor.max_val(T::from_f64(1e-12)) * prem;
+    WystupFxStructuredProductReport {
+        bgk_shifted_barrier: be,
+        guaranteed_period_npv: guar,
+        ko_protected_strip_npv: ko,
+        total_accumulator_npv: total,
+        unbarriered_strip_npv: unbar,
+        fair_zero_cost_accumulator_strike: kf,
+        dcd_embedded_put_premium_pct: prem,
+        dcd_enhanced_yield_rate: s.domestic_rate + pickup,
+        dcd_yield_pickup_bps: T::from_f64(10000.0) * pickup,
     }
 }
 

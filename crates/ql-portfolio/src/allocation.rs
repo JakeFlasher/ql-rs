@@ -3,6 +3,219 @@ use ql_ad::Real;
 use thiserror::Error;
 
 #[derive(Clone, Debug)]
+pub struct MeucciIdzorekBlackLittermanSpec<T: Real = f64> {
+    pub covariance: Vec<Vec<T>>,
+    pub market_weights: Vec<T>,
+    pub risk_aversion_lambda: T,
+    pub tau: T,
+    pub view_matrix_p: Vec<Vec<T>>,
+    pub view_returns_q: Vec<T>,
+    pub view_confidences: Vec<T>,
+}
+#[derive(Clone, Debug)]
+pub struct MeucciIdzorekBlackLittermanReport<T: Real = f64> {
+    pub implied_equilibrium_returns: Vec<T>,
+    pub calibrated_omega_diagonal: Vec<T>,
+    pub posterior_expected_returns: Vec<T>,
+    pub posterior_return_covariance: Vec<Vec<T>>,
+    pub optimal_posterior_weights: Vec<T>,
+    pub active_weight_tilts: Vec<T>,
+    pub mahalanobis_plausibility_squared: T,
+    pub view_weight_sensitivities_l2: Vec<T>,
+    pub grinold_kahn_transfer_coefficient: T,
+    pub meucci_ellipsoidal_shrinkage_factor: T,
+}
+fn invm<T: Real>(a: &[Vec<T>]) -> Vec<Vec<T>> {
+    let n = a.len();
+    let mut x = vec![vec![T::zero(); 2 * n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            x[i][j] = a[i][j];
+        }
+        x[i][n + i] = T::one();
+    }
+    for i in 0..n {
+        let mut p = i;
+        for r in i + 1..n {
+            if x[r][i].abs().val() > x[p][i].abs().val() {
+                p = r;
+            }
+        }
+        x.swap(i, p);
+        let d = x[i][i].max_val(T::from_f64(1e-14));
+        for j in 0..2 * n {
+            x[i][j] /= d;
+        }
+        for r in 0..n {
+            if r != i {
+                let f = x[r][i];
+                let piv = x[i].clone();
+                for j in 0..2 * n {
+                    x[r][j] -= f * piv[j];
+                }
+            }
+        }
+    }
+    x.into_iter().map(|r| r[n..].to_vec()).collect()
+}
+pub fn solve_meucci_idzorek_black_litterman_and_plausibility<T: Real>(
+    s: &MeucciIdzorekBlackLittermanSpec<T>,
+) -> MeucciIdzorekBlackLittermanReport<T> {
+    let n = s.market_weights.len();
+    let k = s.view_returns_q.len();
+    let mut pi = vec![T::zero(); n];
+    for i in 0..n {
+        for j in 0..n {
+            pi[i] += s.risk_aversion_lambda * s.covariance[i][j] * s.market_weights[j];
+        }
+    }
+    let mut ts = vec![vec![T::zero(); n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            ts[i][j] = s.tau * s.covariance[i][j];
+        }
+    }
+    let mut om = vec![T::zero(); k];
+    for a in 0..k {
+        let mut v = T::zero();
+        for i in 0..n {
+            for j in 0..n {
+                v += s.view_matrix_p[a][i] * ts[i][j] * s.view_matrix_p[a][j];
+            }
+        }
+        let c = s
+            .view_confidences
+            .get(a)
+            .copied()
+            .unwrap_or(T::from_f64(0.5))
+            .max_val(T::from_f64(1e-6))
+            .min_val(T::from_f64(1.0 - 1e-6));
+        om[a] = (T::one() - c) / c * v;
+    }
+    let mut mtx = vec![vec![T::zero(); k]; k];
+    for a in 0..k {
+        for b in 0..k {
+            for i in 0..n {
+                for j in 0..n {
+                    mtx[a][b] += s.view_matrix_p[a][i] * ts[i][j] * s.view_matrix_p[b][j];
+                }
+            }
+            if a == b {
+                mtx[a][b] += om[a];
+            }
+        }
+    }
+    let mi = invm(&mtx);
+    let mut kap = vec![vec![T::zero(); k]; n];
+    for i in 0..n {
+        for b in 0..k {
+            for a in 0..k {
+                for j in 0..n {
+                    kap[i][b] += ts[i][j] * s.view_matrix_p[a][j] * mi[a][b];
+                }
+            }
+        }
+    }
+    let mut mu = pi.clone();
+    for i in 0..n {
+        for b in 0..k {
+            let mut q = s.view_returns_q[b];
+            for j in 0..n {
+                q -= s.view_matrix_p[b][j] * pi[j];
+            }
+            mu[i] += kap[i][b] * q;
+        }
+    }
+    let mut post = s.covariance.clone();
+    for i in 0..n {
+        for j in 0..n {
+            post[i][j] *= T::one() + s.tau;
+            for a in 0..k {
+                for b in 0..n {
+                    post[i][j] -= kap[i][a] * s.view_matrix_p[a][b] * ts[b][j];
+                }
+            }
+        }
+    }
+    let invs = invm(&s.covariance);
+    let mut w = vec![T::zero(); n];
+    for i in 0..n {
+        for j in 0..n {
+            w[i] += invs[i][j] * mu[j] / s.risk_aversion_lambda.max_val(T::from_f64(1e-12));
+        }
+    }
+    let active = w
+        .iter()
+        .zip(s.market_weights.iter())
+        .map(|(a, b)| *a - *b)
+        .collect::<Vec<_>>();
+    let mut alpha = vec![T::zero(); n];
+    for i in 0..n {
+        alpha[i] = mu[i] - pi[i];
+    }
+    let mut maha = T::zero();
+    for i in 0..n {
+        for j in 0..n {
+            maha += alpha[i] / s.tau.max_val(T::from_f64(1e-12)) * invs[i][j] * alpha[j];
+        }
+    }
+    let sens = (0..k)
+        .map(|a| {
+            let mut z = T::zero();
+            for i in 0..n {
+                let mut dw = T::zero();
+                for j in 0..n {
+                    dw += invs[i][j] * kap[j][a];
+                }
+                z += (dw / s.risk_aversion_lambda.max_val(T::from_f64(1e-12))).powf(2.0);
+            }
+            z.sqrt()
+        })
+        .collect();
+    let mut proj = w.clone();
+    for x in &mut proj {
+        *x = x.max_val(T::zero());
+    }
+    let sumw: T = proj.iter().copied().fold(T::zero(), |a, b| a + b);
+    let summ: T = s
+        .market_weights
+        .iter()
+        .copied()
+        .fold(T::zero(), |a, b| a + b);
+    for x in &mut proj {
+        *x *= summ / sumw.max_val(T::from_f64(1e-12));
+    }
+    let mut num = T::zero();
+    let mut den1 = T::zero();
+    let mut den2 = T::zero();
+    for i in 0..n {
+        num += (proj[i] - s.market_weights[i]) * alpha[i];
+        for j in 0..n {
+            den1 += (proj[i] - s.market_weights[i])
+                * s.covariance[i][j]
+                * (proj[j] - s.market_weights[j]);
+            den2 += alpha[i] * invs[i][j] * alpha[j];
+        }
+    }
+    let tc = (num / (den1.max_val(T::from_f64(1e-16)) * den2.max_val(T::from_f64(1e-16))).sqrt())
+        .max_val(T::from_f64(-1.0))
+        .min_val(T::one());
+    let shrink = (T::one() - s.tau.sqrt() / (den2 + 1e-16).sqrt()).max_val(T::zero());
+    MeucciIdzorekBlackLittermanReport {
+        implied_equilibrium_returns: pi,
+        calibrated_omega_diagonal: om,
+        posterior_expected_returns: mu,
+        posterior_return_covariance: post,
+        optimal_posterior_weights: w,
+        active_weight_tilts: active,
+        mahalanobis_plausibility_squared: maha,
+        view_weight_sensitivities_l2: sens,
+        grinold_kahn_transfer_coefficient: tc,
+        meucci_ellipsoidal_shrinkage_factor: shrink,
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct PaleologoFactorNeutralAlphaSpec<T: Real = f64> {
     pub raw_alphas: Vec<T>,
     pub factor_loadings_b: Vec<Vec<T>>,

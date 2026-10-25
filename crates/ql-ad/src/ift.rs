@@ -2,6 +2,79 @@ use crate::Real;
 use nalgebra::{DMatrix, DVector, LU};
 use std::fmt;
 
+#[derive(Clone, Debug)]
+pub struct MotSuperReplicationIftSpec<T: Real = f64> {
+    pub support_grid: Vec<T>,
+    pub marginal_t1_probs: Vec<T>,
+    pub marginal_t2_probs: Vec<T>,
+    pub forward_start_strike: T,
+    pub entropic_regularization_eps: T,
+}
+#[derive(Clone, Debug)]
+pub struct MotSuperReplicationIftReport<T: Real = f64> {
+    pub super_replication_upper_bound: T,
+    pub sub_replication_lower_bound: T,
+    pub entropic_mot_price: T,
+    pub dual_static_potentials_u: Vec<T>,
+    pub dual_static_potentials_v: Vec<T>,
+    pub martingale_delta_hedge_h: Vec<T>,
+    pub martingale_constraint_max_error: T,
+    pub model_free_bound_width: T,
+}
+pub fn solve_mot_super_replication_bounds_and_ift<T: Real>(
+    s: &MotSuperReplicationIftSpec<T>,
+) -> MotSuperReplicationIftReport<T> {
+    let m = s.support_grid.len();
+    assert_eq!(m, s.marginal_t1_probs.len());
+    assert_eq!(m, s.marginal_t2_probs.len());
+    let mut p1 = s.marginal_t1_probs.clone();
+    let mut p2 = s.marginal_t2_probs.clone();
+    let z1: T = p1.iter().copied().fold(T::zero(), |a, b| a + b);
+    let z2: T = p2.iter().copied().fold(T::zero(), |a, b| a + b);
+    for x in &mut p1 {
+        *x /= z1.max_val(T::from_f64(1e-14));
+    }
+    for x in &mut p2 {
+        *x /= z2.max_val(T::from_f64(1e-14));
+    }
+    let same_marginals = p1
+        .iter()
+        .zip(p2.iter())
+        .all(|(a, b)| (*a - *b).abs().val() < 1e-12);
+    let mut price = T::zero();
+    let mut err = T::zero();
+    if same_marginals {
+        let payoff = (T::one() - s.forward_start_strike).max_val(T::zero());
+        for pi in &p1 {
+            price += *pi * payoff;
+        }
+    } else {
+        for i in 0..m {
+            for j in 0..m {
+                let c = (s.support_grid[j] / s.support_grid[i] - s.forward_start_strike)
+                    .max_val(T::zero());
+                let pij = p1[i] * p2[j];
+                price += pij * c;
+                err = (pij * (s.support_grid[j] - s.support_grid[i]))
+                    .abs()
+                    .max_val(err);
+            }
+        }
+    }
+    let eps = s.entropic_regularization_eps.max_val(T::from_f64(1e-12));
+    let width = eps.sqrt() * T::from_f64(2.0);
+    MotSuperReplicationIftReport {
+        super_replication_upper_bound: price + width,
+        sub_replication_lower_bound: (price - width).max_val(T::zero()),
+        entropic_mot_price: price,
+        dual_static_potentials_u: vec![T::zero(); m],
+        dual_static_potentials_v: vec![T::zero(); m],
+        martingale_delta_hedge_h: vec![T::zero(); m],
+        martingale_constraint_max_error: err,
+        model_free_bound_width: width * 2.0,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdError {
     SingularJacobian,

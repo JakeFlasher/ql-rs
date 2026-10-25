@@ -787,3 +787,175 @@ mod phase16_tests {
         assert!((bcd.base_correlations[0].d[0] - fd).abs() < 1e-4);
     }
 }
+use ql_math::{bivariate_normal_cdf, inv_norm_cdf};
+
+#[derive(Clone, Debug)]
+pub struct OKaneBespokeBaseCorrelationSpec<T: Real = f64> {
+    pub index_detachments: Vec<T>,
+    pub index_base_correlations: Vec<T>,
+    pub index_expected_loss: T,
+    pub bespoke_hazard_rates: Vec<T>,
+    pub bespoke_recovery_rate: T,
+    pub bespoke_attachment: T,
+    pub bespoke_detachment: T,
+    pub strike_mapping_exponent_gamma: T,
+    pub student_t_dof_nu: T,
+    pub maturity: T,
+    pub risk_free_rate: T,
+}
+#[derive(Clone, Debug)]
+pub struct OKaneBespokeBaseCorrelationReport<T: Real = f64> {
+    pub bespoke_expected_loss: T,
+    pub mapped_standard_attachment: T,
+    pub mapped_standard_detachment: T,
+    pub mapped_attachment_base_corr: T,
+    pub mapped_detachment_base_corr: T,
+    pub bespoke_tranche_expected_loss_lhp: T,
+    pub bespoke_tranche_par_spread_bps: T,
+    pub gaussian_copula_senior_tranche_loss: T,
+    pub student_t_copula_senior_tranche_loss: T,
+    pub student_t_tail_dependence_lambda: T,
+}
+pub fn vasicek_lhp_closed_form_base_tranche_loss<T: Real>(p: T, r: T, k: T, rho: T) -> T {
+    let lg = (T::one() - r).max_val(T::from_f64(1e-12));
+    let kn = (k / lg)
+        .max_val(T::from_f64(1e-12))
+        .min_val(T::one() - T::from_f64(1e-12));
+    let z = (inv_norm_cdf(p) - ((T::one() - rho).max_val(T::zero())).sqrt() * inv_norm_cdf(kn))
+        / rho.max_val(T::from_f64(1e-12)).sqrt();
+    lg * bivariate_normal_cdf(
+        inv_norm_cdf(p),
+        -z,
+        -rho.max_val(T::from_f64(-0.999)).min_val(T::from_f64(0.999)),
+    ) + k * z.norm_cdf()
+}
+fn interp<T: Real>(x: T, xs: &[T], ys: &[T]) -> T {
+    if xs.is_empty() {
+        return T::from_f64(0.5);
+    }
+    if x.val() <= xs[0].val() {
+        return ys[0];
+    }
+    for i in 1..xs.len() {
+        if x.val() <= xs[i].val() {
+            let w = (x - xs[i - 1]) / (xs[i] - xs[i - 1]);
+            return ys[i - 1] + w * (ys[i] - ys[i - 1]);
+        }
+    }
+    *ys.last().unwrap()
+}
+fn student_t_cdf<T: Real>(x: T, nu: T) -> T {
+    // Positive-side density quadrature; this remains in the AD scalar type.
+    let gamma = |z: T| {
+        let cc = [
+            0.9999999999998099,
+            676.5203681218851,
+            -1259.1392167224028,
+            771.3234287776531,
+            -176.6150291621406,
+            12.507343278686905,
+            -0.13857109526572012,
+            9.984369578019572e-6,
+            1.5056327351493116e-7,
+        ];
+        let zz = z.max_val(T::from_f64(0.5)) - 1.0;
+        let mut q = T::from_f64(cc[0]);
+        for (i, ci) in cc.iter().enumerate().skip(1) {
+            q += T::from_f64(*ci) / (zz + i as f64);
+        }
+        let tt = zz + 7.5;
+        T::from_f64((2.0 * std::f64::consts::PI).sqrt()) * tt.pow(zz + 0.5) * (-tt).exp() * q
+    };
+    let norm =
+        gamma((nu + 1.0) * 0.5) / (nu * T::from_f64(std::f64::consts::PI)).sqrt() / gamma(nu * 0.5);
+    let nodes = [
+        -0.9602898565,
+        -0.7966664774,
+        -0.5255324099,
+        -0.1834346425,
+        0.1834346425,
+        0.5255324099,
+        0.7966664774,
+        0.9602898565,
+    ];
+    let weights = [
+        0.1012285363,
+        0.2223810345,
+        0.3137066459,
+        0.3626837834,
+        0.3626837834,
+        0.3137066459,
+        0.2223810345,
+        0.1012285363,
+    ];
+    let upper = x.abs().min_val(T::from_f64(20.0));
+    let mut integ = T::zero();
+    for i in 0..8 {
+        let t = upper * (nodes[i] + 1.0) * 0.5;
+        integ +=
+            norm * (T::one() + t * t / nu).pow(-(nu + T::one()) * 0.5) * upper * (0.5 * weights[i]);
+    }
+    let out = T::from_f64(0.5) + integ;
+    if x.val() < 0.0 { T::one() - out } else { out }
+}
+pub fn price_okane_bespoke_tranche_and_student_t_basket<T: Real>(
+    s: &OKaneBespokeBaseCorrelationSpec<T>,
+) -> OKaneBespokeBaseCorrelationReport<T> {
+    let n = s.bespoke_hazard_rates.len().max(1) as f64;
+    let p = s
+        .bespoke_hazard_rates
+        .iter()
+        .copied()
+        .map(|h| T::one() - (-h * s.maturity).exp())
+        .fold(T::zero(), |a, b| a + b)
+        / n;
+    let el = (T::one() - s.bespoke_recovery_rate) * p;
+    let ratio = (s.index_expected_loss / el.max_val(T::from_f64(1e-12)))
+        .pow(s.strike_mapping_exponent_gamma);
+    let ka = s.bespoke_attachment * ratio;
+    let kd = s.bespoke_detachment * ratio;
+    let ra = interp(ka, &s.index_detachments, &s.index_base_correlations);
+    let rd = interp(kd, &s.index_detachments, &s.index_base_correlations);
+    let l0a = vasicek_lhp_closed_form_base_tranche_loss(
+        p,
+        s.bespoke_recovery_rate,
+        s.bespoke_attachment,
+        ra,
+    );
+    let l0d = vasicek_lhp_closed_form_base_tranche_loss(
+        p,
+        s.bespoke_recovery_rate,
+        s.bespoke_detachment,
+        rd,
+    );
+    let frac = ((l0d - l0a).max_val(T::zero())
+        / (s.bespoke_detachment - s.bespoke_attachment).max_val(T::from_f64(1e-12)))
+    .min_val(T::one());
+    let base_ann = if s.risk_free_rate.val().abs() < 1e-10 {
+        s.maturity
+    } else {
+        (T::one() - (-s.risk_free_rate * s.maturity).exp()) / s.risk_free_rate
+    };
+    let ann = base_ann * (T::one() - frac * 0.5);
+    let senior = (el - l0d).max_val(T::zero());
+    let nu = s.student_t_dof_nu.max_val(T::from_f64(2.01));
+    let tail = T::from_f64(2.0)
+        * student_t_cdf(
+            -((nu + T::one()) * (T::one() - rd) / (T::one() + rd)).sqrt(),
+            nu + T::one(),
+        );
+    let t_senior = (senior * (T::one() + tail * 0.25)).min_val(el);
+    OKaneBespokeBaseCorrelationReport {
+        bespoke_expected_loss: el,
+        mapped_standard_attachment: ka,
+        mapped_standard_detachment: kd,
+        mapped_attachment_base_corr: ra,
+        mapped_detachment_base_corr: rd,
+        bespoke_tranche_expected_loss_lhp: frac,
+        bespoke_tranche_par_spread_bps: T::from_f64(10000.0) * frac
+            / ann.max_val(T::from_f64(1e-12)),
+        gaussian_copula_senior_tranche_loss: senior,
+        student_t_copula_senior_tranche_loss: t_senior,
+        student_t_tail_dependence_lambda: tail,
+    }
+}

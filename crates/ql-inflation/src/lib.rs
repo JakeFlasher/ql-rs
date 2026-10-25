@@ -12,6 +12,117 @@ pub enum InflationError {
     #[error("invalid inflation curve")]
     InvalidCurve,
 }
+
+#[derive(Clone, Debug)]
+pub struct BrigoMercurioInflationMarketModelSpec<T: Real = f64> {
+    pub notional: T,
+    pub base_cpi: T,
+    pub payment_times: Vec<T>,
+    pub forward_cpis: Vec<T>,
+    pub nominal_forward_rates: Vec<T>,
+    pub nominal_discount_factors: Vec<T>,
+    pub forward_cpi_vols: Vec<T>,
+    pub nominal_forward_vols: Vec<T>,
+    pub inter_maturity_cpi_corr: T,
+    pub nominal_cpi_corr: T,
+    pub lpi_floor: T,
+    pub lpi_cap: T,
+    pub fixed_swap_rate: T,
+}
+#[derive(Clone, Debug)]
+pub struct BrigoMercurioInflationMarketModelReport<T: Real = f64> {
+    pub unadjusted_yoy_forwards: Vec<T>,
+    pub convexity_adjusted_yoy_forwards: Vec<T>,
+    pub total_yoy_convexity_adjustment_bps: T,
+    pub yoy_effective_total_vols: Vec<T>,
+    pub fimm_lpi_expected_rates: Vec<T>,
+    pub unadjusted_lpi_swap_npv: T,
+    pub fimm_convexity_adjusted_lpi_swap_npv: T,
+    pub compounded_lpi_pension_terminal_index: T,
+}
+pub fn price_brigo_mercurio_yoy_and_lpi_market_model<T: Real>(
+    s: &BrigoMercurioInflationMarketModelSpec<T>,
+) -> BrigoMercurioInflationMarketModelReport<T> {
+    let m = s.payment_times.len();
+    let mut un = Vec::with_capacity(m);
+    let mut adj = Vec::with_capacity(m);
+    let mut vols = Vec::with_capacity(m);
+    let mut lpi = Vec::with_capacity(m);
+    let mut prev = s.base_cpi;
+    let mut tprev = T::zero();
+    let mut n_un = T::zero();
+    let mut n_ad = T::zero();
+    let mut terminal = s.base_cpi;
+    for i in 0..m {
+        let t = s.payment_times[i];
+        let dt = (t - tprev).max_val(T::from_f64(1e-8));
+        let cpi = *s.forward_cpis.get(i).unwrap_or(&prev);
+        let g = cpi / prev;
+        let f = g - T::one();
+        let si = *s.forward_cpi_vols.get(i).unwrap_or(&T::zero());
+        let sip = if i == 0 {
+            T::zero()
+        } else {
+            *s.forward_cpi_vols.get(i - 1).unwrap_or(&T::zero())
+        };
+        let sn = *s.nominal_forward_vols.get(i).unwrap_or(&T::zero());
+        let fnr = *s.nominal_forward_rates.get(i).unwrap_or(&T::zero());
+        let c = if i == 0 {
+            T::zero()
+        } else {
+            tprev
+                * (sip * sip - s.inter_maturity_cpi_corr * si * sip
+                    + (dt * fnr / (T::one() + dt * fnr)) * sn * s.nominal_cpi_corr * (si - sip))
+        };
+        let ga = g * c.exp();
+        let fa = ga - T::one();
+        let v = ((if i == 0 {
+            T::zero()
+        } else {
+            tprev * (si * si + sip * sip - T::from_f64(2.0) * s.inter_maturity_cpi_corr * si * sip)
+        }) + dt * si * si)
+            .max_val(T::from_f64(1e-16))
+            .sqrt();
+        let lpi_rate = |gg: T, ff: T| {
+            let kf = T::one() + s.lpi_floor;
+            let kc = T::one() + s.lpi_cap;
+            let d1f = ((gg / kf).ln() + v * v * 0.5) / v;
+            let d2f = d1f - v;
+            let put = kf * (-d2f).norm_cdf() - gg * (-d1f).norm_cdf();
+            let d1c = ((gg / kc).ln() + v * v * 0.5) / v;
+            let d2c = d1c - v;
+            let call = gg * d1c.norm_cdf() - kc * d2c.norm_cdf();
+            ff + put - call
+        };
+        let lu = lpi_rate(g, f);
+        let la = lpi_rate(ga, fa);
+        un.push(f);
+        adj.push(fa);
+        vols.push(v);
+        lpi.push(la);
+        let df = *s.nominal_discount_factors.get(i).unwrap_or(&T::one());
+        n_un += s.notional * df * dt * (lu - s.fixed_swap_rate);
+        n_ad += s.notional * df * dt * (la - s.fixed_swap_rate);
+        terminal *= T::one() + la;
+        prev = cpi;
+        tprev = t;
+    }
+    let total = adj
+        .iter()
+        .zip(un.iter())
+        .map(|(a, b)| (*a - *b) * 10000.0)
+        .fold(T::zero(), |x, y| x + y);
+    BrigoMercurioInflationMarketModelReport {
+        unadjusted_yoy_forwards: un,
+        convexity_adjusted_yoy_forwards: adj,
+        total_yoy_convexity_adjustment_bps: total,
+        yoy_effective_total_vols: vols,
+        fimm_lpi_expected_rates: lpi,
+        unadjusted_lpi_swap_npv: n_un,
+        fimm_convexity_adjusted_lpi_swap_npv: n_ad,
+        compounded_lpi_pension_terminal_index: terminal,
+    }
+}
 #[derive(Clone, Debug)]
 pub struct MultiplicativeSeasonality {
     pub factors: [f64; 12],

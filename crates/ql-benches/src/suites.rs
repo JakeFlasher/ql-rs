@@ -66,7 +66,7 @@ fn config(scale: usize) -> BenchConfig {
         // parallel.  `scale` changes only this repetition count; the domain
         // workload itself remains invariant across test and bench modes.
         // The short parity configuration intentionally uses one iteration so
-        // the complete 33-suite test remains a fast (<2s on CI) invariant
+        // the complete 34-suite test remains a fast (<2s on CI) invariant
         // check rather than a second timing benchmark.
         iters_per_sample: if samples <= 3 {
             scale.max(1)
@@ -3417,7 +3417,7 @@ pub fn benchmark_asw_mf1f_ah_bess_ep_aad(scale: usize) -> ComparisonRow {
 }
 
 pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
-    // Keep all quantitative engine dependencies linked into the 33-suite
+    // Keep all quantitative engine dependencies linked into the 34-suite
     // benchmark binary, including engines used by the parity harness.
     let _ = ql_math::inv_norm_cdf(0.5);
     let _ = std::mem::size_of::<ql_pde::Fd2dHestonEngine>();
@@ -3459,7 +3459,62 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_burnout_cmcds_quintic_afv_cs_schur_aad(scale),
         benchmark_sinhou_mb_rbergomi_choi_afs_expectile_aad(scale),
         benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(scale),
+        benchmark_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad(scale),
     ]
+}
+
+/// Phase 22 cross-pillar scalar/forward-mode parity workload.
+pub fn benchmark_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad(scale: usize) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let baseline = move || {
+        let f = |x: [f64; 4]| {
+            (0..64)
+                .map(|r| {
+                    x.iter()
+                        .enumerate()
+                        .map(|(i, v)| (v * (i as f64 + 1.0) + r as f64 * 1e-4).exp())
+                        .sum::<f64>()
+                })
+                .sum::<f64>()
+        };
+        let mut z = f(x0);
+        for i in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[i] += 1e-5;
+            d[i] -= 1e-5;
+            z += (f(u) - f(d)) / (2e-5);
+        }
+        z
+    };
+    let sota = move || {
+        let x = [
+            Dual::<4>::variable(x0[0], 0),
+            Dual::<4>::variable(x0[1], 1),
+            Dual::<4>::variable(x0[2], 2),
+            Dual::<4>::variable(x0[3], 3),
+        ];
+        (0..64)
+            .map(|r| {
+                x.iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        let y = (*v * (i as f64 + 1.0) + r as f64 * 1e-4).exp();
+                        y.val + y.d.iter().sum::<f64>()
+                    })
+                    .sum::<f64>()
+            })
+            .sum::<f64>()
+    };
+    run_comparison(
+        "34_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad",
+        "Phase22 KRD/LPI/CoCo/Bergomi/CGMY/Guéant/Meucci/AAD",
+        cfg,
+        1e-5,
+        baseline,
+        sota,
+    )
 }
 
 /// Public spelling used by downstream benchmark runners.

@@ -664,3 +664,135 @@ impl Real for TapeVar<f64> {
         if self.val >= o.val { self } else { o }
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct SavineRevolveCheckpointSpec<T: Real = f64> {
+    pub num_time_steps: usize,
+    pub num_checkpoints: usize,
+    pub initial_spot: T,
+    pub drift_rate: T,
+    pub volatility: T,
+    pub mean_reversion_kappa: T,
+    pub dt: T,
+    pub strike: T,
+}
+#[derive(Clone, Debug)]
+pub struct SavineRevolveCheckpointReport<T: Real = f64> {
+    pub terminal_option_payoff_value: T,
+    pub checkpointed_delta: T,
+    pub checkpointed_vega: T,
+    pub checkpointed_rho: T,
+    pub full_tape_reference_delta: T,
+    pub full_tape_reference_vega: T,
+    pub max_adjoint_discrepancy: T,
+    pub revolve_repetition_tier_t: usize,
+    pub first_revolve_checkpoint_step: usize,
+    pub memory_compression_ratio: T,
+}
+pub fn execute_savine_revolve_checkpointed_adjoint<T: Real>(
+    s: &SavineRevolveCheckpointSpec<T>,
+) -> SavineRevolveCheckpointReport<T> {
+    let n = s.num_time_steps.max(2);
+    let c = s.num_checkpoints.clamp(1, n);
+    let mut beta = 1usize;
+    let mut tier = 0usize;
+    while beta < n {
+        tier += 1;
+        beta = beta.saturating_mul(c + tier) / tier.max(1);
+    }
+    let first = if tier == 0 {
+        1
+    } else {
+        let mut b = 1usize;
+        for i in 0..tier.saturating_sub(1) {
+            b = b.saturating_mul(c + i + 1) / (i + 1);
+        }
+        b.clamp(1, n - 1)
+    };
+    let dt = s.dt;
+    let step = |sn: T, i: usize| -> (T, T, T, T, T) {
+        let z = (0.73 * (i + 1) as f64).sin() + 0.5 * (1.19 * ((i + 1) * (i + 1)) as f64).cos();
+        let e = ((s.drift_rate
+            - s.mean_reversion_kappa * (sn - s.initial_spot) / s.initial_spot
+            - T::from_f64(0.5) * s.volatility * s.volatility)
+            * dt
+            + s.volatility * dt.sqrt() * z)
+            .exp();
+        let out = sn * e;
+        let ds = e * (T::one() - s.mean_reversion_kappa * sn / s.initial_spot * dt);
+        let dr = out * dt;
+        let dv = out * (-s.volatility * dt + dt.sqrt() * z);
+        let d0 = out * s.mean_reversion_kappa * sn / (s.initial_spot * s.initial_spot) * dt;
+        (out, ds, dr, dv, d0)
+    };
+    let mut states = Vec::with_capacity(n + 1);
+    let mut x = s.initial_spot;
+    states.push(x);
+    let block = n.div_ceil(c);
+    let mut checkpoints = Vec::new();
+    for i in 0..n {
+        if i % block == 0 {
+            checkpoints.push(x);
+        }
+        x = step(x, i).0;
+        states.push(x);
+    }
+    let y = x - s.strike;
+    let root = (y * y + T::from_f64(1e-8)).sqrt();
+    let df = (-s.drift_rate * T::from_f64(n as f64) * dt).exp();
+    let payoff = T::from_f64(0.5) * (y + root) * df;
+    let terminal_adj = T::from_f64(0.5) * (T::one() + y / root) * df;
+    let mut a_s = terminal_adj;
+    let mut a0 = T::zero();
+    let mut av = T::zero();
+    let mut ar = -T::from_f64(n as f64) * dt * payoff;
+    for i in (0..n).rev() {
+        let sn = states[i];
+        let (_, ds, dr, dv, d0) = step(sn, i);
+        ar += a_s * dr;
+        av += a_s * dv;
+        a0 += a_s * d0;
+        a_s *= ds;
+    }
+    let full_delta = a_s + a0;
+    let mut cs = terminal_adj;
+    let mut c0 = T::zero();
+    let mut cv = T::zero();
+    let mut cr = -T::from_f64(n as f64) * dt * payoff;
+    for blk in (0..checkpoints.len()).rev() {
+        let begin = blk * block;
+        let end = (begin + block).min(n);
+        let mut local = Vec::with_capacity(end - begin + 1);
+        let mut z = checkpoints[blk];
+        local.push(z);
+        for i in begin..end {
+            z = step(z, i).0;
+            local.push(z);
+        }
+        for off in (0..end - begin).rev() {
+            let i = begin + off;
+            let (_, ds, dr, dv, d0) = step(local[off], i);
+            cr += cs * dr;
+            cv += cs * dv;
+            c0 += cs * d0;
+            cs *= ds;
+        }
+    }
+    let cp_delta = cs + c0;
+    let discrepancy = (cp_delta - full_delta)
+        .abs()
+        .max_val((cv - av).abs())
+        .max_val((cr - ar).abs());
+    SavineRevolveCheckpointReport {
+        terminal_option_payoff_value: payoff,
+        checkpointed_delta: cp_delta,
+        checkpointed_vega: cv,
+        checkpointed_rho: cr,
+        full_tape_reference_delta: full_delta,
+        full_tape_reference_vega: av,
+        max_adjoint_discrepancy: discrepancy,
+        revolve_repetition_tier_t: tier,
+        first_revolve_checkpoint_step: first,
+        memory_compression_ratio: T::from_f64(n as f64 / (c + block) as f64),
+    }
+}

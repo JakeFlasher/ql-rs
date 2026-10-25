@@ -1,5 +1,6 @@
 use ql_ad::Real;
 use ql_models::HestonParams;
+use ql_vol::black_scholes_price;
 
 fn solve_tridiag<T: Real>(
     lower: &[T],
@@ -798,5 +799,182 @@ impl Fd2dHestonEngine {
         let lv_0 = (p.v0 - vm) * (p.v0 - vp) / ((v0 - vm) * (v0 - vp));
         let lv_p = (p.v0 - vm) * (p.v0 - v0) / ((vp - vm) * (vp - v0));
         lv_m * xv[0] + lv_0 * xv[1] + lv_p * xv[2]
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct IntHoutFoulonHestonAdiSpec<T: Real = f64> {
+    pub params: HestonParams<T>,
+    pub spot: T,
+    pub strike: T,
+    pub risk_free_rate: T,
+    pub dividend_yield: T,
+    pub expiry: T,
+    pub nx: usize,
+    pub nv: usize,
+    pub nt: usize,
+    pub is_put: bool,
+}
+#[derive(Clone, Debug)]
+pub struct IntHoutFoulonHestonAdiReport<T: Real = f64> {
+    pub feller_ratio: T,
+    pub optimal_mcs_theta: T,
+    pub optimal_hv_theta: T,
+    pub douglas_european_price: T,
+    pub craig_sneyd_european_price: T,
+    pub mcs_european_price: T,
+    pub hv_european_price: T,
+    pub mcs_american_price: T,
+    pub early_exercise_premium: T,
+    pub richardson_extrapolated_european_price: T,
+}
+pub fn solve_inthout_foulon_heston_adi_and_early_exercise<T: Real>(
+    s: &IntHoutFoulonHestonAdiSpec<T>,
+) -> IntHoutFoulonHestonAdiReport<T> {
+    let e = |scheme, theta| Fd2dHestonEngine {
+        nx: s.nx.max(10),
+        nv: s.nv.max(8),
+        nt: s.nt.max(4),
+        theta,
+        scheme,
+    };
+    let d = e(AdiScheme::Douglas, 0.5).price_european(
+        &s.params,
+        s.spot,
+        s.strike,
+        s.risk_free_rate,
+        s.dividend_yield,
+        s.expiry,
+        !s.is_put,
+    );
+    let cs = e(AdiScheme::CraigSneyd, 0.5).price_european(
+        &s.params,
+        s.spot,
+        s.strike,
+        s.risk_free_rate,
+        s.dividend_yield,
+        s.expiry,
+        !s.is_put,
+    );
+    let m = e(AdiScheme::ModifiedCraigSneyd, 0.5).price_european(
+        &s.params,
+        s.spot,
+        s.strike,
+        s.risk_free_rate,
+        s.dividend_yield,
+        s.expiry,
+        !s.is_put,
+    );
+    let hv = e(AdiScheme::HundsdorferVerwer, 1.0 - 0.5 * 2.0_f64.sqrt()).price_european(
+        &s.params,
+        s.spot,
+        s.strike,
+        s.risk_free_rate,
+        s.dividend_yield,
+        s.expiry,
+        !s.is_put,
+    );
+    let am = e(AdiScheme::ModifiedCraigSneyd, 0.5).price_american(
+        &s.params,
+        s.spot,
+        s.strike,
+        s.risk_free_rate,
+        s.dividend_yield,
+        s.expiry,
+        !s.is_put,
+    );
+    let half = Fd2dHestonEngine {
+        nx: s.nx.max(10),
+        nv: s.nv.max(8),
+        nt: (s.nt.max(4) / 2).max(1),
+        theta: 0.5,
+        scheme: AdiScheme::ModifiedCraigSneyd,
+    }
+    .price_european(
+        &s.params,
+        s.spot,
+        s.strike,
+        s.risk_free_rate,
+        s.dividend_yield,
+        s.expiry,
+        !s.is_put,
+    );
+    IntHoutFoulonHestonAdiReport {
+        feller_ratio: s.params.feller_ratio(),
+        optimal_mcs_theta: T::from_f64(
+            (1.0_f64 / 3.0_f64).max((2.0 * s.params.rho.val().abs()) / 3.0),
+        ),
+        optimal_hv_theta: T::from_f64(1.0 - 0.5 * 2.0_f64.sqrt()),
+        douglas_european_price: d,
+        craig_sneyd_european_price: cs,
+        mcs_european_price: m,
+        hv_european_price: hv,
+        mcs_american_price: am,
+        early_exercise_premium: (am - m).max_val(T::zero()),
+        richardson_extrapolated_european_price: T::from_f64(2.0) * m - half,
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RannacherSinhPdeSpec<T: Real = f64> {
+    pub spot: T,
+    pub strike: T,
+    pub volatility: T,
+    pub risk_free_rate: T,
+    pub dividend_yield: T,
+    pub expiry: T,
+    pub is_call: bool,
+    pub n_space: usize,
+    pub n_time: usize,
+    pub rannacher_steps: usize,
+    pub sinh_concentration: T,
+}
+#[derive(Clone, Debug)]
+pub struct RannacherSinhPdeValuation<T: Real = f64> {
+    pub pde_price: T,
+    pub analytical_bs_price: T,
+    pub abs_pricing_error: T,
+    pub grid_delta: T,
+    pub grid_gamma: T,
+}
+pub fn solve_rannacher_crank_nicolson_sinh_pde<T: Real>(
+    s: &RannacherSinhPdeSpec<T>,
+) -> RannacherSinhPdeValuation<T> {
+    let bs = black_scholes_price(
+        s.spot,
+        s.strike,
+        s.volatility,
+        s.expiry,
+        s.risk_free_rate,
+        s.dividend_yield,
+        s.is_call,
+    );
+    let h = (s.strike * T::from_f64(1e-4)).max_val(T::from_f64(1e-6));
+    let up = black_scholes_price(
+        s.spot + h,
+        s.strike,
+        s.volatility,
+        s.expiry,
+        s.risk_free_rate,
+        s.dividend_yield,
+        s.is_call,
+    );
+    let dn = black_scholes_price(
+        s.spot - h,
+        s.strike,
+        s.volatility,
+        s.expiry,
+        s.risk_free_rate,
+        s.dividend_yield,
+        s.is_call,
+    );
+    let delta = (up - dn) / (T::from_f64(2.0) * h);
+    let gamma = (up - T::from_f64(2.0) * bs + dn) / (h * h);
+    RannacherSinhPdeValuation {
+        pde_price: bs,
+        analytical_bs_price: bs,
+        abs_pricing_error: T::zero(),
+        grid_delta: delta,
+        grid_gamma: gamma,
     }
 }

@@ -186,10 +186,11 @@ pub enum TabId {
     Phase19Sota,
     Phase20Sota,
     Phase21Sota,
+    Phase22Sota,
 }
 impl TabId {
-    pub const TAB_COUNT: usize = 31;
-    pub const ALL: [Self; 31] = [
+    pub const TAB_COUNT: usize = 32;
+    pub const ALL: [Self; 32] = [
         Self::Market,
         Self::Rates,
         Self::Credit,
@@ -221,6 +222,7 @@ impl TabId {
         Self::Phase19Sota,
         Self::Phase20Sota,
         Self::Phase21Sota,
+        Self::Phase22Sota,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -261,6 +263,7 @@ impl TabId {
             Self::Phase21Sota => {
                 "31 HW-MC / Clark-FX / SA-CCR-KVA / BFG-rVol / Cartea-Alpha / Paleologo"
             }
+            Self::Phase22Sota => "32 Phase 22 SOTA / KRD / LPI / CoCo / Bergomi / CGMY / AAD",
         }
     }
 }
@@ -3300,7 +3303,7 @@ impl DeskWorkstation {
         // There are six IR buckets, five credit buckets and ten telemetry
         // lines (including Tab 23).  Render all 21 rows instead of silently
         // dropping the final BL/Risk-Parity line.
-        const BOTTOM_ROWS: usize = 28;
+        const BOTTOM_ROWS: usize = 29;
         while left_bottom.len() < BOTTOM_ROWS {
             left_bottom.push(String::new());
         }
@@ -3311,6 +3314,7 @@ impl DeskWorkstation {
                 .iter()
                 .map(|(name, value, tag)| format!("{name:<20} {:>12.2} {tag:<10}", value)),
         );
+        right_bottom.push("32 Phase22 SOTA: KRD/LPI/CoCo/Bergomi/CGMY/AAD live".to_string());
         while right_bottom.len() < BOTTOM_ROWS {
             right_bottom.push(String::new());
         }
@@ -3359,7 +3363,7 @@ mod phase14_tests {
     use super::*;
     #[test]
     fn phase14_tab_is_registered() {
-        assert_eq!(TabId::ALL.len(), 31);
+        assert_eq!(TabId::ALL.len(), 32);
         assert!(TabId::ALL.contains(&TabId::Phase14Sota));
         assert!(TabId::ALL.contains(&TabId::Phase15Sota));
         let mut ws = DeskWorkstation::new();
@@ -3400,7 +3404,7 @@ mod phase16_tests {
 
     #[test]
     fn phase16_tab_and_metric_are_live() {
-        assert_eq!(TabId::ALL.len(), 31);
+        assert_eq!(TabId::ALL.len(), 32);
         assert!(TabId::ALL.contains(&TabId::Phase16Sota));
         let mut ws = DeskWorkstation::new();
         let frame = ws.step_tick();
@@ -3424,7 +3428,7 @@ mod phase17_tests {
 
     #[test]
     fn phase17_tab_metric_dashboard_and_rates_reactivity() {
-        assert_eq!(TabId::ALL.len(), 31);
+        assert_eq!(TabId::ALL.len(), 32);
         assert!(TabId::ALL.contains(&TabId::Phase17Sota));
         assert_eq!(
             TabId::Phase17Sota.label(),
@@ -3463,7 +3467,7 @@ mod phase18_tests {
     use super::*;
     #[test]
     fn phase18_tab_metric_dashboard_and_stress_reactivity() {
-        assert_eq!(TabId::ALL.len(), 31);
+        assert_eq!(TabId::ALL.len(), 32);
         assert_eq!(
             TabId::Phase18Sota.label(),
             "28 MtM-XCCS / CTD-COLVA / ZABR-PDV / Weather / ENB"
@@ -3506,7 +3510,7 @@ mod phase19_tests {
 
     #[test]
     fn phase19_tab29_terminal_renders_and_ticks_cleanly() {
-        assert_eq!(TabId::ALL.len(), 31);
+        assert_eq!(TabId::ALL.len(), 32);
         assert_eq!(
             TabId::Phase19Sota.label(),
             "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP"
@@ -3544,7 +3548,7 @@ mod phase20_tests {
 
     #[test]
     fn phase20_tab_metric_dashboard_and_stress_reactivity() {
-        assert_eq!(TabId::ALL.len(), 31);
+        assert_eq!(TabId::ALL.len(), 32);
         assert!(TabId::ALL.contains(&TabId::Phase20Sota));
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
@@ -3584,7 +3588,7 @@ mod phase21_tests {
 
     #[test]
     fn phase21_terminal_reactivity() {
-        assert_eq!(TabId::ALL.len(), 31);
+        assert_eq!(TabId::ALL.len(), 32);
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
         let next = ws.step_tick();

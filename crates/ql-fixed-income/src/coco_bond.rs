@@ -1,4 +1,5 @@
 use ql_ad::Real;
+use ql_vol::black_scholes_price;
 
 #[derive(Copy, Clone, Debug)]
 pub enum CocoTriggerPayoff<T: Real> {
@@ -97,6 +98,172 @@ pub fn price_coco_bond_ds<T: Real>(s: &CocoBondSpec<T>) -> CocoBondValuation<T> 
         principal_loss_pv: principal_loss,
         conversion_or_recovery_pv: conversion,
         trigger_probability: ph,
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DeSpiegeleerCoCoMandatoryConvSpec<T: Real = f64> {
+    pub notional: T,
+    pub spot: T,
+    pub risk_free_rate: T,
+    pub dividend_yield: T,
+    pub credit_spread: T,
+    pub maturity: T,
+    pub coupon_rate: T,
+    pub coupon_freq: usize,
+    pub decs_lower_strike: T,
+    pub decs_upper_strike: T,
+    pub vol_lower_strike: T,
+    pub vol_upper_strike: T,
+    pub coco_cet1_trigger_spot: T,
+    pub coco_ponv_trigger_spot: T,
+    pub coco_conversion_floor_price: T,
+    pub coco_equity_vol: T,
+}
+#[derive(Clone, Debug)]
+pub struct DeSpiegeleerCoCoMandatoryConvReport<T: Real = f64> {
+    pub decs_mandatory_convertible_value: T,
+    pub percs_capped_convertible_value: T,
+    pub decs_embedded_collar_value: T,
+    pub decs_equity_delta: T,
+    pub dual_trigger_coco_value: T,
+    pub coco_cet1_trigger_probability: T,
+    pub coco_ponv_writedown_probability: T,
+    pub coco_implied_yield_spread_bps: T,
+}
+fn hit<T: Real>(s: T, b: T, mu: T, sig: T, t: T) -> T {
+    if b.val() >= s.val() {
+        return T::one();
+    }
+    if b.val() <= 0. || sig.val() <= 1e-12 || t.val() <= 0. {
+        return T::zero();
+    }
+    let st = sig * t.sqrt();
+    let l = (b / s).ln();
+    let a = ((l - mu * t) / st).norm_cdf();
+    let e = (T::from_f64(2.0) * mu * l / (sig * sig)).exp();
+    (a + e * ((l + mu * t) / st).norm_cdf())
+        .max_val(T::zero())
+        .min_val(T::one())
+}
+pub fn price_despiegeleer_coco_and_mandatory_convertible<T: Real>(
+    s: &DeSpiegeleerCoCoMandatoryConvSpec<T>,
+) -> DeSpiegeleerCoCoMandatoryConvReport<T> {
+    let n = (s.coupon_freq.max(1) as f64 * s.maturity.val().round().max(1.0)) as usize;
+    let dt = s.maturity / T::from_f64(n as f64);
+    let rr = s.risk_free_rate + s.credit_spread;
+    let mut coupons = T::zero();
+    for j in 1..=n {
+        coupons += s.notional * s.coupon_rate * dt * (-rr * dt * j as f64).exp();
+    }
+    let cl = black_scholes_price(
+        s.spot,
+        s.decs_lower_strike,
+        s.vol_lower_strike,
+        s.maturity,
+        s.risk_free_rate,
+        s.dividend_yield,
+        true,
+    );
+    let cu = black_scholes_price(
+        s.spot,
+        s.decs_upper_strike,
+        s.vol_upper_strike,
+        s.maturity,
+        s.risk_free_rate,
+        s.dividend_yield,
+        true,
+    );
+    let ru = s.notional / s.decs_lower_strike;
+    let rl = s.notional / s.decs_upper_strike;
+    let decs = coupons + ru * s.spot * (-s.dividend_yield * s.maturity).exp() - ru * cl + rl * cu;
+    let percs = coupons + ru * s.spot * (-s.dividend_yield * s.maturity).exp() - ru * cu;
+    let d1 = |k: T, vol: T| {
+        if vol.val() <= 1e-12 || s.maturity.val() <= 1e-12 {
+            if s.spot.val() > k.val() {
+                T::from_f64(1e6)
+            } else {
+                T::from_f64(-1e6)
+            }
+        } else {
+            ((s.spot / k).ln()
+                + (s.risk_free_rate - s.dividend_yield + vol * vol * 0.5) * s.maturity)
+                / (vol * s.maturity.sqrt())
+        }
+    };
+    let d1l = d1(s.decs_lower_strike, s.vol_lower_strike);
+    let d1u = d1(s.decs_upper_strike, s.vol_upper_strike);
+    let delta = (-s.dividend_yield * s.maturity).exp()
+        * (ru * (T::one() - d1l.norm_cdf()) + rl * d1u.norm_cdf());
+    let straight = coupons + s.notional * (-rr * s.maturity).exp();
+    let mut loss = T::zero();
+    for j in 1..=n {
+        let t = dt * j as f64;
+        loss += s.notional
+            * s.coupon_rate
+            * dt
+            * (-rr * t).exp()
+            * hit(
+                s.spot,
+                s.coco_cet1_trigger_spot,
+                s.risk_free_rate - s.dividend_yield - s.coco_equity_vol * s.coco_equity_vol * 0.5,
+                s.coco_equity_vol,
+                t,
+            );
+    }
+    let mu = s.risk_free_rate - s.dividend_yield - s.coco_equity_vol * s.coco_equity_vol * 0.5;
+    let mus = mu + s.coco_equity_vol * s.coco_equity_vol;
+    let pc = hit(
+        s.spot,
+        s.coco_cet1_trigger_spot,
+        mu,
+        s.coco_equity_vol,
+        s.maturity,
+    );
+    let pp = hit(
+        s.spot,
+        s.coco_ponv_trigger_spot,
+        mu,
+        s.coco_equity_vol,
+        s.maturity,
+    );
+    let pcs = hit(
+        s.spot,
+        s.coco_cet1_trigger_spot,
+        mus,
+        s.coco_equity_vol,
+        s.maturity,
+    );
+    let pps = hit(
+        s.spot,
+        s.coco_ponv_trigger_spot,
+        mus,
+        s.coco_equity_vol,
+        s.maturity,
+    );
+    let cp = s
+        .coco_cet1_trigger_spot
+        .max_val(s.coco_conversion_floor_price);
+    let principal = s.notional * (-rr * s.maturity).exp() * pc
+        - s.notional / cp
+            * s.spot
+            * (-(s.dividend_yield + s.credit_spread) * s.maturity).exp()
+            * (pcs - pps);
+    let coco = straight - loss - principal;
+    let spread = if coco.val() > 0. && straight.val() > 0. {
+        T::from_f64(10000.0) * (s.credit_spread - (coco / straight).ln() / s.maturity)
+    } else {
+        T::zero()
+    };
+    DeSpiegeleerCoCoMandatoryConvReport {
+        decs_mandatory_convertible_value: decs,
+        percs_capped_convertible_value: percs,
+        decs_embedded_collar_value: -ru * cl + rl * cu,
+        decs_equity_delta: delta,
+        dual_trigger_coco_value: coco,
+        coco_cet1_trigger_probability: pc,
+        coco_ponv_writedown_probability: pp,
+        coco_implied_yield_spread_bps: spread,
     }
 }
 

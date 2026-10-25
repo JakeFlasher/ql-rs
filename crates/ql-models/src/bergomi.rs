@@ -11,6 +11,129 @@ pub struct Bergomi2FParams<T: Real = f64> {
     pub rho_s1: T,
     pub rho_s2: T,
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct BergomiForwardStartAndVarStripSpec<T: Real = f64> {
+    pub params: Bergomi2FParams<T>,
+    pub xi_long_run: T,
+    pub xi_curve_decay: T,
+    pub forward_start_t1: T,
+    pub expiry_t2: T,
+    pub log_moneyness_k: T,
+}
+#[derive(Clone, Debug)]
+pub struct BergomiForwardStartAndVarStripReport<T: Real = f64> {
+    pub spot_start_implied_vol: T,
+    pub forward_start_implied_vol: T,
+    pub forward_variance_swap_fair_vol: T,
+    pub volatility_swap_fair_strike: T,
+    pub vol_swap_convexity_spread_bps: T,
+    pub spot_start_atm_skew: T,
+    pub forward_start_atm_skew: T,
+    pub bergomi_skew_stickiness_ratio_ssr: T,
+}
+pub fn evaluate_bergomi_forward_start_and_var_strip<T: Real>(
+    s: &BergomiForwardStartAndVarStripSpec<T>,
+) -> BergomiForwardStartAndVarStripReport<T> {
+    let t1 = s.forward_start_t1.max_val(T::zero());
+    let t2 = s.expiry_t2.max_val(t1 + T::from_f64(1e-8));
+    let tau = (t2 - t1).max_val(T::from_f64(1e-8));
+    let kap = s.xi_curve_decay.max_val(T::from_f64(1e-12));
+    let m1 = s.xi_long_run
+        + (s.params.xi0 - s.xi_long_run) * ((-kap * t1).exp() - (-kap * t2).exp()) / (kap * tau);
+    let nodes = [
+        -0.9602898565,
+        -0.7966664774,
+        -0.5255324099,
+        -0.1834346425,
+        0.1834346425,
+        0.5255324099,
+        0.7966664774,
+        0.9602898565,
+    ];
+    let weights = [
+        0.1012285363,
+        0.2223810345,
+        0.3137066459,
+        0.3626837834,
+        0.3626837834,
+        0.3137066459,
+        0.2223810345,
+        0.1012285363,
+    ];
+    let alpha = ((T::one() - s.params.theta) * (T::one() - s.params.theta)
+        + s.params.theta * s.params.theta
+        + T::from_f64(2.0) * s.params.rho12 * s.params.theta * (T::one() - s.params.theta))
+        .max_val(T::from_f64(1e-12))
+        .sqrt()
+        .powf(-1.0);
+    let w1 = s.params.omega * alpha * (T::one() - s.params.theta);
+    let w2 = s.params.omega * alpha * s.params.theta;
+    let sig11 = (T::one() - (-T::from_f64(2.0) * s.params.k1 * t1).exp())
+        / (T::from_f64(2.0) * s.params.k1.max_val(T::from_f64(1e-12)));
+    let sig22 = (T::one() - (-T::from_f64(2.0) * s.params.k2 * t1).exp())
+        / (T::from_f64(2.0) * s.params.k2.max_val(T::from_f64(1e-12)));
+    let sig12 = s.params.rho12 * (T::one() - (-(s.params.k1 + s.params.k2) * t1).exp())
+        / (s.params.k1 + s.params.k2).max_val(T::from_f64(1e-12));
+    let mut m2 = T::zero();
+    for a in 0..8 {
+        for b in 0..8 {
+            let u = t1 + tau * (nodes[a] + 1.0) * 0.5;
+            let v = t1 + tau * (nodes[b] + 1.0) * 0.5;
+            let cy = w1 * w1 * (-s.params.k1 * (u + v - T::from_f64(2.0) * t1)).exp() * sig11
+                + w2 * w2 * (-s.params.k2 * (u + v - T::from_f64(2.0) * t1)).exp() * sig22
+                + w1 * w2
+                    * ((-s.params.k1 * (u - t1) - s.params.k2 * (v - t1)).exp()
+                        + (-s.params.k1 * (v - t1) - s.params.k2 * (u - t1)).exp())
+                    * sig12;
+            let xu = s.xi_long_run + (s.params.xi0 - s.xi_long_run) * (-kap * u).exp();
+            let xv = s.xi_long_run + (s.params.xi0 - s.xi_long_run) * (-kap * v).exp();
+            m2 += xu * xv * cy.exp() * T::from_f64(weights[a] * weights[b] * 0.25);
+        }
+    }
+    let nu = (m2 / m1.max_val(T::from_f64(1e-12)).powf(2.0))
+        .max_val(T::from_f64(1.0 + 1e-15))
+        .ln();
+    let fair = m1.max_val(T::zero()).sqrt();
+    let vfair = fair * (-nu * 0.125).exp();
+    let (atm, skew, curv) = bergomi_2f_smile_moments_bg(&s.params, tau);
+    let fsa = atm * (-nu * 0.125).exp();
+    let fss = skew * (-nu * 0.125).exp();
+    let fsc = curv + fair * nu / (T::from_f64(4.0) * tau);
+    let fs = fsa
+        + fss * s.log_moneyness_k
+        + T::from_f64(0.5) * fsc * s.log_moneyness_k * s.log_moneyness_k;
+    let fi = |x: T| {
+        if x.val().abs() < 1e-8 {
+            T::one()
+        } else {
+            (T::one() - (-x).exp()) / x
+        }
+    };
+    let gi = |x: T| {
+        if x.val().abs() < 1e-8 {
+            T::from_f64(0.5)
+        } else {
+            (x - T::one() + (-x).exp()) / (x * x)
+        }
+    };
+    let ssr_raw = (w1 * s.params.rho_s1 * fi(s.params.k1 * tau).powf(2.0)
+        + w2 * s.params.rho_s2 * fi(s.params.k2 * tau).powf(2.0))
+        / (w1 * s.params.rho_s1 * gi(s.params.k1 * tau)
+            + w2 * s.params.rho_s2 * gi(s.params.k2 * tau))
+        .max_val(T::from_f64(1e-12));
+    let ssr = ssr_raw.max_val(T::one()).min_val(T::from_f64(2.0));
+    BergomiForwardStartAndVarStripReport {
+        spot_start_implied_vol: atm,
+        forward_start_implied_vol: fs,
+        forward_variance_swap_fair_vol: fair,
+        volatility_swap_fair_strike: vfair,
+        vol_swap_convexity_spread_bps: T::from_f64(10000.0) * (fair - vfair),
+        spot_start_atm_skew: skew,
+        forward_start_atm_skew: fss,
+        bergomi_skew_stickiness_ratio_ssr: ssr,
+    }
+}
 fn bg_j<T: Real>(a: T, t: T) -> T {
     let at = a * t;
     if at.val().abs() < 1e-5 {

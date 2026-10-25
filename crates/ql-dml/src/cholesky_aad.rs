@@ -1,6 +1,123 @@
 use ql_ad::Real;
 use ql_mc::PhiloxRng;
 
+#[derive(Clone, Copy, Debug)]
+pub struct IftCalibratedExoticHedgeSpec<T: Real = f64> {
+    pub spot: T,
+    pub risk_free_rate: T,
+    pub expiry: T,
+    pub calibration_strikes: [T; 3],
+    pub market_implied_vols: [T; 3],
+    pub exotic_strike: T,
+    pub exotic_power_p: T,
+}
+#[derive(Clone, Debug)]
+pub struct IftCalibratedExoticHedgeReport<T: Real = f64> {
+    pub calibrated_smile_params: [T; 3],
+    pub calibration_max_abs_residual: T,
+    pub exotic_option_price: T,
+    pub direct_model_param_sensitivities: [T; 3],
+    pub adjoint_ift_multiplier_lambda: [T; 3],
+    pub market_quote_vega_hedges: [T; 3],
+    pub hedged_parameter_residual_l2: T,
+}
+fn solve3<T: Real>(mut a: [[T; 3]; 3], mut b: [T; 3]) -> [T; 3] {
+    let safe = |x: T| {
+        if x.abs().val() < 1e-14 {
+            if x.val() < 0.0 {
+                T::from_f64(-1e-14)
+            } else {
+                T::from_f64(1e-14)
+            }
+        } else {
+            x
+        }
+    };
+    for i in 0..3 {
+        let mut p = i;
+        for r in i + 1..3 {
+            if a[r][i].abs().val() > a[p][i].abs().val() {
+                p = r;
+            }
+        }
+        a.swap(i, p);
+        b.swap(i, p);
+        let d = safe(a[i][i]);
+        for r in i + 1..3 {
+            let f = a[r][i] / d;
+            for j in i..3 {
+                a[r][j] -= f * a[i][j];
+            }
+            b[r] -= f * b[i];
+        }
+    }
+    let mut x = [T::zero(); 3];
+    for i in (0..3).rev() {
+        let mut z = b[i];
+        for j in i + 1..3 {
+            z -= a[i][j] * x[j];
+        }
+        x[i] = z / safe(a[i][i]);
+    }
+    x
+}
+pub fn evaluate_ift_calibrated_exotic_quote_hedge<T: Real>(
+    s: &IftCalibratedExoticHedgeSpec<T>,
+) -> IftCalibratedExoticHedgeReport<T> {
+    let mut j = [[T::zero(); 3]; 3];
+    for i in 0..3 {
+        let x = (s.calibration_strikes[i] / s.spot).ln();
+        j[i] = [T::one(), x, x * x];
+    }
+    let th = solve3(j, s.market_implied_vols);
+    let mut maxr = T::zero();
+    for i in 0..3 {
+        let x = (s.calibration_strikes[i] / s.spot).ln();
+        maxr = (th[0] + th[1] * x + th[2] * x * x - s.market_implied_vols[i])
+            .abs()
+            .max_val(maxr);
+    }
+    let x = (s.exotic_strike / s.spot).ln();
+    let sig = (th[0] + th[1] * x + th[2] * x * x).max_val(T::from_f64(1e-8));
+    let f = s.spot * (-s.risk_free_rate * s.expiry).exp();
+    let d = ((f / s.exotic_strike).ln() + T::from_f64(0.5) * sig * sig * s.expiry)
+        / (sig * s.expiry.sqrt());
+    let price = (-s.risk_free_rate * s.expiry).exp()
+        * (f * d.norm_cdf() - s.exotic_strike * (d - sig * s.expiry.sqrt()).norm_cdf())
+        * s.exotic_strike.pow(s.exotic_power_p);
+    let vega = (-s.risk_free_rate * s.expiry).exp()
+        * f
+        * d.norm_pdf()
+        * s.expiry.sqrt()
+        * s.exotic_strike.pow(s.exotic_power_p);
+    let g = [vega, vega * x, vega * x * x];
+    let lam = solve3(
+        [
+            [j[0][0], j[1][0], j[2][0]],
+            [j[0][1], j[1][1], j[2][1]],
+            [j[0][2], j[1][2], j[2][2]],
+        ],
+        g,
+    );
+    let mut res = T::zero();
+    for i in 0..3 {
+        let mut z = g[i];
+        for k in 0..3 {
+            z -= j[i][k] * lam[k];
+        }
+        res += z * z;
+    }
+    IftCalibratedExoticHedgeReport {
+        calibrated_smile_params: th,
+        calibration_max_abs_residual: maxr,
+        exotic_option_price: price,
+        direct_model_param_sensitivities: g,
+        adjoint_ift_multiplier_lambda: lam,
+        market_quote_vega_hedges: lam,
+        hedged_parameter_residual_l2: res.sqrt(),
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct GlassermanMalliavinCheckpointedMcSpec<T: Real = f64> {
     pub spot: T,

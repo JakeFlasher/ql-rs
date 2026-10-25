@@ -88,6 +88,7 @@ The offline benchmark harness checks numerical parity against independent baseli
 | 31_burnout_cmcds_quintic_afv_cs_schur_aad | Burnout-MBS/CMCDS/Quintic-OU/AFV-CB/CS-Swaption/Schur-HRP AD | 951571.20 (IQR 2719.80) | 139885.20 (IQR 777.60) | 6.80x | 3.731e-9 |
 | 32_sinhou_mb_rbergomi_choi_afs_expectile_aad | SinhOU/BK-FRN/MoriniBrigo/WWM/mrBergomi/Choi/AFS/EXVaR single-pass AD | 1627688.60 (IQR 45339.60) | 220754.00 (IQR 2371.40) | 7.37x | 1.505e-8 |
 | 33_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad | Phase21 institutional 12-engine AAD vs FD | 478730.80 (IQR 4589.60) | 75338.80 (IQR 1749.20) | 6.35x | 6.899e-9 |
+| 34_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad | Phase22 KRD/LPI/CoCo/Bergomi2F/CGMY/Guéant/Meucci/AAD | 33153.20 (IQR 824.20) | 25943.00 (IQR 75.60) | 1.28x | 1.050e-7 |
 
 ## Quick start
 
@@ -117,4 +118,4 @@ MIT OR Apache-2.0.
 
 
 ## Phase 18 Institutional Expansion
-The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB and entropy pooling. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic-OU VIX, AFV convertibles, Clewlow–Strickland swaptions, Schur-HRP and nonlinear shrinkage. Phase 20 adds Sinh-OU/CIR++ RFR, callable BK FRNs, no-Armageddon credit options, WWM-XVA, mixed rough Bergomi, Choi/Li–Deng–Zhou spreads, MRJD commodities, AFS LOB, EXVaR and PCRP. The workstation now exposes Tab 31 and the benchmark suite contains 33 AD parity workloads.
+The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB and entropy pooling. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic-OU VIX, AFV convertibles, Clewlow–Strickland swaptions, Schur-HRP and nonlinear shrinkage. Phase 20 adds Sinh-OU/CIR++ RFR, callable BK FRNs, no-Armageddon credit options, WWM-XVA, mixed rough Bergomi, Choi/Li–Deng–Zhou spreads, MRJD commodities, AFS LOB, EXVaR and PCRP. The workstation now exposes Tab 32 and the benchmark suite contains 34 AD parity workloads, including book-backed Phase 22 SOTA engines.

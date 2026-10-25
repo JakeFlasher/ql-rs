@@ -1,7 +1,43 @@
 pub mod harness;
 pub mod suites;
 /// Number of registered benchmark suites in the current release.
-pub const SUITE_COUNT: usize = 33;
+pub const SUITE_COUNT: usize = 34;
+pub const SUITE_NAMES: [&str; SUITE_COUNT] = [
+    "01_calendar_popcnt",
+    "02_leg_simd_soa",
+    "03_multicurve_ift_dv01",
+    "04_implied_vol_ift_dual2",
+    "05_heston_cos_dual5",
+    "06_gbm_mc_simd8",
+    "07_scripted_autocall_fuzzy_aad",
+    "08_portfolio_dag_incremental",
+    "09_credit_cds_ift_cs01",
+    "10_fx_vanna_volga_dual3",
+    "11_capriotti_giles_cholesky_corr_aad",
+    "12_chebyshev_dynamic_simm_mva",
+    "13_reiner_rubinstein_barrier_dual5",
+    "14_burley_owen_rqmc_variance_reduction",
+    "15_levy_cos_vg_dual5",
+    "16_asb_cdo_tranche_recursion_dual",
+    "17_rfr_sabr_caplet_strip_dual4",
+    "18_xccs_multicurrency_ift_dv01",
+    "19_american_baw_ju_ift_dual5",
+    "20_risk_parity_ift_allocation_aad",
+    "21_bermudan_hw1f_tree_ift_dv01",
+    "22_sabr_svi_ift_and_qp_kkt_aad",
+    "23_slv_rbergomi_and_autocallable_cega_aad",
+    "24_frtb_sbm_ima_and_cvar_execution_aad",
+    "25_monotone_convex_vix_parisian_robust_aad",
+    "26_double_heston_tarf_coco_hrp_aad",
+    "27_jy_inflation_tba_bergomi_nco_aad",
+    "28_cheyette_cmo_qrh_basecorr_cdar_aad",
+    "29_asw_mf1f_ah_bess_ep_aad",
+    "30_mtmxccs_colva_zabr_pdv_weather_enb_aad",
+    "31_burnout_cmcds_quintic_afv_cs_schur_aad",
+    "32_sinhou_mb_rbergomi_choi_afs_expectile_aad",
+    "33_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad",
+    "34_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad",
+];
 pub use harness::{BenchConfig, ComparisonRow, format_markdown_table, run_comparison};
 pub use suites::{
     run_all_benchmark_suites_with_Config, run_all_benchmark_suites_with_config, run_all_benchmarks,
