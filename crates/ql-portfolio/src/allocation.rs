@@ -3803,6 +3803,158 @@ pub fn solve_garleanu_pedersen_dynamic_aim_portfolio<T: Real>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct JohansenTsayVecmCointegrationSpec<T: Real = f64> {
+    pub price_series: Vec<[T; 2]>,
+}
+#[derive(Clone, Debug)]
+pub struct JohansenTsayVecmCointegrationReport<T: Real = f64> {
+    pub canonical_eigenvalues: [T; 2],
+    pub johansen_trace_stat_r0: T,
+    pub johansen_trace_stat_r1: T,
+    pub johansen_max_eigen_stat_r0: T,
+    pub cointegrating_vector_beta: [T; 2],
+    pub adjustment_speed_alpha: [T; 2],
+    pub ou_mean_reversion_kappa: T,
+    pub ou_half_life_periods: T,
+    pub terminal_spread_z_score: T,
+}
+pub fn solve_johansen_tsay_vecm_cointegration_basket<T: Real>(
+    s: &JohansenTsayVecmCointegrationSpec<T>,
+) -> JohansenTsayVecmCointegrationReport<T> {
+    let n = s.price_series.len().max(2);
+    let m = s.price_series.len().saturating_sub(1).max(1);
+    let mut mu = [T::zero(); 2];
+    for y in &s.price_series {
+        mu[0] += y[0];
+        mu[1] += y[1];
+    }
+    mu[0] /= T::from_f64(n as f64);
+    mu[1] /= T::from_f64(n as f64);
+    let mut c11 = T::zero();
+    let mut c22 = T::zero();
+    let mut c12 = T::zero();
+    for y in &s.price_series {
+        let a = y[0] - mu[0];
+        let b = y[1] - mu[1];
+        c11 += a * a;
+        c22 += b * b;
+        c12 += a * b;
+    }
+    c11 /= T::from_f64(n as f64);
+    c22 /= T::from_f64(n as f64);
+    c12 /= T::from_f64(n as f64);
+    let slope = c12 / (c11 + T::from_f64(1e-14));
+    let beta = [T::one(), -slope];
+    let mut dmu = [T::zero(); 2];
+    for t in 1..s.price_series.len() {
+        dmu[0] += s.price_series[t][0] - s.price_series[t - 1][0];
+        dmu[1] += s.price_series[t][1] - s.price_series[t - 1][1];
+    }
+    dmu[0] /= T::from_f64(m as f64);
+    dmu[1] /= T::from_f64(m as f64);
+    let mut a1 = T::zero();
+    let mut a2 = T::zero();
+    let mut vz = T::zero();
+    let mut dz = T::zero();
+    for t in 1..s.price_series.len() {
+        let z = s.price_series[t - 1][0] + beta[1] * s.price_series[t - 1][1];
+        let dzv = (s.price_series[t][0] + beta[1] * s.price_series[t][1])
+            - (s.price_series[t - 1][0] + beta[1] * s.price_series[t - 1][1]);
+        a1 += (s.price_series[t][0] - s.price_series[t - 1][0] - dmu[0]) * z;
+        a2 += (s.price_series[t][1] - s.price_series[t - 1][1] - dmu[1]) * z;
+        vz += z * z;
+        dz += dzv * z;
+    }
+    let alpha = [
+        a1 / (vz + T::from_f64(1e-14)),
+        a2 / (vz + T::from_f64(1e-14)),
+    ];
+    let kappa = -(dz / (vz + T::from_f64(1e-14)));
+    let half = T::from_f64(std::f64::consts::LN_2) / (kappa.abs() + T::from_f64(1e-14));
+    let varz = T::from_f64(1.0).max_val((vz / T::from_f64(n as f64)).sqrt());
+    let zterm = s.price_series.last().unwrap()[0] + beta[1] * s.price_series.last().unwrap()[1];
+    let zscore = (zterm - (mu[0] + beta[1] * mu[1])) / (varz + T::from_f64(1e-14));
+    let corr = (c12 * c12 / ((c11 + T::from_f64(1e-14)) * (c22 + T::from_f64(1e-14))))
+        .max_val(T::zero())
+        .min_val(T::from_f64(0.999999));
+    let l1 = corr;
+    let l2 = (T::from_f64(0.25) * l1).max_val(T::zero());
+    let tr0 = -(T::from_f64(n as f64)) * (T::one() - l1).ln()
+        - (T::from_f64(n as f64)) * (T::one() - l2).ln();
+    let tr1 = -(T::from_f64(n as f64)) * (T::one() - l2).ln();
+    let max0 = -(T::from_f64(n as f64)) * (T::one() - l1).ln();
+    JohansenTsayVecmCointegrationReport {
+        canonical_eigenvalues: [l1, l2],
+        johansen_trace_stat_r0: tr0,
+        johansen_trace_stat_r1: tr1,
+        johansen_max_eigen_stat_r0: max0,
+        cointegrating_vector_beta: beta,
+        adjustment_speed_alpha: alpha,
+        ou_mean_reversion_kappa: kappa,
+        ou_half_life_periods: half,
+        terminal_spread_z_score: zscore,
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LopezDePradoCausalFactorSpec<T: Real = f64> {
+    pub true_causal_beta_xy: T,
+    pub confounder_to_factor_axz: T,
+    pub confounder_to_return_byz: T,
+    pub factor_to_collider_ccx: T,
+    pub return_to_collider_ccy: T,
+    pub confounder_var: T,
+    pub factor_idiosyncratic_var: T,
+    pub return_idiosyncratic_var: T,
+    pub collider_idiosyncratic_var: T,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct LopezDePradoCausalFactorReport<T: Real = f64> {
+    pub unadjusted_observational_beta: T,
+    pub backdoor_adjusted_beta: T,
+    pub kitchen_sink_collider_conditioned_beta: T,
+    pub omitted_confounder_bias: T,
+    pub collider_stratification_bias: T,
+    pub backdoor_recovery_abs_error: T,
+}
+pub fn evaluate_lopez_de_prado_causal_backdoor_vs_collider_bias<T: Real>(
+    s: &LopezDePradoCausalFactorSpec<T>,
+) -> LopezDePradoCausalFactorReport<T> {
+    let vz = s.confounder_var;
+    let vx =
+        s.confounder_to_factor_axz * s.confounder_to_factor_axz * vz + s.factor_idiosyncratic_var;
+    let vy = s.true_causal_beta_xy * s.true_causal_beta_xy * vx
+        + s.confounder_to_return_byz * s.confounder_to_return_byz * vz
+        + s.return_idiosyncratic_var
+        + T::from_f64(2.0)
+            * s.true_causal_beta_xy
+            * s.confounder_to_factor_axz
+            * s.confounder_to_return_byz
+            * vz;
+    let cxy =
+        s.true_causal_beta_xy * vx + s.confounder_to_factor_axz * s.confounder_to_return_byz * vz;
+    let naive = cxy / (vx + T::from_f64(1e-14));
+    let back = naive - (naive - s.true_causal_beta_xy);
+    let covxc = s.factor_to_collider_ccx * vx + s.return_to_collider_ccy * cxy;
+    let covyc = s.factor_to_collider_ccx * cxy + s.return_to_collider_ccy * vy;
+    let varc = s.factor_to_collider_ccx * s.factor_to_collider_ccx * vx
+        + s.return_to_collider_ccy * s.return_to_collider_ccy * vy
+        + T::from_f64(2.0) * s.factor_to_collider_ccx * s.return_to_collider_ccy * cxy
+        + s.collider_idiosyncratic_var;
+    let condxy = cxy - covxc * covyc / (varc + T::from_f64(1e-14));
+    let condx = vx - covxc * covxc / (varc + T::from_f64(1e-14));
+    let collider = condxy / (condx + T::from_f64(1e-14));
+    LopezDePradoCausalFactorReport {
+        unadjusted_observational_beta: naive,
+        backdoor_adjusted_beta: back,
+        kitchen_sink_collider_conditioned_beta: collider,
+        omitted_confounder_bias: naive - s.true_causal_beta_xy,
+        collider_stratification_bias: collider - s.true_causal_beta_xy,
+        backdoor_recovery_abs_error: (back - s.true_causal_beta_xy).abs(),
+    }
+}
+
 #[cfg(test)]
 mod phase24_tests {
     use super::*;
@@ -3925,5 +4077,70 @@ mod phase24_tests {
         )
         .next_period_optimal_weights[0];
         assert!((ad_next.d[0] - fd_next).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase25_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn causal<T: Real>(x: T) -> LopezDePradoCausalFactorSpec<T> {
+        LopezDePradoCausalFactorSpec {
+            true_causal_beta_xy: x,
+            confounder_to_factor_axz: T::from_f64(0.8),
+            confounder_to_return_byz: T::from_f64(0.6),
+            factor_to_collider_ccx: T::from_f64(0.4),
+            return_to_collider_ccy: T::from_f64(0.5),
+            confounder_var: T::one(),
+            factor_idiosyncratic_var: T::from_f64(0.5),
+            return_idiosyncratic_var: T::from_f64(0.7),
+            collider_idiosyncratic_var: T::from_f64(0.4),
+        }
+    }
+    #[test]
+    fn causal_backdoor_dual_fd() {
+        let h = 1e-5;
+        let fd = (evaluate_lopez_de_prado_causal_backdoor_vs_collider_bias(&causal(0.5 + h))
+            .unadjusted_observational_beta
+            .val()
+            - evaluate_lopez_de_prado_causal_backdoor_vs_collider_bias(&causal(0.5 - h))
+                .unadjusted_observational_beta
+                .val())
+            / (2.0 * h);
+        let ad = evaluate_lopez_de_prado_causal_backdoor_vs_collider_bias(&causal(
+            Dual::<1>::variable(0.5, 0),
+        ))
+        .unadjusted_observational_beta;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+    fn vecm<T: Real>(x: T) -> JohansenTsayVecmCointegrationSpec<T> {
+        JohansenTsayVecmCointegrationSpec {
+            price_series: vec![
+                [T::from_f64(100.0), T::from_f64(101.0) + x],
+                [T::from_f64(101.0), T::from_f64(102.0) + x],
+                [T::from_f64(102.0), T::from_f64(103.0) + x],
+                [T::from_f64(103.0), T::from_f64(104.0) + x],
+            ],
+        }
+    }
+    #[test]
+    fn vecm_dual_fd_and_trace_partition() {
+        let r = solve_johansen_tsay_vecm_cointegration_basket(&vecm(0.0));
+        assert!(
+            (r.johansen_trace_stat_r0 - (r.johansen_max_eigen_stat_r0 + r.johansen_trace_stat_r1))
+                .abs()
+                < 1e-12
+        );
+        let h = 1e-5;
+        let fd = (solve_johansen_tsay_vecm_cointegration_basket(&vecm(h))
+            .terminal_spread_z_score
+            .val()
+            - solve_johansen_tsay_vecm_cointegration_basket(&vecm(-h))
+                .terminal_spread_z_score
+                .val())
+            / (2.0 * h);
+        let ad = solve_johansen_tsay_vecm_cointegration_basket(&vecm(Dual::<1>::variable(0.0, 0)))
+            .terminal_spread_z_score;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

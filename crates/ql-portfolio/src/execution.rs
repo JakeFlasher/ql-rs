@@ -1422,6 +1422,71 @@ pub fn evaluate_ohara_ekop_kyle_microstructure_and_etf_band<T: Real>(
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct HasbrouckDsswPriceDiscoverySpec<T: Real = f64> {
+    pub alpha_venue1: T,
+    pub alpha_venue2: T,
+    pub sigma_venue1: T,
+    pub sigma_venue2: T,
+    pub venue_innovation_corr: T,
+    pub fundamental_dividend: T,
+    pub risk_free_rate: T,
+    pub noise_trader_share_mu: T,
+    pub noise_trader_sentiment_mean: T,
+    pub noise_trader_sentiment_var: T,
+    pub arbitrageur_risk_aversion_gamma: T,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct HasbrouckDsswPriceDiscoveryReport<T: Real = f64> {
+    pub gonzalo_granger_cs_venue1: T,
+    pub gonzalo_granger_cs_venue2: T,
+    pub hasbrouck_is_upper_venue1: T,
+    pub hasbrouck_is_lower_venue1: T,
+    pub hasbrouck_is_midpoint_venue1: T,
+    pub hasbrouck_is_midpoint_venue2: T,
+    pub efficient_price_innovation_var: T,
+    pub dssw_fundamental_price: T,
+    pub dssw_equilibrium_price: T,
+    pub dssw_noise_trader_risk_discount: T,
+}
+pub fn evaluate_hasbrouck_information_share_and_dssw_limits_to_arb<T: Real>(
+    s: &HasbrouckDsswPriceDiscoverySpec<T>,
+) -> HasbrouckDsswPriceDiscoveryReport<T> {
+    let den = s.alpha_venue1.abs() + s.alpha_venue2.abs() + T::from_f64(1e-14);
+    let cs1 = s.alpha_venue2.abs() / den;
+    let cs2 = T::one() - cs1;
+    let v1 = s.sigma_venue1 * s.sigma_venue1;
+    let v2 = s.sigma_venue2 * s.sigma_venue2;
+    let cov = s.venue_innovation_corr * s.sigma_venue1 * s.sigma_venue2;
+    let total = (v1 + v2 + T::from_f64(2.0) * cov).abs() + T::from_f64(1e-14);
+    let mid1 = (cs1 * cs1 * v1 + cs2 * cs2 * v2 + T::from_f64(2.0) * cs1 * cs2 * cov) / total;
+    let rho_smooth = (s.venue_innovation_corr * s.venue_innovation_corr + T::from_f64(1e-24))
+        .sqrt()
+        - T::from_f64(1e-12);
+    let spread = (rho_smooth * cs1 * cs2 * (v1 + v2 - T::from_f64(2.0) * cov).abs()) / total;
+    let up = (mid1 + spread).min_val(T::one());
+    let low = (mid1 - spread).max_val(T::zero());
+    let evar = total;
+    let fundamental = s.fundamental_dividend / (s.risk_free_rate + T::from_f64(1e-8));
+    let risk =
+        s.arbitrageur_risk_aversion_gamma * s.noise_trader_share_mu * s.noise_trader_sentiment_var;
+    let eq = fundamental
+        - s.noise_trader_share_mu * s.noise_trader_sentiment_mean
+            / (T::one() + s.arbitrageur_risk_aversion_gamma * s.noise_trader_sentiment_var.abs());
+    HasbrouckDsswPriceDiscoveryReport {
+        gonzalo_granger_cs_venue1: cs1,
+        gonzalo_granger_cs_venue2: cs2,
+        hasbrouck_is_upper_venue1: up,
+        hasbrouck_is_lower_venue1: low,
+        hasbrouck_is_midpoint_venue1: (up + low) / 2.0,
+        hasbrouck_is_midpoint_venue2: T::one() - (up + low) / 2.0,
+        efficient_price_innovation_var: evar,
+        dssw_fundamental_price: fundamental,
+        dssw_equilibrium_price: eq,
+        dssw_noise_trader_risk_discount: risk,
+    }
+}
+
 #[cfg(test)]
 mod phase24_tests {
     use super::*;
@@ -1474,5 +1539,47 @@ mod phase24_tests {
             evaluate_ohara_ekop_kyle_microstructure_and_etf_band(&mk(Dual::<1>::variable(0.2, 0)))
                 .bangia_total_lvar;
         assert!((ad_lvar.d[0] - fd_lvar).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase25_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn hs<T: Real>(x: T) -> HasbrouckDsswPriceDiscoverySpec<T> {
+        HasbrouckDsswPriceDiscoverySpec {
+            alpha_venue1: x,
+            alpha_venue2: T::from_f64(0.3),
+            sigma_venue1: T::from_f64(0.1),
+            sigma_venue2: T::from_f64(0.12),
+            venue_innovation_corr: T::from_f64(0.2),
+            fundamental_dividend: T::one(),
+            risk_free_rate: T::from_f64(0.02),
+            noise_trader_share_mu: T::from_f64(0.2),
+            noise_trader_sentiment_mean: T::from_f64(0.1),
+            noise_trader_sentiment_var: T::from_f64(0.1),
+            arbitrageur_risk_aversion_gamma: T::from_f64(2.0),
+        }
+    }
+    #[test]
+    fn hasbrouck_dual_fd_and_partition() {
+        let r = evaluate_hasbrouck_information_share_and_dssw_limits_to_arb(&hs(0.2));
+        assert!((r.gonzalo_granger_cs_venue1 + r.gonzalo_granger_cs_venue2 - 1.0).abs() < 1e-12);
+        assert!(
+            (r.hasbrouck_is_midpoint_venue1 + r.hasbrouck_is_midpoint_venue2 - 1.0).abs() < 1e-12
+        );
+        let h = 1e-5;
+        let fd = (evaluate_hasbrouck_information_share_and_dssw_limits_to_arb(&hs(0.2 + h))
+            .efficient_price_innovation_var
+            .val()
+            - evaluate_hasbrouck_information_share_and_dssw_limits_to_arb(&hs(0.2 - h))
+                .efficient_price_innovation_var
+                .val())
+            / (2.0 * h);
+        let ad = evaluate_hasbrouck_information_share_and_dssw_limits_to_arb(&hs(
+            Dual::<1>::variable(0.2, 0),
+        ))
+        .efficient_price_innovation_var;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

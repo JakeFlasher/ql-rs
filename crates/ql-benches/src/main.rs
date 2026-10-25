@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 fn main() {
     let rows = run_all_benchmarks(5);
-    assert_eq!(rows.len(), 36, "Phase 24 benchmark suite registration");
+    assert_eq!(rows.len(), 37, "Phase 24 benchmark suite registration");
     let report = format_markdown_table(&rows);
     println!("{report}");
     let write_report = std::env::args().skip(1).any(|arg| arg == "--write-report")

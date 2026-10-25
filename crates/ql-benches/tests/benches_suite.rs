@@ -1,3 +1,4 @@
+use ql_benches::harness::with_config_override;
 use ql_benches::run_all_benchmark_suites_with_config;
 
 #[test]
@@ -6,7 +7,7 @@ fn benchmarks_verify_parity_and_optional_sota_speedups() {
     // parity paths during normal `cargo test`; timing gates are inherently
     // host-dependent and opt in through QL_RUN_TIMING_GATES=1.
     let rows = run_all_benchmark_suites_with_config(1, 3);
-    assert_eq!(rows.len(), 36);
+    assert_eq!(rows.len(), 37);
     for row in &rows {
         assert!(!row.id.is_empty());
         assert!(!row.description.is_empty());
@@ -66,4 +67,12 @@ fn phase24_suite36_workload_is_registered() {
         .expect("suite 36");
     assert!(row.parity_ok);
     assert!(row.max_abs_diff < 1e-4);
+}
+
+#[test]
+fn phase25_suite37_workload_is_registered() {
+    let row = with_config_override(1, 3, || {
+        ql_benches::benchmark_phase25_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin(1)
+    });
+    assert!(row.parity_ok && row.max_abs_diff < 1e-4);
 }

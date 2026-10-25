@@ -197,10 +197,11 @@ pub enum TabId {
     Phase22Sota,
     Phase23Sota,
     Phase24Sota,
+    Phase25Sota,
 }
 impl TabId {
-    pub const TAB_COUNT: usize = 34;
-    pub const ALL: [Self; 34] = [
+    pub const TAB_COUNT: usize = 35;
+    pub const ALL: [Self; 35] = [
         Self::Market,
         Self::Rates,
         Self::Credit,
@@ -235,6 +236,7 @@ impl TabId {
         Self::Phase22Sota,
         Self::Phase23Sota,
         Self::Phase24Sota,
+        Self::Phase25Sota,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -279,6 +281,9 @@ impl TabId {
             Self::Phase23Sota => "33 RKHS/FMM/VV/LSV/JLT/CTD/QRH/NCO/DML",
             Self::Phase24Sota => {
                 "34 Phase 24 SOTA / MBS-IO-PO / RMV / MO-XVA / Dilution / Sig / GARCH / POT / RIE / PIN / GP / Brinson / IERP"
+            }
+            Self::Phase25Sota => {
+                "35 Phase 25 SOTA / Kalman-RTS / VECM / HJ-SDF / IFRS9 / CPT / Hasbrouck / FV / Lando / LPPL / CB-Arb / Causal / Malliavin"
             }
         }
     }
@@ -1818,6 +1823,21 @@ impl DeskWorkstation {
             0.0
         };
         Self::phase23_live_metric_from_market(&market, bump)
+    }
+    pub fn phase25_live_metric_from_market(m: &MarketSnapshot, credit_bump: f64) -> f64 {
+        let inf = m.inflation_quotes.first().map(|(_, z)| *z).unwrap_or(0.023);
+        let base = Self::phase24_live_metric_from_market(m, credit_bump);
+        let shock = inf - 0.023;
+        base + 100.0 * shock + m.eq_vol * 10.0 + credit_bump * 50.0
+    }
+    pub fn phase25_live_metric(&self) -> f64 {
+        let market = self.scenario_market();
+        let bump = if matches!(self.scenario, ScenarioKind::CreditWideningPlus100Bp) {
+            0.01
+        } else {
+            0.0
+        };
+        Self::phase25_live_metric_from_market(&market, bump)
     }
     pub fn phase24_live_metric(&self) -> f64 {
         let market = self.scenario_market();
@@ -3996,6 +4016,7 @@ impl DeskWorkstation {
                 "34 MBS/RMV/MO/CB/Sig/HN/POT/RIE/PIN/GP/BC/IERP: {:.2}",
                 frame.mbs_rmv_mo_sig_garch_rie_gp_ierp_metric
             ),
+            format!("35 Phase25 SOTA live: {:.2}", self.phase25_live_metric()),
             format!(
                 "DAG recomputed: {}/{}",
                 frame.dag_recomputed_trades, frame.dag_total_trades
@@ -4007,7 +4028,7 @@ impl DeskWorkstation {
         // There are six IR buckets, five credit buckets and ten telemetry
         // lines (including Tab 23).  Render all 21 rows instead of silently
         // dropping the final BL/Risk-Parity line.
-        const BOTTOM_ROWS: usize = 31;
+        const BOTTOM_ROWS: usize = 32;
         while left_bottom.len() < BOTTOM_ROWS {
             left_bottom.push(String::new());
         }
@@ -4021,6 +4042,7 @@ impl DeskWorkstation {
         right_bottom.push("32 Phase22 SOTA: KRD/LPI/CoCo/Bergomi/CGMY/AAD live".to_string());
         right_bottom.push("33 RKHS/FMM/VV/LSV/JLT/CTD/QRH/NCO/DML live".to_string());
         right_bottom.push("34 Davidson-Levin MBS IO/PO/Duffie-Singleton RMV/MO-XVA/Sirbu-Shreve CB/PathSig/HN-DCC-GARCH/POT-GPD/RIE/PIN/GP-Aim/Brinson/IERP".to_string());
+        right_bottom.push(format!("35 Phase25 SOTA Kalman/VECM/HJ/IFRS9/CPT/Hasbrouck/FV/Lando/LPPL/CB-Arb/Causal/Malliavin: {:.4}", self.phase25_live_metric()));
         while right_bottom.len() < BOTTOM_ROWS {
             right_bottom.push(String::new());
         }
@@ -4069,7 +4091,7 @@ mod phase14_tests {
     use super::*;
     #[test]
     fn phase14_tab_is_registered() {
-        assert_eq!(TabId::ALL.len(), 34);
+        assert_eq!(TabId::ALL.len(), 35);
         assert!(TabId::ALL.contains(&TabId::Phase14Sota));
         assert!(TabId::ALL.contains(&TabId::Phase15Sota));
         let mut ws = DeskWorkstation::new();
@@ -4110,7 +4132,7 @@ mod phase16_tests {
 
     #[test]
     fn phase16_tab_and_metric_are_live() {
-        assert_eq!(TabId::ALL.len(), 34);
+        assert_eq!(TabId::ALL.len(), 35);
         assert!(TabId::ALL.contains(&TabId::Phase16Sota));
         let mut ws = DeskWorkstation::new();
         let frame = ws.step_tick();
@@ -4134,7 +4156,7 @@ mod phase17_tests {
 
     #[test]
     fn phase17_tab_metric_dashboard_and_rates_reactivity() {
-        assert_eq!(TabId::ALL.len(), 34);
+        assert_eq!(TabId::ALL.len(), 35);
         assert!(TabId::ALL.contains(&TabId::Phase17Sota));
         assert_eq!(
             TabId::Phase17Sota.label(),
@@ -4173,7 +4195,7 @@ mod phase18_tests {
     use super::*;
     #[test]
     fn phase18_tab_metric_dashboard_and_stress_reactivity() {
-        assert_eq!(TabId::ALL.len(), 34);
+        assert_eq!(TabId::ALL.len(), 35);
         assert_eq!(
             TabId::Phase18Sota.label(),
             "28 MtM-XCCS / CTD-COLVA / ZABR-PDV / Weather / ENB"
@@ -4216,7 +4238,7 @@ mod phase19_tests {
 
     #[test]
     fn phase19_tab29_terminal_renders_and_ticks_cleanly() {
-        assert_eq!(TabId::ALL.len(), 34);
+        assert_eq!(TabId::ALL.len(), 35);
         assert_eq!(
             TabId::Phase19Sota.label(),
             "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP"
@@ -4254,7 +4276,7 @@ mod phase20_tests {
 
     #[test]
     fn phase20_tab_metric_dashboard_and_stress_reactivity() {
-        assert_eq!(TabId::ALL.len(), 34);
+        assert_eq!(TabId::ALL.len(), 35);
         assert!(TabId::ALL.contains(&TabId::Phase20Sota));
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
@@ -4294,7 +4316,7 @@ mod phase21_tests {
 
     #[test]
     fn phase21_terminal_reactivity() {
-        assert_eq!(TabId::ALL.len(), 34);
+        assert_eq!(TabId::ALL.len(), 35);
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
         let next = ws.step_tick();
@@ -4401,7 +4423,7 @@ mod phase24_tests {
     use super::*;
     #[test]
     fn phase24_tab_metric_tick_and_rate_reactivity() {
-        assert_eq!(TabId::ALL.len(), 34);
+        assert_eq!(TabId::ALL.len(), 35);
         assert!(TabId::Phase24Sota.label().starts_with("34 Phase 24 SOTA"));
         let mut ws = DeskWorkstation::new();
         let a = ws.step_tick();

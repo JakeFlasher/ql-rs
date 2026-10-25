@@ -1387,6 +1387,255 @@ pub fn evaluate_bacon_carino_brinson_and_karnosky_singer_attribution<T: Real>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct CochraneHansenJagannathanSdfSpec<T: Real = f64> {
+    pub mean_excess_returns: [T; 2],
+    pub excess_return_cov: [[T; 2]; 2],
+    pub risk_free_rate: T,
+    pub candidate_sdf_pricing_errors: [T; 2],
+    pub steady_state_log_dp_ratio: T,
+    pub var1_companion_matrix: [[T; 2]; 2],
+    pub state_innovation_cov: [[T; 2]; 2],
+}
+#[derive(Clone, Debug)]
+pub struct CochraneHansenJagannathanSdfReport<T: Real = f64> {
+    pub mean_sdf_m_bar: T,
+    pub max_sharpe_ratio: T,
+    pub hj_sdf_volatility_lower_bound: T,
+    pub linear_sdf_loadings_b: [T; 2],
+    pub hj_specification_distance: T,
+    pub campbell_shiller_rho: T,
+    pub discount_rate_news_variance_share: T,
+    pub cash_flow_news_variance_share: T,
+}
+fn inv2_rm<T: Real>(a: [[T; 2]; 2]) -> [[T; 2]; 2] {
+    let d = a[0][0] * a[1][1] - a[0][1] * a[1][0];
+    let z = T::one() / (d + T::from_f64(1e-14));
+    [[a[1][1] * z, -a[0][1] * z], [-a[1][0] * z, a[0][0] * z]]
+}
+pub fn evaluate_cochrane_hansen_jagannathan_sdf_and_campbell_shiller<T: Real>(
+    s: &CochraneHansenJagannathanSdfSpec<T>,
+) -> CochraneHansenJagannathanSdfReport<T> {
+    let m = T::one() / (T::one() + s.risk_free_rate);
+    let iv = inv2_rm(s.excess_return_cov);
+    let q0 = iv[0][0] * s.mean_excess_returns[0] + iv[0][1] * s.mean_excess_returns[1];
+    let q1 = iv[1][0] * s.mean_excess_returns[0] + iv[1][1] * s.mean_excess_returns[1];
+    let sr = (s.mean_excess_returns[0] * q0 + s.mean_excess_returns[1] * q1).sqrt();
+    let b = [m * q0, m * q1];
+    let av = [
+        [
+            s.excess_return_cov[0][0] + s.mean_excess_returns[0] * s.mean_excess_returns[0],
+            s.excess_return_cov[0][1] + s.mean_excess_returns[0] * s.mean_excess_returns[1],
+        ],
+        [
+            s.excess_return_cov[1][0] + s.mean_excess_returns[1] * s.mean_excess_returns[0],
+            s.excess_return_cov[1][1] + s.mean_excess_returns[1] * s.mean_excess_returns[1],
+        ],
+    ];
+    let ai = inv2_rm(av);
+    let d0 =
+        ai[0][0] * s.candidate_sdf_pricing_errors[0] + ai[0][1] * s.candidate_sdf_pricing_errors[1];
+    let d1 =
+        ai[1][0] * s.candidate_sdf_pricing_errors[0] + ai[1][1] * s.candidate_sdf_pricing_errors[1];
+    let dist =
+        (s.candidate_sdf_pricing_errors[0] * d0 + s.candidate_sdf_pricing_errors[1] * d1).sqrt();
+    let rho = T::one() / (T::one() + (s.steady_state_log_dp_ratio).exp());
+    let drv = s.var1_companion_matrix[0][0] * s.state_innovation_cov[0][0]
+        + s.var1_companion_matrix[0][1] * s.state_innovation_cov[1][0]
+        + s.var1_companion_matrix[1][0] * s.state_innovation_cov[0][1]
+        + s.var1_companion_matrix[1][1] * s.state_innovation_cov[1][1];
+    let cvar = s.state_innovation_cov[0][0] + s.state_innovation_cov[1][1];
+    let dr = (drv * drv) / (drv * drv + cvar * cvar + T::from_f64(1e-14));
+    CochraneHansenJagannathanSdfReport {
+        mean_sdf_m_bar: m,
+        max_sharpe_ratio: sr,
+        hj_sdf_volatility_lower_bound: m * sr,
+        linear_sdf_loadings_b: b,
+        hj_specification_distance: dist,
+        campbell_shiller_rho: rho,
+        discount_rate_news_variance_share: dr,
+        cash_flow_news_variance_share: T::one() - dr,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct WakkerTverskyKahnemanCptSpec<T: Real = f64> {
+    pub scenario_returns: [T; 4],
+    pub scenario_probabilities: [T; 4],
+    pub reference_return: T,
+    pub alpha_gain: T,
+    pub beta_loss: T,
+    pub loss_aversion_lambda: T,
+    pub prelec_gamma_gain: T,
+    pub prelec_gamma_loss: T,
+    pub prelec_delta: T,
+}
+#[derive(Clone, Debug)]
+pub struct WakkerTverskyKahnemanCptReport<T: Real = f64> {
+    pub decision_weights: [T; 4],
+    pub prospect_values: [T; 4],
+    pub cumulative_prospect_utility: T,
+    pub cpt_certainty_equivalent: T,
+    pub loss_tail_overweighting_ratio: T,
+    pub gain_tail_overweighting_ratio: T,
+}
+pub fn evaluate_wakker_tversky_kahneman_cumulative_prospect_utility<T: Real>(
+    s: &WakkerTverskyKahnemanCptSpec<T>,
+) -> WakkerTverskyKahnemanCptReport<T> {
+    let mut idx = [0usize, 1, 2, 3];
+    idx.sort_by(|&i, &j| {
+        s.scenario_returns[i]
+            .val()
+            .partial_cmp(&s.scenario_returns[j].val())
+            .unwrap()
+    });
+    let mut w = [T::zero(); 4];
+    let mut v = [T::zero(); 4];
+    let prelec =
+        |p: T, gamma: T| (-s.prelec_delta * (-p.max_val(T::from_f64(1e-14)).ln()).pow(gamma)).exp();
+    for (k, &i) in idx.iter().enumerate() {
+        let gain = s.scenario_returns[i].val() >= s.reference_return.val();
+        let gamma = if gain {
+            s.prelec_gamma_gain
+        } else {
+            s.prelec_gamma_loss
+        };
+        let mut cum_prob = T::zero();
+        let mut next_prob = T::zero();
+        if gain {
+            for &j in idx.iter().skip(k) {
+                cum_prob += s.scenario_probabilities[j].max_val(T::from_f64(1e-14));
+            }
+            for &j in idx.iter().skip(k + 1) {
+                next_prob += s.scenario_probabilities[j].max_val(T::from_f64(1e-14));
+            }
+        } else {
+            for &j in idx.iter().take(k + 1) {
+                cum_prob += s.scenario_probabilities[j].max_val(T::from_f64(1e-14));
+            }
+            for &j in idx.iter().take(k) {
+                next_prob += s.scenario_probabilities[j].max_val(T::from_f64(1e-14));
+            }
+        }
+        w[i] = prelec(cum_prob, gamma) - prelec(next_prob, gamma);
+        if gain {
+            let x = s.scenario_returns[i] - s.reference_return;
+            v[i] = x.max_val(T::zero()).pow(s.alpha_gain);
+        } else {
+            let x = s.reference_return - s.scenario_returns[i];
+            v[i] = -s.loss_aversion_lambda * x.max_val(T::zero()).pow(s.beta_loss);
+        }
+    }
+    let cum = (0..4).fold(T::zero(), |z, i| z + w[i] * v[i]);
+    let ce = if cum.val() >= 0.0 {
+        cum.max_val(T::zero()).pow(T::one() / s.alpha_gain)
+    } else {
+        -((-cum) / s.loss_aversion_lambda).pow(T::one() / s.beta_loss)
+    };
+    let loss_ratio = w[idx[0]] / (s.scenario_probabilities[idx[0]] + T::from_f64(1e-14));
+    let gain_ratio = w[idx[3]] / (s.scenario_probabilities[idx[3]] + T::from_f64(1e-14));
+    WakkerTverskyKahnemanCptReport {
+        decision_weights: w,
+        prospect_values: v,
+        cumulative_prospect_utility: cum,
+        cpt_certainty_equivalent: ce,
+        loss_tail_overweighting_ratio: loss_ratio,
+        gain_tail_overweighting_ratio: gain_ratio,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SornetteLpplBubbleCrashSpec<T: Real = f64> {
+    pub observation_times: Vec<T>,
+    pub log_prices: Vec<T>,
+    pub critical_time_tc: T,
+    pub power_law_exponent_m: T,
+    pub log_periodic_omega: T,
+    pub expected_crash_drop_kappa: T,
+    pub ridge_penalty: T,
+}
+#[derive(Clone, Debug)]
+pub struct SornetteLpplBubbleCrashReport<T: Real = f64> {
+    pub linear_params_a_b_c1_c2: [T; 4],
+    pub oscillation_amplitude_c: T,
+    pub fitted_rmse: T,
+    pub sornette_damping_parameter: T,
+    pub terminal_crash_hazard_rate: T,
+    pub cumulative_crash_probability: T,
+}
+fn solve4_lp<T: Real>(mut a: [[T; 5]; 4]) -> [T; 4] {
+    for i in 0..4 {
+        let mut p = i;
+        for r in i + 1..4 {
+            if a[r][i].abs().val() > a[p][i].abs().val() {
+                p = r;
+            }
+        }
+        a.swap(i, p);
+        let d = a[i][i];
+        for value in a[i].iter_mut().skip(i) {
+            *value /= d;
+        }
+        let pivot = a[i];
+        for (r, row) in a.iter_mut().enumerate() {
+            if r != i {
+                let f = row[i];
+                for (j, value) in row.iter_mut().enumerate().skip(i) {
+                    *value -= f * pivot[j];
+                }
+            }
+        }
+    }
+    [a[0][4], a[1][4], a[2][4], a[3][4]]
+}
+pub fn calibrate_sornette_lppl_bubble_and_crash_hazard<T: Real>(
+    s: &SornetteLpplBubbleCrashSpec<T>,
+) -> SornetteLpplBubbleCrashReport<T> {
+    let n = s.observation_times.len().max(1);
+    let mut g = [[T::zero(); 5]; 4];
+    for (&t, &y) in s.observation_times.iter().zip(s.log_prices.iter()) {
+        let dt = (s.critical_time_tc - t).max_val(T::from_f64(1e-12));
+        let x = dt.pow(s.power_law_exponent_m);
+        let th = s.log_periodic_omega * dt.ln();
+        let z = [T::one(), x, x * th.cos(), x * th.sin()];
+        for i in 0..4 {
+            for j in 0..4 {
+                g[i][j] += z[i] * z[j];
+            }
+            g[i][4] += z[i] * y;
+        }
+    }
+    for (i, row) in g.iter_mut().enumerate() {
+        row[i] += s.ridge_penalty;
+    }
+    let p = solve4_lp(g);
+    let mut e = T::zero();
+    for (&t, &y) in s.observation_times.iter().zip(s.log_prices.iter()) {
+        let dt = (s.critical_time_tc - t).max_val(T::from_f64(1e-12));
+        let x = dt.pow(s.power_law_exponent_m);
+        let th = s.log_periodic_omega * dt.ln();
+        let fit = p[0] + p[1] * x + p[2] * x * th.cos() + p[3] * x * th.sin();
+        let d = fit - y;
+        e += d * d;
+    }
+    let rm = (e / n as f64).sqrt();
+    let c = (p[2] * p[2] + p[3] * p[3] + T::from_f64(1e-24)).sqrt();
+    let damp = s.power_law_exponent_m.abs() * p[1].abs()
+        / (s.log_periodic_omega.abs() * c + T::from_f64(1e-14));
+    let tn = *s.observation_times.last().unwrap_or(&T::zero());
+    let hazard = s.expected_crash_drop_kappa.abs() * s.log_periodic_omega.abs()
+        / (s.critical_time_tc - tn).max_val(T::from_f64(1e-8));
+    let prob = T::one() - (-hazard * (s.critical_time_tc - tn).max_val(T::zero())).exp();
+    SornetteLpplBubbleCrashReport {
+        linear_params_a_b_c1_c2: p,
+        oscillation_amplitude_c: c,
+        fitted_rmse: rm,
+        sornette_damping_parameter: damp,
+        terminal_crash_hazard_rate: hazard,
+        cumulative_crash_probability: prob,
+    }
+}
+
 #[cfg(test)]
 mod phase24_tests {
     use super::*;
@@ -1470,5 +1719,128 @@ mod phase24_tests {
         ))
         .carino_linked_selection_total;
         assert!((ad.d[0] - fd).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod phase25_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn hj<T: Real>(x: T) -> CochraneHansenJagannathanSdfSpec<T> {
+        CochraneHansenJagannathanSdfSpec {
+            mean_excess_returns: [x, T::from_f64(0.05)],
+            excess_return_cov: [
+                [T::from_f64(0.04), T::from_f64(0.01)],
+                [T::from_f64(0.01), T::from_f64(0.06)],
+            ],
+            risk_free_rate: T::from_f64(0.02),
+            candidate_sdf_pricing_errors: [T::from_f64(0.01), T::from_f64(-0.01)],
+            steady_state_log_dp_ratio: T::from_f64(1.0),
+            var1_companion_matrix: [[T::from_f64(0.9), T::zero()], [T::zero(), T::from_f64(0.8)]],
+            state_innovation_cov: [
+                [T::from_f64(0.02), T::zero()],
+                [T::zero(), T::from_f64(0.03)],
+            ],
+        }
+    }
+    #[test]
+    fn hj_dual_fd_and_share_partition() {
+        let r = evaluate_cochrane_hansen_jagannathan_sdf_and_campbell_shiller(&hj(0.04));
+        assert!(
+            (r.discount_rate_news_variance_share + r.cash_flow_news_variance_share - 1.0).abs()
+                < 1e-12
+        );
+        let h = 1e-5;
+        let fd = (evaluate_cochrane_hansen_jagannathan_sdf_and_campbell_shiller(&hj(0.04 + h))
+            .max_sharpe_ratio
+            .val()
+            - evaluate_cochrane_hansen_jagannathan_sdf_and_campbell_shiller(&hj(0.04 - h))
+                .max_sharpe_ratio
+                .val())
+            / (2.0 * h);
+        let ad = evaluate_cochrane_hansen_jagannathan_sdf_and_campbell_shiller(&hj(
+            Dual::<1>::variable(0.04, 0),
+        ))
+        .max_sharpe_ratio;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+    fn cpt_spec<T: Real>(l: T, mid: T) -> WakkerTverskyKahnemanCptSpec<T> {
+        WakkerTverskyKahnemanCptSpec {
+            scenario_returns: [
+                T::from_f64(-0.2),
+                T::from_f64(-0.05),
+                mid,
+                T::from_f64(0.15),
+            ],
+            scenario_probabilities: [
+                T::from_f64(0.1),
+                T::from_f64(0.4),
+                T::from_f64(0.4),
+                T::from_f64(0.1),
+            ],
+            reference_return: T::zero(),
+            alpha_gain: T::from_f64(0.88),
+            beta_loss: T::from_f64(0.88),
+            loss_aversion_lambda: l,
+            prelec_gamma_gain: T::from_f64(0.7),
+            prelec_gamma_loss: T::from_f64(0.7),
+            prelec_delta: T::one(),
+        }
+    }
+    fn lppl_spec<T: Real>(x: T) -> SornetteLpplBubbleCrashSpec<T> {
+        SornetteLpplBubbleCrashSpec {
+            observation_times: vec![
+                T::one(),
+                T::from_f64(2.0),
+                T::from_f64(3.0),
+                T::from_f64(4.0),
+                T::from_f64(5.0),
+            ],
+            log_prices: vec![
+                T::from_f64(4.0),
+                T::from_f64(4.1),
+                x,
+                T::from_f64(4.3),
+                T::from_f64(4.4),
+            ],
+            critical_time_tc: T::from_f64(10.0),
+            power_law_exponent_m: T::from_f64(0.5),
+            log_periodic_omega: T::from_f64(8.0),
+            expected_crash_drop_kappa: T::from_f64(0.2),
+            ridge_penalty: T::from_f64(1e-6),
+        }
+    }
+    #[test]
+    fn cpt_lambda_dual_fd() {
+        let h = 1e-5;
+        let fd = (evaluate_wakker_tversky_kahneman_cumulative_prospect_utility(&cpt_spec(
+            2.25 + h,
+            0.03,
+        ))
+        .cumulative_prospect_utility
+            - evaluate_wakker_tversky_kahneman_cumulative_prospect_utility(&cpt_spec(
+                2.25 - h,
+                0.03,
+            ))
+            .cumulative_prospect_utility)
+            / (2.0 * h);
+        let ad = evaluate_wakker_tversky_kahneman_cumulative_prospect_utility(&cpt_spec(
+            Dual::<1>::variable(2.25, 0),
+            Dual::<1>::from_value(0.03),
+        ))
+        .cumulative_prospect_utility;
+        assert!(ad.d[0] < 0.0 && (ad.d[0] - fd).abs() < 1e-5);
+    }
+    #[test]
+    fn lppl_dual_fd() {
+        let h = 1e-5;
+        let fd = (calibrate_sornette_lppl_bubble_and_crash_hazard(&lppl_spec(4.2 + h)).fitted_rmse
+            - calibrate_sornette_lppl_bubble_and_crash_hazard(&lppl_spec(4.2 - h)).fitted_rmse)
+            / (2.0 * h);
+        let ad = calibrate_sornette_lppl_bubble_and_crash_hazard(&lppl_spec(Dual::<1>::variable(
+            4.2, 0,
+        )))
+        .fitted_rmse;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

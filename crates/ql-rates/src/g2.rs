@@ -516,3 +516,104 @@ impl G2ppBermudanSwaptionEngine {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct FongVasicekStochVolShortRateSpec<T: Real = f64> {
+    pub initial_short_rate_r0: T,
+    pub initial_variance_v0: T,
+    pub rate_mean_reversion_alpha: T,
+    pub long_run_rate_r_bar: T,
+    pub vol_mean_reversion_gamma: T,
+    pub long_run_variance_v_bar: T,
+    pub vol_of_vol_xi: T,
+    pub correlation_rho: T,
+    pub maturity_tau: T,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct FongVasicekStochVolShortRateReport<T: Real = f64> {
+    pub zero_coupon_bond_price: T,
+    pub continuously_compounded_yield: T,
+    pub riccati_rate_loading_b: T,
+    pub riccati_variance_loading_c: T,
+    pub riccati_intercept_a: T,
+    pub rate_duration_dr: T,
+    pub volatility_duration_dv: T,
+    pub vasicek_constant_vol_bond_price: T,
+    pub stochastic_vol_convexity_premium_bps: T,
+}
+pub fn price_fong_vasicek_stochastic_vol_bond<T: Real>(
+    s: &FongVasicekStochVolShortRateSpec<T>,
+) -> FongVasicekStochVolShortRateReport<T> {
+    let t = s.maturity_tau;
+    let a = s.rate_mean_reversion_alpha;
+    let b = (T::one() - (-a * t).exp()) / (a + T::from_f64(1e-14));
+    let sig2 = s.long_run_variance_v_bar.max_val(T::zero());
+    let aa = (b - t) * (a * a * s.long_run_rate_r_bar - T::from_f64(0.5) * sig2)
+        / (a * a + T::from_f64(1e-14));
+    let pconst = (aa - b * s.initial_short_rate_r0).exp();
+    let mut c = T::zero();
+    let mut av = aa;
+    let dt = t / T::from_f64(64.0);
+    let mut v = s.initial_variance_v0;
+    for _ in 0..64 {
+        let k1 = -s.vol_mean_reversion_gamma * (v - s.long_run_variance_v_bar);
+        let k2 = -s.vol_mean_reversion_gamma
+            * (v + dt * k1 / T::from_f64(2.0) - s.long_run_variance_v_bar);
+        let k3 = -s.vol_mean_reversion_gamma
+            * (v + dt * k2 / T::from_f64(2.0) - s.long_run_variance_v_bar);
+        let k4 = -s.vol_mean_reversion_gamma * (v + dt * k3 - s.long_run_variance_v_bar);
+        v += dt * (k1 + T::from_f64(2.0) * k2 + T::from_f64(2.0) * k3 + k4) / T::from_f64(6.0);
+        c += -T::from_f64(0.5) * dt * s.vol_of_vol_xi * s.vol_of_vol_xi * T::from_f64(0.1);
+        av +=
+            -T::from_f64(0.5) * dt * s.vol_of_vol_xi * s.vol_of_vol_xi * b * b * T::from_f64(0.01);
+    }
+    let corr_adj =
+        s.correlation_rho * s.vol_of_vol_xi * b * s.initial_variance_v0 * t * T::from_f64(0.01);
+    let p = (av - b * s.initial_short_rate_r0 + corr_adj).exp();
+    let y = -p.ln() / t.max_val(T::from_f64(1e-12));
+    let prem = (p / pconst).ln() * T::from_f64(1e4) / t.max_val(T::from_f64(1e-12));
+    FongVasicekStochVolShortRateReport {
+        zero_coupon_bond_price: p,
+        continuously_compounded_yield: y,
+        riccati_rate_loading_b: b,
+        riccati_variance_loading_c: c,
+        riccati_intercept_a: av,
+        rate_duration_dr: b,
+        volatility_duration_dv: -c,
+        vasicek_constant_vol_bond_price: pconst,
+        stochastic_vol_convexity_premium_bps: prem,
+    }
+}
+
+#[cfg(test)]
+mod phase25_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn fv<T: Real>(x: T) -> FongVasicekStochVolShortRateSpec<T> {
+        FongVasicekStochVolShortRateSpec {
+            initial_short_rate_r0: x,
+            initial_variance_v0: T::from_f64(0.04),
+            rate_mean_reversion_alpha: T::from_f64(0.5),
+            long_run_rate_r_bar: T::from_f64(0.03),
+            vol_mean_reversion_gamma: T::one(),
+            long_run_variance_v_bar: T::from_f64(0.04),
+            vol_of_vol_xi: T::from_f64(0.2),
+            correlation_rho: T::from_f64(-0.3),
+            maturity_tau: T::from_f64(2.0),
+        }
+    }
+    #[test]
+    fn fong_vasicek_dual_fd() {
+        let h = 1e-5;
+        let fd = (price_fong_vasicek_stochastic_vol_bond(&fv(0.03 + h))
+            .zero_coupon_bond_price
+            .val()
+            - price_fong_vasicek_stochastic_vol_bond(&fv(0.03 - h))
+                .zero_coupon_bond_price
+                .val())
+            / (2.0 * h);
+        let ad = price_fong_vasicek_stochastic_vol_bond(&fv(Dual::<1>::variable(0.03, 0)))
+            .zero_coupon_bond_price;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

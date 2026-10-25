@@ -1045,6 +1045,147 @@ fn linear_slice_value_derivative<T: Real>(xs: &[f64], ys: &[T], t: f64) -> (T, T
     )
 }
 
+#[derive(Clone, Debug)]
+pub struct TsayKalmanRtsStateSpaceCurveSpec<T: Real = f64> {
+    pub transition_f: [[T; 2]; 2],
+    pub state_drift_c: [T; 2],
+    pub process_noise_q: [[T; 2]; 2],
+    pub measurement_h: [[T; 2]; 2],
+    pub measurement_noise_r: [T; 2],
+    pub initial_state_mean: [T; 2],
+    pub initial_state_cov: [[T; 2]; 2],
+    pub observations: Vec<[T; 2]>,
+}
+#[derive(Clone, Debug)]
+pub struct TsayKalmanRtsStateSpaceCurveReport<T: Real = f64> {
+    pub filtered_states: Vec<[T; 2]>,
+    pub smoothed_states: Vec<[T; 2]>,
+    pub filtered_trace_covariances: Vec<T>,
+    pub smoothed_trace_covariances: Vec<T>,
+    pub innovation_log_likelihood: T,
+    pub terminal_kalman_gain_frobenius: T,
+    pub max_smoother_variance_reduction: T,
+}
+fn mat2_trans<T: Real>(a: [[T; 2]; 2]) -> [[T; 2]; 2] {
+    [[a[0][0], a[1][0]], [a[0][1], a[1][1]]]
+}
+fn mat2_mul<T: Real>(a: [[T; 2]; 2], b: [[T; 2]; 2]) -> [[T; 2]; 2] {
+    [
+        [
+            a[0][0] * b[0][0] + a[0][1] * b[1][0],
+            a[0][0] * b[0][1] + a[0][1] * b[1][1],
+        ],
+        [
+            a[1][0] * b[0][0] + a[1][1] * b[1][0],
+            a[1][0] * b[0][1] + a[1][1] * b[1][1],
+        ],
+    ]
+}
+fn mat2_add<T: Real>(a: [[T; 2]; 2], b: [[T; 2]; 2]) -> [[T; 2]; 2] {
+    [
+        [a[0][0] + b[0][0], a[0][1] + b[0][1]],
+        [a[1][0] + b[1][0], a[1][1] + b[1][1]],
+    ]
+}
+fn mat2_sub<T: Real>(a: [[T; 2]; 2], b: [[T; 2]; 2]) -> [[T; 2]; 2] {
+    [
+        [a[0][0] - b[0][0], a[0][1] - b[0][1]],
+        [a[1][0] - b[1][0], a[1][1] - b[1][1]],
+    ]
+}
+fn mat2_inv<T: Real>(a: [[T; 2]; 2]) -> [[T; 2]; 2] {
+    let d = a[0][0] * a[1][1] - a[0][1] * a[1][0];
+    let di = T::one() / d;
+    [[a[1][1] * di, -a[0][1] * di], [-a[1][0] * di, a[0][0] * di]]
+}
+fn mat2_vec<T: Real>(a: [[T; 2]; 2], x: [T; 2]) -> [T; 2] {
+    [
+        a[0][0] * x[0] + a[0][1] * x[1],
+        a[1][0] * x[0] + a[1][1] * x[1],
+    ]
+}
+pub fn evaluate_tsay_kalman_rts_state_space_curve<T: Real>(
+    s: &TsayKalmanRtsStateSpaceCurveSpec<T>,
+) -> TsayKalmanRtsStateSpaceCurveReport<T> {
+    let n = s.observations.len();
+    let f = s.transition_f;
+    let h = s.measurement_h;
+    let ht = mat2_trans(h);
+    let ft = mat2_trans(f);
+    let mut xf = Vec::with_capacity(n);
+    let mut pf = Vec::with_capacity(n);
+    let mut xp = Vec::with_capacity(n);
+    let mut pp = Vec::with_capacity(n);
+    let mut x = s.initial_state_mean;
+    let mut p = s.initial_state_cov;
+    let mut ll = T::zero();
+    let mut kg = T::zero();
+    let rmat = [
+        [s.measurement_noise_r[0], T::zero()],
+        [T::zero(), s.measurement_noise_r[1]],
+    ];
+    for y in &s.observations {
+        let xpred = [
+            mat2_vec(f, x)[0] + s.state_drift_c[0],
+            mat2_vec(f, x)[1] + s.state_drift_c[1],
+        ];
+        let ppred = mat2_add(mat2_mul(mat2_mul(f, p), ft), s.process_noise_q);
+        let v = [y[0] - (mat2_vec(h, xpred)[0]), y[1] - mat2_vec(h, xpred)[1]];
+        let ss = mat2_add(mat2_mul(mat2_mul(h, ppred), ht), rmat);
+        let si = mat2_inv(ss);
+        let k = mat2_mul(mat2_mul(ppred, ht), si);
+        let kv = mat2_vec(k, v);
+        x = [xpred[0] + kv[0], xpred[1] + kv[1]];
+        let i_kh = mat2_sub(
+            [[T::one(), T::zero()], [T::zero(), T::one()]],
+            mat2_mul(k, h),
+        );
+        p = mat2_add(
+            mat2_mul(mat2_mul(i_kh, ppred), mat2_trans(i_kh)),
+            mat2_mul(mat2_mul(k, rmat), mat2_trans(k)),
+        );
+        let det = ss[0][0] * ss[1][1] - ss[0][1] * ss[1][0];
+        let q =
+            v[0] * (si[0][0] * v[0] + si[0][1] * v[1]) + v[1] * (si[1][0] * v[0] + si[1][1] * v[1]);
+        ll += -T::from_f64(0.5) * (T::from_f64(2.0 * std::f64::consts::PI).ln() + det.ln() + q);
+        kg = (k[0][0] * k[0][0] + k[0][1] * k[0][1] + k[1][0] * k[1][0] + k[1][1] * k[1][1]).sqrt();
+        xp.push(xpred);
+        pp.push(ppred);
+        xf.push(x);
+        pf.push(p);
+    }
+    let mut xs = xf.clone();
+    let mut ps = pf.clone();
+    for t in (0..n.saturating_sub(1)).rev() {
+        let j = mat2_mul(mat2_mul(pf[t], ft), mat2_inv(pp[t + 1]));
+        let dx = [xs[t + 1][0] - xp[t + 1][0], xs[t + 1][1] - xp[t + 1][1]];
+        let jd = mat2_vec(j, dx);
+        xs[t] = [xf[t][0] + jd[0], xf[t][1] + jd[1]];
+        ps[t] = mat2_add(
+            pf[t],
+            mat2_mul(mat2_mul(j, mat2_sub(ps[t + 1], pp[t + 1])), mat2_trans(j)),
+        );
+    }
+    let ftc = pf.iter().map(|a| a[0][0] + a[1][1]).collect::<Vec<_>>();
+    let stc = ps.iter().map(|a| a[0][0] + a[1][1]).collect::<Vec<_>>();
+    let mut maxred = T::zero();
+    for i in 0..n {
+        let red = ftc[i] - stc[i];
+        if red.val() > maxred.val() {
+            maxred = red;
+        }
+    }
+    TsayKalmanRtsStateSpaceCurveReport {
+        filtered_states: xf,
+        smoothed_states: xs,
+        filtered_trace_covariances: ftc,
+        smoothed_trace_covariances: stc,
+        innovation_log_likelihood: ll,
+        terminal_kalman_gain_frobenius: kg,
+        max_smoother_variance_reduction: maxred,
+    }
+}
+
 #[cfg(test)]
 mod phase13_tests {
     use super::*;
@@ -1126,6 +1267,44 @@ mod phase21_tests {
             query_time: 2.0,
         };
         let ad = bootstrap_hagan_west_monotone_convex_curve(&ad_spec).query_discount_factor;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase25_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn spec<T: Real>(x: T) -> TsayKalmanRtsStateSpaceCurveSpec<T> {
+        TsayKalmanRtsStateSpaceCurveSpec {
+            transition_f: [
+                [T::from_f64(0.9), T::from_f64(0.1)],
+                [T::zero(), T::from_f64(0.95)],
+            ],
+            state_drift_c: [T::zero(), T::zero()],
+            process_noise_q: [
+                [T::from_f64(0.01), T::zero()],
+                [T::zero(), T::from_f64(0.01)],
+            ],
+            measurement_h: [[T::one(), T::zero()], [T::zero(), T::one()]],
+            measurement_noise_r: [T::from_f64(0.02), T::from_f64(0.02)],
+            initial_state_mean: [T::zero(), T::zero()],
+            initial_state_cov: [[T::one(), T::zero()], [T::zero(), T::one()]],
+            observations: vec![[x, T::from_f64(1.0)], [T::from_f64(1.1), T::from_f64(0.9)]],
+        }
+    }
+    #[test]
+    fn kalman_rts_dual_fd() {
+        let h = 1e-5;
+        let fd = (evaluate_tsay_kalman_rts_state_space_curve(&spec(1.0 + h))
+            .innovation_log_likelihood
+            .val()
+            - evaluate_tsay_kalman_rts_state_space_curve(&spec(1.0 - h))
+                .innovation_log_likelihood
+                .val())
+            / (2.0 * h);
+        let ad = evaluate_tsay_kalman_rts_state_space_curve(&spec(Dual::<1>::variable(1.0, 0)))
+            .innovation_log_likelihood;
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

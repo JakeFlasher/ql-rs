@@ -471,6 +471,75 @@ pub fn price_sirbu_shreve_dilution_and_makewhole_convertible<T: Real>(
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ThorpKassoufCalamosConvertibleArbSpec<T: Real = f64> {
+    pub stock_price: T,
+    pub conversion_ratio: T,
+    pub convertible_market_price: T,
+    pub face_value: T,
+    pub annual_coupon_rate: T,
+    pub stock_dividend_yield: T,
+    pub risk_free_rate: T,
+    pub credit_spread: T,
+    pub short_stock_rebate_rate: T,
+    pub implied_volatility: T,
+    pub realized_volatility: T,
+    pub maturity: T,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct ThorpKassoufCalamosConvertibleArbReport<T: Real = f64> {
+    pub conversion_parity: T,
+    pub conversion_premium_ratio: T,
+    pub straight_bond_investment_floor: T,
+    pub theoretical_convertible_value: T,
+    pub delta_neutral_short_shares: T,
+    pub convertible_gamma: T,
+    pub annual_cash_flow_advantage: T,
+    pub breakeven_payback_years: T,
+    pub expected_annual_gamma_carry_pnl: T,
+}
+pub fn analyze_thorp_kassouf_calamos_convertible_arbitrage<T: Real>(
+    s: &ThorpKassoufCalamosConvertibleArbSpec<T>,
+) -> ThorpKassoufCalamosConvertibleArbReport<T> {
+    let t = s.maturity.max_val(T::from_f64(1e-12));
+    let parity = s.stock_price * s.conversion_ratio;
+    let floor = s.face_value * (-(s.risk_free_rate + s.credit_spread) * t).exp();
+    let vol = s.implied_volatility.max_val(T::from_f64(1e-8));
+    let d1 = ((s.stock_price / (s.face_value / s.conversion_ratio + T::from_f64(1e-14))).ln()
+        + (s.risk_free_rate - s.stock_dividend_yield + T::from_f64(0.5) * vol * vol) * t)
+        / (vol * t.sqrt());
+    let d2 = d1 - vol * t.sqrt();
+    let call = s.stock_price * (-s.stock_dividend_yield * t).exp() * d1.norm_cdf()
+        - (s.face_value / s.conversion_ratio) * (-(s.risk_free_rate) * t).exp() * d2.norm_cdf();
+    let theo = floor + call * s.conversion_ratio;
+    let delta = s.conversion_ratio * (-s.stock_dividend_yield * t).exp() * d1.norm_cdf();
+    let gamma = s.conversion_ratio * (-s.stock_dividend_yield * t).exp() * d1.norm_pdf()
+        / (s.stock_price * vol * t.sqrt());
+    let adv = s.annual_coupon_rate * s.face_value
+        + s.short_stock_rebate_rate * s.stock_price * delta
+        - s.stock_dividend_yield * s.stock_price * delta
+        - s.credit_spread * floor;
+    let pay = (s.convertible_market_price - parity).abs() / (adv.abs() + T::from_f64(1e-14));
+    let carry = gamma
+        * s.stock_price
+        * s.stock_price
+        * (s.realized_volatility * s.realized_volatility
+            - s.implied_volatility * s.implied_volatility)
+        / T::from_f64(2.0)
+        + adv;
+    ThorpKassoufCalamosConvertibleArbReport {
+        conversion_parity: parity,
+        conversion_premium_ratio: theo / (parity + T::from_f64(1e-14)) - T::one(),
+        straight_bond_investment_floor: floor,
+        theoretical_convertible_value: theo,
+        delta_neutral_short_shares: delta,
+        convertible_gamma: gamma,
+        annual_cash_flow_advantage: adv,
+        breakeven_payback_years: pay,
+        expected_annual_gamma_carry_pnl: carry,
+    }
+}
+
 #[cfg(test)]
 mod phase24_tests {
     use super::*;
@@ -512,6 +581,50 @@ mod phase24_tests {
             100., 0,
         )))
         .make_whole_enhanced_price;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase25_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn cb<T: Real>(x: T) -> ThorpKassoufCalamosConvertibleArbSpec<T> {
+        ThorpKassoufCalamosConvertibleArbSpec {
+            stock_price: x,
+            conversion_ratio: T::from_f64(0.8),
+            convertible_market_price: T::from_f64(95.0),
+            face_value: T::from_f64(100.0),
+            annual_coupon_rate: T::from_f64(0.03),
+            stock_dividend_yield: T::from_f64(0.01),
+            risk_free_rate: T::from_f64(0.02),
+            credit_spread: T::from_f64(0.03),
+            short_stock_rebate_rate: T::from_f64(0.01),
+            implied_volatility: T::from_f64(0.2),
+            realized_volatility: T::from_f64(0.22),
+            maturity: T::from_f64(3.0),
+        }
+    }
+    #[test]
+    fn convertible_arb_dual_fd() {
+        let r = analyze_thorp_kassouf_calamos_convertible_arbitrage(&cb(100.0));
+        assert!(
+            (r.conversion_parity * (1.0 + r.conversion_premium_ratio)
+                - r.theoretical_convertible_value)
+                .abs()
+                < 1e-12
+        );
+        let h = 1e-5;
+        let fd = (analyze_thorp_kassouf_calamos_convertible_arbitrage(&cb(100.0 + h))
+            .theoretical_convertible_value
+            .val()
+            - analyze_thorp_kassouf_calamos_convertible_arbitrage(&cb(100.0 - h))
+                .theoretical_convertible_value
+                .val())
+            / (2.0 * h);
+        let ad =
+            analyze_thorp_kassouf_calamos_convertible_arbitrage(&cb(Dual::<1>::variable(100.0, 0)))
+                .theoretical_convertible_value;
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

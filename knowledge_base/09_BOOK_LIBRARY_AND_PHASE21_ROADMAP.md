@@ -36,4 +36,4 @@ The workspace book library contains **86 books and monographs across 14 topic fo
 10. **Bacon (2023) Brinson–Fachler & Carino (1999) Exact Logarithmic Multi-Period Performance Attribution** — Bacon (2023, Ch. 5 & 8).
 
 ### Phase 24 Round 1 delivery
-The twelve institutional engines above are now wired into `ql-fixed-income`, `ql-credit`, `ql-xva`, `ql-models`, `ql-vol`, `ql-portfolio`, and `ql-ad`, with Suite 36 (`36_mbs_io_po_rmv_mo_xva_dilution_sig_garch_pot_rie_pin_gp_brinson_ierp`) and workstation Tab 34 (`34 Phase 24 SOTA`).
+The twelve institutional engines above are now wired into `ql-fixed-income`, `ql-credit`, `ql-xva`, `ql-models`, `ql-vol`, `ql-portfolio`, and `ql-ad`, with Suite 37 (`37_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin`) and workstation Tab 35 (`35 Phase 25 SOTA`).

@@ -11,7 +11,7 @@ use ql_benches::{
 #[test]
 fn phase21_suite33_and_invariants() {
     let rows = with_config_override(1, 3, || run_all_benchmarks(1));
-    assert_eq!(rows.len(), 36);
+    assert_eq!(rows.len(), 37);
     let row = with_config_override(1, 3, || {
         benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(1)
     });
@@ -51,4 +51,15 @@ fn phase24_suite36_and_invariants() {
     });
     assert!(row.parity_diff < 1e-4);
     assert!(row.speedup > 1.0);
+}
+
+#[test]
+fn phase25_suite37_and_invariants() {
+    let rows = ql_benches::run_all_benchmark_suites_with_config(1, 3);
+    let row = rows
+        .iter()
+        .find(|r| r.id.starts_with("37_"))
+        .expect("suite 37");
+    assert!(row.parity_ok);
+    assert!(row.max_abs_diff < 1e-4);
 }

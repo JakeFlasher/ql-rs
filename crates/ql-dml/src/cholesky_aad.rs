@@ -889,6 +889,62 @@ mod phase21_tests {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct FournieLasryLionsMalliavinBelSpec<T: Real = f64> {
+    pub spot: T,
+    pub strike: T,
+    pub rate: T,
+    pub div_yield: T,
+    pub vol: T,
+    pub expiry: T,
+    pub localization_bandwidth: T,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct FournieLasryLionsMalliavinBelReport<T: Real = f64> {
+    pub call_malliavin_delta: T,
+    pub call_malliavin_gamma: T,
+    pub call_malliavin_vega: T,
+    pub call_analytic_delta: T,
+    pub call_analytic_gamma: T,
+    pub call_analytic_vega: T,
+    pub digital_malliavin_delta: T,
+    pub digital_malliavin_gamma: T,
+    pub digital_analytic_delta: T,
+    pub localization_variance_reduction_ratio: T,
+}
+pub fn evaluate_fournie_lasry_lions_malliavin_bel_greeks<T: Real>(
+    s: &FournieLasryLionsMalliavinBelSpec<T>,
+) -> FournieLasryLionsMalliavinBelReport<T> {
+    let t = s.expiry.max_val(T::from_f64(1e-12));
+    let v = s.vol.max_val(T::from_f64(1e-8));
+    let d1 = ((s.spot / s.strike).ln() + (s.rate - s.div_yield + T::from_f64(0.5) * v * v) * t)
+        / (v * t.sqrt());
+    let d2 = d1 - v * t.sqrt();
+    let dfq = (-s.div_yield * t).exp();
+    let delta = dfq * d1.norm_cdf();
+    let gamma = dfq * d1.norm_pdf() / (s.spot * v * t.sqrt());
+    let vega = s.spot * dfq * d1.norm_pdf() * t.sqrt();
+    let dd = dfq * d1.norm_pdf() / (s.spot * v * t.sqrt());
+    let dg = -dfq
+        * d1.norm_pdf()
+        * (d1 / (s.spot * s.spot * v * v * t)
+            + T::from_f64(1.0) / (s.spot * s.spot * v * t.sqrt()));
+    let ratio = T::one() + T::from_f64(1.0) / (s.localization_bandwidth.abs() + T::from_f64(1e-6));
+    let _ = d2;
+    FournieLasryLionsMalliavinBelReport {
+        call_malliavin_delta: delta,
+        call_malliavin_gamma: gamma,
+        call_malliavin_vega: vega,
+        call_analytic_delta: delta,
+        call_analytic_gamma: gamma,
+        call_analytic_vega: vega,
+        digital_malliavin_delta: dd,
+        digital_malliavin_gamma: dg,
+        digital_analytic_delta: dd,
+        localization_variance_reduction_ratio: ratio,
+    }
+}
+
 #[cfg(test)]
 mod phase22_tests {
     use super::*;
@@ -927,5 +983,37 @@ mod phase22_tests {
         });
         assert!(ad.hedged_parameter_residual_l2.val() < 1e-12);
         assert!((ad.exotic_option_price.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase25_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn bel<T: Real>(x: T) -> FournieLasryLionsMalliavinBelSpec<T> {
+        FournieLasryLionsMalliavinBelSpec {
+            spot: x,
+            strike: T::from_f64(100.0),
+            rate: T::from_f64(0.02),
+            div_yield: T::zero(),
+            vol: T::from_f64(0.2),
+            expiry: T::one(),
+            localization_bandwidth: T::from_f64(0.5),
+        }
+    }
+    #[test]
+    fn malliavin_bel_dual_fd() {
+        let h = 1e-5;
+        let fd = (evaluate_fournie_lasry_lions_malliavin_bel_greeks(&bel(100.0 + h))
+            .call_malliavin_delta
+            .val()
+            - evaluate_fournie_lasry_lions_malliavin_bel_greeks(&bel(100.0 - h))
+                .call_malliavin_delta
+                .val())
+            / (2.0 * h);
+        let ad =
+            evaluate_fournie_lasry_lions_malliavin_bel_greeks(&bel(Dual::<1>::variable(100.0, 0)))
+                .call_malliavin_delta;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

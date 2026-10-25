@@ -1308,6 +1308,168 @@ pub fn evaluate_duffie_singleton_larix_recovery_and_basis<T: Real>(
     analyze_duffie_singleton_rmv_rfv_and_cds_basis(s)
 }
 
+#[derive(Clone, Debug)]
+pub struct Ifrs9CeclMultiStageEclSpec<T: Real = f64> {
+    pub annual_ttc_pds: [T; 3],
+    pub annual_eads: [T; 3],
+    pub base_lgd: T,
+    pub lgd_macro_sensitivity: T,
+    pub vasicek_asset_correlation: T,
+    pub effective_interest_rate: T,
+    pub scenario_weights: [T; 3],
+    pub scenario_macro_shocks_z: [T; 3],
+    pub origination_lifetime_pd: T,
+    pub sicr_pd_multiplier_threshold: T,
+}
+#[derive(Clone, Debug)]
+pub struct Ifrs9CeclMultiStageEclReport<T: Real = f64> {
+    pub stage1_12m_ecl: T,
+    pub stage2_lifetime_ecl: T,
+    pub stage3_credit_impaired_ecl: T,
+    pub current_weighted_lifetime_pd: T,
+    pub sicr_stage2_allocation_weight: T,
+    pub blended_ifrs9_ecl_provision: T,
+    pub stage1_gross_interest_income: T,
+    pub stage3_net_eir_interest_income: T,
+}
+pub fn compute_ifrs9_cecl_multistage_expected_credit_loss<T: Real>(
+    s: &Ifrs9CeclMultiStageEclSpec<T>,
+) -> Ifrs9CeclMultiStageEclReport<T> {
+    let rho = s
+        .vasicek_asset_correlation
+        .max_val(T::from_f64(1e-8))
+        .min_val(T::from_f64(0.999999));
+    let sr = rho.sqrt();
+    let id = (T::one() - rho).sqrt();
+    let mut wp = T::zero();
+    let mut life = T::zero();
+    let mut stage1 = T::zero();
+    let mut stage2 = T::zero();
+    let mut stage3 = T::zero();
+    for j in 0..3 {
+        let w = s.scenario_weights[j];
+        let z = s.scenario_macro_shocks_z[j];
+        let mut surv = T::zero();
+        for h in 0..3 {
+            let p = s.annual_ttc_pds[h].max_val(T::from_f64(1e-10));
+            let q = ((p.ln() * -T::one() + sr * z) / id).neg();
+            let pit = q.norm_cdf();
+            let disc = (T::one() + s.effective_interest_rate).powf(-(h as f64 + 1.0));
+            life += w * pit * disc;
+            if h == 0 {
+                stage1 += w * pit;
+            }
+            stage2 += w * pit * disc;
+            stage3 += w * pit * disc * (T::one() + s.annual_ttc_pds[2].max_val(T::zero()));
+            surv += pit;
+        }
+        wp += w * surv / T::from_f64(3.0);
+    }
+    let lgd = (s.base_lgd + s.lgd_macro_sensitivity * wp)
+        .max_val(T::zero())
+        .min_val(T::one());
+    stage1 *= s.annual_eads[0] * lgd;
+    stage2 *= s.annual_eads[1] * lgd;
+    stage3 *= s.annual_eads[2] * lgd;
+    let mult = wp / (s.origination_lifetime_pd + T::from_f64(1e-14));
+    let omega = T::one()
+        / (T::one() + (-(mult - s.sicr_pd_multiplier_threshold) * T::from_f64(20.0)).exp());
+    let blend = (T::one() - omega) * stage1 + omega * stage2;
+    Ifrs9CeclMultiStageEclReport {
+        stage1_12m_ecl: stage1,
+        stage2_lifetime_ecl: stage2,
+        stage3_credit_impaired_ecl: stage3,
+        current_weighted_lifetime_pd: life,
+        sicr_stage2_allocation_weight: omega,
+        blended_ifrs9_ecl_provision: blend,
+        stage1_gross_interest_income: s.annual_eads[0] * s.effective_interest_rate,
+        stage3_net_eir_interest_income: s.annual_eads[2]
+            * s.effective_interest_rate
+            * (T::one() - lgd),
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LandoCoxAffineDefaultSpec<T: Real = f64> {
+    pub risk_free_rate: T,
+    pub base_default_hazard: T,
+    pub initial_credit_intensity_y0: T,
+    pub credit_kappa: T,
+    pub credit_theta: T,
+    pub credit_sigma: T,
+    pub initial_liquidity_intensity_z0: T,
+    pub liquidity_kappa: T,
+    pub liquidity_theta: T,
+    pub liquidity_sigma: T,
+    pub recovery_rate: T,
+    pub maturity: T,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct LandoCoxAffineDefaultReport<T: Real = f64> {
+    pub survival_probability: T,
+    pub liquidity_discount_factor: T,
+    pub defaultable_zero_coupon_price: T,
+    pub recovery_leg_pv: T,
+    pub risky_corporate_bond_price: T,
+    pub total_yield_spread_bps: T,
+    pub pure_credit_spread_bps: T,
+    pub pure_liquidity_spread_bps: T,
+    pub credit_spread_fraction: T,
+}
+fn cir_surv<T: Real>(k: T, th: T, sig: T, y: T, t: T) -> T {
+    let e = (-k * t).exp();
+    let g = (k * k + T::from_f64(2.0) * sig * sig).sqrt();
+    let b = T::from_f64(2.0) * (e - T::one()) / ((k + g) * (e - T::one()) + T::from_f64(2.0) * g);
+    let a = ((T::from_f64(2.0) * g * ((k + g) * t / T::from_f64(2.0)).exp())
+        / ((k + g) * (e - T::one()) + T::from_f64(2.0) * g))
+        .pow(T::from_f64(2.0) * k * th / (sig * sig + T::from_f64(1e-14)));
+    a * (-b * y).exp()
+}
+pub fn evaluate_lando_cox_affine_default_and_liquidity_decomposition<T: Real>(
+    s: &LandoCoxAffineDefaultSpec<T>,
+) -> LandoCoxAffineDefaultReport<T> {
+    let t = s.maturity;
+    let surv = (-s.base_default_hazard * t).exp()
+        * cir_surv(
+            s.credit_kappa,
+            s.credit_theta,
+            s.credit_sigma,
+            s.initial_credit_intensity_y0,
+            t,
+        );
+    let liq = cir_surv(
+        s.liquidity_kappa,
+        s.liquidity_theta,
+        s.liquidity_sigma,
+        s.initial_liquidity_intensity_z0,
+        t,
+    );
+    let df = (-s.risk_free_rate * t).exp();
+    let defp = df * surv;
+    let mut rec = T::zero();
+    for i in 0..16 {
+        let x = -0.9894009349916499 + (i as f64 + 0.5) * 1.9788018699832998 / 16.0;
+        let u = t * (x + 1.0) / 2.0;
+        let q = (-s.risk_free_rate * u).exp() * (-s.base_default_hazard * u).exp();
+        rec += s.recovery_rate * q * s.base_default_hazard * t / T::from_f64(16.0);
+    }
+    let credit = -(surv.max_val(T::from_f64(1e-14))).ln() / t.max_val(T::from_f64(1e-14));
+    let lspread = -(liq.max_val(T::from_f64(1e-14))).ln() / t.max_val(T::from_f64(1e-14));
+    let total = credit + lspread;
+    let risky = df * (-total * t).exp() + rec;
+    LandoCoxAffineDefaultReport {
+        survival_probability: surv,
+        liquidity_discount_factor: liq,
+        defaultable_zero_coupon_price: defp,
+        recovery_leg_pv: rec,
+        risky_corporate_bond_price: risky,
+        total_yield_spread_bps: total * T::from_f64(1e4),
+        pure_credit_spread_bps: credit * T::from_f64(1e4),
+        pure_liquidity_spread_bps: lspread * T::from_f64(1e4),
+        credit_spread_fraction: credit / total,
+    }
+}
+
 #[cfg(test)]
 mod phase24_tests {
     use super::*;
@@ -1363,5 +1525,84 @@ mod phase24_tests {
         ))
         .raw_cds_bond_basis;
         assert!((ad_basis.d[0] - fd_basis).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase25_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn ecl<T: Real>(x: T) -> Ifrs9CeclMultiStageEclSpec<T> {
+        Ifrs9CeclMultiStageEclSpec {
+            annual_ttc_pds: [x, T::from_f64(0.04), T::from_f64(0.1)],
+            annual_eads: [T::from_f64(100.0), T::from_f64(100.0), T::from_f64(100.0)],
+            base_lgd: T::from_f64(0.45),
+            lgd_macro_sensitivity: T::from_f64(0.05),
+            vasicek_asset_correlation: T::from_f64(0.2),
+            effective_interest_rate: T::from_f64(0.03),
+            scenario_weights: [T::from_f64(0.3), T::from_f64(0.5), T::from_f64(0.2)],
+            scenario_macro_shocks_z: [T::from_f64(-1.0), T::zero(), T::from_f64(1.0)],
+            origination_lifetime_pd: T::from_f64(0.04),
+            sicr_pd_multiplier_threshold: T::from_f64(1.5),
+        }
+    }
+    #[test]
+    fn ifrs9_dual_fd() {
+        let h = 1e-5;
+        let fd = (compute_ifrs9_cecl_multistage_expected_credit_loss(&ecl(0.02 + h))
+            .stage1_12m_ecl
+            .val()
+            - compute_ifrs9_cecl_multistage_expected_credit_loss(&ecl(0.02 - h))
+                .stage1_12m_ecl
+                .val())
+            / (2.0 * h);
+        let ad =
+            compute_ifrs9_cecl_multistage_expected_credit_loss(&ecl(Dual::<1>::variable(0.02, 0)))
+                .stage1_12m_ecl;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+    fn lando<T: Real>(x: T) -> LandoCoxAffineDefaultSpec<T> {
+        LandoCoxAffineDefaultSpec {
+            risk_free_rate: T::from_f64(0.02),
+            base_default_hazard: T::from_f64(0.01),
+            initial_credit_intensity_y0: x,
+            credit_kappa: T::from_f64(0.5),
+            credit_theta: T::from_f64(0.02),
+            credit_sigma: T::from_f64(0.1),
+            initial_liquidity_intensity_z0: T::from_f64(0.01),
+            liquidity_kappa: T::from_f64(0.4),
+            liquidity_theta: T::from_f64(0.01),
+            liquidity_sigma: T::from_f64(0.1),
+            recovery_rate: T::from_f64(0.4),
+            maturity: T::from_f64(3.0),
+        }
+    }
+    #[test]
+    fn lando_dual_fd_and_spread_decomposition() {
+        let mut zl = lando(0.02);
+        zl.initial_liquidity_intensity_z0 = 0.0;
+        zl.liquidity_theta = 0.0;
+        let zero_liq = evaluate_lando_cox_affine_default_and_liquidity_decomposition(&zl);
+        assert!(zero_liq.pure_liquidity_spread_bps.abs() < 1e-12);
+        assert!(
+            (zero_liq.total_yield_spread_bps
+                - zero_liq.pure_credit_spread_bps
+                - zero_liq.pure_liquidity_spread_bps)
+                .abs()
+                < 1e-12
+        );
+        let h = 1e-5;
+        let fd = (evaluate_lando_cox_affine_default_and_liquidity_decomposition(&lando(0.02 + h))
+            .survival_probability
+            .val()
+            - evaluate_lando_cox_affine_default_and_liquidity_decomposition(&lando(0.02 - h))
+                .survival_probability
+                .val())
+            / (2.0 * h);
+        let ad = evaluate_lando_cox_affine_default_and_liquidity_decomposition(&lando(
+            Dual::<1>::variable(0.02, 0),
+        ))
+        .survival_probability;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

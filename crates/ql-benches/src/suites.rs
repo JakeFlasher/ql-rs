@@ -3472,6 +3472,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_phase24_mbs_io_po_rmv_mo_xva_dilution_sig_garch_pot_rie_pin_gp_brinson_ierp(
             scale,
         ),
+        benchmark_phase25_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin(scale),
     ]
 }
 
@@ -5408,6 +5409,257 @@ pub fn phase24_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
         br.carino_linked_selection_total,
         ie.implied_erp,
     ]
+}
+
+pub fn phase25_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+    let kal = ql_curves::evaluate_tsay_kalman_rts_state_space_curve(
+        &ql_curves::TsayKalmanRtsStateSpaceCurveSpec {
+            transition_f: [
+                [T::from_f64(0.9) + x[0] * 0.01, T::from_f64(0.1)],
+                [T::zero(), T::from_f64(0.95) + x[1] * 0.01],
+            ],
+            state_drift_c: [x[2], x[3]],
+            process_noise_q: [
+                [T::from_f64(0.01), T::zero()],
+                [T::zero(), T::from_f64(0.01)],
+            ],
+            measurement_h: [[T::one(), T::zero()], [T::zero(), T::one()]],
+            measurement_noise_r: [T::from_f64(0.02), T::from_f64(0.02)],
+            initial_state_mean: [T::zero(), T::zero()],
+            initial_state_cov: [[T::one(), T::zero()], [T::zero(), T::one()]],
+            observations: vec![
+                [T::one() + x[0], T::one() + x[1]],
+                [T::from_f64(1.1) + x[2], T::from_f64(0.9) + x[3]],
+            ],
+        },
+    );
+    let vecm = ql_portfolio::solve_johansen_tsay_vecm_cointegration_basket(
+        &ql_portfolio::JohansenTsayVecmCointegrationSpec {
+            price_series: vec![
+                [T::from_f64(100.) + x[0], T::from_f64(101.) + x[1]],
+                [T::from_f64(101.) + x[2], T::from_f64(102.) + x[3]],
+                [T::from_f64(102.) + x[0], T::from_f64(103.) + x[1]],
+                [T::from_f64(103.) + x[2], T::from_f64(104.) + x[3]],
+            ],
+        },
+    );
+    let hj = ql_portfolio::evaluate_cochrane_hansen_jagannathan_sdf_and_campbell_shiller(
+        &ql_portfolio::CochraneHansenJagannathanSdfSpec {
+            mean_excess_returns: [T::from_f64(0.04) + x[0], T::from_f64(0.05) + x[1]],
+            excess_return_cov: [
+                [T::from_f64(0.04), T::from_f64(0.01)],
+                [T::from_f64(0.01), T::from_f64(0.06)],
+            ],
+            risk_free_rate: T::from_f64(0.02),
+            candidate_sdf_pricing_errors: [x[2], x[3]],
+            steady_state_log_dp_ratio: T::from_f64(1.),
+            var1_companion_matrix: [[T::from_f64(0.9), T::zero()], [T::zero(), T::from_f64(0.8)]],
+            state_innovation_cov: [
+                [T::from_f64(0.02), T::zero()],
+                [T::zero(), T::from_f64(0.03)],
+            ],
+        },
+    );
+    let ecl = ql_credit::compute_ifrs9_cecl_multistage_expected_credit_loss(
+        &ql_credit::Ifrs9CeclMultiStageEclSpec {
+            annual_ttc_pds: [
+                T::from_f64(0.02) + x[0] * 0.001,
+                T::from_f64(0.03),
+                T::from_f64(0.1),
+            ],
+            annual_eads: [
+                T::from_f64(100.),
+                T::from_f64(100.) + x[1],
+                T::from_f64(100.) + x[2],
+            ],
+            base_lgd: T::from_f64(0.45),
+            lgd_macro_sensitivity: T::from_f64(0.05),
+            vasicek_asset_correlation: T::from_f64(0.2),
+            effective_interest_rate: T::from_f64(0.03),
+            scenario_weights: [T::from_f64(0.3), T::from_f64(0.5), T::from_f64(0.2)],
+            scenario_macro_shocks_z: [x[0], x[1], x[2] + x[3]],
+            origination_lifetime_pd: T::from_f64(0.04),
+            sicr_pd_multiplier_threshold: T::from_f64(1.5),
+        },
+    );
+    let cpt = ql_portfolio::evaluate_wakker_tversky_kahneman_cumulative_prospect_utility(
+        &ql_portfolio::WakkerTverskyKahnemanCptSpec {
+            scenario_returns: [
+                x[0],
+                x[1],
+                T::from_f64(-0.1) + x[2],
+                T::from_f64(0.2) + x[3],
+            ],
+            scenario_probabilities: [T::from_f64(0.25); 4],
+            reference_return: T::zero(),
+            alpha_gain: T::from_f64(0.88),
+            beta_loss: T::from_f64(0.88),
+            loss_aversion_lambda: T::from_f64(2.25),
+            prelec_gamma_gain: T::from_f64(0.7),
+            prelec_gamma_loss: T::from_f64(0.7),
+            prelec_delta: T::one(),
+        },
+    );
+    let hs = ql_portfolio::evaluate_hasbrouck_information_share_and_dssw_limits_to_arb(
+        &ql_portfolio::HasbrouckDsswPriceDiscoverySpec {
+            alpha_venue1: T::from_f64(0.2) + x[0],
+            alpha_venue2: T::from_f64(0.3) + x[1],
+            sigma_venue1: T::from_f64(0.1),
+            sigma_venue2: T::from_f64(0.12),
+            venue_innovation_corr: T::from_f64(0.2),
+            fundamental_dividend: T::from_f64(1.),
+            risk_free_rate: T::from_f64(0.02),
+            noise_trader_share_mu: T::from_f64(0.2),
+            noise_trader_sentiment_mean: x[2],
+            noise_trader_sentiment_var: T::from_f64(0.1) + x[3],
+            arbitrageur_risk_aversion_gamma: T::from_f64(2.),
+        },
+    );
+    let fv = ql_rates::price_fong_vasicek_stochastic_vol_bond(
+        &ql_rates::FongVasicekStochVolShortRateSpec {
+            initial_short_rate_r0: T::from_f64(0.03) + x[0],
+            initial_variance_v0: T::from_f64(0.04) + x[2] * T::from_f64(0.001),
+            rate_mean_reversion_alpha: T::from_f64(0.5),
+            long_run_rate_r_bar: T::from_f64(0.03),
+            vol_mean_reversion_gamma: T::from_f64(1.),
+            long_run_variance_v_bar: T::from_f64(0.04),
+            vol_of_vol_xi: T::from_f64(0.2) + x[2] * T::from_f64(0.01),
+            correlation_rho: T::from_f64(-0.3) + x[3] * T::from_f64(0.01),
+            maturity_tau: T::from_f64(2.) + x[1],
+        },
+    );
+    let la = ql_credit::evaluate_lando_cox_affine_default_and_liquidity_decomposition(
+        &ql_credit::LandoCoxAffineDefaultSpec {
+            risk_free_rate: T::from_f64(0.02) + x[0] * T::from_f64(0.01),
+            base_default_hazard: T::from_f64(0.01) + x[1] * T::from_f64(0.01),
+            initial_credit_intensity_y0: T::from_f64(0.02) + x[0] * T::from_f64(0.01),
+            credit_kappa: T::from_f64(0.5),
+            credit_theta: T::from_f64(0.02),
+            credit_sigma: T::from_f64(0.1),
+            initial_liquidity_intensity_z0: T::from_f64(0.01) + x[2],
+            liquidity_kappa: T::from_f64(0.4) + x[1] * T::from_f64(0.01),
+            liquidity_theta: T::from_f64(0.01),
+            liquidity_sigma: T::from_f64(0.1),
+            recovery_rate: T::from_f64(0.4),
+            maturity: T::from_f64(3.) + x[3],
+        },
+    );
+    let lp = ql_portfolio::calibrate_sornette_lppl_bubble_and_crash_hazard(
+        &ql_portfolio::SornetteLpplBubbleCrashSpec {
+            observation_times: vec![
+                T::from_f64(1.),
+                T::from_f64(2.),
+                T::from_f64(3.),
+                T::from_f64(4.),
+                T::from_f64(5.),
+            ],
+            log_prices: vec![
+                T::from_f64(4.) + x[0],
+                T::from_f64(4.1) + x[1],
+                T::from_f64(4.2) + x[2],
+                T::from_f64(4.3) + x[3],
+                T::from_f64(4.4) + x[0],
+            ],
+            critical_time_tc: T::from_f64(10.),
+            power_law_exponent_m: T::from_f64(0.5),
+            log_periodic_omega: T::from_f64(8.),
+            expected_crash_drop_kappa: T::from_f64(0.2),
+            ridge_penalty: T::from_f64(1e-6),
+        },
+    );
+    let cb = ql_fixed_income::analyze_thorp_kassouf_calamos_convertible_arbitrage(
+        &ql_fixed_income::ThorpKassoufCalamosConvertibleArbSpec {
+            stock_price: T::from_f64(100.) + x[0],
+            conversion_ratio: T::from_f64(0.8),
+            convertible_market_price: T::from_f64(95.),
+            face_value: T::from_f64(100.),
+            annual_coupon_rate: T::from_f64(0.03),
+            stock_dividend_yield: T::from_f64(0.01),
+            risk_free_rate: T::from_f64(0.02),
+            credit_spread: T::from_f64(0.03),
+            short_stock_rebate_rate: T::from_f64(0.01),
+            implied_volatility: T::from_f64(0.2) + x[1] * T::from_f64(0.01),
+            realized_volatility: T::from_f64(0.22) + x[2] * T::from_f64(0.01),
+            maturity: T::from_f64(3.) + x[3],
+        },
+    );
+    let ca = ql_portfolio::evaluate_lopez_de_prado_causal_backdoor_vs_collider_bias(
+        &ql_portfolio::LopezDePradoCausalFactorSpec {
+            true_causal_beta_xy: T::from_f64(0.5) + x[0] * T::from_f64(0.01),
+            confounder_to_factor_axz: T::from_f64(0.7) + x[1],
+            confounder_to_return_byz: T::from_f64(0.4),
+            factor_to_collider_ccx: T::from_f64(0.5),
+            return_to_collider_ccy: T::from_f64(0.5) + x[2] * T::from_f64(0.01),
+            confounder_var: T::one(),
+            factor_idiosyncratic_var: T::from_f64(0.5),
+            return_idiosyncratic_var: T::from_f64(0.7),
+            collider_idiosyncratic_var: T::from_f64(0.5) + x[3] * T::from_f64(0.01),
+        },
+    );
+    let ma = ql_dml::evaluate_fournie_lasry_lions_malliavin_bel_greeks(
+        &ql_dml::FournieLasryLionsMalliavinBelSpec {
+            spot: T::from_f64(100.) + x[3],
+            strike: T::from_f64(100.) + x[0],
+            rate: T::from_f64(0.02) + x[1] * T::from_f64(0.01),
+            div_yield: T::zero(),
+            vol: T::from_f64(0.2) + x[2] * T::from_f64(0.01),
+            expiry: T::one() + x[3] * T::from_f64(0.01),
+            localization_bandwidth: T::from_f64(0.5),
+        },
+    );
+    [
+        kal.innovation_log_likelihood,
+        vecm.ou_mean_reversion_kappa,
+        hj.hj_sdf_volatility_lower_bound,
+        ecl.blended_ifrs9_ecl_provision,
+        cpt.cumulative_prospect_utility,
+        hs.hasbrouck_is_midpoint_venue1,
+        fv.zero_coupon_bond_price,
+        la.risky_corporate_bond_price,
+        lp.terminal_crash_hazard_rate + lp.fitted_rmse,
+        cb.theoretical_convertible_value,
+        ca.kitchen_sink_collider_conditioned_beta,
+        ma.call_malliavin_delta,
+    ]
+}
+pub fn benchmark_phase25_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin(
+    scale: usize,
+) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.02, -0.01, 0.03, -0.01];
+    let baseline = move || {
+        let f = |x: [f64; 4]| phase25_workloads(x).iter().map(|v| v.val()).sum::<f64>();
+        let mut z = f(x0);
+        for i in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[i] += 1e-5;
+            d[i] -= 1e-5;
+            z += (f(u) - f(d)) / (2e-5);
+        }
+        z
+    };
+    let sota = move || {
+        type D = Dual<4>;
+        let x = [
+            D::variable(x0[0], 0),
+            D::variable(x0[1], 1),
+            D::variable(x0[2], 2),
+            D::variable(x0[3], 3),
+        ];
+        phase25_workloads(x)
+            .iter()
+            .map(|v| v.val + v.d.iter().sum::<f64>())
+            .sum::<f64>()
+    };
+    run_comparison(
+        "37_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin",
+        "Phase25 Kalman/RTS/VECM/HJ-SDF/IFRS9/CPT/Hasbrouck/FV/Lando/LPPL/CB-Arb/Causal/Malliavin",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
 }
 pub fn benchmark_phase24_mbs_io_po_rmv_mo_xva_dilution_sig_garch_pot_rie_pin_gp_brinson_ierp(
     scale: usize,
