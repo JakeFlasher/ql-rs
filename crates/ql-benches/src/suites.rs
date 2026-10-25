@@ -39,7 +39,8 @@ use ql_models::{
 use ql_portfolio::{
     BoxConstrainedMarkowitzSpec, MarketSnapshot, NestedClusteredOptimizationSpec, PortfolioDag,
     PortfolioTrade, box_constrained_markowitz_weights, conditional_drawdown_at_risk,
-    gerber_covariance_matrix, nested_clustered_optimization_weights, risk_budgeting_weights,
+    entropic_value_at_risk, factor_risk_attribution, gerber_covariance_matrix,
+    nested_clustered_optimization_weights, risk_budgeting_weights,
 };
 use ql_rates as _;
 use ql_rates::{
@@ -3037,18 +3038,49 @@ fn phase16_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
         &curve,
     )
     .npv;
+    let ctd = ql_fixed_income::analyze_treasury_futures_ctd(
+        &ql_fixed_income::TreasuryFuturesBasketSpec {
+            futures_price: T::from_f64(98.5) + x[0] * 0.05,
+            delivery_time: 0.25,
+            repo_rate: T::from_f64(0.03) + x[1] * 0.0005,
+            notional_standard_yield: 0.06,
+            deliverables: vec![
+                ql_fixed_income::TreasuryFutureDeliverable {
+                    clean_price: T::from_f64(99.2),
+                    coupon_rate: T::from_f64(0.06),
+                    remaining_semiannual_periods: 16,
+                    accrued_interest_spot: T::from_f64(0.5),
+                    accrued_interest_delivery: T::from_f64(1.0),
+                    interim_coupon: T::zero(),
+                    yield_vol: T::from_f64(0.008) + x[2] * 0.0001,
+                    modified_duration: T::from_f64(6.5),
+                },
+                ql_fixed_income::TreasuryFutureDeliverable {
+                    clean_price: T::from_f64(89.0),
+                    coupon_rate: T::from_f64(0.045),
+                    remaining_semiannual_periods: 18,
+                    accrued_interest_spot: T::from_f64(0.4),
+                    accrued_interest_delivery: T::from_f64(0.8),
+                    interim_coupon: T::zero(),
+                    yield_vol: T::from_f64(0.008),
+                    modified_duration: T::from_f64(7.2),
+                },
+            ],
+        },
+    )
+    .option_adjusted_futures_price;
     let cmo = price_cmo_waterfall(
         &CmoWaterfallSpec {
             original_balance: T::from_f64(100.0),
-            wac: T::from_f64(0.04),
-            pass_through_rate: T::from_f64(0.035),
+            wac: T::from_f64(0.05),
+            pass_through_rate: T::from_f64(0.045),
             term_months: 24,
-            psa_speed: T::from_f64(1.0) + x[0] * 0.01,
-            pac_collar_psa: Some((T::from_f64(0.5), T::from_f64(2.0))),
+            psa_speed: T::from_f64(150.0) + x[0] * 1.0,
+            pac_collar_psa: Some((T::from_f64(100.0), T::from_f64(300.0))),
             tranches: vec![
                 CmoTrancheSpec {
                     initial_balance: T::from_f64(60.0),
-                    coupon_rate: T::from_f64(0.035),
+                    coupon_rate: T::from_f64(0.04),
                     is_pac: true,
                 },
                 CmoTrancheSpec {
@@ -3073,9 +3105,29 @@ fn phase16_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
             z0: T::zero(),
         },
         T::from_f64(100.0),
-        T::from_f64(100.0),
+        T::from_f64(95.0),
         T::from_f64(1.0),
     );
+    let prdc = ql_fx::price_prdc_note_hybrid(&ql_fx::PrdcNoteSpec {
+        notional: T::from_f64(100.0),
+        spot_fx: T::from_f64(150.0) + x[0] * 0.1,
+        r_dom: T::from_f64(0.01),
+        r_for: T::from_f64(0.04),
+        a_dom: T::from_f64(0.05),
+        sigma_dom: T::from_f64(0.008),
+        a_for: T::from_f64(0.08),
+        sigma_for: T::from_f64(0.01),
+        sigma_fx: T::from_f64(0.12) + x[2] * 0.001,
+        rho_fx_dom: T::from_f64(0.3),
+        rho_fx_for: T::from_f64(-0.2),
+        rho_dom_for: T::from_f64(0.25),
+        coupon_times: vec![1.0, 2.0],
+        foreign_gearing: T::from_f64(0.15),
+        domestic_gearing: T::from_f64(0.10),
+        coupon_cap: T::from_f64(0.08),
+        fx_knockout_barrier: Some(T::from_f64(180.0)),
+    })
+    .npv;
     let times = [1.0, 2.0, 3.0, 4.0, 5.0];
     let q1 = BaseCorrelationTrancheQuote {
         attachment: 0.0,
@@ -3098,16 +3150,33 @@ fn phase16_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     );
     let (_, fair, _) = price_mezzanine_tranche_base_correlation(
         &bc,
-        0.03,
-        0.07,
+        0.02,
+        0.05,
         T::from_f64(0.02) + x[1] * 0.0001,
         T::from_f64(100.0),
     );
-    let rets = (0..12)
-        .map(|i| T::from_f64(0.01 * ((i % 5) as f64 - 2.0)) + x[3] * 0.0001)
+    let rets = (0..16)
+        .map(|i| T::from_f64(-0.045 + 0.006 * i as f64) + x[3] * (0.0001 * ((i % 3) as f64 - 1.0)))
         .collect::<Vec<_>>();
     let cdar = conditional_drawdown_at_risk(&rets, 0.75).cdar;
-    [chey, cmo, qrh, fair + cdar]
+    let evar = entropic_value_at_risk(&rets, 0.90);
+    let attr = factor_risk_attribution(
+        &[
+            T::from_f64(0.4) + x[0] * 0.001,
+            T::from_f64(0.6) - x[0] * 0.001,
+        ],
+        &[
+            vec![T::from_f64(1.1), T::from_f64(0.3)],
+            vec![T::from_f64(0.8), T::from_f64(0.9)],
+        ],
+        &[
+            vec![T::from_f64(0.04), T::from_f64(0.005)],
+            vec![T::from_f64(0.005), T::from_f64(0.02)],
+        ],
+        &[T::from_f64(0.01), T::from_f64(0.015)],
+    )
+    .total_volatility;
+    [chey + ctd, cmo, qrh + prdc, fair + cdar + evar + attr]
 }
 
 pub fn benchmark_cheyette_cmo_qrh_basecorr_cdar_aad(scale: usize) -> ComparisonRow {
@@ -3115,16 +3184,17 @@ pub fn benchmark_cheyette_cmo_qrh_basecorr_cdar_aad(scale: usize) -> ComparisonR
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let h = 1e-5;
     let baseline = || {
-        let mut checksum = 0.0;
-        for component in 0..4 {
-            checksum += phase16_workloads(x0)[component];
-            for lane in 0..4 {
-                let mut up = x0;
-                let mut dn = x0;
-                up[lane] += h;
-                dn[lane] -= h;
-                checksum += (phase16_workloads(up)[component] - phase16_workloads(dn)[component])
-                    / (2.0 * h);
+        let base = phase16_workloads(x0);
+        let mut checksum: f64 = base.iter().sum();
+        for lane in 0..4 {
+            let mut up = x0;
+            let mut dn = x0;
+            up[lane] += h;
+            dn[lane] -= h;
+            let w_up = phase16_workloads(up);
+            let w_dn = phase16_workloads(dn);
+            for component in 0..4 {
+                checksum += (w_up[component] - w_dn[component]) / (2.0 * h);
             }
         }
         checksum

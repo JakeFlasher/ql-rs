@@ -332,8 +332,8 @@ pub fn qrh_mc_price<T: Real>(
         w_k.push(dt_h * (diff / gh));
     }
     let rng = ql_math::PhiloxRng::new(seed);
-    let mut sum_call = T::zero();
-    let mut sum_put = T::zero();
+    let mut term_spots = Vec::with_capacity(paths);
+    let mut mean_spot = T::zero();
     for path in 0..paths {
         let anti = path % 2 == 1;
         let id = (path / 2) as u64;
@@ -346,7 +346,7 @@ pub fn qrh_mc_price<T: Real>(
             let eps = rng.normal4(id, i as u32)[0] * if anti { -1.0 } else { 1.0 };
             let dw = sqrt_dt * eps;
             log_s += (rate - div - v * 0.5) * dt + v.sqrt() * dw;
-            dz_hist[i] = -p.lambda * (z * dt + p.nu * v.sqrt() * dw);
+            dz_hist[i] = -p.lambda * z * dt - p.nu * v.sqrt() * dw;
             let mut conv = T::zero();
             for (j, &dz_j) in dz_hist.iter().enumerate().take(i + 1) {
                 conv += w_k[i + 1 - j] * dz_j / dt;
@@ -354,23 +354,21 @@ pub fn qrh_mc_price<T: Real>(
             z = p.z0 + conv;
         }
         let s_t = log_s.exp();
-        let call_diff = s_t - strike;
-        let put_diff = -call_diff;
-        let call_payoff = (call_diff + (call_diff * call_diff + 1e-8).sqrt()) * 0.5;
-        let put_payoff = (put_diff + (put_diff * put_diff + 1e-8).sqrt()) * 0.5;
-        let df = (-rate * expiry).exp();
-        sum_call += call_payoff * df;
-        sum_put += put_payoff * df;
+        mean_spot += s_t;
+        term_spots.push(s_t);
     }
-    let raw_call = sum_call / paths as f64;
-    let raw_put = sum_put / paths as f64;
-    let parity = spot * (-div * expiry).exp() - strike * (-rate * expiry).exp();
-    let correction = raw_call - raw_put - parity;
-    if is_call {
-        raw_call - correction * 0.5
-    } else {
-        raw_put + correction * 0.5
+    mean_spot = mean_spot / paths as f64;
+    let target_fwd = spot * ((rate - div) * expiry).exp();
+    let scale = target_fwd / mean_spot.max_val(T::from_f64(1e-12));
+    let df = (-rate * expiry).exp();
+    let mut sum = T::zero();
+    for s_raw in term_spots {
+        let s_t = s_raw * scale;
+        let diff = if is_call { s_t - strike } else { strike - s_t };
+        let payoff = (diff + (diff * diff + 1e-8).sqrt()) * 0.5;
+        sum += payoff * df;
     }
+    sum / paths as f64
 }
 
 #[cfg(test)]

@@ -268,33 +268,40 @@ pub fn entropic_value_at_risk<T: Real>(returns: &[T], confidence: f64) -> T {
         return losses[0];
     }
     let n_f = losses.len() as f64;
+    let m_max = losses
+        .iter()
+        .filter(|l| (l.val() - l_max).abs() <= 1e-14)
+        .count() as f64;
+    if alpha <= m_max / n_f {
+        return l_max_t;
+    }
     let obj_f64 = |z: f64| -> f64 {
         let sum_e: f64 = losses.iter().map(|l| (z * (l.val() - l_max)).exp()).sum();
         l_max + ((sum_e / n_f).ln() - alpha.ln()) / z
     };
-    let mut a = T::from_f64(1e-4);
-    let mut b = T::from_f64(500.0) / (l_max_t - l_min_t).max_val(T::from_f64(1e-4));
-    let gr = T::from_f64(0.5 * (5.0f64.sqrt() - 1.0));
+    let mut a = 1e-4f64;
+    let mut b = 500.0 / (l_max - l_min).max(1e-4);
+    let gr = 0.5 * (5.0f64.sqrt() - 1.0);
     let mut c = b - gr * (b - a);
     let mut d = a + gr * (b - a);
-    let mut fc = obj_f64(c.val());
-    let mut fd = obj_f64(d.val());
+    let mut fc = obj_f64(c);
+    let mut fd = obj_f64(d);
     for _ in 0..64 {
         if fc < fd {
             b = d;
             d = c;
             fd = fc;
             c = b - gr * (b - a);
-            fc = obj_f64(c.val());
+            fc = obj_f64(c);
         } else {
             a = c;
             c = d;
             fc = fd;
             d = a + gr * (b - a);
-            fd = obj_f64(d.val());
+            fd = obj_f64(d);
         }
     }
-    let z_star = (a + b) * 0.5;
+    let z_star = T::from_f64(0.5 * (a + b));
     let mut sum_exp = T::zero();
     for &l in &losses {
         sum_exp += (z_star * (l - l_max_t)).exp();
@@ -433,11 +440,14 @@ mod phase16_tests {
     use ql_ad::Dual;
     #[test]
     fn evar_cdar_and_factor_euler_invariants() {
-        let rets = vec![-0.05, -0.02, -0.01, 0.0, 0.01, 0.02, 0.03, 0.04];
+        let rets = vec![
+            -0.05, -0.035, -0.025, -0.02, -0.015, -0.01, -0.005, 0.0, 0.005, 0.01, 0.015, 0.02,
+            0.025, 0.03, 0.035, 0.04,
+        ];
         let var90 = empirical_var(&rets, 0.90);
         let es90 = empirical_expected_shortfall(&rets, 0.90);
         let evar90 = entropic_value_at_risk(&rets, 0.90);
-        assert!(var90 <= es90 + 1e-12 && es90 <= evar90 + 1e-12);
+        assert!(var90 <= es90 + 1e-12 && es90 <= evar90 + 1e-12 && evar90 <= 0.05 + 1e-12);
         let dd = conditional_drawdown_at_risk(&rets, 0.75);
         assert!(dd.average_drawdown <= dd.cdar + 1e-12 && dd.cdar <= dd.max_drawdown + 1e-12);
         let w = vec![0.4, 0.6];

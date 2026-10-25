@@ -514,11 +514,9 @@ pub fn analyze_treasury_futures_ctd<T: Real>(
         let dirty = b.clean_price + b.accrued_interest_spot;
         let gross_basis = b.clean_price - spec.futures_price * cf;
         let carry = (b.accrued_interest_delivery - b.accrued_interest_spot + b.interim_coupon)
-            * 100.0
             - dirty * spec.repo_rate * dt;
         let net_basis = gross_basis - carry;
-        let irr =
-            (invoice + b.interim_coupon * 100.0 - dirty) / (dirty.max_val(T::from_f64(1e-8)) * dt);
+        let irr = (invoice + b.interim_coupon - dirty) / (dirty.max_val(T::from_f64(1e-8)) * dt);
         let fwd_clean = b.clean_price - carry;
         let fwd_adj = fwd_clean / cf.max_val(T::from_f64(1e-8));
         if irr.val() > best_irr {
@@ -554,8 +552,10 @@ pub fn analyze_treasury_futures_ctd<T: Real>(
         let s2 = m2 * b2.modified_duration * b2.yield_vol;
         let sig_sp =
             ((s1 * s1 + s2 * s2 - s1 * s2 * 1.8).max_val(T::from_f64(1e-12))).sqrt() * dt.sqrt();
-        let d = (m1 - m2) / sig_sp;
-        ((m1 - m2) * d.norm_cdf() + sig_sp * d.norm_pdf()).max_val(T::zero())
+        let diff = m1 - m2;
+        let spread = -((diff * diff + 1e-12).sqrt());
+        let d = spread / sig_sp;
+        (spread * d.norm_cdf() + sig_sp * d.norm_pdf()).max_val(T::zero())
     } else {
         T::zero()
     };
@@ -625,7 +625,8 @@ pub fn price_cmo_waterfall<T: Real>(
             };
             let sched = (pmt - bal * rw).max_val(T::zero()).min_val(bal);
             let base_cpr = (0.002 * m as f64).min(0.06);
-            let cpr = (psa_mult * (base_cpr / 100.0))
+            let psa_scale = if psa_mult.val() > 10.0 { 0.01 } else { 1.0 };
+            let cpr = (psa_mult * (base_cpr * psa_scale))
                 .max_val(T::zero())
                 .min_val(T::from_f64(0.99));
             let smm = T::one() - (T::one() - cpr).powf(1.0 / 12.0);
@@ -664,22 +665,35 @@ pub fn price_cmo_waterfall<T: Real>(
         let pool_int = pool_bal * s.pass_through_rate / 12.0;
         pool_pv += (p_tot + pool_int) * df;
         pool_wal_num += p_tot * t;
+        let mut tr_int_raw = vec![T::zero(); k_tr];
         let mut tr_int_sum = T::zero();
         for i in 0..k_tr {
             let icf = tr_bal[i] * s.tranches[i].coupon_rate / 12.0;
-            tr_int_tot[i] += icf;
-            tr_pv[i] += icf * df;
+            tr_int_raw[i] = icf;
             tr_int_sum += icf;
         }
-        io_pv += (pool_int - tr_int_sum).max_val(T::zero()) * df;
+        let int_scale = if tr_int_sum.val() > pool_int.val() && tr_int_sum.val() > 1e-14 {
+            pool_int / tr_int_sum
+        } else {
+            T::one()
+        };
+        let mut paid_int_sum = T::zero();
+        for i in 0..k_tr {
+            let icf = tr_int_raw[i] * int_scale;
+            tr_int_tot[i] += icf;
+            tr_pv[i] += icf * df;
+            paid_int_sum += icf;
+        }
+        io_pv += (pool_int - paid_int_sum).max_val(T::zero()) * df;
         let mut rem_p = p_tot;
         if s.pac_collar_psa.is_some() {
-            let target = pac_sched[m - 1];
+            let mut rem_target = pac_sched[m - 1];
             for i in 0..k_tr {
                 if s.tranches[i].is_pac {
-                    let alloc = rem_p.min_val(target).min_val(tr_bal[i]);
+                    let alloc = rem_p.min_val(rem_target).min_val(tr_bal[i]);
                     tr_bal[i] = (tr_bal[i] - alloc).max_val(T::zero());
                     rem_p = (rem_p - alloc).max_val(T::zero());
+                    rem_target = (rem_target - alloc).max_val(T::zero());
                     tr_pv[i] += alloc * df;
                     tr_wal_num[i] += alloc * t;
                     tr_prin_tot[i] += alloc;
@@ -756,7 +770,7 @@ mod phase16_tests {
                     modified_duration: 6.5,
                 },
                 TreasuryFutureDeliverable {
-                    clean_price: 92.0,
+                    clean_price: 89.0,
                     coupon_rate: 0.045,
                     remaining_semiannual_periods: 18,
                     accrued_interest_spot: 0.4,
@@ -769,6 +783,12 @@ mod phase16_tests {
         };
         let ctd = analyze_treasury_futures_ctd(&basket);
         assert!((ctd.bond_metrics[0].conversion_factor - 1.0).abs() < 1e-12);
+        let dirty0 =
+            basket.deliverables[0].clean_price + basket.deliverables[0].accrued_interest_spot;
+        let bnoc0 = dirty0
+            * basket.delivery_time
+            * (basket.repo_rate - ctd.bond_metrics[0].implied_repo_rate);
+        assert!((ctd.bond_metrics[0].net_basis - bnoc0).abs() < 1e-12);
         assert!(ctd.switch_option_value > 0.0);
         let cmo = CmoWaterfallSpec {
             original_balance: 100.0,

@@ -55,13 +55,14 @@ use ql_exotics::{
 };
 use ql_fixed_income::{
     CmoTrancheSpec, CmoWaterfallSpec, CocoBondSpec, CocoTriggerPayoff, ConvertibleBondSpec,
-    SpecifiedPoolMbsSpec, TbaDollarRollSpec, analyze_tba_dollar_roll, price_cmo_waterfall,
-    price_coco_bond_ds, price_convertible_bond_tf, price_specified_pool_mbs,
+    SpecifiedPoolMbsSpec, TbaDollarRollSpec, TreasuryFutureDeliverable, TreasuryFuturesBasketSpec,
+    analyze_tba_dollar_roll, analyze_treasury_futures_ctd, price_cmo_waterfall, price_coco_bond_ds,
+    price_convertible_bond_tf, price_specified_pool_mbs,
 };
 use ql_fx::ConstNotionalXccs;
 use ql_fx::{
-    FxSmileQuote, FxTarfCapConvention, FxTarfSpec, FxVannaVolgaSmile, garman_kohlhagen_spot_delta,
-    price_fx_tarf_mc_ad,
+    FxSmileQuote, FxTarfCapConvention, FxTarfSpec, FxVannaVolgaSmile, PrdcNoteSpec,
+    garman_kohlhagen_spot_delta, price_fx_tarf_mc_ad, price_prdc_note_hybrid,
 };
 use ql_inflation::{
     CalibratedInflationCurve, JarrowYildirimParams, MultiplicativeSeasonality,
@@ -85,7 +86,10 @@ use ql_portfolio::{
     equal_risk_contribution_weights, gerber_covariance_matrix, hierarchical_risk_parity_weights,
     nested_clustered_optimization_weights, obizhaeva_wang_execution, robust_markowitz_weights,
 };
-use ql_portfolio::{conditional_drawdown_at_risk, gaussian_expected_shortfall};
+use ql_portfolio::{
+    conditional_drawdown_at_risk, entropic_value_at_risk, factor_risk_attribution,
+    gaussian_expected_shortfall,
+};
 use ql_rates::{
     BermudanSwaption, CheyetteSwaptionSpec, EuropeanSwaption, G2PlusPlus,
     HullWhiteBermudanTreeEngine, RfrCapletSpec, RfrRateType, SwaptionSettlement,
@@ -1623,15 +1627,15 @@ impl DeskWorkstation {
         let cmo = price_cmo_waterfall(
             &CmoWaterfallSpec {
                 original_balance: 100.0,
-                wac: 0.04,
-                pass_through_rate: 0.035,
+                wac: 0.05,
+                pass_through_rate: 0.045,
                 term_months: 24,
-                psa_speed: 1.0,
-                pac_collar_psa: Some((0.5, 2.0)),
+                psa_speed: 150.0,
+                pac_collar_psa: Some((100.0, 300.0)),
                 tranches: vec![
                     CmoTrancheSpec {
                         initial_balance: 60.0,
-                        coupon_rate: 0.035,
+                        coupon_rate: 0.04,
                         is_pac: true,
                     },
                     CmoTrancheSpec {
@@ -1658,10 +1662,67 @@ impl DeskWorkstation {
             market.eq_spot,
             1.0,
         );
-        let dd_returns = (0..12)
-            .map(|i| 0.01 * ((i % 5) as f64 - 2.0) - 0.002 * rate)
+        let ctd = analyze_treasury_futures_ctd(&TreasuryFuturesBasketSpec {
+            futures_price: 98.5,
+            delivery_time: 0.25,
+            repo_rate: rate,
+            notional_standard_yield: 0.06,
+            deliverables: vec![
+                TreasuryFutureDeliverable {
+                    clean_price: 99.2,
+                    coupon_rate: 0.06,
+                    remaining_semiannual_periods: 16,
+                    accrued_interest_spot: 0.5,
+                    accrued_interest_delivery: 1.0,
+                    interim_coupon: 0.0,
+                    yield_vol: 0.008,
+                    modified_duration: 6.5,
+                },
+                TreasuryFutureDeliverable {
+                    clean_price: 89.0,
+                    coupon_rate: 0.045,
+                    remaining_semiannual_periods: 18,
+                    accrued_interest_spot: 0.4,
+                    accrued_interest_delivery: 0.8,
+                    interim_coupon: 0.0,
+                    yield_vol: 0.008,
+                    modified_duration: 7.2,
+                },
+            ],
+        })
+        .option_adjusted_futures_price;
+        let prdc = price_prdc_note_hybrid(&PrdcNoteSpec {
+            notional: 100.0,
+            spot_fx: 150.0,
+            r_dom: 0.01,
+            r_for: 0.04,
+            a_dom: 0.05,
+            sigma_dom: 0.008,
+            a_for: 0.08,
+            sigma_for: 0.01,
+            sigma_fx: 0.12,
+            rho_fx_dom: 0.3,
+            rho_fx_for: -0.2,
+            rho_dom_for: 0.25,
+            coupon_times: vec![1.0, 2.0],
+            foreign_gearing: 0.15,
+            domestic_gearing: 0.10,
+            coupon_cap: 0.08,
+            fx_knockout_barrier: Some(180.0),
+        })
+        .npv;
+        let factor_attr = factor_risk_attribution(
+            &[0.4, 0.6],
+            &[vec![1.1, 0.3], vec![0.8, 0.9]],
+            &[vec![0.04, 0.005], vec![0.005, 0.02]],
+            &[0.01, 0.015],
+        )
+        .total_volatility;
+        let dd_returns = (0..16)
+            .map(|i| -0.045 + 0.006 * i as f64 - 0.002 * rate)
             .collect::<Vec<_>>();
-        let evar_cdar = conditional_drawdown_at_risk(&dd_returns, 0.75).cdar;
+        let evar_cdar = conditional_drawdown_at_risk(&dd_returns, 0.75).cdar
+            + entropic_value_at_risk(&dd_returns, 0.90);
         let base_quotes = vec![
             BaseCorrelationTrancheQuote {
                 attachment: 0.0,
@@ -1685,15 +1746,18 @@ impl DeskWorkstation {
         );
         let (_, base_fair, _) = ql_credit::price_mezzanine_tranche_base_correlation(
             &base_corr,
-            0.03,
-            0.07,
+            0.02,
+            0.05,
             0.02 + rate,
             100.0,
         );
         let cheyette_cmo_qrh_evar_metric = cheyette.npv.val()
             + cmo.total_structure_pv.val()
             + qrh.val()
+            + ctd
+            + prdc
             + evar_cdar
+            + factor_attr
             + base_fair.val();
         let blotter_rows = vec![
             ("IRS 5Y PayFix".to_string(), irs_npv, "IFT".to_string()),

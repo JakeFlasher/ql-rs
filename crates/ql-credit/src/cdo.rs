@@ -629,10 +629,10 @@ pub fn bootstrap_base_correlation_curve<T: Real>(
             let tr_ann = a_d - prev_ann.val();
             tr_prot - q.upfront.val() * width - q.running_spread.val() * tr_ann
         };
-        let mut lo = 0.02f64;
-        let mut hi = 0.92f64;
+        let mut lo = 0.005f64;
+        let mut hi = 0.95f64;
         let f_lo = target_fn(lo);
-        for _ in 0..42 {
+        for _ in 0..52 {
             let mid = 0.5 * (lo + hi);
             let f_mid = target_fn(mid);
             if (f_mid >= 0.0) == (f_lo >= 0.0) {
@@ -642,7 +642,17 @@ pub fn bootstrap_base_correlation_curve<T: Real>(
             }
         }
         let root_f64 = 0.5 * (lo + hi);
-        let h_rho = 1e-5;
+        let (p_d_jet, a_d_jet) = base_tranche_legs(
+            q.detachment,
+            ql_ad::Dual2::<1>::variable(root_f64, 0),
+            ql_ad::Dual2::<1>::from_value(hazard_rate.val()),
+            ql_ad::Dual2::<1>::from_value(recovery_rate.val()),
+            ql_ad::Dual2::<1>::from_value(risk_free_rate.val()),
+            payment_times,
+        );
+        let res_jet = p_d_jet - q.running_spread.val() * a_d_jet;
+        let f_x = T::from_f64(res_jet.d1[0]);
+        let f_xx = res_jet.d2[0][0];
         let residual_at = |r: T| {
             let (p_d, a_d) = base_tranche_legs(
                 q.detachment,
@@ -654,10 +664,9 @@ pub fn bootstrap_base_correlation_curve<T: Real>(
             );
             (p_d - prev_prot) - q.upfront * width - q.running_spread * (a_d - prev_ann)
         };
-        let f_x = (residual_at(T::from_f64(root_f64 + h_rho))
-            - residual_at(T::from_f64(root_f64 - h_rho)))
-            / (2.0 * h_rho);
-        let rho_t = ql_ad::ift_lift_1d(root_f64, residual_at, f_x, 0.0);
+        let rho_t = ql_ad::ift_lift_1d(root_f64, residual_at, f_x, f_xx)
+            .max_val(T::from_f64(0.001))
+            .min_val(T::from_f64(0.999));
         let (p_d, a_d) = base_tranche_legs(
             q.detachment,
             rho_t,

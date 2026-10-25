@@ -601,10 +601,23 @@ pub fn price_prdc_note_hybrid<T: Real>(s: &PrdcNoteSpec<T>) -> PrdcValuation<T> 
         let step_pv = s.notional * tau * (gf / s.spot_fx) * (c1 - c2).max_val(T::zero()) * surv;
         coupon_pv += step_pv;
         if let Some(h_ko) = s.fx_knockout_barrier {
-            let fwd_fx = s.spot_fx * ((s.r_dom - s.r_for) * tk).exp();
-            let st = sig_eff * tk.sqrt();
-            let p_stay = ((h_ko / fwd_fx).ln() / st.max_val(T::from_f64(1e-8))).norm_cdf();
-            surv *= p_stay.max_val(T::zero()).min_val(T::one());
+            if h_ko.val() <= s.spot_fx.val() {
+                surv = T::from_f64(1e-8);
+            } else {
+                let fwd_fx = s.spot_fx * ((s.r_dom - s.r_for) * tk).exp();
+                let st = (sig_eff * tk.sqrt()).max_val(T::from_f64(1e-8));
+                let var_t = st * st;
+                let h_eff = h_ko * (st * (tau / tk).sqrt() * 0.5826).exp();
+                let b = (h_eff / s.spot_fx).ln();
+                let mu_t = (fwd_fx / s.spot_fx).ln() - var_t * 0.5;
+                let d1 = (b - mu_t) / st;
+                let d2 = (-b - mu_t) / st;
+                let exp_arg = (mu_t * b * 2.0 / var_t).min_val(T::from_f64(50.0));
+                let p_no_hit = (d1.norm_cdf() - exp_arg.exp() * d2.norm_cdf())
+                    .max_val(T::from_f64(1e-8))
+                    .min_val(T::one());
+                surv = surv.min_val(p_no_hit);
+            }
         }
         prev_t = tk;
     }

@@ -84,4 +84,4 @@ The following is generated from the release tree by `cargo run -p ql-benches --r
 | 25_monotone_convex_vix_parisian_robust_aad | monotone-convex curve plus VIX/Parisian and robust Markowitz AD | 300819.75 (IQR 7149.28) | 44633.22 (IQR 820.93) | 6.74x | 1.502e-7 |
 | 26_double_heston_tarf_coco_hrp_aad | Double Heston/TARF/CoCo/HRP single-pass AD | 315109.47 (IQR 11868.42) | 74076.90 (IQR 1031.90) | 4.25x | 1.206e-5 |
 | 27_jy_inflation_tba_bergomi_nco_aad | JY-Inflation/TBA-Roll/Bergomi2F/NCO single-pass AD | 128985.65 (IQR 1504.72) | 59492.88 (IQR 633.30) | 2.17x | 1.614e-7 |
-| 28_cheyette_cmo_qrh_basecorr_cdar_aad | Cheyette/CMO/QRH/BaseCorr/EVaR single-pass AD | 12387768.62 (IQR 168112.35) | 361468.33 (IQR 779.53) | 34.27x | 8.727e-5 |
+| 28_cheyette_cmo_qrh_basecorr_cdar_aad | Cheyette/CMO/QRH/BaseCorr/EVaR single-pass AD | 3730469.80 (IQR 52471.30) | 427737.83 (IQR 1331.67) | 8.72x | 2.529e-9 |

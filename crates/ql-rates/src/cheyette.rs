@@ -385,8 +385,8 @@ pub fn price_cheyette_swaption_markov_projection<T: Real, C: YieldTermStructure<
     let var_n = s.sigma0 * s.sigma0 * q0 * q0 * k2_te;
     let eff_vol = (var_n / te).max_val(T::from_f64(1e-16)).sqrt();
     let kt = s.mean_reversion * te;
-    let time_weight = if kt.val().abs() < 1e-4 {
-        T::one() + kt * 0.5
+    let time_weight = if kt.val().abs() < 1e-2 {
+        T::from_f64(0.5) + kt / 6.0 - kt * kt / 24.0 - kt * kt * kt / 72.0
     } else {
         let e1 = (-kt).exp();
         let e2 = e1 * e1;

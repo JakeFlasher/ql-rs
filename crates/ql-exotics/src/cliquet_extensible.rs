@@ -188,13 +188,14 @@ pub fn price_himalaya_option_mc_ad<T: Real>(
         return T::zero();
     }
     let paths = n_paths.max(2);
+    let rho_min = -1.0 / (m.max(2) as f64 - 1.0) + 1e-4;
     let rho = s
         .correlation
-        .max_val(T::from_f64(-0.95))
+        .max_val(T::from_f64(rho_min))
         .min_val(T::from_f64(0.95));
-    let s_rho = rho.max_val(T::zero()).sqrt();
-    let s_idio = (T::one() - rho.max_val(T::zero()))
-        .max_val(T::zero())
+    let b_orth = (T::one() - rho).max_val(T::from_f64(1e-12)).sqrt();
+    let a_comm = (T::one() + rho * (m as f64 - 1.0))
+        .max_val(T::from_f64(1e-12))
         .sqrt();
     let temp = s.temperature.max(1e-3);
     let t_end = s.observation_times[m - 1].max(0.0);
@@ -213,10 +214,16 @@ pub fn price_himalaya_option_mc_ad<T: Real>(
             let dt = (t_now - prev_t).max(1e-8);
             let sqrt_dt = dt.sqrt();
             let sgn = if anti { -1.0 } else { 1.0 };
-            let z_common = rng.normal4(id, (step * (m + 1)) as u32)[0] * sgn;
-            for i in 0..m {
-                let z_i = rng.normal4(id, (step * (m + 1) + i + 1) as u32)[0] * sgn;
-                let dw = s_rho * z_common + s_idio * z_i;
+            let mut z_raw = vec![0.0; m];
+            let mut z_mean = 0.0;
+            for (i, z_slot) in z_raw.iter_mut().enumerate().take(m) {
+                let zi = rng.normal4(id, (step * m + i) as u32)[0] * sgn;
+                *z_slot = zi;
+                z_mean += zi;
+            }
+            z_mean /= m as f64;
+            for (i, &zi) in z_raw.iter().enumerate().take(m) {
+                let dw = b_orth * (zi - z_mean) + a_comm * z_mean;
                 let v = s.vols[i];
                 cur[i] *= ((s.rate - s.div_yields[i] - v * v * 0.5) * dt + v * sqrt_dt * dw).exp();
             }
