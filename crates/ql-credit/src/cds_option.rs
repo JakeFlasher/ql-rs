@@ -171,34 +171,32 @@ pub fn price_index_cds_swaption<T: Real>(
     let mut prot = T::zero();
     let mut fep = T::zero();
     let mut surv = T::zero();
+    let te = s.option_expiry;
     for i in 0..n {
         let w = T::from_f64(s.constituent_weights[i] / wsum);
-        let cds = crate::CreditDefaultSwap {
-            side: crate::ProtectionSide::Buyer,
-            notional: 1.0,
-            running_spread: 1.0,
-            recovery_rate: s.constituent_recoveries[i].val(),
-            payment_times: s.payment_times.clone(),
-            accrual_fractions: s
-                .payment_times
-                .iter()
-                .scan(s.option_expiry, |p, &x| {
-                    let z = (x - *p).max(0.0);
-                    *p = x;
-                    Some(z)
-                })
-                .collect(),
-        };
-        let v = crate::IsdaCdsEngine::price(&cds, discount, &curves[i]);
-        ann += w * v.risky_annuity;
-        prot += w * v.protection_leg_npv;
-        let q = curves[i].survival_probability(s.option_expiry);
-        surv += w * q;
+        let rec = s.constituent_recoveries[i];
+        let q_te = curves[i].survival_probability(te);
+        let mut c_prot = T::zero();
+        let mut c_ann = T::zero();
+        let mut prev_surv = q_te;
+        let mut prev_t = te;
+        for &t in &s.payment_times {
+            if t <= te || t > s.maturity + 1e-12 {
+                continue;
+            }
+            let dt = (t - prev_t).max(0.0);
+            let surv_t = curves[i].survival_probability(t);
+            let df = discount.discount_factor(t);
+            c_prot += (T::one() - rec) * df * (prev_surv - surv_t);
+            c_ann += df * T::from_f64(dt) * (prev_surv + surv_t) * 0.5;
+            prev_surv = surv_t;
+            prev_t = t;
+        }
+        ann += w * c_ann;
+        prot += w * c_prot;
+        surv += w * q_te;
         if s.include_fep {
-            fep += w
-                * (T::one() - s.constituent_recoveries[i])
-                * discount.discount_factor(s.option_expiry)
-                * (T::one() - q);
+            fep += w * (T::one() - rec) * discount.discount_factor(te) * (T::one() - q_te);
         }
     }
     let fwd = (prot + fep) / ann.max_val(T::from_f64(1e-14));

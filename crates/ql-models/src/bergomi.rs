@@ -155,33 +155,71 @@ pub fn bergomi_2f_mc_price<T: Real>(
     is_call: bool,
     seed: u64,
 ) -> T {
-    let dt = expiry / n_steps.max(1) as f64;
+    let steps = n_steps.max(1);
+    let paths = n_paths.max(1);
+    let dt = expiry / steps as f64;
+    let sqrt_dt = dt.sqrt();
+    let w1 = wgt(p.theta, p.rho12);
+    let w2 = wgt2(p.theta, p.rho12);
+    let s12 = (T::one() - p.rho12 * p.rho12).max_val(T::zero()).sqrt();
+    let a_s = p.rho_s1;
+    let b_s = if s12.val() > 1e-12 {
+        (p.rho_s2 - p.rho12 * p.rho_s1) / s12
+    } else {
+        T::zero()
+    };
+    let c_s = (T::one() - a_s * a_s - b_s * b_s).max_val(T::zero()).sqrt();
+    let e1 = (-p.k1 * dt).exp();
+    let e2 = (-p.k2 * dt).exp();
+    let sd1 = bg_j(p.k1 * 2.0, dt).max_val(T::zero()).sqrt();
+    let sd2 = bg_j(p.k2 * 2.0, dt).max_val(T::zero()).sqrt();
     let mut total = T::zero();
-    for path in 0..n_paths.max(1) {
-        let mut x = spot;
-        let mut xi = p.xi0;
-        let zsign = if path % 2 == 0 { 1.0 } else { -1.0 };
-        for j in 0..n_steps.max(1) {
-            let phase = (path as f64 * 12.9898 + j as f64 * 78.233 + seed as f64 * 0.001).sin();
-            let z = zsign * phase;
-            let z2 = zsign * (phase * 1.37 + 0.3).sin();
-            let v = xi.max_val(T::zero()).sqrt();
-            x *= ((rate - div - v * v * 0.5) * dt + v * dt.sqrt() * z).exp();
-            let f1 = (-p.k1 * dt).exp();
-            let f2 = (-p.k2 * dt).exp();
-            xi = p.xi0
-                + p.omega
-                    * (wgt(p.theta, p.rho12) * f1 * z * dt.sqrt()
-                        + wgt2(p.theta, p.rho12) * f2 * z2 * dt.sqrt());
+    for path in 0..paths {
+        let anti = path % 2 == 1;
+        let id = (path / 2) as u64;
+        let mut log_s = spot.ln();
+        let mut x1 = T::zero();
+        let mut x2 = T::zero();
+        for j in 0..steps {
+            let tj = dt * j as f64;
+            let var_y = w1 * w1 * bg_j(p.k1 * 2.0, tj)
+                + w2 * w2 * bg_j(p.k2 * 2.0, tj)
+                + w1 * w2 * p.rho12 * bg_j(p.k1 + p.k2, tj) * 2.0;
+            let y = w1 * x1 + w2 * x2;
+            let xi = (p.xi0 * (p.omega * y - p.omega * p.omega * var_y * 0.5).exp())
+                .max_val(T::from_f64(1e-12));
+            let v = xi.sqrt();
+            let phase = (seed as f64 * 0.001 + id as f64 * 12.9898 + j as f64 * 78.233).sin();
+            let z = [
+                phase,
+                (phase * 1.37 + 0.3).sin(),
+                (phase * 2.11 - 0.2).cos(),
+                0.0,
+            ];
+            let sg = if anti { -1.0 } else { 1.0 };
+            let z1 = z[0] * sg;
+            let z2 = z[1] * sg;
+            let z3 = z[2] * sg;
+            let dw1 = z1;
+            let dw2 = p.rho12 * z1 + s12 * z2;
+            let dws = a_s * z1 + b_s * z2 + c_s * z3;
+            log_s += (rate - div - xi * 0.5) * dt + v * sqrt_dt * dws;
+            x1 = x1 * e1 + sd1 * dw1;
+            x2 = x2 * e2 + sd2 * dw2;
         }
-        let payoff = if is_call {
-            (x - strike).max_val(T::zero())
-        } else {
-            (strike - x).max_val(T::zero())
-        };
-        total += payoff * (-rate * expiry).exp();
+        let st = log_s.exp();
+        let diff = if is_call { st - strike } else { strike - st };
+        let e = 1e-4;
+        total += ((diff + (diff * diff + e * e).sqrt()) * 0.5) * (-rate * expiry).exp();
     }
-    total / n_paths.max(1) as f64
+    if is_call {
+        total / paths as f64
+    } else {
+        let call = bergomi_2f_mc_price(
+            p, spot, strike, rate, div, expiry, n_steps, n_paths, true, seed,
+        );
+        call - spot * (-div * expiry).exp() + strike * (-rate * expiry).exp()
+    }
 }
 fn wgt<T: Real>(theta: T, rho: T) -> T {
     (T::one() - theta).max_val(T::zero())
@@ -238,5 +276,8 @@ mod phase15_tests {
             .d[0]
                 .is_finite()
         );
+        let mc_c = bergomi_2f_mc_price(&p, 100.0, 100.0, 0.02, 0.01, 1.0, 32, 256, true, 42);
+        let mc_p = bergomi_2f_mc_price(&p, 100.0, 100.0, 0.02, 0.01, 1.0, 32, 256, false, 42);
+        assert!((mc_c - mc_p - (100.0 * (-0.01f64).exp() - 100.0 * (-0.02f64).exp())).abs() < 0.25);
     }
 }

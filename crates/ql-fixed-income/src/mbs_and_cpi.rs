@@ -271,6 +271,7 @@ pub fn price_specified_pool_mbs<T: Real>(
     let mut bal = spec.original_balance;
     let mut pv = T::zero();
     let mut wal_num = T::zero();
+    let mut tot_prin = T::zero();
     let mut prep = T::zero();
     let mut loss = T::zero();
     let rw = spec.wac / 12.0;
@@ -302,16 +303,18 @@ pub fn price_specified_pool_mbs<T: Real>(
         let sched = (pmt - perf * rw).max_val(T::zero()).min_val(perf);
         let pre = smm * (perf - sched).max_val(T::zero());
         let coupon = perf * spec.pass_through_rate / 12.0;
-        let cf = coupon + sched + pre + (T::one() - spec.loss_severity) * def;
+        let prin_cf = sched + pre + (T::one() - spec.loss_severity) * def;
+        let cf = coupon + prin_cf;
         pv += cf * curve.discount_factor(t) * (-oas * t).exp();
-        wal_num += T::from_f64(t) * (sched + pre);
+        wal_num += T::from_f64(t) * prin_cf;
+        tot_prin += prin_cf;
         prep += pre;
         loss += credit_loss;
         bal = (perf - sched - pre).max_val(T::zero());
     }
     SpecifiedPoolValuation {
         pv,
-        wal: wal_num / spec.original_balance.max_val(T::from_f64(1e-12)),
+        wal: wal_num / tot_prin.max_val(T::from_f64(1e-12)),
         total_prepaid_principal: prep,
         total_credit_loss: loss,
     }
@@ -350,14 +353,15 @@ pub fn analyze_tba_dollar_roll<T: Real>(s: &TbaDollarRollSpec<T>) -> TbaDollarRo
     let smm = T::one()
         - (T::one() - s.assumed_cpr.max_val(T::zero()).min_val(T::from_f64(0.99))).powf(1.0 / 12.0);
     let surv = (T::one() - a_sched) * (T::one() - smm);
-    let i1 = s.front_clean_price + s.pass_through_rate * (100.0 * s.front_accrued_fraction);
-    let i2 = surv * (s.back_clean_price + s.pass_through_rate * (100.0 * s.back_accrued_fraction));
-    let cf = (s.pass_through_rate / 12.0 + T::one() - surv) * 100.0;
+    let monthly_coupon = s.pass_through_rate / 12.0 * 100.0;
+    let i1 = s.front_clean_price + monthly_coupon * s.front_accrued_fraction;
+    let i2 = surv * (s.back_clean_price + monthly_coupon * s.back_accrued_fraction);
+    let cf = monthly_coupon + (T::one() - surv) * 100.0;
     let dt = s.roll_period_years.max(1e-6);
     let imp = (cf + i2 - i1) / (i1 * dt);
     let net = i1 * (T::one() + s.repo_rate * dt) - i2 - cf;
     let pstar = (i1 * (T::one() + s.repo_rate * dt) - cf) / surv.max_val(T::from_f64(1e-12))
-        - s.pass_through_rate * (100.0 * s.back_accrued_fraction);
+        - monthly_coupon * s.back_accrued_fraction;
     TbaDollarRollReport {
         price_drop: s.front_clean_price - s.back_clean_price,
         breakeven_drop: s.front_clean_price - pstar,

@@ -1371,20 +1371,26 @@ pub fn marchenko_pastur_denoise_covariance<T: Real>(
         if cov[i][i].val() <= 0.0 {
             return Err(AllocationError::SingularCovariance);
         }
+        for j in i + 1..n {
+            if (cov[i][j].val() - cov[j][i].val()).abs() > 1e-10 {
+                return Err(AllocationError::SingularCovariance);
+            }
+        }
     }
+    let sd: Vec<T> = (0..n).map(|i| cov[i][i].sqrt()).collect();
+    let mut ct = vec![vec![T::zero(); n]; n];
     let mut c = vec![vec![0.0; n]; n];
-    let mut sd = vec![0.0; n];
     for i in 0..n {
-        sd[i] = cov[i][i].val().sqrt();
         for j in 0..n {
-            c[i][j] = cov[i][j].val() / (sd[i] * sd[j]);
+            ct[i][j] = cov[i][j] / (sd[i] * sd[j]);
+            c[i][j] = ct[i][j].val();
         }
     }
     let mut v = vec![vec![0.0; n]; n];
     for i in 0..n {
         v[i][i] = 1.0;
     }
-    for _ in 0..64 {
+    for _ in 0..(32 * n * n).max(64) {
         let mut p = (0, 1);
         let mut mx = 0.0;
         for i in 0..n {
@@ -1420,29 +1426,51 @@ pub fn marchenko_pastur_denoise_covariance<T: Real>(
             v[k][j] = si * a + co * b;
         }
     }
-    let mut eig = (0..n).map(|i| c[i][i]).collect::<Vec<_>>();
+    let mut eig = vec![T::zero(); n];
+    for k in 0..n {
+        for a in 0..n {
+            for b in 0..n {
+                eig[k] += ct[a][b] * (v[a][k] * v[b][k]);
+            }
+        }
+    }
     let lp = (1.0 + (n as f64 / num_observations as f64).sqrt()).powi(2);
-    let noise = eig.iter().filter(|x| **x <= lp).sum::<f64>()
-        / (eig.iter().filter(|x| **x <= lp).count().max(1) as f64);
-    for x in &mut eig {
-        if *x <= lp {
-            *x = noise;
+    let mut ns = T::zero();
+    let mut cnt = 0;
+    for x in &eig {
+        if x.val() <= lp {
+            ns += *x;
+            cnt += 1;
+        }
+    }
+    if cnt > 0 {
+        let m = ns / cnt as f64;
+        for x in &mut eig {
+            if x.val() <= lp {
+                *x = m;
+            }
         }
     }
     let mut out = vec![vec![T::zero(); n]; n];
+    let mut raw = vec![vec![T::zero(); n]; n];
     for i in 0..n {
         for j in 0..n {
-            let mut z = T::zero();
             for k in 0..n {
-                z += T::from_f64(v[i][k] * v[j][k] * eig[k]);
+                raw[i][j] += eig[k] * (v[i][k] * v[j][k]);
             }
-            out[i][j] = z * sd[i] * sd[j];
+        }
+    }
+    let ds: Vec<T> = (0..n)
+        .map(|i| raw[i][i].max_val(T::from_f64(1e-14)).sqrt())
+        .collect();
+    for i in 0..n {
+        for j in 0..n {
+            out[i][j] = sd[i] * sd[j] * raw[i][j] / (ds[i] * ds[j]);
         }
         out[i][i] = cov[i][i];
     }
     Ok(out)
 }
-
 #[derive(Clone, Debug)]
 pub struct NestedClusteredOptimizationSpec<T: Real = f64> {
     pub covariance: Vec<Vec<T>>,
@@ -1450,7 +1478,7 @@ pub struct NestedClusteredOptimizationSpec<T: Real = f64> {
     pub risk_aversion: T,
     pub num_clusters: usize,
 }
-#[allow(clippy::possible_missing_else)]
+#[allow(clippy::needless_range_loop)]
 pub fn try_nested_clustered_optimization_weights<T: Real>(
     s: &NestedClusteredOptimizationSpec<T>,
 ) -> Result<Vec<T>, AllocationError> {
@@ -1459,64 +1487,111 @@ pub fn try_nested_clustered_optimization_weights<T: Real>(
         || s.covariance.iter().any(|r| r.len() != n)
         || s.num_clusters == 0
         || s.num_clusters > n
+        || s.covariance.iter().flatten().any(|x| !x.val().is_finite())
     {
         return Err(AllocationError::InvalidDimensions);
     }
-    if s.expected_returns.is_none() {
-        return Ok(markowitz_minimum_variance_weights(&s.covariance));
-    }
-    let mu = s.expected_returns.as_ref().unwrap();
-    if mu.len() != n {
+    if let Some(mu) = &s.expected_returns
+        && (mu.len() != n || mu.iter().any(|x| !x.val().is_finite()))
+    {
         return Err(AllocationError::InvalidDimensions);
     }
-    let k = s.num_clusters;
-    let mut clusters = vec![Vec::new(); k];
+    let mut sd = vec![0.0; n];
     for i in 0..n {
-        clusters[i % k].push(i);
+        if s.covariance[i][i].val() <= 0.0 {
+            return Err(AllocationError::SingularCovariance);
+        }
+        sd[i] = s.covariance[i][i].val().sqrt();
+        for j in i + 1..n {
+            if (s.covariance[i][j].val() - s.covariance[j][i].val()).abs() > 1e-10 {
+                return Err(AllocationError::SingularCovariance);
+            }
+        }
     }
+    let k = s.num_clusters;
+    let mut clusters: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
+    while clusters.len() > k {
+        let (mut ba, mut bb, mut bd) = (0, 1, f64::INFINITY);
+        for a in 0..clusters.len() {
+            for b in a + 1..clusters.len() {
+                let mut d = f64::INFINITY;
+                for &i in &clusters[a] {
+                    for &j in &clusters[b] {
+                        d = d.min(
+                            (0.5 * (1.0
+                                - (s.covariance[i][j].val() / (sd[i] * sd[j])).clamp(-1.0, 1.0)))
+                            .max(0.0)
+                            .sqrt(),
+                        );
+                    }
+                }
+                if d < bd {
+                    (ba, bb, bd) = (a, b, d);
+                }
+            }
+        }
+        let right = clusters.remove(bb);
+        clusters[ba].extend(right);
+    }
+    let gamma = s.risk_aversion.max_val(T::from_f64(1e-12));
     let mut local = vec![vec![T::zero(); n]; k];
     for (ci, cl) in clusters.iter().enumerate() {
-        let mut sub = vec![vec![T::zero(); cl.len()]; cl.len()];
-        let mut rhs = vec![T::zero(); cl.len()];
+        let m = cl.len();
+        let mut sub = vec![vec![T::zero(); m]; m];
+        let mut rhs = vec![T::one(); m];
         for (a, &i) in cl.iter().enumerate() {
-            rhs[a] = T::one() + mu[i] / s.risk_aversion.max_val(T::from_f64(1e-12));
+            if let Some(mu) = &s.expected_returns {
+                rhs[a] = T::one() + mu[i] / gamma;
+            }
             for (b, &j) in cl.iter().enumerate() {
                 sub[a][b] = s.covariance[i][j];
             }
         }
         let x = solve_linear_generic(&sub, &rhs)?;
         let z = x.iter().fold(T::zero(), |a, b| a + *b);
+        if z.val().abs() < 1e-14 {
+            return Err(AllocationError::SingularCovariance);
+        }
         for (a, &i) in cl.iter().enumerate() {
-            local[ci][i] = x[a] / z.max_val(T::from_f64(1e-14));
+            local[ci][i] = x[a] / z;
         }
     }
     let mut red = vec![vec![T::zero(); k]; k];
+    let mut rhs = vec![T::one(); k];
     for a in 0..k {
+        if let Some(mu) = &s.expected_returns {
+            let mut cm = T::zero();
+            for &i in &clusters[a] {
+                cm += local[a][i] * mu[i];
+            }
+            rhs[a] = T::one() + cm / gamma;
+        }
         for b in 0..k {
-            for i in &clusters[a] {
-                for j in &clusters[b] {
-                    red[a][b] += local[a][*i] * s.covariance[*i][*j] * local[b][*j];
+            for &i in &clusters[a] {
+                for &j in &clusters[b] {
+                    red[a][b] += local[a][i] * s.covariance[i][j] * local[b][j];
                 }
             }
         }
     }
-    let ones = vec![T::one(); k];
-    let om = solve_linear_generic(&red, &ones)?;
-    let oz = om.iter().fold(T::zero(), |a, b| a + *b);
-    let mut w = vec![T::zero(); n];
-    for i in 0..n {
-        let ci = i % k;
-        w[i] = om[ci] / oz.max_val(T::from_f64(1e-14)) * local[ci][i];
+    let om = solve_linear_generic(&red, &rhs)?;
+    let z = om.iter().fold(T::zero(), |a, b| a + *b);
+    if z.val().abs() < 1e-14 {
+        return Err(AllocationError::SingularCovariance);
     }
-    Ok(w)
+    let mut out = vec![T::zero(); n];
+    for (ci, cl) in clusters.iter().enumerate() {
+        for &i in cl {
+            out[i] = om[ci] / z * local[ci][i];
+        }
+    }
+    Ok(out)
 }
 pub fn nested_clustered_optimization_weights<T: Real>(
     s: &NestedClusteredOptimizationSpec<T>,
 ) -> Vec<T> {
     try_nested_clustered_optimization_weights(s).expect("valid NCO inputs")
 }
-
-#[allow(clippy::useless_vec)]
 #[cfg(test)]
 mod phase15_tests {
     use super::*;
@@ -1530,7 +1605,7 @@ mod phase15_tests {
             vec![-0.01, -0.02],
         ];
         let g = gerber_covariance_matrix(&r, 0.5, 1e-3).unwrap();
-        assert!(g[0][0] > 0.0);
+        assert!(g[0][0] > 0.0 && (g[0][1] - g[1][0]).abs() < 1e-12);
         let c = vec![
             vec![0.04, 0.01, 0., 0.],
             vec![0.01, 0.09, 0., 0.],
@@ -1543,18 +1618,27 @@ mod phase15_tests {
             risk_aversion: 1.0,
             num_clusters: 2,
         });
+        let mv = markowitz_minimum_variance_weights(&c);
         assert!((w.iter().sum::<f64>() - 1.0).abs() < 1e-10);
-        let d = vec![
-            vec![Dual::<1>::variable(0.04, 0), Dual::<1>::from_value(0.01)],
-            vec![Dual::<1>::from_value(0.01), Dual::<1>::from_value(0.09)],
-        ];
+        for i in 0..4 {
+            assert!((w[i] - mv[i]).abs() < 1e-10);
+        }
+        let h = 1e-5;
+        let eval = |x: f64| {
+            let mut z = c.clone();
+            z[0][1] = x;
+            z[1][0] = x;
+            marchenko_pastur_denoise_covariance(&z, 12).unwrap()[0][1]
+        };
+        let fd = (eval(0.01 + h) - eval(0.01 - h)) / (2.0 * h);
+        let mut cd: Vec<Vec<Dual<1>>> = c
+            .iter()
+            .map(|r| r.iter().map(|&x| Dual::from_value(x)).collect())
+            .collect();
+        cd[0][1] = Dual::variable(0.01, 0);
+        cd[1][0] = Dual::variable(0.01, 0);
         assert!(
-            gerber_covariance_matrix(
-                &vec![vec![d[0][0], d[0][1]], vec![d[1][0], d[1][1]]],
-                0.5,
-                1e-3
-            )
-            .is_ok()
+            (marchenko_pastur_denoise_covariance(&cd, 12).unwrap()[0][1].d[0] - fd).abs() < 1e-5
         );
     }
 }

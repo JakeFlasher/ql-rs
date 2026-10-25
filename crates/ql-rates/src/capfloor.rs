@@ -259,7 +259,11 @@ pub fn price_range_accrual_coupon<T: Real, D: YieldTermStructure<T>, F: YieldTer
     ois: &D,
     fwd: &F,
 ) -> T {
-    if spec.fixing_times.is_empty() {
+    if spec.fixing_times.is_empty()
+        || spec.pay_time <= 0.0
+        || spec.accrual_fraction <= 0.0
+        || spec.lower_bound.val() >= spec.upper_bound.val()
+    {
         return T::zero();
     }
     let delta = spec.rate_tenor.max(1e-4);
@@ -297,7 +301,6 @@ pub enum PathDependentCapFloorKind {
     StickyCap,
     StickyFloor,
 }
-
 #[derive(Clone, Debug)]
 pub struct StickyRatchetCapFloorSpec<T: Real = f64> {
     pub notional: T,
@@ -330,34 +333,48 @@ pub fn price_sticky_ratchet_capfloor_hw1f<
     if m == 0 {
         return (T::zero(), Vec::new());
     }
+    let hw_b = |a: T, dt: f64| {
+        let t = T::from_f64(dt.max(0.0));
+        let at = a * t;
+        if at.val().abs() < 1e-6 {
+            t * (T::one() - at * 0.5 + at * at / 6.0)
+        } else {
+            (T::one() - (-at).exp()) / a
+        }
+    };
     let rng = ql_mc::PhiloxRng::new(seed);
     let mut total = T::zero();
     let mut path_vals = Vec::with_capacity(n_paths);
     for pth in 0..n_paths.max(1) {
         let anti = pth % 2 == 1;
         let id = (pth / 2) as u64;
-        let mut x = T::zero();
+        let mut x_ou = T::zero();
+        let mut int_x = T::zero();
+        let mut var_int = T::zero();
         let mut pv = T::zero();
         let mut coupon = spec.initial_coupon;
         let mut prev_t = 0.0;
-        let mut log_df = T::zero();
         for k in 1..=m {
-            let t0 = spec.period_times[k - 1];
-            let t1 = spec.period_times[k];
-            let dt = (t1 - prev_t).max(0.0);
-            let z = rng.normal4(id, (k - 1) as u32)[0] * if anti { -1.0 } else { 1.0 };
-            let var = if model.a.val().abs() < 1e-8 {
-                model.sigma * model.sigma * dt
-            } else {
-                model.sigma * model.sigma * (T::one() - (-model.a * dt * 2.0).exp())
-                    / (model.a * 2.0)
-            };
-            x = x * (-model.a * dt).exp() + var.max_val(T::zero()).sqrt() * z;
-            let p0 = ois.discount_factor(t0);
-            let p1 = model.zcb_price(ois, t0, t1, x);
-            let ratio = fwd.discount_factor(t0)
-                / fwd.discount_factor(t1)
-                / (ois.discount_factor(t0) / ois.discount_factor(t1));
+            let t0 = spec.period_times[k - 1].max(0.0);
+            let t1 = spec.period_times[k].max(t0 + 1e-8);
+            let dt = (t0 - prev_t).max(0.0);
+            if dt > 0.0 {
+                let z = rng.normal4(id, (k - 1) as u32)[0] * if anti { -1.0 } else { 1.0 };
+                let b_dt = hw_b(model.a, dt);
+                let var_dx = model.sigma * model.sigma * hw_b(model.a * 2.0, dt);
+                int_x +=
+                    x_ou * b_dt + var_dx.max_val(T::zero()).sqrt() * z * (dt - b_dt.val()) * 0.5;
+                var_int += model.sigma * model.sigma * dt * dt * dt / 3.0;
+                x_ou = x_ou * (-model.a * dt).exp() + var_dx.max_val(T::zero()).sqrt() * z;
+                prev_t = t0;
+            }
+            let b_0_t0 = hw_b(model.a, t0);
+            let x_rn = x_ou + model.sigma * model.sigma * b_0_t0 * b_0_t0 * 0.5;
+            let b_tau = hw_b(model.a, t1 - t0);
+            let vx_t0 = model.sigma * model.sigma * hw_b(model.a * 2.0, t0);
+            let p_ois_ratio = ois.discount_factor(t1) / ois.discount_factor(t0);
+            let p1 = p_ois_ratio * (-b_tau * x_rn - b_tau * b_tau * vx_t0 * 0.5).exp();
+            let ratio = (fwd.discount_factor(t0) / fwd.discount_factor(t1)) * p_ois_ratio;
             let tau = (t1 - t0).max(1e-12);
             let l = (ratio / p1 - 1.0) / tau;
             let cf = match spec.kind {
@@ -381,11 +398,8 @@ pub fn price_sticky_ratchet_capfloor_hw1f<
                     v
                 }
             };
-            // Normalize the simulated discount factor to the market bond ratio.
-            log_df += -((ois.discount_factor(t1) / ois.discount_factor(prev_t.max(0.0))).ln());
-            let _ = p0;
-            pv += cf * log_df.exp();
-            prev_t = t1;
+            let df_t0 = ois.discount_factor(t0) * (-int_x - var_int * 0.5).exp();
+            pv += cf * df_t0 * p1;
         }
         total += pv;
         path_vals.push(pv);
@@ -421,43 +435,65 @@ mod phase15_tests {
         let ab = price_range_accrual_coupon(&mk(0.0, 0.06), &c, &c);
         assert!((a + b - ab).abs() < 1e-12);
         let s = StickyRatchetCapFloorSpec {
-            notional: 1.0,
+            notional: 100.0,
             period_times: vec![0.0, 0.5, 1.0],
-            initial_coupon: 0.03,
-            spread: 0.0,
-            max_step_up: 0.01,
-            max_step_down: 0.01,
+            initial_coupon: 0.02,
+            spread: 0.005,
+            max_step_up: 0.05,
+            max_step_down: 0.05,
             smoothing_eps: 1e-4,
             kind: PathDependentCapFloorKind::Ratchet,
         };
-        let m = ql_models::HullWhite1F {
-            a: 0.1,
-            sigma: 0.01,
+        let det = price_sticky_ratchet_capfloor_hw1f(
+            &s,
+            &ql_models::HullWhite1F { a: 0.1, sigma: 0.0 },
+            &c,
+            &c,
+            2,
+            7,
+        )
+        .0;
+        let f_det = (c.discount_factor(0.0) / c.discount_factor(0.5) - 1.0) / 0.5;
+        let expected_c = f_det + 0.005;
+        let expected_pv =
+            100.0 * 0.5 * expected_c * (c.discount_factor(0.5) + c.discount_factor(1.0));
+        assert!((det - expected_pv).abs() < 1e-3);
+        let h = 1e-5;
+        let eval_sig = |sig: f64| {
+            price_sticky_ratchet_capfloor_hw1f(
+                &s,
+                &ql_models::HullWhite1F { a: 0.1, sigma: sig },
+                &c,
+                &c,
+                64,
+                7,
+            )
+            .0
         };
-        let v = price_sticky_ratchet_capfloor_hw1f(&s, &m, &c, &c, 64, 7).0;
-        let sd = ql_models::HullWhite1F::<Dual<1>> {
-            a: Dual::from_value(0.1),
-            sigma: Dual::variable(0.01, 0),
+        let fd = (eval_sig(0.01 + h) - eval_sig(0.01 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let cd = FlatForwardCurve::new(d, D::from_value(0.03));
+        let sd = StickyRatchetCapFloorSpec {
+            notional: D::from_value(100.0),
+            period_times: vec![0.0, 0.5, 1.0],
+            initial_coupon: D::from_value(0.02),
+            spread: D::from_value(0.005),
+            max_step_up: D::from_value(0.05),
+            max_step_down: D::from_value(0.05),
+            smoothing_eps: 1e-4,
+            kind: PathDependentCapFloorKind::Ratchet,
         };
-        let cd = FlatForwardCurve::new(d, Dual::<1>::from_value(0.03));
-        let ad = price_sticky_ratchet_capfloor_hw1f(
-            &StickyRatchetCapFloorSpec {
-                notional: Dual::from_value(1.0),
-                period_times: s.period_times.clone(),
-                initial_coupon: Dual::from_value(0.03),
-                spread: Dual::from_value(0.0),
-                max_step_up: Dual::variable(0.01, 0),
-                max_step_down: Dual::from_value(0.01),
-                smoothing_eps: 1e-4,
-                kind: s.kind,
-            },
+        let (ad, _) = price_sticky_ratchet_capfloor_hw1f(
             &sd,
+            &ql_models::HullWhite1F {
+                a: D::from_value(0.1),
+                sigma: D::variable(0.01, 0),
+            },
             &cd,
             &cd,
             64,
             7,
-        )
-        .0;
-        assert!(v.is_finite() && ad.d[0].is_finite());
+        );
+        assert!((ad.d[0] - fd).abs() < 1e-4);
     }
 }

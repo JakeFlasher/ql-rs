@@ -2825,7 +2825,7 @@ fn benchmark_phase15_jy_tba_bergomi_nco(scale: usize) -> ComparisonRow {
                 num_clusters: 2,
             },
         );
-        w.iter().sum::<f64>() + g.iter().flatten().sum::<f64>()
+        w[0] + w[1] * 2.0 + w[2] * 3.0 + w[3] * 4.0 + g[0][0] + g[0][1]
     };
     let x0 = [
         [0.01, 0.015, 0.012, -0.2],
@@ -2834,28 +2834,29 @@ fn benchmark_phase15_jy_tba_bergomi_nco(scale: usize) -> ComparisonRow {
         [0.04, 0.01, 0.09, 0.01],
     ];
     let checksum = || {
+        let h = 1e-5;
         let mut total = eval_jy(x0[0]) + eval_mbs(x0[1]) + eval_bg_fx(x0[2]) + eval_nco(x0[3]);
         for i in 0..4 {
             let mut up = x0[0];
             let mut dn = x0[0];
-            up[i] += 1e-4;
-            dn[i] -= 1e-4;
-            total += (eval_jy(up) - eval_jy(dn)) / (2e-4);
+            up[i] += h;
+            dn[i] -= h;
+            total += (eval_jy(up) - eval_jy(dn)) / (2.0 * h);
             let mut up = x0[1];
             let mut dn = x0[1];
-            up[i] += 1e-4;
-            dn[i] -= 1e-4;
-            total += (eval_mbs(up) - eval_mbs(dn)) / (2e-4);
+            up[i] += h;
+            dn[i] -= h;
+            total += (eval_mbs(up) - eval_mbs(dn)) / (2.0 * h);
             let mut up = x0[2];
             let mut dn = x0[2];
-            up[i] += 1e-4;
-            dn[i] -= 1e-4;
-            total += (eval_bg_fx(up) - eval_bg_fx(dn)) / (2e-4);
+            up[i] += h;
+            dn[i] -= h;
+            total += (eval_bg_fx(up) - eval_bg_fx(dn)) / (2.0 * h);
             let mut up = x0[3];
             let mut dn = x0[3];
-            up[i] += 1e-4;
-            dn[i] -= 1e-4;
-            total += (eval_nco(up) - eval_nco(dn)) / (2e-4);
+            up[i] += h;
+            dn[i] -= h;
+            total += (eval_nco(up) - eval_nco(dn)) / (2.0 * h);
         }
         total
     };
@@ -2969,19 +2970,19 @@ fn benchmark_phase15_jy_tba_bergomi_nco(scale: usize) -> ComparisonRow {
             .collect::<Vec<_>>();
         let gc = gerber_covariance_matrix(&ret, 0.5, 1e-3).unwrap();
         let nc = nested_clustered_optimization_weights(&NestedClusteredOptimizationSpec {
-            covariance: gc,
+            covariance: gc.clone(),
             expected_returns: None,
             risk_aversion: D::one(),
             num_clusters: 2,
         });
-        let nco = nc.iter().copied().fold(D::zero(), |a, b| a + b);
+        let nco = nc[0] + nc[1] * 2.0 + nc[2] * 3.0 + nc[3] * 4.0 + gc[0][0] + gc[0][1];
         let mut nco_fd = eval_nco(x0[3]);
         for i in 0..4 {
             let mut up = x0[3];
             let mut dn = x0[3];
-            up[i] += 1e-4;
-            dn[i] -= 1e-4;
-            nco_fd += (eval_nco(up) - eval_nco(dn)) / (2e-4);
+            up[i] += 1e-5;
+            dn[i] -= 1e-5;
+            nco_fd += (eval_nco(up) - eval_nco(dn)) / (2.0e-5);
         }
         std::hint::black_box(nco.val + nco.d.iter().sum::<f64>());
         let out = jy + mb.net_roll_advantage + pool.pv * 1e-3 + bg;

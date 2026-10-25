@@ -339,22 +339,40 @@ fn jy_b<T: Real>(a: T, tau: f64) -> T {
         (T::one() - (-at).exp()) / a
     }
 }
-fn jy_phi<T: Real>(a: T, tau: f64) -> T {
-    let t = T::from_f64(tau.max(0.0));
-    let at = a * t;
-    if at.val().abs() < 1e-4 {
-        t * t * t * (T::from_f64(1.0 / 3.0) - at * 0.25 + at * at * 0.1)
-    } else {
-        (t - jy_b(a, tau) * 2.0 + jy_b(a * 2.0, tau)) / (a * a)
-    }
-}
 fn jy_psi<T: Real>(a1: T, a2: T, tau: f64) -> T {
-    let t = T::from_f64(tau.max(0.0));
-    if (a1 * t).val().abs() < 1e-4 || (a2 * t).val().abs() < 1e-4 {
-        t * t * t * (T::from_f64(1.0 / 3.0) - (a1 + a2) * t * 0.125)
-    } else {
-        (t - jy_b(a1, tau) - jy_b(a2, tau) + jy_b(a1 + a2, tau)) / (a1 * a2)
+    let t = tau.max(0.0);
+    if t <= 0.0 {
+        return T::zero();
     }
+    let nodes = [
+        -0.9602898565,
+        -0.7966664774,
+        -0.5255324099,
+        -0.1834346425,
+        0.1834346425,
+        0.5255324099,
+        0.7966664774,
+        0.9602898565,
+    ];
+    let weights = [
+        0.1012285363,
+        0.2223810345,
+        0.3137066459,
+        0.3626837834,
+        0.3626837834,
+        0.3137066459,
+        0.2223810345,
+        0.1012285363,
+    ];
+    let mut sum = T::zero();
+    for (&x, &w) in nodes.iter().zip(weights.iter()) {
+        let s = 0.5 * t * (x + 1.0);
+        sum += jy_b(a1, s) * jy_b(a2, s) * (0.5 * t * w);
+    }
+    sum
+}
+fn jy_phi<T: Real>(a: T, tau: f64) -> T {
+    jy_psi(a, a, tau)
 }
 fn jy_int_b<T: Real>(a: T, tau: f64) -> T {
     let t = T::from_f64(tau.max(0.0));
@@ -365,7 +383,6 @@ fn jy_int_b<T: Real>(a: T, tau: f64) -> T {
         (t - jy_b(a, tau)) / a
     }
 }
-
 pub fn jarrow_yildirim_yoy_moments<T: Real>(
     p: &JarrowYildirimParams<T>,
     t_start: f64,
@@ -395,8 +412,8 @@ pub fn jarrow_yildirim_yoy_moments<T: Real>(
         + p.sigma_nom * p.sigma_nom * jy_phi(p.a_nom, dt)
         + p.sigma_real * p.sigma_real * jy_phi(p.a_real, dt)
         - p.rho_nom_real * p.sigma_nom * p.sigma_real * jy_psi(p.a_nom, p.a_real, dt) * 2.0
-        + p.rho_real_cpi * p.sigma_real * p.sigma_cpi * jy_int_b(p.a_real, dt) * 2.0
-        - p.rho_nom_cpi * p.sigma_nom * p.sigma_cpi * jy_int_b(p.a_nom, dt) * 2.0;
+        + p.rho_nom_cpi * p.sigma_nom * p.sigma_cpi * jy_int_b(p.a_nom, dt) * 2.0
+        - p.rho_real_cpi * p.sigma_real * p.sigma_cpi * jy_int_b(p.a_real, dt) * 2.0;
     let var = (pre + acc).max_val(T::zero());
     let conv = if t0 > 0.0 {
         let nodes = [
@@ -435,45 +452,60 @@ pub fn jarrow_yildirim_yoy_moments<T: Real>(
     };
     (conv, var)
 }
-
 pub fn price_yoy_capfloor_jarrow_yildirim<T: Real>(
     instrument: &YoYInflationCapFloor<T>,
     discount: &impl YieldTermStructure<T>,
     inflation: &ZeroInflationCurve<T>,
     params: &JarrowYildirimParams<T>,
 ) -> (T, Vec<T>) {
-    let mut npv = T::zero();
+    if instrument.maturity_years == 0
+        || !instrument.gearing.val().is_finite()
+        || instrument.gearing.val() < 0.0
+        || !instrument.spread.val().is_finite()
+    {
+        return (T::zero(), Vec::new());
+    }
+    let mut cap_npv = T::zero();
+    let mut floor_npv = T::zero();
     let mut fwds = Vec::with_capacity(instrument.maturity_years);
+    let g = instrument.gearing;
     for y in 1..=instrument.maturity_years {
         let t0 = (y - 1) as f64;
         let t1 = y as f64;
         let ratio = inflation.forward_cpi(t1, None) / inflation.forward_cpi(t0, None);
         let (conv, var) = jarrow_yildirim_yoy_moments(params, t0, t1);
         let gross = ratio * conv.exp();
-        let fwd = gross - 1.0;
-        fwds.push(fwd);
-        let strike = instrument
-            .cap_rate
-            .or(instrument.floor_rate)
-            .unwrap_or_else(T::zero)
-            + 1.0;
-        let st = var.sqrt();
-        let omega = if instrument.cap_floor_type == YoYInflationCapFloorType::Floor {
-            -1.0
-        } else {
-            1.0
+        fwds.push(gross - 1.0);
+        let df = discount.discount_factor(t1);
+        let price_let = |k_rate: T, omega: f64| {
+            if g.val().abs() < 1e-14 {
+                return (T::from_f64(omega) * (instrument.spread - k_rate)).max_val(T::zero());
+            }
+            let strike = ((k_rate - instrument.spread) / g + 1.0).max_val(T::from_f64(1e-8));
+            let st = var.sqrt();
+            let unit = if st.val() <= 1e-14 {
+                (T::from_f64(omega) * (gross - strike)).max_val(T::zero())
+            } else {
+                let d1 = ((gross / strike).ln() + var * 0.5) / st;
+                let d2 = d1 - st;
+                T::from_f64(omega)
+                    * (gross * (T::from_f64(omega) * d1).norm_cdf()
+                        - strike * (T::from_f64(omega) * d2).norm_cdf())
+            };
+            g * unit
         };
-        let unit = if st.val() <= 1e-14 {
-            (T::from_f64(omega) * (gross - strike)).max_val(T::zero())
-        } else {
-            let d1 = ((gross / strike).ln() + var * 0.5) / st;
-            let d2 = d1 - st;
-            T::from_f64(omega)
-                * (gross * (T::from_f64(omega) * d1).norm_cdf()
-                    - strike * (T::from_f64(omega) * d2).norm_cdf())
-        };
-        npv += instrument.notional * discount.discount_factor(t1) * unit;
+        if let Some(k) = instrument.cap_rate {
+            cap_npv += instrument.notional * df * price_let(k, 1.0);
+        }
+        if let Some(k) = instrument.floor_rate {
+            floor_npv += instrument.notional * df * price_let(k, -1.0);
+        }
     }
+    let npv = match instrument.cap_floor_type {
+        YoYInflationCapFloorType::Cap => cap_npv,
+        YoYInflationCapFloorType::Floor => floor_npv,
+        YoYInflationCapFloorType::Collar => cap_npv - floor_npv,
+    };
     (npv, fwds)
 }
 
@@ -844,5 +876,91 @@ mod phase14_tests {
             .collect();
         let s = estimate_multiplicative_seasonality(&obs).unwrap();
         assert!((s.factors.iter().product::<f64>() - 1.0).abs() < 1e-10);
+    }
+}
+
+#[cfg(test)]
+mod phase15_tests {
+    use super::*;
+    use ql_ad::Dual;
+    use ql_curves::FlatForwardCurve;
+    use ql_time::Date;
+    #[test]
+    fn jarrow_yildirim_moments_parity_and_ad() {
+        let d = Date::from_ymd(2024, 1, 1).unwrap();
+        let disc = FlatForwardCurve::new(d, 0.025);
+        let inf = ZeroInflationCurve::new(d, 100.0, vec![1.0, 2.0, 5.0], vec![0.02; 3], None);
+        let p = JarrowYildirimParams {
+            a_nom: 0.1,
+            sigma_nom: 0.01,
+            a_real: 0.08,
+            sigma_real: 0.008,
+            sigma_cpi: 0.012,
+            rho_nom_real: 0.2,
+            rho_nom_cpi: 0.15,
+            rho_real_cpi: -0.2,
+        };
+        let mut p_pos = p;
+        p_pos.rho_nom_cpi = 0.5;
+        let mut p_neg = p;
+        p_neg.rho_nom_cpi = -0.5;
+        assert!(
+            jarrow_yildirim_yoy_moments(&p_pos, 1.0, 2.0).1
+                > jarrow_yildirim_yoy_moments(&p_neg, 1.0, 2.0).1
+        );
+        let cap = YoYInflationCapFloor {
+            notional: 100.0,
+            maturity_years: 3,
+            cap_rate: Some(0.022),
+            floor_rate: Some(0.022),
+            gearing: 1.5,
+            spread: 0.002,
+            cap_floor_type: YoYInflationCapFloorType::Cap,
+        };
+        let mut flr = cap;
+        flr.cap_floor_type = YoYInflationCapFloorType::Floor;
+        let mut col = cap;
+        col.cap_floor_type = YoYInflationCapFloorType::Collar;
+        let vc = price_yoy_capfloor_jarrow_yildirim(&cap, &disc, &inf, &p).0;
+        let vf = price_yoy_capfloor_jarrow_yildirim(&flr, &disc, &inf, &p).0;
+        let vcol = price_yoy_capfloor_jarrow_yildirim(&col, &disc, &inf, &p).0;
+        assert!((vc - vf - vcol).abs() < 1e-12);
+        let h = 1e-5;
+        let mut pu = p;
+        let mut pd = p;
+        pu.sigma_real += h;
+        pd.sigma_real -= h;
+        let fd = (price_yoy_capfloor_jarrow_yildirim(&cap, &disc, &inf, &pu).0
+            - price_yoy_capfloor_jarrow_yildirim(&cap, &disc, &inf, &pd).0)
+            / (2.0 * h);
+        type D = Dual<1>;
+        let dd = FlatForwardCurve::new(d, D::from_value(0.025));
+        let id = ZeroInflationCurve::new(
+            d,
+            100.0,
+            vec![1.0, 2.0, 5.0],
+            vec![D::from_value(0.02); 3],
+            None,
+        );
+        let cd = YoYInflationCapFloor {
+            notional: D::from_value(100.0),
+            maturity_years: 3,
+            cap_rate: Some(D::from_value(0.022)),
+            floor_rate: Some(D::from_value(0.022)),
+            gearing: D::from_value(1.5),
+            spread: D::from_value(0.002),
+            cap_floor_type: YoYInflationCapFloorType::Cap,
+        };
+        let pd = JarrowYildirimParams {
+            a_nom: D::from_value(0.1),
+            sigma_nom: D::from_value(0.01),
+            a_real: D::from_value(0.08),
+            sigma_real: D::variable(0.008, 0),
+            sigma_cpi: D::from_value(0.012),
+            rho_nom_real: D::from_value(0.2),
+            rho_nom_cpi: D::from_value(0.15),
+            rho_real_cpi: D::from_value(-0.2),
+        };
+        assert!((price_yoy_capfloor_jarrow_yildirim(&cd, &dd, &id, &pd).0.d[0] - fd).abs() < 1e-5);
     }
 }

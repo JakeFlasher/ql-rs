@@ -301,63 +301,131 @@ impl<T: Real> FxVannaVolgaSmile<T> {
             (-self.r_dom * self.expiry).exp() - call
         }
     }
-    pub fn price_one_touch(&self, barrier: T, is_up_and_in: bool, rebate_at_expiry: bool) -> T {
-        let f = self.spot * ((self.r_dom - self.r_for) * self.expiry).exp();
-        let sig = self.sigma2.max_val(T::from_f64(1e-8));
-        let st = sig * self.expiry.sqrt();
-        let hit = if is_up_and_in {
-            if self.spot.val() >= barrier.val() {
-                T::one()
-            } else {
-                let mu = (self.r_dom - self.r_for - sig * sig * 0.5) * self.expiry;
-                ((f / barrier).ln() + mu) / (st)
-            }
-            .norm_cdf()
-        } else {
-            if self.spot.val() <= barrier.val() {
-                T::one()
-            } else {
-                let z = ((barrier / f).ln()
-                    - (self.r_dom - self.r_for - sig * sig * 0.5) * self.expiry)
-                    / st;
-                z.norm_cdf()
-            }
-        };
-        let base = (-self.r_dom * self.expiry).exp() * hit;
-        let (sm, _) = self.implied_vol_and_strike_slope(self.k2);
-        let adjust = (sig - sm)
-            * self.expiry.sqrt()
-            * garman_kohlhagen_vega(self.spot, self.k2, sm, self.expiry, self.r_dom, self.r_for);
-        let out = (base + adjust * (T::one() - hit)).max_val(T::zero());
+    fn flat_one_touch(&self, barrier: T, sig: T, is_up_and_in: bool, rebate_at_expiry: bool) -> T {
+        let df = (-self.r_dom * self.expiry).exp();
+        if (is_up_and_in && self.spot.val() >= barrier.val())
+            || (!is_up_and_in && self.spot.val() <= barrier.val())
+        {
+            return if rebate_at_expiry { df } else { T::one() };
+        }
+        let sv = sig.max_val(T::from_f64(1e-8));
+        let st = sv * self.expiry.max_val(T::from_f64(1e-12)).sqrt();
+        let mu = (self.r_dom - self.r_for - sv * sv * 0.5) / (sv * sv);
+        let eta = if is_up_and_in { -1.0 } else { 1.0 };
         if rebate_at_expiry {
-            out
+            let x2 = (self.spot / barrier).ln() / st + (mu + 1.0) * st;
+            let y2 = (barrier / self.spot).ln() / st + (mu + 1.0) * st;
+            df * ((T::from_f64(-eta) * (x2 - st)).norm_cdf()
+                + (barrier / self.spot).powf((mu * 2.0).val())
+                    * (T::from_f64(eta) * (y2 - st)).norm_cdf())
         } else {
-            out * (-self.r_dom * self.expiry).exp()
+            let lam = (mu * mu + self.r_dom * 2.0 / (sv * sv))
+                .max_val(T::zero())
+                .sqrt();
+            let z = (barrier / self.spot).ln() / st + lam * st;
+            (barrier / self.spot).powf((mu + lam).val()) * (T::from_f64(eta) * z).norm_cdf()
+                + (barrier / self.spot).powf((mu - lam).val())
+                    * (T::from_f64(eta) * (z - lam * st * 2.0)).norm_cdf()
         }
     }
+    pub fn price_one_touch(&self, barrier: T, is_up_and_in: bool, rebate_at_expiry: bool) -> T {
+        let sig = self.sigma2.max_val(T::from_f64(1e-8));
+        let base = self.flat_one_touch(barrier, sig, is_up_and_in, rebate_at_expiry);
+        let hit = self.flat_one_touch(barrier, sig, is_up_and_in, false);
+        let surv = (T::one() - hit).max_val(T::zero());
+        let sm = self.implied_vol(barrier).max_val(T::from_f64(1e-8));
+        let smile = self.flat_one_touch(barrier, sm, is_up_and_in, rebate_at_expiry);
+        (base + surv * (smile - base)).max_val(T::zero())
+    }
+    fn flat_double_no_touch(&self, lower: T, upper: T, sig: T) -> T {
+        if lower.val() >= upper.val()
+            || self.spot.val() <= lower.val()
+            || self.spot.val() >= upper.val()
+        {
+            return T::zero();
+        }
+        let sv = sig.max_val(T::from_f64(1e-8));
+        let st = sv * self.expiry.max_val(T::from_f64(1e-12)).sqrt();
+        let x0 = (self.spot / lower).ln();
+        let w = (upper / lower).ln();
+        let nu = self.r_dom - self.r_for - sv * sv * 0.5;
+        let mut sum = T::zero();
+        for n in -4..=4 {
+            let nf = n as f64;
+            let sh = w * (2.0 * nf);
+            let e1 = ((nu * sh) / (sv * sv)).min_val(T::from_f64(50.0)).exp();
+            let p1 = ((w - x0 - sh - nu * self.expiry) / st).norm_cdf()
+                - ((-x0 - sh - nu * self.expiry) / st).norm_cdf();
+            let e2 = ((nu * (sh - x0 * 2.0)) / (sv * sv))
+                .min_val(T::from_f64(50.0))
+                .exp();
+            let p2 = ((w + x0 - sh - nu * self.expiry) / st).norm_cdf()
+                - ((x0 - sh - nu * self.expiry) / st).norm_cdf();
+            sum += e1 * p1 - e2 * p2;
+        }
+        ((-self.r_dom * self.expiry).exp() * sum).max_val(T::zero())
+    }
     pub fn price_double_no_touch(&self, lower: T, upper: T) -> T {
-        if lower.val() >= upper.val() {
+        if lower.val() >= upper.val()
+            || self.spot.val() <= lower.val()
+            || self.spot.val() >= upper.val()
+        {
             return T::zero();
         }
         let sig = self.sigma2.max_val(T::from_f64(1e-8));
-        let st = sig * self.expiry.sqrt();
-        let f = self.spot * ((self.r_dom - self.r_for) * self.expiry).exp();
-        let p1 = ((upper / f).ln() / st).norm_cdf();
-        let p2 = ((f / lower).ln() / st).norm_cdf();
-        let base = (-self.r_dom * self.expiry).exp() * (p1 + p2 - 1.0).max_val(T::zero());
-        let smile = (self.implied_vol(lower) + self.implied_vol(upper)) * 0.5 - sig;
-        (base
-            + smile
-                * st
-                * garman_kohlhagen_vega(
-                    self.spot,
-                    self.k2,
-                    sig,
-                    self.expiry,
-                    self.r_dom,
-                    self.r_for,
-                ))
-        .max_val(T::zero())
+        let base = self.flat_double_no_touch(lower, upper, sig);
+        let sm = (self.implied_vol(lower) + self.implied_vol(upper)) * 0.5;
+        let surv = (base * (self.r_dom * self.expiry).exp())
+            .max_val(T::zero())
+            .min_val(T::one());
+        let eff = (sig + surv * (sm - sig)).max_val(T::from_f64(1e-8));
+        self.flat_double_no_touch(lower, upper, eff)
+    }
+    fn flat_knock_out(
+        &self,
+        strike: T,
+        barrier: T,
+        sig: T,
+        is_up_and_out: bool,
+        is_call: bool,
+    ) -> T {
+        if (is_up_and_out && self.spot.val() >= barrier.val())
+            || (!is_up_and_out && self.spot.val() <= barrier.val())
+        {
+            return T::zero();
+        }
+        let sv = sig.max_val(T::from_f64(1e-8));
+        let st = sv * self.expiry.max_val(T::from_f64(1e-12)).sqrt();
+        let mu = (self.r_dom - self.r_for - sv * sv * 0.5) / (sv * sv);
+        let phi = if is_call { 1.0 } else { -1.0 };
+        let eta = if is_up_and_out { -1.0 } else { 1.0 };
+        let dfd = (-self.r_dom * self.expiry).exp();
+        let dff = (-self.r_for * self.expiry).exp();
+        let x1 = (self.spot / strike).ln() / st + (mu + 1.0) * st;
+        let x2 = (self.spot / barrier).ln() / st + (mu + 1.0) * st;
+        let y1 = (barrier * barrier / (self.spot * strike)).ln() / st + (mu + 1.0) * st;
+        let y2 = (barrier / self.spot).ln() / st + (mu + 1.0) * st;
+        let hs = (barrier / self.spot).powf((mu * 2.0).val());
+        let hs2 = hs * (barrier / self.spot) * (barrier / self.spot);
+        let a = T::from_f64(phi) * self.spot * dff * (T::from_f64(phi) * x1).norm_cdf()
+            - T::from_f64(phi) * strike * dfd * (T::from_f64(phi) * (x1 - st)).norm_cdf();
+        let b = T::from_f64(phi) * self.spot * dff * (T::from_f64(phi) * x2).norm_cdf()
+            - T::from_f64(phi) * strike * dfd * (T::from_f64(phi) * (x2 - st)).norm_cdf();
+        let c = T::from_f64(phi) * self.spot * dff * hs2 * (T::from_f64(eta) * y1).norm_cdf()
+            - T::from_f64(phi) * strike * dfd * hs * (T::from_f64(eta) * (y1 - st)).norm_cdf();
+        let d = T::from_f64(phi) * self.spot * dff * hs2 * (T::from_f64(eta) * y2).norm_cdf()
+            - T::from_f64(phi) * strike * dfd * hs * (T::from_f64(eta) * (y2 - st)).norm_cdf();
+        let val = match (is_up_and_out, is_call, strike.val() > barrier.val()) {
+            (false, true, true) => a - c,
+            (false, true, false) => b - d,
+            (true, true, true) => T::zero(),
+            (true, true, false) => a - b + c - d,
+            (false, false, true) => a - b + c - d,
+            (false, false, false) => T::zero(),
+            (true, false, true) => b - d,
+            (true, false, false) => a - c,
+        };
+        val.max_val(T::zero())
     }
     pub fn price_knock_out_barrier(
         &self,
@@ -371,17 +439,13 @@ impl<T: Real> FxVannaVolgaSmile<T> {
         {
             return T::zero();
         }
-        let vanilla = garman_kohlhagen_price(
-            self.spot,
-            strike,
-            self.sigma2,
-            self.expiry,
-            self.r_dom,
-            self.r_for,
-            is_call,
-        );
-        let hit = self.price_one_touch(barrier, is_up_and_out, false);
-        (vanilla * (T::one() - hit)).max_val(T::zero())
+        let sig = self.sigma2.max_val(T::from_f64(1e-8));
+        let base = self.flat_knock_out(strike, barrier, sig, is_up_and_out, is_call);
+        let hit = self.flat_one_touch(barrier, sig, is_up_and_out, false);
+        let surv = (T::one() - hit).max_val(T::zero());
+        let sm = self.implied_vol(strike).max_val(T::from_f64(1e-8));
+        let smile = self.flat_knock_out(strike, barrier, sm, is_up_and_out, is_call);
+        (base + surv * (smile - base)).max_val(T::zero())
     }
 }
 

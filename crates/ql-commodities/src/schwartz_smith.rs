@@ -248,15 +248,39 @@ impl<T: Real> GibsonSchwartz2F<T> {
         }
     }
     pub fn futures_price(&self, maturity: T) -> T {
-        let b = self.b(maturity);
-        let b2 = self.b(maturity * 2.0);
-        let var = self.sigma_cy * self.sigma_cy * (maturity - b * 2.0 + b2)
-            / (self.kappa * self.kappa).max_val(T::from_f64(1e-12))
-            - self.rho * self.sigma_spot * self.sigma_cy * (maturity - b) * 2.0
-                / self.kappa.max_val(T::from_f64(1e-12));
+        let t = maturity.max_val(T::zero());
+        let b = self.b(t);
+        let nodes = [
+            -0.9602898565,
+            -0.7966664774,
+            -0.5255324099,
+            -0.1834346425,
+            0.1834346425,
+            0.5255324099,
+            0.7966664774,
+            0.9602898565,
+        ];
+        let weights = [
+            0.1012285363,
+            0.2223810345,
+            0.3137066459,
+            0.3626837834,
+            0.3626837834,
+            0.3137066459,
+            0.2223810345,
+            0.1012285363,
+        ];
+        let mut var = T::zero();
+        for (&x, &w) in nodes.iter().zip(weights.iter()) {
+            let u = t * (x + 1.0) * 0.5;
+            let bu = self.b(u);
+            var += (self.sigma_cy * self.sigma_cy * bu * bu
+                - self.rho * self.sigma_spot * self.sigma_cy * bu * 2.0)
+                * (t * 0.5 * w);
+        }
         self.spot
             * (-b * self.convenience_yield0
-                + (self.rate - self.alpha_rn) * maturity
+                + (self.rate - self.alpha_rn) * t
                 + b * self.alpha_rn
                 + var * 0.5)
                 .exp()
@@ -337,9 +361,15 @@ mod phase15_tests_gibson {
         let c = m.price_futures_option(1.0, 2.0, 100.0, ql_instruments::OptionType::Call);
         let p = m.price_futures_option(1.0, 2.0, 100.0, ql_instruments::OptionType::Put);
         assert!((c - p - (-0.02f64).exp() * (m.futures_price(2.0) - 100.0)).abs() < 1e-10);
+        let h = 1e-5;
+        let mut up = m;
+        let mut dn = m;
+        up.sigma_cy += h;
+        dn.sigma_cy -= h;
+        let fd = (up.futures_price(2.0) - dn.futures_price(2.0)) / (2.0 * h);
         let md = GibsonSchwartz2F::<Dual<1>> {
             spot: Dual::from_value(100.0),
-            convenience_yield0: Dual::variable(0.03, 0),
+            convenience_yield0: Dual::from_value(0.03),
             rate: Dual::from_value(0.02),
             kappa: Dual::from_value(1.0),
             alpha_rn: Dual::from_value(0.02),
@@ -347,7 +377,7 @@ mod phase15_tests_gibson {
             sigma_cy: Dual::variable(0.3, 0),
             rho: Dual::from_value(-0.2),
         };
-        assert!(md.futures_price(Dual::from_value(2.0)).d[0].is_finite());
+        assert!((md.futures_price(Dual::from_value(2.0)).d[0] - fd).abs() < 1e-6);
     }
 }
 
