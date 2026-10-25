@@ -38,4 +38,4 @@
 | 34_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad | Phase22 KRD/LPI/CoCo/Bergomi/CGMY/Guéant/Meucci/AAD | 2710837.60 (IQR 9714.80) | 681914.40 (IQR 12539.40) | 3.98x | 8.527e-12 |
 | 35_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml | Phase23 RKHS/FMM/VV/LSV/JLT/CTD/QRH/Parisian/Aïd/Propagator/NCO/DML | 91665.20 (IQR 238.40) | 22880.20 (IQR 1066.00) | 4.01x | 2.449e-6 |
 
-All 35 suites pass numerical parity. The release exposes 33 workstation tabs; speedups range from 2.09x to 169.84x (6.46x median, 19.34x mean).
+All 36 suites pass numerical parity. The release exposes 34 workstation tabs; speedups range from 2.09x to 169.84x (6.46x median, 19.34x mean).

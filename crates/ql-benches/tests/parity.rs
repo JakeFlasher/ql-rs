@@ -10,7 +10,7 @@ use ql_benches::{
 #[test]
 fn phase21_suite33_and_invariants() {
     let rows = with_config_override(1, 3, || run_all_benchmarks(1));
-    assert_eq!(rows.len(), 35);
+    assert_eq!(rows.len(), 36);
     let row = with_config_override(1, 3, || {
         benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(1)
     });

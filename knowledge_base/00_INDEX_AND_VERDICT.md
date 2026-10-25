@@ -2,7 +2,7 @@
 
 ## Verdict
 
-`ql-rs` is a cohesive 23-crate, MIT/Apache-2.0 quantitative-finance workspace. It keeps the domain fidelity that made QuantLib useful while replacing hidden mutation with immutable values, generic scalar kernels, exact first- and second-order IFT risk, data-oriented storage, and explicit parallel execution. The implementation is accompanied by 35 numerical benchmark suites, 33 workstation tabs, and a 66-paper research catalog.
+`ql-rs` is a cohesive 23-crate, MIT/Apache-2.0 quantitative-finance workspace. It keeps the domain fidelity that made QuantLib useful while replacing hidden mutation with immutable values, generic scalar kernels, exact first- and second-order IFT risk, data-oriented storage, and explicit parallel execution. The implementation is accompanied by 36 numerical benchmark suites, 34 workstation tabs, and a 66-paper research catalog.
 
 ## Three empirical pillars
 
@@ -40,7 +40,7 @@ The comparison in `03_CROSS_LANGUAGE_BENCHMARK_ARCHITECTURES.md` shows that the 
 | `05_BLUEPRINT_MODERN_RUST_QUANTLIB.md` | Detailed 23-crate software and mathematical blueprint. |
 | `06_LITERATURE_AND_REFERENCES.md` | Annotated 66-paper and repository bibliography. |
 | `07_BENCHMARK_METHODOLOGY_AND_STUDY.md` | Harness design, suite descriptions, and empirical interpretation. |
-| `08_BENCHMARK_RESULTS.md` | Reproducible 35-suite benchmark output. |
+| `08_BENCHMARK_RESULTS.md` | Reproducible 36-suite benchmark output. |
 
 ## Release verification
 
@@ -53,6 +53,6 @@ cargo run -p ql-benches --release
 
 
 ## Phase 18 Institutional Expansion
-The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB and entropy pooling. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic OU SPX/VIX, AFV convertibles, Clewlow–Strickland swaptions, Schur-HRP and nonlinear shrinkage. The workstation now exposes Tab 33 and the benchmark suite contains 35 AD parity workloads.
+The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB and entropy pooling. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic OU SPX/VIX, AFV convertibles, Clewlow–Strickland swaptions, Schur-HRP and nonlinear shrinkage. The workstation now exposes Tab 34 and the benchmark suite contains 36 AD parity workloads.
 
 Phase 20 adds production-grade inflation, structured-credit, rough-volatility, callable, portfolio, and XVA engines with exact Dual/IFT parity. Phase 21 completes the institutional expansion with Hagan–West monotone-convex bootstrapping, Piterbarg quasi-Gaussian amortizing swaptions, Clark FX delta-smile calibration, Gatheral–Gyöngy LSV leverage, Green SA-CCR lifetime KVA/MVA, Gregory Euler netting allocation, Bayer–Friz–Gatheral rough volatility, Bouzoubaa cliquets, Burger multifuel dispatch, Cartea–Jaimungal execution, Paleologo factor-neutral allocation, and checkpointed Glasserman–Malliavin AAD.

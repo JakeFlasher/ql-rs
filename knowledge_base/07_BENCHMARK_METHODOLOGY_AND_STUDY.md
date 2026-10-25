@@ -6,7 +6,7 @@ A fair quantitative benchmark must measure complete domain work, not a micro-ker
 
 The harness in `crates/ql-benches/src/harness.rs` performs warmups, repeated fixed-size iterations, sorting, median/IQR calculation, and `black_box` barriers. `run_comparison` records the final values and fails if the absolute parity difference exceeds the suite tolerance. `scale` changes only repetitions, so `ns/op` retains the same workload definition in tests and release runs.
 
-Current release scope: **35 benchmark suites** and **33 workstation tabs**.
+Current release scope: **35 benchmark suites** and **34 workstation tabs**.
 
 ## 2. Mathematical interpretation
 
@@ -98,10 +98,10 @@ Each suite has a deterministic workload, one warmup, 3 timing samples, and a con
 | 35_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml | Phase23 RKHS/FMM/VV/LSV/JLT/CTD/QRH/Parisian/Aïd/Propagator/NCO/DML | 91665.20 (IQR 238.40) | 22880.20 (IQR 1066.00) | 4.01x | 2.449e-6 |
 
 ## Phase 18 Institutional Expansion
-The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB and entropy pooling. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic OU SPX/VIX, AFV convertibles, Clewlow–Strickland swaptions, Schur-HRP and nonlinear shrinkage. Phase 20 adds Sinh-OU/CIR++ RFR, callable BK FRNs, no-Armageddon credit options, WWM-XVA, mixed rough Bergomi, Choi/Li–Deng–Zhou spreads, MRJD commodities, AFS LOB, EXVaR and PCRP. The workstation now exposes Tab 33 and the benchmark suite contains 35 AD parity workloads.
+The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB and entropy pooling. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic OU SPX/VIX, AFV convertibles, Clewlow–Strickland swaptions, Schur-HRP and nonlinear shrinkage. Phase 20 adds Sinh-OU/CIR++ RFR, callable BK FRNs, no-Armageddon credit options, WWM-XVA, mixed rough Bergomi, Choi/Li–Deng–Zhou spreads, MRJD commodities, AFS LOB, EXVaR and PCRP. The workstation now exposes Tab 34 and the benchmark suite contains 36 AD parity workloads.
 
 ## Empirical summary
-The release run contains **35 suites** and **33 tabs**. All 35 parity checks pass; speedups range from **2.09x** to **169.84x**, with a **6.46x median** and **19.34x mean** acceleration for the ql-rs single-pass/optimized paths versus their legacy baselines.
+The release run contains **36 suites** and **34 tabs**. All 36 parity checks pass; speedups range from **2.09x** to **169.84x**, with a **6.46x median** and **19.34x mean** acceleration for the ql-rs single-pass/optimized paths versus their legacy baselines.
 
 ### Phase 20 suite
 

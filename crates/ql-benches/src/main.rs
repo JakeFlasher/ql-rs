@@ -2,7 +2,9 @@ use ql_benches::{format_markdown_table, run_all_benchmarks};
 use std::fs;
 use std::path::PathBuf;
 fn main() {
-    let report = format_markdown_table(&run_all_benchmarks(5));
+    let rows = run_all_benchmarks(5);
+    assert_eq!(rows.len(), 36, "Phase 24 benchmark suite registration");
+    let report = format_markdown_table(&rows);
     println!("{report}");
     let write_report = std::env::args().skip(1).any(|arg| arg == "--write-report")
         || std::env::var("QL_WRITE_BENCH_REPORT").is_ok();
