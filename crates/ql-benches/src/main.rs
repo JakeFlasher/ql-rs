@@ -3,20 +3,20 @@ use std::fs;
 use std::path::PathBuf;
 fn main() {
     let rows = run_all_benchmarks(5);
-    assert_eq!(rows.len(), 38, "Phase 26 benchmark suite registration");
+    assert_eq!(rows.len(), 39, "Phase 27 benchmark suite registration");
     let mut speedups: Vec<f64> = rows.iter().map(|r| r.speedup).collect();
     speedups.sort_by(f64::total_cmp);
     let median = speedups[speedups.len() / 2];
     let mean = speedups.iter().sum::<f64>() / speedups.len() as f64;
     let report = format!(
-        "{}\nSummary: 38 benchmark suites; speedups range from **{:.2}x** to **{:.2}x** (median **{:.2}x**, mean **{:.2}x**). All parity checks pass their domain tolerances; Suite 38 parity is **{:.3e}**.\n",
+        "{}\nSummary: 39 benchmark suites; speedups range from **{:.2}x** to **{:.2}x** (median **{:.2}x**, mean **{:.2}x**). All parity checks pass their domain tolerances; Suite 39 parity is **{:.3e}**.\n",
         format_markdown_table(&rows),
         speedups[0],
-        speedups[37],
+        speedups[38],
         median,
         mean,
         rows.iter()
-            .find(|r| r.id.starts_with("38_"))
+            .find(|r| r.id.starts_with("39_"))
             .map(|r| r.parity_diff)
             .unwrap_or_default()
     );

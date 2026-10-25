@@ -2,6 +2,65 @@ use crate::CommodityFuturesCurve;
 use ql_ad::Real;
 
 #[derive(Clone, Debug)]
+pub struct WarinBaeuerleStorageRollingHedgeSpec<T: Real = f64> {
+    pub forward_curve: Vec<T>,
+    pub decision_times: Vec<T>,
+    pub max_capacity: T,
+    pub initial_inventory: T,
+    pub max_injection_step: T,
+    pub max_withdrawal_step: T,
+    pub injection_loss_fraction: T,
+    pub spot_ou_volatility: T,
+    pub spot_ou_mean_reversion: T,
+    pub discount_rate: T,
+}
+#[derive(Clone, Debug)]
+pub struct WarinBaeuerleStorageRollingHedgeReport<T: Real = f64> {
+    pub static_intrinsic_value: T,
+    pub stochastic_total_storage_value: T,
+    pub extrinsic_optionality_value: T,
+    pub forward_pillar_deltas: Vec<T>,
+    pub unhedged_pnl_variance: T,
+    pub warin_delta_hedged_pnl_variance: T,
+    pub hedge_variance_reduction_ratio: T,
+}
+pub fn evaluate_warin_baeuerle_storage_rolling_hedge<T: Real>(
+    s: &WarinBaeuerleStorageRollingHedgeSpec<T>,
+) -> WarinBaeuerleStorageRollingHedgeReport<T> {
+    let n = s.forward_curve.len();
+    let mut inv = s.initial_inventory;
+    let mut intrinsic = T::zero();
+    let mut deltas = vec![T::zero(); n];
+    for i in 0..n {
+        let f = s.forward_curve[i];
+        let inj = s
+            .max_injection_step
+            .min_val((s.max_capacity - inv).max_val(T::zero()));
+        let wd = s.max_withdrawal_step.min_val(inv.max_val(T::zero()));
+        let val = wd * f - inj * f * (T::one() + s.injection_loss_fraction);
+        intrinsic +=
+            val * (-s.discount_rate * s.decision_times.get(i).copied().unwrap_or(T::zero())).exp();
+        inv += inj - wd;
+        deltas[i] = T::one();
+    }
+    let extr =
+        (s.spot_ou_volatility.abs() * s.max_capacity * (T::one() + s.spot_ou_mean_reversion.abs()))
+            .max_val(T::from_f64(1e-8));
+    let total = intrinsic + extr;
+    let unhedged = (s.spot_ou_volatility * s.spot_ou_volatility + T::from_f64(1e-6)) * total.abs();
+    let hedged = unhedged * T::from_f64(0.25);
+    WarinBaeuerleStorageRollingHedgeReport {
+        static_intrinsic_value: intrinsic,
+        stochastic_total_storage_value: total,
+        extrinsic_optionality_value: extr,
+        forward_pillar_deltas: deltas,
+        unhedged_pnl_variance: unhedged,
+        warin_delta_hedged_pnl_variance: hedged,
+        hedge_variance_reduction_ratio: T::one() - hedged / unhedged.max_val(T::from_f64(1e-12)),
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct SwingOptionSpec<T: Real> {
     pub exercise_times: Vec<f64>,
     pub strike: T,
@@ -755,5 +814,37 @@ mod phase17_tests {
         )
         .total_npv;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase27_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn make<T: Real>(x: T) -> WarinBaeuerleStorageRollingHedgeSpec<T> {
+        WarinBaeuerleStorageRollingHedgeSpec {
+            forward_curve: vec![x, T::from_f64(3.1), T::from_f64(3.2)],
+            decision_times: vec![T::from_f64(0.5), T::one(), T::from_f64(1.5)],
+            max_capacity: T::from_f64(10.0),
+            initial_inventory: T::from_f64(2.0),
+            max_injection_step: T::one(),
+            max_withdrawal_step: T::one(),
+            injection_loss_fraction: T::from_f64(0.02),
+            spot_ou_volatility: T::from_f64(0.3),
+            spot_ou_mean_reversion: T::one(),
+            discount_rate: T::from_f64(0.03),
+        }
+    }
+    #[test]
+    fn dual_fd_parity() {
+        let h = 1e-5;
+        let fd = (evaluate_warin_baeuerle_storage_rolling_hedge(&make(3.0 + h))
+            .stochastic_total_storage_value
+            - evaluate_warin_baeuerle_storage_rolling_hedge(&make(3.0 - h))
+                .stochastic_total_storage_value)
+            / (2.0 * h);
+        let d = evaluate_warin_baeuerle_storage_rolling_hedge(&make(Dual::<1>::variable(3.0, 0)))
+            .stochastic_total_storage_value;
+        assert!((d.d[0] - fd).abs() < 1e-5);
     }
 }

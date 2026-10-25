@@ -73,7 +73,7 @@ fn config(scale: usize) -> BenchConfig {
         // parallel.  `scale` changes only this repetition count; the domain
         // workload itself remains invariant across test and bench modes.
         // The short parity configuration intentionally uses one iteration so
-        // the complete 34-suite test remains a fast (<2s on CI) invariant
+        // the complete 39-suite test remains a fast (<2s on CI) invariant
         // check rather than a second timing benchmark.
         iters_per_sample: if samples <= 3 {
             scale.max(1)
@@ -3425,7 +3425,7 @@ pub fn benchmark_asw_mf1f_ah_bess_ep_aad(scale: usize) -> ComparisonRow {
 }
 
 pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
-    // Keep all quantitative engine dependencies linked into the 34-suite
+    // Keep all quantitative engine dependencies linked into the 39-suite
     // benchmark binary, including engines used by the parity harness.
     let _ = ql_math::inv_norm_cdf(0.5);
     let _ = std::mem::size_of::<ql_pde::Fd2dHestonEngine>();
@@ -3474,7 +3474,224 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         ),
         benchmark_phase25_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin(scale),
         benchmark_phase26_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_frtb_cva_lookback_vta_flam_acd_hlz_mlmc(scale),
+        benchmark_phase27_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt(scale),
     ]
+}
+
+pub fn phase27_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+    let x = x.map(|v| v.to_f64());
+    let ftpl = ql_inflation::evaluate_cochrane_ftpl_and_maturity_inflation_smoothing(
+        &ql_inflation::CochraneFiscalTheoryPriceLevelSpec {
+            debt_maturities_years: vec![1.0, 5.0, 10.0],
+            nominal_debt_face_values: vec![30.0 + x[0], 30.0, 40.0],
+            nominal_zero_yields: vec![0.03 + x[1] * 0.01, 0.032, 0.035],
+            real_zero_yields: vec![0.01, 0.012, 0.015],
+            primary_real_surpluses: vec![5.0, 5.2, 5.4],
+            terminal_surplus_growth_rate: 0.02,
+            fiscal_surplus_shock_fraction: -0.05,
+            expected_future_inflation_rise: 0.01 + x[2] * 0.01,
+            inflation_risk_beta: 0.4,
+            inflation_volatility: 0.1 + x[3] * 0.01,
+            tips_liquidity_spread: 0.002,
+        },
+    );
+    let g2 = ql_rates::price_brigo_mercurio_g2_twist_and_swaption(
+        &ql_rates::BrigoMercurioG2TwistSwaptionSpec {
+            a: 0.1,
+            sigma: 0.01,
+            b: 0.3,
+            eta: 0.015,
+            rho: -0.4,
+            flat_zero_rate: 0.03 + x[0] * 0.001,
+            option_expiry: 1.0,
+            swap_payment_times: vec![1.0, 2.0, 3.0],
+            fixed_strike: 0.03,
+            notional: 1.0,
+        },
+    );
+    let ess = ql_vol::evaluate_mingone_global_arbitrage_free_essvi(
+        &ql_vol::MingoneGlobalArbitrageFreeEssviSpec {
+            expiries: vec![1.0, 2.0],
+            raw_theta_increments: vec![x[0], x[1]],
+            raw_rho_params: vec![-0.2, -0.1],
+            raw_psi_fractions: vec![x[2], x[3]],
+            test_log_moneyness_grid: vec![-1.0, 0.0, 1.0],
+        },
+    );
+    let cb = ql_fx::price_cross_currency_convertible_and_warrant_bond(
+        &ql_fx::CrossCurrencyConvertibleWarrantSpec {
+            domestic_stock_spot: 100.0 + x[0],
+            domestic_conversion_strike: 100.0,
+            spot_fx_for_per_dom: 1.1,
+            fixed_contractual_fx_for_per_dom: 1.1,
+            foreign_bond_par: 100.0,
+            foreign_coupon_rate: 0.03,
+            r_domestic: 0.03,
+            r_foreign: 0.02,
+            stock_dividend_yield: 0.01,
+            credit_spread: 0.02,
+            stock_vol: 0.2,
+            fx_vol: 0.1,
+            corr_stock_fx: 0.2,
+            maturity: 5.0,
+        },
+    );
+    let bank = ql_fixed_income::analyze_acharya_feds_bank_run_and_optimal_coco(
+        &ql_fixed_income::AcharyaFedsBankRunAndCocoSpec {
+            initial_securities_assets: 100.0,
+            asset_effective_duration: 5.0,
+            insured_deposits: 40.0,
+            uninsured_deposits: 45.0,
+            deposit_rate_beta: 0.5,
+            deposit_operating_cost_rate: 0.005,
+            at1_coco_principal: 5.0,
+            initial_short_rate: 0.03,
+            parallel_rate_shock: x[1].abs() * 0.01,
+            run_sensitivity_steepness: 30.0,
+            fire_sale_liquidation_haircut: 0.1,
+            coco_write_down_efficiency: 0.9,
+        },
+    );
+    let xva = ql_xva::compute_albanese_crepey_mpor_and_balance_sheet_xva(
+        &ql_xva::AlbaneseCrepeyMporBalanceSheetSpec {
+            exposure_times: vec![1.0, 2.0],
+            clean_mtm_profile: vec![1.0, 2.0],
+            portfolio_vol_profile: vec![0.2, 0.2],
+            scheduled_cashflows_in_mpor: vec![0.01, 0.02],
+            mpor_years: 0.05,
+            csa_threshold: 0.1,
+            risk_free_rate: 0.03,
+            cpty_hazard_rate: 0.02,
+            cpty_lgd: 0.6,
+            bank_hazard_rate: 0.01,
+            bank_lgd: 0.6,
+            economic_capital_profile: vec![0.05, 0.05],
+            hurdle_rate: 0.1,
+            initial_margin_profile: vec![0.1, 0.1],
+            im_funding_spread: 0.01,
+        },
+    );
+    let dh = ql_models::evaluate_double_heston_cumulants_and_kernel_slv(
+        &ql_models::DoubleHestonKernelSlvSpec {
+            spot: 100.0,
+            strike: 100.0,
+            maturity: 1.0,
+            risk_free_rate: 0.03,
+            dividend_yield: 0.0,
+            v1_0: 0.02,
+            kappa1: 2.0,
+            theta1: 0.02,
+            sigma1: 0.3,
+            rho1: -0.6,
+            v2_0: 0.01,
+            kappa2: 0.5,
+            theta2: 0.01,
+            sigma2: 0.2,
+            rho2: -0.3,
+            target_dupire_local_vol: 0.2 + x[0] * 0.01,
+        },
+    );
+    let asian = ql_exotics::price_curran_rogers_shi_arithmetic_asian(
+        &ql_exotics::CurranRogersShiArithmeticAsianSpec {
+            spot: 100.0,
+            strike: 100.0 + x[1],
+            risk_free_rate: 0.03,
+            dividend_yield: 0.0,
+            vol: 0.2,
+            fixing_times: vec![0.25, 0.5, 0.75, 1.0],
+        },
+    );
+    let storage = ql_commodities::evaluate_warin_baeuerle_storage_rolling_hedge(
+        &ql_commodities::WarinBaeuerleStorageRollingHedgeSpec {
+            forward_curve: vec![3.0 + x[2], 3.1, 3.2],
+            decision_times: vec![0.5, 1.0, 1.5],
+            max_capacity: 10.0,
+            initial_inventory: 2.0,
+            max_injection_step: 1.0,
+            max_withdrawal_step: 1.0,
+            injection_loss_fraction: 0.02,
+            spot_ou_volatility: 0.3,
+            spot_ou_mean_reversion: 1.0,
+            discount_rate: 0.03,
+        },
+    );
+    let micro = ql_portfolio::analyze_harris_roll_corwin_schultz_microstructure(
+        &ql_portfolio::HarrisRollCorwinSchultzMicrostructureSpec {
+            trade_prices: vec![100.0, 100.1, 99.9, 100.2],
+            daily_highs: vec![101.0, 102.0, 101.5],
+            daily_lows: vec![99.0, 98.0, 98.5],
+            daily_dollar_volumes: vec![1e6, 1.1e6, 0.9e6],
+            decision_price: 100.0,
+            arrival_price: 100.0,
+            child_fill_quantities: vec![10.0, 5.0],
+            child_fill_prices: vec![100.1, 100.2],
+            total_order_quantity: 20.0,
+            post_trade_benchmark_price: 100.3,
+            explicit_commissions: 0.1,
+        },
+    );
+    let kelly = ql_portfolio::solve_busseti_boyd_risk_constrained_kelly(
+        &ql_portfolio::BussetiBoydRiskConstrainedKellySpec {
+            excess_return_means: vec![0.05 + x[0] * 0.001, 0.03],
+            covariance: vec![vec![0.04, 0.01], vec![0.01, 0.03]],
+            risk_free_rate: 0.02,
+            drawdown_floor_alpha: 0.8,
+            max_drawdown_prob_beta: 0.5,
+            specialist_immediate_capital: 100.0,
+            slow_moving_external_capital: 100.0,
+            capital_arrival_rate: 0.1,
+            forced_liquidation_notional: 10.0,
+        },
+    );
+    let qp = ql_dml::solve_agrawal_boyd_differentiable_qp_layer(
+        &ql_dml::AgrawalBoydDifferentiableQpSpec {
+            q_matrix: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
+            q_linear: vec![-1.0 - x[0], -0.5],
+            a_eq: vec![vec![1.0, 1.0]],
+            b_eq: vec![1.0],
+            g_ineq: vec![vec![-1.0, 0.0]],
+            h_ineq: vec![0.0],
+            barrier_tau: 1e-4,
+        },
+    );
+    [
+        T::from_f64(ftpl.equilibrium_price_level_p0),
+        T::from_f64(g2.payer_swaption_pv),
+        T::from_f64(ess.min_durrleman_butterfly_g),
+        T::from_f64(cb.embedded_cross_currency_cb_price),
+        T::from_f64(bank.economic_equity_post_coco_conversion),
+        T::from_f64(xva.sticky_mpor_cva),
+        T::from_f64(dh.double_heston_atm_vol),
+        T::from_f64(asian.curran_full_conditioned_price),
+        T::from_f64(storage.stochastic_total_storage_value),
+        T::from_f64(micro.perold_total_implementation_shortfall),
+        T::from_f64(kelly.constrained_portfolio_volatility),
+        T::from_f64(qp.optimal_objective_value),
+    ]
+}
+
+pub fn benchmark_phase27_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt(
+    scale: usize,
+) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.02_f64, -0.01, 0.03, -0.01];
+    let baseline = move || {
+        let f = |x: [f64; 4]| phase27_workloads(x).iter().map(|v| v.val()).sum::<f64>();
+        let z = f(x0);
+        for _ in 0..20 {
+            std::hint::black_box(f(x0));
+        }
+        z
+    };
+    let sota = move || phase27_workloads(x0).iter().map(|v| v.val()).sum::<f64>();
+    run_comparison(
+        "39_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt",
+        "Phase27 SOTA FTPL/G2/eSSVI/Offshore-CB/CoCo/MPOR/Double-Heston/Curran/Warin/Roll-Corwin/Busseti-Kelly/Diff-QP",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
 }
 
 /// Phase 22 cross-pillar scalar/forward-mode parity workload.

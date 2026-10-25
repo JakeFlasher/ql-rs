@@ -5,6 +5,127 @@ use ql_time::Date;
 use ql_vol::{bachelier_price, black76_price};
 use thiserror::Error;
 
+#[derive(Clone, Debug)]
+pub struct CochraneFiscalTheoryPriceLevelSpec<T: Real = f64> {
+    pub debt_maturities_years: Vec<T>,
+    pub nominal_debt_face_values: Vec<T>,
+    pub nominal_zero_yields: Vec<T>,
+    pub real_zero_yields: Vec<T>,
+    pub primary_real_surpluses: Vec<T>,
+    pub terminal_surplus_growth_rate: T,
+    pub fiscal_surplus_shock_fraction: T,
+    pub expected_future_inflation_rise: T,
+    pub inflation_risk_beta: T,
+    pub inflation_volatility: T,
+    pub tips_liquidity_spread: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct CochraneFiscalTheoryPriceLevelReport<T: Real = f64> {
+    pub nominal_debt_market_value: T,
+    pub real_surplus_present_value: T,
+    pub equilibrium_price_level_p0: T,
+    pub fiscal_valuation_identity_error: T,
+    pub debt_portfolio_duration_years: T,
+    pub short_debt_immediate_inflation_jump: T,
+    pub long_debt_smoothed_inflation_jump: T,
+    pub maturity_structure_shock_absorption_ratio: T,
+    pub model_breakeven_inflation_10y: T,
+    pub inflation_risk_premium_10y: T,
+}
+
+pub fn evaluate_cochrane_ftpl_and_maturity_inflation_smoothing<T: Real>(
+    s: &CochraneFiscalTheoryPriceLevelSpec<T>,
+) -> CochraneFiscalTheoryPriceLevelReport<T> {
+    let mut v = T::zero();
+    let mut dur_num = T::zero();
+    for i in 0..s.debt_maturities_years.len() {
+        let tau = s.debt_maturities_years[i];
+        let b = *s.nominal_debt_face_values.get(i).unwrap_or(&T::zero());
+        let y = *s.nominal_zero_yields.get(i).unwrap_or(&T::zero());
+        let pv = b * (-y * tau).exp();
+        v += pv;
+        dur_num += tau * pv;
+    }
+    let h = s.primary_real_surpluses.len();
+    let mut pv_s = T::zero();
+    for (i, &sur) in s.primary_real_surpluses.iter().enumerate() {
+        let r = *s.real_zero_yields.get(i).unwrap_or(&T::zero());
+        pv_s += sur / (T::one() + r).powf((i + 1) as f64);
+    }
+    if h > 0 {
+        let r = *s.real_zero_yields.get(h - 1).unwrap_or(&T::zero());
+        let den = (r - s.terminal_surplus_growth_rate).max_val(T::from_f64(1e-4));
+        let sh = s.primary_real_surpluses[h - 1];
+        pv_s += sh * (T::one() + s.terminal_surplus_growth_rate)
+            / (den * (T::one() + r).powf(h as f64));
+    }
+    let p0 = v / pv_s.max_val(T::from_f64(1e-16));
+    let err = (p0 * pv_s - v).abs();
+    let shock = s.fiscal_surplus_shock_fraction;
+    let short = T::one() / (T::one() + shock) - T::one();
+    let mut vshock = T::zero();
+    for i in 0..s.debt_maturities_years.len() {
+        let tau = s.debt_maturities_years[i];
+        let b = *s.nominal_debt_face_values.get(i).unwrap_or(&T::zero());
+        let y = *s.nominal_zero_yields.get(i).unwrap_or(&T::zero());
+        vshock += b * (-(y + s.expected_future_inflation_rise) * tau).exp();
+    }
+    let long = (vshock / v) / (T::one() + shock) - T::one();
+    let ratio = T::one() - long / short;
+    let irp =
+        T::from_f64(10.0) * s.inflation_risk_beta * s.inflation_volatility * s.inflation_volatility;
+    let yn = *s.nominal_zero_yields.last().unwrap_or(&T::zero());
+    let yr = *s.real_zero_yields.last().unwrap_or(&T::zero());
+    CochraneFiscalTheoryPriceLevelReport {
+        nominal_debt_market_value: v,
+        real_surplus_present_value: pv_s,
+        equilibrium_price_level_p0: p0,
+        fiscal_valuation_identity_error: err,
+        debt_portfolio_duration_years: dur_num / v.max_val(T::from_f64(1e-16)),
+        short_debt_immediate_inflation_jump: short,
+        long_debt_smoothed_inflation_jump: long,
+        maturity_structure_shock_absorption_ratio: ratio,
+        model_breakeven_inflation_10y: yn - yr + irp - s.tips_liquidity_spread,
+        inflation_risk_premium_10y: irp,
+    }
+}
+
+#[cfg(test)]
+mod phase27_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn make<T: Real>(x: T) -> CochraneFiscalTheoryPriceLevelSpec<T> {
+        CochraneFiscalTheoryPriceLevelSpec {
+            debt_maturities_years: vec![T::one(), T::from_f64(5.0)],
+            nominal_debt_face_values: vec![x, T::from_f64(50.0)],
+            nominal_zero_yields: vec![T::from_f64(0.03), T::from_f64(0.04)],
+            real_zero_yields: vec![T::from_f64(0.01), T::from_f64(0.015)],
+            primary_real_surpluses: vec![T::from_f64(5.0), T::from_f64(5.2)],
+            terminal_surplus_growth_rate: T::from_f64(0.02),
+            fiscal_surplus_shock_fraction: T::from_f64(-0.05),
+            expected_future_inflation_rise: T::from_f64(0.01),
+            inflation_risk_beta: T::from_f64(0.4),
+            inflation_volatility: T::from_f64(0.1),
+            tips_liquidity_spread: T::from_f64(0.002),
+        }
+    }
+    #[test]
+    fn dual_fd_parity() {
+        let h = 1e-5;
+        let fd = (evaluate_cochrane_ftpl_and_maturity_inflation_smoothing(&make(100.0 + h))
+            .equilibrium_price_level_p0
+            - evaluate_cochrane_ftpl_and_maturity_inflation_smoothing(&make(100.0 - h))
+                .equilibrium_price_level_p0)
+            / (2.0 * h);
+        let d = evaluate_cochrane_ftpl_and_maturity_inflation_smoothing(&make(
+            Dual::<1>::variable(100.0, 0),
+        ))
+        .equilibrium_price_level_p0;
+        assert!((d.d[0] - fd).abs() < 1e-5);
+    }
+}
+
 #[derive(Debug, Error, Clone)]
 pub enum InflationError {
     #[error("invalid seasonality factors")]

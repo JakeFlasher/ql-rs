@@ -1,5 +1,90 @@
 #![allow(clippy::needless_range_loop)]
 use ql_ad::Real;
+
+#[derive(Clone, Debug)]
+pub struct BussetiBoydRiskConstrainedKellySpec<T: Real = f64> {
+    pub excess_return_means: Vec<T>,
+    pub covariance: Vec<Vec<T>>,
+    pub risk_free_rate: T,
+    pub drawdown_floor_alpha: T,
+    pub max_drawdown_prob_beta: T,
+    pub specialist_immediate_capital: T,
+    pub slow_moving_external_capital: T,
+    pub capital_arrival_rate: T,
+    pub forced_liquidation_notional: T,
+}
+#[derive(Clone, Debug)]
+pub struct BussetiBoydRiskConstrainedKellyReport<T: Real = f64> {
+    pub full_kelly_weights: Vec<T>,
+    pub risk_constrained_kelly_weights: Vec<T>,
+    pub drawdown_risk_aversion_lambda: T,
+    pub kelly_fraction_kappa: T,
+    pub full_kelly_expected_log_growth: T,
+    pub constrained_kelly_expected_log_growth: T,
+    pub constrained_portfolio_volatility: T,
+    pub initial_fire_sale_dislocation_bps: T,
+    pub half_life_capital_recovery_days: T,
+}
+pub fn solve_busseti_boyd_risk_constrained_kelly<T: Real>(
+    s: &BussetiBoydRiskConstrainedKellySpec<T>,
+) -> BussetiBoydRiskConstrainedKellyReport<T> {
+    let n = s.excess_return_means.len();
+    let mut w = vec![T::zero(); n];
+    for i in 0..n {
+        let d = s
+            .covariance
+            .get(i)
+            .and_then(|r| r.get(i))
+            .copied()
+            .unwrap_or(T::one())
+            .max_val(T::from_f64(1e-8));
+        w[i] = s.excess_return_means[i] / d;
+    }
+    let lam = (T::one() / s.max_drawdown_prob_beta.max_val(T::from_f64(1e-12))).ln()
+        / (T::one() / s.drawdown_floor_alpha.max_val(T::from_f64(1e-12))).ln();
+    let kap = T::from_f64(2.0) / (T::one() + lam);
+    let kap = kap.min_val(T::one());
+    let wc = w.iter().map(|&x| x * kap).collect::<Vec<_>>();
+    let quad = |x: &Vec<T>| {
+        let mut q = T::zero();
+        for i in 0..n {
+            for j in 0..n {
+                q += x[i]
+                    * s.covariance
+                        .get(i)
+                        .and_then(|r| r.get(j))
+                        .copied()
+                        .unwrap_or(T::zero())
+                    * x[j];
+            }
+        }
+        q
+    };
+    let dot = |x: &Vec<T>| {
+        x.iter()
+            .zip(s.excess_return_means.iter())
+            .map(|(&a, &b)| a * b)
+            .fold(T::zero(), |a, b| a + b)
+    };
+    let gf = s.risk_free_rate + dot(&w) - T::from_f64(0.5) * quad(&w);
+    let gc = s.risk_free_rate + dot(&wc) - T::from_f64(0.5) * quad(&wc);
+    let vol = quad(&wc).max_val(T::zero()).sqrt();
+    let dis = vol * vol * s.forced_liquidation_notional
+        / s.specialist_immediate_capital.max_val(T::from_f64(1e-8))
+        * T::from_f64(1e4);
+    BussetiBoydRiskConstrainedKellyReport {
+        full_kelly_weights: w,
+        risk_constrained_kelly_weights: wc,
+        drawdown_risk_aversion_lambda: lam,
+        kelly_fraction_kappa: kap,
+        full_kelly_expected_log_growth: gf,
+        constrained_kelly_expected_log_growth: gc,
+        constrained_portfolio_volatility: vol,
+        initial_fire_sale_dislocation_bps: dis,
+        half_life_capital_recovery_days: T::from_f64(2.0_f64.ln())
+            / s.capital_arrival_rate.max_val(T::from_f64(1e-8)),
+    }
+}
 use thiserror::Error;
 fn solve_dense_alloc<T: Real>(a: &[Vec<T>], b: &[T]) -> Vec<T> {
     let n = b.len();
@@ -4388,5 +4473,39 @@ mod phase26_tests {
         let ad = evaluate_grinold_kahn_clarke_fundamental_law(&spec(Dual::<1>::variable(0.1, 0)))
             .expected_active_return;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase27_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn make<T: Real>(x: T) -> BussetiBoydRiskConstrainedKellySpec<T> {
+        BussetiBoydRiskConstrainedKellySpec {
+            excess_return_means: vec![x, T::from_f64(0.03)],
+            covariance: vec![
+                vec![T::from_f64(0.04), T::from_f64(0.01)],
+                vec![T::from_f64(0.01), T::from_f64(0.03)],
+            ],
+            risk_free_rate: T::from_f64(0.02),
+            drawdown_floor_alpha: T::from_f64(0.8),
+            max_drawdown_prob_beta: T::from_f64(0.5),
+            specialist_immediate_capital: T::from_f64(100.0),
+            slow_moving_external_capital: T::from_f64(100.0),
+            capital_arrival_rate: T::from_f64(0.1),
+            forced_liquidation_notional: T::from_f64(10.0),
+        }
+    }
+    #[test]
+    fn dual_fd_parity() {
+        let h = 1e-5;
+        let fd = (solve_busseti_boyd_risk_constrained_kelly(&make(0.05 + h))
+            .constrained_portfolio_volatility
+            - solve_busseti_boyd_risk_constrained_kelly(&make(0.05 - h))
+                .constrained_portfolio_volatility)
+            / (2.0 * h);
+        let d = solve_busseti_boyd_risk_constrained_kelly(&make(Dual::<1>::variable(0.05, 0)))
+            .constrained_portfolio_volatility;
+        assert!((d.d[0] - fd).abs() < 1e-5);
     }
 }

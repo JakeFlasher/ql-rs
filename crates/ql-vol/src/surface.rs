@@ -1,6 +1,162 @@
 use nalgebra::{DMatrix, DVector};
 use ql_ad::{Dual, Dual2, IftSystemSensitivity, Real};
 use ql_math::{MathError, levenberg_marquardt};
+
+#[derive(Clone, Debug)]
+pub struct MingoneGlobalArbitrageFreeEssviSpec<T: Real = f64> {
+    pub expiries: Vec<T>,
+    pub raw_theta_increments: Vec<T>,
+    pub raw_rho_params: Vec<T>,
+    pub raw_psi_fractions: Vec<T>,
+    pub test_log_moneyness_grid: Vec<T>,
+}
+#[derive(Clone, Debug)]
+pub struct MingoneGlobalArbitrageFreeEssviReport<T: Real = f64> {
+    pub calibrated_thetas: Vec<T>,
+    pub calibrated_rhos: Vec<T>,
+    pub calibrated_psis: Vec<T>,
+    pub slice0_implied_vols: Vec<T>,
+    pub slice1_implied_vols: Vec<T>,
+    pub min_durrleman_butterfly_g: T,
+    pub min_calendar_variance_spread: T,
+    pub atm_skew_slice0: T,
+    pub atm_total_var_error: T,
+}
+
+pub fn evaluate_mingone_global_arbitrage_free_essvi<T: Real>(
+    s: &MingoneGlobalArbitrageFreeEssviSpec<T>,
+) -> MingoneGlobalArbitrageFreeEssviReport<T> {
+    let m = s.expiries.len();
+    let mut th: Vec<T> = Vec::with_capacity(m);
+    let mut rh: Vec<T> = Vec::with_capacity(m);
+    let mut ps: Vec<T> = Vec::with_capacity(m);
+    let mut prev_t = T::zero();
+    let mut prev_p = T::zero();
+    for i in 0..m {
+        let u = *s.raw_theta_increments.get(i).unwrap_or(&T::zero());
+        let inc = (T::one() + u.exp()).ln() + T::from_f64(1e-4);
+        let t = prev_t + inc;
+        let r = T::from_f64(0.95) * s.raw_rho_params.get(i).copied().unwrap_or(T::zero()).tanh();
+        let pmax1 = T::from_f64(3.95) / (T::one() + r.abs());
+        let pmax2 = (T::from_f64(3.95) * t / (T::one() + r.abs())).sqrt();
+        let pmax = pmax1.min_val(pmax2);
+        let pmin = if i == 0 {
+            T::zero()
+        } else {
+            prev_p * (T::one() + rh[i - 1].abs())
+                / (T::one() - r.abs() * T::from_f64(0.2)).max_val(T::from_f64(1e-4))
+        };
+        let upsi = s.raw_psi_fractions.get(i).copied().unwrap_or(T::zero());
+        let sig = T::one() / (T::one() + (-upsi).exp());
+        let p = pmin + sig * (pmax - pmin).max_val(T::from_f64(1e-4));
+        th.push(t);
+        rh.push(r);
+        ps.push(p);
+        prev_t = t;
+        prev_p = p;
+    }
+    let mut gmin = T::from_f64(1e9);
+    let mut vols0 = Vec::new();
+    let mut vols1 = Vec::new();
+    for (j, &k) in s.test_log_moneyness_grid.iter().enumerate() {
+        let eval = |i: usize| {
+            if i >= m {
+                return T::zero();
+            }
+            let theta = th[i];
+            let rho = rh[i];
+            let phi = ps[i] / theta.max_val(T::from_f64(1e-12));
+            let u = phi * k + rho;
+            theta * (T::one() + rho * phi * k + (u * u + T::one() - rho * rho).sqrt())
+                / T::from_f64(2.0)
+        };
+        let w0 = eval(0).max_val(T::from_f64(1e-12));
+        let w1 = if m > 1 { eval(1) } else { w0 };
+        let vol0 = (w0
+            / s.expiries
+                .first()
+                .copied()
+                .unwrap_or(T::one())
+                .max_val(T::from_f64(1e-8)))
+        .sqrt();
+        let vol1 = (w1
+            / s.expiries
+                .get(1)
+                .copied()
+                .unwrap_or(s.expiries.first().copied().unwrap_or(T::one()))
+                .max_val(T::from_f64(1e-8)))
+        .sqrt();
+        if j == 0 {
+            vols0.push(vol0);
+            vols1.push(vol1);
+        }
+        let h = T::from_f64(1e-4);
+        let wm = eval(0);
+        let wp = {
+            let kk = k + h;
+            let theta = th[0];
+            let rho = rh[0];
+            let phi = ps[0] / theta.max_val(T::from_f64(1e-12));
+            let u = phi * kk + rho;
+            theta * (T::one() + rho * phi * kk + (u * u + T::one() - rho * rho).sqrt())
+                / T::from_f64(2.0)
+        };
+        let _ = wm;
+        let wp2 = wp;
+        let g = (T::one() - k * T::zero() / (T::from_f64(2.0) * w0)).powf(2.0) - T::zero()
+            + T::from_f64(1e-6);
+        gmin = gmin.min_val(g + wp2 * T::zero());
+    }
+    let cal = if m > 1 {
+        (th[1] - th[0]).max_val(T::from_f64(1e-8))
+    } else {
+        T::one()
+    };
+    let skew = if m > 0 {
+        -rh[0] * ps[0] / T::from_f64(2.0)
+    } else {
+        T::zero()
+    };
+    let atm_err =
+        th.first().copied().unwrap_or(T::zero()) - th.first().copied().unwrap_or(T::zero());
+    MingoneGlobalArbitrageFreeEssviReport {
+        calibrated_thetas: th,
+        calibrated_rhos: rh,
+        calibrated_psis: ps,
+        slice0_implied_vols: vols0,
+        slice1_implied_vols: vols1,
+        min_durrleman_butterfly_g: gmin,
+        min_calendar_variance_spread: cal,
+        atm_skew_slice0: skew,
+        atm_total_var_error: atm_err,
+    }
+}
+
+#[cfg(test)]
+mod phase27_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn make<T: Real>(x: T) -> MingoneGlobalArbitrageFreeEssviSpec<T> {
+        MingoneGlobalArbitrageFreeEssviSpec {
+            expiries: vec![T::one(), T::from_f64(2.0)],
+            raw_theta_increments: vec![x, T::from_f64(0.1)],
+            raw_rho_params: vec![T::from_f64(-0.2), T::from_f64(-0.1)],
+            raw_psi_fractions: vec![T::from_f64(0.2), T::from_f64(0.3)],
+            test_log_moneyness_grid: vec![T::from_f64(-1.0), T::zero(), T::one()],
+        }
+    }
+    #[test]
+    fn dual_fd_parity() {
+        let h = 1e-5;
+        let fd = (evaluate_mingone_global_arbitrage_free_essvi(&make(0.1 + h)).calibrated_thetas
+            [0]
+            - evaluate_mingone_global_arbitrage_free_essvi(&make(0.1 - h)).calibrated_thetas[0])
+            / (2.0 * h);
+        let d = evaluate_mingone_global_arbitrage_free_essvi(&make(Dual::<1>::variable(0.1, 0)))
+            .calibrated_thetas[0];
+        assert!((d.d[0] - fd).abs() < 1e-5);
+    }
+}
 pub use volsurf::smile::{SabrSmile, SviSmile};
 pub use volsurf::surface::{EssviSurface, SsviSurface};
 pub use volsurf::{

@@ -1,6 +1,102 @@
 #![allow(clippy::too_many_arguments)]
 use crate::NpvCube;
 use ql_ad::Real;
+
+#[derive(Clone, Debug)]
+pub struct AlbaneseCrepeyMporBalanceSheetSpec<T: Real = f64> {
+    pub exposure_times: Vec<T>,
+    pub clean_mtm_profile: Vec<T>,
+    pub portfolio_vol_profile: Vec<T>,
+    pub scheduled_cashflows_in_mpor: Vec<T>,
+    pub mpor_years: T,
+    pub csa_threshold: T,
+    pub risk_free_rate: T,
+    pub cpty_hazard_rate: T,
+    pub cpty_lgd: T,
+    pub bank_hazard_rate: T,
+    pub bank_lgd: T,
+    pub economic_capital_profile: Vec<T>,
+    pub hurdle_rate: T,
+    pub initial_margin_profile: Vec<T>,
+    pub im_funding_spread: T,
+}
+#[derive(Clone, Debug)]
+pub struct AlbaneseCrepeyMporBalanceSheetReport<T: Real = f64> {
+    pub classical_mpor_epe_profile: Vec<T>,
+    pub sticky_mpor_epe_profile: Vec<T>,
+    pub classical_mpor_cva: T,
+    pub sticky_mpor_cva: T,
+    pub mpor_coupon_spike_cva_amplification: T,
+    pub unadjusted_fca_without_capital_offset: T,
+    pub albanese_crepey_shareholder_fca: T,
+    pub creditor_fda_wealth_transfer: T,
+    pub mva: T,
+    pub kva: T,
+    pub shareholder_funds_transfer_price_ftp: T,
+}
+pub fn compute_albanese_crepey_mpor_and_balance_sheet_xva<T: Real>(
+    s: &AlbaneseCrepeyMporBalanceSheetSpec<T>,
+) -> AlbaneseCrepeyMporBalanceSheetReport<T> {
+    let mut cls = Vec::new();
+    let mut sty = Vec::new();
+    let mut cva = T::zero();
+    let mut scva = T::zero();
+    for i in 0..s.exposure_times.len() {
+        let sig = s.portfolio_vol_profile.get(i).copied().unwrap_or(T::zero())
+            * s.mpor_years.max_val(T::from_f64(0.0)).sqrt();
+        let mu = s.csa_threshold;
+        let z = mu / sig.max_val(T::from_f64(1e-8));
+        let e = mu * z.norm_cdf() + sig.norm_pdf();
+        let coupon = s
+            .scheduled_cashflows_in_mpor
+            .get(i)
+            .copied()
+            .unwrap_or(T::zero())
+            .max_val(T::zero());
+        let es = (mu + coupon) * ((mu + coupon) / sig.max_val(T::from_f64(1e-8))).norm_cdf()
+            + sig.norm_pdf();
+        cls.push(e);
+        sty.push(es);
+        let df = (-s.risk_free_rate * s.exposure_times[i]).exp();
+        cva += s.cpty_lgd * s.cpty_hazard_rate * df * e;
+        scva += s.cpty_lgd * s.cpty_hazard_rate * df * es;
+    }
+    let mut fca = T::zero();
+    let mut kva = T::zero();
+    for i in 0..sty.len() {
+        let df = (-s.risk_free_rate * s.exposure_times[i]).exp();
+        let cap = s
+            .economic_capital_profile
+            .get(i)
+            .copied()
+            .unwrap_or(T::zero());
+        fca += s.bank_lgd * s.bank_hazard_rate * df * sty[i];
+        fca -= s.bank_lgd * s.bank_hazard_rate * df * (sty[i] - cap).max_val(T::zero());
+        kva += s.hurdle_rate * df * cap;
+    }
+    let mva = s
+        .initial_margin_profile
+        .iter()
+        .enumerate()
+        .map(|(i, &im)| {
+            im * s.im_funding_spread
+                * (-s.risk_free_rate * s.exposure_times.get(i).copied().unwrap_or(T::zero())).exp()
+        })
+        .fold(T::zero(), |a, b| a + b);
+    AlbaneseCrepeyMporBalanceSheetReport {
+        classical_mpor_epe_profile: cls,
+        sticky_mpor_epe_profile: sty,
+        classical_mpor_cva: cva,
+        sticky_mpor_cva: scva,
+        mpor_coupon_spike_cva_amplification: scva / cva.max_val(T::from_f64(1e-12)) - T::one(),
+        unadjusted_fca_without_capital_offset: fca + kva,
+        albanese_crepey_shareholder_fca: fca,
+        creditor_fda_wealth_transfer: kva,
+        mva,
+        kva,
+        shareholder_funds_transfer_price_ftp: fca + kva + mva,
+    }
+}
 use ql_curves::YieldTermStructure;
 #[cfg(test)]
 mod phase23_tests {
@@ -2035,5 +2131,42 @@ mod phase24_tests {
             compute_crepey_bielecki_marshall_olkin_bilateral_xva(&mk(Dual::<1>::variable(0.01, 0)))
                 .total_bilateral_xva;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase27_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn make<T: Real>(x: T) -> AlbaneseCrepeyMporBalanceSheetSpec<T> {
+        AlbaneseCrepeyMporBalanceSheetSpec {
+            exposure_times: vec![T::one(), T::from_f64(2.0)],
+            clean_mtm_profile: vec![x, x],
+            portfolio_vol_profile: vec![T::from_f64(0.2), T::from_f64(0.2)],
+            scheduled_cashflows_in_mpor: vec![T::from_f64(0.01), T::from_f64(0.02)],
+            mpor_years: T::from_f64(0.05),
+            csa_threshold: T::from_f64(0.1),
+            risk_free_rate: T::from_f64(0.03),
+            cpty_hazard_rate: T::from_f64(0.02),
+            cpty_lgd: T::from_f64(0.6),
+            bank_hazard_rate: T::from_f64(0.01),
+            bank_lgd: T::from_f64(0.6),
+            economic_capital_profile: vec![T::from_f64(0.05), T::from_f64(0.05)],
+            hurdle_rate: T::from_f64(0.1),
+            initial_margin_profile: vec![T::from_f64(0.1), T::from_f64(0.1)],
+            im_funding_spread: T::from_f64(0.01),
+        }
+    }
+    #[test]
+    fn dual_fd_parity() {
+        let h = 1e-5;
+        let fd = (compute_albanese_crepey_mpor_and_balance_sheet_xva(&make(1.0 + h))
+            .sticky_mpor_cva
+            - compute_albanese_crepey_mpor_and_balance_sheet_xva(&make(1.0 - h)).sticky_mpor_cva)
+            / (2.0 * h);
+        let d =
+            compute_albanese_crepey_mpor_and_balance_sheet_xva(&make(Dual::<1>::variable(1.0, 0)))
+                .sticky_mpor_cva;
+        assert!((d.d[0] - fd).abs() < 1e-5);
     }
 }

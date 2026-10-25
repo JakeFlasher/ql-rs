@@ -1,5 +1,119 @@
 #![allow(clippy::needless_range_loop)]
 use ql_ad::Real;
+
+#[derive(Clone, Debug)]
+pub struct CrossCurrencyConvertibleWarrantSpec<T: Real = f64> {
+    pub domestic_stock_spot: T,
+    pub domestic_conversion_strike: T,
+    pub spot_fx_for_per_dom: T,
+    pub fixed_contractual_fx_for_per_dom: T,
+    pub foreign_bond_par: T,
+    pub foreign_coupon_rate: T,
+    pub r_domestic: T,
+    pub r_foreign: T,
+    pub stock_dividend_yield: T,
+    pub credit_spread: T,
+    pub stock_vol: T,
+    pub fx_vol: T,
+    pub corr_stock_fx: T,
+    pub maturity: T,
+}
+#[derive(Clone, Debug)]
+pub struct CrossCurrencyConvertibleWarrantReport<T: Real = f64> {
+    pub composite_fx_equity_vol: T,
+    pub quanto_adjusted_dividend_yield: T,
+    pub straight_foreign_bond_floor: T,
+    pub composite_detachable_warrant_bond_price: T,
+    pub quanto_detachable_warrant_bond_price: T,
+    pub embedded_cross_currency_cb_price: T,
+    pub composite_vs_quanto_warrant_spread: T,
+    pub stock_delta_in_foreign_ccy: T,
+    pub fx_delta_in_foreign_ccy: T,
+}
+
+pub fn price_cross_currency_convertible_and_warrant_bond<T: Real>(
+    s: &CrossCurrencyConvertibleWarrantSpec<T>,
+) -> CrossCurrencyConvertibleWarrantReport<T> {
+    let t = s.maturity.max_val(T::from_f64(1e-8));
+    let sigc = (s.stock_vol * s.stock_vol
+        + s.fx_vol * s.fx_vol
+        + T::from_f64(2.0) * s.corr_stock_fx * s.stock_vol * s.fx_vol)
+        .max_val(T::from_f64(1e-12))
+        .sqrt();
+    let qquanto = s.stock_dividend_yield + s.r_foreign
+        - s.r_domestic
+        - s.corr_stock_fx * s.stock_vol * s.fx_vol;
+    let k = s.domestic_conversion_strike * s.fixed_contractual_fx_for_per_dom;
+    let spot = s.domestic_stock_spot * s.spot_fx_for_per_dom;
+    let dfc = (-(s.r_foreign + s.credit_spread) * t).exp();
+    let floor = s.foreign_bond_par * dfc
+        + s.foreign_coupon_rate * s.foreign_bond_par * (T::one() - dfc)
+            / (s.r_foreign + s.credit_spread).max_val(T::from_f64(1e-8));
+    let bs = |vol: T, q: T| {
+        let vs = vol * t.sqrt();
+        let d1 = ((spot / k.max_val(T::from_f64(1e-8))).ln()
+            + (s.r_foreign - q + T::from_f64(0.5) * vol * vol) * t)
+            / vs.max_val(T::from_f64(1e-8));
+        let d2 = d1 - vs;
+        spot * (-q * t).exp() * d1.norm_cdf() - k * (-s.r_foreign * t).exp() * d2.norm_cdf()
+    };
+    let comp = bs(sigc, s.stock_dividend_yield);
+    let quanto = bs(s.stock_vol, qquanto);
+    let cb = floor + comp;
+    let delta = (-s.stock_dividend_yield * t).exp()
+        * ((spot / k.max_val(T::from_f64(1e-8))).ln()
+            + (s.r_foreign - s.stock_dividend_yield + T::from_f64(0.5) * sigc * sigc) * t)
+            .norm_cdf();
+    let fxdelta = s.domestic_stock_spot * delta;
+    CrossCurrencyConvertibleWarrantReport {
+        composite_fx_equity_vol: sigc,
+        quanto_adjusted_dividend_yield: qquanto,
+        straight_foreign_bond_floor: floor,
+        composite_detachable_warrant_bond_price: floor + comp,
+        quanto_detachable_warrant_bond_price: floor + quanto,
+        embedded_cross_currency_cb_price: cb,
+        composite_vs_quanto_warrant_spread: comp - quanto,
+        stock_delta_in_foreign_ccy: delta,
+        fx_delta_in_foreign_ccy: fxdelta,
+    }
+}
+
+#[cfg(test)]
+mod phase27_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn make<T: Real>(x: T) -> CrossCurrencyConvertibleWarrantSpec<T> {
+        CrossCurrencyConvertibleWarrantSpec {
+            domestic_stock_spot: x,
+            domestic_conversion_strike: T::from_f64(100.0),
+            spot_fx_for_per_dom: T::from_f64(1.1),
+            fixed_contractual_fx_for_per_dom: T::from_f64(1.1),
+            foreign_bond_par: T::from_f64(100.0),
+            foreign_coupon_rate: T::from_f64(0.03),
+            r_domestic: T::from_f64(0.03),
+            r_foreign: T::from_f64(0.02),
+            stock_dividend_yield: T::from_f64(0.01),
+            credit_spread: T::from_f64(0.02),
+            stock_vol: T::from_f64(0.2),
+            fx_vol: T::from_f64(0.1),
+            corr_stock_fx: T::from_f64(0.2),
+            maturity: T::from_f64(5.0),
+        }
+    }
+    #[test]
+    fn dual_fd_parity() {
+        let h = 1e-5;
+        let fd = (price_cross_currency_convertible_and_warrant_bond(&make(100.0 + h))
+            .embedded_cross_currency_cb_price
+            - price_cross_currency_convertible_and_warrant_bond(&make(100.0 - h))
+                .embedded_cross_currency_cb_price)
+            / (2.0 * h);
+        let d =
+            price_cross_currency_convertible_and_warrant_bond(&make(Dual::<1>::variable(100.0, 0)))
+                .embedded_cross_currency_cb_price;
+        assert!((d.d[0] - fd).abs() < 1e-5);
+    }
+}
 #[cfg(test)]
 mod phase23_tests {
     use super::*;

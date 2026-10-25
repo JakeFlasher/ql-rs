@@ -1,6 +1,104 @@
 #![allow(clippy::needless_range_loop)]
 use super::allocation::AllocationError;
 use ql_ad::Real;
+
+#[derive(Clone, Debug)]
+pub struct HarrisRollCorwinSchultzMicrostructureSpec<T: Real = f64> {
+    pub trade_prices: Vec<T>,
+    pub daily_highs: Vec<T>,
+    pub daily_lows: Vec<T>,
+    pub daily_dollar_volumes: Vec<T>,
+    pub decision_price: T,
+    pub arrival_price: T,
+    pub child_fill_quantities: Vec<T>,
+    pub child_fill_prices: Vec<T>,
+    pub total_order_quantity: T,
+    pub post_trade_benchmark_price: T,
+    pub explicit_commissions: T,
+}
+#[derive(Clone, Debug)]
+pub struct HarrisRollCorwinSchultzMicrostructureReport<T: Real = f64> {
+    pub roll_serial_cov_effective_spread: T,
+    pub corwin_schultz_high_low_spread: T,
+    pub parkinson_high_low_volatility: T,
+    pub amihud_illiquidity_ratio: T,
+    pub perold_delay_cost: T,
+    pub perold_market_impact_cost: T,
+    pub perold_explicit_fee_cost: T,
+    pub perold_opportunity_cost: T,
+    pub perold_total_implementation_shortfall: T,
+    pub perold_identity_conservation_error: T,
+}
+pub fn analyze_harris_roll_corwin_schultz_microstructure<T: Real>(
+    s: &HarrisRollCorwinSchultzMicrostructureSpec<T>,
+) -> HarrisRollCorwinSchultzMicrostructureReport<T> {
+    let mut diffs = Vec::new();
+    for w in s.trade_prices.windows(2) {
+        diffs.push(w[1] - w[0]);
+    }
+    let cov = if diffs.len() > 1 {
+        diffs
+            .windows(2)
+            .map(|w| w[0] * w[1])
+            .fold(T::zero(), |a, b| a + b)
+            / ((diffs.len() - 1) as f64)
+    } else {
+        T::from_f64(-1e-8)
+    };
+    let roll = T::from_f64(2.0) * (-cov).max_val(T::from_f64(1e-16)).sqrt();
+    let mut cs = T::zero();
+    let mut pv = T::zero();
+    for i in 1..s.daily_highs.len() {
+        let b = (s.daily_highs[i - 1] / s.daily_lows[i - 1]).ln().powf(2.0)
+            + (s.daily_highs[i] / s.daily_lows[i]).ln().powf(2.0);
+        let g = (s.daily_highs[i - 1].max_val(s.daily_highs[i])
+            / s.daily_lows[i - 1].min_val(s.daily_lows[i]))
+        .ln()
+        .powf(2.0);
+        let den = T::from_f64(3.0 - 2.0 * 2.0_f64.sqrt());
+        let al = (T::from_f64(2.0) * b.sqrt() - b.sqrt()) / den - (g / den).sqrt();
+        cs += T::from_f64(2.0) * (al.max_val(T::zero()).exp() - T::one())
+            / (al.max_val(T::zero()).exp() + T::one());
+        pv += (s.daily_highs[i] / s.daily_lows[i]).ln().powf(2.0);
+    }
+    if s.daily_highs.len() > 1 {
+        cs /= T::from_f64((s.daily_highs.len() - 1) as f64);
+        pv = (pv / T::from_f64((s.daily_highs.len() - 1) as f64)).sqrt()
+            / T::from_f64(2.0 * 2.0_f64.sqrt());
+    }
+    let qexec = s
+        .child_fill_quantities
+        .iter()
+        .copied()
+        .fold(T::zero(), |a, b| a + b);
+    let impact = s
+        .child_fill_quantities
+        .iter()
+        .zip(s.child_fill_prices.iter())
+        .map(|(&q, &p)| q * (p - s.arrival_price))
+        .fold(T::zero(), |a, b| a + b);
+    let delay = qexec * (s.arrival_price - s.decision_price);
+    let opp = (s.total_order_quantity - qexec) * (s.post_trade_benchmark_price - s.decision_price);
+    let fees = s.explicit_commissions;
+    let total = delay + impact + fees + opp;
+    HarrisRollCorwinSchultzMicrostructureReport {
+        roll_serial_cov_effective_spread: roll,
+        corwin_schultz_high_low_spread: cs,
+        parkinson_high_low_volatility: pv,
+        amihud_illiquidity_ratio: impact.abs()
+            / s.daily_dollar_volumes
+                .iter()
+                .copied()
+                .fold(T::zero(), |a, b| a + b)
+                .max_val(T::from_f64(1e-8)),
+        perold_delay_cost: delay,
+        perold_market_impact_cost: impact,
+        perold_explicit_fee_cost: fees,
+        perold_opportunity_cost: opp,
+        perold_total_implementation_shortfall: total,
+        perold_identity_conservation_error: (total - (delay + impact + fees + opp)).abs(),
+    }
+}
 #[derive(Clone, Debug)]
 pub struct EngleRussellAcdTradeDurationSpec<T: Real = f64> {
     pub inter_trade_durations: Vec<T>,
@@ -1700,5 +1798,39 @@ mod phase26_tests {
         )))
         .next_expected_duration_psi_n1;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase27_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn make<T: Real>(x: T) -> HarrisRollCorwinSchultzMicrostructureSpec<T> {
+        HarrisRollCorwinSchultzMicrostructureSpec {
+            trade_prices: vec![x, T::from_f64(100.1), T::from_f64(99.9)],
+            daily_highs: vec![T::from_f64(101.0), T::from_f64(102.0)],
+            daily_lows: vec![T::from_f64(99.0), T::from_f64(98.0)],
+            daily_dollar_volumes: vec![T::from_f64(1e6), T::from_f64(1.1e6)],
+            decision_price: T::from_f64(100.0),
+            arrival_price: T::from_f64(100.0),
+            child_fill_quantities: vec![T::from_f64(10.0)],
+            child_fill_prices: vec![x],
+            total_order_quantity: T::from_f64(20.0),
+            post_trade_benchmark_price: T::from_f64(100.3),
+            explicit_commissions: T::from_f64(0.1),
+        }
+    }
+    #[test]
+    fn dual_fd_parity() {
+        let h = 1e-5;
+        let fd = (analyze_harris_roll_corwin_schultz_microstructure(&make(100.0 + h))
+            .perold_total_implementation_shortfall
+            - analyze_harris_roll_corwin_schultz_microstructure(&make(100.0 - h))
+                .perold_total_implementation_shortfall)
+            / (2.0 * h);
+        let d =
+            analyze_harris_roll_corwin_schultz_microstructure(&make(Dual::<1>::variable(100.0, 0)))
+                .perold_total_implementation_shortfall;
+        assert!((d.d[0] - fd).abs() < 1e-5);
     }
 }

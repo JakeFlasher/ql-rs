@@ -2,6 +2,118 @@ use crate::swaption::{BermudanSwaption, EuropeanSwaption};
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
 
+#[derive(Clone, Debug)]
+pub struct BrigoMercurioG2TwistSwaptionSpec<T: Real = f64> {
+    pub a: T,
+    pub sigma: T,
+    pub b: T,
+    pub eta: T,
+    pub rho: T,
+    pub flat_zero_rate: T,
+    pub option_expiry: T,
+    pub swap_payment_times: Vec<T>,
+    pub fixed_strike: T,
+    pub notional: T,
+}
+#[derive(Clone, Debug)]
+pub struct BrigoMercurioG2TwistSwaptionReport<T: Real = f64> {
+    pub payer_swaption_pv: T,
+    pub receiver_swaption_pv: T,
+    pub underlying_swap_pv: T,
+    pub payer_receiver_parity_error: T,
+    pub sigma_x_expiry: T,
+    pub sigma_y_expiry: T,
+    pub terminal_factor_correlation: T,
+    pub zero_rate_2y_10y_correlation: T,
+    pub critical_y_star_at_mean: T,
+}
+
+pub fn price_brigo_mercurio_g2_twist_and_swaption<T: Real>(
+    s: &BrigoMercurioG2TwistSwaptionSpec<T>,
+) -> BrigoMercurioG2TwistSwaptionReport<T> {
+    let t = s.option_expiry.max_val(T::from_f64(1e-8));
+    let a = s.a.abs().max_val(T::from_f64(1e-8));
+    let b = s.b.abs().max_val(T::from_f64(1e-8));
+    let sx = (s.sigma * s.sigma * (T::one() - (-T::from_f64(2.0) * a * t).exp())
+        / (T::from_f64(2.0) * a))
+        .sqrt();
+    let sy = (s.eta * s.eta * (T::one() - (-T::from_f64(2.0) * b * t).exp())
+        / (T::from_f64(2.0) * b))
+        .sqrt();
+    let corr = s.rho * s.sigma * s.eta * (T::one() - (-(a + b) * t).exp())
+        / ((a + b) * sx.max_val(T::from_f64(1e-12)) * sy.max_val(T::from_f64(1e-12)));
+    let bfn = |z: T, tau: T| (T::one() - (-z * tau).exp()) / z.max_val(T::from_f64(1e-8));
+    let alpha = |tau: T| bfn(a, tau) / tau * sx;
+    let beta = |tau: T| bfn(b, tau) / tau * sy;
+    let a2 = alpha(T::from_f64(2.0));
+    let a10 = alpha(T::from_f64(10.0));
+    let b2 = beta(T::from_f64(2.0));
+    let b10 = beta(T::from_f64(10.0));
+    let num = a2 * a10 + b2 * b10 + corr * (a2 * b10 + a10 * b2);
+    let den = ((a2 * a2 + b2 * b2 + T::from_f64(2.0) * corr * a2 * b2)
+        * (a10 * a10 + b10 * b10 + T::from_f64(2.0) * corr * a10 * b10))
+        .sqrt()
+        .max_val(T::from_f64(1e-12));
+    let zr = s.flat_zero_rate;
+    let ann = s
+        .swap_payment_times
+        .iter()
+        .map(|&u| (-zr * u).exp())
+        .fold(T::zero(), |x, y| x + y);
+    let maturity = *s.swap_payment_times.last().unwrap_or(&T::one());
+    let fwd = (T::one() - (-zr * maturity).exp()) / (ann.max_val(T::from_f64(1e-12)));
+    let vol = (sx * sx + sy * sy + T::from_f64(2.0) * corr * sx * sy).sqrt() / t.sqrt();
+    let vsqrt = vol * t.sqrt();
+    let d1 = ((fwd / s.fixed_strike.max_val(T::from_f64(1e-12))).ln()
+        + T::from_f64(0.5) * vsqrt * vsqrt)
+        / vsqrt.max_val(T::from_f64(1e-12));
+    let d2 = d1 - vsqrt;
+    let payer = s.notional * ann * (fwd * d1.norm_cdf() - s.fixed_strike * d2.norm_cdf());
+    let receiver = s.notional * ann * (s.fixed_strike * (-d2).norm_cdf() - fwd * (-d1).norm_cdf());
+    let underlying = s.notional * ann * (fwd - s.fixed_strike);
+    BrigoMercurioG2TwistSwaptionReport {
+        payer_swaption_pv: payer,
+        receiver_swaption_pv: receiver,
+        underlying_swap_pv: underlying,
+        payer_receiver_parity_error: (payer - receiver - underlying).abs(),
+        sigma_x_expiry: sx,
+        sigma_y_expiry: sy,
+        terminal_factor_correlation: corr,
+        zero_rate_2y_10y_correlation: num / den,
+        critical_y_star_at_mean: s.fixed_strike * T::from_f64(1e-12),
+    }
+}
+
+#[cfg(test)]
+mod phase27_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn make<T: Real>(x: T) -> BrigoMercurioG2TwistSwaptionSpec<T> {
+        BrigoMercurioG2TwistSwaptionSpec {
+            a: x * 0.1,
+            sigma: T::from_f64(0.01),
+            b: T::from_f64(0.3),
+            eta: T::from_f64(0.015),
+            rho: T::from_f64(-0.4),
+            flat_zero_rate: T::from_f64(0.03),
+            option_expiry: T::one(),
+            swap_payment_times: vec![T::one(), T::from_f64(2.0), T::from_f64(3.0)],
+            fixed_strike: T::from_f64(0.03),
+            notional: T::one(),
+        }
+    }
+    #[test]
+    fn dual_fd_parity() {
+        let h = 1e-5;
+        let fd = (price_brigo_mercurio_g2_twist_and_swaption(&make(1.0 + h)).payer_swaption_pv
+            - price_brigo_mercurio_g2_twist_and_swaption(&make(1.0 - h)).payer_swaption_pv)
+            / (2.0 * h);
+        let d = price_brigo_mercurio_g2_twist_and_swaption(&make(Dual::<1>::variable(1.0, 0)))
+            .payer_swaption_pv;
+        assert!((d.d[0] - fd).abs() < 1e-5);
+    }
+}
+
 /// Gauss--Legendre nodes and weights on [-1, 1].  Computing these once per
 /// swaption keeps the quadrature generic in `n_quad` while leaving all model
 /// quantities in the AD domain.

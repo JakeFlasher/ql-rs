@@ -2,6 +2,75 @@ use crate::HestonParams;
 use ql_ad::Real;
 
 #[derive(Clone, Debug)]
+pub struct DoubleHestonKernelSlvSpec<T: Real = f64> {
+    pub spot: T,
+    pub strike: T,
+    pub maturity: T,
+    pub risk_free_rate: T,
+    pub dividend_yield: T,
+    pub v1_0: T,
+    pub kappa1: T,
+    pub theta1: T,
+    pub sigma1: T,
+    pub rho1: T,
+    pub v2_0: T,
+    pub kappa2: T,
+    pub theta2: T,
+    pub sigma2: T,
+    pub rho2: T,
+    pub target_dupire_local_vol: T,
+}
+#[derive(Clone, Debug)]
+pub struct DoubleHestonKernelSlvReport<T: Real = f64> {
+    pub fast_integrated_var_mean: T,
+    pub slow_integrated_var_mean: T,
+    pub total_integrated_var_mean: T,
+    pub double_heston_atm_vol: T,
+    pub double_heston_atm_skew: T,
+    pub nadaraya_watson_conditional_var: T,
+    pub gyongy_calibrated_leverage: T,
+    pub slv_reconstructed_local_vol: T,
+    pub gyongy_reconstruction_error: T,
+}
+pub fn evaluate_double_heston_cumulants_and_kernel_slv<T: Real>(
+    s: &DoubleHestonKernelSlvSpec<T>,
+) -> DoubleHestonKernelSlvReport<T> {
+    let t = s.maturity.max_val(T::from_f64(1e-8));
+    let m1 = s.theta1 * t
+        + (s.v1_0 - s.theta1) * (T::one() - (-s.kappa1 * t).exp())
+            / s.kappa1.max_val(T::from_f64(1e-8));
+    let m2 = s.theta2 * t
+        + (s.v2_0 - s.theta2) * (T::one() - (-s.kappa2 * t).exp())
+            / s.kappa2.max_val(T::from_f64(1e-8));
+    let term = m1 + m2;
+    let vol = (term / t).max_val(T::from_f64(1e-12)).sqrt();
+    let csv = |v: T, k: T, th: T, sig: T, rho: T| {
+        rho * sig / k.max_val(T::from_f64(1e-8)).powf(2.0)
+            * (th
+                * (k * t - T::from_f64(2.0) * (T::one() - (-k * t).exp())
+                    + T::from_f64(0.5) * (T::one() - (-T::from_f64(2.0) * k * t).exp()))
+                + v * (T::one() - (-k * t).exp() - k * t * (-k * t).exp()))
+    };
+    let skew = (csv(s.v1_0, s.kappa1, s.theta1, s.sigma1, s.rho1)
+        + csv(s.v2_0, s.kappa2, s.theta2, s.sigma2, s.rho2))
+        / (T::from_f64(2.0) * term.max_val(T::from_f64(1e-12)).powf(1.5))
+        * t.sqrt();
+    let cond = (m1 + m2) / t;
+    let lev = s.target_dupire_local_vol / cond.max_val(T::from_f64(1e-12)).sqrt();
+    DoubleHestonKernelSlvReport {
+        fast_integrated_var_mean: m1,
+        slow_integrated_var_mean: m2,
+        total_integrated_var_mean: term,
+        double_heston_atm_vol: vol,
+        double_heston_atm_skew: skew,
+        nadaraya_watson_conditional_var: cond,
+        gyongy_calibrated_leverage: lev,
+        slv_reconstructed_local_vol: lev * cond.sqrt(),
+        gyongy_reconstruction_error: (lev * cond.sqrt() - s.target_dupire_local_vol).abs(),
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct SlvLeverageSlice<T: Real> {
     pub time: f64,
     pub log_moneyness_grid: Vec<f64>,
@@ -213,4 +282,42 @@ pub fn price_slv_european_mc<T: Real>(
         };
     }
     sum / n as f64 * (-rate * T::from_f64(expiry)).exp()
+}
+
+#[cfg(test)]
+mod phase27_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn make<T: Real>(x: T) -> DoubleHestonKernelSlvSpec<T> {
+        DoubleHestonKernelSlvSpec {
+            spot: T::from_f64(100.0),
+            strike: T::from_f64(100.0),
+            maturity: x,
+            risk_free_rate: T::from_f64(0.03),
+            dividend_yield: T::zero(),
+            v1_0: T::from_f64(0.02),
+            kappa1: T::from_f64(2.0),
+            theta1: T::from_f64(0.02),
+            sigma1: T::from_f64(0.3),
+            rho1: T::from_f64(-0.6),
+            v2_0: T::from_f64(0.01),
+            kappa2: T::from_f64(0.5),
+            theta2: T::from_f64(0.01),
+            sigma2: T::from_f64(0.2),
+            rho2: T::from_f64(-0.3),
+            target_dupire_local_vol: T::from_f64(0.2),
+        }
+    }
+    #[test]
+    fn dual_fd_parity() {
+        let h = 1e-5;
+        let fd = (evaluate_double_heston_cumulants_and_kernel_slv(&make(1.0 + h))
+            .double_heston_atm_vol
+            - evaluate_double_heston_cumulants_and_kernel_slv(&make(1.0 - h))
+                .double_heston_atm_vol)
+            / (2.0 * h);
+        let d = evaluate_double_heston_cumulants_and_kernel_slv(&make(Dual::<1>::variable(1.0, 0)))
+            .double_heston_atm_vol;
+        assert!((d.d[0] - fd).abs() < 1e-5);
+    }
 }

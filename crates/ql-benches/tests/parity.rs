@@ -13,7 +13,7 @@ use ql_benches::{
 #[test]
 fn phase21_suite33_and_invariants() {
     let rows = with_config_override(1, 3, || run_all_benchmarks(1));
-    assert_eq!(rows.len(), 38);
+    assert_eq!(rows.len(), 39);
     let row = with_config_override(1, 3, || {
         benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(1)
     });
@@ -65,11 +65,19 @@ fn phase25_suite37_and_invariants() {
 }
 
 #[test]
-fn phase26_suite38_and_invariants() {
+fn phase26_suite39_and_invariants() {
     let row = with_config_override(1, 3, || {
         ql_benches::benchmark_phase26_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_frtb_cva_lookback_vta_flam_acd_hlz_mlmc(1)
     });
     assert!(row.parity_ok);
     assert!(row.max_abs_diff < 1e-4);
     assert!(row.speedup > 1.0);
+}
+
+#[test]
+fn phase27_suite39_and_invariants() {
+    let row = with_config_override(1, 3, || {
+        ql_benches::benchmark_phase27_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt(1)
+    });
+    assert!(row.parity_ok && row.max_abs_diff < 1e-4 && row.speedup > 1.0);
 }

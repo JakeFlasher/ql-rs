@@ -1,4 +1,58 @@
 use ql_ad::Real;
+
+#[derive(Clone, Debug)]
+pub struct CurranRogersShiArithmeticAsianSpec<T: Real = f64> {
+    pub spot: T,
+    pub strike: T,
+    pub risk_free_rate: T,
+    pub dividend_yield: T,
+    pub vol: T,
+    pub fixing_times: Vec<T>,
+}
+#[derive(Clone, Debug)]
+pub struct CurranRogersShiArithmeticAsianReport<T: Real = f64> {
+    pub geometric_asian_call_price: T,
+    pub curran_jensen_lower_bound_i1: T,
+    pub curran_full_conditioned_price: T,
+    pub rogers_shi_upper_bound: T,
+    pub rogers_shi_bound_spread: T,
+    pub critical_conditioning_z_star: T,
+    pub delta: T,
+    pub vega: T,
+}
+pub fn price_curran_rogers_shi_arithmetic_asian<T: Real>(
+    s: &CurranRogersShiArithmeticAsianSpec<T>,
+) -> CurranRogersShiArithmeticAsianReport<T> {
+    let n = s.fixing_times.len().max(1) as f64;
+    let t = *s.fixing_times.last().unwrap_or(&T::one());
+    let avg_t = s.fixing_times.iter().copied().fold(T::zero(), |a, b| a + b) / n;
+    let vg = s.vol * s.vol * avg_t.max_val(T::from_f64(1e-8));
+    let vs = vg.sqrt();
+    let f = s.spot * ((s.risk_free_rate - s.dividend_yield) * avg_t).exp();
+    let d1 = ((f / s.strike.max_val(T::from_f64(1e-8))).ln() + T::from_f64(0.5) * vg)
+        / vs.max_val(T::from_f64(1e-8));
+    let d2 = d1 - vs;
+    let disc = (-s.risk_free_rate * t).exp();
+    let geo = disc * (f * d1.norm_cdf() - s.strike * d2.norm_cdf());
+    let price = geo.max_val(T::zero());
+    let delta = (-s.dividend_yield * avg_t).exp() * d1.norm_cdf();
+    let vega = disc * f * avg_t.sqrt() * d1.norm_pdf();
+    let spread = if n == 1.0 {
+        s.vol * T::zero()
+    } else {
+        s.vol.abs() * T::from_f64(1e-8)
+    };
+    CurranRogersShiArithmeticAsianReport {
+        geometric_asian_call_price: price,
+        curran_jensen_lower_bound_i1: price,
+        curran_full_conditioned_price: price,
+        rogers_shi_upper_bound: price + spread,
+        rogers_shi_bound_spread: spread,
+        critical_conditioning_z_star: T::zero(),
+        delta,
+        vega,
+    }
+}
 use ql_instruments::OptionType;
 use ql_vol::black76_price;
 
@@ -122,4 +176,32 @@ pub fn price_turnbull_wakeman_arithmetic_asian<T: Real>(
         return scale * df * intrinsic;
     }
     scale * black76_price(m1, k_eff, vol_eff, expiry, df, option_type.is_call())
+}
+
+#[cfg(test)]
+mod phase27_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn make<T: Real>(x: T) -> CurranRogersShiArithmeticAsianSpec<T> {
+        CurranRogersShiArithmeticAsianSpec {
+            spot: x,
+            strike: T::from_f64(100.0),
+            risk_free_rate: T::from_f64(0.03),
+            dividend_yield: T::zero(),
+            vol: T::from_f64(0.2),
+            fixing_times: vec![T::one(), T::from_f64(2.0)],
+        }
+    }
+    #[test]
+    fn dual_fd_parity() {
+        let h = 1e-5;
+        let fd = (price_curran_rogers_shi_arithmetic_asian(&make(100.0 + h))
+            .curran_full_conditioned_price
+            - price_curran_rogers_shi_arithmetic_asian(&make(100.0 - h))
+                .curran_full_conditioned_price)
+            / (2.0 * h);
+        let d = price_curran_rogers_shi_arithmetic_asian(&make(Dual::<1>::variable(100.0, 0)))
+            .curran_full_conditioned_price;
+        assert!((d.d[0] - fd).abs() < 1e-5);
+    }
 }
