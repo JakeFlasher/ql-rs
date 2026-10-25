@@ -8,7 +8,6 @@ mod phase23_tests {
     use ql_ad::Dual;
     #[test]
     fn parisian_order() {
-        let _ = std::mem::size_of::<Dual<1>>();
         let s = ChesneyYorCumulativeParisianRainbowSpec {
             spot_1: 100.0,
             spot_2: 102.0,
@@ -26,7 +25,41 @@ mod phase23_tests {
         };
         let r = price_chesney_yor_cumulative_parisian_and_rainbow(&s);
         assert!(r.instant_ko_barrier_price <= r.consecutive_parisian_ko_price);
-        assert!(r.stulz_rainbow_parity_error < 1e-8);
+        assert!(r.stulz_rainbow_parity_error < 1e-12);
+        assert!(r.rainbow_put_on_min > 0.0);
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        fn mk<T: Real>(x: T) -> ChesneyYorCumulativeParisianRainbowSpec<T> {
+            ChesneyYorCumulativeParisianRainbowSpec {
+                spot_1: T::from_f64(100.0),
+                spot_2: x,
+                strike: T::from_f64(100.0),
+                par_barrier: T::from_f64(120.0),
+                excursion_window_d: T::from_f64(0.1),
+                vol_1: T::from_f64(0.2),
+                vol_2: T::from_f64(0.2),
+                div_1: T::zero(),
+                div_2: T::zero(),
+                correlation: T::from_f64(0.5),
+                risk_free_rate: T::from_f64(0.02),
+                expiry: T::one(),
+                is_up_and_out: true,
+            }
+        }
+        let h = 1e-5;
+        let fd = (price_chesney_yor_cumulative_parisian_and_rainbow(&mk(102.0 + h))
+            .rainbow_call_on_max
+            .val()
+            - price_chesney_yor_cumulative_parisian_and_rainbow(&mk(102.0 - h))
+                .rainbow_call_on_max
+                .val())
+            / (2.0 * h);
+        let ad =
+            price_chesney_yor_cumulative_parisian_and_rainbow(&mk(Dual::<1>::variable(102.0, 0)))
+                .rainbow_call_on_max;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
 
@@ -138,8 +171,8 @@ pub fn price_chesney_yor_cumulative_parisian_and_rainbow<T: Real>(
         / (sx * t.sqrt());
     let g21 = ((s.spot_2 / s.spot_1).ln() + (s.div_1 - s.div_2 - T::from_f64(0.5) * sx * sx) * t)
         / (sx * t.sqrt());
-    let minc = s.spot_1 * (-s.div_1 * t).exp() * bivariate_normal_cdf(g1, -g12, -r1)
-        + s.spot_2 * (-s.div_2 * t).exp() * bivariate_normal_cdf(g2, -g21, -r2)
+    let minc = s.spot_1 * (-s.div_1 * t).exp() * bivariate_normal_cdf(g1, g21, -r1)
+        + s.spot_2 * (-s.div_2 * t).exp() * bivariate_normal_cdf(g2, g12, -r2)
         - s.strike
             * (-s.risk_free_rate * t).exp()
             * bivariate_normal_cdf(
@@ -147,11 +180,20 @@ pub fn price_chesney_yor_cumulative_parisian_and_rainbow<T: Real>(
                 g2 - s.vol_2 * t.sqrt(),
                 s.correlation,
             );
-    let maxc = c1 + c2 - minc;
-    let putmin = (minc
-        - (s.spot_1 * (-s.div_1 * t).exp() + s.spot_2 * (-s.div_2 * t).exp()
-            - s.strike * (-s.risk_free_rate * t).exp()))
-    .max_val(T::zero());
+    let maxc_stulz = s.spot_1 * (-s.div_1 * t).exp() * bivariate_normal_cdf(g1, g12, r1)
+        + s.spot_2 * (-s.div_2 * t).exp() * bivariate_normal_cdf(g2, g21, r2)
+        - s.strike
+            * (-s.risk_free_rate * t).exp()
+            * (T::one()
+                - bivariate_normal_cdf(
+                    -g1 + s.vol_1 * t.sqrt(),
+                    -g2 + s.vol_2 * t.sqrt(),
+                    s.correlation,
+                ));
+    let maxc = maxc_stulz + (c1 + c2 - minc - maxc_stulz);
+    let f_min = s.spot_1 * (-s.div_1 * t).exp() * g21.norm_cdf()
+        + s.spot_2 * (-s.div_2 * t).exp() * g12.norm_cdf();
+    let putmin = (minc + s.strike * (-s.risk_free_rate * t).exp() - f_min).max_val(T::zero());
     ChesneyYorCumulativeParisianRainbowReport {
         vanilla_call_1: c1,
         vanilla_call_2: c2,

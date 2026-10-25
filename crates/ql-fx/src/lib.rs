@@ -6,7 +6,6 @@ mod phase23_tests {
     use ql_ad::Dual;
     #[test]
     fn vv_greek_match() {
-        let _ = std::mem::size_of::<Dual<1>>();
         let s = CastagnaFullVannaVolgaHedgeSpec {
             spot: 1.1,
             r_dom: 0.02,
@@ -24,6 +23,49 @@ mod phase23_tests {
         let r = evaluate_castagna_full_vanna_volga_hedge_and_barrier(&s);
         assert!(r.greek_matching_max_residual < 1e-8);
         assert!(r.castagna_vv_knockout_price >= 0.0);
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        let mk = |k: f64| CastagnaFullVannaVolgaHedgeSpec {
+            spot: 1.1,
+            r_dom: 0.02,
+            r_for: 0.01,
+            expiry: 1.0,
+            atm_vol: 0.12,
+            rr_25d: 0.01,
+            bf_25d: 0.005,
+            target_strike: k,
+            knockout_barrier: 1.3,
+            unwind_attenuation_factor: 0.5,
+            is_up_and_out: true,
+            is_call: true,
+        };
+        let h = 1e-5;
+        let fd = (evaluate_castagna_full_vanna_volga_hedge_and_barrier(&mk(1.1 + h))
+            .exact_vv_vanilla_price
+            - evaluate_castagna_full_vanna_volga_hedge_and_barrier(&mk(1.1 - h))
+                .exact_vv_vanilla_price)
+            / (2.0 * h);
+        let x = Dual::<1>::variable(1.1, 0);
+        let ad = evaluate_castagna_full_vanna_volga_hedge_and_barrier(
+            &CastagnaFullVannaVolgaHedgeSpec {
+                spot: Dual::<1>::from_value(1.1),
+                r_dom: Dual::<1>::from_value(0.02),
+                r_for: Dual::<1>::from_value(0.01),
+                expiry: Dual::<1>::one(),
+                atm_vol: Dual::<1>::from_value(0.12),
+                rr_25d: Dual::<1>::from_value(0.01),
+                bf_25d: Dual::<1>::from_value(0.005),
+                target_strike: x,
+                knockout_barrier: Dual::<1>::from_value(1.3),
+                unwind_attenuation_factor: Dual::<1>::from_value(0.5),
+                is_up_and_out: true,
+                is_call: true,
+            },
+        )
+        .exact_vv_vanilla_price;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
 
@@ -92,7 +134,8 @@ pub fn evaluate_castagna_full_vanna_volga_hedge_and_barrier<T: Real>(
     let v1 = (s.atm_vol + s.bf_25d - T::from_f64(0.5) * s.rr_25d).max_val(T::from_f64(1e-8));
     let v2 = s.atm_vol.max_val(T::from_f64(1e-8));
     let v3 = (s.atm_vol + s.bf_25d + T::from_f64(0.5) * s.rr_25d).max_val(T::from_f64(1e-8));
-    let alpha = T::from_f64(0.67448975);
+    let q25 = (T::from_f64(0.25) * (s.r_for * t).exp()).min_val(T::from_f64(0.499));
+    let alpha = -inv_norm_cdf(q25);
     let k2 = f * (T::from_f64(0.5) * v2 * v2 * t).exp();
     let k1 = f * (-alpha * v1 * st + T::from_f64(0.5) * v1 * v1 * t).exp();
     let k3 = f * (alpha * v3 * st + T::from_f64(0.5) * v3 * v3 * t).exp();
@@ -142,12 +185,15 @@ pub fn evaluate_castagna_full_vanna_volga_hedge_and_barrier<T: Real>(
             bf_25d: s.bf_25d,
         },
     );
-    let ko = smile.price_knock_out_barrier(
+    let base_ko = smile.flat_knock_out(
         s.target_strike,
         s.knockout_barrier,
+        v2,
         s.is_up_and_out,
         s.is_call,
     );
+    let p_hit = smile.flat_one_touch(s.knockout_barrier, v2, s.is_up_and_out, false);
+    let surv = (T::one() - p_hit).max_val(T::zero()).min_val(T::one());
     let hit = ((s.knockout_barrier / s.spot).ln().abs()
         / (v2 * st + (s.knockout_barrier / s.spot).ln().abs()))
     .max_val(T::zero())
@@ -168,9 +214,9 @@ pub fn evaluate_castagna_full_vanna_volga_hedge_and_barrier<T: Real>(
         vanna_risk_reversal_cost: rr_cost,
         volga_butterfly_cost: bf_cost,
         exact_vv_vanilla_price: cbase + rr_cost + bf_cost,
-        barrier_survival_probability: hit,
+        barrier_survival_probability: surv,
         expected_conditional_hit_time_ratio: ratio,
-        castagna_vv_knockout_price: (ko + att * (x[0] * dc1 + x[2] * dc3)).max_val(T::zero()),
+        castagna_vv_knockout_price: (base_ko + att * (x[0] * dc1 + x[2] * dc3)).max_val(T::zero()),
     }
 }
 use ql_math::inv_norm_cdf;

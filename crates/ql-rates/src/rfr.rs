@@ -10,7 +10,6 @@ mod phase23_tests {
     use ql_ad::Dual;
     #[test]
     fn fmm_caplet_positive() {
-        let _ = std::mem::size_of::<Dual<1>>();
         let s = LyashenkoMercurioFmmSpec {
             notional: 1.0,
             exercise_time_t0: 1.0,
@@ -25,6 +24,44 @@ mod phase23_tests {
         };
         let r = price_lyashenko_mercurio_fmm_caplet_and_swaption(&s);
         assert!(r.backward_looking_rfr_caplet_npv >= r.forward_looking_caplet_npv);
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        let mk = |x: f64| LyashenkoMercurioFmmSpec {
+            notional: 1.0,
+            exercise_time_t0: 1.0,
+            period_accruals: vec![0.5],
+            forward_rates: vec![x],
+            discount_factors: vec![0.98],
+            fmm_volatilities: vec![0.2],
+            displacement_shift: 0.0,
+            inter_period_correlation_decay: 1.0,
+            strike: 0.02,
+            is_payer_or_caplet: true,
+        };
+        let h = 1e-5;
+        let fd = (price_lyashenko_mercurio_fmm_caplet_and_swaption(&mk(0.03 + h))
+            .backward_looking_rfr_caplet_npv
+            - price_lyashenko_mercurio_fmm_caplet_and_swaption(&mk(0.03 - h))
+                .backward_looking_rfr_caplet_npv)
+            / (2.0 * h);
+        let x = Dual::<1>::variable(0.03, 0);
+        let sd = LyashenkoMercurioFmmSpec {
+            notional: Dual::<1>::one(),
+            exercise_time_t0: Dual::<1>::one(),
+            period_accruals: vec![Dual::<1>::from_value(0.5)],
+            forward_rates: vec![x],
+            discount_factors: vec![Dual::<1>::from_value(0.98)],
+            fmm_volatilities: vec![Dual::<1>::from_value(0.2)],
+            displacement_shift: Dual::<1>::zero(),
+            inter_period_correlation_decay: Dual::<1>::one(),
+            strike: Dual::<1>::from_value(0.02),
+            is_payer_or_caplet: true,
+        };
+        let ad =
+            price_lyashenko_mercurio_fmm_caplet_and_swaption(&sd).backward_looking_rfr_caplet_npv;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
 
@@ -91,7 +128,7 @@ pub fn price_lyashenko_mercurio_fmm_caplet_and_swaption<T: Real>(
             T::one(),
             s.is_payer_or_caplet,
         );
-    let conv = f + tau * f * (f + sh) * (f + sh) / (T::one() + tau * f) * ((vf).exp() - T::one());
+    let conv = f + tau * (f + sh) * (f + sh) / (T::one() + tau * f) * (vf.exp() - T::one());
     let mut ann = T::zero();
     let mut num = T::zero();
     for i in 0..n {
@@ -121,7 +158,8 @@ pub fn price_lyashenko_mercurio_fmm_caplet_and_swaption<T: Real>(
         }
     }
     let sv = var.max_val(T::zero()).sqrt();
-    let sw = ann
+    let sw = s.notional
+        * ann
         * black76_price(
             par + sh,
             s.strike + sh,

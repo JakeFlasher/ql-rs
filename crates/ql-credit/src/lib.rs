@@ -16,7 +16,6 @@ mod phase23_tests {
     use ql_ad::Dual;
     #[test]
     fn jlt_rows_stochastic() {
-        let _ = std::mem::size_of::<Dual<1>>();
         let s = JarrowLandoTurnbullRatingMigrationSpec {
             initial_rating_index: 0,
             physical_generator_4x4: [
@@ -37,6 +36,73 @@ mod phase23_tests {
         for row in r.transition_matrix_at_maturity {
             assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-8);
         }
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        let mk = |x: f64| {
+            let mut s = JarrowLandoTurnbullRatingMigrationSpec {
+                initial_rating_index: 0,
+                physical_generator_4x4: [
+                    [-0.1, 0.08, 0.01, 0.01],
+                    [0.02, -0.08, 0.04, 0.02],
+                    [0.0, 0.02, -0.05, 0.03],
+                    [0.0; 4],
+                ],
+                risk_premium_multipliers: [1.0, 1.0, 1.0],
+                recovery_rate: 0.4,
+                risk_free_rate: 0.02,
+                maturity: 5.0,
+                base_coupon_rate: 0.03,
+                hy_downgrade_stepup_spread: 0.01,
+                counterparty_epe_notional: 1.0,
+            };
+            s.risk_premium_multipliers[0] = x;
+            s
+        };
+        let h = 1e-5;
+        let fd = (evaluate_jlt_rating_migration_and_crcva(&mk(1.0 + h))
+            .credit_spreads_bps_by_rating[0]
+            - evaluate_jlt_rating_migration_and_crcva(&mk(1.0 - h)).credit_spreads_bps_by_rating
+                [0])
+            / (2.0 * h);
+        let ad = evaluate_jlt_rating_migration_and_crcva(&JarrowLandoTurnbullRatingMigrationSpec {
+            initial_rating_index: 0,
+            physical_generator_4x4: [
+                [
+                    -Dual::<1>::from_value(0.1),
+                    Dual::<1>::from_value(0.08),
+                    Dual::<1>::from_value(0.01),
+                    Dual::<1>::from_value(0.01),
+                ],
+                [
+                    Dual::<1>::from_value(0.02),
+                    -Dual::<1>::from_value(0.08),
+                    Dual::<1>::from_value(0.04),
+                    Dual::<1>::from_value(0.02),
+                ],
+                [
+                    Dual::<1>::zero(),
+                    Dual::<1>::from_value(0.02),
+                    -Dual::<1>::from_value(0.05),
+                    Dual::<1>::from_value(0.03),
+                ],
+                [Dual::<1>::zero(); 4],
+            ],
+            risk_premium_multipliers: [
+                Dual::<1>::variable(1.0, 0),
+                Dual::<1>::one(),
+                Dual::<1>::one(),
+            ],
+            recovery_rate: Dual::<1>::from_value(0.4),
+            risk_free_rate: Dual::<1>::from_value(0.02),
+            maturity: Dual::<1>::from_value(5.0),
+            base_coupon_rate: Dual::<1>::from_value(0.03),
+            hy_downgrade_stepup_spread: Dual::<1>::from_value(0.01),
+            counterparty_epe_notional: Dual::<1>::one(),
+        })
+        .credit_spreads_bps_by_rating[0];
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
 
@@ -76,6 +142,45 @@ fn mm4<T: Real>(a: &[[T; 4]; 4], b: &[[T; 4]; 4]) -> [[T; 4]; 4] {
     }
     c
 }
+fn solve4m<T: Real>(mut a: [[T; 4]; 4], mut b: [[T; 4]; 4]) -> [[T; 4]; 4] {
+    for i in 0..4 {
+        let mut p = i;
+        for r in i + 1..4 {
+            if a[r][i].abs().val() > a[p][i].abs().val() {
+                p = r;
+            }
+        }
+        a.swap(i, p);
+        b.swap(i, p);
+        let d = if a[i][i].abs().val() < 1e-14 {
+            if a[i][i].val() < 0.0 {
+                T::from_f64(-1e-14)
+            } else {
+                T::from_f64(1e-14)
+            }
+        } else {
+            a[i][i]
+        };
+        for j in i..4 {
+            a[i][j] /= d;
+        }
+        for j in 0..4 {
+            b[i][j] /= d;
+        }
+        for r in 0..4 {
+            if r != i {
+                let f = a[r][i];
+                for j in i..4 {
+                    a[r][j] -= f * a[i][j];
+                }
+                for j in 0..4 {
+                    b[r][j] -= f * b[i][j];
+                }
+            }
+        }
+    }
+    b
+}
 pub fn evaluate_jlt_rating_migration_and_crcva<T: Real>(
     s: &JarrowLandoTurnbullRatingMigrationSpec<T>,
 ) -> JarrowLandoTurnbullRatingMigrationReport<T> {
@@ -93,24 +198,45 @@ pub fn evaluate_jlt_rating_migration_and_crcva<T: Real>(
     let mut a = [[T::zero(); 4]; 4];
     for i in 0..4 {
         for j in 0..4 {
-            a[i][j] = q[i][j] * s.maturity / T::from_f64(128.0);
+            a[i][j] = q[i][j] * s.maturity / T::from_f64(16.0);
         }
     }
-    let mut p = [[T::zero(); 4]; 4];
-    for i in 0..4 {
-        p[i][i] = T::one();
-    }
-    let mut term = p;
-    for k in 1..=32 {
-        term = mm4(&term, &a);
-        let fac = T::from_f64((1..=k).fold(1.0, |z, v| z * (v as f64)));
+    let id = {
+        let mut z = [[T::zero(); 4]; 4];
         for i in 0..4 {
-            for j in 0..4 {
-                p[i][j] += term[i][j] / fac;
-            }
+            z[i][i] = T::one();
+        }
+        z
+    };
+    let a2 = mm4(&a, &a);
+    let a4 = mm4(&a2, &a2);
+    let a6 = mm4(&a4, &a2);
+    let c0 = T::one();
+    let c1 = T::from_f64(0.5);
+    let c2 = T::from_f64(5.0 / 44.0);
+    let c3 = T::from_f64(1.0 / 66.0);
+    let c4 = T::from_f64(1.0 / 792.0);
+    let c5 = T::from_f64(1.0 / 15840.0);
+    let c6 = T::from_f64(1.0 / 665280.0);
+    let mut poly = [[T::zero(); 4]; 4];
+    let mut v = [[T::zero(); 4]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            poly[i][j] = c1 * id[i][j] + c3 * a2[i][j] + c5 * a4[i][j];
+            v[i][j] = c0 * id[i][j] + c2 * a2[i][j] + c4 * a4[i][j] + c6 * a6[i][j];
         }
     }
-    for _ in 0..7 {
+    let u = mm4(&a, &poly);
+    let mut vm = [[T::zero(); 4]; 4];
+    let mut vp = [[T::zero(); 4]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            vm[i][j] = v[i][j] - u[i][j];
+            vp[i][j] = v[i][j] + u[i][j];
+        }
+    }
+    let mut p = solve4m(vm, vp);
+    for _ in 0..4 {
         p = mm4(&p, &p);
     }
     let mut err = T::zero();
@@ -136,8 +262,10 @@ pub fn evaluate_jlt_rating_migration_and_crcva<T: Real>(
         down += p[i0][j];
     }
     let disc = (-s.risk_free_rate * s.maturity).exp();
-    let van = disc * ((T::one() - def[i0]) * (T::one() + s.base_coupon_rate * s.maturity));
-    let step = van + disc * s.hy_downgrade_stepup_spread * s.maturity * down;
+    let van = disc
+        * ((T::one() - def[i0]) * (T::one() + s.base_coupon_rate * s.maturity)
+            + s.recovery_rate * def[i0]);
+    let step = van + disc * p[i0][2] * s.hy_downgrade_stepup_spread * s.maturity;
     let cva = s.counterparty_epe_notional * (T::one() - s.recovery_rate) * def[i0] * disc;
     let mig = cva + s.counterparty_epe_notional * (T::one() - s.recovery_rate) * down * disc;
     JarrowLandoTurnbullRatingMigrationReport {

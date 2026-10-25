@@ -5105,7 +5105,10 @@ pub fn phase23_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let nco = ql_portfolio::solve_lopez_de_prado_denoised_nco_allocation(
         &ql_portfolio::LopezDePradoNcoDenoisedSpec {
             covariance: vec![
-                vec![T::from_f64(0.04), T::from_f64(0.01)],
+                vec![
+                    T::from_f64(0.04) + x[1] * T::from_f64(0.002),
+                    T::from_f64(0.01),
+                ],
                 vec![T::from_f64(0.01), T::from_f64(0.09)],
             ],
             expected_returns: vec![T::from_f64(0.05) + x[1], T::from_f64(0.06)],
@@ -5127,7 +5130,7 @@ pub fn phase23_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
         },
     );
     [
-        rk.pricing_rmse_bps,
+        rk.query_zero_rates[0],
         fmm.backward_looking_rfr_caplet_npv,
         vv.exact_vv_vanilla_price,
         lsv.lsv_reconstructed_implied_vol,
@@ -5172,7 +5175,7 @@ pub fn benchmark_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml(
     };
     run_comparison(
         "35_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml",
-        "Phase23 12-engine AAD vs FD",
+        "Phase23 RKHS/FMM/VV/LSV/JLT/CTD/QRH/Parisian/Aïd/Propagator/NCO/DML",
         cfg,
         1e-4,
         baseline,

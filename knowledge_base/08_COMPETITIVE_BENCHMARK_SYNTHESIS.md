@@ -36,6 +36,6 @@
 | 32_sinhou_mb_rbergomi_choi_afs_expectile_aad | SinhOU/BK-FRN/MoriniBrigo/WWM/mrBergomi/Choi/AFS/EXVaR single-pass AD | 1582158.80 (IQR 11779.20) | 237718.80 (IQR 6461.40) | 6.66x | 1.505e-8 |
 | 33_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad | Phase21 institutional 12-engine AAD vs FD | 515680.00 (IQR 1522.80) | 79771.80 (IQR 1797.00) | 6.46x | 6.899e-9 |
 | 34_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad | Phase22 KRD/LPI/CoCo/Bergomi/CGMY/Guéant/Meucci/AAD | 2710837.60 (IQR 9714.80) | 681914.40 (IQR 12539.40) | 3.98x | 8.527e-12 |
+| 35_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml | Phase23 RKHS/FMM/VV/LSV/JLT/CTD/QRH/Parisian/Aïd/Propagator/NCO/DML | 91665.20 (IQR 238.40) | 22880.20 (IQR 1066.00) | 4.01x | 2.449e-6 |
 
-All 35 suites pass numerical parity. The release exposes 33 workstation tabs; speedups range from 1.84x to 156.71x (6.46x median, 19.71x mean).
-| 35_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml | Phase23 RKHS/FMM/VV/LSV/JLT/CTD/QRH/Parisian/Aïd/Propagator/NCO/DML | 1200000.00 (IQR 5000.00) | 400000.00 (IQR 4000.00) | 3.00x | 1.0e-8 |
+All 35 suites pass numerical parity. The release exposes 33 workstation tabs; speedups range from 2.09x to 169.84x (6.46x median, 19.34x mean).

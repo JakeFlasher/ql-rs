@@ -274,7 +274,7 @@ impl TabId {
                 "31 HW-MC / Clark-FX / SA-CCR-KVA / BFG-rVol / Cartea-Alpha / Paleologo"
             }
             Self::Phase22Sota => "32 Phase 22 SOTA / KRD / LPI / CoCo / Bergomi / CGMY / AAD",
-            Self::Phase23Sota => "33 Phase 23 SOTA / RKHS / FMM / VV / LSV / CTD / QRH / NCO",
+            Self::Phase23Sota => "33 RKHS/FMM/VV/LSV/JLT/CTD/QRH/NCO/DML",
         }
     }
 }
@@ -1408,7 +1408,7 @@ impl DeskWorkstation {
             &ql_curves::FilipovicRkhsYieldCurveSpec {
                 cashflow_times: vec![1.0, 2.0],
                 instrument_cashflow_matrix: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
-                instrument_dirty_prices: vec![0.98, 0.95],
+                instrument_dirty_prices: vec![m.ois_quotes[0], m.ois_quotes[1]],
                 decay_alpha: 1.0,
                 ridge_penalty_lambda: 1e-8,
                 query_times: vec![1.0, 2.0],
@@ -1536,7 +1536,7 @@ impl DeskWorkstation {
         );
         let aid = ql_commodities::price_aid_carmona_structural_electricity_stack(
             &ql_commodities::AidCarmonaStructuralElectricityStackSpec {
-                gas_forward: 30.0,
+                gas_forward: m.fwd_quotes[0] * 1000.0,
                 gas_vol: 0.3,
                 base_heat_rate: 2.0,
                 total_capacity_mw: 100.0,
@@ -1571,7 +1571,10 @@ impl DeskWorkstation {
         );
         let nco = ql_portfolio::solve_lopez_de_prado_denoised_nco_allocation(
             &ql_portfolio::LopezDePradoNcoDenoisedSpec {
-                covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
+                covariance: vec![
+                    vec![0.04 + credit_bump, 0.01],
+                    vec![0.01, 0.09 + credit_bump],
+                ],
                 expected_returns: vec![0.05, 0.06],
                 sample_ratio_q: 2.0,
                 denoising_alpha: 0.5,
@@ -1590,7 +1593,7 @@ impl DeskWorkstation {
                 dml_differential_weight_gamma: 1.0,
             },
         );
-        rk.pricing_rmse_bps.val()
+        rk.query_zero_rates[0].val()
             + fmm.backward_looking_rfr_caplet_npv.val()
             + vv.exact_vv_vanilla_price.val()
             + lsv.lsv_reconstructed_implied_vol.val()
@@ -1603,6 +1606,7 @@ impl DeskWorkstation {
             + nco.nco_portfolio_volatility.val()
             + dml.hybrid_pw_lrm_digital_delta.val()
             + credit_bump
+            + Self::phase22_live_metric(m, credit_bump) * 1e-3
     }
     pub fn phase23_live_metric(&self) -> f64 {
         let market = self.scenario_market();
@@ -3799,7 +3803,7 @@ impl DeskWorkstation {
                 .map(|(name, value, tag)| format!("{name:<20} {:>12.2} {tag:<10}", value)),
         );
         right_bottom.push("32 Phase22 SOTA: KRD/LPI/CoCo/Bergomi/CGMY/AAD live".to_string());
-        right_bottom.push("33 Phase23 SOTA: RKHS/FMM/VV/LSV/JLT/CTD/QRH/NCO/DML live".to_string());
+        right_bottom.push("33 RKHS/FMM/VV/LSV/JLT/CTD/QRH/NCO/DML live".to_string());
         while right_bottom.len() < BOTTOM_ROWS {
             right_bottom.push(String::new());
         }
@@ -4141,6 +4145,36 @@ mod phase22_tests {
             assert_ne!(
                 stressed.krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric,
                 frame.krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric
+            );
+        }
+    }
+}
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    #[test]
+    fn phase23_tab33_metric_renders_and_reacts() {
+        let mut ws = DeskWorkstation::new();
+        let f = ws.step_tick();
+        assert_eq!(
+            TabId::Phase23Sota.label(),
+            "33 RKHS/FMM/VV/LSV/JLT/CTD/QRH/NCO/DML"
+        );
+        assert!(
+            ws.render_dashboard(&f, false)
+                .contains("33 RKHS/FMM/VV/LSV/JLT/CTD/QRH/NCO/DML live")
+        );
+        for sc in [
+            ScenarioKind::RatesPlus50Bp,
+            ScenarioKind::EquityCrashMinus15Pct,
+            ScenarioKind::CreditWideningPlus100Bp,
+            ScenarioKind::StagflationPlus150Bp,
+        ] {
+            ws.set_scenario(sc);
+            let g = ws.step_tick();
+            assert!(
+                g.rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml_metric
+                    .is_finite()
             );
         }
     }

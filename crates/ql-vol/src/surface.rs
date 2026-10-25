@@ -13,7 +13,6 @@ mod phase23_tests {
     use ql_ad::Dual;
     #[test]
     fn lsv_projection_positive() {
-        let _ = std::mem::size_of::<Dual<1>>();
         let s = GuyonMarkovianProjectionLsvSpec {
             forward: 100.0,
             strike: 105.0,
@@ -32,7 +31,49 @@ mod phase23_tests {
         assert!(r.dupire_local_vol_at_strike > 0.0);
         assert!(r.conditional_expected_sv_at_strike > 0.0);
     }
+
+    #[test]
+    fn dual_fd_parity() {
+        let mk = |k: f64| GuyonMarkovianProjectionLsvSpec {
+            forward: 100.0,
+            strike: k,
+            expiry: 1.0,
+            forward_start_t1: 0.25,
+            atm_vol: 0.2,
+            market_atm_skew: -0.1,
+            market_atm_curvature: 0.1,
+            sv_v0: 0.04,
+            sv_kappa: 1.0,
+            sv_eta: 0.3,
+            sv_rho: -0.5,
+            sv_mixing_weight_eta: 0.5,
+        };
+        let h = 1e-5;
+        let fd = (evaluate_guyon_markovian_projection_lsv_smile(&mk(100.0 + h))
+            .lsv_reconstructed_implied_vol
+            - evaluate_guyon_markovian_projection_lsv_smile(&mk(100.0 - h))
+                .lsv_reconstructed_implied_vol)
+            / (2.0 * h);
+        let x = Dual::<1>::variable(100.0, 0);
+        let ad = evaluate_guyon_markovian_projection_lsv_smile(&GuyonMarkovianProjectionLsvSpec {
+            forward: Dual::<1>::from_value(100.0),
+            strike: x,
+            expiry: Dual::<1>::one(),
+            forward_start_t1: Dual::<1>::from_value(0.25),
+            atm_vol: Dual::<1>::from_value(0.2),
+            market_atm_skew: Dual::<1>::from_value(-0.1),
+            market_atm_curvature: Dual::<1>::from_value(0.1),
+            sv_v0: Dual::<1>::from_value(0.04),
+            sv_kappa: Dual::<1>::one(),
+            sv_eta: Dual::<1>::from_value(0.3),
+            sv_rho: Dual::<1>::from_value(-0.5),
+            sv_mixing_weight_eta: Dual::<1>::from_value(0.5),
+        })
+        .lsv_reconstructed_implied_vol;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
 }
+
 #[derive(Clone, Copy, Debug)]
 pub struct GuyonMarkovianProjectionLsvSpec<T: Real = f64> {
     pub forward: T,
@@ -96,7 +137,7 @@ pub fn evaluate_guyon_markovian_projection_lsv_smile<T: Real>(
     let dup2 = (s.atm_vol * s.atm_vol
         + T::from_f64(4.0) * s.atm_vol * s.market_atm_skew * x
         + (T::from_f64(3.0) * s.atm_vol * s.market_atm_curvature
-            + T::from_f64(2.0) * s.market_atm_skew * s.market_atm_skew)
+            + T::from_f64(6.0) * s.market_atm_skew * s.market_atm_skew)
             * x
             * x)
         .max_val(T::from_f64(1e-8));
@@ -130,14 +171,29 @@ pub fn evaluate_guyon_markovian_projection_lsv_smile<T: Real>(
         let d = (s.atm_vol * s.atm_vol
             + T::from_f64(4.0) * s.atm_vol * s.market_atm_skew * y
             + (T::from_f64(3.0) * s.atm_vol * s.market_atm_curvature
-                + T::from_f64(2.0) * s.market_atm_skew * s.market_atm_skew)
+                + T::from_f64(6.0) * s.market_atm_skew * s.market_atm_skew)
                 * y
                 * y)
             .max_val(T::from_f64(1e-8))
             .sqrt();
-        integ += T::from_f64(0.5 * gw[j]) / d;
+        let my = (T::one()
+            + eta
+                * ((s.sv_rho * s.sv_eta / s.atm_vol.max_val(T::from_f64(1e-8)) * i2 / (t * t))
+                    * y
+                    + T::from_f64(0.5)
+                        * s.sv_eta
+                        * s.sv_eta
+                        * (T::one() - s.sv_rho * s.sv_rho)
+                        * isv2
+                        / (t * t)
+                        * y
+                        * y))
+            .max_val(T::from_f64(1e-6));
+        let cond_y = (s.sv_v0 * my).max_val(T::from_f64(1e-12));
+        let lev_y = d / cond_y.sqrt();
+        integ += T::from_f64(0.5 * gw[j]) * lev_y * cond_y.sqrt();
     }
-    let rec = T::one() / integ.max_val(T::from_f64(1e-12));
+    let rec = integ.max_val(T::from_f64(1e-12));
     let mkt = s.atm_vol + s.market_atm_skew * x + T::from_f64(0.5) * s.market_atm_curvature * x * x;
     let rem = t - s.forward_start_t1;
     let i2r = if rem.val() > 1e-8 {

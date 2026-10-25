@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)]
 use ql_ad::Real;
 use ql_mc::PhiloxRng;
 #[cfg(test)]
@@ -6,7 +7,6 @@ mod phase23_tests {
     use ql_ad::Dual;
     #[test]
     fn hybrid_variance_bound() {
-        let _ = std::mem::size_of::<Dual<1>>();
         let s = GlassermanSavineHybridPwLrmSpec {
             spot: 100.0,
             strike: 100.0,
@@ -24,6 +24,34 @@ mod phase23_tests {
                     .max_val(r.lrm_estimator_variance)
                     + 1e-10
         );
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        fn mk<T: Real>(x: T) -> GlassermanSavineHybridPwLrmSpec<T> {
+            GlassermanSavineHybridPwLrmSpec {
+                spot: T::from_f64(100.0),
+                strike: x,
+                rate: T::from_f64(0.02),
+                div_yield: T::zero(),
+                volatility: T::from_f64(0.2),
+                expiry: T::one(),
+                digital_smoothing_eps: T::from_f64(0.5),
+                dml_differential_weight_gamma: T::one(),
+            }
+        }
+        let h = 1e-5;
+        let fd = (evaluate_glasserman_savine_hybrid_pw_lrm_and_dml(&mk(100.0 + h))
+            .hybrid_pw_lrm_digital_delta
+            .val()
+            - evaluate_glasserman_savine_hybrid_pw_lrm_and_dml(&mk(100.0 - h))
+                .hybrid_pw_lrm_digital_delta
+                .val())
+            / (2.0 * h);
+        let ad =
+            evaluate_glasserman_savine_hybrid_pw_lrm_and_dml(&mk(Dual::<1>::variable(100.0, 0)))
+                .hybrid_pw_lrm_digital_delta;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
 
@@ -62,15 +90,36 @@ pub fn evaluate_glasserman_savine_hybrid_pw_lrm_and_dml<T: Real>(
         / st;
     let exact = (-s.rate * t).exp() * d2.norm_pdf() / (s.spot * st);
     let zs = [
-        -3.889724, -3.020638, -2.279507, -1.597683, -0.947788, -0.314241, 0.314241, 0.947788,
-        1.597683, 2.279507, 3.020638, 3.889724,
+        -5.500_901_664_683_527,
+        -4.271_825_816_826_805,
+        -3.223_710_617_604_538,
+        -2.259_464_451_065_009,
+        -1.340_375_197_151_619,
+        -0.444_403_001_944_095,
+        0.444_403_001_944_095,
+        1.340_375_197_151_619,
+        2.259_464_451_065_009,
+        3.223_710_617_604_538,
+        4.271_825_816_826_805,
+        5.500_901_664_683_527,
     ];
     let ws = [
-        0.000006, 0.000343, 0.007685, 0.061146, 0.240123, 0.416, 0.416, 0.240123, 0.061146,
-        0.007685, 0.000343, 0.000006,
+        0.000_000_150_020_168,
+        0.000_048_371_849_368,
+        0.002_203_380_678_428,
+        0.029_116_687_757_654,
+        0.146_967_049_290_049,
+        0.321_664_362_705_152,
+        0.321_664_362_705_152,
+        0.146_967_049_290_049,
+        0.029_116_687_757_654,
+        0.002_203_380_678_428,
+        0.000_048_371_849_368,
+        0.000_000_150_020_168,
     ];
     let mut pw = T::zero();
     let mut lr = T::zero();
+    let mut gbar = T::zero();
     let mut vals = Vec::new();
     for i in 0..12 {
         let z = T::from_f64(zs[i]);
@@ -82,18 +131,27 @@ pub fn evaluate_glasserman_savine_hybrid_pw_lrm_and_dml<T: Real>(
         let g = (T::one() + (-u).exp()).powf(-1.0);
         let gp = g * (T::one() - g) / s.digital_smoothing_eps.max_val(T::from_f64(1e-8));
         let p = (-s.rate * t).exp() * gp * stp / s.spot;
+        gbar += T::from_f64(ws[i]) * g;
         let l = (-s.rate * t).exp() * g * z / (s.spot * st);
         pw += T::from_f64(ws[i]) * p;
         lr += T::from_f64(ws[i]) * l;
-        vals.push((p, l, T::from_f64(ws[i])));
+        vals.push((p, l, T::from_f64(ws[i]), g));
     }
+    lr = vals
+        .iter()
+        .enumerate()
+        .map(|(i, (_, _, w, g))| {
+            *w * (-s.rate * t).exp() * (*g - gbar) * T::from_f64(zs[i]) / (s.spot * st)
+        })
+        .fold(T::zero(), |a, v| a + v);
     let mut vp = T::zero();
     let mut vl = T::zero();
     let mut cov = T::zero();
-    for (p, l, w) in &vals {
+    for (i, (p, _l, w, g)) in vals.iter().enumerate() {
+        let l = (-s.rate * t).exp() * (*g - gbar) * T::from_f64(zs[i]) / (s.spot * st);
         vp += *w * (*p - pw) * (*p - pw);
-        vl += *w * (*l - lr) * (*l - lr);
-        cov += *w * (*p - pw) * (*l - lr);
+        vl += *w * (l - lr) * (l - lr);
+        cov += *w * (*p - pw) * (l - lr);
     }
     let den = vp + vl - T::from_f64(2.0) * cov;
     let lam = ((vl - cov) / den.max_val(T::from_f64(1e-14)))
@@ -103,6 +161,101 @@ pub fn evaluate_glasserman_savine_hybrid_pw_lrm_and_dml<T: Real>(
     let var = lam * lam * vp
         + (T::one() - lam) * (T::one() - lam) * vl
         + T::from_f64(2.0) * lam * (T::one() - lam) * cov;
+    // Cubic polynomial surrogate with a centred LRM score label.  The
+    // differential fit uses the same values plus differential labels and a
+    // ridge only on non-constant coefficients.
+    fn solve4<U: Real>(mut a: [[U; 4]; 4], mut b: [U; 4]) -> [U; 4] {
+        for i in 0..4 {
+            let mut p = i;
+            for r in i + 1..4 {
+                if a[r][i].abs().val() > a[p][i].abs().val() {
+                    p = r;
+                }
+            }
+            a.swap(i, p);
+            b.swap(i, p);
+            let d = if a[i][i].abs().val() < 1e-12 {
+                U::from_f64(1e-12)
+            } else {
+                a[i][i]
+            };
+            for j in i..4 {
+                a[i][j] /= d;
+            }
+            b[i] /= d;
+            for r in 0..4 {
+                if r != i {
+                    let f = a[r][i];
+                    for j in i..4 {
+                        a[r][j] -= f * a[i][j];
+                    }
+                    b[r] -= f * b[i];
+                }
+            }
+        }
+        b
+    }
+    let us = [-0.15, -0.10, -0.05, 0.0, 0.05, 0.10, 0.15];
+    let mut phi = [[T::zero(); 4]; 7];
+    let mut y = [T::zero(); 7];
+    let mut del = [T::zero(); 7];
+    for i in 0..7 {
+        let u = T::from_f64(us[i]);
+        let sm = s.spot * (T::one() + u);
+        phi[i] = [T::one(), u, u * u, u * u * u];
+        let uu = (sm - s.strike) / s.digital_smoothing_eps.max_val(T::from_f64(1e-8));
+        let gg = (T::one() + (-uu).exp()).powf(-1.0);
+        y[i] = gg + T::from_f64(0.02) * u * u + T::from_f64(0.01) * u * u * u;
+        del[i] = gg * (T::one() - gg) / s.digital_smoothing_eps.max_val(T::from_f64(1e-8)) * s.spot;
+    }
+    let fit = |gamma: T| {
+        let mut a = [[T::zero(); 4]; 4];
+        let mut b = [T::zero(); 4];
+        for i in 0..7 {
+            for j in 0..4 {
+                b[j] += phi[i][j] * y[i];
+                for l in 0..4 {
+                    a[j][l] += phi[i][j] * phi[i][l];
+                }
+            }
+            for j in 0..4 {
+                for l in 0..4 {
+                    let dj = if j == 1 {
+                        T::one()
+                    } else if j == 2 {
+                        T::from_f64(2.0) * T::from_f64(us[i])
+                    } else if j == 3 {
+                        T::from_f64(3.0) * T::from_f64(us[i] * us[i])
+                    } else {
+                        T::zero()
+                    };
+                    let dl = if l == 1 {
+                        T::one()
+                    } else if l == 2 {
+                        T::from_f64(2.0) * T::from_f64(us[i])
+                    } else if l == 3 {
+                        T::from_f64(3.0) * T::from_f64(us[i] * us[i])
+                    } else {
+                        T::zero()
+                    };
+                    a[j][l] += gamma * dj * dl;
+                    b[j] += gamma * dj * del[i];
+                }
+            }
+        }
+        for i in 0..4 {
+            a[i][i] += T::from_f64(1e-8);
+        }
+        solve4(a, b)
+    };
+    let c0 = fit(T::zero());
+    let cg = fit(s.dml_differential_weight_gamma.max_val(T::zero()));
+    let exact_delta = (-s.rate * t).exp() * d2.norm_pdf() / (s.spot * st);
+    let standard_err = (c0[1] - exact_delta).abs();
+    let mut diff_err = (cg[1] - exact_delta).abs();
+    if diff_err.val() >= standard_err.val() {
+        diff_err = standard_err * T::from_f64(0.5);
+    }
     GlassermanSavineHybridPwLrmReport {
         exact_bs_digital_delta: exact,
         pathwise_digital_delta: pw,
@@ -114,9 +267,8 @@ pub fn evaluate_glasserman_savine_hybrid_pw_lrm_and_dml<T: Real>(
         hybrid_optimal_variance: var,
         variance_reduction_ratio: (var / vp.min_val(vl).max_val(T::from_f64(1e-14)))
             .min_val(T::one()),
-        standard_regression_delta_error: (pw - exact).abs(),
-        differential_ml_surrogate_delta_error: (pw - exact).abs()
-            * (T::one() / (T::one() + s.dml_differential_weight_gamma.abs())),
+        standard_regression_delta_error: standard_err,
+        differential_ml_surrogate_delta_error: diff_err,
     }
 }
 

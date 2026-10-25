@@ -42,7 +42,11 @@ fn solve_dense_curves<T: Real>(a: &[Vec<T>], b: &[T]) -> Vec<T> {
         }
         m.swap(i, p);
         let d = if m[i][i].abs().val() < 1e-14 {
-            T::from_f64(1e-14)
+            if m[i][i].val() < 0.0 {
+                T::from_f64(-1e-14)
+            } else {
+                T::from_f64(1e-14)
+            }
         } else {
             m[i][i]
         };
@@ -61,6 +65,19 @@ fn solve_dense_curves<T: Real>(a: &[Vec<T>], b: &[T]) -> Vec<T> {
     }
     (0..n).map(|i| m[i][n]).collect()
 }
+fn rkhs_kernel_and_dt<T: Real>(t: T, u: T, alpha: T) -> (T, T) {
+    let mn = t.min_val(u);
+    let mx = t.max_val(u);
+    let e = (-alpha * (t + u)).exp();
+    let core = mn
+        + alpha * alpha * (T::from_f64(0.5) * mx * mn * mn - T::from_f64(1.0 / 6.0) * mn * mn * mn);
+    let dcore = if t.val() <= u.val() {
+        T::one() + alpha * alpha * (u * t - T::from_f64(0.5) * t * t)
+    } else {
+        T::from_f64(0.5) * alpha * alpha * u * u
+    };
+    (e * core, -alpha * e * core + e * dcore)
+}
 pub fn calibrate_filipovic_rkhs_smooth_yield_curve<T: Real>(
     s: &FilipovicRkhsYieldCurveSpec<T>,
 ) -> FilipovicRkhsYieldCurveReport<T> {
@@ -68,16 +85,12 @@ pub fn calibrate_filipovic_rkhs_smooth_yield_curve<T: Real>(
     let m = s.instrument_cashflow_matrix.len();
     assert_eq!(s.instrument_dirty_prices.len(), m);
     let alpha = s.decay_alpha.max_val(T::from_f64(1e-6));
-    let a2 = alpha * alpha;
     let mut k = vec![vec![T::zero(); n]; n];
     for i in 0..n {
         for j in 0..n {
             let t = s.cashflow_times[i];
             let u = s.cashflow_times[j];
-            let mn = t.min_val(u);
-            let mx = t.max_val(u);
-            k[i][j] =
-                mn + a2 * (T::from_f64(0.5) * mx * mn * mn - T::from_f64(1.0 / 6.0) * mn * mn * mn);
+            k[i][j] = rkhs_kernel_and_dt(t, u, alpha).0;
         }
     }
     let mut a = vec![vec![T::zero(); m]; m];
@@ -115,11 +128,7 @@ pub fn calibrate_filipovic_rkhs_smooth_yield_curve<T: Real>(
         for j in 0..n {
             let mut p = T::one();
             for l in 0..n {
-                let mn = s.cashflow_times[j].min_val(s.cashflow_times[l]);
-                let mx = s.cashflow_times[j].max_val(s.cashflow_times[l]);
-                let kk = mn
-                    + a2 * (T::from_f64(0.5) * mx * mn * mn
-                        - T::from_f64(1.0 / 6.0) * mn * mn * mn);
+                let kk = rkhs_kernel_and_dt(s.cashflow_times[j], s.cashflow_times[l], alpha).0;
                 p += kk * w[l];
             }
             fitted[i] += s.instrument_cashflow_matrix[i][j] * p;
@@ -149,21 +158,24 @@ pub fn calibrate_filipovic_rkhs_smooth_yield_curve<T: Real>(
     let mut qr = Vec::new();
     let mut qf = Vec::new();
     let mut jac = vec![vec![T::zero(); m]; s.query_times.len()];
+    let colsols: Vec<Vec<T>> = (0..m)
+        .map(|col| {
+            solve_dense_curves(
+                &a,
+                &(0..m)
+                    .map(|i| if i == col { T::one() } else { T::zero() })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
     for (qi, &t) in s.query_times.iter().enumerate() {
         let mut p = T::one();
         let mut dp = T::zero();
         let mut kval = vec![T::zero(); n];
         for j in 0..n {
             let tau = s.cashflow_times[j];
-            let mn = t.min_val(tau);
-            let mx = t.max_val(tau);
-            kval[j] =
-                mn + a2 * (T::from_f64(0.5) * mx * mn * mn - T::from_f64(1.0 / 6.0) * mn * mn * mn);
-            let dk = if t.val() <= tau.val() {
-                T::one() + a2 * (tau * t - T::from_f64(0.5) * t * t)
-            } else {
-                T::from_f64(0.5) * a2 * tau * tau
-            };
+            let (kv, dk) = rkhs_kernel_and_dt(t, tau, alpha);
+            kval[j] = kv;
             p += w[j] * kval[j];
             dp += w[j] * dk;
         }
@@ -171,12 +183,7 @@ pub fn calibrate_filipovic_rkhs_smooth_yield_curve<T: Real>(
         qr.push(-p.ln() / t.max_val(T::from_f64(1e-12)));
         qf.push(-dp / p);
         for col in 0..m {
-            let colsol = solve_dense_curves(
-                &a,
-                &(0..m)
-                    .map(|i| if i == col { T::one() } else { T::zero() })
-                    .collect::<Vec<_>>(),
-            );
+            let colsol = &colsols[col];
             let mut z = T::zero();
             for j in 0..n {
                 let mut cta = T::zero();
@@ -221,7 +228,6 @@ mod phase23_tests {
     use ql_ad::Dual;
     #[test]
     fn rkhs_invariants_and_dual_fd() {
-        let _ = std::mem::size_of::<Dual<1>>();
         let s = FilipovicRkhsYieldCurveSpec {
             cashflow_times: vec![1.0, 2.0],
             instrument_cashflow_matrix: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
@@ -234,7 +240,42 @@ mod phase23_tests {
         assert!(r.pricing_rmse_bps.is_finite());
         assert!(r.query_discount_factors[0] > 0.0);
     }
+
+    #[test]
+    fn dual_fd_parity() {
+        let eval = |x: f64| {
+            calibrate_filipovic_rkhs_smooth_yield_curve(&FilipovicRkhsYieldCurveSpec {
+                cashflow_times: vec![1.0, 2.0],
+                instrument_cashflow_matrix: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
+                instrument_dirty_prices: vec![0.98 + x, 0.95],
+                decay_alpha: 1.0,
+                ridge_penalty_lambda: 1e-8,
+                query_times: vec![1.0],
+            })
+            .query_zero_rates[0]
+        };
+        let h = 1e-5;
+        let fd = (eval(h) - eval(-h)) / (2.0 * h);
+        let x = Dual::<1>::variable(0.0, 0);
+        let ad = calibrate_filipovic_rkhs_smooth_yield_curve(&FilipovicRkhsYieldCurveSpec {
+            cashflow_times: vec![Dual::<1>::from_value(1.0), Dual::<1>::from_value(2.0)],
+            instrument_cashflow_matrix: vec![
+                vec![Dual::<1>::one(), Dual::<1>::zero()],
+                vec![Dual::<1>::zero(), Dual::<1>::one()],
+            ],
+            instrument_dirty_prices: vec![
+                Dual::<1>::from_value(0.98) + x,
+                Dual::<1>::from_value(0.95),
+            ],
+            decay_alpha: Dual::<1>::one(),
+            ridge_penalty_lambda: Dual::<1>::from_value(1e-8),
+            query_times: vec![Dual::<1>::one()],
+        })
+        .query_zero_rates[0];
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
 }
+
 #[derive(Debug, Clone)]
 pub struct FlatForwardCurve<T: Real = f64> {
     pub reference_date: Date,

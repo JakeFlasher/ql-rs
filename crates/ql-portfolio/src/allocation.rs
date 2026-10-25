@@ -1,12 +1,53 @@
 #![allow(clippy::needless_range_loop)]
 use ql_ad::Real;
+use thiserror::Error;
+fn solve_dense_alloc<T: Real>(a: &[Vec<T>], b: &[T]) -> Vec<T> {
+    let n = b.len();
+    let mut m = vec![vec![T::zero(); n + 1]; n];
+    for i in 0..n {
+        for j in 0..n {
+            m[i][j] = a[i][j];
+        }
+        m[i][n] = b[i];
+    }
+    for i in 0..n {
+        let mut p = i;
+        for r in i + 1..n {
+            if m[r][i].abs().val() > m[p][i].abs().val() {
+                p = r;
+            }
+        }
+        m.swap(i, p);
+        let d = if m[i][i].abs().val() < 1e-14 {
+            if m[i][i].val() < 0.0 {
+                T::from_f64(-1e-14)
+            } else {
+                T::from_f64(1e-14)
+            }
+        } else {
+            m[i][i]
+        };
+        for j in i..=n {
+            m[i][j] /= d;
+        }
+        let piv = m[i].clone();
+        for r in 0..n {
+            if r != i {
+                let f = m[r][i];
+                for j in i..=n {
+                    m[r][j] -= f * piv[j];
+                }
+            }
+        }
+    }
+    (0..n).map(|i| m[i][n]).collect()
+}
 #[cfg(test)]
 mod phase23_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
     fn nco_weights_sum() {
-        let _ = std::mem::size_of::<Dual<1>>();
         let s = LopezDePradoNcoDenoisedSpec {
             covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
             expected_returns: vec![0.05, 0.06],
@@ -16,10 +57,37 @@ mod phase23_tests {
         };
         let r = solve_lopez_de_prado_denoised_nco_allocation(&s);
         assert!((r.nco_optimal_weights.iter().sum::<f64>() - 1.0).abs() < 1e-8);
+        assert!((r.nco_optimal_weights[0] - r.nco_optimal_weights[1]).abs() > 1e-8);
         assert!(r.denoised_condition_number <= r.raw_condition_number + 1e-8);
     }
+
+    #[test]
+    fn dual_fd_parity() {
+        fn mk<T: Real>(x: T) -> LopezDePradoNcoDenoisedSpec<T> {
+            LopezDePradoNcoDenoisedSpec {
+                covariance: vec![
+                    vec![T::from_f64(0.04), T::from_f64(0.01)],
+                    vec![T::from_f64(0.01), T::from_f64(0.09)],
+                ],
+                expected_returns: vec![x, T::from_f64(0.06)],
+                sample_ratio_q: T::from_f64(2.0),
+                denoising_alpha: T::from_f64(0.5),
+                num_clusters: 2,
+            }
+        }
+        let h = 1e-5;
+        let fd = (solve_lopez_de_prado_denoised_nco_allocation(&mk(0.05 + h))
+            .nco_portfolio_volatility
+            .val()
+            - solve_lopez_de_prado_denoised_nco_allocation(&mk(0.05 - h))
+                .nco_portfolio_volatility
+                .val())
+            / (2.0 * h);
+        let ad = solve_lopez_de_prado_denoised_nco_allocation(&mk(Dual::<1>::variable(0.05, 0)))
+            .nco_portfolio_volatility;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
 }
-use thiserror::Error;
 
 #[derive(Clone, Debug)]
 pub struct LopezDePradoNcoDenoisedSpec<T: Real = f64> {
@@ -52,6 +120,8 @@ pub fn solve_lopez_de_prado_denoised_nco_allocation<T: Real>(
     let mut corr = vec![vec![T::zero(); n]; n];
     for i in 0..n {
         vol[i] = s.covariance[i][i].max_val(T::from_f64(1e-12)).sqrt();
+    }
+    for i in 0..n {
         for j in 0..n {
             corr[i][j] = s.covariance[i][j] / (vol[i] * vol[j]);
         }
@@ -75,15 +145,16 @@ pub fn solve_lopez_de_prado_denoised_nco_allocation<T: Real>(
     for i in 0..n {
         for j in 0..n {
             for k in 0..n {
-                dc[i][j] += vecs[k][i] * deig[k] * vecs[k][j];
+                dc[i][j] += vecs[i][k] * deig[k] * vecs[j][k];
             }
         }
     }
+    let dc_diag: Vec<T> = (0..n)
+        .map(|i| dc[i][i].max_val(T::from_f64(1e-12)).sqrt())
+        .collect();
     for i in 0..n {
-        let di = dc[i][i];
         for j in 0..n {
-            let dj = dc[j][j];
-            dc[i][j] /= (di * dj).sqrt().max_val(T::from_f64(1e-12));
+            dc[i][j] /= dc_diag[i] * dc_diag[j];
         }
     }
     let mut ds = vec![vec![T::zero(); n]; n];
@@ -97,34 +168,88 @@ pub fn solve_lopez_de_prado_denoised_nco_allocation<T: Real>(
     let mut det = dc.clone();
     for i in 0..n {
         for j in 0..n {
-            det[i][j] -= deig[0] * vecs[0][i] * vecs[0][j];
+            det[i][j] -= deig[0] * vecs[i][0] * vecs[j][0];
         }
     }
+    let det_diag: Vec<T> = (0..n)
+        .map(|i| det[i][i].abs().max_val(T::from_f64(1e-12)).sqrt())
+        .collect();
     for i in 0..n {
-        let di = det[i][i];
         for j in 0..n {
-            let dj = det[j][j];
-            det[i][j] /= (di * dj).abs().sqrt().max_val(T::from_f64(1e-12));
+            det[i][j] /= det_diag[i] * det_diag[j];
         }
     }
-    let mut mw = s.expected_returns.clone();
-    let sm = mw
-        .iter()
-        .copied()
-        .fold(T::zero(), |a, v| a + v.abs())
-        .max_val(T::from_f64(1e-12));
-    for x in &mut mw {
-        *x = x.abs() / sm;
+    let mut mark_a = ds.clone();
+    for i in 0..n {
+        mark_a[i][i] += T::from_f64(1e-8);
     }
+    let zraw = solve_dense_alloc(&mark_a, &s.expected_returns);
+    let zsum = zraw.iter().copied().fold(T::zero(), |a, v| a + v);
+    let zden = if zsum.abs().val() < 1e-12 {
+        T::from_f64(1e-12)
+    } else {
+        zsum
+    };
+    let mw: Vec<T> = zraw.iter().map(|v| *v / zden).collect();
     let k = s.num_clusters.clamp(1, n);
     let mut intra = vec![T::zero(); n];
-    for i in 0..n {
-        intra[i] = T::one() / T::from_f64((n / k) as f64);
+    let ranges: Vec<(usize, usize)> = (0..k).map(|c| (c * n / k, (c + 1) * n / k)).collect();
+    for &(lo, hi) in &ranges {
+        let sz = hi - lo;
+        let mut sub = vec![vec![T::zero(); sz]; sz];
+        let mut mu = vec![T::zero(); sz];
+        for i in 0..sz {
+            mu[i] = s.expected_returns[lo + i];
+            for j in 0..sz {
+                sub[i][j] = ds[lo + i][lo + j];
+            }
+            sub[i][i] += T::from_f64(1e-8);
+        }
+        let u = solve_dense_alloc(&sub, &mu);
+        let us = u.iter().copied().fold(T::zero(), |a, v| a + v);
+        let ud = if us.abs().val() < 1e-12 {
+            T::from_f64(1e-12)
+        } else {
+            us
+        };
+        for i in 0..sz {
+            intra[lo + i] = u[i] / ud;
+        }
     }
-    let eta = vec![T::one() / T::from_f64(k as f64); k];
+    let mut omega = vec![vec![T::zero(); k]; k];
+    let mut cmu = vec![T::zero(); k];
+    for aidx in 0..k {
+        let (alo, ahi) = ranges[aidx];
+        for i in alo..ahi {
+            cmu[aidx] += intra[i] * s.expected_returns[i];
+        }
+        for bidx in 0..k {
+            let (blo, bhi) = ranges[bidx];
+            for i in alo..ahi {
+                for j in blo..bhi {
+                    omega[aidx][bidx] += intra[i] * ds[i][j] * intra[j];
+                }
+            }
+        }
+    }
+    for i in 0..k {
+        omega[i][i] += T::from_f64(1e-8);
+    }
+    let eraw = solve_dense_alloc(&omega, &cmu);
+    let esum = eraw.iter().copied().fold(T::zero(), |a, v| a + v);
+    let eden = if esum.abs().val() < 1e-12 {
+        T::from_f64(1e-12)
+    } else {
+        esum
+    };
+    let eta: Vec<T> = eraw.iter().map(|v| *v / eden).collect();
     let mut w = vec![T::zero(); n];
     for i in 0..n {
-        w[i] = T::one() / T::from_f64(n as f64);
+        let c = ranges
+            .iter()
+            .position(|&(lo, hi)| i >= lo && i < hi)
+            .unwrap_or(0);
+        w[i] = eta[c] * intra[i];
     }
     let mut pv = T::zero();
     for i in 0..n {

@@ -5,7 +5,6 @@ mod phase23_tests {
     use ql_ad::Dual;
     #[test]
     fn structural_forward_finite() {
-        let _ = std::mem::size_of::<Dual<1>>();
         let s = AidCarmonaStructuralElectricityStackSpec {
             gas_forward: 30.0,
             gas_vol: 0.3,
@@ -27,6 +26,56 @@ mod phase23_tests {
         let r = price_aid_carmona_structural_electricity_stack(&s);
         assert!(r.structural_power_forward.is_finite());
         assert!(r.negative_price_probability >= 0.0 && r.negative_price_probability <= 1.0);
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        let mk = |x: f64| AidCarmonaStructuralElectricityStackSpec {
+            gas_forward: x,
+            gas_vol: 0.3,
+            base_heat_rate: 2.0,
+            total_capacity_mw: 100.0,
+            baseline_capacity_anchor_mw: 50.0,
+            expected_load_mw: 80.0,
+            expected_renewable_gen_mw: 20.0,
+            residual_load_vol_mw: 10.0,
+            stack_convexity_alpha: 1.0,
+            negative_price_floor_depth: 5.0,
+            curtailment_beta: 1.0,
+            load_gas_correlation: 0.2,
+            power_option_strike: 50.0,
+            spike_threshold_price: 100.0,
+            risk_free_rate: 0.02,
+            expiry: 1.0,
+        };
+        let h = 1e-5;
+        let fd = (price_aid_carmona_structural_electricity_stack(&mk(30.0 + h))
+            .structural_power_forward
+            - price_aid_carmona_structural_electricity_stack(&mk(30.0 - h))
+                .structural_power_forward)
+            / (2.0 * h);
+        let ad = price_aid_carmona_structural_electricity_stack(
+            &AidCarmonaStructuralElectricityStackSpec {
+                gas_forward: Dual::<1>::variable(30.0, 0),
+                gas_vol: Dual::<1>::from_value(0.3),
+                base_heat_rate: Dual::<1>::from_value(2.0),
+                total_capacity_mw: Dual::<1>::from_value(100.0),
+                baseline_capacity_anchor_mw: Dual::<1>::from_value(50.0),
+                expected_load_mw: Dual::<1>::from_value(80.0),
+                expected_renewable_gen_mw: Dual::<1>::from_value(20.0),
+                residual_load_vol_mw: Dual::<1>::from_value(10.0),
+                stack_convexity_alpha: Dual::<1>::one(),
+                negative_price_floor_depth: Dual::<1>::from_value(5.0),
+                curtailment_beta: Dual::<1>::one(),
+                load_gas_correlation: Dual::<1>::from_value(0.2),
+                power_option_strike: Dual::<1>::from_value(50.0),
+                spike_threshold_price: Dual::<1>::from_value(100.0),
+                risk_free_rate: Dual::<1>::from_value(0.02),
+                expiry: Dual::<1>::one(),
+            },
+        )
+        .structural_power_forward;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
 
@@ -66,38 +115,83 @@ pub fn price_aid_carmona_structural_electricity_stack<T: Real>(
     let mu = s.expected_load_mw - s.expected_renewable_gen_mw;
     let cap = s.total_capacity_mw.max_val(T::from_f64(1e-8));
     let a = s.stack_convexity_alpha;
-    let thermal = s.base_heat_rate
-        * s.gas_forward
-        * (a * (mu - s.baseline_capacity_anchor_mw) / cap
-            + T::from_f64(0.5) * a * a * s.residual_load_vol_mw * s.residual_load_vol_mw * t
-                / (cap * cap)
-            + s.load_gas_correlation * a * s.residual_load_vol_mw * s.gas_vol * t / cap)
-            .exp();
-    let curt = s.negative_price_floor_depth
-        * (-s.curtailment_beta * mu / cap
-            + T::from_f64(0.5)
-                * s.curtailment_beta
-                * s.curtailment_beta
-                * s.residual_load_vol_mw
-                * s.residual_load_vol_mw
-                * t
-                / (cap * cap))
-            .exp();
-    let fwd = thermal - curt;
+    let nodes = [
+        -5.500901664683527,
+        -4.271825816826805,
+        -3.223710617604538,
+        -2.259464451065009,
+        -1.340375197151619,
+        -0.444403001944095,
+        0.444403001944095,
+        1.340375197151619,
+        2.259464451065009,
+        3.223710617604538,
+        4.271825816826805,
+        5.500901664683527,
+    ];
+    let weights = [
+        0.000000150020168,
+        0.000048371849368,
+        0.002203380678428,
+        0.029116687757654,
+        0.146967049290049,
+        0.321664362705152,
+        0.321664362705152,
+        0.146967049290049,
+        0.029116687757654,
+        0.002203380678428,
+        0.000048371849368,
+        0.000000150020168,
+    ];
+    let mut call_sum = T::zero();
+    let mut fwd = T::zero();
+    let mut pnodes = Vec::with_capacity(12);
+    for i in 0..12 {
+        let z = T::from_f64(nodes[i]);
+        let w = T::from_f64(weights[i]);
+        let load = s.expected_load_mw - s.expected_renewable_gen_mw
+            + s.residual_load_vol_mw * t.sqrt() * z;
+        let gas_cond = s.gas_forward
+            * (s.load_gas_correlation * s.gas_vol * t.sqrt() * z
+                - T::from_f64(0.5)
+                    * s.load_gas_correlation
+                    * s.load_gas_correlation
+                    * s.gas_vol
+                    * s.gas_vol
+                    * t)
+                .exp();
+        let pnode = s.base_heat_rate
+            * gas_cond
+            * (a * (load - s.baseline_capacity_anchor_mw) / cap
+                + T::from_f64(0.5)
+                    * (T::one() - s.load_gas_correlation * s.load_gas_correlation)
+                    * s.gas_vol
+                    * s.gas_vol
+                    * t)
+                .exp()
+            - s.negative_price_floor_depth * (-s.curtailment_beta * load / cap).exp();
+        fwd += w * pnode;
+        let diff = pnode - s.power_option_strike;
+        call_sum += w * T::from_f64(0.5) * (diff + (diff * diff + T::from_f64(1e-8)).sqrt());
+        pnodes.push((w, pnode));
+    }
     let det =
         s.base_heat_rate * s.gas_forward * (a * (mu - s.baseline_capacity_anchor_mw) / cap).exp()
             - s.negative_price_floor_depth * (-s.curtailment_beta * mu / cap).exp();
-    let sig = s.residual_load_vol_mw * t.sqrt();
-    let neg = ((T::zero() - det) / sig.max_val(T::from_f64(1e-8))).norm_cdf();
-    let scarcity = ((s.spike_threshold_price - det) / sig.max_val(T::from_f64(1e-8))).norm_cdf();
-    let call = (-s.risk_free_rate * t).exp() * (fwd - s.power_option_strike).max_val(T::zero());
+    let mut varp = T::zero();
+    for (w, pn) in &pnodes {
+        varp += *w * (*pn - fwd) * (*pn - fwd);
+    }
+    let sig = varp.max_val(T::from_f64(1e-4)).sqrt();
+    let neg = (-fwd / sig).norm_cdf();
+    let scarcity = ((fwd - s.spike_threshold_price) / sig).norm_cdf();
     AidCarmonaStructuralElectricityStackReport {
         structural_power_forward: fwd,
         deterministic_merit_order_price: det,
         scarcity_spike_convexity_premium: (fwd - det).max_val(T::zero()),
         negative_price_probability: neg,
-        scarcity_spike_probability: (T::one() - scarcity).max_val(T::zero()),
-        structural_power_call_price: call,
+        scarcity_spike_probability: scarcity,
+        structural_power_call_price: (-s.risk_free_rate * t).exp() * call_sum,
         battery_storage_peak_shaving_value: (neg
             * (s.power_option_strike - det).max_val(T::zero())
             + (T::one() - scarcity) * (s.spike_threshold_price - det).max_val(T::zero()))

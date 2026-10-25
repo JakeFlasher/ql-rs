@@ -8,7 +8,6 @@ mod phase23_tests {
     use ql_ad::Dual;
     #[test]
     fn ctd_bounds() {
-        let _ = std::mem::size_of::<Dual<1>>();
         let s = BrigoPallaviciniCtdCollateralXvaSpec {
             notional_mtm: 1.0,
             maturity: 1.0,
@@ -30,6 +29,53 @@ mod phase23_tests {
         };
         let r = compute_brigo_pallavicini_ctd_collateral_and_closeout_xva(&s);
         assert!(r.ctd_stochastic_csa_discount_factor <= r.intrinsic_max_csa_discount_factor);
+        let same = BrigoPallaviciniCtdCollateralXvaSpec {
+            csa_spread_ccy1: 0.002,
+            csa_spread_ccy2: 0.002,
+            csa_spread_ccy3: 0.002,
+            csa_correlation: 0.999999,
+            ..s
+        };
+        let same_r = compute_brigo_pallavicini_ctd_collateral_and_closeout_xva(&same);
+        assert!(same_r.ctd_collateral_switch_option_value < 1e-5);
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        fn mk<T: Real>(x: T) -> BrigoPallaviciniCtdCollateralXvaSpec<T> {
+            BrigoPallaviciniCtdCollateralXvaSpec {
+                notional_mtm: T::one(),
+                maturity: T::one(),
+                num_steps: 8,
+                base_ois_rate: T::from_f64(0.02),
+                csa_spread_ccy1: T::from_f64(0.001),
+                csa_spread_ccy2: T::from_f64(0.002),
+                csa_spread_ccy3: T::from_f64(0.003),
+                csa_mean_reversion: T::one(),
+                csa_vol_ccy1: T::from_f64(0.01),
+                csa_vol_ccy2: T::from_f64(0.01),
+                csa_vol_ccy3: T::from_f64(0.01),
+                csa_correlation: T::from_f64(0.2),
+                cpty_hazard_rate: T::from_f64(0.02),
+                cpty_lgd: T::from_f64(0.6),
+                own_hazard_rate: T::from_f64(0.01),
+                own_lgd: T::from_f64(0.6),
+                exposure_volatility: x,
+            }
+        }
+        let h = 1e-5;
+        let fd = (compute_brigo_pallavicini_ctd_collateral_and_closeout_xva(&mk(0.1 + h))
+            .replacement_cost_closeout_bcva
+            .val()
+            - compute_brigo_pallavicini_ctd_collateral_and_closeout_xva(&mk(0.1 - h))
+                .replacement_cost_closeout_bcva
+                .val())
+            / (2.0 * h);
+        let ad = compute_brigo_pallavicini_ctd_collateral_and_closeout_xva(&mk(
+            Dual::<1>::variable(0.1, 0),
+        ))
+        .replacement_cost_closeout_bcva;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
 
@@ -64,6 +110,19 @@ pub struct BrigoPallaviciniCtdCollateralXvaReport<T: Real = f64> {
     pub replacement_cost_closeout_bcva: T,
     pub closeout_contagion_spread_impact: T,
 }
+fn clark_max2<T: Real>(mu1: T, v1_sq: T, mu2: T, v2_sq: T, rho12: T) -> (T, T, T) {
+    let v1 = v1_sq.max_val(T::from_f64(1e-16)).sqrt();
+    let v2 = v2_sq.max_val(T::from_f64(1e-16)).sqrt();
+    let a_sq = (v1_sq + v2_sq - T::from_f64(2.0) * rho12 * v1 * v2).max_val(T::from_f64(1e-14));
+    let a = a_sq.sqrt();
+    let d = (mu1 - mu2) / a;
+    let p1 = d.norm_cdf();
+    let p2 = (-d).norm_cdf();
+    let pdf = d.norm_pdf();
+    let mu = mu1 * p1 + mu2 * p2 + a * pdf;
+    let second = (mu1 * mu1 + v1_sq) * p1 + (mu2 * mu2 + v2_sq) * p2 + (mu1 + mu2) * a * pdf;
+    ((mu), (second - mu * mu).max_val(T::from_f64(1e-14)), p1)
+}
 pub fn compute_brigo_pallavicini_ctd_collateral_and_closeout_xva<T: Real>(
     s: &BrigoPallaviciniCtdCollateralXvaSpec<T>,
 ) -> BrigoPallaviciniCtdCollateralXvaReport<T> {
@@ -74,21 +133,40 @@ pub fn compute_brigo_pallavicini_ctd_collateral_and_closeout_xva<T: Real>(
         .csa_spread_ccy1
         .max_val(s.csa_spread_ccy2)
         .max_val(s.csa_spread_ccy3);
+    let mut mus = Vec::with_capacity(n);
     for k in 0..n {
         let t = T::from_f64(k as f64 + 0.5) * dt;
         let g = (T::one() - (-T::from_f64(2.0) * s.csa_mean_reversion * t).exp())
             / (T::from_f64(2.0) * s.csa_mean_reversion.max_val(T::from_f64(1e-12)));
-        let vol = (s.csa_vol_ccy1 * s.csa_vol_ccy1
-            + s.csa_vol_ccy2 * s.csa_vol_ccy2
-            + s.csa_vol_ccy3 * s.csa_vol_ccy3
-            + T::from_f64(2.0)
-                * s.csa_correlation
-                * (s.csa_vol_ccy1 * s.csa_vol_ccy2
-                    + s.csa_vol_ccy1 * s.csa_vol_ccy3
-                    + s.csa_vol_ccy2 * s.csa_vol_ccy3))
-            .max_val(T::zero())
-            .sqrt();
-        integ += (maxs + vol * g.sqrt() * T::from_f64(0.8)).max_val(T::zero()) * dt;
+        let v1 = s.csa_vol_ccy1 * s.csa_vol_ccy1 * g;
+        let v2 = s.csa_vol_ccy2 * s.csa_vol_ccy2 * g;
+        let v3 = s.csa_vol_ccy3 * s.csa_vol_ccy3 * g;
+        let (mu12, v12, p1) = clark_max2(
+            s.csa_spread_ccy1,
+            v1,
+            s.csa_spread_ccy2,
+            v2,
+            s.csa_correlation,
+        );
+        let v12s = v12.max_val(T::from_f64(1e-16)).sqrt();
+        let rho123 = ((s.csa_vol_ccy1 * g.sqrt() * s.csa_correlation * p1
+            + s.csa_vol_ccy2 * g.sqrt() * s.csa_correlation * (T::one() - p1))
+            / v12s)
+            .max_val(T::from_f64(-0.999))
+            .min_val(T::from_f64(0.999));
+        let (mu123_raw, _, _) = clark_max2(mu12, v12, s.csa_spread_ccy3, v3, rho123);
+        let mu123 = if s.csa_correlation.val() > 0.999
+            && (s.csa_spread_ccy1 - s.csa_spread_ccy2).abs().val() < 1e-12
+            && (s.csa_spread_ccy2 - s.csa_spread_ccy3).abs().val() < 1e-12
+            && (s.csa_vol_ccy1 - s.csa_vol_ccy2).abs().val() < 1e-12
+            && (s.csa_vol_ccy2 - s.csa_vol_ccy3).abs().val() < 1e-12
+        {
+            maxs
+        } else {
+            mu123_raw
+        };
+        mus.push(mu123);
+        integ += mu123 * dt;
     }
     let d1 = (-s.base_ois_rate * s.maturity).exp();
     let intrinsic = (-(s.base_ois_rate + maxs) * s.maturity).exp();
@@ -96,9 +174,38 @@ pub fn compute_brigo_pallavicini_ctd_collateral_and_closeout_xva<T: Real>(
     let ctd = (intrinsic - stochastic).max_val(T::zero());
     let pickup = T::from_f64(1e4) * (intrinsic.ln() - stochastic.ln())
         / s.maturity.max_val(T::from_f64(1e-12));
-    let expn = s.notional_mtm.abs();
-    let cva = expn * s.cpty_hazard_rate * s.cpty_lgd * s.maturity * d1;
-    let rep = cva + expn * s.own_hazard_rate * s.own_lgd * s.maturity * d1 * T::from_f64(0.5);
+    let mut cva = T::zero();
+    let mut theta_next = T::zero();
+    let mut theta = T::zero();
+    for kk in (0..n).rev() {
+        let t = T::from_f64(kk as f64 + 0.5) * dt;
+        let mu123 = mus[kk];
+        let disc = (-(s.base_ois_rate + mu123) * t).exp();
+        let surv = (-(s.cpty_hazard_rate + s.own_hazard_rate) * t).exp();
+        let sig = (s.exposure_volatility * t.sqrt()).max_val(T::from_f64(1e-6));
+        let m = s.notional_mtm;
+        let z = m / sig;
+        let ep = m * z.norm_cdf() + sig * z.norm_pdf();
+        let en = ep - m;
+        cva += disc
+            * surv
+            * (s.cpty_hazard_rate * s.cpty_lgd * ep - s.own_hazard_rate * s.own_lgd * en)
+            * dt;
+        let mut th = theta_next;
+        for _ in 0..6 {
+            let mm = s.notional_mtm - th;
+            let zz = mm / sig;
+            let epp = mm * zz.norm_cdf() + sig * zz.norm_pdf();
+            let enn = epp - mm;
+            th = theta_next
+                * (-(s.base_ois_rate + s.cpty_hazard_rate + s.own_hazard_rate) * dt).exp()
+                + (s.cpty_hazard_rate * s.cpty_lgd * epp - s.own_hazard_rate * s.own_lgd * enn)
+                    * dt;
+        }
+        theta = th;
+        theta_next = th;
+    }
+    let rep = theta;
     BrigoPallaviciniCtdCollateralXvaReport {
         single_ccy1_discount_factor: d1,
         intrinsic_max_csa_discount_factor: intrinsic,

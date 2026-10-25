@@ -7,7 +7,6 @@ mod phase23_tests {
     use ql_ad::Dual;
     #[test]
     fn propagator_budget() {
-        let _ = std::mem::size_of::<Dual<1>>();
         let s = BouchaudWebsterPropagatorImpactSpec {
             metaorder_size_q: 1.0,
             daily_volume_vd: 10.0,
@@ -24,6 +23,38 @@ mod phase23_tests {
         let r = solve_bouchaud_webster_square_root_and_propagator_execution(&s);
         assert!((r.optimal_u_shaped_trades.iter().sum::<f64>() - 1.0).abs() < 1e-8);
         assert!(r.optimal_propagator_cost <= r.twap_propagator_cost + 1e-8);
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        fn mk<T: Real>(x: T) -> BouchaudWebsterPropagatorImpactSpec<T> {
+            BouchaudWebsterPropagatorImpactSpec {
+                metaorder_size_q: x,
+                daily_volume_vd: T::from_f64(10.0),
+                daily_volatility_sigma: T::from_f64(0.2),
+                y_prefactor: T::one(),
+                propagator_exponent_beta: T::from_f64(0.5),
+                propagator_scale_g0: T::one(),
+                regularization_tau0: T::from_f64(0.01),
+                temporary_impact_eta: T::from_f64(0.1),
+                risk_aversion_lambda: T::from_f64(0.1),
+                horizon: T::one(),
+                num_slices: 8,
+            }
+        }
+        let h = 1e-5;
+        let fd = (solve_bouchaud_webster_square_root_and_propagator_execution(&mk(1.0 + h))
+            .optimal_propagator_cost
+            .val()
+            - solve_bouchaud_webster_square_root_and_propagator_execution(&mk(1.0 - h))
+                .optimal_propagator_cost
+                .val())
+            / (2.0 * h);
+        let ad = solve_bouchaud_webster_square_root_and_propagator_execution(&mk(
+            Dual::<1>::variable(1.0, 0),
+        ))
+        .optimal_propagator_cost;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
 
@@ -74,10 +105,8 @@ pub fn solve_bouchaud_webster_square_root_and_propagator_execution<T: Real>(
                     T::zero()
                 }
                 + s.risk_aversion_lambda
-                    * s.daily_volatility_sigma
-                    * s.daily_volatility_sigma
                     * dt
-                    * T::from_f64((n - i.max(j)) as f64);
+                    * T::from_f64((i.min(j) + 1).min(n - i.max(j)) as f64);
         }
     }
     let mut aug = vec![vec![T::zero(); n + 1]; n];
@@ -95,7 +124,15 @@ pub fn solve_bouchaud_webster_square_root_and_propagator_execution<T: Real>(
             }
         }
         aug.swap(i, p);
-        let d = aug[i][i].abs().max_val(T::from_f64(1e-12));
+        let d = if aug[i][i].abs().val() < 1e-12 {
+            if aug[i][i].val() < 0.0 {
+                T::from_f64(-1e-12)
+            } else {
+                T::from_f64(1e-12)
+            }
+        } else {
+            aug[i][i]
+        };
         for j in i..=n {
             aug[i][j] /= d;
         }

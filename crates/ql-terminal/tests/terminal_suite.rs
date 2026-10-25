@@ -333,21 +333,41 @@ fn phase22_tab32_terminal_renders_and_ticks_cleanly() {
 fn phase23_tab33_terminal_renders_and_reacts() {
     assert_eq!(TabId::ALL.len(), 33);
     assert!(TabId::ALL.contains(&TabId::Phase23Sota));
+    assert_eq!(
+        TabId::Phase23Sota.label(),
+        "33 RKHS/FMM/VV/LSV/JLT/CTD/QRH/NCO/DML"
+    );
     let mut ws = DeskWorkstation::new();
     let base = ws.step_tick();
     assert!(
         base.rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml_metric
             .is_finite()
     );
-    ws.set_scenario(ScenarioKind::CreditWideningPlus100Bp);
-    let stressed = ws.step_tick();
     assert!(
-        stressed
-            .rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml_metric
-            .is_finite()
+        ws.render_dashboard(&base, false)
+            .contains("33 RKHS/FMM/VV/LSV/JLT/CTD/QRH/NCO/DML")
     );
+    let tick = ws.step_tick();
     assert_ne!(
         base.rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml_metric,
-        stressed.rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml_metric
+        tick.rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml_metric
     );
+    for scenario in [
+        ScenarioKind::RatesPlus50Bp,
+        ScenarioKind::EquityCrashMinus15Pct,
+        ScenarioKind::CreditWideningPlus100Bp,
+        ScenarioKind::StagflationPlus150Bp,
+    ] {
+        ws.set_scenario(scenario);
+        let stressed = ws.step_tick();
+        assert!(
+            stressed
+                .rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml_metric
+                .is_finite()
+        );
+        assert_ne!(
+            base.rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml_metric,
+            stressed.rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml_metric
+        );
+    }
 }

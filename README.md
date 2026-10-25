@@ -35,8 +35,8 @@
 | `ql-commodities` | `crates/ql-commodities` | Asset classes | Futures curves, Schwartz–Smith, Clewlow–Strickland strip swaptions, weather HDD/CDD, clean spark/dark spreads, 3-leg spreads, Average Price Options (APO), take-or-pay and BESS arbitrage DP |
 | `ql-levy` | `crates/ql-levy` | Models | Merton, Kou, VG, CGMY COS, Lewis/Carr–Madan FFT |
 | `ql-fixed-income` | `crates/ql-fixed-income` | Rates | NSS, callable/OAS, CoCo AT1 bonds, convertibles, AFV default-coupled PDE, CPI/MBS burnout/OAS, specified pools, TBA rolls, Treasury futures CTD, Agency CMO waterfalls, ASW and IFT z-spreads |
-| `ql-benches` | `crates/ql-benches` | Delivery | 34-suite parity/timing harness |
-| `ql-terminal` | `crates/ql-terminal` | Delivery | Unified SDK, 32-tab Braille/ANSI workstation |
+| `ql-benches` | `crates/ql-benches` | Delivery | 35-suite parity/timing harness |
+| `ql-terminal` | `crates/ql-terminal` | Delivery | Unified SDK, 33-tab Braille/ANSI workstation |
 
 ## Numerical capabilities
 
@@ -89,6 +89,7 @@ The offline benchmark harness checks numerical parity against independent baseli
 | 32_sinhou_mb_rbergomi_choi_afs_expectile_aad | SinhOU/BK-FRN/MoriniBrigo/WWM/mrBergomi/Choi/AFS/EXVaR single-pass AD | 1582158.80 (IQR 11779.20) | 237718.80 (IQR 6461.40) | 6.66x | 1.505e-8 |
 | 33_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad | Phase21 institutional 12-engine AAD vs FD | 515680.00 (IQR 1522.80) | 79771.80 (IQR 1797.00) | 6.46x | 6.899e-9 |
 | 34_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad | Phase22 KRD/LPI/CoCo/Bergomi/CGMY/Guéant/Meucci/AAD | 2710837.60 (IQR 9714.80) | 681914.40 (IQR 12539.40) | 3.98x | 8.527e-12 |
+| 35_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml | Phase23 RKHS/FMM/VV/LSV/JLT/CTD/QRH/Parisian/Aïd/Propagator/NCO/DML | 91665.20 (IQR 238.40) | 22880.20 (IQR 1066.00) | 4.01x | 2.449e-6 |
 
 ## Quick start
 
@@ -118,5 +119,4 @@ MIT OR Apache-2.0.
 
 
 ## Phase 18 Institutional Expansion
-The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB and entropy pooling. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic-OU VIX, AFV convertibles, Clewlow–Strickland swaptions, Schur-HRP and nonlinear shrinkage. Phase 20 adds Sinh-OU/CIR++ RFR, callable BK FRNs, no-Armageddon credit options, WWM-XVA, mixed rough Bergomi, Choi/Li–Deng–Zhou spreads, MRJD commodities, AFS LOB, EXVaR and PCRP. The workstation now exposes Tab 32 and the benchmark suite contains 34 AD parity workloads, including book-backed Phase 22 SOTA engines.
-| 35_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml | Phase23 RKHS/FMM/VV/LSV/JLT/CTD/QRH/Parisian/Aïd/Propagator/NCO/DML | 1200000.00 (IQR 5000.00) | 400000.00 (IQR 4000.00) | 3.00x | 1.0e-8 |
+The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB and entropy pooling. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic-OU VIX, AFV convertibles, Clewlow–Strickland swaptions, Schur-HRP and nonlinear shrinkage. Phase 20 adds Sinh-OU/CIR++ RFR, callable BK FRNs, no-Armageddon credit options, WWM-XVA, mixed rough Bergomi, Choi/Li–Deng–Zhou spreads, MRJD commodities, AFS LOB, EXVaR and PCRP. The workstation now exposes Tab 33 and the benchmark suite contains 35 AD parity workloads, including book-backed Phase 22 SOTA engines.
