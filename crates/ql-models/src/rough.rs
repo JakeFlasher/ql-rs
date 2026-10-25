@@ -390,6 +390,103 @@ pub struct QuadraticRoughHestonParams<T: Real = f64> {
     pub z0: T,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct GatheralRosenbaumJointSpxVixQrhSpec<T: Real = f64> {
+    pub params: QuadraticRoughHestonParams<T>,
+    pub spot: T,
+    pub spx_strike: T,
+    pub vix_strike: T,
+    pub expiry: T,
+    pub rate: T,
+}
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn qrh_vix_positive() {
+        let _ = std::mem::size_of::<Dual<1>>();
+        let p = QuadraticRoughHestonParams {
+            hurst: 0.1,
+            nu: 0.3,
+            lambda: 1.0,
+            a: 1.0,
+            b: 0.0,
+            c: 0.04,
+            z0: 0.0,
+        };
+        let r =
+            evaluate_gatheral_rosenbaum_joint_spx_vix_qrh(&GatheralRosenbaumJointSpxVixQrhSpec {
+                params: p,
+                spot: 100.0,
+                spx_strike: 100.0,
+                vix_strike: 0.2,
+                expiry: 1.0,
+                rate: 0.02,
+            });
+        assert!(r.vix_futures_fair_value > 0.0);
+        assert!(r.zumbach_time_reversal_asymmetry >= 0.0);
+    }
+}
+#[derive(Clone, Debug)]
+pub struct GatheralRosenbaumJointSpxVixQrhReport<T: Real = f64> {
+    pub spx_implied_vol: T,
+    pub spx_atm_skew: T,
+    pub vix_futures_fair_value: T,
+    pub vix_variance_swap_strike: T,
+    pub vix_call_option_price: T,
+    pub vix_implied_vol: T,
+    pub vix_atm_upside_skew: T,
+    pub zumbach_time_reversal_asymmetry: T,
+}
+pub fn evaluate_gatheral_rosenbaum_joint_spx_vix_qrh<T: Real>(
+    s: &GatheralRosenbaumJointSpxVixQrhSpec<T>,
+) -> GatheralRosenbaumJointSpxVixQrhReport<T> {
+    let p = &s.params;
+    let iv = qrh_implied_vol_expansion(p, s.spot, s.spx_strike, s.expiry);
+    let zb = p.z0 - p.b;
+    let v0 = (p.a * zb * zb + p.c).max_val(T::from_f64(1e-8));
+    let h = p.hurst.clamp(0.02, 0.49);
+    let gh = T::from_f64(libm::tgamma(h + 0.5));
+    let varz = p.nu * p.nu * v0 * s.expiry.powf(2.0 * h) / (T::from_f64(2.0 * h) * gh * gh)
+        * (T::one() - (-T::from_f64(2.0) * p.lambda * s.expiry).exp())
+        / (T::from_f64(2.0) * p.lambda * s.expiry).max_val(T::from_f64(1e-12));
+    let muz = p.z0 * (-p.lambda * s.expiry).exp();
+    let nodes = [
+        -3.190993, -2.26658, -1.468553, -0.723551, 0.0, 0.723551, 1.468553, 2.26658, 3.190993,
+    ];
+    let weights = [
+        0.000396, 0.010976, 0.117, 0.373, 0.498, 0.373, 0.117, 0.010976, 0.000396,
+    ];
+    let dv = T::from_f64(30.0 / 365.0);
+    let mut vf = T::zero();
+    let mut vv = T::zero();
+    for i in 0..9 {
+        let z = muz + varz.max_val(T::zero()).sqrt() * T::from_f64(nodes[i]);
+        let fwd = p.a
+            * ((z - p.b) * (z - p.b) * (-p.lambda * dv).exp()
+                + p.nu * p.nu * v0 * dv.powf(2.0 * h) / (T::from_f64(2.0 * h)))
+            .max_val(T::zero())
+            + p.c;
+        vf += T::from_f64(weights[i]) * fwd.sqrt();
+        vv += T::from_f64(weights[i]) * fwd;
+    }
+    let call = (-s.rate * s.expiry).exp() * (vf - s.vix_strike).max_val(T::zero());
+    let zshock = p.nu * v0.sqrt() * s.expiry.powf(h);
+    let asym = T::from_f64(4.0) * p.a * p.b * zshock;
+    GatheralRosenbaumJointSpxVixQrhReport {
+        spx_implied_vol: iv,
+        spx_atm_skew: -p.a * zb.abs().max_val(T::from_f64(1e-8)),
+        vix_futures_fair_value: vf,
+        vix_variance_swap_strike: vv.max_val(T::zero()).sqrt(),
+        vix_call_option_price: call,
+        vix_implied_vol: ((vf / s.vix_strike).max_val(T::from_f64(1e-8))).ln().abs()
+            / s.expiry.max_val(T::from_f64(1e-8)).sqrt(),
+        vix_atm_upside_skew: (T::from_f64(2.0) * p.a * zshock).abs(),
+        zumbach_time_reversal_asymmetry: asym.abs(),
+    }
+}
+
 pub fn qrh_implied_vol_expansion<T: Real>(
     p: &QuadraticRoughHestonParams<T>,
     forward: T,

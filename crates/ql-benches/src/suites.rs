@@ -3467,6 +3467,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_sinhou_mb_rbergomi_choi_afs_expectile_aad(scale),
         benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(scale),
         benchmark_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad(scale),
+        benchmark_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml(scale),
     ]
 }
 
@@ -4164,7 +4165,7 @@ fn phase19_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
         payment_times: vec![1.0, 2.0],
         base_coupon_rate: T::from_f64(0.04),
         downgrade_step_up_spreads: vec![T::zero(), T::from_f64(0.008), T::zero()],
-        recovery_rate: T::from_f64(0.4),
+        recovery_rate: T::from_f64(0.4) + x[0] * T::from_f64(0.01),
         risk_free_rate: T::from_f64(0.03) + x[0] * 0.001,
     })
     .step_up_bond_price;
@@ -4912,6 +4913,266 @@ pub fn benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(
     run_comparison(
         "33_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad",
         "Phase21 institutional 12-engine AAD vs FD",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
+}
+
+/// Direct Phase 23 workload: one value from each of the twelve book-backed engines.
+pub fn phase23_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+    let rk = ql_curves::calibrate_filipovic_rkhs_smooth_yield_curve(
+        &ql_curves::FilipovicRkhsYieldCurveSpec {
+            cashflow_times: vec![T::one(), T::from_f64(2.0)],
+            instrument_cashflow_matrix: vec![vec![T::one(), T::zero()], vec![T::zero(), T::one()]],
+            instrument_dirty_prices: vec![T::from_f64(0.98) + x[0], T::from_f64(0.95) + x[1]],
+            decay_alpha: T::one(),
+            ridge_penalty_lambda: T::from_f64(1e-8),
+            query_times: vec![T::one()],
+        },
+    );
+    let fmm = ql_rates::price_lyashenko_mercurio_fmm_caplet_and_swaption(
+        &ql_rates::LyashenkoMercurioFmmSpec {
+            notional: T::one(),
+            exercise_time_t0: T::one(),
+            period_accruals: vec![T::from_f64(0.5), T::from_f64(0.5)],
+            forward_rates: vec![T::from_f64(0.03) + x[2], T::from_f64(0.03) + x[3]],
+            discount_factors: vec![T::from_f64(0.98), T::from_f64(0.96)],
+            fmm_volatilities: vec![T::from_f64(0.2), T::from_f64(0.2)],
+            displacement_shift: T::zero(),
+            inter_period_correlation_decay: T::one(),
+            strike: T::from_f64(0.03),
+            is_payer_or_caplet: true,
+        },
+    );
+    let vv = ql_fx::evaluate_castagna_full_vanna_volga_hedge_and_barrier(
+        &ql_fx::CastagnaFullVannaVolgaHedgeSpec {
+            spot: T::from_f64(100.0),
+            r_dom: T::from_f64(0.02),
+            r_for: T::from_f64(0.01),
+            expiry: T::one(),
+            atm_vol: T::from_f64(0.15),
+            rr_25d: x[0] * 0.01,
+            bf_25d: x[1] * 0.01,
+            target_strike: T::from_f64(100.0) + x[2],
+            knockout_barrier: T::from_f64(120.0),
+            unwind_attenuation_factor: T::from_f64(0.5),
+            is_up_and_out: true,
+            is_call: true,
+        },
+    );
+    let lsv = ql_vol::evaluate_guyon_markovian_projection_lsv_smile(
+        &ql_vol::GuyonMarkovianProjectionLsvSpec {
+            forward: T::from_f64(100.0),
+            strike: T::from_f64(100.0) + x[3],
+            expiry: T::one(),
+            forward_start_t1: T::from_f64(0.25),
+            atm_vol: T::from_f64(0.2),
+            market_atm_skew: T::from_f64(-0.1),
+            market_atm_curvature: T::from_f64(0.1),
+            sv_v0: T::from_f64(0.04),
+            sv_kappa: T::one(),
+            sv_eta: T::from_f64(0.3),
+            sv_rho: T::from_f64(-0.5),
+            sv_mixing_weight_eta: T::from_f64(0.5),
+        },
+    );
+    let jlt = ql_credit::evaluate_jlt_rating_migration_and_crcva(
+        &ql_credit::JarrowLandoTurnbullRatingMigrationSpec {
+            initial_rating_index: 0,
+            physical_generator_4x4: [
+                [
+                    -T::from_f64(0.1),
+                    T::from_f64(0.08),
+                    T::from_f64(0.01),
+                    T::from_f64(0.01),
+                ],
+                [
+                    T::from_f64(0.02),
+                    -T::from_f64(0.08),
+                    T::from_f64(0.04),
+                    T::from_f64(0.02),
+                ],
+                [
+                    T::zero(),
+                    T::from_f64(0.02),
+                    -T::from_f64(0.05),
+                    T::from_f64(0.03),
+                ],
+                [T::zero(); 4],
+            ],
+            risk_premium_multipliers: [T::one(); 3],
+            recovery_rate: T::from_f64(0.4) + x[0] * T::from_f64(0.01),
+            risk_free_rate: T::from_f64(0.02),
+            maturity: T::from_f64(5.0),
+            base_coupon_rate: T::from_f64(0.03),
+            hy_downgrade_stepup_spread: T::from_f64(0.01),
+            counterparty_epe_notional: T::one(),
+        },
+    );
+    let ctd = ql_xva::compute_brigo_pallavicini_ctd_collateral_and_closeout_xva(
+        &ql_xva::BrigoPallaviciniCtdCollateralXvaSpec {
+            notional_mtm: T::one(),
+            maturity: T::one(),
+            num_steps: 8,
+            base_ois_rate: T::from_f64(0.02),
+            csa_spread_ccy1: T::from_f64(0.001) + x[1] * T::from_f64(1e-4),
+            csa_spread_ccy2: T::from_f64(0.002),
+            csa_spread_ccy3: T::from_f64(0.003),
+            csa_mean_reversion: T::one(),
+            csa_vol_ccy1: T::from_f64(0.01),
+            csa_vol_ccy2: T::from_f64(0.01),
+            csa_vol_ccy3: T::from_f64(0.01),
+            csa_correlation: T::from_f64(0.2),
+            cpty_hazard_rate: T::from_f64(0.02),
+            cpty_lgd: T::from_f64(0.6),
+            own_hazard_rate: T::from_f64(0.01),
+            own_lgd: T::from_f64(0.6),
+            exposure_volatility: T::from_f64(0.1),
+        },
+    );
+    let qrh = ql_models::evaluate_gatheral_rosenbaum_joint_spx_vix_qrh(
+        &ql_models::GatheralRosenbaumJointSpxVixQrhSpec {
+            params: ql_models::QuadraticRoughHestonParams {
+                hurst: 0.1,
+                nu: T::from_f64(0.3),
+                lambda: T::one(),
+                a: T::one(),
+                b: T::zero(),
+                c: T::from_f64(0.04),
+                z0: x[0],
+            },
+            spot: T::from_f64(100.0),
+            spx_strike: T::from_f64(100.0),
+            vix_strike: T::from_f64(0.2),
+            expiry: T::one(),
+            rate: T::from_f64(0.02),
+        },
+    );
+    let par = ql_exotics::price_chesney_yor_cumulative_parisian_and_rainbow(
+        &ql_exotics::ChesneyYorCumulativeParisianRainbowSpec {
+            spot_1: T::from_f64(100.0),
+            spot_2: T::from_f64(102.0) + x[2],
+            strike: T::from_f64(100.0),
+            par_barrier: T::from_f64(120.0),
+            excursion_window_d: T::from_f64(0.1),
+            vol_1: T::from_f64(0.2),
+            vol_2: T::from_f64(0.2),
+            div_1: T::zero(),
+            div_2: T::zero(),
+            correlation: T::from_f64(0.5),
+            risk_free_rate: T::from_f64(0.02),
+            expiry: T::one(),
+            is_up_and_out: true,
+        },
+    );
+    let aid = ql_commodities::price_aid_carmona_structural_electricity_stack(
+        &ql_commodities::AidCarmonaStructuralElectricityStackSpec {
+            gas_forward: T::from_f64(30.0) + x[3],
+            gas_vol: T::from_f64(0.3),
+            base_heat_rate: T::from_f64(2.0),
+            total_capacity_mw: T::from_f64(100.0),
+            baseline_capacity_anchor_mw: T::from_f64(50.0),
+            expected_load_mw: T::from_f64(80.0),
+            expected_renewable_gen_mw: T::from_f64(20.0),
+            residual_load_vol_mw: T::from_f64(10.0),
+            stack_convexity_alpha: T::one(),
+            negative_price_floor_depth: T::from_f64(5.0),
+            curtailment_beta: T::one(),
+            load_gas_correlation: T::from_f64(0.2),
+            power_option_strike: T::from_f64(50.0),
+            spike_threshold_price: T::from_f64(100.0),
+            risk_free_rate: T::from_f64(0.02),
+            expiry: T::one(),
+        },
+    );
+    let imp = ql_portfolio::solve_bouchaud_webster_square_root_and_propagator_execution(
+        &ql_portfolio::BouchaudWebsterPropagatorImpactSpec {
+            metaorder_size_q: T::one() + x[0] * T::from_f64(0.1),
+            daily_volume_vd: T::from_f64(10.0),
+            daily_volatility_sigma: T::from_f64(0.2),
+            y_prefactor: T::one(),
+            propagator_exponent_beta: T::from_f64(0.5),
+            propagator_scale_g0: T::one(),
+            regularization_tau0: T::from_f64(0.01),
+            temporary_impact_eta: T::from_f64(0.1),
+            risk_aversion_lambda: T::from_f64(0.1),
+            horizon: T::one(),
+            num_slices: 8,
+        },
+    );
+    let nco = ql_portfolio::solve_lopez_de_prado_denoised_nco_allocation(
+        &ql_portfolio::LopezDePradoNcoDenoisedSpec {
+            covariance: vec![
+                vec![T::from_f64(0.04), T::from_f64(0.01)],
+                vec![T::from_f64(0.01), T::from_f64(0.09)],
+            ],
+            expected_returns: vec![T::from_f64(0.05) + x[1], T::from_f64(0.06)],
+            sample_ratio_q: T::from_f64(2.0),
+            denoising_alpha: T::from_f64(0.5),
+            num_clusters: 2,
+        },
+    );
+    let dml = ql_dml::evaluate_glasserman_savine_hybrid_pw_lrm_and_dml(
+        &ql_dml::GlassermanSavineHybridPwLrmSpec {
+            spot: T::from_f64(100.0),
+            strike: T::from_f64(100.0) + x[1],
+            rate: T::from_f64(0.02),
+            div_yield: T::zero(),
+            volatility: T::from_f64(0.2),
+            expiry: T::one(),
+            digital_smoothing_eps: T::from_f64(0.5),
+            dml_differential_weight_gamma: T::one(),
+        },
+    );
+    [
+        rk.pricing_rmse_bps,
+        fmm.backward_looking_rfr_caplet_npv,
+        vv.exact_vv_vanilla_price,
+        lsv.lsv_reconstructed_implied_vol,
+        jlt.rating_migration_adjusted_crcva,
+        ctd.ctd_collateral_switch_option_value,
+        qrh.vix_futures_fair_value,
+        par.rainbow_call_on_max,
+        aid.structural_power_forward,
+        imp.optimal_propagator_cost,
+        nco.nco_portfolio_volatility,
+        dml.hybrid_pw_lrm_digital_delta,
+    ]
+}
+pub fn benchmark_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml(
+    scale: usize,
+) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let baseline = move || {
+        let f = |x: [f64; 4]| phase23_workloads(x).iter().copied().sum::<f64>();
+        let mut z = f(x0);
+        for i in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[i] += 1e-5;
+            d[i] -= 1e-5;
+            z += (f(u) - f(d)) / (2e-5);
+        }
+        z
+    };
+    let sota = move || {
+        let x: [Dual<4>; 4] = [
+            Dual::variable(x0[0], 0),
+            Dual::variable(x0[1], 1),
+            Dual::variable(x0[2], 2),
+            Dual::variable(x0[3], 3),
+        ];
+        phase23_workloads(x)
+            .iter()
+            .map(|y| y.val + y.d.iter().sum::<f64>())
+            .sum::<f64>()
+    };
+    run_comparison(
+        "35_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml",
+        "Phase23 12-engine AAD vs FD",
         cfg,
         1e-4,
         baseline,

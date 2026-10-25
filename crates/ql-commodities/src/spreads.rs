@@ -1,4 +1,109 @@
 use ql_ad::Real;
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn structural_forward_finite() {
+        let _ = std::mem::size_of::<Dual<1>>();
+        let s = AidCarmonaStructuralElectricityStackSpec {
+            gas_forward: 30.0,
+            gas_vol: 0.3,
+            base_heat_rate: 2.0,
+            total_capacity_mw: 100.0,
+            baseline_capacity_anchor_mw: 50.0,
+            expected_load_mw: 80.0,
+            expected_renewable_gen_mw: 20.0,
+            residual_load_vol_mw: 10.0,
+            stack_convexity_alpha: 1.0,
+            negative_price_floor_depth: 5.0,
+            curtailment_beta: 1.0,
+            load_gas_correlation: 0.2,
+            power_option_strike: 50.0,
+            spike_threshold_price: 100.0,
+            risk_free_rate: 0.02,
+            expiry: 1.0,
+        };
+        let r = price_aid_carmona_structural_electricity_stack(&s);
+        assert!(r.structural_power_forward.is_finite());
+        assert!(r.negative_price_probability >= 0.0 && r.negative_price_probability <= 1.0);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct AidCarmonaStructuralElectricityStackSpec<T: Real = f64> {
+    pub gas_forward: T,
+    pub gas_vol: T,
+    pub base_heat_rate: T,
+    pub total_capacity_mw: T,
+    pub baseline_capacity_anchor_mw: T,
+    pub expected_load_mw: T,
+    pub expected_renewable_gen_mw: T,
+    pub residual_load_vol_mw: T,
+    pub stack_convexity_alpha: T,
+    pub negative_price_floor_depth: T,
+    pub curtailment_beta: T,
+    pub load_gas_correlation: T,
+    pub power_option_strike: T,
+    pub spike_threshold_price: T,
+    pub risk_free_rate: T,
+    pub expiry: T,
+}
+#[derive(Clone, Debug)]
+pub struct AidCarmonaStructuralElectricityStackReport<T: Real = f64> {
+    pub structural_power_forward: T,
+    pub deterministic_merit_order_price: T,
+    pub scarcity_spike_convexity_premium: T,
+    pub negative_price_probability: T,
+    pub scarcity_spike_probability: T,
+    pub structural_power_call_price: T,
+    pub battery_storage_peak_shaving_value: T,
+}
+pub fn price_aid_carmona_structural_electricity_stack<T: Real>(
+    s: &AidCarmonaStructuralElectricityStackSpec<T>,
+) -> AidCarmonaStructuralElectricityStackReport<T> {
+    let t = s.expiry.max_val(T::from_f64(1e-8));
+    let mu = s.expected_load_mw - s.expected_renewable_gen_mw;
+    let cap = s.total_capacity_mw.max_val(T::from_f64(1e-8));
+    let a = s.stack_convexity_alpha;
+    let thermal = s.base_heat_rate
+        * s.gas_forward
+        * (a * (mu - s.baseline_capacity_anchor_mw) / cap
+            + T::from_f64(0.5) * a * a * s.residual_load_vol_mw * s.residual_load_vol_mw * t
+                / (cap * cap)
+            + s.load_gas_correlation * a * s.residual_load_vol_mw * s.gas_vol * t / cap)
+            .exp();
+    let curt = s.negative_price_floor_depth
+        * (-s.curtailment_beta * mu / cap
+            + T::from_f64(0.5)
+                * s.curtailment_beta
+                * s.curtailment_beta
+                * s.residual_load_vol_mw
+                * s.residual_load_vol_mw
+                * t
+                / (cap * cap))
+            .exp();
+    let fwd = thermal - curt;
+    let det =
+        s.base_heat_rate * s.gas_forward * (a * (mu - s.baseline_capacity_anchor_mw) / cap).exp()
+            - s.negative_price_floor_depth * (-s.curtailment_beta * mu / cap).exp();
+    let sig = s.residual_load_vol_mw * t.sqrt();
+    let neg = ((T::zero() - det) / sig.max_val(T::from_f64(1e-8))).norm_cdf();
+    let scarcity = ((s.spike_threshold_price - det) / sig.max_val(T::from_f64(1e-8))).norm_cdf();
+    let call = (-s.risk_free_rate * t).exp() * (fwd - s.power_option_strike).max_val(T::zero());
+    AidCarmonaStructuralElectricityStackReport {
+        structural_power_forward: fwd,
+        deterministic_merit_order_price: det,
+        scarcity_spike_convexity_premium: (fwd - det).max_val(T::zero()),
+        negative_price_probability: neg,
+        scarcity_spike_probability: (T::one() - scarcity).max_val(T::zero()),
+        structural_power_call_price: call,
+        battery_storage_peak_shaving_value: (neg
+            * (s.power_option_strike - det).max_val(T::zero())
+            + (T::one() - scarcity) * (s.spike_threshold_price - det).max_val(T::zero()))
+            * t,
+    }
+}
 use ql_instruments::OptionType;
 
 #[derive(Clone, Debug)]

@@ -1,6 +1,170 @@
+use crate::barrier::{BarrierOptionSpec, MonitoringFrequency, price_barrier_option};
 use ql_ad::Real;
 use ql_math::bivariate_normal_cdf;
 use ql_vol::black_scholes_price;
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn parisian_order() {
+        let _ = std::mem::size_of::<Dual<1>>();
+        let s = ChesneyYorCumulativeParisianRainbowSpec {
+            spot_1: 100.0,
+            spot_2: 102.0,
+            strike: 100.0,
+            par_barrier: 120.0,
+            excursion_window_d: 0.1,
+            vol_1: 0.2,
+            vol_2: 0.2,
+            div_1: 0.0,
+            div_2: 0.0,
+            correlation: 0.5,
+            risk_free_rate: 0.02,
+            expiry: 1.0,
+            is_up_and_out: true,
+        };
+        let r = price_chesney_yor_cumulative_parisian_and_rainbow(&s);
+        assert!(r.instant_ko_barrier_price <= r.consecutive_parisian_ko_price);
+        assert!(r.stulz_rainbow_parity_error < 1e-8);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ChesneyYorCumulativeParisianRainbowSpec<T: Real = f64> {
+    pub spot_1: T,
+    pub spot_2: T,
+    pub strike: T,
+    pub par_barrier: T,
+    pub excursion_window_d: T,
+    pub vol_1: T,
+    pub vol_2: T,
+    pub div_1: T,
+    pub div_2: T,
+    pub correlation: T,
+    pub risk_free_rate: T,
+    pub expiry: T,
+    pub is_up_and_out: bool,
+}
+#[derive(Clone, Debug)]
+pub struct ChesneyYorCumulativeParisianRainbowReport<T: Real = f64> {
+    pub vanilla_call_1: T,
+    pub vanilla_call_2: T,
+    pub instant_ko_barrier_price: T,
+    pub consecutive_parisian_ko_price: T,
+    pub cumulative_parisian_ko_price: T,
+    pub parisian_protection_premium: T,
+    pub rainbow_call_on_max: T,
+    pub rainbow_call_on_min: T,
+    pub rainbow_put_on_min: T,
+    pub stulz_rainbow_parity_error: T,
+}
+pub fn price_chesney_yor_cumulative_parisian_and_rainbow<T: Real>(
+    s: &ChesneyYorCumulativeParisianRainbowSpec<T>,
+) -> ChesneyYorCumulativeParisianRainbowReport<T> {
+    let t = s.expiry.max_val(T::from_f64(1e-8));
+    let c1 = black_scholes_price(
+        s.spot_1,
+        s.strike,
+        s.vol_1,
+        t,
+        s.risk_free_rate,
+        s.div_1,
+        true,
+    );
+    let c2 = black_scholes_price(
+        s.spot_2,
+        s.strike,
+        s.vol_2,
+        t,
+        s.risk_free_rate,
+        s.div_2,
+        true,
+    );
+    let bs = BarrierOptionSpec {
+        option_type: ql_instruments::OptionType::Call,
+        barrier_type: if s.is_up_and_out {
+            ql_instruments::BarrierType::UpOut
+        } else {
+            ql_instruments::BarrierType::DownOut
+        },
+        spot: s.spot_1,
+        strike: s.strike,
+        barrier: s.par_barrier,
+        rebate: T::zero(),
+        rate: s.risk_free_rate,
+        div_yield: s.div_1,
+        vol: s.vol_1,
+        expiry: t,
+        monitoring: MonitoringFrequency::Continuous,
+    };
+    let ko = price_barrier_option(&bs);
+    let win = (T::one() - (s.excursion_window_d / t).powf(2.0)).max_val(T::zero());
+    let kc = T::from_f64(std::f64::consts::PI / 2.0).sqrt() * s.vol_1 * s.excursion_window_d.sqrt();
+    let km = T::from_f64(0.5).sqrt() * s.vol_1 * s.excursion_window_d.sqrt();
+    let shifted_c = if s.is_up_and_out {
+        s.par_barrier * kc.exp()
+    } else {
+        s.par_barrier * (-kc).exp()
+    };
+    let shifted_m = if s.is_up_and_out {
+        s.par_barrier * km.exp()
+    } else {
+        s.par_barrier * (-km).exp()
+    };
+    let bsc = BarrierOptionSpec {
+        barrier: shifted_c,
+        ..bs
+    };
+    let bsm = BarrierOptionSpec {
+        barrier: shifted_m,
+        ..bs
+    };
+    let consec = c1 - win * (c1 - price_barrier_option(&bsc));
+    let cumul = c1 - win * (c1 - price_barrier_option(&bsm));
+    let sx = (s.vol_1 * s.vol_1 + s.vol_2 * s.vol_2
+        - T::from_f64(2.0) * s.correlation * s.vol_1 * s.vol_2)
+        .max_val(T::from_f64(1e-10))
+        .sqrt();
+    let r1 = (s.vol_1 - s.correlation * s.vol_2) / sx;
+    let r2 = (s.vol_2 - s.correlation * s.vol_1) / sx;
+    let g1 = ((s.spot_1 / s.strike).ln()
+        + (s.risk_free_rate - s.div_1 + T::from_f64(0.5) * s.vol_1 * s.vol_1) * t)
+        / (s.vol_1 * t.sqrt());
+    let g2 = ((s.spot_2 / s.strike).ln()
+        + (s.risk_free_rate - s.div_2 + T::from_f64(0.5) * s.vol_2 * s.vol_2) * t)
+        / (s.vol_2 * t.sqrt());
+    let g12 = ((s.spot_1 / s.spot_2).ln() + (s.div_2 - s.div_1 - T::from_f64(0.5) * sx * sx) * t)
+        / (sx * t.sqrt());
+    let g21 = ((s.spot_2 / s.spot_1).ln() + (s.div_1 - s.div_2 - T::from_f64(0.5) * sx * sx) * t)
+        / (sx * t.sqrt());
+    let minc = s.spot_1 * (-s.div_1 * t).exp() * bivariate_normal_cdf(g1, -g12, -r1)
+        + s.spot_2 * (-s.div_2 * t).exp() * bivariate_normal_cdf(g2, -g21, -r2)
+        - s.strike
+            * (-s.risk_free_rate * t).exp()
+            * bivariate_normal_cdf(
+                g1 - s.vol_1 * t.sqrt(),
+                g2 - s.vol_2 * t.sqrt(),
+                s.correlation,
+            );
+    let maxc = c1 + c2 - minc;
+    let putmin = (minc
+        - (s.spot_1 * (-s.div_1 * t).exp() + s.spot_2 * (-s.div_2 * t).exp()
+            - s.strike * (-s.risk_free_rate * t).exp()))
+    .max_val(T::zero());
+    ChesneyYorCumulativeParisianRainbowReport {
+        vanilla_call_1: c1,
+        vanilla_call_2: c2,
+        instant_ko_barrier_price: ko,
+        consecutive_parisian_ko_price: consec.max_val(ko).min_val(c1),
+        cumulative_parisian_ko_price: cumul.max_val(ko).min_val(consec).min_val(c1),
+        parisian_protection_premium: (consec - ko).max_val(T::zero()),
+        rainbow_call_on_max: maxc.max_val(T::zero()),
+        rainbow_call_on_min: minc.max_val(T::zero()),
+        rainbow_put_on_min: putmin,
+        stulz_rainbow_parity_error: (maxc + minc - c1 - c2).abs(),
+    }
+}
 
 pub struct ForwardStartOptionEngine;
 impl ForwardStartOptionEngine {

@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)]
 use nalgebra::{DMatrix, DVector};
 use ql_ad::{Real, TapeScope, TapeVar};
 use ql_curves::YieldTermStructure;
@@ -9,6 +10,149 @@ pub mod cdo;
 pub mod cds_option;
 pub use cdo::*;
 pub use cds_option::*;
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn jlt_rows_stochastic() {
+        let _ = std::mem::size_of::<Dual<1>>();
+        let s = JarrowLandoTurnbullRatingMigrationSpec {
+            initial_rating_index: 0,
+            physical_generator_4x4: [
+                [-0.1, 0.08, 0.01, 0.01],
+                [0.02, -0.08, 0.04, 0.02],
+                [0.0, 0.02, -0.05, 0.03],
+                [0.0; 4],
+            ],
+            risk_premium_multipliers: [1.0; 3],
+            recovery_rate: 0.4,
+            risk_free_rate: 0.02,
+            maturity: 5.0,
+            base_coupon_rate: 0.03,
+            hy_downgrade_stepup_spread: 0.01,
+            counterparty_epe_notional: 1.0,
+        };
+        let r = evaluate_jlt_rating_migration_and_crcva(&s);
+        for row in r.transition_matrix_at_maturity {
+            assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-8);
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct JarrowLandoTurnbullRatingMigrationSpec<T: Real = f64> {
+    pub initial_rating_index: usize,
+    pub physical_generator_4x4: [[T; 4]; 4],
+    pub risk_premium_multipliers: [T; 3],
+    pub recovery_rate: T,
+    pub risk_free_rate: T,
+    pub maturity: T,
+    pub base_coupon_rate: T,
+    pub hy_downgrade_stepup_spread: T,
+    pub counterparty_epe_notional: T,
+}
+#[derive(Clone, Debug)]
+pub struct JarrowLandoTurnbullRatingMigrationReport<T: Real = f64> {
+    pub transition_matrix_at_maturity: [[T; 4]; 4],
+    pub max_row_sum_stochastic_error: T,
+    pub cumulative_default_probabilities_by_rating: [T; 3],
+    pub credit_spreads_bps_by_rating: [T; 3],
+    pub downgrade_probability_at_maturity: T,
+    pub vanilla_risky_bond_price: T,
+    pub stepup_rating_sensitive_bond_price: T,
+    pub stepup_clause_option_value: T,
+    pub default_only_cva: T,
+    pub rating_migration_adjusted_crcva: T,
+}
+fn mm4<T: Real>(a: &[[T; 4]; 4], b: &[[T; 4]; 4]) -> [[T; 4]; 4] {
+    let mut c = [[T::zero(); 4]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            for k in 0..4 {
+                c[i][j] += a[i][k] * b[k][j];
+            }
+        }
+    }
+    c
+}
+pub fn evaluate_jlt_rating_migration_and_crcva<T: Real>(
+    s: &JarrowLandoTurnbullRatingMigrationSpec<T>,
+) -> JarrowLandoTurnbullRatingMigrationReport<T> {
+    let mut q = [[T::zero(); 4]; 4];
+    for i in 0..3 {
+        let mut sm = T::zero();
+        for j in 0..4 {
+            if j != i {
+                q[i][j] = s.physical_generator_4x4[i][j] * s.risk_premium_multipliers[i.min(2)];
+                sm += q[i][j];
+            }
+        }
+        q[i][i] = -sm;
+    }
+    let mut a = [[T::zero(); 4]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            a[i][j] = q[i][j] * s.maturity / T::from_f64(128.0);
+        }
+    }
+    let mut p = [[T::zero(); 4]; 4];
+    for i in 0..4 {
+        p[i][i] = T::one();
+    }
+    let mut term = p;
+    for k in 1..=32 {
+        term = mm4(&term, &a);
+        let fac = T::from_f64((1..=k).fold(1.0, |z, v| z * (v as f64)));
+        for i in 0..4 {
+            for j in 0..4 {
+                p[i][j] += term[i][j] / fac;
+            }
+        }
+    }
+    for _ in 0..7 {
+        p = mm4(&p, &p);
+    }
+    let mut err = T::zero();
+    for i in 0..4 {
+        let mut rs = T::zero();
+        for j in 0..4 {
+            rs += p[i][j];
+        }
+        err = err.max_val((rs - T::one()).abs());
+    }
+    let mut def = [T::zero(); 3];
+    let mut spr = [T::zero(); 3];
+    for i in 0..3 {
+        def[i] = p[i][3].max_val(T::zero());
+        spr[i] = -T::from_f64(1e4) / s.maturity.max_val(T::from_f64(1e-12))
+            * (T::one() - (T::one() - s.recovery_rate) * def[i])
+                .max_val(T::from_f64(1e-12))
+                .ln();
+    }
+    let i0 = s.initial_rating_index.min(2);
+    let mut down = T::zero();
+    for j in i0 + 1..3 {
+        down += p[i0][j];
+    }
+    let disc = (-s.risk_free_rate * s.maturity).exp();
+    let van = disc * ((T::one() - def[i0]) * (T::one() + s.base_coupon_rate * s.maturity));
+    let step = van + disc * s.hy_downgrade_stepup_spread * s.maturity * down;
+    let cva = s.counterparty_epe_notional * (T::one() - s.recovery_rate) * def[i0] * disc;
+    let mig = cva + s.counterparty_epe_notional * (T::one() - s.recovery_rate) * down * disc;
+    JarrowLandoTurnbullRatingMigrationReport {
+        transition_matrix_at_maturity: p,
+        max_row_sum_stochastic_error: err,
+        cumulative_default_probabilities_by_rating: def,
+        credit_spreads_bps_by_rating: spr,
+        downgrade_probability_at_maturity: down,
+        vanilla_risky_bond_price: van,
+        stepup_rating_sensitive_bond_price: step,
+        stepup_clause_option_value: (step - van).max_val(T::zero()),
+        default_only_cva: cva,
+        rating_migration_adjusted_crcva: mig,
+    }
+}
 
 #[derive(Debug, Error, Clone)]
 pub enum CreditError {

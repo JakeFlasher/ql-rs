@@ -1,4 +1,178 @@
+#![allow(clippy::needless_range_loop)]
 use ql_ad::Real;
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn vv_greek_match() {
+        let _ = std::mem::size_of::<Dual<1>>();
+        let s = CastagnaFullVannaVolgaHedgeSpec {
+            spot: 1.1,
+            r_dom: 0.02,
+            r_for: 0.01,
+            expiry: 1.0,
+            atm_vol: 0.12,
+            rr_25d: 0.01,
+            bf_25d: 0.005,
+            target_strike: 1.1,
+            knockout_barrier: 1.3,
+            unwind_attenuation_factor: 0.5,
+            is_up_and_out: true,
+            is_call: true,
+        };
+        let r = evaluate_castagna_full_vanna_volga_hedge_and_barrier(&s);
+        assert!(r.greek_matching_max_residual < 1e-8);
+        assert!(r.castagna_vv_knockout_price >= 0.0);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CastagnaFullVannaVolgaHedgeSpec<T: Real = f64> {
+    pub spot: T,
+    pub r_dom: T,
+    pub r_for: T,
+    pub expiry: T,
+    pub atm_vol: T,
+    pub rr_25d: T,
+    pub bf_25d: T,
+    pub target_strike: T,
+    pub knockout_barrier: T,
+    pub unwind_attenuation_factor: T,
+    pub is_up_and_out: bool,
+    pub is_call: bool,
+}
+#[derive(Clone, Debug)]
+pub struct CastagnaFullVannaVolgaHedgeReport<T: Real = f64> {
+    pub pillar_strikes: [T; 3],
+    pub exact_vv_hedge_weights: [T; 3],
+    pub greek_matching_max_residual: T,
+    pub vanilla_bs_base_price: T,
+    pub vanna_risk_reversal_cost: T,
+    pub volga_butterfly_cost: T,
+    pub exact_vv_vanilla_price: T,
+    pub barrier_survival_probability: T,
+    pub expected_conditional_hit_time_ratio: T,
+    pub castagna_vv_knockout_price: T,
+}
+fn solve3_fx<T: Real>(mut a: [[T; 4]; 3]) -> [T; 3] {
+    for i in 0..3 {
+        let mut p = i;
+        for r in i + 1..3 {
+            if a[r][i].abs().val() > a[p][i].abs().val() {
+                p = r;
+            }
+        }
+        a.swap(i, p);
+        let d = if a[i][i].abs().val() < 1e-14 {
+            T::from_f64(1e-14)
+        } else {
+            a[i][i]
+        };
+        for j in i..4 {
+            a[i][j] /= d;
+        }
+        for r in 0..3 {
+            if r != i {
+                let f = a[r][i];
+                for j in i..4 {
+                    a[r][j] -= f * a[i][j];
+                }
+            }
+        }
+    }
+    [a[0][3], a[1][3], a[2][3]]
+}
+pub fn evaluate_castagna_full_vanna_volga_hedge_and_barrier<T: Real>(
+    s: &CastagnaFullVannaVolgaHedgeSpec<T>,
+) -> CastagnaFullVannaVolgaHedgeReport<T> {
+    let t = s.expiry.max_val(T::from_f64(1e-12));
+    let st = t.sqrt();
+    let f = s.spot * ((s.r_dom - s.r_for) * t).exp();
+    let v1 = (s.atm_vol + s.bf_25d - T::from_f64(0.5) * s.rr_25d).max_val(T::from_f64(1e-8));
+    let v2 = s.atm_vol.max_val(T::from_f64(1e-8));
+    let v3 = (s.atm_vol + s.bf_25d + T::from_f64(0.5) * s.rr_25d).max_val(T::from_f64(1e-8));
+    let alpha = T::from_f64(0.67448975);
+    let k2 = f * (T::from_f64(0.5) * v2 * v2 * t).exp();
+    let k1 = f * (-alpha * v1 * st + T::from_f64(0.5) * v1 * v1 * t).exp();
+    let k3 = f * (alpha * v3 * st + T::from_f64(0.5) * v3 * v3 * t).exp();
+    let greeks = |k: T| {
+        let d1 = ((f / k).ln() + T::from_f64(0.5) * v2 * v2 * t) / (v2 * st);
+        let d2 = d1 - v2 * st;
+        let vg = s.spot * (-s.r_for * t).exp() * d1.norm_pdf() * st;
+        (vg, -vg * d2 / (s.spot * v2 * st), vg * d1 * d2 / v2)
+    };
+    let g1 = greeks(k1);
+    let g2 = greeks(k2);
+    let g3 = greeks(k3);
+    let gt = greeks(s.target_strike);
+    let x = solve3_fx([
+        [g1.0, g2.0, g3.0, gt.0],
+        [g1.1, g2.1, g3.1, gt.1],
+        [g1.2, g2.2, g3.2, gt.2],
+    ]);
+    let mut res = T::zero();
+    for (row, vals) in [
+        (0, [g1.0, g2.0, g3.0]),
+        (1, [g1.1, g2.1, g3.1]),
+        (2, [g1.2, g2.2, g3.2]),
+    ]
+    .iter()
+    {
+        let z = vals[0] * x[0] + vals[1] * x[1] + vals[2] * x[2] - [gt.0, gt.1, gt.2][*row];
+        res = res.max_val(z.abs());
+    }
+    let cbase = garman_kohlhagen_price(s.spot, s.target_strike, v2, t, s.r_dom, s.r_for, s.is_call);
+    let dc1 = garman_kohlhagen_price(s.spot, k1, v1, t, s.r_dom, s.r_for, s.is_call)
+        - garman_kohlhagen_price(s.spot, k1, v2, t, s.r_dom, s.r_for, s.is_call);
+    let dc3 = garman_kohlhagen_price(s.spot, k3, v3, t, s.r_dom, s.r_for, s.is_call)
+        - garman_kohlhagen_price(s.spot, k3, v2, t, s.r_dom, s.r_for, s.is_call);
+    let bf = T::from_f64(0.5) * (dc3 + dc1);
+    let rr = T::from_f64(0.5) * (dc3 - dc1);
+    let rr_cost = (x[2] - x[0]) * rr;
+    let bf_cost = (x[2] + x[0]) * bf;
+    let smile = FxVannaVolgaSmile::new(
+        s.spot,
+        s.r_dom,
+        s.r_for,
+        t,
+        FxSmileQuote {
+            atm_vol: v2,
+            rr_25d: s.rr_25d,
+            bf_25d: s.bf_25d,
+        },
+    );
+    let ko = smile.price_knock_out_barrier(
+        s.target_strike,
+        s.knockout_barrier,
+        s.is_up_and_out,
+        s.is_call,
+    );
+    let hit = ((s.knockout_barrier / s.spot).ln().abs()
+        / (v2 * st + (s.knockout_barrier / s.spot).ln().abs()))
+    .max_val(T::zero())
+    .min_val(T::one());
+    let ratio = T::one()
+        / (T::one()
+            + v2 * st
+                / (s.knockout_barrier / s.spot)
+                    .ln()
+                    .abs()
+                    .max_val(T::from_f64(1e-12)));
+    let att = hit + (T::one() - hit) * ratio * s.unwind_attenuation_factor;
+    CastagnaFullVannaVolgaHedgeReport {
+        pillar_strikes: [k1, k2, k3],
+        exact_vv_hedge_weights: x,
+        greek_matching_max_residual: res,
+        vanilla_bs_base_price: cbase,
+        vanna_risk_reversal_cost: rr_cost,
+        volga_butterfly_cost: bf_cost,
+        exact_vv_vanilla_price: cbase + rr_cost + bf_cost,
+        barrier_survival_probability: hit,
+        expected_conditional_hit_time_ratio: ratio,
+        castagna_vv_knockout_price: (ko + att * (x[0] * dc1 + x[2] * dc3)).max_val(T::zero()),
+    }
+}
 use ql_math::inv_norm_cdf;
 use thiserror::Error;
 

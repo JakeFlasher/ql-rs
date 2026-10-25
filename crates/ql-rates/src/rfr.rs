@@ -1,9 +1,145 @@
 //! Backward-looking risk-free-rate (RFR) caplets and Willems effective SABR.
 #![allow(clippy::excessive_precision)]
-
+#![allow(clippy::needless_range_loop)]
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
 use ql_vol::black76_price;
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn fmm_caplet_positive() {
+        let _ = std::mem::size_of::<Dual<1>>();
+        let s = LyashenkoMercurioFmmSpec {
+            notional: 1.0,
+            exercise_time_t0: 1.0,
+            period_accruals: vec![0.5],
+            forward_rates: vec![0.03],
+            discount_factors: vec![0.98],
+            fmm_volatilities: vec![0.2],
+            displacement_shift: 0.0,
+            inter_period_correlation_decay: 1.0,
+            strike: 0.02,
+            is_payer_or_caplet: true,
+        };
+        let r = price_lyashenko_mercurio_fmm_caplet_and_swaption(&s);
+        assert!(r.backward_looking_rfr_caplet_npv >= r.forward_looking_caplet_npv);
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct LyashenkoMercurioFmmSpec<T: Real = f64> {
+    pub notional: T,
+    pub exercise_time_t0: T,
+    pub period_accruals: Vec<T>,
+    pub forward_rates: Vec<T>,
+    pub discount_factors: Vec<T>,
+    pub fmm_volatilities: Vec<T>,
+    pub displacement_shift: T,
+    pub inter_period_correlation_decay: T,
+    pub strike: T,
+    pub is_payer_or_caplet: bool,
+}
+#[derive(Clone, Debug)]
+pub struct LyashenkoMercurioFmmReport<T: Real = f64> {
+    pub forward_looking_caplet_npv: T,
+    pub backward_looking_rfr_caplet_npv: T,
+    pub backward_vs_forward_caplet_pickup: T,
+    pub in_arrears_convexity_adjusted_forward: T,
+    pub fmm_par_swap_rate: T,
+    pub fmm_swaption_effective_black_vol: T,
+    pub fmm_rfr_swaption_npv: T,
+}
+pub fn price_lyashenko_mercurio_fmm_caplet_and_swaption<T: Real>(
+    s: &LyashenkoMercurioFmmSpec<T>,
+) -> LyashenkoMercurioFmmReport<T> {
+    let n = s
+        .period_accruals
+        .len()
+        .min(s.forward_rates.len())
+        .min(s.discount_factors.len())
+        .min(s.fmm_volatilities.len());
+    assert!(n > 0);
+    let tau = s.period_accruals[0];
+    let f = s.forward_rates[0];
+    let d = s.discount_factors[0];
+    let sh = s.displacement_shift;
+    let vf = s.fmm_volatilities[0] * s.fmm_volatilities[0] * s.exercise_time_t0.max_val(T::zero());
+    let vb = s.fmm_volatilities[0]
+        * s.fmm_volatilities[0]
+        * (s.exercise_time_t0.max_val(T::zero()) + tau / T::from_f64(3.0));
+    let c1 = s.notional
+        * tau
+        * d
+        * black76_price(
+            f + sh,
+            s.strike + sh,
+            vf.sqrt(),
+            T::one(),
+            T::one(),
+            s.is_payer_or_caplet,
+        );
+    let c2 = s.notional
+        * tau
+        * d
+        * black76_price(
+            f + sh,
+            s.strike + sh,
+            vb.sqrt(),
+            T::one(),
+            T::one(),
+            s.is_payer_or_caplet,
+        );
+    let conv = f + tau * f * (f + sh) * (f + sh) / (T::one() + tau * f) * ((vf).exp() - T::one());
+    let mut ann = T::zero();
+    let mut num = T::zero();
+    for i in 0..n {
+        ann += s.period_accruals[i] * s.discount_factors[i];
+        num += s.period_accruals[i] * s.discount_factors[i] * s.forward_rates[i];
+    }
+    let par = num / ann.max_val(T::from_f64(1e-14));
+    let mut var = T::zero();
+    for i in 0..n {
+        for j in 0..n {
+            let mut ti = s.exercise_time_t0;
+            for k in 0..i {
+                ti += s.period_accruals[k];
+            }
+            let mut tj = s.exercise_time_t0;
+            for k in 0..j {
+                tj += s.period_accruals[k];
+            }
+            let rho = (-s.inter_period_correlation_decay.abs() * (ti - tj).abs()).exp();
+            let wi = s.period_accruals[i] * s.discount_factors[i] / ann.max_val(T::from_f64(1e-14))
+                * (s.forward_rates[i] + sh)
+                / (par + sh).max_val(T::from_f64(1e-12));
+            let wj = s.period_accruals[j] * s.discount_factors[j] / ann.max_val(T::from_f64(1e-14))
+                * (s.forward_rates[j] + sh)
+                / (par + sh).max_val(T::from_f64(1e-12));
+            var += wi * wj * rho * s.fmm_volatilities[i] * s.fmm_volatilities[j];
+        }
+    }
+    let sv = var.max_val(T::zero()).sqrt();
+    let sw = ann
+        * black76_price(
+            par + sh,
+            s.strike + sh,
+            sv,
+            s.exercise_time_t0.max_val(T::zero()),
+            T::one(),
+            s.is_payer_or_caplet,
+        );
+    LyashenkoMercurioFmmReport {
+        forward_looking_caplet_npv: c1,
+        backward_looking_rfr_caplet_npv: c2,
+        backward_vs_forward_caplet_pickup: c2 - c1,
+        in_arrears_convexity_adjusted_forward: conv,
+        fmm_par_swap_rate: par,
+        fmm_swaption_effective_black_vol: sv,
+        fmm_rfr_swaption_npv: sw,
+    }
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum RfrRateType {

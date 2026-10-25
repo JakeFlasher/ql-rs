@@ -1,7 +1,7 @@
 pub mod harness;
 pub mod suites;
 /// Number of registered benchmark suites in the current release.
-pub const SUITE_COUNT: usize = 34;
+pub const SUITE_COUNT: usize = 35;
 pub const SUITE_NAMES: [&str; SUITE_COUNT] = [
     "01_calendar_popcnt",
     "02_leg_simd_soa",
@@ -37,9 +37,12 @@ pub const SUITE_NAMES: [&str; SUITE_COUNT] = [
     "32_sinhou_mb_rbergomi_choi_afs_expectile_aad",
     "33_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad",
     "34_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad",
+    "35_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml",
 ];
 pub use harness::{BenchConfig, ComparisonRow, format_markdown_table, run_comparison};
 pub use suites::{
-    benchmark_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad, run_all_benchmark_suites_with_Config,
-    run_all_benchmark_suites_with_config, run_all_benchmarks, run_all_suites,
+    benchmark_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad,
+    benchmark_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml,
+    run_all_benchmark_suites_with_Config, run_all_benchmark_suites_with_config, run_all_benchmarks,
+    run_all_suites,
 };

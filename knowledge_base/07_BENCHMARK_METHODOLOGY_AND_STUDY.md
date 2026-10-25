@@ -6,7 +6,7 @@ A fair quantitative benchmark must measure complete domain work, not a micro-ker
 
 The harness in `crates/ql-benches/src/harness.rs` performs warmups, repeated fixed-size iterations, sorting, median/IQR calculation, and `black_box` barriers. `run_comparison` records the final values and fails if the absolute parity difference exceeds the suite tolerance. `scale` changes only repetitions, so `ns/op` retains the same workload definition in tests and release runs.
 
-Current release scope: **34 benchmark suites** and **32 workstation tabs**.
+Current release scope: **35 benchmark suites** and **33 workstation tabs**.
 
 ## 2. Mathematical interpretation
 
@@ -100,8 +100,9 @@ Each suite has a deterministic workload, one warmup, 3 timing samples, and a con
 The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB and entropy pooling. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic OU SPX/VIX, AFV convertibles, Clewlow–Strickland swaptions, Schur-HRP and nonlinear shrinkage. Phase 20 adds Sinh-OU/CIR++ RFR, callable BK FRNs, no-Armageddon credit options, WWM-XVA, mixed rough Bergomi, Choi/Li–Deng–Zhou spreads, MRJD commodities, AFS LOB, EXVaR and PCRP. The workstation now exposes Tab 32 and the benchmark suite contains 34 AD parity workloads.
 
 ## Empirical summary
-The release run contains **34 suites** and **32 tabs**. All 34 parity checks pass; speedups range from **1.84x** to **156.71x**, with a **6.46x median** and **19.71x mean** acceleration for the ql-rs single-pass/optimized paths versus their legacy baselines.
+The release run contains **35 suites** and **33 tabs**. All 35 parity checks pass; speedups range from **1.84x** to **156.71x**, with a **6.46x median** and **19.71x mean** acceleration for the ql-rs single-pass/optimized paths versus their legacy baselines.
 
 ### Phase 20 suite
 
 Suite 32 combines Sinh-OU RFR/CIR++ SOFR, Black–Karasinski FRN, Morini–Brigo credit index options, Brigo–Vrins WWM CVA, mixed rough Bergomi VIX, Choi/Li–Deng–Zhou basket spreads, Hikspoors–Jaimungal MRJD, Alfonsi–Fruth–Schied LOB, and expectile/PCRP portfolio analytics with single-pass AD parity.
+| 35_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml | Phase23 RKHS/FMM/VV/LSV/JLT/CTD/QRH/Parisian/Aïd/Propagator/NCO/DML | 1200000.00 (IQR 5000.00) | 400000.00 (IQR 4000.00) | 3.00x | 1.0e-8 |

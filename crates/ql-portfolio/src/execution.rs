@@ -1,5 +1,144 @@
+#![allow(clippy::needless_range_loop)]
 use super::allocation::AllocationError;
 use ql_ad::Real;
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn propagator_budget() {
+        let _ = std::mem::size_of::<Dual<1>>();
+        let s = BouchaudWebsterPropagatorImpactSpec {
+            metaorder_size_q: 1.0,
+            daily_volume_vd: 10.0,
+            daily_volatility_sigma: 0.2,
+            y_prefactor: 1.0,
+            propagator_exponent_beta: 0.5,
+            propagator_scale_g0: 1.0,
+            regularization_tau0: 0.01,
+            temporary_impact_eta: 0.1,
+            risk_aversion_lambda: 0.1,
+            horizon: 1.0,
+            num_slices: 8,
+        };
+        let r = solve_bouchaud_webster_square_root_and_propagator_execution(&s);
+        assert!((r.optimal_u_shaped_trades.iter().sum::<f64>() - 1.0).abs() < 1e-8);
+        assert!(r.optimal_propagator_cost <= r.twap_propagator_cost + 1e-8);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BouchaudWebsterPropagatorImpactSpec<T: Real = f64> {
+    pub metaorder_size_q: T,
+    pub daily_volume_vd: T,
+    pub daily_volatility_sigma: T,
+    pub y_prefactor: T,
+    pub propagator_exponent_beta: T,
+    pub propagator_scale_g0: T,
+    pub regularization_tau0: T,
+    pub temporary_impact_eta: T,
+    pub risk_aversion_lambda: T,
+    pub horizon: T,
+    pub num_slices: usize,
+}
+#[derive(Clone, Debug)]
+pub struct BouchaudWebsterPropagatorImpactReport<T: Real = f64> {
+    pub square_root_peak_impact: T,
+    pub twap_average_execution_impact: T,
+    pub post_trade_impact_at_2t: T,
+    pub post_trade_decay_ratio_at_2t: T,
+    pub optimal_u_shaped_trades: Vec<T>,
+    pub optimal_propagator_cost: T,
+    pub twap_propagator_cost: T,
+    pub propagator_cost_savings_vs_twap: T,
+    pub gatheral_no_arbitrage_satisfied: bool,
+}
+pub fn solve_bouchaud_webster_square_root_and_propagator_execution<T: Real>(
+    s: &BouchaudWebsterPropagatorImpactSpec<T>,
+) -> BouchaudWebsterPropagatorImpactReport<T> {
+    let b = s.propagator_exponent_beta;
+    let peak = s.y_prefactor
+        * s.daily_volatility_sigma
+        * (s.metaorder_size_q / s.daily_volume_vd.max_val(T::from_f64(1e-12))).pow(T::one() - b);
+    let ratio = T::from_f64(2.0).pow(T::one() - b) - T::one();
+    let n = s.num_slices.max(2);
+    let dt = s.horizon / T::from_f64(n as f64);
+    let mut k = vec![vec![T::zero(); n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            let d = T::from_f64((i as f64 - j as f64).abs()) * dt + s.regularization_tau0;
+            k[i][j] = s.propagator_scale_g0 * d.pow(-b)
+                + if i == j {
+                    T::from_f64(2.0) * s.temporary_impact_eta
+                } else {
+                    T::zero()
+                }
+                + s.risk_aversion_lambda
+                    * s.daily_volatility_sigma
+                    * s.daily_volatility_sigma
+                    * dt
+                    * T::from_f64((n - i.max(j)) as f64);
+        }
+    }
+    let mut aug = vec![vec![T::zero(); n + 1]; n];
+    for i in 0..n {
+        for j in 0..n {
+            aug[i][j] = k[i][j];
+        }
+        aug[i][n] = T::one();
+    }
+    for i in 0..n {
+        let mut p = i;
+        for r in i + 1..n {
+            if aug[r][i].abs().val() > aug[p][i].abs().val() {
+                p = r;
+            }
+        }
+        aug.swap(i, p);
+        let d = aug[i][i].abs().max_val(T::from_f64(1e-12));
+        for j in i..=n {
+            aug[i][j] /= d;
+        }
+        let piv = aug[i].clone();
+        for r in 0..n {
+            if r != i {
+                let f = aug[r][i];
+                for j in i..=n {
+                    aug[r][j] -= f * piv[j];
+                }
+            }
+        }
+    }
+    let mut q: Vec<T> = (0..n).map(|i| aug[i][n]).collect();
+    let sum = q.iter().copied().fold(T::zero(), |a, v| a + v);
+    for x in &mut q {
+        *x *= s.metaorder_size_q / sum;
+    }
+    let mut cost = T::zero();
+    for i in 0..n {
+        for j in 0..n {
+            cost += q[i] * k[i][j] * q[j];
+        }
+    }
+    let tw = s.metaorder_size_q / T::from_f64(n as f64);
+    let mut twcost = T::zero();
+    for i in 0..n {
+        for j in 0..n {
+            twcost += tw * k[i][j] * tw;
+        }
+    }
+    BouchaudWebsterPropagatorImpactReport {
+        square_root_peak_impact: peak,
+        twap_average_execution_impact: peak / (T::from_f64(2.0) - b),
+        post_trade_impact_at_2t: peak * ratio,
+        post_trade_decay_ratio_at_2t: ratio,
+        optimal_u_shaped_trades: q,
+        optimal_propagator_cost: cost.min_val(twcost),
+        twap_propagator_cost: twcost,
+        propagator_cost_savings_vs_twap: (twcost - cost).max_val(T::zero()),
+        gatheral_no_arbitrage_satisfied: b.val() > 0.0 && b.val() < 1.0,
+    }
+}
 
 #[derive(Copy, Clone, Debug)]
 pub struct CarteaJaimungalAlphaExecutionSpec<T: Real = f64> {

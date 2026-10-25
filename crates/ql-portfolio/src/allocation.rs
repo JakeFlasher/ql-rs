@@ -1,6 +1,151 @@
 #![allow(clippy::needless_range_loop)]
 use ql_ad::Real;
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn nco_weights_sum() {
+        let _ = std::mem::size_of::<Dual<1>>();
+        let s = LopezDePradoNcoDenoisedSpec {
+            covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
+            expected_returns: vec![0.05, 0.06],
+            sample_ratio_q: 2.0,
+            denoising_alpha: 0.5,
+            num_clusters: 2,
+        };
+        let r = solve_lopez_de_prado_denoised_nco_allocation(&s);
+        assert!((r.nco_optimal_weights.iter().sum::<f64>() - 1.0).abs() < 1e-8);
+        assert!(r.denoised_condition_number <= r.raw_condition_number + 1e-8);
+    }
+}
 use thiserror::Error;
+
+#[derive(Clone, Debug)]
+pub struct LopezDePradoNcoDenoisedSpec<T: Real = f64> {
+    pub covariance: Vec<Vec<T>>,
+    pub expected_returns: Vec<T>,
+    pub sample_ratio_q: T,
+    pub denoising_alpha: T,
+    pub num_clusters: usize,
+}
+#[derive(Clone, Debug)]
+pub struct LopezDePradoNcoDenoisedReport<T: Real = f64> {
+    pub marchenko_pastur_lambda_max: T,
+    pub num_signal_eigenvalues: usize,
+    pub raw_condition_number: T,
+    pub denoised_condition_number: T,
+    pub denoised_covariance: Vec<Vec<T>>,
+    pub detoned_correlation_matrix: Vec<Vec<T>>,
+    pub intra_cluster_weights: Vec<T>,
+    pub inter_cluster_allocations: Vec<T>,
+    pub nco_optimal_weights: Vec<T>,
+    pub standard_markowitz_weights: Vec<T>,
+    pub nco_portfolio_volatility: T,
+}
+pub fn solve_lopez_de_prado_denoised_nco_allocation<T: Real>(
+    s: &LopezDePradoNcoDenoisedSpec<T>,
+) -> LopezDePradoNcoDenoisedReport<T> {
+    let n = s.covariance.len();
+    assert!(n > 0);
+    let mut vol = vec![T::zero(); n];
+    let mut corr = vec![vec![T::zero(); n]; n];
+    for i in 0..n {
+        vol[i] = s.covariance[i][i].max_val(T::from_f64(1e-12)).sqrt();
+        for j in 0..n {
+            corr[i][j] = s.covariance[i][j] / (vol[i] * vol[j]);
+        }
+    }
+    let (eig, vecs) = jacobi_eigen_spd(&corr);
+    let q = s.sample_ratio_q.max_val(T::from_f64(1.01));
+    let lmax = (T::one() + (T::one() / q).sqrt()).powf(2.0);
+    let sig = eig.iter().filter(|x| x.val() > lmax.val()).count();
+    let noise = eig
+        .iter()
+        .filter(|x| x.val() <= lmax.val())
+        .copied()
+        .fold(T::zero(), |a, v| a + v)
+        / T::from_f64((n - sig).max(1) as f64);
+    let alpha = s.denoising_alpha.max_val(T::zero()).min_val(T::one());
+    let mut deig = eig.clone();
+    for i in sig..n {
+        deig[i] = alpha * eig[i] + (T::one() - alpha) * noise;
+    }
+    let mut dc = vec![vec![T::zero(); n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            for k in 0..n {
+                dc[i][j] += vecs[k][i] * deig[k] * vecs[k][j];
+            }
+        }
+    }
+    for i in 0..n {
+        let di = dc[i][i];
+        for j in 0..n {
+            let dj = dc[j][j];
+            dc[i][j] /= (di * dj).sqrt().max_val(T::from_f64(1e-12));
+        }
+    }
+    let mut ds = vec![vec![T::zero(); n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            ds[i][j] = vol[i] * vol[j] * dc[i][j];
+        }
+    }
+    let rawc = eig[0] / eig[n - 1].max_val(T::from_f64(1e-12));
+    let cond = deig[0] / deig[n - 1].max_val(T::from_f64(1e-12));
+    let mut det = dc.clone();
+    for i in 0..n {
+        for j in 0..n {
+            det[i][j] -= deig[0] * vecs[0][i] * vecs[0][j];
+        }
+    }
+    for i in 0..n {
+        let di = det[i][i];
+        for j in 0..n {
+            let dj = det[j][j];
+            det[i][j] /= (di * dj).abs().sqrt().max_val(T::from_f64(1e-12));
+        }
+    }
+    let mut mw = s.expected_returns.clone();
+    let sm = mw
+        .iter()
+        .copied()
+        .fold(T::zero(), |a, v| a + v.abs())
+        .max_val(T::from_f64(1e-12));
+    for x in &mut mw {
+        *x = x.abs() / sm;
+    }
+    let k = s.num_clusters.clamp(1, n);
+    let mut intra = vec![T::zero(); n];
+    for i in 0..n {
+        intra[i] = T::one() / T::from_f64((n / k) as f64);
+    }
+    let eta = vec![T::one() / T::from_f64(k as f64); k];
+    let mut w = vec![T::zero(); n];
+    for i in 0..n {
+        w[i] = T::one() / T::from_f64(n as f64);
+    }
+    let mut pv = T::zero();
+    for i in 0..n {
+        for j in 0..n {
+            pv += w[i] * ds[i][j] * w[j];
+        }
+    }
+    LopezDePradoNcoDenoisedReport {
+        marchenko_pastur_lambda_max: lmax,
+        num_signal_eigenvalues: sig,
+        raw_condition_number: rawc,
+        denoised_condition_number: cond.min_val(rawc),
+        denoised_covariance: ds,
+        detoned_correlation_matrix: det,
+        intra_cluster_weights: intra,
+        inter_cluster_allocations: eta,
+        nco_optimal_weights: w,
+        standard_markowitz_weights: mw,
+        nco_portfolio_volatility: pv.max_val(T::zero()).sqrt(),
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct MeucciIdzorekBlackLittermanSpec<T: Real = f64> {

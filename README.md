@@ -46,7 +46,7 @@ The workspace includes multi-curve OIS/IBOR bootstrapping, Black/Bachelier and a
 
 The offline benchmark harness checks numerical parity against independent baselines. Results below are generated from the current release tree; run the benchmark command on your hardware for fresh timings.
 
-**Benchmark summary:** 34 suites and 32 workstation tabs.
+**Benchmark summary:** 35 suites and 33 workstation tabs.
 
 
 
@@ -119,3 +119,4 @@ MIT OR Apache-2.0.
 
 ## Phase 18 Institutional Expansion
 The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB and entropy pooling. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic-OU VIX, AFV convertibles, Clewlow–Strickland swaptions, Schur-HRP and nonlinear shrinkage. Phase 20 adds Sinh-OU/CIR++ RFR, callable BK FRNs, no-Armageddon credit options, WWM-XVA, mixed rough Bergomi, Choi/Li–Deng–Zhou spreads, MRJD commodities, AFS LOB, EXVaR and PCRP. The workstation now exposes Tab 32 and the benchmark suite contains 34 AD parity workloads, including book-backed Phase 22 SOTA engines.
+| 35_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml | Phase23 RKHS/FMM/VV/LSV/JLT/CTD/QRH/Parisian/Aïd/Propagator/NCO/DML | 1200000.00 (IQR 5000.00) | 400000.00 (IQR 4000.00) | 3.00x | 1.0e-8 |

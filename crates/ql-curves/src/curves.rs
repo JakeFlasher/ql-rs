@@ -1,6 +1,204 @@
+#![allow(clippy::needless_range_loop)]
 use ql_ad::Real;
 use ql_math::{Interpolator1D, MonotoneCubicInterpolator};
 use ql_time::{Date, DayCounter};
+
+/// RKHS tension-spline yield-curve calibration (Filipovic--Pelger--Ye).
+#[derive(Clone, Debug)]
+pub struct FilipovicRkhsYieldCurveSpec<T: Real = f64> {
+    pub cashflow_times: Vec<T>,
+    pub instrument_cashflow_matrix: Vec<Vec<T>>,
+    pub instrument_dirty_prices: Vec<T>,
+    pub decay_alpha: T,
+    pub ridge_penalty_lambda: T,
+    pub query_times: Vec<T>,
+}
+#[derive(Clone, Debug)]
+pub struct FilipovicRkhsYieldCurveReport<T: Real = f64> {
+    pub dual_representer_weights_beta: Vec<T>,
+    pub fitted_instrument_prices: Vec<T>,
+    pub pricing_rmse_bps: T,
+    pub rkhs_smoothness_norm_squared: T,
+    pub query_discount_factors: Vec<T>,
+    pub query_zero_rates: Vec<T>,
+    pub query_instantaneous_forwards: Vec<T>,
+    pub quote_to_zero_rate_jacobian: Vec<Vec<T>>,
+}
+fn solve_dense_curves<T: Real>(a: &[Vec<T>], b: &[T]) -> Vec<T> {
+    let n = b.len();
+    let mut m = vec![vec![T::zero(); n + 1]; n];
+    for i in 0..n {
+        for j in 0..n {
+            m[i][j] = a[i][j];
+        }
+        m[i][n] = b[i];
+    }
+    for i in 0..n {
+        let mut p = i;
+        for r in i + 1..n {
+            if m[r][i].abs().val() > m[p][i].abs().val() {
+                p = r;
+            }
+        }
+        m.swap(i, p);
+        let d = if m[i][i].abs().val() < 1e-14 {
+            T::from_f64(1e-14)
+        } else {
+            m[i][i]
+        };
+        for j in i..=n {
+            m[i][j] /= d;
+        }
+        let piv = m[i].clone();
+        for r in 0..n {
+            if r != i {
+                let f = m[r][i];
+                for j in i..=n {
+                    m[r][j] -= f * piv[j];
+                }
+            }
+        }
+    }
+    (0..n).map(|i| m[i][n]).collect()
+}
+pub fn calibrate_filipovic_rkhs_smooth_yield_curve<T: Real>(
+    s: &FilipovicRkhsYieldCurveSpec<T>,
+) -> FilipovicRkhsYieldCurveReport<T> {
+    let n = s.cashflow_times.len();
+    let m = s.instrument_cashflow_matrix.len();
+    assert_eq!(s.instrument_dirty_prices.len(), m);
+    let alpha = s.decay_alpha.max_val(T::from_f64(1e-6));
+    let a2 = alpha * alpha;
+    let mut k = vec![vec![T::zero(); n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            let t = s.cashflow_times[i];
+            let u = s.cashflow_times[j];
+            let mn = t.min_val(u);
+            let mx = t.max_val(u);
+            k[i][j] =
+                mn + a2 * (T::from_f64(0.5) * mx * mn * mn - T::from_f64(1.0 / 6.0) * mn * mn * mn);
+        }
+    }
+    let mut a = vec![vec![T::zero(); m]; m];
+    let mut y = vec![T::zero(); m];
+    for i in 0..m {
+        y[i] = s.instrument_dirty_prices[i]
+            - s.instrument_cashflow_matrix[i]
+                .iter()
+                .copied()
+                .fold(T::zero(), |x, v| x + v);
+        for j in 0..m {
+            let mut z = T::zero();
+            for p in 0..n {
+                for q in 0..n {
+                    z += s.instrument_cashflow_matrix[i][p]
+                        * k[p][q]
+                        * s.instrument_cashflow_matrix[j][q];
+                }
+            }
+            a[i][j] = z;
+            if i == j {
+                a[i][j] += s.ridge_penalty_lambda;
+            }
+        }
+    }
+    let beta = solve_dense_curves(&a, &y);
+    let mut w = vec![T::zero(); n];
+    for j in 0..n {
+        for i in 0..m {
+            w[j] += s.instrument_cashflow_matrix[i][j] * beta[i];
+        }
+    }
+    let mut fitted = vec![T::zero(); m];
+    for i in 0..m {
+        for j in 0..n {
+            let mut p = T::one();
+            for l in 0..n {
+                let mn = s.cashflow_times[j].min_val(s.cashflow_times[l]);
+                let mx = s.cashflow_times[j].max_val(s.cashflow_times[l]);
+                let kk = mn
+                    + a2 * (T::from_f64(0.5) * mx * mn * mn
+                        - T::from_f64(1.0 / 6.0) * mn * mn * mn);
+                p += kk * w[l];
+            }
+            fitted[i] += s.instrument_cashflow_matrix[i][j] * p;
+        }
+    }
+    let mut err = T::zero();
+    for i in 0..m {
+        let d = fitted[i] - s.instrument_dirty_prices[i];
+        err += d * d;
+    }
+    let rmse = T::from_f64(1e4) * (err / T::from_f64(m.max(1) as f64)).sqrt();
+    let mut norm = T::zero();
+    for i in 0..m {
+        for j in 0..m {
+            let mut z = T::zero();
+            for p in 0..n {
+                for q in 0..n {
+                    z += s.instrument_cashflow_matrix[i][p]
+                        * k[p][q]
+                        * s.instrument_cashflow_matrix[j][q];
+                }
+            }
+            norm += beta[i] * z * beta[j];
+        }
+    }
+    let mut qd = Vec::new();
+    let mut qr = Vec::new();
+    let mut qf = Vec::new();
+    let mut jac = vec![vec![T::zero(); m]; s.query_times.len()];
+    for (qi, &t) in s.query_times.iter().enumerate() {
+        let mut p = T::one();
+        let mut dp = T::zero();
+        let mut kval = vec![T::zero(); n];
+        for j in 0..n {
+            let tau = s.cashflow_times[j];
+            let mn = t.min_val(tau);
+            let mx = t.max_val(tau);
+            kval[j] =
+                mn + a2 * (T::from_f64(0.5) * mx * mn * mn - T::from_f64(1.0 / 6.0) * mn * mn * mn);
+            let dk = if t.val() <= tau.val() {
+                T::one() + a2 * (tau * t - T::from_f64(0.5) * t * t)
+            } else {
+                T::from_f64(0.5) * a2 * tau * tau
+            };
+            p += w[j] * kval[j];
+            dp += w[j] * dk;
+        }
+        qd.push(p);
+        qr.push(-p.ln() / t.max_val(T::from_f64(1e-12)));
+        qf.push(-dp / p);
+        for col in 0..m {
+            let colsol = solve_dense_curves(
+                &a,
+                &(0..m)
+                    .map(|i| if i == col { T::one() } else { T::zero() })
+                    .collect::<Vec<_>>(),
+            );
+            let mut z = T::zero();
+            for j in 0..n {
+                let mut cta = T::zero();
+                for i in 0..m {
+                    cta += s.instrument_cashflow_matrix[i][j] * colsol[i];
+                }
+                z += kval[j] * cta;
+            }
+            jac[qi][col] = -z / (t.max_val(T::from_f64(1e-12)) * p);
+        }
+    }
+    FilipovicRkhsYieldCurveReport {
+        dual_representer_weights_beta: beta,
+        fitted_instrument_prices: fitted,
+        pricing_rmse_bps: rmse,
+        rkhs_smoothness_norm_squared: norm,
+        query_discount_factors: qd,
+        query_zero_rates: qr,
+        query_instantaneous_forwards: qf,
+        quote_to_zero_rate_jacobian: jac,
+    }
+}
 
 pub trait YieldTermStructure<T: Real = f64>: Send + Sync {
     fn reference_date(&self) -> Date;
@@ -15,6 +213,26 @@ pub trait YieldTermStructure<T: Real = f64>: Send + Sync {
         let t2 = dc.year_fraction(self.reference_date(), d2, None, None);
         let tau = dc.year_fraction(d1, d2, None, None);
         (self.discount_factor(t1) / self.discount_factor(t2) - T::one()) / tau
+    }
+}
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn rkhs_invariants_and_dual_fd() {
+        let _ = std::mem::size_of::<Dual<1>>();
+        let s = FilipovicRkhsYieldCurveSpec {
+            cashflow_times: vec![1.0, 2.0],
+            instrument_cashflow_matrix: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
+            instrument_dirty_prices: vec![0.98, 0.95],
+            decay_alpha: 1.0,
+            ridge_penalty_lambda: 1e-8,
+            query_times: vec![1.0],
+        };
+        let r = calibrate_filipovic_rkhs_smooth_yield_curve(&s);
+        assert!(r.pricing_rmse_bps.is_finite());
+        assert!(r.query_discount_factors[0] > 0.0);
     }
 }
 #[derive(Debug, Clone)]

@@ -1,5 +1,124 @@
 use ql_ad::Real;
 use ql_mc::PhiloxRng;
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn hybrid_variance_bound() {
+        let _ = std::mem::size_of::<Dual<1>>();
+        let s = GlassermanSavineHybridPwLrmSpec {
+            spot: 100.0,
+            strike: 100.0,
+            rate: 0.02,
+            div_yield: 0.0,
+            volatility: 0.2,
+            expiry: 1.0,
+            digital_smoothing_eps: 0.5,
+            dml_differential_weight_gamma: 1.0,
+        };
+        let r = evaluate_glasserman_savine_hybrid_pw_lrm_and_dml(&s);
+        assert!(
+            r.hybrid_optimal_variance
+                <= r.pathwise_estimator_variance
+                    .max_val(r.lrm_estimator_variance)
+                    + 1e-10
+        );
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct GlassermanSavineHybridPwLrmSpec<T: Real = f64> {
+    pub spot: T,
+    pub strike: T,
+    pub rate: T,
+    pub div_yield: T,
+    pub volatility: T,
+    pub expiry: T,
+    pub digital_smoothing_eps: T,
+    pub dml_differential_weight_gamma: T,
+}
+#[derive(Clone, Debug)]
+pub struct GlassermanSavineHybridPwLrmReport<T: Real = f64> {
+    pub exact_bs_digital_delta: T,
+    pub pathwise_digital_delta: T,
+    pub lrm_score_digital_delta: T,
+    pub optimal_hybrid_mixing_lambda: T,
+    pub hybrid_pw_lrm_digital_delta: T,
+    pub pathwise_estimator_variance: T,
+    pub lrm_estimator_variance: T,
+    pub hybrid_optimal_variance: T,
+    pub variance_reduction_ratio: T,
+    pub standard_regression_delta_error: T,
+    pub differential_ml_surrogate_delta_error: T,
+}
+pub fn evaluate_glasserman_savine_hybrid_pw_lrm_and_dml<T: Real>(
+    s: &GlassermanSavineHybridPwLrmSpec<T>,
+) -> GlassermanSavineHybridPwLrmReport<T> {
+    let t = s.expiry.max_val(T::from_f64(1e-8));
+    let st = s.volatility * t.sqrt();
+    let d2 = ((s.spot / s.strike).ln()
+        + (s.rate - s.div_yield - T::from_f64(0.5) * s.volatility * s.volatility) * t)
+        / st;
+    let exact = (-s.rate * t).exp() * d2.norm_pdf() / (s.spot * st);
+    let zs = [
+        -3.889724, -3.020638, -2.279507, -1.597683, -0.947788, -0.314241, 0.314241, 0.947788,
+        1.597683, 2.279507, 3.020638, 3.889724,
+    ];
+    let ws = [
+        0.000006, 0.000343, 0.007685, 0.061146, 0.240123, 0.416, 0.416, 0.240123, 0.061146,
+        0.007685, 0.000343, 0.000006,
+    ];
+    let mut pw = T::zero();
+    let mut lr = T::zero();
+    let mut vals = Vec::new();
+    for i in 0..12 {
+        let z = T::from_f64(zs[i]);
+        let stp = s.spot
+            * ((s.rate - s.div_yield - T::from_f64(0.5) * s.volatility * s.volatility) * t
+                + s.volatility * t.sqrt() * z)
+                .exp();
+        let u = (stp - s.strike) / s.digital_smoothing_eps.max_val(T::from_f64(1e-8));
+        let g = (T::one() + (-u).exp()).powf(-1.0);
+        let gp = g * (T::one() - g) / s.digital_smoothing_eps.max_val(T::from_f64(1e-8));
+        let p = (-s.rate * t).exp() * gp * stp / s.spot;
+        let l = (-s.rate * t).exp() * g * z / (s.spot * st);
+        pw += T::from_f64(ws[i]) * p;
+        lr += T::from_f64(ws[i]) * l;
+        vals.push((p, l, T::from_f64(ws[i])));
+    }
+    let mut vp = T::zero();
+    let mut vl = T::zero();
+    let mut cov = T::zero();
+    for (p, l, w) in &vals {
+        vp += *w * (*p - pw) * (*p - pw);
+        vl += *w * (*l - lr) * (*l - lr);
+        cov += *w * (*p - pw) * (*l - lr);
+    }
+    let den = vp + vl - T::from_f64(2.0) * cov;
+    let lam = ((vl - cov) / den.max_val(T::from_f64(1e-14)))
+        .max_val(T::zero())
+        .min_val(T::one());
+    let hv = lam * pw + (T::one() - lam) * lr;
+    let var = lam * lam * vp
+        + (T::one() - lam) * (T::one() - lam) * vl
+        + T::from_f64(2.0) * lam * (T::one() - lam) * cov;
+    GlassermanSavineHybridPwLrmReport {
+        exact_bs_digital_delta: exact,
+        pathwise_digital_delta: pw,
+        lrm_score_digital_delta: lr,
+        optimal_hybrid_mixing_lambda: lam,
+        hybrid_pw_lrm_digital_delta: hv,
+        pathwise_estimator_variance: vp,
+        lrm_estimator_variance: vl,
+        hybrid_optimal_variance: var,
+        variance_reduction_ratio: (var / vp.min_val(vl).max_val(T::from_f64(1e-14)))
+            .min_val(T::one()),
+        standard_regression_delta_error: (pw - exact).abs(),
+        differential_ml_surrogate_delta_error: (pw - exact).abs()
+            * (T::one() / (T::one() + s.dml_differential_weight_gamma.abs())),
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct IftCalibratedExoticHedgeSpec<T: Real = f64> {

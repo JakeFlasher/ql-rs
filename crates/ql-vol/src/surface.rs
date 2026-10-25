@@ -7,6 +7,159 @@ pub use volsurf::{
     DupireLocalVol as DupireTotalVarianceFormula, SmileSection, Strike, Tenor, Vol, VolSurface,
 };
 pub type DupireLocalVol = DupireTotalVarianceFormula;
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn lsv_projection_positive() {
+        let _ = std::mem::size_of::<Dual<1>>();
+        let s = GuyonMarkovianProjectionLsvSpec {
+            forward: 100.0,
+            strike: 105.0,
+            expiry: 1.0,
+            forward_start_t1: 0.25,
+            atm_vol: 0.2,
+            market_atm_skew: -0.1,
+            market_atm_curvature: 0.1,
+            sv_v0: 0.04,
+            sv_kappa: 1.0,
+            sv_eta: 0.3,
+            sv_rho: -0.5,
+            sv_mixing_weight_eta: 0.5,
+        };
+        let r = evaluate_guyon_markovian_projection_lsv_smile(&s);
+        assert!(r.dupire_local_vol_at_strike > 0.0);
+        assert!(r.conditional_expected_sv_at_strike > 0.0);
+    }
+}
+#[derive(Clone, Copy, Debug)]
+pub struct GuyonMarkovianProjectionLsvSpec<T: Real = f64> {
+    pub forward: T,
+    pub strike: T,
+    pub expiry: T,
+    pub forward_start_t1: T,
+    pub atm_vol: T,
+    pub market_atm_skew: T,
+    pub market_atm_curvature: T,
+    pub sv_v0: T,
+    pub sv_kappa: T,
+    pub sv_eta: T,
+    pub sv_rho: T,
+    pub sv_mixing_weight_eta: T,
+}
+#[derive(Clone, Debug)]
+pub struct GuyonMarkovianProjectionLsvReport<T: Real = f64> {
+    pub dupire_local_vol_at_strike: T,
+    pub conditional_expected_sv_at_strike: T,
+    pub calibrated_lsv_leverage_at_strike: T,
+    pub lsv_reconstructed_implied_vol: T,
+    pub calibration_implied_vol_error: T,
+    pub lsv_skew_stickiness_ratio_ssr: T,
+    pub lsv_forward_start_atm_skew: T,
+}
+pub fn evaluate_guyon_markovian_projection_lsv_smile<T: Real>(
+    s: &GuyonMarkovianProjectionLsvSpec<T>,
+) -> GuyonMarkovianProjectionLsvReport<T> {
+    let t = s.expiry.max_val(T::from_f64(1e-8));
+    let x = (s.strike / s.forward).ln();
+    let eta = s.sv_mixing_weight_eta.max_val(T::zero()).min_val(T::one());
+    let k = s.sv_kappa;
+    let i1 = if (k * t).abs().val() < 1e-5 {
+        t - T::from_f64(0.5) * k * t * t
+    } else {
+        (T::one() - (-k * t).exp()) / k
+    };
+    let i2 = if (k * t).abs().val() < 1e-5 {
+        T::from_f64(0.5) * t * t - T::from_f64(1.0 / 6.0) * k * t * t * t
+    } else {
+        (k * t - T::one() + (-k * t).exp()) / (k * k)
+    };
+    let isv2 = if (T::from_f64(2.0) * k * t).abs().val() < 1e-5 {
+        T::from_f64(0.5) * t * t
+    } else {
+        (T::from_f64(2.0) * k * t - T::one() + (-T::from_f64(2.0) * k * t).exp())
+            / (T::from_f64(4.0) * k * k)
+    };
+    let m = (T::one()
+        + eta
+            * ((s.sv_rho * s.sv_eta / s.atm_vol.max_val(T::from_f64(1e-8)) * i2 / (t * t)) * x
+                + T::from_f64(0.5)
+                    * s.sv_eta
+                    * s.sv_eta
+                    * (T::one() - s.sv_rho * s.sv_rho)
+                    * isv2
+                    / (t * t)
+                    * x
+                    * x))
+        .max_val(T::from_f64(1e-6));
+    let dup2 = (s.atm_vol * s.atm_vol
+        + T::from_f64(4.0) * s.atm_vol * s.market_atm_skew * x
+        + (T::from_f64(3.0) * s.atm_vol * s.market_atm_curvature
+            + T::from_f64(2.0) * s.market_atm_skew * s.market_atm_skew)
+            * x
+            * x)
+        .max_val(T::from_f64(1e-8));
+    let dup = dup2.sqrt();
+    let cond = s.sv_v0 * m;
+    let lev = dup / cond.sqrt();
+    let gl = [
+        -0.9602898565,
+        -0.7966664774,
+        -0.5255324099,
+        -0.1834346425,
+        0.1834346425,
+        0.5255324099,
+        0.7966664774,
+        0.9602898565,
+    ];
+    let gw = [
+        0.1012285363,
+        0.2223810345,
+        0.3137066459,
+        0.3626837834,
+        0.3626837834,
+        0.3137066459,
+        0.2223810345,
+        0.1012285363,
+    ];
+    let mut integ = T::zero();
+    for j in 0..8 {
+        let u = T::from_f64(0.5) * (T::one() + T::from_f64(gl[j]));
+        let y = u * x;
+        let d = (s.atm_vol * s.atm_vol
+            + T::from_f64(4.0) * s.atm_vol * s.market_atm_skew * y
+            + (T::from_f64(3.0) * s.atm_vol * s.market_atm_curvature
+                + T::from_f64(2.0) * s.market_atm_skew * s.market_atm_skew)
+                * y
+                * y)
+            .max_val(T::from_f64(1e-8))
+            .sqrt();
+        integ += T::from_f64(0.5 * gw[j]) / d;
+    }
+    let rec = T::one() / integ.max_val(T::from_f64(1e-12));
+    let mkt = s.atm_vol + s.market_atm_skew * x + T::from_f64(0.5) * s.market_atm_curvature * x * x;
+    let rem = t - s.forward_start_t1;
+    let i2r = if rem.val() > 1e-8 {
+        (k * rem - T::one() + (-k * rem).exp()) / (k * k * rem * rem)
+    } else {
+        T::from_f64(0.5)
+    };
+    let i2t = i2 / (t * t);
+    let ssr = (T::one() - eta) * T::from_f64(2.0)
+        + eta * (T::from_f64(0.5) * t * i1 / i2.max_val(T::from_f64(1e-12)));
+    GuyonMarkovianProjectionLsvReport {
+        dupire_local_vol_at_strike: dup,
+        conditional_expected_sv_at_strike: cond,
+        calibrated_lsv_leverage_at_strike: lev,
+        lsv_reconstructed_implied_vol: rec,
+        calibration_implied_vol_error: (rec - mkt).abs(),
+        lsv_skew_stickiness_ratio_ssr: ssr,
+        lsv_forward_start_atm_skew: s.market_atm_skew
+            * ((T::one() - eta) * (rem / t).max_val(T::zero()).sqrt()
+                + eta * i2r / i2t.max_val(T::from_f64(1e-12))),
+    }
+}
 #[derive(Debug, Clone)]
 pub struct AdSviSmile<T: Real> {
     pub forward: T,

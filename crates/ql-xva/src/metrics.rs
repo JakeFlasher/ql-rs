@@ -2,6 +2,114 @@
 use crate::NpvCube;
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn ctd_bounds() {
+        let _ = std::mem::size_of::<Dual<1>>();
+        let s = BrigoPallaviciniCtdCollateralXvaSpec {
+            notional_mtm: 1.0,
+            maturity: 1.0,
+            num_steps: 8,
+            base_ois_rate: 0.02,
+            csa_spread_ccy1: 0.001,
+            csa_spread_ccy2: 0.002,
+            csa_spread_ccy3: 0.003,
+            csa_mean_reversion: 1.0,
+            csa_vol_ccy1: 0.01,
+            csa_vol_ccy2: 0.01,
+            csa_vol_ccy3: 0.01,
+            csa_correlation: 0.2,
+            cpty_hazard_rate: 0.02,
+            cpty_lgd: 0.6,
+            own_hazard_rate: 0.01,
+            own_lgd: 0.6,
+            exposure_volatility: 0.1,
+        };
+        let r = compute_brigo_pallavicini_ctd_collateral_and_closeout_xva(&s);
+        assert!(r.ctd_stochastic_csa_discount_factor <= r.intrinsic_max_csa_discount_factor);
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BrigoPallaviciniCtdCollateralXvaSpec<T: Real = f64> {
+    pub notional_mtm: T,
+    pub maturity: T,
+    pub num_steps: usize,
+    pub base_ois_rate: T,
+    pub csa_spread_ccy1: T,
+    pub csa_spread_ccy2: T,
+    pub csa_spread_ccy3: T,
+    pub csa_mean_reversion: T,
+    pub csa_vol_ccy1: T,
+    pub csa_vol_ccy2: T,
+    pub csa_vol_ccy3: T,
+    pub csa_correlation: T,
+    pub cpty_hazard_rate: T,
+    pub cpty_lgd: T,
+    pub own_hazard_rate: T,
+    pub own_lgd: T,
+    pub exposure_volatility: T,
+}
+#[derive(Clone, Debug)]
+pub struct BrigoPallaviciniCtdCollateralXvaReport<T: Real = f64> {
+    pub single_ccy1_discount_factor: T,
+    pub intrinsic_max_csa_discount_factor: T,
+    pub ctd_stochastic_csa_discount_factor: T,
+    pub ctd_collateral_switch_option_value: T,
+    pub effective_ctd_spread_pickup_bps: T,
+    pub risk_free_closeout_bcva: T,
+    pub replacement_cost_closeout_bcva: T,
+    pub closeout_contagion_spread_impact: T,
+}
+pub fn compute_brigo_pallavicini_ctd_collateral_and_closeout_xva<T: Real>(
+    s: &BrigoPallaviciniCtdCollateralXvaSpec<T>,
+) -> BrigoPallaviciniCtdCollateralXvaReport<T> {
+    let n = s.num_steps.max(1);
+    let dt = s.maturity / T::from_f64(n as f64);
+    let mut integ = T::zero();
+    let maxs = s
+        .csa_spread_ccy1
+        .max_val(s.csa_spread_ccy2)
+        .max_val(s.csa_spread_ccy3);
+    for k in 0..n {
+        let t = T::from_f64(k as f64 + 0.5) * dt;
+        let g = (T::one() - (-T::from_f64(2.0) * s.csa_mean_reversion * t).exp())
+            / (T::from_f64(2.0) * s.csa_mean_reversion.max_val(T::from_f64(1e-12)));
+        let vol = (s.csa_vol_ccy1 * s.csa_vol_ccy1
+            + s.csa_vol_ccy2 * s.csa_vol_ccy2
+            + s.csa_vol_ccy3 * s.csa_vol_ccy3
+            + T::from_f64(2.0)
+                * s.csa_correlation
+                * (s.csa_vol_ccy1 * s.csa_vol_ccy2
+                    + s.csa_vol_ccy1 * s.csa_vol_ccy3
+                    + s.csa_vol_ccy2 * s.csa_vol_ccy3))
+            .max_val(T::zero())
+            .sqrt();
+        integ += (maxs + vol * g.sqrt() * T::from_f64(0.8)).max_val(T::zero()) * dt;
+    }
+    let d1 = (-s.base_ois_rate * s.maturity).exp();
+    let intrinsic = (-(s.base_ois_rate + maxs) * s.maturity).exp();
+    let stochastic = (-s.base_ois_rate * s.maturity - integ).exp();
+    let ctd = (intrinsic - stochastic).max_val(T::zero());
+    let pickup = T::from_f64(1e4) * (intrinsic.ln() - stochastic.ln())
+        / s.maturity.max_val(T::from_f64(1e-12));
+    let expn = s.notional_mtm.abs();
+    let cva = expn * s.cpty_hazard_rate * s.cpty_lgd * s.maturity * d1;
+    let rep = cva + expn * s.own_hazard_rate * s.own_lgd * s.maturity * d1 * T::from_f64(0.5);
+    BrigoPallaviciniCtdCollateralXvaReport {
+        single_ccy1_discount_factor: d1,
+        intrinsic_max_csa_discount_factor: intrinsic,
+        ctd_stochastic_csa_discount_factor: stochastic,
+        ctd_collateral_switch_option_value: ctd,
+        effective_ctd_spread_pickup_bps: pickup,
+        risk_free_closeout_bcva: cva,
+        replacement_cost_closeout_bcva: rep,
+        closeout_contagion_spread_impact: (rep - cva).abs(),
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct GregoryNettingSetAllocationSpec<T: Real = f64> {
