@@ -1624,21 +1624,40 @@ mod phase15_tests {
             assert!((w[i] - mv[i]).abs() < 1e-10);
         }
         let h = 1e-5;
-        let eval = |x: f64| {
-            let mut z = c.clone();
-            z[0][1] = x;
-            z[1][0] = x;
-            marchenko_pastur_denoise_covariance(&z, 12).unwrap()[0][1]
+        let eval_rmt = |x01: f64| {
+            let mut c2 = c.clone();
+            c2[0][1] = x01;
+            c2[1][0] = x01;
+            marchenko_pastur_denoise_covariance(&c2, 12).unwrap()[0][1]
         };
-        let fd = (eval(0.01 + h) - eval(0.01 - h)) / (2.0 * h);
-        let mut cd: Vec<Vec<Dual<1>>> = c
+        let fd_rmt = (eval_rmt(0.01 + h) - eval_rmt(0.01 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let mut cd: Vec<Vec<D>> = c
             .iter()
-            .map(|r| r.iter().map(|&x| Dual::from_value(x)).collect())
+            .map(|row| row.iter().map(|&v| D::from_value(v)).collect())
             .collect();
-        cd[0][1] = Dual::variable(0.01, 0);
-        cd[1][0] = Dual::variable(0.01, 0);
-        assert!(
-            (marchenko_pastur_denoise_covariance(&cd, 12).unwrap()[0][1].d[0] - fd).abs() < 1e-5
-        );
+        cd[0][1] = D::variable(0.01, 0);
+        cd[1][0] = D::variable(0.01, 0);
+        let rmt_d = marchenko_pastur_denoise_covariance(&cd, 12).unwrap();
+        assert!((rmt_d[0][1].d[0] - fd_rmt).abs() < 1e-5);
+        let eval_nco0 = |x01: f64| {
+            let mut c2 = c.clone();
+            c2[0][1] = x01;
+            c2[1][0] = x01;
+            nested_clustered_optimization_weights(&NestedClusteredOptimizationSpec {
+                covariance: c2,
+                expected_returns: None,
+                risk_aversion: 1.0,
+                num_clusters: 2,
+            })[0]
+        };
+        let fd_nco = (eval_nco0(0.01 + h) - eval_nco0(0.01 - h)) / (2.0 * h);
+        let nco_d = nested_clustered_optimization_weights(&NestedClusteredOptimizationSpec {
+            covariance: cd,
+            expected_returns: None,
+            risk_aversion: D::one(),
+            num_clusters: 2,
+        });
+        assert!((nco_d[0].d[0] - fd_nco).abs() < 1e-5);
     }
 }

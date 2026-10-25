@@ -296,6 +296,7 @@ mod phase14_tests {
 mod phase15_tests {
     use super::*;
     use crate::SurvivalProbabilityCurve;
+    use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;
     use ql_time::Date;
     #[test]
@@ -304,19 +305,36 @@ mod phase15_tests {
         let disc = FlatForwardCurve::new(d, 0.02);
         let curve = SurvivalProbabilityCurve::new(d, vec![1.0, 2.0, 5.0], vec![0.03, 0.03, 0.03]);
         let mut s = IndexCdsSwaptionSpec {
-            notional: 1.0,
-            index_coupon: 0.01,
+            notional: 100.0,
+            index_coupon: 0.012,
             strike_spread: 0.012,
             option_expiry: 1.0,
             maturity: 5.0,
             payment_times: vec![1.0, 2.0, 3.0, 4.0, 5.0],
             constituent_weights: vec![1.0],
             constituent_recoveries: vec![0.4],
-            vol: 0.2,
+            vol: 0.25,
             is_payer: true,
             include_fep: true,
         };
         let p = price_index_cds_swaption(&s, &disc, std::slice::from_ref(&curve));
+        let single = price_cds_swaption_from_curves(
+            &CdsSwaptionSpec {
+                notional: 100.0,
+                strike_spread: 0.012,
+                option_expiry: 1.0,
+                maturity: 5.0,
+                recovery: 0.4,
+                running_spread: 0.012,
+                vol: 0.25,
+                payment_times: vec![1.0, 2.0, 3.0, 4.0, 5.0],
+                knocks_out_on_default: false,
+                is_payer: true,
+            },
+            &disc,
+            &curve,
+        );
+        assert!((p.npv - single.npv).abs() < 1e-10);
         s.is_payer = false;
         let r = price_index_cds_swaption(&s, &disc, std::slice::from_ref(&curve));
         assert!(
@@ -328,5 +346,32 @@ mod phase15_tests {
                 .abs()
                 < 1e-8
         );
+        let h = 1e-5;
+        let eval_rec = |rec_val: f64| {
+            let mut spec = s.clone();
+            spec.is_payer = true;
+            spec.constituent_recoveries = vec![rec_val];
+            price_index_cds_swaption(&spec, &disc, std::slice::from_ref(&curve)).npv
+        };
+        let fd_rec = (eval_rec(0.4 + h) - eval_rec(0.4 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let disc_d = FlatForwardCurve::new(d, D::from_value(0.02));
+        let curve_d =
+            SurvivalProbabilityCurve::new(d, vec![1.0, 2.0, 5.0], vec![D::from_value(0.03); 3]);
+        let sd = IndexCdsSwaptionSpec {
+            notional: D::from_value(100.0),
+            index_coupon: D::from_value(0.012),
+            strike_spread: D::from_value(0.012),
+            option_expiry: 1.0,
+            maturity: 5.0,
+            payment_times: vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            constituent_weights: vec![1.0],
+            constituent_recoveries: vec![D::variable(0.4, 0)],
+            vol: D::from_value(0.25),
+            is_payer: true,
+            include_fep: true,
+        };
+        let ad = price_index_cds_swaption(&sd, &disc_d, std::slice::from_ref(&curve_d)).npv;
+        assert!((ad.d[0] - fd_rec).abs() < 1e-5);
     }
 }

@@ -242,7 +242,7 @@ impl<T: Real> GibsonSchwartz2F<T> {
     fn b(&self, t: T) -> T {
         let at = self.kappa * t;
         if at.val().abs() < 1e-6 {
-            t - at * t * t * 0.5 + at * at * t / 6.0
+            t * (T::one() - at * 0.5 + at * at / 6.0)
         } else {
             (T::one() - (-at).exp()) / self.kappa
         }
@@ -362,11 +362,11 @@ mod phase15_tests_gibson {
         let p = m.price_futures_option(1.0, 2.0, 100.0, ql_instruments::OptionType::Put);
         assert!((c - p - (-0.02f64).exp() * (m.futures_price(2.0) - 100.0)).abs() < 1e-10);
         let h = 1e-5;
-        let mut up = m;
-        let mut dn = m;
-        up.sigma_cy += h;
-        dn.sigma_cy -= h;
-        let fd = (up.futures_price(2.0) - dn.futures_price(2.0)) / (2.0 * h);
+        let mut m_up = m;
+        let mut m_dn = m;
+        m_up.sigma_cy += h;
+        m_dn.sigma_cy -= h;
+        let fd = (m_up.futures_price(2.0) - m_dn.futures_price(2.0)) / (2.0 * h);
         let md = GibsonSchwartz2F::<Dual<1>> {
             spot: Dual::from_value(100.0),
             convenience_yield0: Dual::from_value(0.03),
@@ -377,7 +377,8 @@ mod phase15_tests_gibson {
             sigma_cy: Dual::variable(0.3, 0),
             rho: Dual::from_value(-0.2),
         };
-        assert!((md.futures_price(Dual::from_value(2.0)).d[0] - fd).abs() < 1e-6);
+        let ad = md.futures_price(Dual::from_value(2.0));
+        assert!((ad.d[0] - fd).abs() < 1e-6);
     }
 }
 

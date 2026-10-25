@@ -9,3 +9,6 @@ pub use distributions::*;
 pub use interpolation::*;
 pub use solvers::*;
 pub use tridiagonal::*;
+
+pub mod philox;
+pub use philox::PhiloxRng;

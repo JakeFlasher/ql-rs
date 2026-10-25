@@ -383,13 +383,13 @@ mod phase15_tests {
         let c = FlatForwardCurve::new(d, 0.03);
         let s = TbaDollarRollSpec {
             front_clean_price: 99.0,
-            back_clean_price: 98.0,
+            back_clean_price: 98.5,
             wac: 0.04,
             pass_through_rate: 0.035,
             remaining_months: 120,
             front_accrued_fraction: 0.5,
             back_accrued_fraction: 0.5,
-            roll_period_years: 1.0,
+            roll_period_years: 1.0 / 12.0,
             assumed_cpr: 0.06,
             repo_rate: 0.02,
         };
@@ -398,6 +398,29 @@ mod phase15_tests {
         s2.back_clean_price = 99.0 - r.breakeven_drop;
         let r2 = analyze_tba_dollar_roll(&s2);
         assert!(r2.net_roll_advantage.abs() < 1e-10);
+        assert!((r2.implied_repo_rate - s.repo_rate).abs() < 1e-10);
+        let h = 1e-5;
+        let mut s_up = s;
+        let mut s_dn = s;
+        s_up.front_clean_price += h;
+        s_dn.front_clean_price -= h;
+        let fd = (analyze_tba_dollar_roll(&s_up).implied_repo_rate
+            - analyze_tba_dollar_roll(&s_dn).implied_repo_rate)
+            / (2.0 * h);
+        let sd = TbaDollarRollSpec::<Dual<1>> {
+            front_clean_price: Dual::variable(99.0, 0),
+            back_clean_price: Dual::from_value(98.5),
+            wac: Dual::from_value(0.04),
+            pass_through_rate: Dual::from_value(0.035),
+            remaining_months: 120,
+            front_accrued_fraction: 0.5,
+            back_accrued_fraction: 0.5,
+            roll_period_years: 1.0 / 12.0,
+            assumed_cpr: Dual::from_value(0.06),
+            repo_rate: Dual::from_value(0.02),
+        };
+        let ad = analyze_tba_dollar_roll(&sd).implied_repo_rate;
+        assert!((ad.d[0] - fd).abs() < 1e-6);
         let m = SpecifiedPoolMbsSpec {
             original_balance: 100.0,
             wac: 0.04,
@@ -409,22 +432,10 @@ mod phase15_tests {
             refi_slope: 0.0,
             refi_inflection: 0.0,
             primary_secondary_spread: 0.0,
-            cdr: 0.0,
+            cdr: 0.01,
             loss_severity: 0.4,
         };
-        assert!(price_specified_pool_mbs(&m, &c, 0.0).pv.is_finite());
-        let sd = TbaDollarRollSpec::<Dual<1>> {
-            front_clean_price: Dual::variable(99.0, 0),
-            back_clean_price: Dual::from_value(98.0),
-            wac: Dual::from_value(0.04),
-            pass_through_rate: Dual::from_value(0.035),
-            remaining_months: 120,
-            front_accrued_fraction: 0.5,
-            back_accrued_fraction: 0.5,
-            roll_period_years: 1.0,
-            assumed_cpr: Dual::from_value(0.06),
-            repo_rate: Dual::from_value(0.02),
-        };
-        assert!(analyze_tba_dollar_roll(&sd).implied_repo_rate.d[0].is_finite());
+        let val = price_specified_pool_mbs(&m, &c, 0.0);
+        assert!(val.pv > 90.0 && val.wal > 0.4 && val.wal <= 1.0);
     }
 }

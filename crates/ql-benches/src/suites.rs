@@ -2701,7 +2701,7 @@ fn benchmark_phase14_double_heston_tarf_coco_hrp(scale: usize) -> ComparisonRow 
     )
 }
 
-fn benchmark_phase15_jy_tba_bergomi_nco(scale: usize) -> ComparisonRow {
+pub fn benchmark_phase15_jy_tba_bergomi_nco(scale: usize) -> ComparisonRow {
     let cfg = config(scale);
     let d = date(2024, 1, 1);
     let eval_jy = |x: [f64; 4]| {
@@ -2969,24 +2969,41 @@ fn benchmark_phase15_jy_tba_bergomi_nco(scale: usize) -> ComparisonRow {
             })
             .collect::<Vec<_>>();
         let gc = gerber_covariance_matrix(&ret, 0.5, 1e-3).unwrap();
+        let c_d = vec![
+            vec![
+                D::variable(x0[3][0], 0),
+                D::variable(x0[3][1], 1),
+                D::zero(),
+                D::zero(),
+            ],
+            vec![
+                D::variable(x0[3][1], 1),
+                D::from_value(0.09),
+                D::zero(),
+                D::zero(),
+            ],
+            vec![
+                D::zero(),
+                D::zero(),
+                D::variable(x0[3][2], 2),
+                D::from_value(0.01),
+            ],
+            vec![
+                D::zero(),
+                D::zero(),
+                D::from_value(0.01),
+                D::from_value(0.16),
+            ],
+        ];
         let nc = nested_clustered_optimization_weights(&NestedClusteredOptimizationSpec {
-            covariance: gc.clone(),
+            covariance: c_d,
             expected_returns: None,
             risk_aversion: D::one(),
             num_clusters: 2,
         });
         let nco = nc[0] + nc[1] * 2.0 + nc[2] * 3.0 + nc[3] * 4.0 + gc[0][0] + gc[0][1];
-        let mut nco_fd = eval_nco(x0[3]);
-        for i in 0..4 {
-            let mut up = x0[3];
-            let mut dn = x0[3];
-            up[i] += 1e-5;
-            dn[i] -= 1e-5;
-            nco_fd += (eval_nco(up) - eval_nco(dn)) / (2.0e-5);
-        }
-        std::hint::black_box(nco.val + nco.d.iter().sum::<f64>());
-        let out = jy + mb.net_roll_advantage + pool.pv * 1e-3 + bg;
-        out.val + out.d.iter().sum::<f64>() + nco_fd
+        let out = jy + mb.net_roll_advantage + pool.pv * 1e-3 + bg + nco;
+        out.val + out.d.iter().sum::<f64>()
     };
     run_comparison(
         "27_jy_inflation_tba_bergomi_nco_aad",
@@ -2997,6 +3014,7 @@ fn benchmark_phase15_jy_tba_bergomi_nco(scale: usize) -> ComparisonRow {
         sota,
     )
 }
+
 pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
     // Keep all quantitative engine dependencies linked into the 27-suite
     // benchmark binary, including engines used by the parity harness.

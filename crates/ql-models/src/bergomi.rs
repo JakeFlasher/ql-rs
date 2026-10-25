@@ -74,7 +74,7 @@ fn bg_cross<T: Real>(a: T, b: T, t: T) -> T {
         0.3626837834,
         0.3137066459,
         0.2223810345,
-        0.2223810345 * 0.0 + 0.1012285363,
+        0.1012285363,
     ];
     let mut z = T::zero();
     for (&x, &w) in nodes.iter().zip(weights.iter()) {
@@ -173,6 +173,7 @@ pub fn bergomi_2f_mc_price<T: Real>(
     let e2 = (-p.k2 * dt).exp();
     let sd1 = bg_j(p.k1 * 2.0, dt).max_val(T::zero()).sqrt();
     let sd2 = bg_j(p.k2 * 2.0, dt).max_val(T::zero()).sqrt();
+    let rng = ql_math::PhiloxRng::new(seed);
     let mut total = T::zero();
     for path in 0..paths {
         let anti = path % 2 == 1;
@@ -181,45 +182,33 @@ pub fn bergomi_2f_mc_price<T: Real>(
         let mut x1 = T::zero();
         let mut x2 = T::zero();
         for j in 0..steps {
-            let tj = dt * j as f64;
-            let var_y = w1 * w1 * bg_j(p.k1 * 2.0, tj)
-                + w2 * w2 * bg_j(p.k2 * 2.0, tj)
-                + w1 * w2 * p.rho12 * bg_j(p.k1 + p.k2, tj) * 2.0;
-            let y = w1 * x1 + w2 * x2;
-            let xi = (p.xi0 * (p.omega * y - p.omega * p.omega * var_y * 0.5).exp())
+            let t_j = dt * j as f64;
+            let var_y = w1 * w1 * bg_j(p.k1 * 2.0, t_j)
+                + w2 * w2 * bg_j(p.k2 * 2.0, t_j)
+                + w1 * w2 * p.rho12 * bg_j(p.k1 + p.k2, t_j) * 2.0;
+            let y_j = w1 * x1 + w2 * x2;
+            let xi_inst = (p.xi0 * (p.omega * y_j - p.omega * p.omega * var_y * 0.5).exp())
                 .max_val(T::from_f64(1e-12));
-            let v = xi.sqrt();
-            let phase = (seed as f64 * 0.001 + id as f64 * 12.9898 + j as f64 * 78.233).sin();
-            let z = [
-                phase,
-                (phase * 1.37 + 0.3).sin(),
-                (phase * 2.11 - 0.2).cos(),
-                0.0,
-            ];
-            let sg = if anti { -1.0 } else { 1.0 };
-            let z1 = z[0] * sg;
-            let z2 = z[1] * sg;
-            let z3 = z[2] * sg;
+            let v = xi_inst.sqrt();
+            let draws = rng.normal4(id, j as u32);
+            let sgn = if anti { -1.0 } else { 1.0 };
+            let z1 = draws[0] * sgn;
+            let z2 = draws[1] * sgn;
+            let z3 = draws[2] * sgn;
             let dw1 = z1;
             let dw2 = p.rho12 * z1 + s12 * z2;
             let dws = a_s * z1 + b_s * z2 + c_s * z3;
-            log_s += (rate - div - xi * 0.5) * dt + v * sqrt_dt * dws;
+            log_s += (rate - div - xi_inst * 0.5) * dt + v * sqrt_dt * dws;
             x1 = x1 * e1 + sd1 * dw1;
             x2 = x2 * e2 + sd2 * dw2;
         }
-        let st = log_s.exp();
-        let diff = if is_call { st - strike } else { strike - st };
-        let e = 1e-4;
-        total += ((diff + (diff * diff + e * e).sqrt()) * 0.5) * (-rate * expiry).exp();
+        let s_t = log_s.exp();
+        let diff = if is_call { s_t - strike } else { strike - s_t };
+        let eps = 1e-4;
+        let payoff = (diff + (diff * diff + eps * eps).sqrt()) * 0.5;
+        total += payoff * (-rate * expiry).exp();
     }
-    if is_call {
-        total / paths as f64
-    } else {
-        let call = bergomi_2f_mc_price(
-            p, spot, strike, rate, div, expiry, n_steps, n_paths, true, seed,
-        );
-        call - spot * (-div * expiry).exp() + strike * (-rate * expiry).exp()
-    }
+    total / paths as f64
 }
 fn wgt<T: Real>(theta: T, rho: T) -> T {
     (T::one() - theta).max_val(T::zero())
@@ -256,6 +245,13 @@ mod phase15_tests {
         };
         let (a, s, c) = bergomi_2f_smile_moments_bg(&p, 1.0);
         assert!((a - 0.2).abs() < 1e-12 && s.abs() < 1e-12 && c.abs() < 1e-12);
+        let h = 1e-5;
+        let eval_om = |om: f64| {
+            let mut p2 = p;
+            p2.omega = om;
+            bergomi_2f_implied_vol_bg(&p2, 100.0, 95.0, 1.0)
+        };
+        let fd = (eval_om(0.2 + h) - eval_om(0.2 - h)) / (2.0 * h);
         let pd = Bergomi2FParams::<Dual<1>> {
             xi0: Dual::from_value(0.04),
             omega: Dual::variable(0.2, 0),
@@ -266,18 +262,16 @@ mod phase15_tests {
             rho_s1: Dual::from_value(-0.5),
             rho_s2: Dual::from_value(-0.3),
         };
-        assert!(
-            bergomi_2f_implied_vol_bg(
-                &pd,
-                Dual::from_value(100.0),
-                Dual::from_value(100.0),
-                Dual::from_value(1.0)
-            )
-            .d[0]
-                .is_finite()
+        let ad = bergomi_2f_implied_vol_bg(
+            &pd,
+            Dual::from_value(100.0),
+            Dual::from_value(95.0),
+            Dual::from_value(1.0),
         );
+        assert!((ad.d[0] - fd).abs() < 1e-6);
         let mc_c = bergomi_2f_mc_price(&p, 100.0, 100.0, 0.02, 0.01, 1.0, 32, 256, true, 42);
         let mc_p = bergomi_2f_mc_price(&p, 100.0, 100.0, 0.02, 0.01, 1.0, 32, 256, false, 42);
-        assert!((mc_c - mc_p - (100.0 * (-0.01f64).exp() - 100.0 * (-0.02f64).exp())).abs() < 0.25);
+        let parity = 100.0 * (-0.01f64).exp() - 100.0 * (-0.02f64).exp();
+        assert!((mc_c - mc_p - parity).abs() < 0.25);
     }
 }

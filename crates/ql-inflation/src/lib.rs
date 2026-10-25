@@ -921,28 +921,28 @@ mod phase15_tests {
         flr.cap_floor_type = YoYInflationCapFloorType::Floor;
         let mut col = cap;
         col.cap_floor_type = YoYInflationCapFloorType::Collar;
-        let vc = price_yoy_capfloor_jarrow_yildirim(&cap, &disc, &inf, &p).0;
-        let vf = price_yoy_capfloor_jarrow_yildirim(&flr, &disc, &inf, &p).0;
-        let vcol = price_yoy_capfloor_jarrow_yildirim(&col, &disc, &inf, &p).0;
+        let (vc, _) = price_yoy_capfloor_jarrow_yildirim(&cap, &disc, &inf, &p);
+        let (vf, _) = price_yoy_capfloor_jarrow_yildirim(&flr, &disc, &inf, &p);
+        let (vcol, _) = price_yoy_capfloor_jarrow_yildirim(&col, &disc, &inf, &p);
         assert!((vc - vf - vcol).abs() < 1e-12);
         let h = 1e-5;
-        let mut pu = p;
-        let mut pd = p;
-        pu.sigma_real += h;
-        pd.sigma_real -= h;
-        let fd = (price_yoy_capfloor_jarrow_yildirim(&cap, &disc, &inf, &pu).0
-            - price_yoy_capfloor_jarrow_yildirim(&cap, &disc, &inf, &pd).0)
+        let mut p_up = p;
+        let mut p_dn = p;
+        p_up.sigma_real += h;
+        p_dn.sigma_real -= h;
+        let fd = (price_yoy_capfloor_jarrow_yildirim(&cap, &disc, &inf, &p_up).0
+            - price_yoy_capfloor_jarrow_yildirim(&cap, &disc, &inf, &p_dn).0)
             / (2.0 * h);
         type D = Dual<1>;
-        let dd = FlatForwardCurve::new(d, D::from_value(0.025));
-        let id = ZeroInflationCurve::new(
+        let disc_d = FlatForwardCurve::new(d, D::from_value(0.025));
+        let inf_d = ZeroInflationCurve::new(
             d,
             100.0,
             vec![1.0, 2.0, 5.0],
             vec![D::from_value(0.02); 3],
             None,
         );
-        let cd = YoYInflationCapFloor {
+        let cap_d = YoYInflationCapFloor {
             notional: D::from_value(100.0),
             maturity_years: 3,
             cap_rate: Some(D::from_value(0.022)),
@@ -961,6 +961,7 @@ mod phase15_tests {
             rho_nom_cpi: D::from_value(0.15),
             rho_real_cpi: D::from_value(-0.2),
         };
-        assert!((price_yoy_capfloor_jarrow_yildirim(&cd, &dd, &id, &pd).0.d[0] - fd).abs() < 1e-5);
+        let ad = price_yoy_capfloor_jarrow_yildirim(&cap_d, &disc_d, &inf_d, &pd).0;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

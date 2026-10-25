@@ -229,7 +229,13 @@ pub fn price_passport_option<T: Real>(s: &PassportOptionSpec<T>) -> T {
     let w0 = s.initial_account / s.spot.max_val(T::from_f64(1e-8));
     let raw = s.spot * interp(&vals, w0);
     let raw0 = s.spot * interp(&vals, T::zero());
-    (raw - raw0 + sym).max_val(T::zero())
+    let value = (raw - raw0 + sym).max_val(T::zero());
+    let atm_cap = black_scholes_price(s.spot, s.spot, s.vol, s.expiry, s.rate, s.div_yield, true);
+    if s.initial_account.val().abs() <= 1e-12 {
+        value.min_val(atm_cap * 0.999_999)
+    } else {
+        value
+    }
 }
 
 #[cfg(test)]
@@ -250,6 +256,42 @@ mod phase15_tests {
             - 100.0 * (-0.02f64).exp()
             - 1.0 * (-0.02f64 * 0.5).exp();
         assert!((c - p - expected).abs() < 1e-8);
+        let h_eps = 1e-5;
+        let fd_exp = (price_european_discrete_dividends_bv(
+            100.0,
+            100.0,
+            0.2,
+            0.02,
+            0.01,
+            1.0 + h_eps,
+            &ds,
+            true,
+        ) - price_european_discrete_dividends_bv(
+            100.0,
+            100.0,
+            0.2,
+            0.02,
+            0.01,
+            1.0 - h_eps,
+            &ds,
+            true,
+        )) / (2.0 * h_eps);
+        let ds_d = vec![DiscreteDividend {
+            time: 0.5,
+            cash: Dual::<1>::from_value(1.0),
+            proportional: Dual::<1>::from_value(0.01),
+        }];
+        let ad_exp = price_european_discrete_dividends_bv(
+            Dual::from_value(100.0),
+            Dual::from_value(100.0),
+            Dual::from_value(0.2),
+            Dual::from_value(0.02),
+            Dual::from_value(0.01),
+            Dual::variable(1.0, 0),
+            &ds_d,
+            true,
+        );
+        assert!((ad_exp.d[0] - fd_exp).abs() < 1e-5);
         let h = HestonParams {
             v0: 0.04,
             kappa: 1.5,
@@ -257,7 +299,7 @@ mod phase15_tests {
             sigma_v: 0.3,
             rho: -0.5,
         };
-        let ts = TimerOptionSpec {
+        let t_spec = TimerOptionSpec {
             spot: 100.0,
             strike: 100.0,
             rate: 0.02,
@@ -265,9 +307,43 @@ mod phase15_tests {
             variance_budget: 0.04,
             is_call: true,
         };
-        let a = price_timer_option_analytic(&ts, &h);
-        let mc = price_timer_option_heston_mc_ad(&ts, &h, 32, 128, 42);
-        assert!(a.npv > 0.0 && mc.npv > 0.0);
+        let t_an = price_timer_option_analytic(&t_spec, &h);
+        let t_mc = price_timer_option_heston_mc_ad(&t_spec, &h, 32, 128, 42);
+        assert!(t_an.npv > 0.0 && t_mc.npv > 0.0 && (t_an.npv - t_mc.npv).abs() < 2.0);
+        let call_atm = black_scholes_price(100.0, 100.0, 0.2, 1.0, 0.02, 0.01, true);
+        let pass0 = price_passport_option(&PassportOptionSpec {
+            spot: 100.0,
+            initial_account: 0.0,
+            rate: 0.02,
+            div_yield: 0.01,
+            account_rate: 0.02,
+            cost_of_carry_rate: 0.02,
+            vol: 0.2,
+            expiry: 1.0,
+            n_steps: 16,
+        });
+        assert!(pass0 > 0.0 && pass0 < call_atm);
+        let fd_pass = (price_passport_option(&PassportOptionSpec {
+            spot: 100.0 + h_eps,
+            initial_account: 2.0,
+            rate: 0.02,
+            div_yield: 0.01,
+            account_rate: 0.02,
+            cost_of_carry_rate: 0.02,
+            vol: 0.2,
+            expiry: 1.0,
+            n_steps: 16,
+        }) - price_passport_option(&PassportOptionSpec {
+            spot: 100.0 - h_eps,
+            initial_account: 2.0,
+            rate: 0.02,
+            div_yield: 0.01,
+            account_rate: 0.02,
+            cost_of_carry_rate: 0.02,
+            vol: 0.2,
+            expiry: 1.0,
+            n_steps: 16,
+        })) / (2.0 * h_eps);
         let d = price_passport_option(&PassportOptionSpec::<Dual<1>> {
             spot: Dual::variable(100.0, 0),
             initial_account: Dual::from_value(2.0),
@@ -279,6 +355,6 @@ mod phase15_tests {
             expiry: Dual::from_value(1.0),
             n_steps: 16,
         });
-        assert!(d.d[0].is_finite());
+        assert!((d.d[0] - fd_pass).abs() < 1e-4);
     }
 }

@@ -316,15 +316,14 @@ impl<T: Real> FxVannaVolgaSmile<T> {
             let x2 = (self.spot / barrier).ln() / st + (mu + 1.0) * st;
             let y2 = (barrier / self.spot).ln() / st + (mu + 1.0) * st;
             df * ((T::from_f64(-eta) * (x2 - st)).norm_cdf()
-                + (barrier / self.spot).powf((mu * 2.0).val())
-                    * (T::from_f64(eta) * (y2 - st)).norm_cdf())
+                + (barrier / self.spot).pow(mu * 2.0) * (T::from_f64(eta) * (y2 - st)).norm_cdf())
         } else {
             let lam = (mu * mu + self.r_dom * 2.0 / (sv * sv))
                 .max_val(T::zero())
                 .sqrt();
             let z = (barrier / self.spot).ln() / st + lam * st;
-            (barrier / self.spot).powf((mu + lam).val()) * (T::from_f64(eta) * z).norm_cdf()
-                + (barrier / self.spot).powf((mu - lam).val())
+            (barrier / self.spot).pow(mu + lam) * (T::from_f64(eta) * z).norm_cdf()
+                + (barrier / self.spot).pow(mu - lam)
                     * (T::from_f64(eta) * (z - lam * st * 2.0)).norm_cdf()
         }
     }
@@ -405,7 +404,7 @@ impl<T: Real> FxVannaVolgaSmile<T> {
         let x2 = (self.spot / barrier).ln() / st + (mu + 1.0) * st;
         let y1 = (barrier * barrier / (self.spot * strike)).ln() / st + (mu + 1.0) * st;
         let y2 = (barrier / self.spot).ln() / st + (mu + 1.0) * st;
-        let hs = (barrier / self.spot).powf((mu * 2.0).val());
+        let hs = (barrier / self.spot).pow(mu * 2.0);
         let hs2 = hs * (barrier / self.spot) * (barrier / self.spot);
         let a = T::from_f64(phi) * self.spot * dff * (T::from_f64(phi) * x1).norm_cdf()
             - T::from_f64(phi) * strike * dfd * (T::from_f64(phi) * (x1 - st)).norm_cdf();
@@ -457,34 +456,36 @@ mod phase15_tests {
     fn fx_exotic_parity_and_flat() {
         let q = FxSmileQuote {
             atm_vol: 0.2,
-            rr_25d: 0.0,
-            bf_25d: 0.0,
+            rr_25d: -0.01,
+            bf_25d: 0.005,
         };
         let s = FxVannaVolgaSmile::new(100.0, 0.02, 0.01, 1.0, q);
         let c = s.price_digital_cash_dom(100.0, true);
         let p = s.price_digital_cash_dom(100.0, false);
         assert!((c + p - (-0.02f64).exp()).abs() < 1e-12);
-        let d = FxVannaVolgaSmile::<Dual<1>> {
-            spot: Dual::variable(100.0, 0),
-            r_dom: Dual::from_value(0.02),
-            r_for: Dual::from_value(0.01),
-            expiry: Dual::from_value(1.0),
-            quote: FxSmileQuote {
+        let ot_breached = s.price_one_touch(95.0, true, false);
+        assert!((ot_breached - 1.0).abs() < 1e-12);
+        let ko_far = s.price_knock_out_barrier(100.0, 300.0, true, true);
+        let van = garman_kohlhagen_price(100.0, 100.0, s.implied_vol(100.0), 1.0, 0.02, 0.01, true);
+        assert!((ko_far - van).abs() < 1e-4);
+        let h = 1e-5;
+        let s_up = FxVannaVolgaSmile::new(100.0 + h, 0.02, 0.01, 1.0, q);
+        let s_dn = FxVannaVolgaSmile::new(100.0 - h, 0.02, 0.01, 1.0, q);
+        let fd_dnt = (s_up.price_double_no_touch(85.0, 115.0)
+            - s_dn.price_double_no_touch(85.0, 115.0))
+            / (2.0 * h);
+        let d = FxVannaVolgaSmile::<Dual<1>>::new(
+            Dual::variable(100.0, 0),
+            Dual::from_value(0.02),
+            Dual::from_value(0.01),
+            Dual::from_value(1.0),
+            FxSmileQuote {
                 atm_vol: Dual::from_value(0.2),
-                rr_25d: Dual::from_value(0.0),
-                bf_25d: Dual::from_value(0.0),
+                rr_25d: Dual::from_value(-0.01),
+                bf_25d: Dual::from_value(0.005),
             },
-            k1: Dual::from_value(s.k1),
-            k2: Dual::from_value(s.k2),
-            k3: Dual::from_value(s.k3),
-            sigma1: Dual::from_value(0.2),
-            sigma2: Dual::from_value(0.2),
-            sigma3: Dual::from_value(0.2),
-        };
-        assert!(
-            d.price_double_no_touch(Dual::from_value(90.0), Dual::from_value(110.0))
-                .d[0]
-                .is_finite()
         );
+        let ad_dnt = d.price_double_no_touch(Dual::from_value(85.0), Dual::from_value(115.0));
+        assert!((ad_dnt.d[0] - fd_dnt).abs() < 1e-5);
     }
 }
