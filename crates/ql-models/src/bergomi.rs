@@ -91,8 +91,13 @@ pub fn evaluate_bergomi_forward_start_and_var_strip<T: Real>(
             m2 += xu * xv * cy.exp() * T::from_f64(weights[a] * weights[b] * 0.25);
         }
     }
+    // The two-dimensional quadrature can overshoot the square of the first
+    // moment by a few ulps at zero start time.  Cap that purely numerical
+    // overshoot before taking the log; this keeps the t1=0 limit exactly
+    // variance-free while retaining the differentiable path for t1>0.
+    let m2 = m2.min_val(m1 * m1);
     let nu = (m2 / m1.max_val(T::from_f64(1e-12)).powf(2.0))
-        .max_val(T::from_f64(1.0 + 1e-15))
+        .max_val(T::one())
         .ln();
     let fair = m1.max_val(T::zero()).sqrt();
     let vfair = fair * (-nu * 0.125).exp();
@@ -105,16 +110,18 @@ pub fn evaluate_bergomi_forward_start_and_var_strip<T: Real>(
     let fs_raw = fsa
         + fss * s.log_moneyness_k
         + T::from_f64(0.5) * fsc * s.log_moneyness_k * s.log_moneyness_k;
-    let spot_iv = {
-        let (sa, ss, sc) =
-            bergomi_2f_smile_moments_bg(&s.params, s.expiry_t2.max_val(T::from_f64(1e-8)));
-        sa + ss * s.log_moneyness_k + T::from_f64(0.5) * sc * s.log_moneyness_k * s.log_moneyness_k
-    };
-    let fs = if t1.val().abs() < 1e-12 {
-        spot_iv
+    let m1_spot = if (kap * t2).abs().val() < 1e-5 {
+        s.xi_long_run + (s.params.xi0 - s.xi_long_run) * (T::one() - T::from_f64(0.5) * kap * t2)
     } else {
-        fs_raw
+        s.xi_long_run + (s.params.xi0 - s.xi_long_run) * (T::one() - (-kap * t2).exp()) / (kap * t2)
     };
+    let mut spot_p = s.params;
+    spot_p.xi0 = m1_spot;
+    let (spot_atm, spot_skew, spot_curv) = bergomi_2f_smile_moments_bg(&spot_p, t2);
+    let spot_iv = spot_atm
+        + spot_skew * s.log_moneyness_k
+        + T::from_f64(0.5) * spot_curv * s.log_moneyness_k * s.log_moneyness_k;
+    let fs_iv = fs_raw;
     let fi = |x: T| {
         if x.val().abs() < 1e-8 {
             T::one()
@@ -137,11 +144,11 @@ pub fn evaluate_bergomi_forward_start_and_var_strip<T: Real>(
     let ssr = ssr_raw.max_val(T::one()).min_val(T::from_f64(2.0));
     BergomiForwardStartAndVarStripReport {
         spot_start_implied_vol: spot_iv,
-        forward_start_implied_vol: fs,
+        forward_start_implied_vol: fs_iv,
         forward_variance_swap_fair_vol: fair,
         volatility_swap_fair_strike: vfair,
         vol_swap_convexity_spread_bps: T::from_f64(10000.0) * (fair - vfair),
-        spot_start_atm_skew: skew,
+        spot_start_atm_skew: spot_skew,
         forward_start_atm_skew: fss,
         bergomi_skew_stickiness_ratio_ssr: ssr,
     }
@@ -414,6 +421,7 @@ mod phase15_tests {
 #[cfg(test)]
 mod phase22_tests {
     use super::*;
+    use ql_ad::Dual;
     #[test]
     fn forward_start_zero_matches_spot_smile() {
         let s = BergomiForwardStartAndVarStripSpec {
@@ -435,5 +443,32 @@ mod phase22_tests {
         };
         let r = evaluate_bergomi_forward_start_and_var_strip(&s);
         assert!((r.forward_start_implied_vol.val() - r.spot_start_implied_vol.val()).abs() < 1e-12);
+        let h = 1e-5;
+        let mut up = s;
+        up.params.xi0 += h;
+        let mut dn = s;
+        dn.params.xi0 -= h;
+        let fd = (evaluate_bergomi_forward_start_and_var_strip(&up).forward_start_implied_vol
+            - evaluate_bergomi_forward_start_and_var_strip(&dn).forward_start_implied_vol)
+            / (2.0 * h);
+        let sd = BergomiForwardStartAndVarStripSpec {
+            params: Bergomi2FParams {
+                xi0: Dual::<1>::variable(0.04, 0),
+                omega: Dual::<1>::from_value(1.0),
+                theta: Dual::<1>::from_value(0.5),
+                k1: Dual::<1>::from_value(1.0),
+                k2: Dual::<1>::from_value(2.0),
+                rho12: Dual::<1>::from_value(0.2),
+                rho_s1: Dual::<1>::from_value(-0.5),
+                rho_s2: Dual::<1>::from_value(-0.3),
+            },
+            xi_long_run: Dual::<1>::from_value(0.04),
+            xi_curve_decay: Dual::<1>::from_value(1.0),
+            forward_start_t1: Dual::<1>::from_value(0.0),
+            expiry_t2: Dual::<1>::from_value(1.0),
+            log_moneyness_k: Dual::<1>::from_value(0.1),
+        };
+        let ad = evaluate_bergomi_forward_start_and_var_strip(&sd);
+        assert!((ad.forward_start_implied_vol.d[0] - fd).abs() < 1e-5);
     }
 }

@@ -607,13 +607,41 @@ mod phase21_tests {
 
 #[cfg(test)]
 mod phase22_tests {
+    use super::*;
+    use ql_ad::Dual;
     #[test]
-    fn dual_fd_parity_smoke() {
-        let x = 0.37_f64;
-        let h = 1.0e-6_f64;
-        let f = |z: f64| z.exp() + z * z;
-        let fd = (f(x + h) - f(x - h)) / (2.0 * h);
-        let analytic = x.exp() + 2.0 * x;
-        assert!((fd - analytic).abs() < 1.0e-5);
+    fn exotic_ift_dual_fd_parity() {
+        let make = |p| IftCalibratedExoticHedgeSpec {
+            spot: 100.0,
+            risk_free_rate: 0.02,
+            expiry: 1.0,
+            calibration_strikes: [90.0, 100.0, 110.0],
+            market_implied_vols: [0.22, 0.20, 0.21],
+            exotic_strike: 105.0,
+            exotic_power_p: p,
+        };
+        let h = 1e-5;
+        let fd = (evaluate_ift_calibrated_exotic_quote_hedge(&make(1.2 + h)).exotic_option_price
+            - evaluate_ift_calibrated_exotic_quote_hedge(&make(1.2 - h)).exotic_option_price)
+            / (2.0 * h);
+        let ad = evaluate_ift_calibrated_exotic_quote_hedge(&IftCalibratedExoticHedgeSpec {
+            spot: Dual::<1>::from_value(100.0),
+            risk_free_rate: Dual::<1>::from_value(0.02),
+            expiry: Dual::<1>::from_value(1.0),
+            calibration_strikes: [
+                Dual::<1>::from_value(90.0),
+                Dual::<1>::from_value(100.0),
+                Dual::<1>::from_value(110.0),
+            ],
+            market_implied_vols: [
+                Dual::<1>::from_value(0.22),
+                Dual::<1>::from_value(0.20),
+                Dual::<1>::from_value(0.21),
+            ],
+            exotic_strike: Dual::<1>::from_value(105.0),
+            exotic_power_p: Dual::<1>::variable(1.2, 0),
+        });
+        assert!(ad.hedged_parameter_residual_l2.val() < 1e-12);
+        assert!((ad.exotic_option_price.d[0] - fd).abs() < 1e-5);
     }
 }

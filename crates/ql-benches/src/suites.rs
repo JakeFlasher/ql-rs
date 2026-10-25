@@ -6,8 +6,9 @@ use ql_commodities as _;
 use ql_credit::asb_recursive_expected_tranche_loss;
 use ql_credit::{
     BaseCorrelationTrancheQuote, CalibratedCreditCurve, CdsQuote, CreditDefaultSwap, IsdaCdsEngine,
-    ProtectionSide, SurvivalProbabilityCurve, bootstrap_base_correlation_curve,
-    price_mezzanine_tranche_base_correlation,
+    OKaneBespokeBaseCorrelationSpec, ProtectionSide, SurvivalProbabilityCurve,
+    bootstrap_base_correlation_curve, price_mezzanine_tranche_base_correlation,
+    price_okane_bespoke_tranche_and_student_t_basket,
 };
 use ql_curves::{
     CalibratedCurveSystem, DiscountCurve, FlatForwardCurve, MonotoneConvexZeroCurve,
@@ -19,13 +20,19 @@ use ql_exotics::{
     ParisianBarrierOptionSpec, price_barrier_option, price_parisian_option_mc_ad,
 };
 use ql_fixed_income::{
-    CmoTrancheSpec, CmoWaterfallSpec, SpecifiedPoolMbsSpec, TbaDollarRollSpec,
-    analyze_tba_dollar_roll, price_cmo_waterfall, price_specified_pool_mbs,
+    CmoTrancheSpec, CmoWaterfallSpec, NelsonSiegelSvensson, SpecifiedPoolMbsSpec,
+    TbaDollarRollSpec, TuckmanKeyRateDurationSpec, analyze_tba_dollar_roll,
+    analyze_tuckman_key_rate_durations_and_pca_hedge, price_cmo_waterfall,
+    price_specified_pool_mbs,
 };
 use ql_fx::{CalibratedXccsCurve, ConstNotionalXccs, XccsQuote};
-use ql_fx::{FxSmileQuote, FxVannaVolgaSmile};
+use ql_fx::{
+    FxSmileQuote, FxVannaVolgaSmile, WystupFxStructuredProductSpec,
+    evaluate_wystup_fx_accumulator_and_dcd,
+};
 use ql_inflation::{
-    JarrowYildirimParams, YoYInflationCapFloor, YoYInflationCapFloorType, ZeroInflationCurve,
+    BrigoMercurioInflationMarketModelSpec, JarrowYildirimParams, YoYInflationCapFloor,
+    YoYInflationCapFloorType, ZeroInflationCurve, price_brigo_mercurio_yoy_and_lpi_market_model,
     price_yoy_capfloor_jarrow_yildirim,
 };
 use ql_instruments::{FixedRateLeg, OptionType, ResolvedCouponLeg};
@@ -3556,49 +3563,97 @@ fn phase22_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
             view_confidences: vec![T::from_f64(0.65)],
         },
     );
-    let vas = ql_credit::vasicek_lhp_closed_form_base_tranche_loss(
-        T::from_f64(0.02),
-        T::from_f64(0.4),
-        T::from_f64(0.1),
-        T::from_f64(0.2),
-    );
-    let nss = ql_fixed_income::NelsonSiegelSvensson {
-        reference_date: date(2024, 1, 1),
-        beta0: T::from_f64(0.03),
-        beta1: T::from_f64(-0.01),
-        beta2: T::from_f64(0.02),
-        beta3: T::from_f64(-0.005),
-        tau1: T::from_f64(1.5),
-        tau2: T::from_f64(4.0),
-    }
-    .zero_rate(T::from_f64(2.0));
-    let (_, inf_var) = ql_inflation::jarrow_yildirim_yoy_moments(
-        &ql_inflation::JarrowYildirimParams {
-            a_nom: T::from_f64(0.1),
-            sigma_nom: T::from_f64(0.01),
-            a_real: T::from_f64(0.2),
-            sigma_real: T::from_f64(0.008),
-            sigma_cpi: T::from_f64(0.005),
-            rho_nom_real: T::from_f64(0.2),
-            rho_nom_cpi: T::from_f64(0.1),
-            rho_real_cpi: T::from_f64(0.1),
+    let krd = analyze_tuckman_key_rate_durations_and_pca_hedge(&TuckmanKeyRateDurationSpec {
+        nss_curve: NelsonSiegelSvensson {
+            reference_date: date(2024, 1, 1),
+            beta0: T::from_f64(0.03) + x[0] * T::from_f64(0.001),
+            beta1: T::from_f64(-0.01),
+            beta2: T::from_f64(0.02),
+            beta3: T::from_f64(-0.005),
+            tau1: T::from_f64(1.5),
+            tau2: T::from_f64(4.0),
         },
-        0.0,
-        1.0,
-    );
-    let fxacc = ql_fx::price_fx_accumulator_strip_no_ko(&ql_fx::FxAccumulatorSpec {
-        base_notional_per_fixing: T::from_f64(10.0),
-        spot: T::from_f64(1.1),
-        strike: T::from_f64(1.05),
-        knockout_barrier: T::from_f64(1.2),
-        r_dom: T::from_f64(0.02),
-        r_for: T::from_f64(0.01),
-        vol: T::from_f64(0.12),
-        fixing_times: vec![0.25, 0.5, 0.75, 1.0],
-        guaranteed_fixings: 1,
+        cashflow_times: vec![
+            T::from_f64(1.0),
+            T::from_f64(2.0),
+            T::from_f64(3.0),
+            T::from_f64(5.0),
+        ],
+        cashflow_amounts: vec![
+            T::from_f64(2.0),
+            T::from_f64(2.0),
+            T::from_f64(2.0),
+            T::from_f64(102.0),
+        ],
+        key_rate_tenors: vec![
+            T::from_f64(1.0),
+            T::from_f64(2.0),
+            T::from_f64(5.0),
+            T::from_f64(10.0),
+        ],
+        pca_decay_lambda: T::from_f64(0.25),
+        benchmark_hedge_tenors: [T::from_f64(2.0), T::from_f64(5.0), T::from_f64(10.0)],
+    });
+    let lpi =
+        price_brigo_mercurio_yoy_and_lpi_market_model(&BrigoMercurioInflationMarketModelSpec {
+            notional: T::from_f64(1_000_000.0),
+            base_cpi: T::from_f64(100.0),
+            payment_times: vec![T::from_f64(1.0), T::from_f64(2.0), T::from_f64(3.0)],
+            forward_cpis: vec![
+                T::from_f64(102.0) + x[1],
+                T::from_f64(104.0) + x[1],
+                T::from_f64(106.0) + x[1],
+            ],
+            nominal_forward_rates: vec![T::from_f64(0.03); 3],
+            nominal_discount_factors: vec![T::from_f64(0.97), T::from_f64(0.94), T::from_f64(0.91)],
+            forward_cpi_vols: vec![T::from_f64(0.01) + x[1] * T::from_f64(0.001); 3],
+            nominal_forward_vols: vec![T::from_f64(0.01); 3],
+            inter_maturity_cpi_corr: T::from_f64(0.5),
+            nominal_cpi_corr: T::from_f64(0.2),
+            lpi_floor: T::from_f64(-0.02),
+            lpi_cap: T::from_f64(0.03),
+            fixed_swap_rate: T::from_f64(0.02) + x[1] * T::from_f64(0.001),
+        });
+    let cdo = price_okane_bespoke_tranche_and_student_t_basket(&OKaneBespokeBaseCorrelationSpec {
+        index_detachments: vec![
+            T::from_f64(0.03),
+            T::from_f64(0.07),
+            T::from_f64(0.10),
+            T::from_f64(0.15),
+        ],
+        index_base_correlations: vec![
+            T::from_f64(0.35),
+            T::from_f64(0.40),
+            T::from_f64(0.45),
+            T::from_f64(0.50),
+        ],
+        index_expected_loss: T::from_f64(0.04) + x[2] * T::from_f64(0.001),
+        bespoke_hazard_rates: vec![T::from_f64(0.02); 5],
+        bespoke_recovery_rate: T::from_f64(0.4),
+        bespoke_attachment: T::from_f64(0.03),
+        bespoke_detachment: T::from_f64(0.10),
+        strike_mapping_exponent_gamma: T::from_f64(1.0),
+        student_t_dof_nu: T::from_f64(6.0) + x[2],
+        maturity: T::from_f64(5.0),
+        risk_free_rate: T::from_f64(0.02),
+    });
+    let fx = evaluate_wystup_fx_accumulator_and_dcd(&WystupFxStructuredProductSpec {
+        spot: T::from_f64(1.10) + x[3] * T::from_f64(0.01),
+        accumulator_strike: T::from_f64(1.05),
+        knockout_barrier: T::from_f64(1.20),
         downside_gearing: T::from_f64(2.0),
-        is_accumulator: true,
-        smoothing_eps: 1e-3,
+        domestic_rate: T::from_f64(0.02),
+        foreign_rate: T::from_f64(0.01),
+        volatility: T::from_f64(0.12) + x[3] * T::from_f64(0.001),
+        fixing_times: vec![
+            T::from_f64(0.25),
+            T::from_f64(0.5),
+            T::from_f64(0.75),
+            T::from_f64(1.0),
+        ],
+        guaranteed_fixings: 1,
+        dcd_conversion_strike: T::from_f64(1.10),
+        dcd_tenor: T::from_f64(1.0),
     });
     let pde = ql_pde::solve_rannacher_crank_nicolson_sinh_pde(&ql_pde::RannacherSinhPdeSpec {
         spot: T::from_f64(100.0) + x[0],
@@ -3618,12 +3673,12 @@ fn phase22_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
             support_grid: vec![T::from_f64(0.8), T::one(), T::from_f64(1.2)],
             marginal_t1_probs: vec![T::from_f64(0.2), T::from_f64(0.5), T::from_f64(0.3)],
             marginal_t2_probs: vec![T::from_f64(0.25), T::from_f64(0.5), T::from_f64(0.25)],
-            forward_start_strike: T::from_f64(0.95),
+            forward_start_strike: T::from_f64(0.95) + x[3] * T::from_f64(0.001),
             entropic_regularization_eps: T::from_f64(0.02),
         });
     let exotic =
         ql_dml::evaluate_ift_calibrated_exotic_quote_hedge(&ql_dml::IftCalibratedExoticHedgeSpec {
-            spot: T::from_f64(100.0),
+            spot: T::from_f64(100.0) + x[0],
             risk_free_rate: T::from_f64(0.02),
             expiry: T::from_f64(1.0),
             calibration_strikes: [T::from_f64(90.0), T::from_f64(100.0), T::from_f64(110.0)],
@@ -3635,9 +3690,9 @@ fn phase22_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
         ql_ad::execute_savine_revolve_checkpointed_adjoint(&ql_ad::SavineRevolveCheckpointSpec {
             num_time_steps: 8,
             num_checkpoints: 2,
-            initial_spot: T::from_f64(100.0),
+            initial_spot: T::from_f64(100.0) + x[1],
             drift_rate: T::from_f64(0.02),
-            volatility: T::from_f64(0.2),
+            volatility: T::from_f64(0.2) + x[3] * T::from_f64(0.001),
             mean_reversion_kappa: T::from_f64(0.5),
             dt: T::from_f64(0.125),
             strike: T::from_f64(100.0),
@@ -3645,11 +3700,18 @@ fn phase22_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     // Cholesky/AAD pillar contributes a stable correlation normalization.
     let chv = (T::one() + T::from_f64(0.2)).sqrt();
     [
-        berg.spot_start_implied_vol + vas + chv + nss,
-        berg.forward_start_implied_vol + cg0 + coco.dual_trigger_coco_value + fxacc + pde.pde_price,
+        berg.spot_start_implied_vol
+            + krd.dirty_price * T::from_f64(1e-4)
+            + chv
+            + lpi.fimm_convexity_adjusted_lpi_swap_npv * T::from_f64(1e-6),
+        berg.forward_start_implied_vol
+            + cg0
+            + coco.dual_trigger_coco_value
+            + fx.total_accumulator_npv
+            + pde.pde_price,
         berg.forward_variance_swap_fair_vol
             + gue.current_optimal_bid_offset
-            + inf_var
+            + cdo.student_t_copula_senior_tranche_loss
             + mot.entropic_mot_price,
         berg.volatility_swap_fair_strike
             + meu.mahalanobis_plausibility_squared

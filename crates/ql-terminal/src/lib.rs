@@ -60,10 +60,11 @@ use ql_commodities::{
 };
 use ql_credit::{
     BaseCorrelationTrancheQuote, BlackCoxStructuralSpec, CalibratedCreditCurve, CdsQuote,
-    CmCdsMarketModelSpec, CreditDefaultSwap, IsdaCdsEngine, JltRatingMigrationSpec, ProtectionSide,
-    SurvivalProbabilityCurve, analyze_structural_credit_black_cox,
-    bootstrap_base_correlation_curve, evaluate_jlt_rating_migration_credit,
-    price_cmcds_market_model,
+    CmCdsMarketModelSpec, CreditDefaultSwap, IsdaCdsEngine, JltRatingMigrationSpec,
+    OKaneBespokeBaseCorrelationSpec, ProtectionSide, SurvivalProbabilityCurve,
+    analyze_structural_credit_black_cox, bootstrap_base_correlation_curve,
+    evaluate_jlt_rating_migration_credit, price_cmcds_market_model,
+    price_okane_bespoke_tranche_and_student_t_basket,
 };
 use ql_curves::{DiscountCurve, FlatForwardCurve, MonotoneConvexZeroCurve, YieldTermStructure};
 use ql_exotics::{
@@ -77,24 +78,27 @@ use ql_exotics::{
 use ql_fixed_income::{
     AfvConvertibleBondSpec, BondAssetSwapSpec, CallableBondOasSpec, CmoTrancheSpec,
     CmoWaterfallSpec, CocoBondSpec, CocoTriggerPayoff, ConvertibleBondSpec,
-    DeSpiegeleerCoCoMandatoryConvSpec, MbsBurnoutOasSpec, SpecifiedPoolMbsSpec, TbaDollarRollSpec,
-    TreasuryFutureDeliverable, TreasuryFuturesBasketSpec, analyze_bond_asset_swap_and_z_spread,
-    analyze_callable_bond_oas_ad, analyze_mbs_burnout_oas_ad, analyze_tba_dollar_roll,
-    analyze_treasury_futures_ctd, price_cmo_waterfall, price_coco_bond_ds,
+    DeSpiegeleerCoCoMandatoryConvSpec, MbsBurnoutOasSpec, NelsonSiegelSvensson,
+    SpecifiedPoolMbsSpec, TbaDollarRollSpec, TreasuryFutureDeliverable, TreasuryFuturesBasketSpec,
+    TuckmanKeyRateDurationSpec, analyze_bond_asset_swap_and_z_spread, analyze_callable_bond_oas_ad,
+    analyze_mbs_burnout_oas_ad, analyze_tba_dollar_roll, analyze_treasury_futures_ctd,
+    analyze_tuckman_key_rate_durations_and_pca_hedge, price_cmo_waterfall, price_coco_bond_ds,
     price_convertible_bond_afv_pde, price_convertible_bond_tf,
     price_despiegeleer_coco_and_mandatory_convertible, price_specified_pool_mbs,
 };
 use ql_fx::{
     ConstNotionalXccs, FxAccumulatorSpec, FxKikoOptionSpec, FxSmileQuote, FxTarfCapConvention,
     FxTarfSpec, FxVannaVolgaSmile, FxWindowBarrierSpec, MtmResettingXccs, PrdcNoteSpec,
+    WystupFxStructuredProductSpec, evaluate_wystup_fx_accumulator_and_dcd,
     garman_kohlhagen_spot_delta, price_fx_accumulator_strip_no_ko, price_fx_kiko_option,
     price_fx_tarf_mc_ad, price_fx_window_barrier_option, price_mtm_resetting_xccs,
     price_prdc_note_hybrid,
 };
 use ql_inflation::{
-    CalibratedInflationCurve, JarrowYildirimParams, MultiplicativeSeasonality,
-    YoYInflationCapFloor, YoYInflationCapFloorType, ZciisCapFloorSpec, ZeroCouponInflationSwap,
-    ZeroInflationCurve, price_yoy_capfloor_jarrow_yildirim, price_zciis_capfloor_jarrow_yildirim,
+    BrigoMercurioInflationMarketModelSpec, CalibratedInflationCurve, JarrowYildirimParams,
+    MultiplicativeSeasonality, YoYInflationCapFloor, YoYInflationCapFloorType, ZciisCapFloorSpec,
+    ZeroCouponInflationSwap, ZeroInflationCurve, price_brigo_mercurio_yoy_and_lpi_market_model,
+    price_yoy_capfloor_jarrow_yildirim, price_zciis_capfloor_jarrow_yildirim,
 };
 use ql_instruments::{BaroneAdesiWhaleyEngine, OptionType, SwapType, VanillaSwapSpec};
 use ql_levy::{CgmyProcess, VarianceGamma, cos_levy_price, evaluate_cgmy_fractional_fft_and_pide};
@@ -1258,7 +1262,142 @@ impl DeskWorkstation {
             })
             .dual_trigger_coco_value
             .val();
-        phase21_live_metric(m, credit_bump) + bg + levy + cg + mm + bl + coco
+        // Phase 22's four remaining SOTA pillars are evaluated on the same
+        // live market snapshot (and credit bump) as the existing telemetry.
+        let krd = analyze_tuckman_key_rate_durations_and_pca_hedge(&TuckmanKeyRateDurationSpec {
+            nss_curve: NelsonSiegelSvensson {
+                reference_date: m.ref_date,
+                beta0: r + 0.01,
+                beta1: -0.01,
+                beta2: 0.02,
+                beta3: -0.005,
+                tau1: 1.5,
+                tau2: 4.0,
+            },
+            cashflow_times: vec![1.0, 2.0, 3.0, 5.0],
+            cashflow_amounts: vec![2.0, 2.0, 2.0, 102.0],
+            key_rate_tenors: vec![1.0, 2.0, 5.0, 10.0],
+            pca_decay_lambda: 0.25,
+            benchmark_hedge_tenors: [2.0, 5.0, 10.0],
+        })
+        .dirty_price
+        .val();
+        let lpi =
+            price_brigo_mercurio_yoy_and_lpi_market_model(&BrigoMercurioInflationMarketModelSpec {
+                notional: 1_000_000.0,
+                base_cpi: 100.0,
+                payment_times: vec![1.0, 2.0, 3.0],
+                forward_cpis: vec![102.0, 104.0, 106.0],
+                nominal_forward_rates: vec![r; 3],
+                nominal_discount_factors: vec![(-r).exp(), (-2.0 * r).exp(), (-3.0 * r).exp()],
+                forward_cpi_vols: vec![m.eq_vol; 3],
+                nominal_forward_vols: vec![m.eq_vol * 0.5; 3],
+                inter_maturity_cpi_corr: 0.5,
+                nominal_cpi_corr: 0.2,
+                lpi_floor: -0.02,
+                lpi_cap: 0.03,
+                fixed_swap_rate: 0.02 + credit_bump,
+            })
+            .fimm_convexity_adjusted_lpi_swap_npv
+            .val();
+        let cdo =
+            price_okane_bespoke_tranche_and_student_t_basket(&OKaneBespokeBaseCorrelationSpec {
+                index_detachments: vec![0.03, 0.07, 0.10, 0.15],
+                index_base_correlations: vec![0.35, 0.40, 0.45, 0.50],
+                index_expected_loss: 0.04 + credit_bump,
+                bespoke_hazard_rates: vec![0.02 + credit_bump; 5],
+                bespoke_recovery_rate: 0.4,
+                bespoke_attachment: 0.03,
+                bespoke_detachment: 0.10,
+                strike_mapping_exponent_gamma: 1.0,
+                student_t_dof_nu: 6.0 + 10.0 * credit_bump,
+                maturity: 5.0,
+                risk_free_rate: r,
+            })
+            .student_t_copula_senior_tranche_loss
+            .val();
+        let fx = evaluate_wystup_fx_accumulator_and_dcd(&WystupFxStructuredProductSpec {
+            spot: m.eq_spot,
+            accumulator_strike: m.eq_spot * 0.95,
+            knockout_barrier: m.eq_spot * 1.10,
+            downside_gearing: 2.0,
+            domestic_rate: r,
+            foreign_rate: 0.01,
+            volatility: m.eq_vol.max(1e-4),
+            fixing_times: vec![0.25, 0.5, 0.75, 1.0],
+            guaranteed_fixings: 1,
+            dcd_conversion_strike: m.eq_spot,
+            dcd_tenor: 1.0,
+        })
+        .total_accumulator_npv
+        .val();
+        let pde = ql_pde::solve_rannacher_crank_nicolson_sinh_pde(&ql_pde::RannacherSinhPdeSpec {
+            spot: m.eq_spot,
+            strike: m.eq_spot,
+            volatility: m.eq_vol.max(1e-4),
+            risk_free_rate: r,
+            dividend_yield: 0.01,
+            expiry: 1.0,
+            is_call: true,
+            n_space: 31,
+            n_time: 8,
+            rannacher_steps: 2,
+            sinh_concentration: 0.15,
+        })
+        .pde_price
+        .val();
+        let mot =
+            ql_ad::solve_mot_super_replication_bounds_and_ift(&ql_ad::MotSuperReplicationIftSpec {
+                support_grid: vec![0.8, 1.0, 1.2],
+                marginal_t1_probs: vec![0.2, 0.5, 0.3],
+                marginal_t2_probs: vec![0.25, 0.5, 0.25],
+                forward_start_strike: 0.95 + 0.001 * credit_bump,
+                entropic_regularization_eps: 0.02,
+            })
+            .entropic_mot_price
+            .val();
+        let exotic = ql_dml::evaluate_ift_calibrated_exotic_quote_hedge(
+            &ql_dml::IftCalibratedExoticHedgeSpec {
+                spot: m.eq_spot,
+                risk_free_rate: r,
+                expiry: 1.0,
+                calibration_strikes: [0.9 * m.eq_spot, m.eq_spot, 1.1 * m.eq_spot],
+                market_implied_vols: [m.eq_vol * 1.1, m.eq_vol, m.eq_vol * 1.05],
+                exotic_strike: 1.05 * m.eq_spot,
+                exotic_power_p: 1.2,
+            },
+        )
+        .exotic_option_price
+        .val();
+        let revolve = ql_ad::execute_savine_revolve_checkpointed_adjoint(
+            &ql_ad::SavineRevolveCheckpointSpec {
+                num_time_steps: 8,
+                num_checkpoints: 2,
+                initial_spot: m.eq_spot,
+                drift_rate: r,
+                volatility: m.eq_vol.max(1e-4),
+                mean_reversion_kappa: 0.5,
+                dt: 0.125,
+                strike: m.eq_spot,
+            },
+        )
+        .terminal_option_payoff_value
+        .val();
+        phase21_live_metric(m, credit_bump)
+            + bg
+            + levy
+            + cg
+            + mm
+            + bl
+            + coco
+            + krd * 1e-4
+            + lpi * 1e-6
+            + cdo
+            + fx
+            + pde
+            + mot
+            + exotic
+            + revolve
     }
     pub fn step_tick(&mut self) -> WorkstationFrameData {
         self.tick += 1;
@@ -3752,6 +3891,10 @@ mod phase22_tests {
     fn phase22_tab32_metric_renders() {
         let mut ws = DeskWorkstation::new();
         let frame = ws.step_tick();
+        assert_eq!(
+            TabId::Phase22Sota.label(),
+            "32 Phase 22 SOTA / KRD / LPI / CoCo / Bergomi / CGMY / AAD"
+        );
         assert!(
             frame
                 .krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric
@@ -3761,5 +3904,23 @@ mod phase22_tests {
             ws.render_dashboard(&frame, false)
                 .contains("32 KRD/LPI/CoCo/Bergomi2F/CGMY/Guéant/Meucci")
         );
+        let next = ws.step_tick();
+        assert_ne!(
+            next.krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric,
+            frame.krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric
+        );
+        for scenario in [
+            ScenarioKind::RatesPlus50Bp,
+            ScenarioKind::EquityCrashMinus15Pct,
+            ScenarioKind::CreditWideningPlus100Bp,
+            ScenarioKind::StagflationPlus150Bp,
+        ] {
+            ws.set_scenario(scenario);
+            let stressed = ws.step_tick();
+            assert_ne!(
+                stressed.krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric,
+                frame.krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric
+            );
+        }
     }
 }

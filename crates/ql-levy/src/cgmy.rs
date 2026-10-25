@@ -278,8 +278,12 @@ pub fn evaluate_cgmy_fractional_fft_and_pide<T: Real>(
         )
     };
     let v0 = profile(x0);
-    let hx = T::from_f64(1e-4);
-    let vx = (profile(x0 + hx) - profile(x0 - hx)) / (T::from_f64(2.0) * hx);
+    let sqrt_t = s.expiry.max_val(T::from_f64(1e-8)).sqrt();
+    let d1_bs = ((atm / k0).ln()
+        + (s.risk_free_rate - s.dividend_yield + T::from_f64(0.5) * sigma_eff * sigma_eff)
+            * s.expiry)
+        / (sigma_eff * sqrt_t);
+    let vx = atm * (-s.dividend_yield * s.expiry).exp() * d1_bs.norm_cdf();
     let mut non = T::zero();
     let zmax = T::from_f64(3.0);
     for i in 0..8 {
@@ -330,13 +334,53 @@ pub fn evaluate_cgmy_fractional_fft_and_pide<T: Real>(
 
 #[cfg(test)]
 mod phase22_tests {
+    use super::*;
+    use ql_ad::Dual;
     #[test]
-    fn dual_fd_parity_smoke() {
-        let x = 0.37_f64;
-        let h = 1.0e-6_f64;
-        let f = |z: f64| z.exp() + z * z;
-        let fd = (f(x + h) - f(x - h)) / (2.0 * h);
-        let analytic = x.exp() + 2.0 * x;
-        assert!((fd - analytic).abs() < 1.0e-5);
+    fn cgmy_dual_fd_parity_and_symmetry() {
+        let make = |sigma| CgmyFractionalFftAndPideSpec {
+            process: CgmyProcess {
+                sigma,
+                c: 0.5,
+                g: 5.0,
+                m: 5.0,
+                y: 0.7,
+            },
+            spot: 100.0,
+            strikes: vec![100.0],
+            risk_free_rate: 0.02,
+            dividend_yield: 0.01,
+            expiry: 1.0,
+            damping_alpha: 1.0,
+            fourier_step_eta: 0.1,
+            log_strike_step_lambda: 0.1,
+            small_jump_cutoff_eps: 1e-4,
+        };
+        let r = evaluate_cgmy_fractional_fft_and_pide(&make(0.15));
+        assert!(r.exact_variance_swap_rate.val() > 0.0);
+        assert!(r.cumulant_c3.val().abs() < 1e-12);
+        let h = 1e-5;
+        let fd = (evaluate_cgmy_fractional_fft_and_pide(&make(0.15 + h)).exact_variance_swap_rate
+            - evaluate_cgmy_fractional_fft_and_pide(&make(0.15 - h)).exact_variance_swap_rate)
+            / (2.0 * h);
+        let ad = evaluate_cgmy_fractional_fft_and_pide(&CgmyFractionalFftAndPideSpec {
+            process: CgmyProcess {
+                sigma: Dual::<1>::variable(0.15, 0),
+                c: Dual::<1>::from_value(0.5),
+                g: Dual::<1>::from_value(5.0),
+                m: Dual::<1>::from_value(5.0),
+                y: Dual::<1>::from_value(0.7),
+            },
+            spot: Dual::<1>::from_value(100.0),
+            strikes: vec![Dual::<1>::from_value(100.0)],
+            risk_free_rate: Dual::<1>::from_value(0.02),
+            dividend_yield: Dual::<1>::from_value(0.01),
+            expiry: Dual::<1>::from_value(1.0),
+            damping_alpha: 1.0,
+            fourier_step_eta: 0.1,
+            log_strike_step_lambda: 0.1,
+            small_jump_cutoff_eps: Dual::<1>::from_value(1e-4),
+        });
+        assert!((ad.exact_variance_swap_rate.d[0] - fd).abs() < 1e-5);
     }
 }

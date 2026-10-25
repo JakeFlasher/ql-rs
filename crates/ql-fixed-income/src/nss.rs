@@ -311,3 +311,72 @@ pub fn analyze_tuckman_key_rate_durations_and_pca_hedge<T: Real>(
         hedged_pca_residual_l2: res.sqrt(),
     }
 }
+
+#[cfg(test)]
+mod phase22_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn tuckman_dual_fd_parity_and_hedge_invariants() {
+        let make = |b0| TuckmanKeyRateDurationSpec {
+            nss_curve: NelsonSiegelSvensson {
+                reference_date: Date::from_ymd(2024, 1, 1).unwrap(),
+                beta0: b0,
+                beta1: -0.01,
+                beta2: 0.02,
+                beta3: -0.005,
+                tau1: 1.5,
+                tau2: 4.0,
+            },
+            cashflow_times: vec![1.0, 2.0, 3.0, 5.0],
+            cashflow_amounts: vec![2.0, 2.0, 2.0, 102.0],
+            key_rate_tenors: vec![1.0, 2.0, 5.0, 10.0],
+            pca_decay_lambda: 0.25,
+            benchmark_hedge_tenors: [2.0, 5.0, 10.0],
+        };
+        let r = analyze_tuckman_key_rate_durations_and_pca_hedge(&make(0.03));
+        assert!(r.krd_sum_partition_error.val() < 1e-12);
+        assert!(r.hedged_pca_residual_l2.val() < 1e-10);
+        let h = 1e-5;
+        let fd = (analyze_tuckman_key_rate_durations_and_pca_hedge(&make(0.03 + h)).dirty_price
+            - analyze_tuckman_key_rate_durations_and_pca_hedge(&make(0.03 - h)).dirty_price)
+            / (2.0 * h);
+        let ad = analyze_tuckman_key_rate_durations_and_pca_hedge(&TuckmanKeyRateDurationSpec {
+            nss_curve: NelsonSiegelSvensson {
+                reference_date: Date::from_ymd(2024, 1, 1).unwrap(),
+                beta0: Dual::<1>::variable(0.03, 0),
+                beta1: Dual::<1>::from_value(-0.01),
+                beta2: Dual::<1>::from_value(0.02),
+                beta3: Dual::<1>::from_value(-0.005),
+                tau1: Dual::<1>::from_value(1.5),
+                tau2: Dual::<1>::from_value(4.0),
+            },
+            cashflow_times: vec![
+                Dual::<1>::from_value(1.0),
+                Dual::<1>::from_value(2.0),
+                Dual::<1>::from_value(3.0),
+                Dual::<1>::from_value(5.0),
+            ],
+            cashflow_amounts: vec![
+                Dual::<1>::from_value(2.0),
+                Dual::<1>::from_value(2.0),
+                Dual::<1>::from_value(2.0),
+                Dual::<1>::from_value(102.0),
+            ],
+            key_rate_tenors: vec![
+                Dual::<1>::from_value(1.0),
+                Dual::<1>::from_value(2.0),
+                Dual::<1>::from_value(5.0),
+                Dual::<1>::from_value(10.0),
+            ],
+            pca_decay_lambda: Dual::<1>::from_value(0.25),
+            benchmark_hedge_tenors: [
+                Dual::<1>::from_value(2.0),
+                Dual::<1>::from_value(5.0),
+                Dual::<1>::from_value(10.0),
+            ],
+        });
+        assert!((ad.dirty_price.d[0] - fd).abs() < 1e-5);
+    }
+}

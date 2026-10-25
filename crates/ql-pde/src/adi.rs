@@ -1138,6 +1138,7 @@ pub fn solve_rannacher_crank_nicolson_sinh_pde<T: Real>(
 #[cfg(test)]
 mod phase22_tests {
     use super::*;
+    use ql_ad::Dual;
     #[test]
     fn sinh_rannacher_price_and_greeks_are_finite() {
         let s = RannacherSinhPdeSpec {
@@ -1160,5 +1161,28 @@ mod phase22_tests {
                 && r.grid_gamma.val().is_finite()
         );
         assert!(r.abs_pricing_error.val() < 2.0);
+        let h = 1e-4;
+        let mut up = s;
+        up.spot += h;
+        let mut dn = s;
+        dn.spot -= h;
+        let fd = (solve_rannacher_crank_nicolson_sinh_pde(&up).pde_price
+            - solve_rannacher_crank_nicolson_sinh_pde(&dn).pde_price)
+            / (2.0 * h);
+        let sd = RannacherSinhPdeSpec {
+            spot: Dual::<1>::variable(100.0, 0),
+            strike: Dual::<1>::from_value(100.0),
+            volatility: Dual::<1>::from_value(0.2),
+            risk_free_rate: Dual::<1>::from_value(0.02),
+            dividend_yield: Dual::<1>::from_value(0.01),
+            expiry: Dual::<1>::from_value(1.0),
+            is_call: true,
+            n_space: 41,
+            n_time: 16,
+            rannacher_steps: 2,
+            sinh_concentration: Dual::<1>::from_value(0.15),
+        };
+        let ad = solve_rannacher_crank_nicolson_sinh_pde(&sd);
+        assert!((ad.pde_price.d[0] - fd).abs() < 1e-5);
     }
 }

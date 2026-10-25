@@ -1123,6 +1123,7 @@ pub fn solve_gueant_lehalle_bounded_market_making<T: Real>(
 #[cfg(test)]
 mod phase22_tests {
     use super::*;
+    use ql_ad::Dual;
     #[test]
     fn gueant_semi_implicit_values_positive() {
         let s = GueantLehalleMarketMakingSpec {
@@ -1143,5 +1144,26 @@ mod phase22_tests {
                 .iter()
                 .all(|x| x.val().is_finite() && x.val() > 0.0)
         );
+        let h = 1e-5;
+        let mut up = s;
+        up.volatility += h;
+        let mut dn = s;
+        dn.volatility -= h;
+        let fd = (solve_gueant_lehalle_bounded_market_making(&up).current_optimal_bid_offset
+            - solve_gueant_lehalle_bounded_market_making(&dn).current_optimal_bid_offset)
+            / (2.0 * h);
+        let ad = solve_gueant_lehalle_bounded_market_making(&GueantLehalleMarketMakingSpec {
+            max_inventory_q: 2,
+            current_inventory_q: 0,
+            horizon: Dual::<1>::from_value(1.0),
+            num_time_steps: 8,
+            volatility: Dual::<1>::variable(0.2, 0),
+            risk_aversion_gamma: Dual::<1>::from_value(0.5),
+            intensity_decay_k: Dual::<1>::from_value(1.2),
+            base_intensity_a: Dual::<1>::from_value(2.0),
+            terminal_inventory_penalty: Dual::<1>::from_value(0.1),
+            adverse_selection_zeta: Dual::<1>::from_value(0.0),
+        });
+        assert!((ad.current_optimal_bid_offset.d[0] - fd).abs() < 1e-5);
     }
 }

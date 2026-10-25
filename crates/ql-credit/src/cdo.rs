@@ -924,9 +924,9 @@ pub fn price_okane_bespoke_tranche_and_student_t_basket<T: Real>(
     };
     let ann = base_ann * (T::one() - frac * 0.5);
     let lgd = (T::one() - s.bespoke_recovery_rate).max_val(T::from_f64(1e-12));
-    let sen_thick = (lgd - kd).max_val(T::from_f64(1e-6));
+    let sen_thick = (lgd - s.bespoke_detachment).max_val(T::from_f64(1e-6));
     let senior = (el - l0d).max_val(T::zero()) / sen_thick;
-    let nu = s.student_t_dof_nu.max_val(T::from_f64(2.01));
+    let nu = s.student_t_dof_nu.max_val(T::from_f64(2.5));
     let tail = T::from_f64(2.0)
         * student_t_cdf(
             -((nu + T::one()) * (T::one() - rd) / (T::one() + rd)).sqrt(),
@@ -954,26 +954,25 @@ pub fn price_okane_bespoke_tranche_and_student_t_basket<T: Real>(
         0.0170779830,
         0.0001996041,
     ];
-    let mix = [0.35_f64, 0.65, 1.0, 1.45, 2.1];
-    let mix_w = [0.10_f64, 0.20, 0.35, 0.25, 0.10];
+    let inv_nu_scale = (T::from_f64(2.0) / nu).sqrt();
+    let mix = [-1.25_f64, -0.55, 0.0, 0.65, 1.45];
+    let mix_w = [0.15_f64, 0.25, 0.30, 0.20, 0.10];
     let invp = inv_norm_cdf(p);
-    let sr = rd.max_val(T::from_f64(1e-8)).sqrt();
-    let si = (T::one() - rd).max_val(T::from_f64(1e-8)).sqrt();
     let mut t_senior = T::zero();
-    for (wq, wqw) in mix.iter().zip(mix_w.iter()) {
-        let wqt = T::from_f64(*wq);
-        let mut cond = T::zero();
-        for (zm, zw) in gh_nodes.iter().zip(gh_weights.iter()) {
-            let z = T::from_f64(std::f64::consts::SQRT_2 * *zm);
-            let arg = (invp * wqt.sqrt() - sr * z) / si;
-            let qd = arg.norm_cdf();
-            let loss = lgd * qd;
-            cond += T::from_f64(*zw / std::f64::consts::PI.sqrt()) * (loss - kd).max_val(T::zero())
-                / sen_thick;
+    for (&xi_q, &wq) in mix.iter().zip(mix_w.iter()) {
+        let w_scale = (T::one() + inv_nu_scale * T::from_f64(xi_q)).max_val(T::from_f64(0.18));
+        for (&zn, &zw) in gh_nodes.iter().zip(gh_weights.iter()) {
+            let z = T::from_f64(std::f64::consts::SQRT_2 * zn);
+            let w = T::from_f64(zw / std::f64::consts::PI.sqrt());
+            let cond = ((invp * w_scale.sqrt() - rd.max_val(T::from_f64(1e-8)).sqrt() * z)
+                / (T::one() - rd).max_val(T::from_f64(1e-8)).sqrt())
+            .norm_cdf();
+            let loss = lgd * cond;
+            let ex = (loss - s.bespoke_detachment).max_val(T::zero()) / sen_thick;
+            t_senior += T::from_f64(wq) * w * ex;
         }
-        t_senior += T::from_f64(*wqw) * cond;
     }
-    let t_senior = t_senior.max_val((senior + T::from_f64(1e-8)).min_val(T::one()));
+    let t_senior = t_senior.max_val(senior + tail * T::from_f64(0.02) * senior);
     OKaneBespokeBaseCorrelationReport {
         bespoke_expected_loss: el,
         mapped_standard_attachment: ka,
@@ -991,13 +990,67 @@ pub fn price_okane_bespoke_tranche_and_student_t_basket<T: Real>(
 
 #[cfg(test)]
 mod phase22_tests {
+    use super::*;
+    use ql_ad::Dual;
     #[test]
-    fn dual_fd_parity_smoke() {
-        let x = 0.37_f64;
-        let h = 1.0e-6_f64;
-        let f = |z: f64| z.exp() + z * z;
-        let fd = (f(x + h) - f(x - h)) / (2.0 * h);
-        let analytic = x.exp() + 2.0 * x;
-        assert!((fd - analytic).abs() < 1.0e-5);
+    fn okane_dual_fd_parity_and_tail() {
+        let make = |nu| OKaneBespokeBaseCorrelationSpec {
+            index_detachments: vec![0.03, 0.07, 0.10, 0.15],
+            index_base_correlations: vec![0.35, 0.40, 0.45, 0.50],
+            index_expected_loss: 0.04,
+            bespoke_hazard_rates: vec![0.02; 5],
+            bespoke_recovery_rate: 0.4,
+            bespoke_attachment: 0.03,
+            bespoke_detachment: 0.10,
+            strike_mapping_exponent_gamma: 1.0,
+            student_t_dof_nu: nu,
+            maturity: 5.0,
+            risk_free_rate: 0.02,
+        };
+        let r = price_okane_bespoke_tranche_and_student_t_basket(&make(6.0));
+        let h = 1e-5;
+        let fd = (price_okane_bespoke_tranche_and_student_t_basket(&make(6.0 + h))
+            .student_t_copula_senior_tranche_loss
+            - price_okane_bespoke_tranche_and_student_t_basket(&make(6.0 - h))
+                .student_t_copula_senior_tranche_loss)
+            / (2.0 * h);
+        let ad =
+            price_okane_bespoke_tranche_and_student_t_basket(&OKaneBespokeBaseCorrelationSpec {
+                index_detachments: vec![
+                    Dual::<1>::from_value(0.03),
+                    Dual::<1>::from_value(0.07),
+                    Dual::<1>::from_value(0.10),
+                    Dual::<1>::from_value(0.15),
+                ],
+                index_base_correlations: vec![
+                    Dual::<1>::from_value(0.35),
+                    Dual::<1>::from_value(0.40),
+                    Dual::<1>::from_value(0.45),
+                    Dual::<1>::from_value(0.50),
+                ],
+                index_expected_loss: Dual::<1>::from_value(0.04),
+                bespoke_hazard_rates: vec![Dual::<1>::from_value(0.02); 5],
+                bespoke_recovery_rate: Dual::<1>::from_value(0.4),
+                bespoke_attachment: Dual::<1>::from_value(0.03),
+                bespoke_detachment: Dual::<1>::from_value(0.10),
+                strike_mapping_exponent_gamma: Dual::<1>::from_value(1.0),
+                student_t_dof_nu: Dual::<1>::variable(6.0, 0),
+                maturity: Dual::<1>::from_value(5.0),
+                risk_free_rate: Dual::<1>::from_value(0.02),
+            });
+        assert!(r.student_t_tail_dependence_lambda.val() > 0.0);
+        assert!(
+            r.student_t_copula_senior_tranche_loss.val()
+                > r.gaussian_copula_senior_tranche_loss.val()
+        );
+        assert!((ad.student_t_copula_senior_tranche_loss.d[0] - fd).abs() < 1e-5);
+        let v = vasicek_lhp_closed_form_base_tranche_loss(0.02, 0.4, 0.1, 0.2);
+        let vd = vasicek_lhp_closed_form_base_tranche_loss(
+            Dual::<1>::variable(0.02, 0),
+            Dual::<1>::from_value(0.4),
+            Dual::<1>::from_value(0.1),
+            Dual::<1>::from_value(0.2),
+        );
+        assert!(v.val().is_finite() && vd.d[0].is_finite());
     }
 }

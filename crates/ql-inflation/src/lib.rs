@@ -1228,13 +1228,65 @@ mod phase19_tests {
 
 #[cfg(test)]
 mod phase22_tests {
+    use super::*;
+    use ql_ad::Dual;
     #[test]
-    fn dual_fd_parity_smoke() {
-        let x = 0.37_f64;
-        let h = 1.0e-6_f64;
-        let f = |z: f64| z.exp() + z * z;
-        let fd = (f(x + h) - f(x - h)) / (2.0 * h);
-        let analytic = x.exp() + 2.0 * x;
-        assert!((fd - analytic).abs() < 1.0e-5);
+    fn brigo_mercurio_dual_fd_parity_and_lpi_bounds() {
+        let make = |k| BrigoMercurioInflationMarketModelSpec {
+            notional: 1_000_000.0,
+            base_cpi: 100.0,
+            payment_times: vec![1.0, 2.0, 3.0],
+            forward_cpis: vec![102.0, 104.0, 106.0],
+            nominal_forward_rates: vec![0.03; 3],
+            nominal_discount_factors: vec![0.97, 0.94, 0.91],
+            forward_cpi_vols: vec![0.01; 3],
+            nominal_forward_vols: vec![0.01; 3],
+            inter_maturity_cpi_corr: 0.5,
+            nominal_cpi_corr: 0.2,
+            lpi_floor: -0.02,
+            lpi_cap: 0.03,
+            fixed_swap_rate: k,
+        };
+        let r = price_brigo_mercurio_yoy_and_lpi_market_model(&make(0.02));
+        assert!(
+            r.fimm_lpi_expected_rates
+                .iter()
+                .all(|x| x.val() >= -0.02 - 1e-8 && x.val() <= 0.03 + 1e-8)
+        );
+        let h = 1e-5;
+        let fd = (price_brigo_mercurio_yoy_and_lpi_market_model(&make(0.02 + h))
+            .fimm_convexity_adjusted_lpi_swap_npv
+            - price_brigo_mercurio_yoy_and_lpi_market_model(&make(0.02 - h))
+                .fimm_convexity_adjusted_lpi_swap_npv)
+            / (2.0 * h);
+        let ad =
+            price_brigo_mercurio_yoy_and_lpi_market_model(&BrigoMercurioInflationMarketModelSpec {
+                notional: Dual::<1>::from_value(1_000_000.0),
+                base_cpi: Dual::<1>::from_value(100.0),
+                payment_times: vec![
+                    Dual::<1>::from_value(1.0),
+                    Dual::<1>::from_value(2.0),
+                    Dual::<1>::from_value(3.0),
+                ],
+                forward_cpis: vec![
+                    Dual::<1>::from_value(102.0),
+                    Dual::<1>::from_value(104.0),
+                    Dual::<1>::from_value(106.0),
+                ],
+                nominal_forward_rates: vec![Dual::<1>::from_value(0.03); 3],
+                nominal_discount_factors: vec![
+                    Dual::<1>::from_value(0.97),
+                    Dual::<1>::from_value(0.94),
+                    Dual::<1>::from_value(0.91),
+                ],
+                forward_cpi_vols: vec![Dual::<1>::from_value(0.01); 3],
+                nominal_forward_vols: vec![Dual::<1>::from_value(0.01); 3],
+                inter_maturity_cpi_corr: Dual::<1>::from_value(0.5),
+                nominal_cpi_corr: Dual::<1>::from_value(0.2),
+                lpi_floor: Dual::<1>::from_value(-0.02),
+                lpi_cap: Dual::<1>::from_value(0.03),
+                fixed_swap_rate: Dual::<1>::variable(0.02, 0),
+            });
+        assert!((ad.fimm_convexity_adjusted_lpi_swap_npv.d[0] - fd).abs() < 1e-5);
     }
 }

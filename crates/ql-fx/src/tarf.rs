@@ -532,13 +532,54 @@ mod phase17_tests {
 
 #[cfg(test)]
 mod phase22_tests {
+    use super::*;
+    use ql_ad::Dual;
     #[test]
-    fn dual_fd_parity_smoke() {
-        let x = 0.37_f64;
-        let h = 1.0e-6_f64;
-        let f = |z: f64| z.exp() + z * z;
-        let fd = (f(x + h) - f(x - h)) / (2.0 * h);
-        let analytic = x.exp() + 2.0 * x;
-        assert!((fd - analytic).abs() < 1.0e-5);
+    fn wystup_dual_fd_parity_and_zero_cost() {
+        let make = |k| WystupFxStructuredProductSpec {
+            spot: 1.10,
+            accumulator_strike: 1.05,
+            knockout_barrier: 1.20,
+            downside_gearing: 2.0,
+            domestic_rate: 0.02,
+            foreign_rate: 0.01,
+            volatility: 0.12,
+            fixing_times: vec![0.25, 0.5, 0.75, 1.0],
+            guaranteed_fixings: 1,
+            dcd_conversion_strike: k,
+            dcd_tenor: 1.0,
+        };
+        let h = 1e-5;
+        let fd = (evaluate_wystup_fx_accumulator_and_dcd(&make(1.10 + h)).dcd_yield_pickup_bps
+            - evaluate_wystup_fx_accumulator_and_dcd(&make(1.10 - h)).dcd_yield_pickup_bps)
+            / (2.0 * h);
+        let ad = evaluate_wystup_fx_accumulator_and_dcd(&WystupFxStructuredProductSpec {
+            spot: Dual::<1>::from_value(1.10),
+            accumulator_strike: Dual::<1>::from_value(1.05),
+            knockout_barrier: Dual::<1>::from_value(1.20),
+            downside_gearing: Dual::<1>::from_value(2.0),
+            domestic_rate: Dual::<1>::from_value(0.02),
+            foreign_rate: Dual::<1>::from_value(0.01),
+            volatility: Dual::<1>::from_value(0.12),
+            fixing_times: vec![
+                Dual::<1>::from_value(0.25),
+                Dual::<1>::from_value(0.5),
+                Dual::<1>::from_value(0.75),
+                Dual::<1>::from_value(1.0),
+            ],
+            guaranteed_fixings: 1,
+            dcd_conversion_strike: Dual::<1>::variable(1.10, 0),
+            dcd_tenor: Dual::<1>::from_value(1.0),
+        });
+        assert!(ad.dcd_yield_pickup_bps.val() > 0.0);
+        let mut zero = make(1.10);
+        zero.accumulator_strike = ad.fair_zero_cost_accumulator_strike.val();
+        assert!(
+            evaluate_wystup_fx_accumulator_and_dcd(&zero)
+                .total_accumulator_npv
+                .abs()
+                < 1e-9
+        );
+        assert!((ad.dcd_yield_pickup_bps.d[0] - fd).abs() < 1e-5);
     }
 }

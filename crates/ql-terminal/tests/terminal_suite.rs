@@ -290,6 +290,10 @@ fn phase21_tab31_terminal_renders_and_ticks_cleanly() {
 #[test]
 fn phase22_tab32_terminal_renders_and_ticks_cleanly() {
     assert_eq!(TabId::ALL.len(), 32);
+    assert_eq!(
+        TabId::Phase22Sota.label(),
+        "32 Phase 22 SOTA / KRD / LPI / CoCo / Bergomi / CGMY / AAD"
+    );
     let mut ws = DeskWorkstation::new();
     let normal = ws.step_tick();
     assert!(
@@ -306,4 +310,21 @@ fn phase22_tab32_terminal_renders_and_ticks_cleanly() {
         next.krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric
             .is_finite()
     );
+    assert_ne!(
+        next.krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric,
+        normal.krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric
+    );
+    for scenario in [
+        ScenarioKind::RatesPlus50Bp,
+        ScenarioKind::EquityCrashMinus15Pct,
+        ScenarioKind::CreditWideningPlus100Bp,
+        ScenarioKind::StagflationPlus150Bp,
+    ] {
+        ws.set_scenario(scenario);
+        let stressed = ws.step_tick();
+        assert_ne!(
+            stressed.krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric,
+            normal.krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_metric
+        );
+    }
 }

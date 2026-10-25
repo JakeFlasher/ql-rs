@@ -732,30 +732,28 @@ pub fn execute_savine_revolve_checkpointed_adjoint<T: Real>(
         x = step(x, i).0;
         states.push(x);
     }
-    // Revolve checkpoint indices.  The first split is the prescribed
-    // beta(c-1,t) step; subsequent splits bisect the remaining intervals while
-    // respecting the checkpoint budget.
+    // Griewank--Walther binomial Revolve forward checkpoint recurrence.  The
+    // cursor advances through the complete [0,n) interval; in particular the
+    // final segment is no longer silently omitted when `n` is not itself a
+    // checkpoint index.
     let mut checkpoint_indices = vec![0usize];
-    if c > 1 {
-        checkpoint_indices.push(first);
-    }
-    while checkpoint_indices.len() < c {
-        let mut best = None;
-        let mut best_len = 0usize;
-        for w in checkpoint_indices.windows(2) {
-            let len = w[1] - w[0];
-            if len > best_len {
-                best_len = len;
-                best = Some((w[0], w[1]));
-            }
-        }
-        let (a, b) = best.unwrap_or((checkpoint_indices[0], n));
-        if b <= a + 1 {
+    let mut cur = 0usize;
+    for rem_c in (1..c).rev() {
+        if cur + 1 >= n {
             break;
         }
-        let mid = a + (b - a) / 2;
-        checkpoint_indices.push(mid);
-        checkpoint_indices.sort_unstable();
+        let rem_steps = n - cur;
+        let mut t_rem = 0usize;
+        while beta(rem_c + 1, t_rem) < rem_steps {
+            t_rem += 1;
+        }
+        let adv = if cur == 0 {
+            first
+        } else {
+            beta(rem_c, t_rem).clamp(1, rem_steps - 1)
+        };
+        cur += adv;
+        checkpoint_indices.push(cur);
     }
     let checkpoints: Vec<T> = checkpoint_indices.iter().map(|&i| states[i]).collect();
     let y = x - s.strike;

@@ -331,5 +331,39 @@ mod phase22_tests {
         };
         let r = price_despiegeleer_coco_and_mandatory_convertible(&s);
         assert!(r.dual_trigger_coco_value.val().is_finite());
+        let h = 1e-5;
+        let mut up = s;
+        up.spot += h;
+        let mut dn = s;
+        dn.spot -= h;
+        let fd = (price_despiegeleer_coco_and_mandatory_convertible(&up).dual_trigger_coco_value
+            - price_despiegeleer_coco_and_mandatory_convertible(&dn).dual_trigger_coco_value)
+            / (2.0 * h);
+        let sd = DeSpiegeleerCoCoMandatoryConvSpec {
+            notional: ql_ad::Dual::<1>::from_value(100.0),
+            spot: ql_ad::Dual::<1>::variable(100.0, 0),
+            risk_free_rate: ql_ad::Dual::<1>::from_value(0.02),
+            dividend_yield: ql_ad::Dual::<1>::from_value(0.01),
+            credit_spread: ql_ad::Dual::<1>::from_value(0.02),
+            maturity: ql_ad::Dual::<1>::from_value(2.0),
+            coupon_rate: ql_ad::Dual::<1>::from_value(0.05),
+            coupon_freq: 2,
+            decs_lower_strike: ql_ad::Dual::<1>::from_value(90.0),
+            decs_upper_strike: ql_ad::Dual::<1>::from_value(110.0),
+            vol_lower_strike: ql_ad::Dual::<1>::from_value(0.2),
+            vol_upper_strike: ql_ad::Dual::<1>::from_value(0.2),
+            coco_cet1_trigger_spot: ql_ad::Dual::<1>::from_value(70.0),
+            coco_ponv_trigger_spot: ql_ad::Dual::<1>::from_value(50.0),
+            coco_conversion_floor_price: ql_ad::Dual::<1>::from_value(60.0),
+            coco_equity_vol: ql_ad::Dual::<1>::from_value(0.2),
+        };
+        assert!(
+            (price_despiegeleer_coco_and_mandatory_convertible(&sd)
+                .dual_trigger_coco_value
+                .d[0]
+                - fd)
+                .abs()
+                < 1e-5
+        );
     }
 }

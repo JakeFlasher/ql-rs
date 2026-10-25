@@ -3288,6 +3288,7 @@ mod phase21_tests {
 #[cfg(test)]
 mod phase22_tests {
     use super::*;
+    use ql_ad::Dual;
     #[test]
     fn meucci_solver_finite() {
         let s = MeucciIdzorekBlackLittermanSpec {
@@ -3301,5 +3302,33 @@ mod phase22_tests {
         };
         let r = solve_meucci_idzorek_black_litterman_and_plausibility(&s);
         assert!(r.mahalanobis_plausibility_squared.val().is_finite());
+        let h = 1e-5;
+        let mut up = s.clone();
+        up.view_returns_q[0] += h;
+        let mut dn = s.clone();
+        dn.view_returns_q[0] -= h;
+        let fd = (solve_meucci_idzorek_black_litterman_and_plausibility(&up)
+            .posterior_expected_returns[0]
+            - solve_meucci_idzorek_black_litterman_and_plausibility(&dn)
+                .posterior_expected_returns[0])
+            / (2.0 * h);
+        let ad = solve_meucci_idzorek_black_litterman_and_plausibility(
+            &MeucciIdzorekBlackLittermanSpec {
+                covariance: vec![
+                    vec![Dual::<1>::from_value(0.04), Dual::<1>::from_value(0.01)],
+                    vec![Dual::<1>::from_value(0.01), Dual::<1>::from_value(0.09)],
+                ],
+                market_weights: vec![Dual::<1>::from_value(0.6), Dual::<1>::from_value(0.4)],
+                risk_aversion_lambda: Dual::<1>::from_value(2.5),
+                tau: Dual::<1>::from_value(0.05),
+                view_matrix_p: vec![vec![
+                    Dual::<1>::from_value(1.0),
+                    Dual::<1>::from_value(-1.0),
+                ]],
+                view_returns_q: vec![Dual::<1>::variable(0.03, 0)],
+                view_confidences: vec![Dual::<1>::from_value(0.65)],
+            },
+        );
+        assert!((ad.posterior_expected_returns[0].d[0] - fd).abs() < 1e-5);
     }
 }
