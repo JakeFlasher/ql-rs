@@ -63,61 +63,107 @@ pub fn evaluate_glasserman_malliavin_checkpointed_aad<T: Real>(
     let mut vibrato_delta = T::zero();
     let mut vibrato_vega = T::zero();
     let x0 = s.spot.ln();
-    for (q, (&xnode, &weight)) in nodes.iter().zip(weights.iter()).enumerate() {
+    let mut check_delta = T::zero();
+    let mut check_vega = T::zero();
+    for (&xnode, &weight) in nodes.iter().zip(weights.iter()) {
         let z = T::from_f64(2.0_f64.sqrt() * xnode);
         let shock = z / T::from_f64(n_steps as f64).sqrt();
         let mut x = x0;
         let mut full_tape = Vec::with_capacity(n_steps + 1);
-        let mut checkpoint_states = Vec::with_capacity(checkpoints + 1);
+        let mut checkpoint_states = Vec::with_capacity(checkpoints);
         full_tape.push(x);
-        checkpoint_states.push(x);
-        let mut dx_spot = T::one() / s.spot.max_val(T::from_f64(1e-12));
-        let mut dx_vol = T::zero();
         for step in 0..n_steps {
+            if step % block_len == 0 {
+                checkpoint_states.push(x);
+            }
             let spread = x - x0;
-            let shape = T::one() + s.local_vol_skew * spread.tanh();
+            let th = spread.tanh();
+            let shape = T::one() + s.local_vol_skew * th;
             let sigma = (s.base_vol * shape).max_val(T::from_f64(1e-8));
-            let dsigma_dx =
-                s.base_vol * s.local_vol_skew * (T::one() - spread.tanh() * spread.tanh());
-            let dsigma_dspot = -dsigma_dx;
-            let dsigma_dvol = shape;
             let drift = (s.rate - s.div_yield - sigma * sigma * 0.5) * dt;
             let diffusion = sigma * sqrt_dt * shock;
             x += drift + diffusion;
-            let dx = (T::one() - sigma * dsigma_dx * dt + dsigma_dx * sqrt_dt * shock) * dx_spot
-                + (-sigma * dsigma_dspot * dt + dsigma_dspot * sqrt_dt * shock)
-                    / s.spot.max_val(T::from_f64(1e-12));
-            let dv = -sigma * dsigma_dvol * dt + dsigma_dvol * sqrt_dt * shock;
-            dx_spot = dx;
-            dx_vol =
-                dx_vol * (T::one() - sigma * dsigma_dx * dt + dsigma_dx * sqrt_dt * shock) + dv;
             full_tape.push(x);
-            if (step + 1) % block_len == 0 || step + 1 == n_steps {
-                checkpoint_states.push(x);
-            }
         }
-        let _stored_state_counts = (full_tape.len(), checkpoint_states.len());
         let terminal = x.exp();
         let intrinsic = terminal - s.strike;
-        let root = (intrinsic * intrinsic + 1e-8).sqrt();
+        let root = (intrinsic * intrinsic + T::from_f64(1e-8)).sqrt();
         let payoff = (intrinsic + root) * 0.5;
-        let payoff_delta = (T::one() + intrinsic / root) * 0.5 * terminal * dx_spot;
-        let payoff_vega = (T::one() + intrinsic / root) * 0.5 * terminal * dx_vol;
+
+        let dpayoff_dx = (T::one() + intrinsic / root) * 0.5 * terminal;
+
+        // Full-tape reverse-mode adjoint sweep over every stored state.
+        let mut adj_x = dpayoff_dx;
+        let mut adj_x0 = T::zero();
+        let mut adj_vol = T::zero();
+        for step in (0..n_steps).rev() {
+            let x_step = full_tape[step];
+            let spread = x_step - x0;
+            let th = spread.tanh();
+            let shape = T::one() + s.local_vol_skew * th;
+            let sigma = (s.base_vol * shape).max_val(T::from_f64(1e-8));
+            let dsigma_dx = s.base_vol * s.local_vol_skew * (T::one() - th * th);
+            let dstep_dsigma = -sigma * dt + sqrt_dt * shock;
+            adj_vol += adj_x * dstep_dsigma * shape;
+            adj_x0 += adj_x * dstep_dsigma * (-dsigma_dx);
+            adj_x *= T::one() + dstep_dsigma * dsigma_dx;
+        }
+        let path_full_delta = (adj_x + adj_x0) / s.spot.max_val(T::from_f64(1e-12));
+        let path_full_vega = adj_vol;
+
+        // Griewank--Walther block-checkpointed reverse-mode sweep.  Each
+        // block is recomputed from its retained checkpoint, so no full tape
+        // is needed by the checkpointed path.
+        let mut adj_x_cp = dpayoff_dx;
+        let mut adj_x0_cp = T::zero();
+        let mut adj_vol_cp = T::zero();
+        for blk in (0..checkpoint_states.len()).rev() {
+            let blk_start = blk * block_len;
+            let blk_end = ((blk + 1) * block_len).min(n_steps);
+            let mut local_tape = Vec::with_capacity(blk_end - blk_start);
+            let mut x_re = checkpoint_states[blk];
+            for _step in blk_start..blk_end {
+                local_tape.push(x_re);
+                let spread = x_re - x0;
+                let th = spread.tanh();
+                let shape = T::one() + s.local_vol_skew * th;
+                let sigma = (s.base_vol * shape).max_val(T::from_f64(1e-8));
+                let drift = (s.rate - s.div_yield - sigma * sigma * 0.5) * dt;
+                let diffusion = sigma * sqrt_dt * shock;
+                x_re += drift + diffusion;
+            }
+            for &x_step in local_tape.iter().rev() {
+                let spread = x_step - x0;
+                let th = spread.tanh();
+                let shape = T::one() + s.local_vol_skew * th;
+                let sigma = (s.base_vol * shape).max_val(T::from_f64(1e-8));
+                let dsigma_dx = s.base_vol * s.local_vol_skew * (T::one() - th * th);
+                let dstep_dsigma = -sigma * dt + sqrt_dt * shock;
+                adj_vol_cp += adj_x_cp * dstep_dsigma * shape;
+                adj_x0_cp += adj_x_cp * dstep_dsigma * (-dsigma_dx);
+                adj_x_cp *= T::one() + dstep_dsigma * dsigma_dx;
+            }
+        }
+        let path_cp_delta = (adj_x_cp + adj_x0_cp) / s.spot.max_val(T::from_f64(1e-12));
+        let path_cp_vega = adj_vol_cp;
+
         let p = T::from_f64(weight / std::f64::consts::PI.sqrt());
         call += p * df * payoff;
         digital += p * df * intrinsic.smooth_heaviside(T::zero(), 1e-4);
-        full_delta += p * df * payoff_delta;
-        full_vega += p * df * payoff_vega;
-        let sigma_last = (s.base_vol * (T::one() + s.local_vol_skew * (x - x0).tanh()))
+        full_delta += p * df * path_full_delta;
+        full_vega += p * df * path_full_vega;
+        check_delta += p * df * path_cp_delta;
+        check_vega += p * df * path_cp_vega;
+        let x_prev = full_tape[n_steps - 1];
+        let sigma_last = (s.base_vol * (T::one() + s.local_vol_skew * (x_prev - x0).tanh()))
             .max_val(T::from_f64(1e-8));
-        let mu_last = x - (s.rate - s.div_yield - sigma_last * sigma_last * 0.5) * dt;
+        let mu_last = x_prev + (s.rate - s.div_yield - sigma_last * sigma_last * 0.5) * dt;
         let score = (mu_last - s.strike.ln()) / (sigma_last * sqrt_dt);
-        vibrato_delta += p * df * score.norm_pdf() / (sigma_last * sqrt_dt) * dx_spot;
-        vibrato_vega += p * df * score.norm_pdf() * (-score / sigma_last) * dx_vol;
-        let _ = q;
+        vibrato_delta += p * df * score.norm_pdf() / (sigma_last * sqrt_dt) * path_full_delta;
+        vibrato_vega += p * df * score.norm_pdf() * (-score / sigma_last) * path_full_vega;
     }
-    let checkpointed_delta = full_delta;
-    let checkpointed_vega = full_vega;
+    let checkpointed_delta = check_delta;
+    let checkpointed_vega = check_vega;
     let error = (checkpointed_delta - full_delta)
         .abs()
         .max_val((checkpointed_vega - full_vega).abs());

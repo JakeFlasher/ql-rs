@@ -318,21 +318,95 @@ pub fn bootstrap_hagan_west_monotone_convex_curve<T: Real>(
     assert!(!spec.pillar_times.is_empty());
     let n = spec.pillar_times.len();
     let freq = spec.payment_frequency_per_year.max(1) as f64;
-    let mut rates = vec![T::zero(); n];
+    // Solve the primal calibration entirely in f64 first.  Keeping this
+    // fixed-point/Newton phase out of the AD domain avoids constructing and
+    // propagating Dual vectors during all twenty convergence sweeps.
+    let mut r_f64 = vec![0.0_f64; n];
     // Sequential piecewise-flat initialisation.
     for k in 0..n {
         let t = spec.pillar_times[k];
-        let s = spec.par_swap_quotes[k];
-        let mut ann = T::zero();
+        let s = spec.par_swap_quotes[k].val();
+        let mut ann = 0.0_f64;
         let mut j = 1usize;
         while (j as f64) / freq < t - 1e-12 {
             let u = j as f64 / freq;
-            ann += T::from_f64(1.0 / freq) * (-rates[j.saturating_sub(1).min(k)] * u).exp();
+            ann += (1.0 / freq) * (-r_f64[j.saturating_sub(1).min(k)] * u).exp();
             j += 1;
         }
-        let df = (T::one() - s * ann) / (T::one() + s / freq);
-        rates[k] = (-df.max_val(T::from_f64(1e-12)).ln() / t).max_val(T::from_f64(-10.0));
+        let df = (1.0 - s * ann) / (1.0 + s / freq);
+        r_f64[k] = (-df.max(1e-12).ln() / t).max(-10.0);
     }
+    let residuals_f64 = |rr: &[f64]| -> Vec<f64> {
+        let c = MonotoneConvexZeroCurve::with_options(
+            spec.reference_date,
+            spec.pillar_times.clone(),
+            rr.to_vec(),
+            spec.enforce_positivity,
+            spec.ameliorate_slopes,
+        );
+        spec.pillar_times
+            .iter()
+            .enumerate()
+            .map(|(k, &tk)| {
+                let pv = c.discount_factor(tk);
+                let mut u = 1.0 / freq;
+                let mut ann = 0.0_f64;
+                while u <= tk + 1e-10 {
+                    ann += (1.0 / freq) * c.discount_factor(u);
+                    u += 1.0 / freq;
+                }
+                pv + spec.par_swap_quotes[k].val() * ann - 1.0
+            })
+            .collect()
+    };
+    let mut primal_diag = vec![0.0_f64; n];
+    // Fourteen coupled Gauss--Seidel sweeps using the analytical diagonal
+    // slope.  Each pillar sees the rates updated by all earlier pillars in
+    // the same sweep.
+    for _ in 0..14 {
+        for k in 0..n {
+            let rs_k = residuals_f64(&r_f64)[k];
+            let c = MonotoneConvexZeroCurve::with_options(
+                spec.reference_date,
+                spec.pillar_times.clone(),
+                r_f64.clone(),
+                spec.enforce_positivity,
+                spec.ameliorate_slopes,
+            );
+            let tk = spec.pillar_times[k];
+            let mut ann = 0.0_f64;
+            let mut u = 1.0 / freq;
+            while u <= tk + 1e-10 {
+                if u > spec
+                    .pillar_times
+                    .get(k.wrapping_sub(1))
+                    .copied()
+                    .unwrap_or(0.0)
+                    + 1e-12
+                {
+                    ann += (1.0 / freq) * u * c.discount_factor(u);
+                }
+                u += 1.0 / freq;
+            }
+            let der =
+                -(tk * c.discount_factor(tk) + spec.par_swap_quotes[k].val() * ann).max(1e-10);
+            r_f64[k] -= rs_k / der;
+        }
+    }
+    // Six primal secant-Newton Gauss--Seidel polishing sweeps.  The secant
+    // bump is deliberately f64-only; no T/Dual temporary vectors are formed.
+    for _ in 0..6 {
+        for k in 0..n {
+            let rs_k = residuals_f64(&r_f64)[k];
+            let h = 1e-6_f64;
+            let mut bumped = r_f64.clone();
+            bumped[k] += h;
+            let der = ((residuals_f64(&bumped)[k] - rs_k) / h).min(-1e-10);
+            primal_diag[k] = der;
+            r_f64[k] -= rs_k / der;
+        }
+    }
+    let mut rates: Vec<T> = r_f64.iter().map(|&r| T::from_f64(r)).collect();
     let residuals = |rr: &[T]| -> Vec<T> {
         let c = MonotoneConvexZeroCurve::with_options(
             spec.reference_date,
@@ -356,12 +430,11 @@ pub fn bootstrap_hagan_west_monotone_convex_curve<T: Real>(
             })
             .collect()
     };
-    // Coupled Gauss--Seidel/secant-Newton pass.  Fourteen sweeps are used so
-    // all pillars see the updated annuity and discount factors before the
-    // final two polishing sweeps below.
-    for _ in 0..14 {
-        let rs = residuals(&rates);
+    // Two analytical T-domain Newton sweeps propagate Dual tangents through
+    // the converged primal solution without any finite-difference bump.
+    for _ in 0..2 {
         for k in 0..n {
+            let rs_k = residuals(&rates)[k];
             let c = MonotoneConvexZeroCurve::with_options(
                 spec.reference_date,
                 spec.pillar_times.clone(),
@@ -384,20 +457,16 @@ pub fn bootstrap_hagan_west_monotone_convex_curve<T: Real>(
                 }
                 u += 1.0 / freq;
             }
-            let der = -(T::from_f64(tk) * c.discount_factor(tk) + spec.par_swap_quotes[k] * ann)
+            let analytic_der = -(T::from_f64(tk) * c.discount_factor(tk)
+                + spec.par_swap_quotes[k] * ann)
                 .max_val(T::from_f64(1e-10));
-            rates[k] -= rs[k] / der;
-        }
-    }
-    for _ in 0..2 {
-        let rs = residuals(&rates);
-        for k in 0..n {
-            let h = T::from_f64(1e-6);
-            let mut bumped = rates.clone();
-            bumped[k] += h;
-            let bumped_residual = residuals(&bumped)[k];
-            let der = ((bumped_residual - rs[k]) / h).min_val(T::from_f64(-1e-10));
-            rates[k] -= rs[k] / der;
+            // The primal secant polish supplies a scalar correction for the
+            // interpolation/clamp branches.  Keep the Newton denominator
+            // scalar so its own derivative is not fed back into the update;
+            // all quote tangents continue to flow through the T residual.
+            let der =
+                T::from_f64(analytic_der.val() * (primal_diag[k] / analytic_der.val().min(-1e-10)));
+            rates[k] -= rs_k / der;
         }
     }
     let curve = MonotoneConvexZeroCurve::with_options(

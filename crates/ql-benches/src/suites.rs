@@ -4584,11 +4584,6 @@ pub fn benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(
     let baseline = move || {
         let f = |x: [f64; 4]| phase21_workloads(x).iter().sum::<f64>();
         let mut z = f(x0);
-        // Keep the finite-difference path deliberately representative of the
-        // eight market bump/revaluation workflow (the center valuation is
-        // repeated for cache-warmup and timing stability).
-        std::hint::black_box(f(x0));
-        std::hint::black_box(f(x0));
         for i in 0..4 {
             let mut u = x0;
             let mut d = x0;

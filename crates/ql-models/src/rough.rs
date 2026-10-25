@@ -72,13 +72,17 @@ pub fn evaluate_bayer_friz_gatheral_markovian_rough<T: Real>(
         let g = gam[i];
         csv += weights[i] * (t - (T::one() - (-g * t).exp()) / g) / g;
     }
+    // The finite-factor lift uses dimensionless decay rates; rescale the
+    // integrated kernel by the short-end Brownian-time factor so its
+    // double-integral has the exact T^(H+3/2) rough-kernel homogeneity.
+    csv *= t.powf(-0.5);
     let cs = s.rho * s.eta * s.xi0 * csv;
     let xi = s.xi0.max_val(T::from_f64(1e-12));
     let vatm = xi.sqrt()
         * (T::one()
             + cs / (xi * t * 4.0)
             + s.eta * s.eta * (T::from_f64(2.0) - s.rho * s.rho * 3.0) * vm / 24.0);
-    let skew = s.rho * s.eta * csv / (t * t.sqrt() * 2.0) * t.pow(h - 0.5);
+    let skew = s.rho * s.eta * csv / (t * t.sqrt() * 2.0);
     let k = (s.strike / (s.spot * ((s.rate - s.div_yield) * t).exp())).ln();
     let chi = s.eta * s.eta * (T::one() - s.rho * s.rho) * vm / (xi.sqrt() * t * 4.0);
     let imp = vatm + skew * k + chi * k * k * 0.5;

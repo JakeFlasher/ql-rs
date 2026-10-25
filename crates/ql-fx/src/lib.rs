@@ -152,12 +152,10 @@ pub fn calibrate_clark_fx_delta_smile<T: Real>(
     };
     let mut bf_cal = bf;
     for _ in 0..6 {
-        let (v, _, _, _) = eval_smile_at_bf(bf_cal);
-        let h = T::from_f64(1e-5);
-        let vp = eval_smile_at_bf(bf_cal + h).0;
-        let vm = eval_smile_at_bf(bf_cal - h).0;
-        let der = (vp - vm) / (h * 2.0);
-        bf_cal -= (v - target_ms) / der.max_val(T::from_f64(1e-10));
+        let (v, sp, sc, _) = eval_smile_at_bf(bf_cal);
+        let vega_ms = garman_kohlhagen_vega(s.spot, kp, sp, s.expiry, s.r_dom, s.r_for)
+            + garman_kohlhagen_vega(s.spot, kc, sc, s.expiry, s.r_dom, s.r_for);
+        bf_cal -= (v - target_ms) / vega_ms.max_val(T::from_f64(1e-10));
     }
     let (_, sp_cal, sc_cal, _) = eval_smile_at_bf(bf_cal);
     let kps = clark_invert_strike(

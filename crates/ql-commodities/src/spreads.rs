@@ -107,19 +107,27 @@ pub fn price_burger_multifuel_tolling_power_plant<T: Real>(
     let mut state = [T::zero(); 3];
     let mut toll = T::zero();
     for i in (0..values.len()).rev() {
+        let t_i = s.dispatch_times[i].max(1e-4);
+        let df_i = (-s.risk_free_rate * T::from_f64(t_i)).exp();
+        let start_cost = df_i * s.start_up_cost.max_val(T::zero());
         let flow = values[i];
-        let min_flow = flow * s.min_load_fraction.max_val(T::zero())
-            - s.start_up_cost
-            - s.part_load_heat_rate_penalty * flow;
-        let full_flow = flow - s.start_up_cost;
+        let min_flow = flow
+            * s.min_load_fraction.max_val(T::zero())
+            * (T::one() - s.part_load_heat_rate_penalty.max_val(T::zero()));
+        let full_flow = flow;
         let next_off = state[0];
         let next_min = state[1];
         let next_full = state[2];
-        state[0] = next_off.max_val(next_min.max_val(next_full));
-        state[1] = (min_flow + next_min).max_val(min_flow + next_full);
-        state[2] = (full_flow + next_full).max_val(full_flow + next_min);
+        // From OFF, an ON transition pays the startup cost; staying OFF does not.
+        state[0] = next_off.max_val(
+            (min_flow - start_cost + next_min).max_val(full_flow - start_cost + next_full),
+        );
+        // Once running, switching/staying on does not incur startup again.
+        let running_best = next_off.max_val((min_flow + next_min).max_val(full_flow + next_full));
+        state[1] = running_best;
+        state[2] = running_best;
         if i == 0 {
-            toll = state[0].max_val(state[1].max_val(state[2]));
+            toll = state[0];
         }
     }
     let switch_value = (multi - spark.max_val(dark)).max_val(T::zero());

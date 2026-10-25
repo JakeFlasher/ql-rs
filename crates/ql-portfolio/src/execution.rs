@@ -71,8 +71,15 @@ pub fn solve_cartea_jaimungal_alpha_execution<T: Real>(
         capture += alpha * inventory[j] * dt;
         cost += (k * rate * rate + phi * inventory[j] * inventory[j]) * dt;
     }
-    let variance_bonus =
-        s.alpha_volatility * s.alpha_volatility / (k * kap * kap * 4.0) * s.horizon;
+    let mut variance_bonus = T::zero();
+    for &time in times.iter().take(n) {
+        let tau = s.horizon - time;
+        let psi_tau = (gamma * tau).sinh() + zeta * (gamma * tau).cosh();
+        let h1_bar = (T::one() - (-(kap + gamma) * tau).exp()) / (kap + gamma)
+            * (psi_tau / denom.max_val(T::from_f64(1e-12)));
+        variance_bonus +=
+            (s.alpha_volatility * s.alpha_volatility / (k * 4.0)) * h1_bar * h1_bar * dt;
+    }
     capture += variance_bonus;
     cost += s.permanent_impact_b * 0.5 * s.initial_inventory * s.initial_inventory - capture;
     CarteaJaimungalAlphaExecutionReport {
