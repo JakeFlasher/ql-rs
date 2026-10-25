@@ -153,3 +153,22 @@ fn phase17_tab_metric_and_rates_scenario_are_live() {
         );
     }
 }
+
+
+#[test]
+fn phase18_tab28_terminal_renders_and_ticks_cleanly() {
+    let mut ws = DeskWorkstation::new();
+    let normal = ws.step_tick();
+    assert!(ws.render_dashboard(&normal, false).contains("BL / Risk Parity ERC"));
+    assert!(normal.mtmxccs_colva_zabr_weather_enb_metric.is_finite());
+    for scenario in [
+        ScenarioKind::RatesPlus50Bp,
+        ScenarioKind::EquityCrashMinus15Pct,
+        ScenarioKind::CreditWideningPlus100Bp,
+        ScenarioKind::StagflationPlus150Bp,
+    ] {
+        ws.set_scenario(scenario);
+        let stressed = ws.step_tick();
+        assert_ne!(stressed.mtmxccs_colva_zabr_weather_enb_metric, normal.mtmxccs_colva_zabr_weather_enb_metric);
+    }
+}

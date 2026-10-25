@@ -315,6 +315,77 @@ pub fn price_napoleon_option_mc_ad<T: Real>(
     sum / paths as f64
 }
 
+#[derive(Clone, Debug)]
+pub struct EverestOptionSpec<T: Real = f64> {
+    pub spots: Vec<T>,
+    pub vols: Vec<T>,
+    pub correlation: T,
+    pub rate: T,
+    pub expiry: T,
+    pub strike: T,
+    pub notional: T,
+    pub tau_temp: T,
+}
+
+pub fn price_everest_option_mc_ad<T: Real>(s: &EverestOptionSpec<T>, paths: usize) -> T {
+    let m = s.spots.len().min(s.vols.len());
+    if m == 0 {
+        return T::zero();
+    }
+    let n_paths = paths.max(2);
+    let t = s.expiry.max_val(T::from_f64(1e-8));
+    let sqrt_t = t.sqrt();
+    let df = (-s.rate * t).exp();
+    let rho_min = -1.0 / (m.max(2) as f64 - 1.0) + 1e-4;
+    let rho = s
+        .correlation
+        .max_val(T::from_f64(rho_min))
+        .min_val(T::from_f64(0.99));
+    let b_orth = (T::one() - rho).max_val(T::from_f64(1e-12)).sqrt();
+    let a_comm = (T::one() + rho * (m as f64 - 1.0))
+        .max_val(T::from_f64(1e-12))
+        .sqrt();
+    let tau = s.tau_temp.max_val(T::from_f64(1e-3));
+    let rng = ql_mc::PhiloxRng::new(0xE7E2_E570_u64);
+    let mut sum = T::zero();
+
+    for pth in 0..n_paths {
+        let anti = pth % 2 == 1;
+        let id = (pth / 2) as u64;
+        let sgn = if anti { -1.0 } else { 1.0 };
+        let mut z_raw = vec![0.0; m];
+        let mut z_mean = 0.0;
+        for (i, slot) in z_raw.iter_mut().enumerate().take(m) {
+            let zi = rng.normal4(id, i as u32)[0] * sgn;
+            *slot = zi;
+            z_mean += zi;
+        }
+        z_mean /= m as f64;
+        let mut rets = Vec::with_capacity(m);
+        let mut r_min = f64::INFINITY;
+        for (i, &zi) in z_raw.iter().enumerate().take(m) {
+            let dw = b_orth * (zi - z_mean) + a_comm * z_mean;
+            let v = s.vols[i];
+            let r_i = (s.spots[i] / s.spots[0].max_val(T::from_f64(1e-12)))
+                * ((s.rate - v * v * 0.5) * t + v * sqrt_t * dw).exp();
+            r_min = r_min.min(r_i.val());
+            rets.push(r_i);
+        }
+        let mut w_sum = T::zero();
+        let mut rw_sum = T::zero();
+        for &r_i in &rets {
+            let w_i = (-(r_i - r_min) / tau).exp();
+            w_sum += w_i;
+            rw_sum += w_i * r_i;
+        }
+        let r_worst = rw_sum / w_sum.max_val(T::from_f64(1e-12));
+        let diff = r_worst - s.strike;
+        let pay = (diff + (diff * diff + T::from_f64(1e-8)).sqrt()) * 0.5;
+        sum += s.notional * df * pay;
+    }
+    sum / (n_paths as f64)
+}
+
 #[cfg(test)]
 mod phase16_tests {
     use super::*;
@@ -597,13 +668,47 @@ mod phase17_tests {
     }
 }
 
-#[derive(Clone,Debug)]
-pub struct EverestOptionSpec<T: Real=f64>{pub spots:Vec<T>,pub vols:Vec<T>,pub correlation:T,pub rate:T,pub expiry:T,pub strike:T,pub notional:T,pub tau_temp:T}
-pub fn price_everest_option_mc_ad<T: Real>(s:&EverestOptionSpec<T>,paths:usize)->T{if s.spots.is_empty(){return T::zero()} let mut sum=T::zero();for &v in &s.spots{sum += v;} let avg=sum/T::from_f64(s.spots.len() as f64); let r=avg/s.spots[0]-s.strike;let _=paths; s.notional*(-s.rate*s.expiry).exp()*((r+(r*r+T::from_f64(1e-8)).sqrt())*0.5)}
-
 #[cfg(test)]
 mod phase18_tests {
     use super::*;
+    use ql_ad::Dual;
+
     #[test]
-    fn everest_positive_payoff() { let s=EverestOptionSpec{spots:vec![100.0,110.0],vols:vec![0.2,0.2],correlation:0.5,rate:0.0,expiry:1.0,strike:0.5,notional:1.0,tau_temp:0.1}; assert!(price_everest_option_mc_ad(&s,8)>0.0); }
+    fn everest_correlation_monotonicity_and_ad() {
+        let mut s = EverestOptionSpec {
+            spots: vec![100.0, 100.0, 100.0],
+            vols: vec![0.20, 0.25, 0.22],
+            correlation: 0.1,
+            rate: 0.03,
+            expiry: 1.0,
+            strike: 0.90,
+            notional: 100.0,
+            tau_temp: 0.02,
+        };
+        let p_low_corr = price_everest_option_mc_ad(&s, 64);
+        s.correlation = 0.85;
+        let p_high_corr = price_everest_option_mc_ad(&s, 64);
+        assert!(p_high_corr > p_low_corr);
+
+        let h = 1e-5;
+        let eval_rho = |r: f64| {
+            let mut sp = s.clone();
+            sp.correlation = r;
+            price_everest_option_mc_ad(&sp, 64)
+        };
+        let fd = (eval_rho(0.5 + h) - eval_rho(0.5 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let sd = EverestOptionSpec {
+            spots: vec![D::from_value(100.0); 3],
+            vols: vec![D::from_value(0.20), D::from_value(0.25), D::from_value(0.22)],
+            correlation: D::variable(0.5, 0),
+            rate: D::from_value(0.03),
+            expiry: D::one(),
+            strike: D::from_value(0.90),
+            notional: D::from_value(100.0),
+            tau_temp: D::from_value(0.02),
+        };
+        let ad = price_everest_option_mc_ad(&sd, 64);
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
 }

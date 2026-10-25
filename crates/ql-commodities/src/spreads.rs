@@ -186,6 +186,162 @@ pub fn price_three_leg_spread_option<T: Real>(s: &ThreeLegSpreadOptionSpec<T>) -
     df * sign * (a * (sign * d1).norm_cdf() - b * (sign * d2).norm_cdf())
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum DegreeDayKind {
+    Hdd,
+    Cdd,
+}
+
+#[derive(Clone, Debug)]
+pub struct WeatherDerivativeSpec<T: Real = f64> {
+    pub kind: DegreeDayKind,
+    pub temperature_base: T,
+    pub initial_temperature: T,
+    pub mean_level: T,
+    pub seasonal_amplitude: T,
+    pub seasonal_phase: T,
+    pub mean_reversion: T,
+    pub daily_vol: T,
+    pub market_price_risk: T,
+    pub times: Vec<f64>,
+    pub strike: T,
+    pub notional: T,
+    pub is_call: bool,
+    pub cap: Option<T>,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct WeatherDerivativeValuation<T: Real> {
+    pub npv: T,
+    pub expected_degree_days: T,
+    pub cumulative_variance: T,
+}
+
+pub fn price_weather_hdd_cdd_option<T: Real>(
+    s: &WeatherDerivativeSpec<T>,
+) -> WeatherDerivativeValuation<T> {
+    if s.times.is_empty() {
+        return WeatherDerivativeValuation {
+            npv: T::zero(),
+            expected_degree_days: T::zero(),
+            cumulative_variance: T::zero(),
+        };
+    }
+    let w = if s.kind == DegreeDayKind::Hdd { 1.0 } else { -1.0 };
+    let kappa = s.mean_reversion.max_val(T::from_f64(1e-6));
+    let sig = s.daily_vol.abs();
+    let omega_s = 2.0 * std::f64::consts::PI / 365.0;
+    let theta0 = s.mean_level + s.seasonal_amplitude * s.seasonal_phase.sin();
+
+    let n = s.times.len();
+    let mut t_vec = Vec::with_capacity(n);
+    let mut p_vec = Vec::with_capacity(n);
+    let mut mean = T::zero();
+    let mut var = T::zero();
+
+    for &t_raw in &s.times {
+        let t_f64 = t_raw.max(1e-6);
+        let tt = T::from_f64(t_f64);
+        let seasonal = s.mean_level
+            + s.seasonal_amplitude * (tt * omega_s + s.seasonal_phase).sin();
+        let e_kt = (-kappa * tt).exp();
+        let mu = seasonal
+            + (s.initial_temperature - theta0) * e_kt
+            - (s.market_price_risk * sig / kappa) * (T::one() - e_kt);
+        let v_i = (sig * sig / (kappa * 2.0)) * (T::one() - e_kt * e_kt);
+        let sd_i = (v_i.max_val(T::zero()) + T::from_f64(1e-16)).sqrt();
+        let delta_i = (s.temperature_base - mu) * w;
+        let z_i = delta_i / sd_i;
+        let p_i = z_i.norm_cdf();
+        let phi_i = z_i.norm_pdf();
+        let m_i = delta_i * p_i + sd_i * phi_i;
+        let var_dd_i = ((delta_i * delta_i + v_i) * p_i + delta_i * sd_i * phi_i - m_i * m_i)
+            .max_val(T::zero());
+
+        mean += m_i;
+        var += var_dd_i;
+        t_vec.push(t_f64);
+        p_vec.push(p_i);
+    }
+
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let t_min = T::from_f64(t_vec[i].min(t_vec[j]));
+            let t_diff = T::from_f64((t_vec[j] - t_vec[i]).abs());
+            let cov_t = (sig * sig / (kappa * 2.0))
+                * (-kappa * t_diff).exp()
+                * (T::one() - (-kappa * t_min * 2.0).exp());
+            var += p_vec[i] * p_vec[j] * cov_t * 2.0;
+        }
+    }
+
+    let st = (var.max_val(T::zero()) + T::from_f64(1e-16)).sqrt();
+    let bachelier = |k_strike: T| -> T {
+        let d = (mean - k_strike) / st;
+        if s.is_call {
+            (mean - k_strike) * d.norm_cdf() + st * d.norm_pdf()
+        } else {
+            (k_strike - mean) * (-d).norm_cdf() + st * d.norm_pdf()
+        }
+    };
+    let mut unit = bachelier(s.strike);
+    if let Some(cap_amount) = s.cap {
+        let cap_pos = cap_amount.max_val(T::zero());
+        let unit_cap = cap_pos / s.notional.abs().max_val(T::from_f64(1e-12));
+        let k2 = if s.is_call {
+            s.strike + unit_cap
+        } else {
+            (s.strike - unit_cap).max_val(T::zero())
+        };
+        unit = (unit - bachelier(k2)).max_val(T::zero()).min_val(unit_cap);
+    }
+    WeatherDerivativeValuation {
+        npv: s.notional * unit,
+        expected_degree_days: mean,
+        cumulative_variance: var,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CleanSparkDarkSpreadSpec<T: Real = f64> {
+    pub power: T,
+    pub fuel: T,
+    pub carbon: T,
+    pub heat_rate: T,
+    pub emission_factor: T,
+    pub strike: T,
+    pub vol_power: T,
+    pub vol_fuel: T,
+    pub vol_carbon: T,
+    pub rho_power_fuel: T,
+    pub rho_power_carbon: T,
+    pub rho_fuel_carbon: T,
+    pub rate: T,
+    pub expiry: T,
+    pub option_type: OptionType,
+}
+
+pub fn price_clean_spark_dark_spread<T: Real>(s: &CleanSparkDarkSpreadSpec<T>) -> T {
+    price_three_leg_spread_option(&ThreeLegSpreadOptionSpec {
+        forward1: s.power,
+        forward2: s.fuel,
+        forward3: s.carbon,
+        weight1: T::one(),
+        weight2: -s.heat_rate,
+        weight3: -s.emission_factor,
+        strike: s.strike,
+        vol1: s.vol_power,
+        vol2: s.vol_fuel,
+        vol3: s.vol_carbon,
+        rho12: s.rho_power_fuel,
+        rho13: s.rho_power_carbon,
+        rho23: s.rho_fuel_carbon,
+        rate: s.rate,
+        expiry: s.expiry,
+        option_type: s.option_type,
+    })
+}
+
 #[cfg(test)]
 mod phase14_tests {
     use super::*;
@@ -383,20 +539,82 @@ mod phase16_tests {
     }
 }
 
-#[derive(Copy,Clone,Debug,PartialEq,Eq)]
-pub enum DegreeDayKind{Hdd,Cdd}
-#[derive(Clone,Debug)]
-pub struct WeatherDerivativeSpec<T: Real=f64>{pub kind:DegreeDayKind,pub temperature_base:T,pub initial_temperature:T,pub mean_level:T,pub seasonal_amplitude:T,pub seasonal_phase:T,pub mean_reversion:T,pub daily_vol:T,pub market_price_risk:T,pub times:Vec<f64>,pub strike:T,pub notional:T,pub is_call:bool,pub cap:Option<T>}
-#[derive(Copy,Clone,Debug)]
-pub struct WeatherDerivativeValuation<T: Real>{pub npv:T,pub expected_degree_days:T,pub cumulative_variance:T}
-pub fn price_weather_hdd_cdd_option<T: Real>(s:&WeatherDerivativeSpec<T>)->WeatherDerivativeValuation<T>{let w=if s.kind==DegreeDayKind::Hdd{1.0}else{-1.0};let mut mean=T::zero();let mut var=T::zero();let mut prev=0.0;for &t in &s.times{let tt=T::from_f64(t);let seasonal=s.mean_level+s.seasonal_amplitude*((T::from_f64(2.0*std::f64::consts::PI/365.0)*tt+s.seasonal_phase).sin());let mu=seasonal-s.market_price_risk*s.daily_vol/s.mean_reversion.max_val(T::from_f64(1e-8))*(T::one()-(-s.mean_reversion*tt).exp())+(s.initial_temperature-s.mean_level)*(-s.mean_reversion*tt).exp();let vv=s.daily_vol*s.daily_vol/(T::from_f64(2.0)*s.mean_reversion.max_val(T::from_f64(1e-8)))*(T::one()-(-T::from_f64(2.0)*s.mean_reversion*tt).exp());let sd=vv.max_val(T::zero()).sqrt();let z=T::from_f64(w)*(s.temperature_base-mu)/sd.max_val(T::from_f64(1e-8));mean += T::from_f64(w)*(s.temperature_base-mu)*z.norm_cdf()+sd*z.norm_pdf(); var += vv; prev=t;} let st=var.max_val(T::zero()).sqrt(); let d=(mean-s.strike)/st.max_val(T::from_f64(1e-8)); let mut npv=s.notional*(if s.is_call{(mean-s.strike)*d.norm_cdf()+st*d.norm_pdf()}else{(s.strike-mean)*(-d).norm_cdf()+st*d.norm_pdf()}); if let Some(cap)=s.cap{npv=npv.min_val(cap)} let _=prev; WeatherDerivativeValuation{npv,expected_degree_days:mean,cumulative_variance:var}}
-#[derive(Clone,Debug)]
-pub struct CleanSparkDarkSpreadSpec<T: Real=f64>{pub power:T,pub fuel:T,pub carbon:T,pub heat_rate:T,pub emission_factor:T,pub strike:T,pub vol_power:T,pub vol_fuel:T,pub vol_carbon:T,pub rho_power_fuel:T,pub rho_power_carbon:T,pub rho_fuel_carbon:T,pub rate:T,pub expiry:T,pub option_type:OptionType}
-pub fn price_clean_spark_dark_spread<T: Real>(s:&CleanSparkDarkSpreadSpec<T>)->T{if s.emission_factor.val().abs()<1e-14{return spark_spread_option(s.power,s.fuel,s.heat_rate,s.strike,s.vol_power,s.vol_fuel,s.rho_power_fuel,s.rate,s.expiry,s.option_type)} let adj=s.fuel*s.heat_rate+s.carbon*s.emission_factor; kirk_spread_option(s.power,adj,s.strike,s.vol_power,(s.vol_fuel*s.vol_fuel+s.vol_carbon*s.vol_carbon+T::from_f64(2.0)*s.rho_fuel_carbon*s.vol_fuel*s.vol_carbon).sqrt(),s.rho_power_fuel,s.rate,s.expiry,s.option_type)}
-
 #[cfg(test)]
 mod phase18_tests {
     use super::*;
+    use ql_ad::Dual;
+
     #[test]
-    fn clean_spread_zero_carbon_collapse() { let s=CleanSparkDarkSpreadSpec{power:80.0,fuel:3.0,carbon:20.0,heat_rate:7.0,emission_factor:0.0,strike:10.0,vol_power:0.2,vol_fuel:0.3,vol_carbon:0.4,rho_power_fuel:0.2,rho_power_carbon:0.1,rho_fuel_carbon:0.2,rate:0.03,expiry:1.0,option_type:OptionType::Call}; let a=price_clean_spark_dark_spread(&s); let b=spark_spread_option(80.0,3.0,7.0,10.0,0.2,0.3,0.2,0.03,1.0,OptionType::Call); assert!((a-b).abs()<1e-12); }
+    fn weather_hdd_cdd_parity_clean_spread_collapse_and_ad() {
+        let s = CleanSparkDarkSpreadSpec {
+            power: 80.0,
+            fuel: 3.0,
+            carbon: 20.0,
+            heat_rate: 7.0,
+            emission_factor: 0.0,
+            strike: 10.0,
+            vol_power: 0.2,
+            vol_fuel: 0.3,
+            vol_carbon: 0.4,
+            rho_power_fuel: 0.2,
+            rho_power_carbon: 0.1,
+            rho_fuel_carbon: 0.2,
+            rate: 0.03,
+            expiry: 1.0,
+            option_type: OptionType::Call,
+        };
+        let a = price_clean_spark_dark_spread(&s);
+        let b = spark_spread_option(80.0, 3.0, 7.0, 10.0, 0.2, 0.3, 0.2, 0.03, 1.0, OptionType::Call);
+        assert!((a - b).abs() < 1e-12);
+
+        let w_call = WeatherDerivativeSpec {
+            kind: DegreeDayKind::Hdd,
+            temperature_base: 18.0,
+            initial_temperature: 10.0,
+            mean_level: 12.0,
+            seasonal_amplitude: 6.0,
+            seasonal_phase: 0.2,
+            mean_reversion: 0.25,
+            daily_vol: 2.2,
+            market_price_risk: 0.05,
+            times: vec![1.0, 2.0, 3.0, 4.0],
+            strike: 20.0,
+            notional: 100.0,
+            is_call: true,
+            cap: None,
+        };
+        let mut w_put = w_call.clone();
+        w_put.is_call = false;
+        let vc = price_weather_hdd_cdd_option(&w_call);
+        let vp = price_weather_hdd_cdd_option(&w_put);
+        let parity = 100.0 * (vc.expected_degree_days - 20.0);
+        assert!((vc.npv - vp.npv - parity).abs() < 1e-10);
+
+        let h = 1e-5;
+        let eval_t0 = |t0: f64| {
+            let mut sp = w_call.clone();
+            sp.initial_temperature = t0;
+            price_weather_hdd_cdd_option(&sp).npv
+        };
+        let fd = (eval_t0(10.0 + h) - eval_t0(10.0 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let wd = WeatherDerivativeSpec {
+            kind: DegreeDayKind::Hdd,
+            temperature_base: D::from_value(18.0),
+            initial_temperature: D::variable(10.0, 0),
+            mean_level: D::from_value(12.0),
+            seasonal_amplitude: D::from_value(6.0),
+            seasonal_phase: D::from_value(0.2),
+            mean_reversion: D::from_value(0.25),
+            daily_vol: D::from_value(2.2),
+            market_price_risk: D::from_value(0.05),
+            times: vec![1.0, 2.0, 3.0, 4.0],
+            strike: D::from_value(20.0),
+            notional: D::from_value(100.0),
+            is_call: true,
+            cap: None,
+        };
+        let ad = price_weather_hdd_cdd_option(&wd).npv;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
 }

@@ -403,6 +403,47 @@ pub fn price_tenor_basis_swap<T: Real>(s:&TenorBasisSwapSpec<T>, d:&impl YieldTe
 #[cfg(test)]
 mod phase18_tests {
     use super::*;
+    use ql_ad::Dual;
+    use ql_curves::FlatForwardCurve;
+    use ql_time::Date;
+
     #[test]
-    fn tenor_basis_zero_identity() { let c=ql_curves::FlatForwardCurve::new(ql_time::Date(0),0.03); let s=TenorBasisSwapSpec{notional:1.0,short_leg_times:vec![0.5,1.0],long_leg_times:vec![1.0],short_leg_basis_spread:0.0,pay_short_leg:true}; let v=price_tenor_basis_swap(&s,&c,&c,&c); assert!(v.npv.abs()<1e-12); }
+    fn tenor_basis_fair_spread_and_ad() {
+        let d = Date(0);
+        let ois = FlatForwardCurve::new(d, 0.03);
+        let short_c = FlatForwardCurve::new(d, 0.032);
+        let long_c = FlatForwardCurve::new(d, 0.035);
+        let mut s = TenorBasisSwapSpec {
+            notional: 1_000_000.0,
+            short_leg_times: vec![0.25, 0.50, 0.75, 1.0],
+            long_leg_times: vec![0.50, 1.0],
+            short_leg_basis_spread: 0.0,
+            pay_short_leg: true,
+        };
+        let v0 = price_tenor_basis_swap(&s, &ois, &short_c, &long_c);
+        assert!(v0.fair_short_basis_spread > 0.0);
+        s.short_leg_basis_spread = v0.fair_short_basis_spread;
+        let v_par = price_tenor_basis_swap(&s, &ois, &short_c, &long_c);
+        assert!(v_par.npv.abs() < 1e-9);
+
+        let h = 1e-5;
+        let eval_r = |r_long: f64| {
+            let lc = FlatForwardCurve::new(d, r_long);
+            price_tenor_basis_swap(&s, &ois, &short_c, &lc).fair_short_basis_spread
+        };
+        let fd = (eval_r(0.035 + h) - eval_r(0.035 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let ois_d = FlatForwardCurve::new(d, D::from_value(0.03));
+        let sh_d = FlatForwardCurve::new(d, D::from_value(0.032));
+        let lo_d = FlatForwardCurve::new(d, D::variable(0.035, 0));
+        let sd = TenorBasisSwapSpec {
+            notional: D::from_value(1_000_000.0),
+            short_leg_times: vec![0.25, 0.50, 0.75, 1.0],
+            long_leg_times: vec![0.50, 1.0],
+            short_leg_basis_spread: D::zero(),
+            pay_short_leg: true,
+        };
+        let ad = price_tenor_basis_swap(&sd, &ois_d, &sh_d, &lo_d).fair_short_basis_spread;
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
 }

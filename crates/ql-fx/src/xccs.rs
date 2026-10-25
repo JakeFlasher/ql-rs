@@ -258,25 +258,148 @@ impl CalibratedXccsCurve {
 
 #[derive(Clone, Debug)]
 pub struct MtmResettingXccs<T: Real = f64> {
-    pub for_notional: T, pub spot_fx: T, pub payment_times: Vec<f64>, pub accrual_fractions: Vec<f64>,
-    pub for_basis_spread: T, pub dom_spread: T, pub receive_foreign: bool,
+    pub for_notional: T,
+    pub spot_fx: T,
+    pub payment_times: Vec<f64>,
+    pub accrual_fractions: Vec<f64>,
+    pub for_basis_spread: T,
+    pub dom_spread: T,
+    pub receive_foreign: bool,
 }
+
 #[derive(Clone, Debug)]
-pub struct MtmXccsValuation<T: Real> { pub npv:T, pub fair_foreign_basis_spread:T, pub foreign_leg_pv:T, pub resetting_domestic_leg_pv:T, pub reset_notional_profile:Vec<T> }
-pub fn price_mtm_resetting_xccs<T: Real>(swap:&MtmResettingXccs<T>, dom_ois:&impl YieldTermStructure<T>, for_ois:&impl YieldTermStructure<T>, for_csa_discount:&impl YieldTermStructure<T>) -> MtmXccsValuation<T> {
- let n=swap.payment_times.len().min(swap.accrual_fractions.len()); if n==0{return MtmXccsValuation{npv:T::zero(),fair_foreign_basis_spread:T::zero(),foreign_leg_pv:T::zero(),resetting_domestic_leg_pv:T::zero(),reset_notional_profile:Vec::new()};}
- let mut prof=Vec::with_capacity(n); let mut dom=T::zero(); let mut f0= -swap.for_notional*swap.spot_fx; let mut bpv=T::zero(); let mut prev=0.0;
- for i in 0..n { let t=swap.payment_times[i].max(prev+1e-8); let tau=swap.accrual_fractions[i].max(0.0); let ddp=if prev<=1e-12{T::one()}else{dom_ois.discount_factor(prev)}; let ddc=dom_ois.discount_factor(t); let fcp=if prev<=1e-12{T::one()}else{for_csa_discount.discount_factor(prev)}; let fcc=for_csa_discount.discount_factor(t); let nf=swap.for_notional*swap.spot_fx*fcp/ddp.max_val(T::from_f64(1e-12)); prof.push(nf); dom += nf*swap.dom_spread*tau*ddc; let pp=if prev<=1e-12{T::one()}else{for_ois.discount_factor(prev)}; let pc=for_ois.discount_factor(t).max_val(T::from_f64(1e-12)); f0 += swap.for_notional*swap.spot_fx*(pp/pc-T::one())*fcc; bpv += swap.for_notional*swap.spot_fx*fcc*tau; if i+1==n {f0 += swap.for_notional*swap.spot_fx*fcc;} prev=t; }
- let fair=(dom-f0)/bpv.max_val(T::from_f64(1e-12)); let fp=f0+swap.for_basis_spread*bpv; let npv=if swap.receive_foreign{fp-dom}else{dom-fp}; MtmXccsValuation{npv,fair_foreign_basis_spread:fair,foreign_leg_pv:fp,resetting_domestic_leg_pv:dom,reset_notional_profile:prof}
+pub struct MtmXccsValuation<T: Real> {
+    pub npv: T,
+    pub fair_foreign_basis_spread: T,
+    pub foreign_leg_pv: T,
+    pub resetting_domestic_leg_pv: T,
+    pub reset_notional_profile: Vec<T>,
+}
+
+pub fn price_mtm_resetting_xccs<T: Real>(
+    swap: &MtmResettingXccs<T>,
+    dom_ois: &impl YieldTermStructure<T>,
+    for_ois: &impl YieldTermStructure<T>,
+    for_csa_discount: &impl YieldTermStructure<T>,
+) -> MtmXccsValuation<T> {
+    let n = swap.payment_times.len().min(swap.accrual_fractions.len());
+    if n == 0 {
+        return MtmXccsValuation {
+            npv: T::zero(),
+            fair_foreign_basis_spread: T::zero(),
+            foreign_leg_pv: T::zero(),
+            resetting_domestic_leg_pv: T::zero(),
+            reset_notional_profile: Vec::new(),
+        };
+    }
+    let mut prof = Vec::with_capacity(n);
+    let mut dom = T::zero();
+    let mut f0 = -swap.for_notional * swap.spot_fx;
+    let mut bpv = T::zero();
+    let mut prev = 0.0;
+    for i in 0..n {
+        let t = swap.payment_times[i].max(prev + 1e-8);
+        let tau = swap.accrual_fractions[i].max(0.0);
+        let ddp = if prev <= 1e-12 {
+            T::one()
+        } else {
+            dom_ois.discount_factor(prev)
+        };
+        let ddc = dom_ois.discount_factor(t).max_val(T::from_f64(1e-12));
+        let fcp = if prev <= 1e-12 {
+            T::one()
+        } else {
+            for_csa_discount.discount_factor(prev)
+        };
+        let fcc = for_csa_discount.discount_factor(t);
+        let nf = swap.for_notional * swap.spot_fx * fcp / ddp.max_val(T::from_f64(1e-12));
+        prof.push(nf);
+        let dom_flt_tau = ddp / ddc - T::one();
+        // Explicit period-by-period MtM principal draw (-nf at prev) + floating coupon + spread + principal repayment at t
+        dom += -nf * ddp + nf * (T::one() + dom_flt_tau + swap.dom_spread * tau) * ddc;
+
+        let pp = if prev <= 1e-12 {
+            T::one()
+        } else {
+            for_ois.discount_factor(prev)
+        };
+        let pc = for_ois.discount_factor(t).max_val(T::from_f64(1e-12));
+        f0 += swap.for_notional * swap.spot_fx * (pp / pc - T::one()) * fcc;
+        bpv += swap.for_notional * swap.spot_fx * fcc * tau;
+        if i + 1 == n {
+            f0 += swap.for_notional * swap.spot_fx * fcc;
+        }
+        prev = t;
+    }
+    let fair = (dom - f0) / bpv.max_val(T::from_f64(1e-12));
+    let fp = f0 + swap.for_basis_spread * bpv;
+    let npv = if swap.receive_foreign {
+        fp - dom
+    } else {
+        dom - fp
+    };
+    MtmXccsValuation {
+        npv,
+        fair_foreign_basis_spread: fair,
+        foreign_leg_pv: fp,
+        resetting_domestic_leg_pv: dom,
+        reset_notional_profile: prof,
+    }
 }
 
 #[cfg(test)]
 mod phase18_tests {
     use super::*;
+    use ql_ad::Dual;
+    use ql_curves::FlatForwardCurve;
+    use ql_time::Date;
+
     #[test]
-    fn mtm_identity_and_empty() {
-        let c = ql_curves::FlatForwardCurve::new(ql_time::Date(0), 0.03);
-        let s = MtmResettingXccs { for_notional: 1.0, spot_fx: 1.1, payment_times: vec![1.0,2.0], accrual_fractions: vec![1.0,1.0], for_basis_spread: 0.0, dom_spread: 0.0, receive_foreign: true };
-        let v=price_mtm_resetting_xccs(&s,&c,&c,&c); assert!(v.resetting_domestic_leg_pv.abs()<1e-12); assert!(v.fair_foreign_basis_spread.abs()<1e-12);
+    fn mtm_xccs_telescoping_fair_spread_and_ad() {
+        let d = Date(0);
+        let c_dom = FlatForwardCurve::new(d, 0.04);
+        let c_for = FlatForwardCurve::new(d, 0.02);
+        let c_for_csa = FlatForwardCurve::new(d, 0.025);
+        let mut s = MtmResettingXccs {
+            for_notional: 1_000_000.0,
+            spot_fx: 1.10,
+            payment_times: vec![0.5, 1.0, 1.5, 2.0],
+            accrual_fractions: vec![0.5; 4],
+            for_basis_spread: 0.0,
+            dom_spread: 0.0,
+            receive_foreign: true,
+        };
+        let v_same = price_mtm_resetting_xccs(&s, &c_dom, &c_for, &c_for);
+        assert!(v_same.resetting_domestic_leg_pv.abs() < 1e-9);
+        assert!(v_same.fair_foreign_basis_spread.abs() < 1e-12);
+
+        let v_csa = price_mtm_resetting_xccs(&s, &c_dom, &c_for, &c_for_csa);
+        s.for_basis_spread = v_csa.fair_foreign_basis_spread;
+        let v_par = price_mtm_resetting_xccs(&s, &c_dom, &c_for, &c_for_csa);
+        assert!(v_par.npv.abs() < 1e-9);
+
+        let h = 1e-5;
+        let eval_fx = |fx: f64| {
+            let mut sp = s.clone();
+            sp.for_basis_spread = -0.0015;
+            sp.spot_fx = fx;
+            price_mtm_resetting_xccs(&sp, &c_dom, &c_for, &c_for_csa).npv
+        };
+        let fd = (eval_fx(1.10 + h) - eval_fx(1.10 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let cd_d = FlatForwardCurve::new(d, D::from_value(0.04));
+        let cf_d = FlatForwardCurve::new(d, D::from_value(0.02));
+        let cfc_d = FlatForwardCurve::new(d, D::from_value(0.025));
+        let sd = MtmResettingXccs {
+            for_notional: D::from_value(1_000_000.0),
+            spot_fx: D::variable(1.10, 0),
+            payment_times: vec![0.5, 1.0, 1.5, 2.0],
+            accrual_fractions: vec![0.5; 4],
+            for_basis_spread: D::from_value(-0.0015),
+            dom_spread: D::zero(),
+            receive_foreign: true,
+        };
+        let ad = price_mtm_resetting_xccs(&sd, &cd_d, &cf_d, &cfc_d).npv;
+        assert!((ad.d[0] - fd).abs() < 2e-5);
     }
 }

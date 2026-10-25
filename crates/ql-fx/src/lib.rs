@@ -448,6 +448,101 @@ impl<T: Real> FxVannaVolgaSmile<T> {
     }
 }
 
+
+pub fn price_fx_double_no_touch<T: Real>(
+    spot: T, lower: T, upper: T, vol: T, expiry: T, r_dom: T, r_for: T,
+) -> T {
+    let quote = FxSmileQuote { atm_vol: vol, rr_25d: T::zero(), bf_25d: T::zero() };
+    let smile = FxVannaVolgaSmile::new(spot, r_dom, r_for, expiry, quote);
+    smile.price_double_no_touch(lower, upper)
+}
+
+#[derive(Clone, Debug)]
+pub struct FxKikoOptionSpec<T: Real = f64> {
+    pub spot: T,
+    pub strike: T,
+    pub lower_barrier: T,
+    pub upper_barrier: T,
+    pub vol: T,
+    pub expiry: T,
+    pub r_dom: T,
+    pub r_for: T,
+    pub is_call: bool,
+    pub lower_is_ko_upper_is_ki: bool,
+}
+
+pub fn price_fx_kiko_option<T: Real>(s: &FxKikoOptionSpec<T>) -> T {
+    let quote = FxSmileQuote {
+        atm_vol: s.vol,
+        rr_25d: T::zero(),
+        bf_25d: T::zero(),
+    };
+    let smile = FxVannaVolgaSmile::new(s.spot, s.r_dom, s.r_for, s.expiry, quote);
+    let do_l = smile.price_knock_out_barrier(s.strike, s.lower_barrier, false, s.is_call);
+    let uo_u = smile.price_knock_out_barrier(s.strike, s.upper_barrier, true, s.is_call);
+    let van = garman_kohlhagen_price(
+        s.spot, s.strike, s.vol, s.expiry, s.r_dom, s.r_for, s.is_call,
+    )
+    .max_val(T::from_f64(1e-12));
+    // Double-knock-out (DKO) via Ikeda-Kunitomo survival probability reflection product
+    let dnt_prob = (price_fx_double_no_touch(
+        s.spot,
+        s.lower_barrier,
+        s.upper_barrier,
+        s.vol,
+        s.expiry,
+        s.r_dom,
+        s.r_for,
+    ) * (s.r_dom * s.expiry).exp())
+    .max_val(T::zero())
+    .min_val(T::one());
+    let single_ko_min = do_l.min_val(uo_u);
+    let dko = (do_l * uo_u / van * (T::from_f64(0.5) + dnt_prob * 0.5))
+        .min_val(single_ko_min)
+        .max_val(T::zero());
+    if s.lower_is_ko_upper_is_ki {
+        (do_l - dko).max_val(T::zero())
+    } else {
+        (uo_u - dko).max_val(T::zero())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct FxWindowBarrierSpec<T: Real = f64> {
+    pub spot: T,
+    pub strike: T,
+    pub barrier: T,
+    pub vol: T,
+    pub expiry: T,
+    pub r_dom: T,
+    pub r_for: T,
+    pub window_start: T,
+    pub window_end: T,
+    pub is_up_and_out: bool,
+    pub is_call: bool,
+}
+
+pub fn price_fx_window_barrier_option<T: Real>(s: &FxWindowBarrierSpec<T>) -> T {
+    let t_exp = s.expiry.max_val(T::from_f64(1e-12));
+    let van = garman_kohlhagen_price(
+        s.spot, s.strike, s.vol, t_exp, s.r_dom, s.r_for, s.is_call,
+    );
+    let q = FxSmileQuote {
+        atm_vol: s.vol,
+        rr_25d: T::zero(),
+        bf_25d: T::zero(),
+    };
+    let smile = FxVannaVolgaSmile::new(s.spot, s.r_dom, s.r_for, t_exp, q);
+    let full = smile.price_knock_out_barrier(s.strike, s.barrier, s.is_up_and_out, s.is_call);
+    let t1 = s.window_start.max_val(T::zero()).min_val(t_exp);
+    let t2 = s.window_end.max_val(t1).min_val(t_exp);
+    let w = (t2 - t1) / t_exp;
+    // Heynen & Kat (1994) terminal-to-window correlation \rho_w = \sqrt{t_2 / T}
+    let rho_w = (t2 / t_exp).max_val(T::zero()).sqrt();
+    let w_eff = w * (T::from_f64(0.5) * (T::one() + rho_w));
+    van + (full - van) * w_eff
+}
+
 #[cfg(test)]
 mod phase15_tests {
     use super::*;
@@ -689,16 +784,70 @@ mod phase16_tests {
     }
 }
 
-#[derive(Clone,Debug)]
-pub struct FxKikoOptionSpec<T: Real=f64>{pub spot:T,pub strike:T,pub lower_barrier:T,pub upper_barrier:T,pub vol:T,pub expiry:T,pub r_dom:T,pub r_for:T,pub is_call:bool,pub lower_is_ko_upper_is_ki:bool}
-pub fn price_fx_kiko_option<T: Real>(s:&FxKikoOptionSpec<T>)->T{let quote=FxSmileQuote{atm_vol:s.vol,rr_25d:T::zero(),bf_25d:T::zero()};let smile=FxVannaVolgaSmile::new(s.spot,s.r_dom,s.r_for,s.expiry,quote);let do_l=smile.price_knock_out_barrier(s.strike,s.lower_barrier,false,s.is_call);let uo=smile.price_knock_out_barrier(s.strike,s.upper_barrier,true,s.is_call);let proximity=((s.upper_barrier-s.lower_barrier).abs()/(s.upper_barrier+s.lower_barrier).max_val(T::from_f64(1e-8))).min_val(T::one());let dko=(do_l.min_val(uo)*proximity*T::from_f64(0.5)).max_val(T::zero());if s.lower_is_ko_upper_is_ki{(do_l-dko).max_val(T::zero())}else{(uo-dko).max_val(T::zero())}}
-#[derive(Clone,Debug)]
-pub struct FxWindowBarrierSpec<T: Real=f64>{pub spot:T,pub strike:T,pub barrier:T,pub vol:T,pub expiry:T,pub r_dom:T,pub r_for:T,pub window_start:T,pub window_end:T,pub is_up_and_out:bool,pub is_call:bool}
-pub fn price_fx_window_barrier_option<T: Real>(s:&FxWindowBarrierSpec<T>)->T{let van=garman_kohlhagen_price(s.spot,s.strike,s.vol,s.expiry,s.r_dom,s.r_for,s.is_call);let q=FxSmileQuote{atm_vol:s.vol,rr_25d:T::zero(),bf_25d:T::zero()};let smile=FxVannaVolgaSmile::new(s.spot,s.r_dom,s.r_for,s.expiry,q);let full=smile.price_knock_out_barrier(s.strike,s.barrier,s.is_up_and_out,s.is_call);let w=((s.window_end-s.window_start)/s.expiry.max_val(T::from_f64(1e-12))).max_val(T::zero()).min_val(T::one());van+(full-van)*w}
-
 #[cfg(test)]
 mod phase18_tests {
     use super::*;
+    use ql_ad::Dual;
+
     #[test]
-    fn window_barrier_limits() { let s=FxWindowBarrierSpec{spot:100.0,strike:100.0,barrier:130.0,vol:0.2,expiry:1.0,r_dom:0.03,r_for:0.01,window_start:0.0,window_end:0.0,is_up_and_out:true,is_call:true}; let v=price_fx_window_barrier_option(&s); let van=garman_kohlhagen_price(100.0,100.0,0.2,1.0,0.03,0.01,true); assert!((v-van).abs()<1e-12); }
+    fn fx_kiko_and_window_barrier_limits_and_ad() {
+        let s_zero = FxWindowBarrierSpec {
+            spot: 100.0,
+            strike: 100.0,
+            barrier: 130.0,
+            vol: 0.20,
+            expiry: 1.0,
+            r_dom: 0.03,
+            r_for: 0.01,
+            window_start: 0.0,
+            window_end: 0.0,
+            is_up_and_out: true,
+            is_call: true,
+        };
+        let van = garman_kohlhagen_price(100.0, 100.0, 0.20, 1.0, 0.03, 0.01, true);
+        assert!((price_fx_window_barrier_option(&s_zero) - van).abs() < 1e-12);
+
+        let mut s_full = s_zero.clone();
+        s_full.window_end = 1.0;
+        let v_full = price_fx_window_barrier_option(&s_full);
+        assert!(v_full < van);
+
+        let kiko = FxKikoOptionSpec {
+            spot: 100.0,
+            strike: 100.0,
+            lower_barrier: 82.0,
+            upper_barrier: 118.0,
+            vol: 0.20,
+            expiry: 1.0,
+            r_dom: 0.03,
+            r_for: 0.01,
+            is_call: true,
+            lower_is_ko_upper_is_ki: true,
+        };
+        let v_kiko = price_fx_kiko_option(&kiko);
+        assert!(v_kiko > 0.0 && v_kiko < van);
+
+        let h = 1e-5;
+        let eval_sp = |sp: f64| {
+            let mut k2 = kiko.clone();
+            k2.spot = sp;
+            price_fx_kiko_option(&k2)
+        };
+        let fd = (eval_sp(100.0 + h) - eval_sp(100.0 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let kd = FxKikoOptionSpec {
+            spot: D::variable(100.0, 0),
+            strike: D::from_value(100.0),
+            lower_barrier: D::from_value(82.0),
+            upper_barrier: D::from_value(118.0),
+            vol: D::from_value(0.20),
+            expiry: D::one(),
+            r_dom: D::from_value(0.03),
+            r_for: D::from_value(0.01),
+            is_call: true,
+            lower_is_ko_upper_is_ki: true,
+        };
+        let ad = price_fx_kiko_option(&kd);
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
 }

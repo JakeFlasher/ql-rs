@@ -1,4 +1,3 @@
-#![allow(clippy::items_after_test_module)]
 use ql_ad::{Dual2, Real};
 pub struct DupireLocalVol;
 impl DupireLocalVol {
@@ -172,6 +171,152 @@ pub fn interpolate_andreasen_huge_call<T: Real>(
     slice.call_prices[g - 1]
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct ZabrParams<T: Real> {
+    pub alpha: T,
+    pub beta: T,
+    pub nu: T,
+    pub rho: T,
+    pub gamma: T,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct ZabrSmileQuote<T: Real> {
+    pub normal_vol: T,
+    pub black_vol: T,
+    pub call_price: T,
+}
+
+fn pow_real<T: Real>(base: T, exp: T) -> T {
+    (base.max_val(T::from_f64(1e-12)).ln() * exp).exp()
+}
+
+pub fn evaluate_zabr_smile<T: Real>(
+    p: &ZabrParams<T>,
+    forward: T,
+    strike: T,
+    expiry: T,
+) -> ZabrSmileQuote<T> {
+    let f = forward.max_val(T::from_f64(1e-8));
+    let k = strike.max_val(T::from_f64(1e-8));
+    let t = expiry.max_val(T::from_f64(1e-8));
+    let alpha = p.alpha.max_val(T::from_f64(1e-8));
+    let beta = p.beta;
+    let one_m_beta = T::one() - beta;
+    let f_mid = (f * k).sqrt();
+    let log_fk = (f / k).ln();
+
+    // CEV integral I_CEV = \int_K^F u^{-\beta} du using smooth 3rd-order expansion in log(F/K)
+    let u = one_m_beta * log_fk * 0.5;
+    let sinh_over_u = T::one() + u * u / 6.0 + u * u * u * u / 120.0;
+    let i_cev = pow_real(f_mid, -beta) * (f - k) / sinh_over_u;
+
+    let alpha_gm2 = pow_real(alpha, p.gamma - T::from_f64(2.0));
+    let y = alpha_gm2 * i_cev;
+    let nu_tilde =
+        (T::from_f64(2.0) - p.gamma).max_val(T::from_f64(0.05)) * p.nu * pow_real(alpha, p.gamma - T::one());
+    let z = nu_tilde * y;
+    let y_over_x = if z.val().abs() < 1e-4 {
+        T::one()
+            - p.rho * z * 0.5
+            + (T::from_f64(2.0) - p.rho * p.rho * 3.0) * z * z / 12.0
+    } else {
+        let j = (T::one() - p.rho * z * 2.0 + z * z)
+            .max_val(T::from_f64(1e-14))
+            .sqrt();
+        let x_z = ((j + z - p.rho) / (T::one() - p.rho).max_val(T::from_f64(1e-12))).ln();
+        z / x_z
+    };
+
+    let f_m_over_i = pow_real(f_mid, beta) * sinh_over_u;
+    let sig_atm_n = alpha * pow_real(f_mid, beta);
+    let time_corr = T::one()
+        + (beta * (beta - T::from_f64(2.0)) * sig_atm_n * sig_atm_n / (f_mid * f_mid * 24.0)
+            + p.rho * beta * alpha * nu_tilde / (pow_real(f_mid, one_m_beta) * 4.0)
+            + (T::from_f64(2.0) - p.rho * p.rho * 3.0) * nu_tilde * nu_tilde / 24.0)
+            * t;
+    let normal_vol = (alpha * f_m_over_i * y_over_x * time_corr).max_val(T::from_f64(1e-8));
+    let fk_ratio = if log_fk.val().abs() < 1e-5 {
+        T::one() / f_mid
+    } else {
+        log_fk / (f - k)
+    };
+    let black_vol = (normal_vol * fk_ratio).max_val(T::from_f64(1e-8));
+    let st = black_vol * t.sqrt();
+    let d1 = (log_fk + black_vol * black_vol * t * 0.5) / st;
+    let d2 = d1 - st;
+    let call_price = (f * d1.norm_cdf() - k * d2.norm_cdf()).max_val(T::zero());
+
+    ZabrSmileQuote {
+        normal_vol,
+        black_vol,
+        call_price,
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct FeldmanSabrCalibrationResult<T: Real> {
+    pub alpha: T,
+    pub nu: T,
+    pub rho: T,
+}
+
+pub fn feldman_analytic_sabr_calibration<T: Real>(
+    forward: T,
+    shift: T,
+    beta: T,
+    expiry: T,
+    h: T,
+    c: [T; 5],
+) -> FeldmanSabrCalibrationResult<T> {
+    let f_s = (forward + shift).max_val(T::from_f64(1e-6));
+    let t = expiry.max_val(T::from_f64(1e-8));
+    let h_s = h.max_val(T::from_f64(1e-6));
+    let atm = c[2].max_val(T::from_f64(1e-8));
+    let denom_atm = (c[1] + c[3] - atm * 2.0).max_val(T::from_f64(1e-10));
+    let f_s_beta = pow_real(f_s, beta);
+    // Feldman (2020) Theorem 1 Eq. (2) / Eq. (32)
+    let alpha = (h_s / (f_s_beta * t.sqrt())) * (atm / denom_atm).sqrt();
+
+    // Adjacent second-difference curvature ratios z_- and z_+ (Feldman Eq. 5)
+    let z_minus = (c[1] - h_s).max_val(T::from_f64(1e-10))
+        / (c[0] + atm - c[1] * 2.0).max_val(T::from_f64(1e-10));
+    let z_plus =
+        c[3].max_val(T::from_f64(1e-10)) / (c[4] + atm - c[3] * 2.0).max_val(T::from_f64(1e-10));
+
+    let sig_sqrt_t = atm * (2.0 * std::f64::consts::PI).sqrt();
+    let xi = h_s / sig_sqrt_t.max_val(T::from_f64(1e-8));
+    let mills = (-xi).norm_cdf() / xi.norm_pdf().max_val(T::from_f64(1e-12));
+    let kappa_h = (T::one() - xi * mills).max_val(T::from_f64(1e-6));
+
+    let one_m_beta = T::one() - beta;
+    let cev_dist = |k_sh: T| -> T {
+        let ks = k_sh.max_val(T::from_f64(1e-6));
+        if one_m_beta.val().abs() < 1e-5 {
+            (f_s / ks).ln() / alpha
+        } else {
+            (pow_real(f_s, one_m_beta) - pow_real(ks, one_m_beta)) / (alpha * one_m_beta)
+        }
+    };
+    let y_minus = cev_dist(f_s - h_s);
+    let y_plus = cev_dist(f_s + h_s);
+
+    let lv_m2 = pow_real((f_s - h_s).max_val(T::from_f64(1e-6)), beta * 2.0);
+    let lv_p2 = pow_real(f_s + h_s, beta * 2.0);
+    let r_minus = ((z_minus * h_s * h_s) / (t * kappa_h * alpha * alpha * lv_m2 * 2.0) - T::one())
+        / y_minus;
+    let r_plus =
+        ((z_plus * h_s * h_s) / (t * kappa_h * alpha * alpha * lv_p2 * 2.0) - T::one()) / y_plus;
+
+    let nu2 = ((r_minus - r_plus) / (y_minus - y_plus)).max_val(T::from_f64(1e-10));
+    let nu = nu2.sqrt();
+    let rho = ((nu2 * y_minus - r_minus) / (nu * 2.0))
+        .max_val(T::from_f64(-0.999))
+        .min_val(T::from_f64(0.999));
+
+    FeldmanSabrCalibrationResult { alpha, nu, rho }
+}
+
 #[cfg(test)]
 mod phase17_tests {
     use super::*;
@@ -222,18 +367,60 @@ mod phase17_tests {
     }
 }
 
-#[derive(Copy,Clone,Debug)]
-pub struct ZabrParams<T: Real>{pub alpha:T,pub beta:T,pub nu:T,pub rho:T,pub gamma:T}
-#[derive(Copy,Clone,Debug)]
-pub struct ZabrSmileQuote<T: Real>{pub normal_vol:T,pub black_vol:T,pub call_price:T}
-pub fn evaluate_zabr_smile<T: Real>(p:&ZabrParams<T>,forward:T,strike:T,expiry:T)->ZabrSmileQuote<T>{let one=T::one();let b=p.beta;let diff=one-b;let y=if diff.val().abs()<1e-5{p.alpha.powf(p.gamma.val()-2.0)*(forward/strike).ln()}else{p.alpha.powf(p.gamma.val()-2.0)*(forward.powf(diff.val())-strike.powf(diff.val()))/diff};let tv=(T::from_f64(2.0)-p.gamma)*p.nu*p.alpha.powf(p.gamma.val()-1.0);let j=(one-T::from_f64(2.0)*p.rho*tv*y+tv*tv*y*y).max_val(T::from_f64(1e-14)).sqrt();let xy=if (tv*y).val().abs()<1e-5{y}else{((j+tv*y-p.rho)/(one-p.rho)).ln()/tv.max_val(T::from_f64(1e-12))};let atm=(forward-strike).val().abs()<1e-8; let vol=if atm{(p.alpha*forward.powf(p.beta.val()-1.0)).abs()}else{(p.alpha*xy/(forward.powf(p.beta.val())-strike.powf(p.beta.val())).abs().max_val(T::from_f64(1e-8))*T::from_f64(diff.val().abs().max(1e-8))*expiry.max_val(T::from_f64(1e-12)).sqrt()).abs()};let nv= p.alpha*expiry.max_val(T::zero()).sqrt();let cp=(forward-strike).max_val(T::zero())+T::from_f64(0.5)*vol*vol*forward*expiry; ZabrSmileQuote{normal_vol:nv,black_vol:vol,call_price:cp}}
-#[derive(Copy,Clone,Debug)]
-pub struct FeldmanSabrCalibrationResult<T: Real>{pub alpha:T,pub nu:T,pub rho:T}
-pub fn feldman_analytic_sabr_calibration<T: Real>(forward:T,shift:T,beta:T,expiry:T,h:T,c:[T;5])->FeldmanSabrCalibrationResult<T>{let atm=c[2];let curv=(c[0]-T::from_f64(2.0)*c[1]+T::from_f64(2.0)*atm-T::from_f64(2.0)*c[3]+c[4]).abs();let alpha=(atm/forward.max_val(T::from_f64(1e-8))*T::from_f64(2.0*std::f64::consts::PI).sqrt()/expiry.max_val(T::from_f64(1e-8)).sqrt()).abs();let nu=(curv/h.max_val(T::from_f64(1e-8))).abs().sqrt();let rho=((c[3]-c[1])/(h.max_val(T::from_f64(1e-8))*alpha.max_val(T::from_f64(1e-8))*expiry.max_val(T::from_f64(1e-8)))).max_val(T::from_f64(-0.999)).min_val(T::from_f64(0.999));let _=shift;let _=beta;FeldmanSabrCalibrationResult{alpha,nu,rho}}
-
 #[cfg(test)]
 mod phase18_tests {
     use super::*;
+    use ql_ad::Dual;
+
     #[test]
-    fn zabr_and_feldman_are_finite() { let q=evaluate_zabr_smile(&ZabrParams{alpha:0.2,beta:0.5,nu:0.4,rho:-0.2,gamma:1.0},100.0,100.0,1.0); assert!(q.black_vol.is_finite()); let r=feldman_analytic_sabr_calibration(100.0,0.0,0.5,1.0,1.0,[10.0,10.0,10.0,10.0,10.0]); assert!(r.alpha.is_finite()); }
+    fn zabr_gamma_wings_feldman_calibration_and_ad() {
+        let p_sabr = ZabrParams {
+            alpha: 0.20,
+            beta: 1.0,
+            nu: 0.45,
+            rho: -0.30,
+            gamma: 1.0,
+        };
+        let p_flat_wing = ZabrParams {
+            gamma: 0.5,
+            ..p_sabr
+        };
+        let q1 = evaluate_zabr_smile(&p_sabr, 100.0, 125.0, 1.0);
+        let q_half = evaluate_zabr_smile(&p_flat_wing, 100.0, 125.0, 1.0);
+        assert!(q1.black_vol.is_finite() && q1.call_price > 0.0);
+        assert_ne!(q1.black_vol, q_half.black_vol);
+
+        let h_fd = 1e-5;
+        let eval_g = |g: f64| {
+            let p = ZabrParams { gamma: g, ..p_sabr };
+            evaluate_zabr_smile(&p, 100.0, 115.0, 1.0).black_vol
+        };
+        let fd = (eval_g(1.0 + h_fd) - eval_g(1.0 - h_fd)) / (2.0 * h_fd);
+        type D = Dual<1>;
+        let pd = ZabrParams {
+            alpha: D::from_value(0.20),
+            beta: D::one(),
+            nu: D::from_value(0.45),
+            rho: D::from_value(-0.30),
+            gamma: D::variable(1.0, 0),
+        };
+        let ad = evaluate_zabr_smile(
+            &pd,
+            D::from_value(100.0),
+            D::from_value(115.0),
+            D::one(),
+        )
+        .black_vol;
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+
+        let cal = feldman_analytic_sabr_calibration(
+            100.0,
+            0.0,
+            0.5,
+            1.0,
+            2.0,
+            [9.80, 8.65, 7.65, 6.80, 6.10],
+        );
+        assert!(cal.alpha > 0.0 && cal.nu > 0.0 && cal.rho.abs() < 1.0);
+    }
 }

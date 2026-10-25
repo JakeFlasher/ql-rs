@@ -1,4 +1,3 @@
-#![allow(clippy::items_after_test_module)]
 use ql_ad::Real;
 use ql_models::HestonParams;
 use ql_vol::black_scholes_price;
@@ -247,6 +246,100 @@ pub fn price_passport_option<T: Real>(s: &PassportOptionSpec<T>) -> T {
     (raw - raw0_sym + sym).max_val(T::zero())
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct FiniteCapTimerOptionSpec<T: Real = f64> {
+    pub spot: T,
+    pub strike: T,
+    pub rate: T,
+    pub div_yield: T,
+    pub variance_budget: T,
+    pub t_max: T,
+    pub is_call: bool,
+}
+
+pub fn price_capped_timer_option_quadrature<T: Real>(
+    s: &FiniteCapTimerOptionSpec<T>,
+    h: &HestonParams<T>,
+) -> TimerOptionValuation<T> {
+    let base = price_timer_option_analytic(
+        &TimerOptionSpec {
+            spot: s.spot,
+            strike: s.strike,
+            rate: s.rate,
+            div_yield: s.div_yield,
+            variance_budget: s.variance_budget,
+            is_call: s.is_call,
+        },
+        h,
+    );
+    let mu_tau = base.effective_expiry.max_val(T::from_f64(1e-6));
+    let t_cap = s.t_max.max_val(T::from_f64(1e-6));
+    let v_bar = (h.v0 * 0.5 + h.theta * 0.5).max_val(T::from_f64(1e-6));
+    let sig_tau = (h.sigma_v / (h.kappa.max_val(T::from_f64(0.1)) * v_bar.sqrt()))
+        .max_val(T::from_f64(0.05))
+        * mu_tau;
+
+    // 8-point Gauss-Legendre quadrature on [0, t_cap] for the Inverse-Gaussian stopping time density
+    let gl_x = [
+        -0.9602898564975363,
+        -0.7966664774136267,
+        -0.525_532_409_916_329,
+        -0.1834346424956498,
+        0.1834346424956498,
+        0.525_532_409_916_329,
+        0.7966664774136267,
+        0.9602898564975363,
+    ];
+    let gl_w = [
+        0.1012285362903763,
+        0.2223810344533745,
+        0.3137066458778873,
+        0.362_683_783_378_362,
+        0.362_683_783_378_362,
+        0.3137066458778873,
+        0.2223810344533745,
+        0.1012285362903763,
+    ];
+    let lam_ig = (mu_tau * mu_tau * mu_tau) / (sig_tau * sig_tau).max_val(T::from_f64(1e-8));
+    let b_budget = s.variance_budget.max_val(T::from_f64(1e-8));
+
+    let mut p_hit = T::zero();
+    let mut npv_hit = T::zero();
+    let mut t_hit = T::zero();
+    for (&xi, &wi) in gl_x.iter().zip(gl_w.iter()) {
+        let t_q = t_cap * (0.5 * (xi + 1.0));
+        let dt_w = t_cap * (0.5 * wi);
+        let z_ig = (t_q - mu_tau) / (mu_tau * (t_q / lam_ig).sqrt()).max_val(T::from_f64(1e-8));
+        let pdf_ig = (lam_ig / (t_q * t_q * t_q * (2.0 * std::f64::consts::PI)).max_val(T::from_f64(1e-12))).sqrt()
+            * (-z_ig * z_ig * 0.5).exp();
+        let w_q = pdf_ig * dt_w;
+        let vol_eff = (b_budget / t_q.max_val(T::from_f64(1e-8))).sqrt();
+        let c_q = black_scholes_price(s.spot, s.strike, vol_eff, t_q, s.rate, s.div_yield, s.is_call);
+        p_hit += w_q;
+        npv_hit += w_q * c_q;
+        t_hit += w_q * t_q;
+    }
+    let p_hit_clamped = p_hit.min_val(T::one()).max_val(T::zero());
+    let p_cap = T::one() - p_hit_clamped;
+    let var_at_cap = (v_bar * t_cap).min_val(b_budget);
+    let vol_cap = (var_at_cap / t_cap).sqrt();
+    let c_cap = black_scholes_price(s.spot, s.strike, vol_cap, t_cap, s.rate, s.div_yield, s.is_call);
+
+    let scale_hit = if p_hit.val() > 1.0 {
+        T::one() / p_hit
+    } else {
+        T::one()
+    };
+    let npv = npv_hit * scale_hit + p_cap * c_cap;
+    let eff_t = t_hit * scale_hit + p_cap * t_cap;
+    let eff_v = b_budget * p_hit_clamped + var_at_cap * p_cap;
+    TimerOptionValuation {
+        npv,
+        effective_expiry: eff_t,
+        variance_budget: eff_v,
+    }
+}
+
 #[cfg(test)]
 mod phase15_tests {
     use super::*;
@@ -368,13 +461,72 @@ mod phase15_tests {
     }
 }
 
-#[derive(Copy,Clone,Debug)]
-pub struct FiniteCapTimerOptionSpec<T: Real=f64>{pub spot:T,pub strike:T,pub rate:T,pub div_yield:T,pub variance_budget:T,pub t_max:T,pub is_call:bool}
-pub fn price_capped_timer_option_quadrature<T: Real>(s:&FiniteCapTimerOptionSpec<T>,h:&HestonParams<T>)->TimerOptionValuation<T>{let base=price_timer_option_analytic(&TimerOptionSpec{spot:s.spot,strike:s.strike,rate:s.rate,div_yield:s.div_yield,variance_budget:s.variance_budget,is_call:s.is_call},h); let t=base.effective_expiry.min_val(s.t_max); TimerOptionValuation{npv:base.npv,effective_expiry:t,variance_budget:s.variance_budget}}
-
 #[cfg(test)]
 mod phase18_tests {
     use super::*;
+    use ql_ad::Dual;
+
     #[test]
-    fn capped_timer_matches_analytic_for_large_cap() { let h=HestonParams{v0:0.04,kappa:1.0,theta:0.04,sigma_v:0.3,rho:0.0}; let s=FiniteCapTimerOptionSpec{spot:100.0,strike:100.0,rate:0.0,div_yield:0.0,variance_budget:0.04,t_max:20.0,is_call:true}; let r=price_capped_timer_option_quadrature(&s,&h); assert!(r.npv.is_finite()); }
+    fn capped_timer_quadrature_monotonicity_limit_and_ad() {
+        let h = HestonParams {
+            v0: 0.04,
+            kappa: 1.5,
+            theta: 0.04,
+            sigma_v: 0.25,
+            rho: 0.0,
+        };
+        let s_large = FiniteCapTimerOptionSpec {
+            spot: 100.0,
+            strike: 100.0,
+            rate: 0.0,
+            div_yield: 0.0,
+            variance_budget: 0.04,
+            t_max: 20.0,
+            is_call: true,
+        };
+        let mut s_tight = s_large;
+        s_tight.t_max = 0.25;
+        let r_large = price_capped_timer_option_quadrature(&s_large, &h);
+        let r_tight = price_capped_timer_option_quadrature(&s_tight, &h);
+        let r_uncapped = price_timer_option_analytic(
+            &TimerOptionSpec {
+                spot: 100.0,
+                strike: 100.0,
+                rate: 0.0,
+                div_yield: 0.0,
+                variance_budget: 0.04,
+                is_call: true,
+            },
+            &h,
+        );
+        assert!(r_tight.npv < r_large.npv);
+        assert!((r_large.npv - r_uncapped.npv).abs() < 5e-2);
+
+        let eps = 1e-5;
+        let eval_tmax = |tm: f64| {
+            let mut sp = s_tight;
+            sp.t_max = tm;
+            price_capped_timer_option_quadrature(&sp, &h).npv
+        };
+        let fd = (eval_tmax(0.5 + eps) - eval_tmax(0.5 - eps)) / (2.0 * eps);
+        type D = Dual<1>;
+        let hd = HestonParams {
+            v0: D::from_value(0.04),
+            kappa: D::from_value(1.5),
+            theta: D::from_value(0.04),
+            sigma_v: D::from_value(0.25),
+            rho: D::zero(),
+        };
+        let sd = FiniteCapTimerOptionSpec {
+            spot: D::from_value(100.0),
+            strike: D::from_value(100.0),
+            rate: D::zero(),
+            div_yield: D::zero(),
+            variance_budget: D::from_value(0.04),
+            t_max: D::variable(0.5, 0),
+            is_call: true,
+        };
+        let ad = price_capped_timer_option_quadrature(&sd, &hd).npv;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
 }

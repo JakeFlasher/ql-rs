@@ -310,6 +310,191 @@ pub fn compute_correlated_first_to_default_bilateral_xva<T: Real>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct MultiCurrencyCsaSpec<T: Real = f64> {
+    pub eligible_currency_spreads: Vec<T>,
+    pub spread_vols: Vec<T>,
+    pub cross_currency_corr: T,
+    pub collateral_balance_profile: Vec<T>,
+    pub payment_times: Vec<f64>,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct MultiCurrencyColvaReport<T: Real> {
+    pub intrinsic_ctd_colva: T,
+    pub switch_option_colva: T,
+    pub total_ctd_colva: T,
+    pub effective_ctd_spread: T,
+}
+
+pub fn compute_multicurrency_ctd_colva<T: Real>(
+    s: &MultiCurrencyCsaSpec<T>,
+) -> MultiCurrencyColvaReport<T> {
+    let n = s.payment_times.len();
+    let m_ccy = s.eligible_currency_spreads.len();
+    if m_ccy == 0 || n == 0 {
+        return MultiCurrencyColvaReport {
+            intrinsic_ctd_colva: T::zero(),
+            switch_option_colva: T::zero(),
+            total_ctd_colva: T::zero(),
+            effective_ctd_spread: T::zero(),
+        };
+    }
+    let rho = s
+        .cross_currency_corr
+        .max_val(T::from_f64(-1.0 / (m_ccy.max(2) as f64 - 1.0) + 1e-4))
+        .min_val(T::from_f64(0.999));
+    let mut mx = s.eligible_currency_spreads[0];
+    for &sp in &s.eligible_currency_spreads[1..] {
+        let diff = sp - mx;
+        mx = (mx + sp + (diff * diff + T::from_f64(1e-16)).sqrt()) * 0.5;
+    }
+
+    let mut intr = T::zero();
+    let mut sw = T::zero();
+    let mut bal = T::zero();
+    let mut prev_t = 0.0;
+
+    for i in 0..n {
+        let t_f64 = s.payment_times[i].max(prev_t);
+        let dt = (t_f64 - prev_t).max(0.0);
+        prev_t = t_f64;
+        let t = T::from_f64(t_f64);
+
+        let vols: Vec<T> = (0..m_ccy)
+            .map(|j| {
+                let v = s.spread_vols.get(j).copied().unwrap_or(T::zero());
+                (v * v + T::from_f64(1e-16)).sqrt()
+            })
+            .collect();
+        let mut mu_y = s.eligible_currency_spreads[0];
+        let mut var_y = vols[0] * vols[0] * t;
+        let mut cov_y: Vec<T> = (0..m_ccy)
+            .map(|k| {
+                if k == 0 {
+                    var_y
+                } else {
+                    rho * vols[0] * vols[k] * t
+                }
+            })
+            .collect();
+
+        for j in 1..m_ccy {
+            let mu_x = s.eligible_currency_spreads[j];
+            let var_x = vols[j] * vols[j] * t;
+            let cov_yx = cov_y[j];
+            let a2 = (var_y + var_x - cov_yx * 2.0).max_val(T::zero());
+            let a = (a2 + T::from_f64(1e-16)).sqrt();
+            let alpha = (mu_y - mu_x) / a;
+            let p = alpha.norm_cdf();
+            let q = T::one() - p;
+            let phi = alpha.norm_pdf();
+
+            let mu_next = mu_y * p + mu_x * q + a * phi;
+            let ey2 = (mu_y * mu_y + var_y) * p
+                + (mu_x * mu_x + var_x) * q
+                + (mu_y + mu_x) * a * phi;
+            let var_next = (ey2 - mu_next * mu_next).max_val(T::zero());
+
+            for k in (j + 1)..m_ccy {
+                let cov_xk = rho * vols[j] * vols[k] * t;
+                cov_y[k] = cov_y[k] * p + cov_xk * q;
+            }
+            mu_y = mu_next;
+            var_y = var_next;
+        }
+
+        let em = mu_y.max_val(mx);
+        let b = s.collateral_balance_profile.get(i).copied().unwrap_or(T::one());
+        intr += mx * b * dt;
+        sw += (em - mx) * b * dt;
+        bal += b * dt;
+    }
+    let total = intr + sw;
+    let eff = total / bal.max_val(T::from_f64(1e-14));
+    MultiCurrencyColvaReport {
+        intrinsic_ctd_colva: intr,
+        switch_option_colva: sw,
+        total_ctd_colva: total,
+        effective_ctd_spread: eff,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TurlakovWwrSpec<T: Real = f64> {
+    pub times: Vec<f64>,
+    pub base_epe: Vec<T>,
+    pub stressed_epe: Vec<T>,
+    pub base_mtm: Vec<T>,
+    pub stressed_mtm: Vec<T>,
+    pub sovereign_hazard_rate: T,
+    pub counterparty_hazard_rate: T,
+    pub crisis_prob_threshold: T,
+    pub coupling_lambda: T,
+    pub lgd: T,
+    pub base_funding_spread: T,
+    pub stressed_funding_spread: T,
+    pub discount_rate: T,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct TurlakovWwrReport<T: Real> {
+    pub wwr_cva: T,
+    pub base_cva: T,
+    pub wwr_fva: T,
+    pub base_fva: T,
+}
+
+pub fn compute_turlakov_wwr_cva_fva<T: Real>(
+    s: &TurlakovWwrSpec<T>,
+) -> TurlakovWwrReport<T> {
+    let n = s.times.len().min(s.base_epe.len());
+    let mut wc = T::zero();
+    let mut bc = T::zero();
+    let mut wf = T::zero();
+    let mut bf = T::zero();
+    let mut prev_t = 0.0;
+    let p_thresh = s.crisis_prob_threshold.max_val(T::from_f64(1e-12));
+    let lam_c = s.coupling_lambda.max_val(T::zero()).min_val(T::one());
+
+    for i in 0..n {
+        let t = s.times[i].max(prev_t);
+        let dt = T::from_f64((t - prev_t).max(0.0));
+        let ps = T::one() - (-s.sovereign_hazard_rate * t).exp();
+        let w_normal = T::one() - (ps / p_thresh).tanh();
+        let w_crisis = T::one() - w_normal;
+        let w_stress = lam_c * w_crisis;
+
+        let base_e = s.base_epe[i];
+        let stress_e = s.stressed_epe.get(i).copied().unwrap_or(base_e);
+        let eff_epe = base_e * (T::one() - w_stress) + stress_e * w_stress;
+
+        let df = (-s.discount_rate * t).exp();
+        let surv_prev = (-s.counterparty_hazard_rate * prev_t).exp();
+        let surv_curr = (-s.counterparty_hazard_rate * t).exp();
+        let dpd = (surv_prev - surv_curr).max_val(T::zero());
+
+        bc += s.lgd * dpd * df * base_e;
+        wc += s.lgd * dpd * df * eff_epe;
+
+        let mt = s.base_mtm.get(i).copied().unwrap_or(T::zero());
+        let sm = s.stressed_mtm.get(i).copied().unwrap_or(mt);
+        let base_fund = mt * s.base_funding_spread;
+        let stress_fund = sm * s.stressed_funding_spread;
+        let eff_fund = base_fund * (T::one() - w_stress) + stress_fund * w_stress;
+
+        bf += base_fund * df * dt;
+        wf += eff_fund * df * dt;
+        prev_t = t;
+    }
+    TurlakovWwrReport {
+        wwr_cva: wc,
+        base_cva: bc,
+        wwr_fva: wf,
+        base_fva: bf,
+    }
+}
+
 #[cfg(test)]
 mod phase14_tests {
     use super::*;
@@ -780,20 +965,73 @@ mod phase13_tests {
     }
 }
 
-#[derive(Clone,Debug)]
-pub struct MultiCurrencyCsaSpec<T: Real=f64>{pub eligible_currency_spreads:Vec<T>,pub spread_vols:Vec<T>,pub cross_currency_corr:T,pub collateral_balance_profile:Vec<T>,pub payment_times:Vec<f64>}
-#[derive(Copy,Clone,Debug)]
-pub struct MultiCurrencyColvaReport<T: Real>{pub intrinsic_ctd_colva:T,pub switch_option_colva:T,pub total_ctd_colva:T,pub effective_ctd_spread:T}
-pub fn compute_multicurrency_ctd_colva<T: Real>(s:&MultiCurrencyCsaSpec<T>)->MultiCurrencyColvaReport<T>{let n=s.payment_times.len(); if s.eligible_currency_spreads.is_empty()||n==0{return MultiCurrencyColvaReport{intrinsic_ctd_colva:T::zero(),switch_option_colva:T::zero(),total_ctd_colva:T::zero(),effective_ctd_spread:T::zero()}} let mut intr=T::zero(); let mut sw=T::zero(); let mut bal=T::zero(); for i in 0..n {let t=T::from_f64(s.payment_times[i].max(0.0)); let mx=s.eligible_currency_spreads.iter().copied().fold(T::from_f64(f64::NEG_INFINITY),|a,b|a.max_val(b)); let mut em=mx; for j in 0..s.eligible_currency_spreads.len(){for k in j+1..s.eligible_currency_spreads.len(){let sig=(s.spread_vols.get(j).copied().unwrap_or(T::zero()).powf(2.0)+s.spread_vols.get(k).copied().unwrap_or(T::zero()).powf(2.0)-T::from_f64(2.0)*s.cross_currency_corr*s.spread_vols.get(j).copied().unwrap_or(T::zero())*s.spread_vols.get(k).copied().unwrap_or(T::zero())).max_val(T::zero()).sqrt()*t.sqrt(); let d=s.eligible_currency_spreads[k]-s.eligible_currency_spreads[j]; let z=if sig.val().abs()<1e-14{T::zero()}else{d/sig}; let e=s.eligible_currency_spreads[j]+d*z.norm_cdf()+sig*z.norm_pdf(); em=em.max_val(e);}} let dt=if i==0{s.payment_times[i]}else{(s.payment_times[i]-s.payment_times[i-1]).max(0.0)}; let b=s.collateral_balance_profile.get(i).copied().unwrap_or(T::one()); intr += mx*b*T::from_f64(dt)*(-t*0.0).exp(); sw += (em-mx)*b*T::from_f64(dt); bal += b*T::from_f64(dt);} let eff=if bal.val().abs()>1e-14{(intr+sw)/bal}else{T::zero()}; MultiCurrencyColvaReport{intrinsic_ctd_colva:intr,switch_option_colva:sw,total_ctd_colva:intr+sw,effective_ctd_spread:eff}}
-#[derive(Clone,Debug)]
-pub struct TurlakovWwrSpec<T: Real=f64>{pub times:Vec<f64>,pub base_epe:Vec<T>,pub stressed_epe:Vec<T>,pub base_mtm:Vec<T>,pub stressed_mtm:Vec<T>,pub sovereign_hazard_rate:T,pub counterparty_hazard_rate:T,pub crisis_prob_threshold:T,pub coupling_lambda:T,pub lgd:T,pub base_funding_spread:T,pub stressed_funding_spread:T,pub discount_rate:T}
-#[derive(Copy,Clone,Debug)]
-pub struct TurlakovWwrReport<T: Real>{pub wwr_cva:T,pub base_cva:T,pub wwr_fva:T,pub base_fva:T}
-pub fn compute_turlakov_wwr_cva_fva<T: Real>(s:&TurlakovWwrSpec<T>)->TurlakovWwrReport<T>{let n=s.times.len().min(s.base_epe.len());let mut wc=T::zero();let mut bc=T::zero();let mut wf=T::zero();let mut bf=T::zero();let mut prev=0.0;for i in 0..n{let t=s.times[i];let dt=T::from_f64((t-prev).max(0.0));let ps=T::one()-(-s.sovereign_hazard_rate*t).exp();let ifac=T::one()-(ps/s.crisis_prob_threshold.max_val(T::from_f64(1e-12))).tanh();let e=s.base_epe[i]+s.coupling_lambda*ps*(s.stressed_epe.get(i).copied().unwrap_or(s.base_epe[i])-s.base_epe[i])*ifac;let df=(-s.discount_rate*t).exp();let surv=(-s.counterparty_hazard_rate*t).exp();let de=s.lgd*s.counterparty_hazard_rate*surv*df;bc += s.lgd*s.counterparty_hazard_rate*surv*df*s.base_epe[i]*dt;wc += de*e*dt;let mt=s.base_mtm.get(i).copied().unwrap_or(T::zero());let sm=s.stressed_mtm.get(i).copied().unwrap_or(mt);bf += mt* s.base_funding_spread*df*dt;wf += (mt*s.base_funding_spread + s.coupling_lambda*ps*(sm*s.stressed_funding_spread-mt*s.base_funding_spread)*ifac)*df*dt;prev=t;} TurlakovWwrReport{wwr_cva:wc,base_cva:bc,wwr_fva:wf,base_fva:bf}}
-
 #[cfg(test)]
 mod phase18_tests {
     use super::*;
+    use ql_ad::Dual;
+
     #[test]
-    fn ctd_and_wwr_limits() { let c=compute_multicurrency_ctd_colva(&MultiCurrencyCsaSpec{eligible_currency_spreads:vec![0.01],spread_vols:vec![0.0],cross_currency_corr:0.0,collateral_balance_profile:vec![1.0],payment_times:vec![1.0]}); assert!(c.switch_option_colva.abs()<1e-12); let r=compute_turlakov_wwr_cva_fva(&TurlakovWwrSpec{times:vec![1.0],base_epe:vec![1.0],stressed_epe:vec![2.0],base_mtm:vec![1.0],stressed_mtm:vec![2.0],sovereign_hazard_rate:0.02,counterparty_hazard_rate:0.03,crisis_prob_threshold:0.1,coupling_lambda:0.0,lgd:0.6,base_funding_spread:0.01,stressed_funding_spread:0.02,discount_rate:0.03}); assert!((r.wwr_cva-r.base_cva).abs()<1e-12); }
+    fn ctd_colva_clark_recursion_and_turlakov_wwr_ad() {
+        let c1 = compute_multicurrency_ctd_colva(&MultiCurrencyCsaSpec {
+            eligible_currency_spreads: vec![0.01, 0.01, 0.01],
+            spread_vols: vec![0.008, 0.008, 0.008],
+            cross_currency_corr: 0.2,
+            collateral_balance_profile: vec![100.0, 100.0],
+            payment_times: vec![0.5, 1.0],
+        });
+        let c2 = compute_multicurrency_ctd_colva(&MultiCurrencyCsaSpec {
+            eligible_currency_spreads: vec![0.01, 0.01],
+            spread_vols: vec![0.008, 0.008],
+            cross_currency_corr: 0.2,
+            collateral_balance_profile: vec![100.0, 100.0],
+            payment_times: vec![0.5, 1.0],
+        });
+        assert!(c2.switch_option_colva > 0.0);
+        assert!(c1.switch_option_colva > c2.switch_option_colva);
+
+        let wwr_spec = TurlakovWwrSpec {
+            times: vec![0.5, 1.0, 2.0],
+            base_epe: vec![10.0, 15.0, 12.0],
+            stressed_epe: vec![25.0, 35.0, 30.0],
+            base_mtm: vec![8.0, 10.0, 9.0],
+            stressed_mtm: vec![20.0, 25.0, 22.0],
+            sovereign_hazard_rate: 0.03,
+            counterparty_hazard_rate: 0.02,
+            crisis_prob_threshold: 0.08,
+            coupling_lambda: 0.5,
+            lgd: 0.6,
+            base_funding_spread: 0.01,
+            stressed_funding_spread: 0.025,
+            discount_rate: 0.03,
+        };
+        let rep = compute_turlakov_wwr_cva_fva(&wwr_spec);
+        assert!(rep.wwr_cva > rep.base_cva);
+        assert!(rep.wwr_fva > rep.base_fva);
+
+        let h = 1e-5;
+        let eval_lam = |lam: f64| {
+            let mut sp = wwr_spec.clone();
+            sp.coupling_lambda = lam;
+            compute_turlakov_wwr_cva_fva(&sp).wwr_cva
+        };
+        let fd = (eval_lam(0.5 + h) - eval_lam(0.5 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let sd = TurlakovWwrSpec {
+            times: vec![0.5, 1.0, 2.0],
+            base_epe: vec![D::from_value(10.0), D::from_value(15.0), D::from_value(12.0)],
+            stressed_epe: vec![D::from_value(25.0), D::from_value(35.0), D::from_value(30.0)],
+            base_mtm: vec![D::from_value(8.0), D::from_value(10.0), D::from_value(9.0)],
+            stressed_mtm: vec![D::from_value(20.0), D::from_value(25.0), D::from_value(22.0)],
+            sovereign_hazard_rate: D::from_value(0.03),
+            counterparty_hazard_rate: D::from_value(0.02),
+            crisis_prob_threshold: D::from_value(0.08),
+            coupling_lambda: D::variable(0.5, 0),
+            lgd: D::from_value(0.6),
+            base_funding_spread: D::from_value(0.01),
+            stressed_funding_spread: D::from_value(0.025),
+            discount_rate: D::from_value(0.03),
+        };
+        let ad = compute_turlakov_wwr_cva_fva(&sd).wwr_cva;
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
 }

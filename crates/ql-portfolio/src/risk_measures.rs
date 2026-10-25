@@ -1,4 +1,3 @@
-#![allow(clippy::items_after_test_module)]
 //! Coherent empirical and parametric risk measures plus Euler allocations.
 
 use ql_ad::{Real, TapeScope, TapeVar};
@@ -435,6 +434,140 @@ pub fn factor_risk_attribution<T: Real>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct MinimumTorsionEnbReport<T: Real> {
+    pub enb: T,
+    pub risk_contributions: Vec<T>,
+    pub probabilities: Vec<T>,
+    pub portfolio_variance: T,
+}
+
+fn invert_square_matrix<T: Real>(mat: &[Vec<T>]) -> Result<Vec<Vec<T>>, String> {
+    let n = mat.len();
+    let mut a = mat.to_vec();
+    let mut inv = vec![vec![T::zero(); n]; n];
+    for (i, row) in inv.iter_mut().enumerate().take(n) {
+        row[i] = T::one();
+    }
+    for col in 0..n {
+        let mut pivot = col;
+        let mut max_abs = a[col][col].val().abs();
+        for (r, row) in a.iter().enumerate().take(n).skip(col + 1) {
+            let v = row[col].val().abs();
+            if v > max_abs {
+                max_abs = v;
+                pivot = r;
+            }
+        }
+        if max_abs < 1e-14 {
+            return Err("singular matrix in Denman-Beavers".into());
+        }
+        if pivot != col {
+            a.swap(pivot, col);
+            inv.swap(pivot, col);
+        }
+        let diag = a[col][col];
+        for j in 0..n {
+            a[col][j] /= diag;
+            inv[col][j] /= diag;
+        }
+        for r in 0..n {
+            if r == col {
+                continue;
+            }
+            let factor = a[r][col];
+            for j in 0..n {
+                let a_cj = a[col][j];
+                let inv_cj = inv[col][j];
+                a[r][j] -= factor * a_cj;
+                inv[r][j] -= factor * inv_cj;
+            }
+        }
+    }
+    Ok(inv)
+}
+
+pub fn try_effective_number_of_bets_minimum_torsion<T: Real>(
+    weights: &[T],
+    cov: &[Vec<T>],
+) -> Result<MinimumTorsionEnbReport<T>, String> {
+    let n = weights.len();
+    if n == 0
+        || cov.len() != n
+        || cov.iter().any(|r| r.len() != n)
+        || weights.iter().any(|x| !x.val().is_finite())
+        || cov.iter().flatten().any(|x| !x.val().is_finite())
+    {
+        return Err("invalid dimensions".into());
+    }
+    let mut sig = Vec::with_capacity(n);
+    for (i, row) in cov.iter().enumerate().take(n) {
+        if row[i].val() <= 0.0 {
+            return Err("non-positive diagonal variance".into());
+        }
+        sig.push(row[i].sqrt());
+    }
+    let mut y_mat = vec![vec![T::zero(); n]; n];
+    let mut z_mat = vec![vec![T::zero(); n]; n];
+    for i in 0..n {
+        z_mat[i][i] = T::one();
+        for j in 0..n {
+            y_mat[i][j] = if i == j {
+                T::one()
+            } else {
+                (cov[i][j] / (sig[i] * sig[j]))
+                    .max_val(T::from_f64(-0.999))
+                    .min_val(T::from_f64(0.999))
+            };
+        }
+    }
+    // 8-step Denman-Beavers quadratic iteration for C^{1/2} (y_mat) and C^{-1/2} (z_mat)
+    for _ in 0..8 {
+        let y_inv = invert_square_matrix(&y_mat)?;
+        let z_inv = invert_square_matrix(&z_mat)?;
+        for i in 0..n {
+            for j in 0..n {
+                y_mat[i][j] = (y_mat[i][j] + z_inv[i][j]) * 0.5;
+                z_mat[i][j] = (z_mat[i][j] + y_inv[i][j]) * 0.5;
+            }
+        }
+    }
+    // Uncorrelated Riccati / minimum-torsion bet exposures b_i = \sum_j C^{1/2}_{ij} \sigma_j w_j
+    let mut v = Vec::with_capacity(n);
+    let mut total = T::zero();
+    for row in y_mat.iter().take(n) {
+        let mut b_i = T::zero();
+        for j in 0..n {
+            b_i += row[j] * sig[j] * weights[j];
+        }
+        let v_i = b_i * b_i;
+        v.push(v_i);
+        total += v_i;
+    }
+    let total_safe = total.max_val(T::from_f64(1e-30));
+    let p: Vec<T> = v.iter().map(|&x| x / total_safe).collect();
+    let ent = p
+        .iter()
+        .map(|&x| {
+            let q = x.max_val(T::from_f64(1e-16));
+            -q * q.ln()
+        })
+        .fold(T::zero(), |a, b| a + b);
+    Ok(MinimumTorsionEnbReport {
+        enb: ent.exp(),
+        risk_contributions: v,
+        probabilities: p,
+        portfolio_variance: total,
+    })
+}
+
+pub fn effective_number_of_bets_minimum_torsion<T: Real>(
+    weights: &[T],
+    cov: &[Vec<T>],
+) -> MinimumTorsionEnbReport<T> {
+    try_effective_number_of_bets_minimum_torsion(weights, cov).expect("invalid covariance")
+}
+
 #[cfg(test)]
 mod phase16_tests {
     use super::*;
@@ -474,14 +607,38 @@ mod phase16_tests {
     }
 }
 
-#[derive(Clone,Debug)]
-pub struct MinimumTorsionEnbReport<T: Real>{pub enb:T,pub risk_contributions:Vec<T>,pub probabilities:Vec<T>,pub portfolio_variance:T}
-pub fn try_effective_number_of_bets_minimum_torsion<T: Real>(weights:&[T],cov:&[Vec<T>])->Result<MinimumTorsionEnbReport<T>,String>{let n=weights.len();if n==0||cov.len()!=n||cov.iter().any(|r|r.len()!=n)||weights.iter().any(|x|!x.val().is_finite())||cov.iter().flatten().any(|x|!x.val().is_finite()){return Err("invalid dimensions".into())} let mut v=Vec::with_capacity(n);for i in 0..n{let row=cov[i].iter().enumerate().map(|(j,c)|*c*weights[j]).fold(T::zero(),|a,b|a+b);v.push((weights[i]*row).max_val(T::zero()));}let total=v.iter().copied().fold(T::zero(),|a,b|a+b).max_val(T::from_f64(1e-30));let p=v.iter().map(|x|*x/total).collect::<Vec<_>>();let ent=p.iter().map(|x|{let q=x.max_val(T::from_f64(1e-16));-q*q.ln()}).fold(T::zero(),|a,b|a+b);Ok(MinimumTorsionEnbReport{enb:ent.exp(),risk_contributions:v,probabilities:p,portfolio_variance:total})}
-pub fn effective_number_of_bets_minimum_torsion<T: Real>(weights:&[T],cov:&[Vec<T>])->MinimumTorsionEnbReport<T>{try_effective_number_of_bets_minimum_torsion(weights,cov).expect("invalid covariance")}
-
 #[cfg(test)]
 mod phase18_tests {
     use super::*;
+    use ql_ad::Dual;
+
     #[test]
-    fn enb_identity_and_concentration() { let c=vec![vec![1.0,0.0],vec![0.0,1.0]]; assert!((effective_number_of_bets_minimum_torsion(&[0.5,0.5],&c).enb-2.0).abs()<1e-12); assert!((effective_number_of_bets_minimum_torsion(&[1.0,0.0],&c).enb-1.0).abs()<1e-12); }
+    fn enb_riccati_root_identity_concentration_and_ad() {
+        let c_id = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        assert!(
+            (effective_number_of_bets_minimum_torsion(&[0.5, 0.5], &c_id).enb - 2.0).abs() < 1e-12
+        );
+        assert!(
+            (effective_number_of_bets_minimum_torsion(&[1.0, 0.0], &c_id).enb - 1.0).abs() < 1e-12
+        );
+
+        let c_corr = vec![vec![0.04, 0.015], vec![0.015, 0.09]];
+        let rep = effective_number_of_bets_minimum_torsion(&[0.6, 0.4], &c_corr);
+        assert!(rep.enb > 1.0 && rep.enb <= 2.0);
+        assert!((rep.probabilities[0] + rep.probabilities[1] - 1.0).abs() < 1e-12);
+
+        let h = 1e-5;
+        let eval_w = |w0: f64| {
+            effective_number_of_bets_minimum_torsion(&[w0, 1.0 - w0], &c_corr).enb
+        };
+        let fd = (eval_w(0.6 + h) - eval_w(0.6 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let w_d = [D::variable(0.6, 0), D::from_value(1.0) - D::variable(0.6, 0)];
+        let c_d = vec![
+            vec![D::from_value(0.04), D::from_value(0.015)],
+            vec![D::from_value(0.015), D::from_value(0.09)],
+        ];
+        let ad = effective_number_of_bets_minimum_torsion(&w_d, &c_d).enb;
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
 }

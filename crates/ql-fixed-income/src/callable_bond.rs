@@ -1,4 +1,3 @@
-#![allow(clippy::possible_missing_else)]
 use ql_ad::Real;
 use ql_vol::black76_price;
 #[derive(Clone, Copy, Debug)]
@@ -292,23 +291,209 @@ pub fn solve_callable_bond_oas(
     bond.solve_callable_bond_oas(market_price, short_rate, rate_vol, steps)
 }
 
-#[derive(Clone,Debug)]
-pub struct CallableBondOasSpec<T: Real=f64>{pub market_dirty_price:T,pub face_amount:T,pub coupon_rate:T,pub payment_times:Vec<f64>,pub call_price:Option<T>,pub put_price:Option<T>,pub short_rate:T,pub short_rate_vol:T,pub tree_steps:usize,pub smoothing_eps:f64}
-#[derive(Copy,Clone,Debug)]
-pub struct CallableBondOasReport<T: Real>{pub oas:T,pub straight_bond_price:T,pub embedded_option_value:T,pub effective_duration:T,pub effective_convexity:T}
-fn smooth_pos<T: Real>(x:T,eps:f64)->T{(x+(x*x+T::from_f64(eps*eps)).sqrt())*0.5}
-pub fn price_callable_tree_generic<T: Real>(s:&CallableBondOasSpec<T>,oas:T)->(T,T){
- let mut straight=T::zero(); for (i,&t) in s.payment_times.iter().enumerate(){let cf=s.face_amount*s.coupon_rate*T::from_f64(if i==0{t}else{t-s.payment_times[i-1]}) + if i+1==s.payment_times.len(){s.face_amount}else{T::zero()}; straight += cf*(-(s.short_rate+oas)*t).exp();}
- let mut callable=straight; if let Some(k)=s.call_price{let opt=smooth_pos(straight-k,s.smoothing_eps.max(1e-8)); callable -= opt;} if let Some(k)=s.put_price{callable += smooth_pos(k-straight,s.smoothing_eps.max(1e-8));} (callable,straight)
+#[derive(Clone, Debug)]
+pub struct CallableBondOasSpec<T: Real = f64> {
+    pub market_dirty_price: T,
+    pub face_amount: T,
+    pub coupon_rate: T,
+    pub payment_times: Vec<f64>,
+    pub call_price: Option<T>,
+    pub put_price: Option<T>,
+    pub short_rate: T,
+    pub short_rate_vol: T,
+    pub tree_steps: usize,
+    pub smoothing_eps: f64,
 }
-pub fn analyze_callable_bond_oas_ad<T: Real>(s:&CallableBondOasSpec<T>)->CallableBondOasReport<T>{
- let mut lo=-0.15; let mut hi=0.50; for _ in 0..52{let m=(lo+hi)*0.5; let p=price_callable_tree_generic(s,T::from_f64(m)).0.val(); if p>s.market_dirty_price.val(){lo=m}else{hi=m}} let mut x=(lo+hi)*0.5; for _ in 0..4{let p=price_callable_tree_generic(s,T::from_f64(x)).0.val()-s.market_dirty_price.val(); let h=1e-5; let d=(price_callable_tree_generic(s,T::from_f64(x+h)).0.val()-price_callable_tree_generic(s,T::from_f64(x-h)).0.val())/(2.0*h); if d.abs()>1e-12{x-=p/d;}}
- let residual=|z:T|{price_callable_tree_generic(s,z).0-s.market_dirty_price}; let fx=(price_callable_tree_generic(s,T::from_f64(x+1e-5)).0-price_callable_tree_generic(s,T::from_f64(x-1e-5)).0)/2e-5; let oas=ql_ad::ift_lift_1d(x,residual,fx,0.0); let (cp,sp)=price_callable_tree_generic(s,oas); let dr=1e-4; let pplus=price_callable_tree_generic(&CallableBondOasSpec{short_rate:s.short_rate+dr,..s.clone()},oas).0; let pminus=price_callable_tree_generic(&CallableBondOasSpec{short_rate:s.short_rate-dr,..s.clone()},oas).0; let dur=-(pplus-pminus)/(T::from_f64(2.0*dr)*cp); let conv=(pplus+pminus-T::from_f64(2.0)*cp)/(T::from_f64(dr*dr)*cp); CallableBondOasReport{oas,straight_bond_price:sp,embedded_option_value:sp-cp,effective_duration:dur,effective_convexity:conv}
+
+#[derive(Copy, Clone, Debug)]
+pub struct CallableBondOasReport<T: Real> {
+    pub oas: T,
+    pub straight_bond_price: T,
+    pub embedded_option_value: T,
+    pub effective_duration: T,
+    pub effective_convexity: T,
+}
+
+fn smooth_pos<T: Real>(x: T, eps: f64) -> T {
+    let e = eps.max(1e-8);
+    (x + (x * x + T::from_f64(e * e)).sqrt()) * 0.5
+}
+
+pub fn price_callable_tree_generic<T: Real>(
+    s: &CallableBondOasSpec<T>,
+    oas: T,
+) -> (T, T) {
+    if s.payment_times.is_empty() {
+        return (T::zero(), T::zero());
+    }
+    let maturity = s
+        .payment_times
+        .iter()
+        .copied()
+        .fold(0.0_f64, f64::max)
+        .max(1e-6);
+    let n = s.tree_steps.max(4);
+    let dt = maturity / (n as f64);
+    let vol_step = s.short_rate_vol.max_val(T::zero()) * dt.sqrt();
+    let eps = s.smoothing_eps.max(1e-8);
+
+    let mut step_coupons = vec![T::zero(); n + 1];
+    for (idx, &t) in s.payment_times.iter().enumerate() {
+        let prev_t = if idx == 0 { 0.0 } else { s.payment_times[idx - 1] };
+        let tau = (t - prev_t).max(0.0);
+        let step_idx = ((t / dt).round() as usize).min(n);
+        step_coupons[step_idx] += s.face_amount * s.coupon_rate * tau;
+    }
+
+    let term_val = s.face_amount + step_coupons[n];
+    let mut callable_vals = vec![term_val; n + 1];
+    let mut straight_vals = vec![term_val; n + 1];
+
+    for j in (0..n).rev() {
+        let mut next_call = vec![T::zero(); j + 1];
+        let mut next_str = vec![T::zero(); j + 1];
+        for i in 0..=j {
+            let state_shift = 2.0 * (i as f64) - (j as f64);
+            let r_node = s.short_rate + oas + vol_step * state_shift;
+            let df = (-r_node * dt).exp();
+            let cont_str = (straight_vals[i] + straight_vals[i + 1]) * df * 0.5;
+            let mut cont_call = (callable_vals[i] + callable_vals[i + 1]) * df * 0.5;
+            if j > 0 {
+                if let Some(k_call) = s.call_price {
+                    cont_call -= smooth_pos(cont_call - k_call, eps);
+                }
+                if let Some(k_put) = s.put_price {
+                    cont_call += smooth_pos(k_put - cont_call, eps);
+                }
+            }
+            next_str[i] = cont_str + step_coupons[j];
+            next_call[i] = cont_call + step_coupons[j];
+        }
+        straight_vals = next_str;
+        callable_vals = next_call;
+    }
+    (callable_vals[0], straight_vals[0])
+}
+
+pub fn analyze_callable_bond_oas_ad<T: Real>(
+    s: &CallableBondOasSpec<T>,
+) -> CallableBondOasReport<T> {
+    let s_f64 = CallableBondOasSpec::<f64> {
+        market_dirty_price: s.market_dirty_price.val(),
+        face_amount: s.face_amount.val(),
+        coupon_rate: s.coupon_rate.val(),
+        payment_times: s.payment_times.clone(),
+        call_price: s.call_price.map(|v| v.val()),
+        put_price: s.put_price.map(|v| v.val()),
+        short_rate: s.short_rate.val(),
+        short_rate_vol: s.short_rate_vol.val(),
+        tree_steps: s.tree_steps,
+        smoothing_eps: s.smoothing_eps,
+    };
+    let eval_f64 = |z: f64| -> f64 {
+        price_callable_tree_generic(&s_f64, z).0 - s_f64.market_dirty_price
+    };
+    let mut lo = -0.15_f64;
+    let mut hi = 0.50_f64;
+    let f_lo = eval_f64(lo);
+    for _ in 0..52 {
+        let mid = 0.5 * (lo + hi);
+        let f_mid = eval_f64(mid);
+        if (f_mid >= 0.0) == (f_lo >= 0.0) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let mut x_root = 0.5 * (lo + hi);
+    let h = 1e-5;
+    for _ in 0..4 {
+        let r0 = eval_f64(x_root);
+        let dr = (eval_f64(x_root + h) - eval_f64(x_root - h)) / (2.0 * h);
+        if dr.abs() > 1e-12 {
+            x_root = (x_root - r0 / dr).clamp(-0.25, 1.0);
+        }
+    }
+    let r_up = eval_f64(x_root + h);
+    let r_0 = eval_f64(x_root);
+    let r_dn = eval_f64(x_root - h);
+    let f_x = (r_up - r_dn) / (2.0 * h);
+    let f_xx = (r_up - 2.0 * r_0 + r_dn) / (h * h);
+
+    let residual_at = |z_t: T| -> T {
+        price_callable_tree_generic(s, z_t).0 - s.market_dirty_price
+    };
+    let oas = ql_ad::ift_lift_1d(x_root, residual_at, T::from_f64(f_x), f_xx);
+    let (cp, sp) = price_callable_tree_generic(s, oas);
+    let dr = 1e-4;
+    let mut s_up = s.clone();
+    s_up.short_rate += T::from_f64(dr);
+    let mut s_dn = s.clone();
+    s_dn.short_rate -= T::from_f64(dr);
+    let p_plus = price_callable_tree_generic(&s_up, oas).0;
+    let p_minus = price_callable_tree_generic(&s_dn, oas).0;
+    let cp_safe = cp.max_val(T::from_f64(1e-12));
+    let dur = -(p_plus - p_minus) / (cp_safe * (2.0 * dr));
+    let conv = (p_plus + p_minus - cp * 2.0) / (cp_safe * (dr * dr));
+    CallableBondOasReport {
+        oas,
+        straight_bond_price: sp,
+        embedded_option_value: sp - cp,
+        effective_duration: dur,
+        effective_convexity: conv,
+    }
 }
 
 #[cfg(test)]
 mod phase18_tests {
     use super::*;
+    use ql_ad::Dual;
+
     #[test]
-    fn callable_report_is_finite() { let s=CallableBondOasSpec{market_dirty_price:100.0,face_amount:100.0,coupon_rate:0.04,payment_times:vec![1.0,2.0,3.0],call_price:Some(1000.0),put_price:None,short_rate:0.03,short_rate_vol:0.01,tree_steps:8,smoothing_eps:1e-8}; let r=analyze_callable_bond_oas_ad(&s); assert!(r.oas.is_finite()); }
+    fn callable_bond_tree_oas_vega_and_ad() {
+        let s_high_call = CallableBondOasSpec {
+            market_dirty_price: 100.0,
+            face_amount: 100.0,
+            coupon_rate: 0.04,
+            payment_times: vec![1.0, 2.0, 3.0],
+            call_price: Some(1000.0),
+            put_price: None,
+            short_rate: 0.03,
+            short_rate_vol: 0.015,
+            tree_steps: 12,
+            smoothing_eps: 1e-4,
+        };
+        let r_high = analyze_callable_bond_oas_ad(&s_high_call);
+        assert!(r_high.embedded_option_value.abs() < 1e-5);
+
+        let mut s_call = s_high_call.clone();
+        s_call.call_price = Some(100.5);
+        let r_call = analyze_callable_bond_oas_ad(&s_call);
+        assert!(r_call.embedded_option_value > 0.0);
+        assert!(r_call.oas < r_high.oas);
+
+        let h = 1e-5;
+        let eval_v = |vol: f64| {
+            let mut sp = s_call.clone();
+            sp.short_rate_vol = vol;
+            analyze_callable_bond_oas_ad(&sp).oas
+        };
+        let fd = (eval_v(0.015 + h) - eval_v(0.015 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let sd = CallableBondOasSpec {
+            market_dirty_price: D::from_value(100.0),
+            face_amount: D::from_value(100.0),
+            coupon_rate: D::from_value(0.04),
+            payment_times: vec![1.0, 2.0, 3.0],
+            call_price: Some(D::from_value(100.5)),
+            put_price: None,
+            short_rate: D::from_value(0.03),
+            short_rate_vol: D::variable(0.015, 0),
+            tree_steps: 12,
+            smoothing_eps: 1e-4,
+        };
+        let ad = analyze_callable_bond_oas_ad(&sd).oas;
+        assert!(ad.d[0] < 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-4);
+    }
 }
