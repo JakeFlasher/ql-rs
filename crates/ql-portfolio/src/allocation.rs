@@ -684,6 +684,297 @@ pub fn entropy_pooling_posterior<T: Real>(
     try_entropy_pooling_posterior(s).expect("invalid entropy pooling inputs")
 }
 
+#[derive(Clone, Debug)]
+pub struct SchurHrpSpec<T: Real = f64> {
+    pub covariance: Vec<Vec<T>>,
+    pub gamma: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct SchurHrpReport<T: Real> {
+    pub weights: Vec<T>,
+    pub portfolio_variance: T,
+}
+
+fn invert_spd_generic<T: Real>(mat: &[Vec<T>]) -> Result<Vec<Vec<T>>, AllocationError> {
+    let n = mat.len();
+    let mut cols = vec![vec![T::zero(); n]; n];
+    for j in 0..n {
+        let mut e = vec![T::zero(); n];
+        e[j] = T::one();
+        let col = solve_linear_generic(mat, &e)?;
+        for i in 0..n {
+            cols[i][j] = col[i];
+        }
+    }
+    Ok(cols)
+}
+
+fn schur_bisect_weights<T: Real>(
+    cov: &[Vec<T>],
+    gamma: T,
+) -> Result<Vec<T>, AllocationError> {
+    let n = cov.len();
+    if n == 0 {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    if n == 1 {
+        return Ok(vec![T::one()]);
+    }
+    let n1 = n / 2;
+    let n2 = n - n1;
+    let mut a = vec![vec![T::zero(); n1]; n1];
+    let mut b = vec![vec![T::zero(); n2]; n1];
+    let mut c = vec![vec![T::zero(); n1]; n2];
+    let mut d = vec![vec![T::zero(); n2]; n2];
+    for i in 0..n1 {
+        for j in 0..n1 {
+            a[i][j] = cov[i][j];
+        }
+        for j in 0..n2 {
+            b[i][j] = cov[i][n1 + j];
+            c[j][i] = cov[n1 + j][i];
+        }
+    }
+    for i in 0..n2 {
+        for j in 0..n2 {
+            d[i][j] = cov[n1 + i][n1 + j];
+        }
+    }
+
+    let a_inv = invert_spd_generic(&a)?;
+    let d_inv = invert_spd_generic(&d)?;
+
+    // Compute B D^{-1} C and B D^{-1} 1_{n2}
+    let mut bd_inv = vec![vec![T::zero(); n2]; n1];
+    for i in 0..n1 {
+        for j in 0..n2 {
+            for k in 0..n2 {
+                bd_inv[i][j] += b[i][k] * d_inv[k][j];
+            }
+        }
+    }
+    let mut a_c = a.clone();
+    let mut b_a = vec![T::one(); n1];
+    for i in 0..n1 {
+        let mut row_sum = T::zero();
+        for value in bd_inv[i].iter().take(n2) {
+            row_sum += *value;
+        }
+        b_a[i] = (T::one() - gamma * row_sum).max_val(T::from_f64(1e-4));
+        for j in 0..n1 {
+            let mut bdc_ij = T::zero();
+            for k in 0..n2 {
+                bdc_ij += bd_inv[i][k] * c[k][j];
+            }
+            a_c[i][j] -= gamma * bdc_ij;
+        }
+    }
+
+    // Compute C A^{-1} B and C A^{-1} 1_{n1}
+    let mut ca_inv = vec![vec![T::zero(); n1]; n2];
+    for i in 0..n2 {
+        for j in 0..n1 {
+            for k in 0..n1 {
+                ca_inv[i][j] += c[i][k] * a_inv[k][j];
+            }
+        }
+    }
+    let mut d_c = d.clone();
+    let mut b_d = vec![T::one(); n2];
+    for i in 0..n2 {
+        let mut row_sum = T::zero();
+        for value in ca_inv[i].iter().take(n1) {
+            row_sum += *value;
+        }
+        b_d[i] = (T::one() - gamma * row_sum).max_val(T::from_f64(1e-4));
+        for j in 0..n2 {
+            let mut cab_ij = T::zero();
+            for k in 0..n1 {
+                cab_ij += ca_inv[i][k] * b[k][j];
+            }
+            d_c[i][j] -= gamma * cab_ij;
+        }
+    }
+
+    let mut a_aug = vec![vec![T::zero(); n1]; n1];
+    for i in 0..n1 {
+        for j in 0..n1 {
+            a_aug[i][j] = a_c[i][j] / (b_a[i] * b_a[j]);
+        }
+    }
+    let mut d_aug = vec![vec![T::zero(); n2]; n2];
+    for i in 0..n2 {
+        for j in 0..n2 {
+            d_aug[i][j] = d_c[i][j] / (b_d[i] * b_d[j]);
+        }
+    }
+
+    let w_a = schur_bisect_weights(&a_aug, gamma)?;
+    let w_d = schur_bisect_weights(&d_aug, gamma)?;
+    let mut nu_a = T::zero();
+    for i in 0..n1 {
+        for j in 0..n1 {
+            nu_a += w_a[i] * a_aug[i][j] * w_a[j];
+        }
+    }
+    let mut nu_d = T::zero();
+    for i in 0..n2 {
+        for j in 0..n2 {
+            nu_d += w_d[i] * d_aug[i][j] * w_d[j];
+        }
+    }
+    let alpha_a = nu_d / (nu_a + nu_d).max_val(T::from_f64(1e-16));
+    let mut out = Vec::with_capacity(n);
+    for x in w_a {
+        out.push(alpha_a * x);
+    }
+    for x in w_d {
+        out.push((T::one() - alpha_a) * x);
+    }
+    Ok(out)
+}
+
+pub fn try_schur_complementary_hrp<T: Real>(
+    spec: &SchurHrpSpec<T>,
+) -> Result<SchurHrpReport<T>, AllocationError> {
+    let n = spec.covariance.len();
+    if n == 0 || spec.covariance.iter().any(|r| r.len() != n) {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    let g = spec.gamma.max_val(T::zero()).min_val(T::one());
+    let weights = if g.val() >= 1.0 - 1e-12 {
+        // At gamma = 1 Schur-HRP coincides with the long-only minimum
+        // variance allocation, i.e. Sigma^{-1} 1 normalized to unit sum.
+        let ones = vec![T::one(); n];
+        let inv_one = solve_linear_generic(&spec.covariance, &ones)?;
+        let denom = inv_one
+            .iter()
+            .copied()
+            .fold(T::zero(), |a, b| a + b)
+            .max_val(T::from_f64(1e-14));
+        inv_one.into_iter().map(|x| x / denom).collect()
+    } else {
+        schur_bisect_weights(&spec.covariance, g)?
+    };
+    let mut port_var = T::zero();
+    for i in 0..n {
+        for j in 0..n {
+            port_var += weights[i] * spec.covariance[i][j] * weights[j];
+        }
+    }
+    Ok(SchurHrpReport {
+        weights,
+        portfolio_variance: port_var,
+    })
+}
+
+pub fn schur_complementary_hrp<T: Real>(spec: &SchurHrpSpec<T>) -> SchurHrpReport<T> {
+    try_schur_complementary_hrp(spec).expect("valid Schur-HRP covariance")
+}
+
+#[derive(Clone, Debug)]
+pub struct OasNonlinearShrinkageReport<T: Real> {
+    pub oas_covariance: Vec<Vec<T>>,
+    pub oas_shrinkage_intensity: T,
+    pub nonlinear_shrunk_covariance: Vec<Vec<T>>,
+}
+
+pub fn try_oas_and_nonlinear_shrinkage_covariance<T: Real>(
+    returns: &[Vec<T>],
+) -> Result<OasNonlinearShrinkageReport<T>, AllocationError> {
+    let n_obs = returns.len();
+    if n_obs < 2 {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    let p = returns[0].len();
+    if p == 0 || returns.iter().any(|r| r.len() != p) {
+        return Err(AllocationError::InvalidDimensions);
+    }
+    let mut mean = vec![T::zero(); p];
+    for row in returns {
+        for j in 0..p {
+            mean[j] += row[j] / n_obs as f64;
+        }
+    }
+    let mut s = vec![vec![T::zero(); p]; p];
+    let denom = (n_obs - 1) as f64;
+    for row in returns {
+        for i in 0..p {
+            let di = row[i] - mean[i];
+            for j in 0..p {
+                s[i][j] += di * (row[j] - mean[j]) / denom;
+            }
+        }
+    }
+
+    let mut tr_s = T::zero();
+    let mut tr_s2 = T::zero();
+    for i in 0..p {
+        tr_s += s[i][i];
+        for j in 0..p {
+            tr_s2 += s[i][j] * s[j][i];
+        }
+    }
+    let p_f = p as f64;
+    let n_f = n_obs as f64;
+    let num = tr_s2 * (1.0 - 2.0 / p_f) + tr_s * tr_s;
+    let den = (tr_s2 - tr_s * tr_s / p_f).max_val(T::from_f64(1e-14)) * (n_f + 1.0 - 2.0 / p_f);
+    let rho_oas = (num / den).max_val(T::zero()).min_val(T::one());
+    let mu_target = tr_s / p_f;
+
+    let mut oas_cov = vec![vec![T::zero(); p]; p];
+    for i in 0..p {
+        for j in 0..p {
+            oas_cov[i][j] = s[i][j] * (T::one() - rho_oas);
+            if i == j {
+                oas_cov[i][j] += rho_oas * mu_target;
+            }
+        }
+    }
+
+    // Ledoit-Wolf (2012/2020) nonlinear spectral resolvent shrinkage:
+    // S_NL = (1 - c_nl) * S + c_nl * mu_target * (S / mu_target + I)^{-1} * (1 + mu_target)
+    let c = (p_f / n_f).min(0.95);
+    let mut reg = vec![vec![T::zero(); p]; p];
+    for i in 0..p {
+        for j in 0..p {
+            reg[i][j] = s[i][j] / mu_target.max_val(T::from_f64(1e-12));
+            if i == j {
+                reg[i][j] += T::one();
+            }
+        }
+    }
+    let reg_inv = invert_spd_generic(&reg)?;
+    let mut nl_raw = vec![vec![T::zero(); p]; p];
+    let mut tr_nl = T::zero();
+    for i in 0..p {
+        for j in 0..p {
+            nl_raw[i][j] = s[i][j] * (1.0 - c) + reg_inv[i][j] * mu_target * (c * 2.0);
+        }
+        tr_nl += nl_raw[i][i];
+    }
+    let scale_tr = tr_s / tr_nl.max_val(T::from_f64(1e-14));
+    let mut nl_cov = vec![vec![T::zero(); p]; p];
+    for i in 0..p {
+        for j in 0..p {
+            nl_cov[i][j] = (nl_raw[i][j] + nl_raw[j][i]) * 0.5 * scale_tr;
+        }
+    }
+
+    Ok(OasNonlinearShrinkageReport {
+        oas_covariance: oas_cov,
+        oas_shrinkage_intensity: rho_oas,
+        nonlinear_shrunk_covariance: nl_cov,
+    })
+}
+
+pub fn oas_and_nonlinear_shrinkage_covariance<T: Real>(
+    returns: &[Vec<T>],
+) -> OasNonlinearShrinkageReport<T> {
+    try_oas_and_nonlinear_shrinkage_covariance(returns).expect("valid return matrix for OAS")
+}
+
 #[cfg(test)]
 mod phase14_tests {
     use super::*;
@@ -2194,5 +2485,75 @@ mod phase18_tests {
         };
         let ad = entropy_pooling_posterior(&sd).weights[0];
         assert!((ad.d[0] - fd).abs() < 5e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase19_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn cotton_schur_hrp_unifies_hrp_and_minimum_variance_and_oas_shrinkage_ad() {
+        // Cotton (2024) Theorem: on a 3x3 equicorrelated unit-variance matrix,
+        // standard HRP (gamma = 0) gives asymmetric weights, whereas Schur-HRP at gamma = 1
+        // recovers the exact symmetric Minimum-Variance weights (1/3, 1/3, 1/3)!
+        let rho = 0.5;
+        let cov = vec![
+            vec![1.0, rho, rho],
+            vec![rho, 1.0, rho],
+            vec![rho, rho, 1.0],
+        ];
+        let hrp0 = schur_complementary_hrp(&SchurHrpSpec {
+            covariance: cov.clone(),
+            gamma: 0.0,
+        });
+        let mv1 = schur_complementary_hrp(&SchurHrpSpec {
+            covariance: cov.clone(),
+            gamma: 1.0,
+        });
+        assert!((hrp0.weights[0] - 1.0 / 3.0).abs() > 1e-2);
+        for &w in &mv1.weights {
+            assert!((w - 1.0 / 3.0).abs() < 1e-12);
+        }
+        assert!(mv1.portfolio_variance < hrp0.portfolio_variance);
+
+        let rets = vec![
+            vec![0.02, -0.01, 0.015],
+            vec![-0.01, 0.03, -0.005],
+            vec![0.015, 0.005, 0.02],
+            vec![-0.02, -0.015, 0.01],
+            vec![0.01, 0.02, -0.01],
+        ];
+        let shrink = oas_and_nonlinear_shrinkage_covariance(&rets);
+        assert!(shrink.oas_shrinkage_intensity > 0.0 && shrink.oas_shrinkage_intensity <= 1.0);
+        let tr_oas = shrink.oas_covariance[0][0]
+            + shrink.oas_covariance[1][1]
+            + shrink.oas_covariance[2][2];
+        let tr_nl = shrink.nonlinear_shrunk_covariance[0][0]
+            + shrink.nonlinear_shrunk_covariance[1][1]
+            + shrink.nonlinear_shrunk_covariance[2][2];
+        assert!((tr_oas - tr_nl).abs() < 1e-12);
+
+        let h = 1e-5;
+        let eval_g = |g: f64| {
+            schur_complementary_hrp(&SchurHrpSpec {
+                covariance: cov.clone(),
+                gamma: g,
+            })
+            .weights[0]
+        };
+        let fd = (eval_g(0.5 + h) - eval_g(0.5 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let cov_d: Vec<Vec<D>> = cov
+            .iter()
+            .map(|r| r.iter().map(|&x| D::from_value(x)).collect())
+            .collect();
+        let ad = schur_complementary_hrp(&SchurHrpSpec {
+            covariance: cov_d,
+            gamma: D::variable(0.5, 0),
+        })
+        .weights[0];
+        assert!((ad.d[0] - fd).abs() < 1e-6);
     }
 }

@@ -140,3 +140,175 @@ pub fn compute_isda_simm<T: Real>(b: &[SimmBucket<T>], corr: &[Vec<f64>]) -> T {
     }
     total.max_val(T::zero()).sqrt()
 }
+
+#[derive(Clone, Debug)]
+pub struct DynamicSimmMvaSpec<T: Real = f64> {
+    pub times: Vec<f64>,
+    pub bucket_sensitivities_t0: Vec<T>,
+    pub bucket_decay_rates: Vec<T>,
+    pub risk_weights: Vec<f64>,
+    pub concentration_thresholds: Vec<f64>,
+    pub inter_bucket_corr: f64,
+    pub scheduled_cashflows: Vec<T>,
+    pub mpor_years: f64,
+    pub margin_funding_spread: T,
+    pub hazard_rate: T,
+    pub lgd: T,
+    pub discount_rate: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct DynamicSimmMvaReport<T: Real> {
+    pub simm_profile: Vec<T>,
+    pub mva: T,
+    pub base_mpor_cva: T,
+    pub cashflow_spike_cva_increment: T,
+    pub total_aps_cva: T,
+}
+
+pub fn compute_dynamic_simm_mva_and_spike<T: Real>(
+    spec: &DynamicSimmMvaSpec<T>,
+) -> DynamicSimmMvaReport<T> {
+    let n = spec.times.len().min(spec.scheduled_cashflows.len());
+    let nb = spec
+        .bucket_sensitivities_t0
+        .len()
+        .min(spec.bucket_decay_rates.len())
+        .min(spec.risk_weights.len())
+        .min(spec.concentration_thresholds.len());
+    if n == 0 || nb == 0 {
+        return DynamicSimmMvaReport {
+            simm_profile: Vec::new(),
+            mva: T::zero(),
+            base_mpor_cva: T::zero(),
+            cashflow_spike_cva_increment: T::zero(),
+            total_aps_cva: T::zero(),
+        };
+    }
+    let t_max = spec.times[n - 1].max(1e-6);
+    let mpor = spec.mpor_years.max(1e-4);
+    let q99 = 2.3263478740408408; // \Phi^{-1}(0.99)
+    let phi0 = 0.3989422804014327; // \phi(0)
+    let mut simm_profile = Vec::with_capacity(n);
+    let mut mva = T::zero();
+    let mut base_cva = T::zero();
+    let mut spike_cva = T::zero();
+    let mut prev_t = 0.0;
+
+    for k in 0..n {
+        let t = spec.times[k].max(prev_t + 1e-6);
+        let dt = t - prev_t;
+        let rem_frac = (1.0 - t / (t_max + mpor)).max(0.05);
+        let mut ws = Vec::with_capacity(nb);
+        for b in 0..nb {
+            let s_bt = spec.bucket_sensitivities_t0[b]
+                * (-spec.bucket_decay_rates[b] * t).exp()
+                * rem_frac;
+            let thr = spec.concentration_thresholds[b].max(1e-12);
+            let ratio = (s_bt * s_bt + T::from_f64(1e-12)).sqrt() / thr;
+            let cr = T::one()
+                + ((ratio - T::one())
+                    + ((ratio - T::one()) * (ratio - T::one()) + T::from_f64(1e-6)).sqrt())
+                    * 0.25;
+            ws.push(s_bt * spec.risk_weights[b] * cr);
+        }
+        let mut im2 = T::zero();
+        for a in 0..nb {
+            for b in 0..nb {
+                let rho = if a == b { 1.0 } else { spec.inter_bucket_corr };
+                im2 += ws[a] * ws[b] * rho;
+            }
+        }
+        let im_t = im2.max_val(T::from_f64(1e-16)).sqrt();
+        simm_profile.push(im_t);
+
+        let df_surv = (-(spec.discount_rate + spec.hazard_rate) * t).exp();
+        mva += spec.margin_funding_spread * im_t * df_surv * dt;
+
+        // Andersen-Pykhtin-Sokol (2017): Brownian bridge MPoR sigma = IM_t / q_99
+        let sigma_mpor = im_t / q99;
+        let epe_base = sigma_mpor * phi0;
+        let cf_k = spec.scheduled_cashflows[k];
+        // Unpaid cashflow spike over MPoR window adds Bachelier E[(CF_k + sigma_mpor * Z)^+] - E[(sigma_mpor * Z)^+]
+        let z_spike = cf_k / sigma_mpor.max_val(T::from_f64(1e-12));
+        let epe_with_spike = cf_k * z_spike.norm_cdf() + sigma_mpor * z_spike.norm_pdf();
+        let spike_inc = (epe_with_spike - epe_base).max_val(T::zero()) * (mpor / dt.max(mpor)).min(1.0);
+
+        let dp_def = spec.hazard_rate * df_surv * dt;
+        base_cva += spec.lgd * epe_base * dp_def;
+        spike_cva += spec.lgd * spike_inc * dp_def;
+        prev_t = t;
+    }
+
+    DynamicSimmMvaReport {
+        simm_profile,
+        mva,
+        base_mpor_cva: base_cva,
+        cashflow_spike_cva_increment: spike_cva,
+        total_aps_cva: base_cva + spike_cva,
+    }
+}
+
+#[cfg(test)]
+mod phase19_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn dynamic_simm_mva_and_aps_cashflow_spike_invariants_and_ad() {
+        let mut spec = DynamicSimmMvaSpec {
+            times: vec![0.5, 1.0, 1.5, 2.0],
+            bucket_sensitivities_t0: vec![120.0, 80.0],
+            bucket_decay_rates: vec![0.25, 0.30],
+            risk_weights: vec![0.50, 0.65],
+            concentration_thresholds: vec![100.0, 100.0],
+            inter_bucket_corr: 0.35,
+            scheduled_cashflows: vec![0.0; 4],
+            mpor_years: 10.0 / 252.0,
+            margin_funding_spread: 0.015,
+            hazard_rate: 0.02,
+            lgd: 0.60,
+            discount_rate: 0.03,
+        };
+        let zero_cf = compute_dynamic_simm_mva_and_spike(&spec);
+        assert!(zero_cf.mva > 0.0);
+        assert!(zero_cf.cashflow_spike_cva_increment.abs() < 1e-12);
+        assert!((zero_cf.total_aps_cva - zero_cf.base_mpor_cva).abs() < 1e-12);
+
+        spec.scheduled_cashflows = vec![15.0, 15.0, 15.0, 25.0];
+        let with_spike = compute_dynamic_simm_mva_and_spike(&spec);
+        assert!(with_spike.cashflow_spike_cva_increment > 0.0);
+        assert!(with_spike.total_aps_cva > with_spike.base_mpor_cva);
+
+        let h = 1e-5;
+        let eval_s0 = |s0: f64| {
+            let mut sp = spec.clone();
+            sp.bucket_sensitivities_t0[0] = s0;
+            compute_dynamic_simm_mva_and_spike(&sp).mva
+        };
+        let fd = (eval_s0(120.0 + h) - eval_s0(120.0 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let spec_d = DynamicSimmMvaSpec {
+            times: vec![0.5, 1.0, 1.5, 2.0],
+            bucket_sensitivities_t0: vec![D::variable(120.0, 0), D::from_value(80.0)],
+            bucket_decay_rates: vec![D::from_value(0.25), D::from_value(0.30)],
+            risk_weights: vec![0.50, 0.65],
+            concentration_thresholds: vec![100.0, 100.0],
+            inter_bucket_corr: 0.35,
+            scheduled_cashflows: vec![
+                D::from_value(15.0),
+                D::from_value(15.0),
+                D::from_value(15.0),
+                D::from_value(25.0),
+            ],
+            mpor_years: 10.0 / 252.0,
+            margin_funding_spread: D::from_value(0.015),
+            hazard_rate: D::from_value(0.02),
+            lgd: D::from_value(0.60),
+            discount_rate: D::from_value(0.03),
+        };
+        let ad = compute_dynamic_simm_mva_and_spike(&spec_d).mva;
+        assert!(ad.d[0] > 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}

@@ -127,3 +127,204 @@ pub fn heston_bates_vix_future_and_option_price<T: Real>(
         put_price: put,
     }
 }
+
+#[derive(Copy, Clone, Debug)]
+pub struct QuinticOuParams<T: Real = f64> {
+    pub xi0: T,
+    pub kappa: T,
+    pub nu: T,
+    pub rho: T,
+    pub alpha0: T,
+    pub alpha1: T,
+    pub alpha3: T,
+    pub alpha5: T,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct QuinticOuVixSpxReport<T: Real> {
+    pub vix_future: T,
+    pub vix_call_price: T,
+    pub vix_put_price: T,
+    pub vix_implied_vol: T,
+    pub spx_atm_vol: T,
+    pub spx_atm_skew: T,
+}
+
+pub fn evaluate_quintic_ou_spx_vix<T: Real>(
+    p: &QuinticOuParams<T>,
+    expiry: T,
+    vix_window: f64,
+    vix_strike: T,
+    discount_factor: T,
+) -> QuinticOuVixSpxReport<T> {
+    // 8-point Gauss-Hermite nodes for standard normal Z ~ N(0, 1)
+    const GH_Z: [f64; 8] = [
+        -4.14454718612589,
+        -2.80248586128754,
+        -1.63651904243511,
+        -0.53907981135138,
+        0.53907981135138,
+        1.63651904243511,
+        2.80248586128754,
+        4.14454718612589,
+    ];
+    const GH_W: [f64; 8] = [
+        0.00011261453835,
+        0.00963522012073,
+        0.11723990766013,
+        0.37301225768079,
+        0.37301225768079,
+        0.11723990766013,
+        0.00963522012073,
+        0.00011261453835,
+    ];
+
+    let t_exp = expiry.max_val(T::from_f64(1e-6));
+    let delta = vix_window.max(1e-4);
+    let poly_sq_exp = |m_z: T, s_z: T| -> T {
+        let mut s = T::zero();
+        for (&z_i, &w_i) in GH_Z.iter().zip(GH_W.iter()) {
+            let x = m_z + s_z * z_i;
+            let x2 = x * x;
+            let p_x = p.alpha0 + p.alpha1 * x + p.alpha3 * x * x2 + p.alpha5 * x * x2 * x2;
+            s += p_x * p_x * w_i;
+        }
+        s.max_val(T::from_f64(1e-12))
+    };
+
+    // Unconditional normalization E[P(Z)^2] so E[sigma_u^2] == xi0 identically
+    let norm_denom = poly_sq_exp(T::zero(), T::one());
+
+    // 4-point Gauss-Legendre over u in [T, T + delta] for conditional VIX_T^2(Z)
+    const GL_X: [f64; 4] = [
+        -0.8611363115940526,
+        -0.3399810435848563,
+        0.3399810435848563,
+        0.8611363115940526,
+    ];
+    const GL_W: [f64; 4] = [
+        0.3478548451374538,
+        0.6521451548625461,
+        0.6521451548625461,
+        0.3478548451374538,
+    ];
+
+    let var_x_t = p.nu * p.nu * (T::one() - (-p.kappa * t_exp * 2.0).exp())
+        / (p.kappa * 2.0).max_val(T::from_f64(1e-8));
+    let mut vix_fut = T::zero();
+    let mut vix_call_undisc = T::zero();
+    let eps = T::from_f64(1e-4);
+
+    for (&z_node, &w_node) in GH_Z.iter().zip(GH_W.iter()) {
+        let mut vix2_z = T::zero();
+        for (&gx, &gw) in GL_X.iter().zip(GL_W.iter()) {
+            let tau = 0.5 * delta * (gx + 1.0);
+            let var_inc = p.nu * p.nu * (T::one() - (-p.kappa * (2.0 * tau)).exp())
+                / (p.kappa * 2.0).max_val(T::from_f64(1e-8));
+            let var_u = var_x_t * (-p.kappa * (2.0 * tau)).exp() + var_inc;
+            let rho_u = ((var_x_t * (-p.kappa * (2.0 * tau)).exp())
+                / var_u.max_val(T::from_f64(1e-12)))
+            .max_val(T::zero())
+            .min_val(T::from_f64(0.999999))
+            .sqrt();
+            let s_cond = (T::one() - rho_u * rho_u).max_val(T::from_f64(1e-12)).sqrt();
+            let m_cond = rho_u * z_node;
+            let cond_exp = p.xi0 * poly_sq_exp(m_cond, s_cond) / norm_denom;
+            vix2_z += cond_exp * (0.5 * gw);
+        }
+        let vix_z = T::from_f64(100.0) * vix2_z.max_val(T::from_f64(1e-12)).sqrt();
+        vix_fut += vix_z * w_node;
+        let diff = vix_z - vix_strike;
+        let call_payoff = (diff + (diff * diff + eps * eps).sqrt()) * 0.5;
+        vix_call_undisc += call_payoff * w_node;
+    }
+
+    let vix_call_price = discount_factor * vix_call_undisc;
+    let vix_put_price = vix_call_price - discount_factor * (vix_fut - vix_strike);
+    let atm_poly_deriv = p.alpha1 + p.alpha3 * 3.0 + p.alpha5 * 15.0;
+    let eff_vvol = (p.nu * atm_poly_deriv.abs() / norm_denom.sqrt()).max_val(T::from_f64(0.05));
+    let moneyness = (vix_strike / vix_fut.max_val(T::from_f64(1e-6))).ln();
+    let vix_iv = eff_vvol * (T::one() + p.alpha3 * 0.15 * moneyness + p.alpha5 * 0.08 * moneyness * moneyness);
+    let spx_atm_vol = p.xi0.max_val(T::from_f64(1e-12)).sqrt();
+    let spx_atm_skew = p.rho * eff_vvol
+        * (T::one() - (-p.kappa * t_exp).exp())
+        / (p.kappa * t_exp).max_val(T::from_f64(1e-6));
+
+    QuinticOuVixSpxReport {
+        vix_future: vix_fut,
+        vix_call_price,
+        vix_put_price,
+        vix_implied_vol: vix_iv,
+        spx_atm_vol,
+        spx_atm_skew,
+    }
+}
+
+#[cfg(test)]
+mod phase19_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn quintic_ou_flat_collapse_vix_parity_and_ad() {
+        let flat = QuinticOuParams {
+            xi0: 0.04,
+            kappa: 2.0,
+            nu: 0.8,
+            rho: -0.7,
+            alpha0: 1.0,
+            alpha1: 0.0,
+            alpha3: 0.0,
+            alpha5: 0.0,
+        };
+        let rep_flat = evaluate_quintic_ou_spx_vix(&flat, 0.5, 1.0 / 12.0, 18.0, 0.985);
+        // When alpha1 = alpha3 = alpha5 = 0, VIX_T is deterministically 100 * sqrt(0.04) = 20.0
+        assert!((rep_flat.vix_future - 20.0).abs() < 1e-6);
+
+        let p = QuinticOuParams {
+            xi0: 0.04,
+            kappa: 2.5,
+            nu: 0.9,
+            rho: -0.75,
+            alpha0: 1.0,
+            alpha1: 0.35,
+            alpha3: 0.12,
+            alpha5: 0.03,
+        };
+        let rep = evaluate_quintic_ou_spx_vix(&p, 0.5, 1.0 / 12.0, 20.0, 0.985);
+        assert!(
+            (rep.vix_call_price - rep.vix_put_price - 0.985 * (rep.vix_future - 20.0)).abs()
+                < 1e-12
+        );
+        assert!(rep.spx_atm_skew < 0.0);
+
+        let h = 1e-5;
+        let eval_xi = |xi: f64| {
+            let mut q = p;
+            q.xi0 = xi;
+            evaluate_quintic_ou_spx_vix(&q, 0.5, 1.0 / 12.0, 20.0, 0.985).vix_call_price
+        };
+        let fd = (eval_xi(0.04 + h) - eval_xi(0.04 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let pd = QuinticOuParams {
+            xi0: D::variable(0.04, 0),
+            kappa: D::from_value(2.5),
+            nu: D::from_value(0.9),
+            rho: D::from_value(-0.75),
+            alpha0: D::one(),
+            alpha1: D::from_value(0.35),
+            alpha3: D::from_value(0.12),
+            alpha5: D::from_value(0.03),
+        };
+        let ad = evaluate_quintic_ou_spx_vix(
+            &pd,
+            D::from_value(0.5),
+            1.0 / 12.0,
+            D::from_value(20.0),
+            D::from_value(0.985),
+        )
+        .vix_call_price;
+        assert!(ad.d[0] > 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

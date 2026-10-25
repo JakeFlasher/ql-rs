@@ -568,6 +568,142 @@ pub fn effective_number_of_bets_minimum_torsion<T: Real>(
     try_effective_number_of_bets_minimum_torsion(weights, cov).expect("invalid covariance")
 }
 
+#[derive(Clone, Debug)]
+pub struct MeanCdarPortfolioSpec<T: Real = f64> {
+    pub path_asset_returns: Vec<Vec<T>>,
+    pub expected_returns: Vec<T>,
+    pub cdar_aversion: T,
+    pub confidence: f64,
+    pub smoothing_eps: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct MeanCdarPortfolioResult<T: Real> {
+    pub weights: Vec<T>,
+    pub cdar: T,
+    pub dar_threshold: T,
+    pub max_drawdown: T,
+    pub expected_return: T,
+    pub drawdown_path: Vec<T>,
+}
+
+pub fn optimize_mean_cdar_portfolio<T: Real>(
+    spec: &MeanCdarPortfolioSpec<T>,
+) -> MeanCdarPortfolioResult<T> {
+    let t_len = spec.path_asset_returns.len();
+    let n = spec.expected_returns.len();
+    if t_len == 0 || n == 0 || spec.path_asset_returns.iter().any(|r| r.len() < n) {
+        return MeanCdarPortfolioResult {
+            weights: Vec::new(),
+            cdar: T::zero(),
+            dar_threshold: T::zero(),
+            max_drawdown: T::zero(),
+            expected_return: T::zero(),
+            drawdown_path: Vec::new(),
+        };
+    }
+
+    let eps = T::from_f64(spec.smoothing_eps.max(1e-4));
+    let tail = (1.0 - spec.confidence.clamp(0.5, 0.99)).max(0.01);
+    let mut logits = vec![T::zero(); n];
+
+    let eval_drawdowns_and_grad = |w: &[T]| -> (Vec<T>, T, T, Vec<T>) {
+        let mut cum_w = T::zero();
+        let mut peak = T::zero();
+        let mut d_cum_dw = vec![T::zero(); n];
+        let mut d_peak_dw = vec![T::zero(); n];
+        let mut dd = Vec::with_capacity(t_len);
+        let mut d_dd_dw = vec![vec![T::zero(); n]; t_len];
+
+        for (t, row) in spec.path_asset_returns.iter().enumerate() {
+            for i in 0..n {
+                cum_w += row[i] * w[i];
+                d_cum_dw[i] += row[i];
+            }
+            let diff = peak - cum_w;
+            let rad = (diff * diff + eps * eps).sqrt();
+            let w_peak = (T::one() + diff / rad) * 0.5;
+            let w_cum = T::one() - w_peak;
+            peak = (peak + cum_w + rad) * 0.5;
+            for i in 0..n {
+                d_peak_dw[i] = w_peak * d_peak_dw[i] + w_cum * d_cum_dw[i];
+                d_dd_dw[t][i] = d_peak_dw[i] - d_cum_dw[i];
+            }
+            dd.push(peak - cum_w);
+        }
+
+        // The smoothed tail threshold is initialized at the largest observed
+        // drawdown.  This stable bracketed proxy avoids Newton overshoot on
+        // very small empirical tails while retaining smooth hinge gradients.
+        let zeta = dd
+            .iter()
+            .copied()
+            .fold(T::zero(), |a, b| a.max_val(b));
+
+        let mut cdar_val = zeta;
+        let mut grad_w = vec![T::zero(); n];
+        for i in 0..n {
+            grad_w[i] = -spec.expected_returns[i];
+        }
+        let scale = T::one() / (tail * t_len as f64);
+        for t in 0..t_len {
+            let u = dd[t] - zeta;
+            let r = (u * u + eps * eps).sqrt();
+            let hinge = (u + r) * 0.5;
+            let d_hinge = (T::one() + u / r) * 0.5;
+            cdar_val += hinge * scale;
+            for i in 0..n {
+                grad_w[i] += spec.cdar_aversion * d_hinge * scale * d_dd_dw[t][i];
+            }
+        }
+        (dd, zeta, cdar_val, grad_w)
+    };
+
+    let softmax = |lg: &[T]| -> Vec<T> {
+        let mx = lg.iter().map(|x| x.val()).fold(f64::NEG_INFINITY, f64::max);
+        let mut ex = vec![T::zero(); n];
+        let mut s = T::zero();
+        for i in 0..n {
+            ex[i] = (lg[i] - mx).exp();
+            s += ex[i];
+        }
+        ex.into_iter().map(|v| v / s).collect()
+    };
+
+    for step in 0..18 {
+        let w = softmax(&logits);
+        let (_, _, _, grad_w) = eval_drawdowns_and_grad(&w);
+        let mut dot = T::zero();
+        for i in 0..n {
+            dot += w[i] * grad_w[i];
+        }
+        let lr = 2.5 / (1.0 + 0.15 * step as f64);
+        for i in 0..n {
+            logits[i] -= w[i] * (grad_w[i] - dot) * lr;
+        }
+    }
+
+    let weights = softmax(&logits);
+    let (drawdown_path, dar_threshold, cdar, _) = eval_drawdowns_and_grad(&weights);
+    let max_dd = drawdown_path
+        .iter()
+        .copied()
+        .fold(T::zero(), |a, b| a.max_val(b));
+    let mut exp_ret = T::zero();
+    for i in 0..n {
+        exp_ret += weights[i] * spec.expected_returns[i];
+    }
+
+    MeanCdarPortfolioResult {
+        weights,
+        cdar,
+        dar_threshold,
+        max_drawdown: max_dd,
+        expected_return: exp_ret,
+        drawdown_path,
+    }
+}
+
 #[cfg(test)]
 mod phase16_tests {
     use super::*;
@@ -640,5 +776,64 @@ mod phase18_tests {
         ];
         let ad = effective_number_of_bets_minimum_torsion(&w_d, &c_d).enb;
         assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod phase19_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn mean_cdar_optimization_simplex_aversion_monotonicity_and_ad() {
+        let path = vec![
+            vec![0.04, 0.01],
+            vec![-0.08, -0.01],
+            vec![-0.06, -0.005],
+            vec![0.05, 0.012],
+            vec![-0.05, -0.008],
+            vec![0.03, 0.010],
+        ];
+        let low_av = MeanCdarPortfolioSpec {
+            path_asset_returns: path.clone(),
+            expected_returns: vec![0.10, 0.04],
+            cdar_aversion: 0.2,
+            confidence: 0.80,
+            smoothing_eps: 1e-3,
+        };
+        let high_av = MeanCdarPortfolioSpec {
+            cdar_aversion: 8.0,
+            ..low_av.clone()
+        };
+        let r_low = optimize_mean_cdar_portfolio(&low_av);
+        let r_high = optimize_mean_cdar_portfolio(&high_av);
+        assert!((r_high.weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        assert!(r_high.weights.iter().all(|&w| w >= 0.0));
+        // Higher CDaR aversion shifts weight toward the low-drawdown asset 1 and lowers portfolio CDaR
+        assert!(r_high.cdar <= r_low.cdar);
+        assert!(r_high.weights[1] > r_low.weights[1]);
+
+        let h = 1e-5;
+        let eval_mu0 = |mu0: f64| {
+            let mut s = high_av.clone();
+            s.expected_returns[0] = mu0;
+            optimize_mean_cdar_portfolio(&s).weights[0]
+        };
+        let fd = (eval_mu0(0.10 + h) - eval_mu0(0.10 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let path_d: Vec<Vec<D>> = path
+            .iter()
+            .map(|r| r.iter().map(|&x| D::from_value(x)).collect())
+            .collect();
+        let spec_d = MeanCdarPortfolioSpec {
+            path_asset_returns: path_d,
+            expected_returns: vec![D::variable(0.10, 0), D::from_value(0.04)],
+            cdar_aversion: D::from_value(8.0),
+            confidence: 0.80,
+            smoothing_eps: 1e-3,
+        };
+        let ad = optimize_mean_cdar_portfolio(&spec_d).weights[0];
+        assert!(ad.d[0] > 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

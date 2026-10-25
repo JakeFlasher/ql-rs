@@ -102,7 +102,7 @@ fn dashboard_renders_all_quadrants_and_chart_modes() {
 
 #[test]
 fn phase11_tabs_and_live_telemetry_are_present() {
-    assert_eq!(TabId::ALL.len(), 28);
+    assert_eq!(TabId::ALL.len(), 29);
     assert_eq!(TabId::ALL[18], TabId::BermudanVolIft);
     assert_eq!(TabId::ALL[19], TabId::SaCcrSwingQp);
     assert_eq!(TabId::ALL[22], TabId::MonotoneConvexVixParisianRobust);
@@ -125,7 +125,7 @@ fn phase11_tabs_and_live_telemetry_are_present() {
 
 #[test]
 fn phase17_tab_metric_and_rates_scenario_are_live() {
-    assert_eq!(TabId::ALL.len(), 28);
+    assert_eq!(TabId::ALL.len(), 29);
     assert!(TabId::ALL.contains(&TabId::Phase17Sota));
     let mut ws = DeskWorkstation::new();
     let frame = ws.step_tick();
@@ -171,4 +171,14 @@ fn phase18_tab28_terminal_renders_and_ticks_cleanly() {
         let stressed = ws.step_tick();
         assert_ne!(stressed.mtmxccs_colva_zabr_weather_enb_metric, normal.mtmxccs_colva_zabr_weather_enb_metric);
     }
+}
+
+#[test]
+fn phase19_tab29_terminal_renders_and_ticks_cleanly() {
+    assert_eq!(TabId::ALL.len(), 29);
+    assert_eq!(TabId::Phase19Sota.label(), "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP");
+    let mut ws = DeskWorkstation::new();
+    let frame = ws.step_tick();
+    assert!(frame.burnout_cmcds_quintic_afv_cs_schur_metric.is_finite());
+    assert!(ws.render_dashboard(&frame, false).contains("29 Burnout/CMCDS/Quintic/AFV/Schur"));
 }

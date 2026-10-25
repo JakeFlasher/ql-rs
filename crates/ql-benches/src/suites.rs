@@ -66,7 +66,7 @@ fn config(scale: usize) -> BenchConfig {
         // parallel.  `scale` changes only this repetition count; the domain
         // workload itself remains invariant across test and bench modes.
         // The short parity configuration intentionally uses one iteration so
-        // the complete 29-suite test remains a fast (<2s on CI) invariant
+        // the complete 31-suite test remains a fast (<2s on CI) invariant
         // check rather than a second timing benchmark.
         iters_per_sample: if samples <= 3 {
             scale.max(1)
@@ -3416,7 +3416,7 @@ pub fn benchmark_asw_mf1f_ah_bess_ep_aad(scale: usize) -> ComparisonRow {
 }
 
 pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
-    // Keep all quantitative engine dependencies linked into the 29-suite
+    // Keep all quantitative engine dependencies linked into the 31-suite
     // benchmark binary, including engines used by the parity harness.
     let _ = ql_math::inv_norm_cdf(0.5);
     let _ = std::mem::size_of::<ql_pde::Fd2dHestonEngine>();
@@ -3455,6 +3455,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_cheyette_cmo_qrh_basecorr_cdar_aad(scale),
         benchmark_asw_mf1f_ah_bess_ep_aad(scale),
         benchmark_mtmxccs_colva_zabr_pdv_weather_enb_aad(scale),
+        benchmark_burnout_cmcds_quintic_afv_cs_schur_aad(scale),
     ]
 }
 
@@ -3712,3 +3713,324 @@ fn phase18_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     ]
 }
 pub fn benchmark_mtmxccs_colva_zabr_pdv_weather_enb_aad(scale: usize)->ComparisonRow{let cfg=config(scale);let x0=[0.2,-0.1,0.3,-0.2];let h=1e-5;let baseline=||{let b=phase18_workloads(x0);let mut c=b.iter().sum();for lane in 0..4{let mut u=x0;let mut d=x0;u[lane]+=h;d[lane]-=h;let bu=phase18_workloads(u);let bd=phase18_workloads(d);for j in 0..4{c+=(bu[j]-bd[j])/(2.0*h);}}c};let sota=||{type D=Dual<4>;let x=[D::variable(x0[0],0),D::variable(x0[1],1),D::variable(x0[2],2),D::variable(x0[3],3)];phase18_workloads(x).iter().map(|y|y.val+y.d.iter().sum::<f64>()).sum()};run_comparison("30_mtmxccs_colva_zabr_pdv_weather_enb_aad","MtM-XCCS/CTD-COLVA/ZABR-PDV/Weather/ENB single-pass AD",cfg,1e-4,baseline,sota)}
+
+fn phase19_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
+    let d = date(2024, 1, 1);
+    let curve = FlatForwardCurve::new(d, T::from_f64(0.035) + x[0] * 0.001);
+    let mbs = ql_fixed_income::analyze_mbs_burnout_oas_ad(
+        &ql_fixed_income::MbsBurnoutOasSpec {
+            market_price: T::from_f64(101.0) + x[0] * 0.2,
+            original_balance: T::from_f64(100.0),
+            wac: T::from_f64(0.06),
+            pass_through_rate: T::from_f64(0.055),
+            term_months: 24,
+            seasoning_months: 12,
+            turnover_cpr: T::from_f64(0.06),
+            max_refi_cpr: T::from_f64(0.30),
+            refi_slope: T::from_f64(60.0),
+            refi_incentive_threshold: T::from_f64(0.005),
+            burnout_beta: T::from_f64(10.0) + x[1] * 0.5,
+            primary_secondary_spread: T::from_f64(0.01),
+        },
+        &curve,
+    )
+    .oas;
+
+    let infl = ZeroInflationCurve::new(
+        d,
+        100.0,
+        vec![1.0, 3.0, 5.0],
+        vec![
+            T::from_f64(0.022) + x[1] * 0.001,
+            T::from_f64(0.024) + x[1] * 0.001,
+            T::from_f64(0.025) + x[1] * 0.001,
+        ],
+        None,
+    );
+    let zciis_cf = ql_inflation::price_zciis_capfloor_jarrow_yildirim(
+        &ql_inflation::ZciisCapFloorSpec {
+            notional: T::from_f64(100.0),
+            maturity_years: 5.0,
+            strike_annual_rate: T::from_f64(0.02) + x[2] * 0.001,
+            target_month: None,
+            is_cap: true,
+        },
+        &curve,
+        &infl,
+        &JarrowYildirimParams {
+            a_nom: T::from_f64(0.05),
+            sigma_nom: T::from_f64(0.008),
+            a_real: T::from_f64(0.04),
+            sigma_real: T::from_f64(0.006),
+            sigma_cpi: T::from_f64(0.012) + x[3] * 0.001,
+            rho_nom_real: T::from_f64(0.3),
+            rho_nom_cpi: T::from_f64(0.2),
+            rho_real_cpi: T::from_f64(-0.1),
+        },
+    )
+    .npv;
+
+    let credit = SurvivalProbabilityCurve::new(
+        d,
+        vec![1.0, 2.0, 3.0, 4.0, 5.0],
+        vec![T::from_f64(0.02) + x[2] * 0.001; 5],
+    );
+    let cmcds = ql_credit::price_cmcds_market_model(
+        &ql_credit::CmCdsMarketModelSpec {
+            notional: T::from_f64(100.0),
+            grid_times: vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            start_idx: 0,
+            end_idx: 3,
+            cm_tenor_periods: 2,
+            participation_rate: T::from_f64(0.95),
+            lgd: T::from_f64(0.6),
+            forward_cds_vols: vec![T::from_f64(0.30) + x[3] * 0.01; 5],
+            forward_cds_corr: T::from_f64(0.8),
+        },
+        &curve,
+        &credit,
+    )
+    .seller_npv;
+
+    let fsimm = ql_xva::compute_dynamic_simm_mva_and_spike(&ql_xva::DynamicSimmMvaSpec {
+        times: vec![0.5, 1.0, 1.5],
+        bucket_sensitivities_t0: vec![T::from_f64(100.0) + x[0] * 5.0, T::from_f64(70.0)],
+        bucket_decay_rates: vec![T::from_f64(0.25), T::from_f64(0.30)],
+        risk_weights: vec![0.5, 0.6],
+        concentration_thresholds: vec![80.0, 80.0],
+        inter_bucket_corr: 0.35,
+        scheduled_cashflows: vec![T::from_f64(12.0), T::from_f64(15.0), T::from_f64(18.0)],
+        mpor_years: 10.0 / 252.0,
+        margin_funding_spread: T::from_f64(0.015) + x[1] * 0.001,
+        hazard_rate: T::from_f64(0.02),
+        lgd: T::from_f64(0.6),
+        discount_rate: T::from_f64(0.03),
+    })
+    .total_aps_cva;
+
+    let jlt = ql_credit::evaluate_jlt_rating_migration_credit(&ql_credit::JltRatingMigrationSpec {
+        generator_matrix: vec![
+            vec![T::from_f64(-0.06), T::from_f64(0.045), T::from_f64(0.015)],
+            vec![T::from_f64(0.02), T::from_f64(-0.07), T::from_f64(0.05)],
+            vec![T::zero(), T::zero(), T::zero()],
+        ],
+        risk_premium_multipliers: vec![T::from_f64(1.2) + x[2] * 0.05, T::from_f64(1.3), T::one()],
+        initial_rating_index: 0,
+        horizon_years: 2.0,
+        payment_times: vec![1.0, 2.0],
+        base_coupon_rate: T::from_f64(0.04),
+        downgrade_step_up_spreads: vec![T::zero(), T::from_f64(0.008), T::zero()],
+        recovery_rate: T::from_f64(0.4),
+        risk_free_rate: T::from_f64(0.03) + x[0] * 0.001,
+    })
+    .step_up_bond_price;
+
+    let qou = ql_models::evaluate_quintic_ou_spx_vix(
+        &ql_models::QuinticOuParams {
+            xi0: T::from_f64(0.04) + x[3] * 0.002,
+            kappa: T::from_f64(2.5),
+            nu: T::from_f64(0.8),
+            rho: T::from_f64(-0.7),
+            alpha0: T::one(),
+            alpha1: T::from_f64(0.30),
+            alpha3: T::from_f64(0.10) + x[1] * 0.01,
+            alpha5: T::from_f64(0.02),
+        },
+        T::from_f64(0.5),
+        1.0 / 12.0,
+        T::from_f64(20.0),
+        T::from_f64(0.985),
+    )
+    .vix_call_price;
+
+    let fbs = ql_vol::evaluate_free_boundary_sabr(
+        &ql_vol::FreeBoundarySabrParams {
+            forward: T::from_f64(-0.003) + x[0] * 0.0005,
+            expiry: T::one(),
+            alpha: T::from_f64(0.008) + x[3] * 0.0005,
+            beta: T::from_f64(0.25),
+            rho: T::from_f64(-0.20),
+            nu: T::from_f64(0.40),
+        },
+        T::from_f64(-0.001),
+        T::from_f64(0.99),
+    )
+    .call_price;
+
+    let afv = ql_fixed_income::price_convertible_bond_afv_pde(
+        &ql_fixed_income::AfvConvertibleBondSpec {
+            spot: T::from_f64(100.0) + x[1] * 1.5,
+            conversion_ratio: T::one(),
+            face_value: T::from_f64(100.0),
+            coupon_rate: T::from_f64(0.03),
+            maturity: T::from_f64(1.5),
+            rate: T::from_f64(0.035) + x[0] * 0.001,
+            div_yield: T::from_f64(0.01),
+            vol: T::from_f64(0.25) + x[3] * 0.01,
+            base_hazard_rate: T::from_f64(0.02) + x[2] * 0.001,
+            hazard_equity_elasticity: T::from_f64(1.2),
+            equity_loss_on_default_eta: T::from_f64(0.5),
+            bond_recovery_rate: T::from_f64(0.4),
+            call_price: Some(T::from_f64(115.0)),
+            soft_call_trigger_spot: Some(T::from_f64(130.0)),
+            put_price: Some(T::from_f64(95.0)),
+        },
+        15,
+        8,
+    )
+    .total_price;
+
+    let gswap = ql_exotics::price_gamma_swap_and_variance_option(
+        &ql_exotics::GammaSwapAndVarOptionSpec {
+            spot: T::from_f64(100.0) + x[1] * 1.0,
+            rate: T::from_f64(0.03),
+            div_yield: T::from_f64(0.01),
+            expiry: T::one(),
+            cut_strike: T::from_f64(100.0),
+            variance_strike: T::from_f64(0.04),
+            quotes: vec![
+                ql_exotics::VarianceSwapStrikeQuote {
+                    strike: T::from_f64(85.0),
+                    implied_vol: T::from_f64(0.24) + x[3] * 0.01,
+                },
+                ql_exotics::VarianceSwapStrikeQuote {
+                    strike: T::from_f64(100.0),
+                    implied_vol: T::from_f64(0.20) + x[3] * 0.01,
+                },
+                ql_exotics::VarianceSwapStrikeQuote {
+                    strike: T::from_f64(115.0),
+                    implied_vol: T::from_f64(0.18) + x[3] * 0.01,
+                },
+            ],
+            heston: HestonParams {
+                v0: T::from_f64(0.04) + x[3] * 0.002,
+                kappa: T::from_f64(2.0),
+                theta: T::from_f64(0.04),
+                sigma_v: T::from_f64(0.35),
+                rho: T::from_f64(-0.7),
+            },
+            is_variance_call: true,
+        },
+    )
+    .variance_option_price;
+
+    let cs_swaption = ql_commodities::price_clewlow_strickland_strip_swaption(
+        &ql_commodities::ClewlowStricklandSwaptionSpec {
+            option_expiry: T::from_f64(0.5),
+            delivery_times: vec![0.75, 1.0, 1.25],
+            forward_prices: vec![
+                T::from_f64(75.0) + x[1] * 0.5,
+                T::from_f64(76.0) + x[1] * 0.5,
+                T::from_f64(74.0) + x[1] * 0.5,
+            ],
+            delivery_weights: vec![1.0 / 3.0; 3],
+            strike: T::from_f64(74.5),
+            rate: T::from_f64(0.03),
+            sigma_short: T::from_f64(0.32) + x[3] * 0.01,
+            alpha_short: T::from_f64(1.1),
+            sigma_long: T::from_f64(0.15),
+            rho_factors: T::from_f64(0.2),
+            seasonal_vol_amp: T::from_f64(0.05),
+            is_payer_call: true,
+        },
+    )
+    .npv;
+
+    let as_mm = ql_portfolio::solve_avellaneda_stoikov_market_making(
+        &ql_portfolio::AvellanedaStoikovMmSpec {
+            mid_price: T::from_f64(100.0) + x[1] * 0.5,
+            initial_inventory: T::from_f64(3.0) + x[2] * 0.2,
+            horizon: T::one(),
+            num_steps: 6,
+            volatility: T::from_f64(0.20) + x[3] * 0.01,
+            risk_aversion: T::from_f64(0.5),
+            order_book_kappa: T::from_f64(1.5),
+            base_arrival_intensity: T::from_f64(10.0),
+            alpha_drift: T::from_f64(0.01),
+        },
+    )
+    .expected_spread_capture_pnl;
+
+    let cdar_opt = ql_portfolio::optimize_mean_cdar_portfolio(
+        &ql_portfolio::MeanCdarPortfolioSpec {
+            path_asset_returns: vec![
+                vec![T::from_f64(0.03), T::from_f64(0.01)],
+                vec![T::from_f64(-0.06), T::from_f64(-0.01)],
+                vec![T::from_f64(-0.04), T::from_f64(-0.005)],
+                vec![T::from_f64(0.04), T::from_f64(0.012)],
+            ],
+            expected_returns: vec![T::from_f64(0.09) + x[0] * 0.005, T::from_f64(0.04)],
+            cdar_aversion: T::from_f64(4.0),
+            confidence: 0.80,
+            smoothing_eps: 1e-3,
+        },
+    )
+    .cdar;
+
+    let schur_w = ql_portfolio::schur_complementary_hrp(&ql_portfolio::SchurHrpSpec {
+        covariance: vec![
+            vec![T::from_f64(0.04) + x[3] * 0.002, T::from_f64(0.012)],
+            vec![T::from_f64(0.012), T::from_f64(0.09) + x[2] * 0.002],
+        ],
+        gamma: T::from_f64(0.6) + x[0] * 0.02,
+    })
+    .weights[0];
+
+    let oas_sh = ql_portfolio::oas_and_nonlinear_shrinkage_covariance(&[
+        vec![T::from_f64(0.02) + x[0] * 0.001, T::from_f64(-0.01)],
+        vec![T::from_f64(-0.015), T::from_f64(0.025) + x[1] * 0.001],
+        vec![T::from_f64(0.01), T::from_f64(0.005)],
+        vec![T::from_f64(-0.005), T::from_f64(-0.01)],
+    ])
+    .oas_shrinkage_intensity;
+
+    [
+        mbs * 100.0 + zciis_cf,
+        cmcds + fsimm + jlt,
+        qou + fbs * 100.0 + afv + gswap,
+        cs_swaption + as_mm + cdar_opt + schur_w + oas_sh,
+    ]
+}
+
+pub fn benchmark_burnout_cmcds_quintic_afv_cs_schur_aad(scale: usize) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let h = 1e-5;
+    let baseline = || {
+        let b = phase19_workloads(x0);
+        let mut c = b.iter().sum();
+        for lane in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[lane] += h;
+            d[lane] -= h;
+            let bu = phase19_workloads(u);
+            let bd = phase19_workloads(d);
+            for j in 0..4 {
+                c += (bu[j] - bd[j]) / (2.0 * h);
+            }
+        }
+        c
+    };
+    let sota = || {
+        type D = Dual<4>;
+        let x = [
+            D::variable(x0[0], 0),
+            D::variable(x0[1], 1),
+            D::variable(x0[2], 2),
+            D::variable(x0[3], 3),
+        ];
+        phase19_workloads(x)
+            .iter()
+            .map(|y| y.val + y.d.iter().sum::<f64>())
+            .sum()
+    };
+    run_comparison(
+        "31_burnout_cmcds_quintic_afv_cs_schur_aad",
+        "Burnout-MBS/CMCDS/Quintic-OU/AFV-CB/CS-Swaption/Schur-HRP AD",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
+}

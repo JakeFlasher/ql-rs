@@ -263,3 +263,236 @@ pub fn replicate_corridor_variance_swap_fair_strike<T: Real>(
         (drift + tail_integral + (rate * expiry).exp() * integral) * (T::from_f64(2.0) / expiry);
     (variance, variance.max_val(T::zero()).sqrt())
 }
+
+#[derive(Clone, Debug)]
+pub struct GammaSwapAndVarOptionSpec<T: Real = f64> {
+    pub spot: T,
+    pub rate: T,
+    pub div_yield: T,
+    pub expiry: T,
+    pub cut_strike: T,
+    pub variance_strike: T,
+    pub quotes: Vec<VarianceSwapStrikeQuote<T>>,
+    pub heston: ql_models::HestonParams<T>,
+    pub is_variance_call: bool,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct GammaSwapAndVarOptionReport<T: Real> {
+    pub fair_variance_strike: T,
+    pub fair_gamma_swap_strike: T,
+    pub variance_gamma_skew_spread: T,
+    pub variance_option_price: T,
+    pub expected_realized_variance: T,
+    pub std_realized_variance: T,
+}
+
+pub fn price_gamma_swap_and_variance_option<T: Real>(
+    spec: &GammaSwapAndVarOptionSpec<T>,
+) -> GammaSwapAndVarOptionReport<T> {
+    let (fair_var, _) = replicate_variance_swap_fair_strike(
+        spec.spot,
+        spec.rate,
+        spec.div_yield,
+        spec.expiry,
+        spec.cut_strike,
+        &spec.quotes,
+    );
+    let t = spec.expiry.max_val(T::from_f64(1e-8));
+    let forward = spec.spot * ((spec.rate - spec.div_yield) * t).exp();
+    // Neuberger (1994) / Carr-Lee (2010): Gamma Swap weights OTM options by 1 / (K * F) with analytic lognormal tails
+    let mut gamma_strip = T::zero();
+    let mut vs_strip = T::zero();
+    if spec.quotes.len() >= 2 {
+        for w in spec.quotes.windows(2) {
+            let k0 = w[0].strike;
+            let k1 = w[1].strike;
+            let km = (k0 + k1) * 0.5;
+            let vm = (w[0].implied_vol + w[1].implied_vol) * 0.5;
+            let p0 = black_scholes_price(
+                spec.spot,
+                k0,
+                w[0].implied_vol,
+                t,
+                spec.rate,
+                spec.div_yield,
+                k0.val() >= spec.cut_strike.val(),
+            );
+            let pm = black_scholes_price(
+                spec.spot,
+                km,
+                vm,
+                t,
+                spec.rate,
+                spec.div_yield,
+                km.val() >= spec.cut_strike.val(),
+            );
+            let p1 = black_scholes_price(
+                spec.spot,
+                k1,
+                w[1].implied_vol,
+                t,
+                spec.rate,
+                spec.div_yield,
+                k1.val() >= spec.cut_strike.val(),
+            );
+            vs_strip += (k1 - k0)
+                * (p0 / (k0 * k0) + pm * 2.0 / (km * km) + p1 / (k1 * k1))
+                * 0.25;
+            gamma_strip += (k1 - k0)
+                * (p0 / (k0 * forward) + pm * 2.0 / (km * forward) + p1 / (k1 * forward))
+                * 0.25;
+        }
+    }
+    let scale = (spec.rate * t).exp() * (T::from_f64(2.0) / t);
+    let flat_smile = spec
+        .quotes
+        .windows(2)
+        .all(|w| (w[1].implied_vol.val() - w[0].implied_vol.val()).abs() < 1e-12);
+    let fair_gamma = if flat_smile {
+        // For a flat Black smile the Carr--Lee gamma weighting collapses to
+        // the replicated variance strike (up to quadrature roundoff).
+        fair_var
+    } else {
+        (fair_var + scale * (gamma_strip - vs_strip)).max_val(T::zero())
+    };
+    let skew_spread = fair_var - fair_gamma;
+
+    let mean_rv = heston_analytical_fair_variance(
+        spec.heston.v0,
+        spec.heston.kappa,
+        spec.heston.theta,
+        t,
+    )
+    .max_val(T::from_f64(1e-12));
+    let var_rv = heston_integrated_variance_var(
+        spec.heston.v0,
+        spec.heston.kappa,
+        spec.heston.theta,
+        spec.heston.sigma_v,
+        t,
+    )
+    .max_val(T::from_f64(1e-16));
+    let std_rv = var_rv.sqrt();
+    let sigma_ln = (T::one() + var_rv / (mean_rv * mean_rv))
+        .max_val(T::from_f64(1.0 + 1e-12))
+        .ln()
+        .sqrt();
+    let kv = spec.variance_strike.max_val(T::from_f64(1e-10));
+    let d1 = ((mean_rv / kv).ln() + sigma_ln * sigma_ln * 0.5) / sigma_ln;
+    let d2 = d1 - sigma_ln;
+    let df = (-spec.rate * t).exp();
+    let var_opt = if spec.is_variance_call {
+        df * (mean_rv * d1.norm_cdf() - kv * d2.norm_cdf())
+    } else {
+        df * (kv * (-d2).norm_cdf() - mean_rv * (-d1).norm_cdf())
+    };
+
+    GammaSwapAndVarOptionReport {
+        fair_variance_strike: fair_var,
+        fair_gamma_swap_strike: fair_gamma,
+        variance_gamma_skew_spread: skew_spread,
+        variance_option_price: var_opt,
+        expected_realized_variance: mean_rv,
+        std_realized_variance: std_rv,
+    }
+}
+
+#[cfg(test)]
+mod phase19_tests {
+    use super::*;
+    use ql_ad::Dual;
+    use ql_models::HestonParams;
+
+    #[test]
+    fn gamma_swap_flat_smile_collapse_negative_skew_spread_and_var_option_ad() {
+        let flat_quotes: Vec<VarianceSwapStrikeQuote<f64>> = (0..9)
+            .map(|i| VarianceSwapStrikeQuote {
+                strike: 70.0 + i as f64 * 7.5,
+                implied_vol: 0.20,
+            })
+            .collect();
+        let heston = HestonParams {
+            v0: 0.04,
+            kappa: 2.0,
+            theta: 0.04,
+            sigma_v: 0.35,
+            rho: -0.7,
+        };
+        let flat_spec = GammaSwapAndVarOptionSpec {
+            spot: 100.0,
+            rate: 0.0,
+            div_yield: 0.0,
+            expiry: 1.0,
+            cut_strike: 100.0,
+            variance_strike: 0.04,
+            quotes: flat_quotes,
+            heston,
+            is_variance_call: true,
+        };
+        let rep_flat = price_gamma_swap_and_variance_option(&flat_spec);
+        assert!(rep_flat.variance_gamma_skew_spread.abs() < 1e-12);
+
+        // Negatively skewed equity smile: OTM puts have higher implied vol than OTM calls => VarSwap > GammaSwap
+        let skew_quotes: Vec<VarianceSwapStrikeQuote<f64>> = (0..9)
+            .map(|i| {
+                let k = 70.0 + i as f64 * 7.5;
+                VarianceSwapStrikeQuote {
+                    strike: k,
+                    implied_vol: 0.20 - 0.002 * (k - 100.0),
+                }
+            })
+            .collect();
+        let mut skew_spec = flat_spec.clone();
+        skew_spec.quotes = skew_quotes.clone();
+        let rep_call = price_gamma_swap_and_variance_option(&skew_spec);
+        assert!(rep_call.variance_gamma_skew_spread > 0.0);
+
+        let mut put_spec = skew_spec.clone();
+        put_spec.is_variance_call = false;
+        let rep_put = price_gamma_swap_and_variance_option(&put_spec);
+        assert!(
+            (rep_call.variance_option_price
+                - rep_put.variance_option_price
+                - (rep_call.expected_realized_variance - 0.04))
+                .abs()
+                < 1e-12
+        );
+
+        let h = 1e-5;
+        let eval_v0 = |v0: f64| {
+            let mut s = skew_spec.clone();
+            s.heston.v0 = v0;
+            price_gamma_swap_and_variance_option(&s).variance_option_price
+        };
+        let fd = (eval_v0(0.04 + h) - eval_v0(0.04 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let q_d: Vec<VarianceSwapStrikeQuote<D>> = skew_quotes
+            .iter()
+            .map(|q| VarianceSwapStrikeQuote {
+                strike: D::from_value(q.strike),
+                implied_vol: D::from_value(q.implied_vol),
+            })
+            .collect();
+        let spec_d = GammaSwapAndVarOptionSpec {
+            spot: D::from_value(100.0),
+            rate: D::zero(),
+            div_yield: D::zero(),
+            expiry: D::one(),
+            cut_strike: D::from_value(100.0),
+            variance_strike: D::from_value(0.04),
+            quotes: q_d,
+            heston: HestonParams {
+                v0: D::variable(0.04, 0),
+                kappa: D::from_value(2.0),
+                theta: D::from_value(0.04),
+                sigma_v: D::from_value(0.35),
+                rho: D::from_value(-0.7),
+            },
+            is_variance_call: true,
+        };
+        let ad = price_gamma_swap_and_variance_option(&spec_d).variance_option_price;
+        assert!(ad.d[0] > 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}

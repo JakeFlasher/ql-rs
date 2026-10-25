@@ -342,6 +342,107 @@ impl<T: Real> GibsonSchwartz2F<T> {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct ClewlowStricklandSwaptionSpec<T: Real = f64> {
+    pub option_expiry: T,
+    pub delivery_times: Vec<f64>,
+    pub forward_prices: Vec<T>,
+    pub delivery_weights: Vec<f64>,
+    pub strike: T,
+    pub rate: T,
+    pub sigma_short: T,
+    pub alpha_short: T,
+    pub sigma_long: T,
+    pub rho_factors: T,
+    pub seasonal_vol_amp: T,
+    pub is_payer_call: bool,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct ClewlowStricklandValuation<T: Real> {
+    pub npv: T,
+    pub forward_swap_price: T,
+    pub effective_strip_vol: T,
+    pub first_contract_samuelson_vol: T,
+    pub last_contract_samuelson_vol: T,
+}
+
+pub fn price_clewlow_strickland_strip_swaption<T: Real>(
+    spec: &ClewlowStricklandSwaptionSpec<T>,
+) -> ClewlowStricklandValuation<T> {
+    let m = spec
+        .delivery_times
+        .len()
+        .min(spec.forward_prices.len())
+        .min(spec.delivery_weights.len());
+    let te = spec.option_expiry.max_val(T::from_f64(1e-8));
+    if m == 0 {
+        return ClewlowStricklandValuation {
+            npv: T::zero(),
+            forward_swap_price: T::zero(),
+            effective_strip_vol: T::zero(),
+            first_contract_samuelson_vol: T::zero(),
+            last_contract_samuelson_vol: T::zero(),
+        };
+    }
+
+    let w_sum: f64 = spec.delivery_weights[..m].iter().sum::<f64>().max(1e-12);
+    let mut w_norm = vec![0.0; m];
+    let mut f_strip = T::zero();
+    for i in 0..m {
+        w_norm[i] = spec.delivery_weights[i] / w_sum;
+        f_strip += spec.forward_prices[i] * w_norm[i];
+    }
+
+    let a = spec.alpha_short.max_val(T::from_f64(1e-6));
+    let int_ss = ((a * te * 2.0).exp() - T::one()) / (a * 2.0);
+    let int_sl = ((a * te).exp() - T::one()) / a;
+
+    let contract_cov = |ti: f64, tj: f64| -> T {
+        let t_i = ti.max(te.val());
+        let t_j = tj.max(te.val());
+        let s_i = T::one() + spec.seasonal_vol_amp * (2.0 * std::f64::consts::PI * t_i).cos();
+        let s_j = T::one() + spec.seasonal_vol_amp * (2.0 * std::f64::consts::PI * t_j).cos();
+        let e_i = (-a * t_i).exp();
+        let e_j = (-a * t_j).exp();
+        s_i * s_j
+            * (spec.sigma_short * spec.sigma_short * e_i * e_j * int_ss
+                + spec.rho_factors * spec.sigma_short * spec.sigma_long * (e_i + e_j) * int_sl
+                + spec.sigma_long * spec.sigma_long * te)
+    };
+
+    let mut m2 = T::zero();
+    for i in 0..m {
+        for j in 0..m {
+            let cov_ij = contract_cov(spec.delivery_times[i], spec.delivery_times[j]);
+            m2 += spec.forward_prices[i]
+                * spec.forward_prices[j]
+                * (w_norm[i] * w_norm[j])
+                * cov_ij.exp();
+        }
+    }
+    let f_sq = (f_strip * f_strip).max_val(T::from_f64(1e-16));
+    let strip_var = (m2 / f_sq).max_val(T::from_f64(1.0 + 1e-12)).ln();
+    let eff_vol = (strip_var / te).sqrt();
+    let v_first = (contract_cov(spec.delivery_times[0], spec.delivery_times[0]) / te)
+        .max_val(T::zero())
+        .sqrt();
+    let v_last = (contract_cov(spec.delivery_times[m - 1], spec.delivery_times[m - 1]) / te)
+        .max_val(T::zero())
+        .sqrt();
+
+    let df = (-spec.rate * te).exp();
+    let npv = black76_price(f_strip, spec.strike, eff_vol, te, df, spec.is_payer_call);
+
+    ClewlowStricklandValuation {
+        npv,
+        forward_swap_price: f_strip,
+        effective_strip_vol: eff_vol,
+        first_contract_samuelson_vol: v_first,
+        last_contract_samuelson_vol: v_last,
+    }
+}
+
 #[cfg(test)]
 mod phase15_tests {
     use super::*;
@@ -417,5 +518,69 @@ mod phase14_tests {
         let c_dn = CalibratedSchwartzSmith2F::calibrate(&ts, &fs_dn, &ot, &om, &ov, m).unwrap();
         let fd = (c_up.futures_price(1.5) - c_dn.futures_price(1.5)) / (2.0 * h);
         assert!((delta[1] - fd).abs() < 1e-4);
+    }
+}
+
+#[cfg(test)]
+mod phase19_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn clewlow_strickland_samuelson_effect_strip_parity_and_ad() {
+        let spec = ClewlowStricklandSwaptionSpec {
+            option_expiry: 0.5,
+            delivery_times: vec![0.75, 1.0, 1.25, 1.5],
+            forward_prices: vec![75.0, 76.0, 74.0, 73.0],
+            delivery_weights: vec![0.25; 4],
+            strike: 74.5,
+            rate: 0.03,
+            sigma_short: 0.35,
+            alpha_short: 1.2,
+            sigma_long: 0.15,
+            rho_factors: 0.2,
+            seasonal_vol_amp: 0.0,
+            is_payer_call: true,
+        };
+        let call = price_clewlow_strickland_strip_swaption(&spec);
+        // Samuelson attenuation: front contract volatility > back contract volatility when alpha_short > 0
+        assert!(call.first_contract_samuelson_vol > call.last_contract_samuelson_vol);
+
+        let mut put_spec = spec.clone();
+        put_spec.is_payer_call = false;
+        let put = price_clewlow_strickland_strip_swaption(&put_spec);
+        let df = (-0.03 * 0.5_f64).exp();
+        assert!((call.npv - put.npv - df * (call.forward_swap_price - 74.5)).abs() < 1e-11);
+
+        let h = 1e-5;
+        let eval_f0 = |f0: f64| {
+            let mut s = spec.clone();
+            s.forward_prices[0] = f0;
+            price_clewlow_strickland_strip_swaption(&s).npv
+        };
+        let fd = (eval_f0(75.0 + h) - eval_f0(75.0 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let spec_d = ClewlowStricklandSwaptionSpec {
+            option_expiry: D::from_value(0.5),
+            delivery_times: vec![0.75, 1.0, 1.25, 1.5],
+            forward_prices: vec![
+                D::variable(75.0, 0),
+                D::from_value(76.0),
+                D::from_value(74.0),
+                D::from_value(73.0),
+            ],
+            delivery_weights: vec![0.25; 4],
+            strike: D::from_value(74.5),
+            rate: D::from_value(0.03),
+            sigma_short: D::from_value(0.35),
+            alpha_short: D::from_value(1.2),
+            sigma_long: D::from_value(0.15),
+            rho_factors: D::from_value(0.2),
+            seasonal_vol_amp: D::zero(),
+            is_payer_call: true,
+        };
+        let ad = price_clewlow_strickland_strip_swaption(&spec_d).npv;
+        assert!(ad.d[0] > 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-6);
     }
 }

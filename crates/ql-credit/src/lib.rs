@@ -660,6 +660,152 @@ pub fn analyze_structural_credit_black_cox<T: Real>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct JltRatingMigrationSpec<T: Real = f64> {
+    pub generator_matrix: Vec<Vec<T>>,
+    pub risk_premium_multipliers: Vec<T>,
+    pub initial_rating_index: usize,
+    pub horizon_years: f64,
+    pub payment_times: Vec<f64>,
+    pub base_coupon_rate: T,
+    pub downgrade_step_up_spreads: Vec<T>,
+    pub recovery_rate: T,
+    pub risk_free_rate: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct JltMigrationValuation<T: Real> {
+    pub transition_probabilities: Vec<T>,
+    pub survival_probability: T,
+    pub default_probability: T,
+    pub downgrade_probability: T,
+    pub step_up_bond_price: T,
+    pub step_up_coupon_pv_uplift: T,
+    pub implied_credit_spread: T,
+}
+
+fn mat_mul_generic<T: Real>(a: &[Vec<T>], b: &[Vec<T>]) -> Vec<Vec<T>> {
+    let m = a.len();
+    let mut out = vec![vec![T::zero(); m]; m];
+    for i in 0..m {
+        for k in 0..m {
+            let aik = a[i][k];
+            for j in 0..m {
+                out[i][j] += aik * b[k][j];
+            }
+        }
+    }
+    out
+}
+
+fn jlt_matrix_exp<T: Real>(q_tilde: &[Vec<T>], t: f64) -> Vec<Vec<T>> {
+    let m = q_tilde.len();
+    let scale = 16.0_f64;
+    let dt = t.max(0.0) / scale;
+    let mut a = vec![vec![T::zero(); m]; m];
+    let mut sum = vec![vec![T::zero(); m]; m];
+    for i in 0..m {
+        sum[i][i] = T::one();
+        for j in 0..m {
+            a[i][j] = q_tilde[i][j] * dt;
+        }
+    }
+    let mut term = sum.clone();
+    for deg in 1..=8 {
+        term = mat_mul_generic(&term, &a);
+        let inv_k = 1.0 / deg as f64;
+        for i in 0..m {
+            for j in 0..m {
+                term[i][j] *= T::from_f64(inv_k);
+                sum[i][j] += term[i][j];
+            }
+        }
+    }
+    for _ in 0..4 {
+        sum = mat_mul_generic(&sum, &sum);
+    }
+    sum
+}
+
+pub fn evaluate_jlt_rating_migration_credit<T: Real>(
+    spec: &JltRatingMigrationSpec<T>,
+) -> JltMigrationValuation<T> {
+    let m = spec.generator_matrix.len();
+    if m < 2
+        || spec.generator_matrix.iter().any(|r| r.len() != m)
+        || spec.risk_premium_multipliers.len() < m
+        || spec.downgrade_step_up_spreads.len() < m
+        || spec.initial_rating_index >= m - 1
+    {
+        return JltMigrationValuation {
+            transition_probabilities: Vec::new(),
+            survival_probability: T::one(),
+            default_probability: T::zero(),
+            downgrade_probability: T::zero(),
+            step_up_bond_price: T::one(),
+            step_up_coupon_pv_uplift: T::zero(),
+            implied_credit_spread: T::zero(),
+        };
+    }
+    let mut q_tilde = vec![vec![T::zero(); m]; m];
+    for i in 0..(m - 1) {
+        let pi_i = spec.risk_premium_multipliers[i].max_val(T::zero());
+        let mut row_sum = T::zero();
+        for j in 0..m {
+            if i != j {
+                let q_ij = spec.generator_matrix[i][j].max_val(T::zero()) * pi_i;
+                q_tilde[i][j] = q_ij;
+                row_sum += q_ij;
+            }
+        }
+        q_tilde[i][i] = -row_sum;
+    }
+
+    let i0 = spec.initial_rating_index;
+    let p_horizon = jlt_matrix_exp(&q_tilde, spec.horizon_years.max(1e-6));
+    let row_h = p_horizon[i0].clone();
+    let p_def_h = row_h[m - 1].max_val(T::zero()).min_val(T::from_f64(0.999999));
+    let p_surv_h = (T::one() - p_def_h).max_val(T::from_f64(1e-8));
+    let mut p_down = T::zero();
+    for p in row_h.iter().take(m - 1).skip(i0 + 1) {
+        p_down += *p;
+    }
+
+    let mut base_pv = T::zero();
+    let mut step_uplift = T::zero();
+    let mut prev_t = 0.0;
+    let mut prev_def = T::zero();
+    for (idx, &t) in spec.payment_times.iter().enumerate() {
+        let dt = (t - prev_t).max(1e-6);
+        let p_t = jlt_matrix_exp(&q_tilde, t);
+        let row_t = &p_t[i0];
+        let def_t = row_t[m - 1];
+        let surv_t = T::one() - def_t;
+        let df = (-spec.risk_free_rate * t).exp();
+        base_pv += spec.base_coupon_rate * dt * surv_t * df;
+        for j in 0..(m - 1) {
+            step_uplift += row_t[j] * spec.downgrade_step_up_spreads[j] * dt * df;
+        }
+        base_pv += spec.recovery_rate * (def_t - prev_def).max_val(T::zero()) * df;
+        if idx + 1 == spec.payment_times.len() {
+            base_pv += surv_t * df;
+        }
+        prev_t = t;
+        prev_def = def_t;
+    }
+    let imp_spread = -p_surv_h.ln() / spec.horizon_years.max(1e-6) * (T::one() - spec.recovery_rate);
+
+    JltMigrationValuation {
+        transition_probabilities: row_h,
+        survival_probability: p_surv_h,
+        default_probability: p_def_h,
+        downgrade_probability: p_down,
+        step_up_bond_price: base_pv + step_uplift,
+        step_up_coupon_pv_uplift: step_uplift,
+        implied_credit_spread: imp_spread,
+    }
+}
+
 #[cfg(test)]
 mod phase17_tests {
     use super::*;
@@ -703,6 +849,76 @@ mod phase17_tests {
         };
         let ad = analyze_structural_credit_black_cox(&sd).black_cox_cds_spread;
         assert!(ad.d[0] < 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod phase19_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn jlt_markov_generator_conservation_step_up_uplift_and_ad() {
+        // 4 states: 0 = IG-A, 1 = IG-BBB, 2 = HY-BB, 3 = Default (absorbing)
+        let q = vec![
+            vec![-0.06, 0.045, 0.010, 0.005],
+            vec![0.020, -0.09, 0.055, 0.015],
+            vec![0.005, 0.025, -0.11, 0.080],
+            vec![0.0, 0.0, 0.0, 0.0],
+        ];
+        let spec = JltRatingMigrationSpec {
+            generator_matrix: q.clone(),
+            risk_premium_multipliers: vec![1.2, 1.4, 1.6, 1.0],
+            initial_rating_index: 0,
+            horizon_years: 3.0,
+            payment_times: vec![1.0, 2.0, 3.0],
+            base_coupon_rate: 0.04,
+            downgrade_step_up_spreads: vec![0.0, 0.005, 0.015, 0.0],
+            recovery_rate: 0.40,
+            risk_free_rate: 0.03,
+        };
+        let val = evaluate_jlt_rating_migration_credit(&spec);
+        let row_sum: f64 = val.transition_probabilities.iter().sum();
+        assert!((row_sum - 1.0).abs() < 1e-10);
+        assert!(val.transition_probabilities.iter().all(|&p| p >= 0.0));
+        assert!(val.step_up_coupon_pv_uplift > 0.0);
+
+        let h = 1e-5;
+        let eval_pi0 = |pi0: f64| {
+            let mut s = spec.clone();
+            s.risk_premium_multipliers[0] = pi0;
+            evaluate_jlt_rating_migration_credit(&s).implied_credit_spread
+        };
+        let fd = (eval_pi0(1.2 + h) - eval_pi0(1.2 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let q_d: Vec<Vec<D>> = q
+            .iter()
+            .map(|r| r.iter().map(|&x| D::from_value(x)).collect())
+            .collect();
+        let spec_d = JltRatingMigrationSpec {
+            generator_matrix: q_d,
+            risk_premium_multipliers: vec![
+                D::variable(1.2, 0),
+                D::from_value(1.4),
+                D::from_value(1.6),
+                D::one(),
+            ],
+            initial_rating_index: 0,
+            horizon_years: 3.0,
+            payment_times: vec![1.0, 2.0, 3.0],
+            base_coupon_rate: D::from_value(0.04),
+            downgrade_step_up_spreads: vec![
+                D::zero(),
+                D::from_value(0.005),
+                D::from_value(0.015),
+                D::zero(),
+            ],
+            recovery_rate: D::from_value(0.40),
+            risk_free_rate: D::from_value(0.03),
+        };
+        let ad = evaluate_jlt_rating_migration_credit(&spec_d).implied_credit_spread;
+        assert!(ad.d[0] > 0.0);
         assert!((ad.d[0] - fd).abs() < 1e-6);
     }
 }

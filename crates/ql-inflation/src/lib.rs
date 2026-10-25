@@ -845,6 +845,65 @@ pub fn estimate_multiplicative_seasonality(
     MultiplicativeSeasonality::new(factors)
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct ZciisCapFloorSpec<T: Real = f64> {
+    pub notional: T,
+    pub maturity_years: f64,
+    pub strike_annual_rate: T,
+    pub target_month: Option<u8>,
+    pub is_cap: bool,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct ZciisCapFloorValuation<T: Real> {
+    pub npv: T,
+    pub forward_cpi_ratio: T,
+    pub strike_growth_factor: T,
+    pub log_cpi_variance: T,
+    pub implied_annual_inflation_forward: T,
+}
+
+pub fn price_zciis_capfloor_jarrow_yildirim<T: Real>(
+    spec: &ZciisCapFloorSpec<T>,
+    discount: &impl YieldTermStructure<T>,
+    inflation: &ZeroInflationCurve<T>,
+    params: &JarrowYildirimParams<T>,
+) -> ZciisCapFloorValuation<T> {
+    let t = spec.maturity_years.max(0.0);
+    if t <= 0.0 {
+        return ZciisCapFloorValuation {
+            npv: T::zero(),
+            forward_cpi_ratio: T::one(),
+            strike_growth_factor: T::one(),
+            log_cpi_variance: T::zero(),
+            implied_annual_inflation_forward: T::zero(),
+        };
+    }
+    let df = discount.discount_factor(t);
+    let f_ratio = (inflation.forward_cpi(t, spec.target_month)
+        / T::from_f64(inflation.base_cpi.max(1e-12)))
+    .max_val(T::from_f64(1e-8));
+    let one_plus_k = (T::one() + spec.strike_annual_rate).max_val(T::from_f64(1e-6));
+    let k_tot = (one_plus_k.ln() * t).exp();
+    let (var_cpi, _) = jarrow_yildirim_yoy_moments(params, 0.0, t);
+    let std = var_cpi.max_val(T::from_f64(1e-16)).sqrt();
+    let d1 = ((f_ratio / k_tot).ln() + var_cpi * 0.5) / std;
+    let d2 = d1 - std;
+    let undiscounted = if spec.is_cap {
+        f_ratio * d1.norm_cdf() - k_tot * d2.norm_cdf()
+    } else {
+        k_tot * (-d2).norm_cdf() - f_ratio * (-d1).norm_cdf()
+    };
+    let imp_ann = (f_ratio.ln() / t).exp() - T::one();
+    ZciisCapFloorValuation {
+        npv: spec.notional * df * undiscounted,
+        forward_cpi_ratio: f_ratio,
+        strike_growth_factor: k_tot,
+        log_cpi_variance: var_cpi,
+        implied_annual_inflation_forward: imp_ann,
+    }
+}
+
 #[cfg(test)]
 mod phase14_tests {
     use super::*;
@@ -963,5 +1022,84 @@ mod phase15_tests {
         };
         let ad = price_yoy_capfloor_jarrow_yildirim(&cap_d, &disc_d, &inf_d, &pd).0;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase19_tests {
+    use super::*;
+    use ql_ad::Dual;
+    use ql_curves::FlatForwardCurve;
+
+    #[test]
+    fn zciis_capfloor_jarrow_yildirim_parity_and_ad() {
+        let d = Date::from_ymd(2024, 1, 1).unwrap();
+        let disc = FlatForwardCurve::new(d, 0.03);
+        let infl = ZeroInflationCurve::new(d, 100.0, vec![1.0, 3.0, 5.0], vec![0.022, 0.024, 0.025], None);
+        let jy = JarrowYildirimParams {
+            a_nom: 0.05,
+            sigma_nom: 0.008,
+            a_real: 0.04,
+            sigma_real: 0.006,
+            sigma_cpi: 0.012,
+            rho_nom_real: 0.3,
+            rho_nom_cpi: 0.2,
+            rho_real_cpi: -0.1,
+        };
+        let cap_spec = ZciisCapFloorSpec {
+            notional: 100.0,
+            maturity_years: 5.0,
+            strike_annual_rate: 0.02,
+            target_month: None,
+            is_cap: true,
+        };
+        let mut flr_spec = cap_spec;
+        flr_spec.is_cap = false;
+        let cap = price_zciis_capfloor_jarrow_yildirim(&cap_spec, &disc, &infl, &jy);
+        let flr = price_zciis_capfloor_jarrow_yildirim(&flr_spec, &disc, &infl, &jy);
+        let zciis = ZeroCouponInflationSwap {
+            notional: 100.0,
+            fixed_rate: 0.02,
+            maturity_years: 5.0,
+            target_month: None,
+            pay_fixed: true,
+        };
+        // Exact ZCIIS Cap - Floor = Pay-Fixed ZCIIS NPV
+        assert!((cap.npv - flr.npv - zciis.npv(&disc, &infl)).abs() < 1e-10);
+
+        let h = 1e-5;
+        let eval_k = |k: f64| {
+            let mut s = cap_spec;
+            s.strike_annual_rate = k;
+            price_zciis_capfloor_jarrow_yildirim(&s, &disc, &infl, &jy).npv
+        };
+        let fd = (eval_k(0.02 + h) - eval_k(0.02 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let disc_d = FlatForwardCurve::new(d, D::from_value(0.03));
+        let infl_d = infl.to_ad(&[D::from_value(0.022), D::from_value(0.024), D::from_value(0.025)]);
+        let jy_d = JarrowYildirimParams {
+            a_nom: D::from_value(0.05),
+            sigma_nom: D::from_value(0.008),
+            a_real: D::from_value(0.04),
+            sigma_real: D::from_value(0.006),
+            sigma_cpi: D::from_value(0.012),
+            rho_nom_real: D::from_value(0.3),
+            rho_nom_cpi: D::from_value(0.2),
+            rho_real_cpi: D::from_value(-0.1),
+        };
+        let cap_d = price_zciis_capfloor_jarrow_yildirim(
+            &ZciisCapFloorSpec {
+                notional: D::from_value(100.0),
+                maturity_years: 5.0,
+                strike_annual_rate: D::variable(0.02, 0),
+                target_month: None,
+                is_cap: true,
+            },
+            &disc_d,
+            &infl_d,
+            &jy_d,
+        );
+        assert!(cap_d.npv.d[0] < 0.0);
+        assert!((cap_d.npv.d[0] - fd).abs() < 1e-6);
     }
 }

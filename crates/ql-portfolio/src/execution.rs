@@ -314,6 +314,88 @@ pub fn multi_asset_almgren_chriss_execution<T: Real>(
     try_multi_asset_almgren_chriss_execution(s).expect("valid multi-asset execution inputs")
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct AvellanedaStoikovMmSpec<T: Real = f64> {
+    pub mid_price: T,
+    pub initial_inventory: T,
+    pub horizon: T,
+    pub num_steps: usize,
+    pub volatility: T,
+    pub risk_aversion: T,
+    pub order_book_kappa: T,
+    pub base_arrival_intensity: T,
+    pub alpha_drift: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct AvellanedaStoikovMmReport<T: Real> {
+    pub reservation_price: T,
+    pub optimal_bid_quote: T,
+    pub optimal_ask_quote: T,
+    pub optimal_bid_ask_spread: T,
+    pub bid_fill_intensity: T,
+    pub ask_fill_intensity: T,
+    pub expected_inventory_trajectory: Vec<T>,
+    pub expected_spread_capture_pnl: T,
+}
+
+pub fn solve_avellaneda_stoikov_market_making<T: Real>(
+    spec: &AvellanedaStoikovMmSpec<T>,
+) -> AvellanedaStoikovMmReport<T> {
+    let n = spec.num_steps.max(1);
+    let tau = spec.horizon.max_val(T::from_f64(1e-6));
+    let dt = tau / n as f64;
+    let gamma = spec.risk_aversion.max_val(T::from_f64(1e-8));
+    let kappa = spec.order_book_kappa.max_val(T::from_f64(1e-8));
+    let sig2 = spec.volatility * spec.volatility;
+
+    // Reservation (indifference) price at t = 0: r(s, q, T) = s + alpha * T - q * gamma * sigma^2 * T
+    let res_price = spec.mid_price + spec.alpha_drift * tau - spec.initial_inventory * gamma * sig2 * tau;
+    let base_half_spread = (T::one() + gamma / kappa).ln() / kappa;
+    let half_spread = base_half_spread + gamma * sig2 * tau * 0.5;
+    let opt_bid = res_price - half_spread;
+    let opt_ask = res_price + half_spread;
+    let opt_spread = opt_ask - opt_bid;
+
+    let delta_bid0 = spec.mid_price - opt_bid;
+    let delta_ask0 = opt_ask - spec.mid_price;
+    let lam_bid0 = spec.base_arrival_intensity * (-kappa * delta_bid0).exp();
+    let lam_ask0 = spec.base_arrival_intensity * (-kappa * delta_ask0).exp();
+
+    let mut q = spec.initial_inventory;
+    let mut traj = Vec::with_capacity(n + 1);
+    traj.push(q);
+    let mut pnl = T::zero();
+
+    for step in 0..n {
+        let rem = tau * ((n - step) as f64 / n as f64);
+        let r_t = spec.mid_price + spec.alpha_drift * rem - q * gamma * sig2 * rem;
+        let hs_t = base_half_spread + gamma * sig2 * rem * 0.5;
+        let db = (spec.mid_price - (r_t - hs_t))
+            .max_val(T::from_f64(-20.0))
+            .min_val(T::from_f64(20.0));
+        let da = ((r_t + hs_t) - spec.mid_price)
+            .max_val(T::from_f64(-20.0))
+            .min_val(T::from_f64(20.0));
+        let lb = spec.base_arrival_intensity * (-kappa * db).exp();
+        let la = spec.base_arrival_intensity * (-kappa * da).exp();
+        pnl += (lb * db + la * da + q * spec.alpha_drift - q * q * gamma * sig2 * 0.5) * dt;
+        q += (lb - la) * dt;
+        traj.push(q);
+    }
+
+    AvellanedaStoikovMmReport {
+        reservation_price: res_price,
+        optimal_bid_quote: opt_bid,
+        optimal_ask_quote: opt_ask,
+        optimal_bid_ask_spread: opt_spread,
+        bid_fill_intensity: lam_bid0,
+        ask_fill_intensity: lam_ask0,
+        expected_inventory_trajectory: traj,
+        expected_spread_capture_pnl: pnl,
+    }
+}
+
 #[cfg(test)]
 mod phase14_tests {
     use super::*;
@@ -509,5 +591,60 @@ mod phase17_tests {
         let ad = optimal_dark_lit_execution(&sd).expected_total_cost;
         assert!(fd < 0.0 && ad.d[0] < 0.0);
         assert!((ad.d[0] - fd_ra).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod phase19_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn avellaneda_stoikov_inventory_skew_symmetry_and_ad() {
+        let zero_q = AvellanedaStoikovMmSpec {
+            mid_price: 100.0,
+            initial_inventory: 0.0,
+            horizon: 1.0,
+            num_steps: 10,
+            volatility: 0.20,
+            risk_aversion: 0.5,
+            order_book_kappa: 1.5,
+            base_arrival_intensity: 10.0,
+            alpha_drift: 0.0,
+        };
+        let rep0 = solve_avellaneda_stoikov_market_making(&zero_q);
+        assert!((rep0.reservation_price - 100.0).abs() < 1e-12);
+        assert!((rep0.bid_fill_intensity - rep0.ask_fill_intensity).abs() < 1e-12);
+
+        let mut long_q = zero_q;
+        long_q.initial_inventory = 5.0;
+        let rep_long = solve_avellaneda_stoikov_market_making(&long_q);
+        // Long inventory skews reservation price downward and increases ask fill intensity vs bid
+        assert!(rep_long.reservation_price < 100.0);
+        assert!(rep_long.ask_fill_intensity > rep_long.bid_fill_intensity);
+        assert!(rep_long.expected_inventory_trajectory.last().copied().unwrap() < 5.0);
+
+        let h = 1e-5;
+        let eval_q = |q: f64| {
+            let mut s = long_q;
+            s.initial_inventory = q;
+            solve_avellaneda_stoikov_market_making(&s).optimal_bid_quote
+        };
+        let fd = (eval_q(5.0 + h) - eval_q(5.0 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let spec_d = AvellanedaStoikovMmSpec {
+            mid_price: D::from_value(100.0),
+            initial_inventory: D::variable(5.0, 0),
+            horizon: D::one(),
+            num_steps: 10,
+            volatility: D::from_value(0.20),
+            risk_aversion: D::from_value(0.5),
+            order_book_kappa: D::from_value(1.5),
+            base_arrival_intensity: D::from_value(10.0),
+            alpha_drift: D::zero(),
+        };
+        let ad = solve_avellaneda_stoikov_market_making(&spec_d).optimal_bid_quote;
+        assert!(ad.d[0] < 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-6);
     }
 }

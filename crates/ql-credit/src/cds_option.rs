@@ -225,6 +225,116 @@ pub fn price_index_cds_swaption<T: Real>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct CmCdsMarketModelSpec<T: Real = f64> {
+    pub notional: T,
+    pub grid_times: Vec<f64>,
+    pub start_idx: usize,
+    pub end_idx: usize,
+    pub cm_tenor_periods: usize,
+    pub participation_rate: T,
+    pub lgd: T,
+    pub forward_cds_vols: Vec<T>,
+    pub forward_cds_corr: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct CmCdsValuation<T: Real> {
+    pub seller_npv: T,
+    pub cmcds_premium_leg_pv: T,
+    pub protection_leg_pv: T,
+    pub fair_participation_rate: T,
+    pub convexity_adjustment_pv: T,
+    pub projected_cm_rates: Vec<T>,
+}
+
+pub fn price_cmcds_market_model<T: Real>(
+    spec: &CmCdsMarketModelSpec<T>,
+    discount: &impl ql_curves::YieldTermStructure<T>,
+    credit: &crate::SurvivalProbabilityCurve<T>,
+) -> CmCdsValuation<T> {
+    let a = spec.start_idx;
+    let b = spec.end_idx;
+    let c = spec.cm_tenor_periods;
+    let max_idx = b + c;
+    if b <= a || spec.grid_times.len() <= max_idx || spec.forward_cds_vols.len() < max_idx {
+        return CmCdsValuation {
+            seller_npv: T::zero(),
+            cmcds_premium_leg_pv: T::zero(),
+            protection_leg_pv: T::zero(),
+            fair_participation_rate: T::one(),
+            convexity_adjustment_pv: T::zero(),
+            projected_cm_rates: Vec::new(),
+        };
+    }
+
+    let mut alphas = vec![0.0; max_idx + 1];
+    let mut p_def = vec![T::one(); max_idx + 1];
+    let mut r_one = vec![T::zero(); max_idx + 1];
+    p_def[0] = discount.discount_factor(spec.grid_times[0])
+        * credit.survival_probability(spec.grid_times[0]);
+
+    for k in 1..=max_idx {
+        let t_prev = spec.grid_times[k - 1];
+        let t_curr = spec.grid_times[k];
+        let alpha_k = (t_curr - t_prev).max(1e-8);
+        alphas[k] = alpha_k;
+        let q_prev = credit.survival_probability(t_prev);
+        let q_curr = credit.survival_probability(t_curr).max_val(T::from_f64(1e-12));
+        p_def[k] = discount.discount_factor(t_curr) * q_curr;
+        r_one[k] = spec.lgd * (q_prev / q_curr - T::one()) / alpha_k;
+    }
+
+    let mut prem_unscaled = T::zero();
+    let mut prem_zero_vol = T::zero();
+    let mut prot_pv = T::zero();
+    let mut cm_rates = Vec::with_capacity(b - a);
+
+    for j in (a + 1)..=b {
+        let t_reset = spec.grid_times[j - 1].max(0.0);
+        let mut denom = T::zero();
+        for h in j..=(j + c) {
+            denom += p_def[h] * alphas[h];
+        }
+        let denom_safe = denom.max_val(T::from_f64(1e-14));
+        let mut e_cm = T::zero();
+        let mut e_cm0 = T::zero();
+        for i in j..=(j + c) {
+            let w_ji = (p_def[i] * alphas[i]) / denom_safe;
+            let sig_i = spec.forward_cds_vols[i - 1];
+            let mut drift_sum = T::zero();
+            for k in (j + 1)..=i {
+                let sig_k = spec.forward_cds_vols[k - 1];
+                let r_k = r_one[k];
+                let ratio = r_k / (r_k + spec.lgd / alphas[k]).max_val(T::from_f64(1e-12));
+                drift_sum += spec.forward_cds_corr * sig_k * ratio;
+            }
+            let conv_factor = (sig_i * drift_sum * t_reset).exp();
+            e_cm += w_ji * r_one[i] * conv_factor;
+            e_cm0 += w_ji * r_one[i];
+        }
+        cm_rates.push(e_cm);
+        let annuity_j = p_def[j] * alphas[j];
+        prem_unscaled += annuity_j * e_cm;
+        prem_zero_vol += annuity_j * e_cm0;
+        prot_pv += annuity_j * r_one[j];
+    }
+
+    let fair_phi = prot_pv / prem_unscaled.max_val(T::from_f64(1e-14));
+    let prem_pv = spec.notional * spec.participation_rate * prem_unscaled;
+    let prot_total = spec.notional * prot_pv;
+    let conv_adj = spec.notional * (prem_unscaled - prem_zero_vol);
+
+    CmCdsValuation {
+        seller_npv: prem_pv - prot_total,
+        cmcds_premium_leg_pv: prem_pv,
+        protection_leg_pv: prot_total,
+        fair_participation_rate: fair_phi,
+        convexity_adjustment_pv: conv_adj,
+        projected_cm_rates: cm_rates,
+    }
+}
+
 #[cfg(test)]
 mod phase14_tests {
     use super::*;
@@ -373,5 +483,78 @@ mod phase15_tests {
         };
         let ad = price_index_cds_swaption(&sd, &disc_d, std::slice::from_ref(&curve_d)).npv;
         assert!((ad.d[0] - fd_rec).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase19_tests {
+    use super::*;
+    use crate::SurvivalProbabilityCurve;
+    use ql_ad::Dual;
+    use ql_curves::FlatForwardCurve;
+    use ql_time::Date;
+
+    #[test]
+    fn brigo_cmcds_one_period_collapse_convexity_and_ad() {
+        let d = Date::from_ymd(2024, 1, 1).unwrap();
+        let disc = FlatForwardCurve::new(d, 0.03);
+        let credit = SurvivalProbabilityCurve::new(
+            d,
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            vec![0.02; 8],
+        );
+        let grid = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        // Brigo (2008) Prop 2.4 invariant: c = 0 (1-period reset) => zero convexity, fair_participation_rate == 1.0, seller_npv == 0.0
+        let spec_c0 = CmCdsMarketModelSpec {
+            notional: 100.0,
+            grid_times: grid.clone(),
+            start_idx: 0,
+            end_idx: 4,
+            cm_tenor_periods: 0,
+            participation_rate: 1.0,
+            lgd: 0.6,
+            forward_cds_vols: vec![0.35; 8],
+            forward_cds_corr: 0.85,
+        };
+        let v0 = price_cmcds_market_model(&spec_c0, &disc, &credit);
+        assert!(v0.seller_npv.abs() < 1e-12);
+        assert!((v0.fair_participation_rate - 1.0).abs() < 1e-12);
+        assert!(v0.convexity_adjustment_pv.abs() < 1e-12);
+
+        // c = 3 (forward 4-period CMCDS): positive convexity adjustment & fair participation rate < 1
+        let mut spec_c3 = spec_c0.clone();
+        spec_c3.cm_tenor_periods = 3;
+        let v3 = price_cmcds_market_model(&spec_c3, &disc, &credit);
+        assert!(v3.convexity_adjustment_pv > 0.0);
+        assert!(v3.fair_participation_rate < 1.0);
+
+        let h = 1e-5;
+        let eval_vol = |v: f64| {
+            let mut s = spec_c3.clone();
+            s.forward_cds_vols = vec![v; 8];
+            price_cmcds_market_model(&s, &disc, &credit).fair_participation_rate
+        };
+        let fd = (eval_vol(0.35 + h) - eval_vol(0.35 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let disc_d = FlatForwardCurve::new(d, D::from_value(0.03));
+        let credit_d = SurvivalProbabilityCurve::new(
+            d,
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            vec![D::from_value(0.02); 8],
+        );
+        let spec_d = CmCdsMarketModelSpec {
+            notional: D::from_value(100.0),
+            grid_times: grid,
+            start_idx: 0,
+            end_idx: 4,
+            cm_tenor_periods: 3,
+            participation_rate: D::one(),
+            lgd: D::from_value(0.6),
+            forward_cds_vols: vec![D::variable(0.35, 0); 8],
+            forward_cds_corr: D::from_value(0.85),
+        };
+        let ad = price_cmcds_market_model(&spec_d, &disc_d, &credit_d).fair_participation_rate;
+        assert!(ad.d[0] < 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-6);
     }
 }

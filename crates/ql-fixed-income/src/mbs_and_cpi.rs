@@ -371,6 +371,221 @@ pub fn analyze_tba_dollar_roll<T: Real>(s: &TbaDollarRollSpec<T>) -> TbaDollarRo
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct MbsBurnoutOasSpec<T: Real = f64> {
+    pub market_price: T,
+    pub original_balance: T,
+    pub wac: T,
+    pub pass_through_rate: T,
+    pub term_months: usize,
+    pub seasoning_months: usize,
+    pub turnover_cpr: T,
+    pub max_refi_cpr: T,
+    pub refi_slope: T,
+    pub refi_incentive_threshold: T,
+    pub burnout_beta: T,
+    pub primary_secondary_spread: T,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct MbsBurnoutOasReport<T: Real> {
+    pub oas: T,
+    pub model_price_zero_oas: T,
+    pub wal: T,
+    pub terminal_burnout_factor: T,
+    pub option_adjusted_duration: T,
+    pub option_adjusted_convexity: T,
+}
+
+pub fn price_mbs_with_burnout<T: Real>(
+    spec: &MbsBurnoutOasSpec<T>,
+    curve: &impl YieldTermStructure<T>,
+    oas: T,
+) -> (T, T, T) {
+    let n = spec.term_months.max(1);
+    let mut bal = spec.original_balance;
+    let mut pv = T::zero();
+    let mut prin_time = T::zero();
+    let mut prin_total = T::zero();
+    let mut cum_burnout = T::zero();
+    let mut burnout_factor = T::one();
+    let eps = T::from_f64(1e-4);
+
+    for m in 1..=n {
+        let t = m as f64 / 12.0;
+        let rem = (n - m + 1) as f64;
+        let r_m = spec.wac / 12.0;
+        let pmt_factor = if r_m.val().abs() < 1e-12 {
+            T::one() / rem
+        } else {
+            let one_plus = (T::one() + r_m).max_val(T::from_f64(1e-8));
+            r_m / (T::one() - (-one_plus.ln() * rem).exp())
+        };
+        let sched_rate = (pmt_factor - r_m).max_val(T::zero()).min_val(T::one());
+        let df_base = curve.discount_factor(t).max_val(T::from_f64(1e-12));
+        let z_t = -df_base.ln() / t.max(1e-8);
+        let incentive = spec.wac - (z_t + spec.primary_secondary_spread);
+        burnout_factor = (-spec.burnout_beta * cum_burnout).exp();
+        let refi_arg = (-spec.refi_slope * (incentive - spec.refi_incentive_threshold))
+            .max_val(T::from_f64(-40.0))
+            .min_val(T::from_f64(40.0));
+        let refi_cpr = burnout_factor * spec.max_refi_cpr / (T::one() + refi_arg.exp());
+        let psa_ramp = ((spec.seasoning_months + m) as f64 / 30.0).min(1.0);
+        let cpr = ((spec.turnover_cpr + refi_cpr) * psa_ramp)
+            .max_val(T::zero())
+            .min_val(T::from_f64(0.98));
+        let smm = T::one() - ((T::one() - cpr).max_val(T::from_f64(1e-8)).ln() / 12.0).exp();
+
+        let interest_pass = bal * (spec.pass_through_rate / 12.0);
+        let sched_prin = bal * sched_rate;
+        let prepay_prin = (bal - sched_prin) * smm;
+        let total_prin = sched_prin + prepay_prin;
+        let cf = interest_pass + total_prin;
+        let df = df_base * (-oas * t).exp();
+        pv += cf * df;
+        prin_time += total_prin * t;
+        prin_total += total_prin;
+        bal = (bal - total_prin).max_val(T::zero());
+
+        let pos_inc = (incentive + (incentive * incentive + eps * eps).sqrt()) * 0.5;
+        cum_burnout += pos_inc / 12.0;
+    }
+    let wal = prin_time / prin_total.max_val(T::from_f64(1e-12));
+    (pv, wal, burnout_factor)
+}
+
+pub fn analyze_mbs_burnout_oas_ad<T: Real>(
+    spec: &MbsBurnoutOasSpec<T>,
+    curve: &impl YieldTermStructure<T>,
+) -> MbsBurnoutOasReport<T> {
+    struct ScalarDiscount<'a> {
+        dfs: &'a [f64],
+    }
+    impl YieldTermStructure<f64> for ScalarDiscount<'_> {
+        fn reference_date(&self) -> ql_time::Date {
+            ql_time::Date(0)
+        }
+        fn discount_factor(&self, t: f64) -> f64 {
+            let idx = ((t * 12.0).round() as usize).saturating_sub(1);
+            self.dfs
+                .get(idx)
+                .copied()
+                .unwrap_or_else(|| self.dfs.last().copied().unwrap_or(1.0))
+        }
+        fn zero_rate(&self, t: f64) -> f64 {
+            let tt = t.max(1e-8);
+            -self.discount_factor(t).ln() / tt
+        }
+        fn instantaneous_forward(&self, t: f64) -> f64 {
+            self.zero_rate(t)
+        }
+    }
+
+    let n = spec.term_months.max(1);
+    let dfs_f64: Vec<f64> = (1..=n)
+        .map(|m| curve.discount_factor(m as f64 / 12.0).val())
+        .collect();
+    let sc_curve = ScalarDiscount { dfs: &dfs_f64 };
+    let spec_f64 = MbsBurnoutOasSpec {
+        market_price: spec.market_price.val(),
+        original_balance: spec.original_balance.val(),
+        wac: spec.wac.val(),
+        pass_through_rate: spec.pass_through_rate.val(),
+        term_months: n,
+        seasoning_months: spec.seasoning_months,
+        turnover_cpr: spec.turnover_cpr.val(),
+        max_refi_cpr: spec.max_refi_cpr.val(),
+        refi_slope: spec.refi_slope.val(),
+        refi_incentive_threshold: spec.refi_incentive_threshold.val(),
+        burnout_beta: spec.burnout_beta.val(),
+        primary_secondary_spread: spec.primary_secondary_spread.val(),
+    };
+
+    let mut lo = -0.10_f64;
+    let mut hi = 0.25_f64;
+    for _ in 0..48 {
+        let mid = 0.5 * (lo + hi);
+        let p_mid = price_mbs_with_burnout(&spec_f64, &sc_curve, mid).0;
+        if p_mid > spec_f64.market_price {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let mut oas_root = 0.5 * (lo + hi);
+    let h_fd = 1e-5;
+    for _ in 0..5 {
+        let p0 = price_mbs_with_burnout(&spec_f64, &sc_curve, oas_root).0 - spec_f64.market_price;
+        let pp = price_mbs_with_burnout(&spec_f64, &sc_curve, oas_root + h_fd).0;
+        let pm = price_mbs_with_burnout(&spec_f64, &sc_curve, oas_root - h_fd).0;
+        let dp = (pp - pm) / (2.0 * h_fd);
+        if dp.abs() > 1e-12 {
+            oas_root = (oas_root - p0 / dp).clamp(-0.15, 0.35);
+        }
+    }
+    let pp_f64 = price_mbs_with_burnout(&spec_f64, &sc_curve, oas_root + h_fd).0;
+    let p0_f64 = price_mbs_with_burnout(&spec_f64, &sc_curve, oas_root).0;
+    let pm_f64 = price_mbs_with_burnout(&spec_f64, &sc_curve, oas_root - h_fd).0;
+    let f_xx = (pp_f64 - 2.0 * p0_f64 + pm_f64) / (h_fd * h_fd);
+
+    let oas_t = T::from_f64(oas_root);
+    let h_t = T::from_f64(h_fd);
+    let (p_up_oas, _, _) = price_mbs_with_burnout(spec, curve, oas_t + h_t);
+    let (p_dn_oas, _, _) = price_mbs_with_burnout(spec, curve, oas_t - h_t);
+    let f_x = (p_up_oas - p_dn_oas) / (2.0 * h_fd);
+
+    let oas = ql_ad::ift_lift_1d(
+        oas_root,
+        |s| price_mbs_with_burnout(spec, curve, s).0 - spec.market_price,
+        f_x,
+        f_xx,
+    );
+    let (model_price_zero_oas, _, _) = price_mbs_with_burnout(spec, curve, T::zero());
+    let (p_mid_t, wal, terminal_burnout_factor) = price_mbs_with_burnout(spec, curve, oas);
+
+    let dy = 1e-4;
+    struct ShiftedCurve<'a, C> {
+        base: &'a C,
+        shift: f64,
+    }
+    impl<T: Real, C: YieldTermStructure<T>> YieldTermStructure<T> for ShiftedCurve<'_, C> {
+        fn reference_date(&self) -> ql_time::Date {
+            self.base.reference_date()
+        }
+        fn discount_factor(&self, t: f64) -> T {
+            self.base.discount_factor(t) * (-self.shift * t).exp()
+        }
+        fn zero_rate(&self, t: f64) -> T {
+            self.base.zero_rate(t) + T::from_f64(self.shift)
+        }
+        fn instantaneous_forward(&self, t: f64) -> T {
+            self.base.instantaneous_forward(t) + T::from_f64(self.shift)
+        }
+    }
+    let c_up = ShiftedCurve {
+        base: curve,
+        shift: dy,
+    };
+    let c_dn = ShiftedCurve {
+        base: curve,
+        shift: -dy,
+    };
+    let (p_rate_up, _, _) = price_mbs_with_burnout(spec, &c_up, oas);
+    let (p_rate_dn, _, _) = price_mbs_with_burnout(spec, &c_dn, oas);
+    let p_denom = p_mid_t.max_val(T::from_f64(1e-8));
+    let oad = (p_rate_dn - p_rate_up) / (p_denom * (2.0 * dy));
+    let oac = (p_rate_up - p_mid_t * 2.0 + p_rate_dn) / (p_denom * (dy * dy));
+
+    MbsBurnoutOasReport {
+        oas,
+        model_price_zero_oas,
+        wal,
+        terminal_burnout_factor,
+        option_adjusted_duration: oad,
+        option_adjusted_convexity: oac,
+    }
+}
+
 #[cfg(test)]
 mod phase15_tests {
     use super::*;
@@ -1058,5 +1273,73 @@ mod phase17_tests {
         );
         assert!((rep_d.z_spread.d[0] - fd).abs() < 1e-6);
         assert!((rep_d.z_spread.d[0] + 1.0 / rep_d.spread_dv01.val).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod phase19_tests {
+    use super::*;
+    use ql_ad::Dual;
+    use ql_curves::FlatForwardCurve;
+    use ql_time::Date;
+
+    #[test]
+    fn mbs_burnout_oas_zero_recovery_burnout_monotonicity_and_ift_ad() {
+        let d = Date::from_ymd(2024, 1, 1).unwrap();
+        let curve = FlatForwardCurve::new(d, 0.035);
+        let mut spec = MbsBurnoutOasSpec {
+            market_price: 100.0,
+            original_balance: 100.0,
+            wac: 0.060,
+            pass_through_rate: 0.055,
+            term_months: 60,
+            seasoning_months: 12,
+            turnover_cpr: 0.06,
+            max_refi_cpr: 0.35,
+            refi_slope: 80.0,
+            refi_incentive_threshold: 0.005,
+            burnout_beta: 12.0,
+            primary_secondary_spread: 0.010,
+        };
+        let (p0, wal_with_burnout, b_term) = price_mbs_with_burnout(&spec, &curve, 0.0);
+        spec.market_price = p0;
+        let rep0 = analyze_mbs_burnout_oas_ad(&spec, &curve);
+        assert!(rep0.oas.abs() < 1e-9);
+        assert!(b_term < 1.0 && b_term > 0.0);
+        assert!(rep0.option_adjusted_duration > 0.0);
+
+        let mut no_burn = spec.clone();
+        no_burn.burnout_beta = 0.0;
+        let (_, wal_no_burnout, b_no) = price_mbs_with_burnout(&no_burn, &curve, 0.0);
+        assert!((b_no - 1.0).abs() < 1e-12);
+        // Burnout slows in-the-money refinancing over time, extending WAL
+        assert!(wal_with_burnout > wal_no_burnout);
+
+        let h = 1e-5;
+        let eval_oas = |mp: f64| {
+            let mut s = spec.clone();
+            s.market_price = mp;
+            analyze_mbs_burnout_oas_ad(&s, &curve).oas
+        };
+        let fd = (eval_oas(101.5 + h) - eval_oas(101.5 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let curve_d = FlatForwardCurve::new(d, D::from_value(0.035));
+        let spec_d = MbsBurnoutOasSpec {
+            market_price: D::variable(101.5, 0),
+            original_balance: D::from_value(100.0),
+            wac: D::from_value(0.060),
+            pass_through_rate: D::from_value(0.055),
+            term_months: 60,
+            seasoning_months: 12,
+            turnover_cpr: D::from_value(0.06),
+            max_refi_cpr: D::from_value(0.35),
+            refi_slope: D::from_value(80.0),
+            refi_incentive_threshold: D::from_value(0.005),
+            burnout_beta: D::from_value(12.0),
+            primary_secondary_spread: D::from_value(0.010),
+        };
+        let ad = analyze_mbs_burnout_oas_ad(&spec_d, &curve_d).oas;
+        assert!(ad.d[0] < 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
