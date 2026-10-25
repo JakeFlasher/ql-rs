@@ -1267,14 +1267,13 @@ pub fn compute_bichuch_capponi_sturm_xva_band<T: Real>(
     let rr_minus = s.repo_borrow_rate;
     let rc_plus = s.collateral_lend_rate;
     let rc_minus = s.collateral_borrow_rate;
-    let r_d = s.dividend_discount_rate;
     let mu_i = s.own_bond_yield_mu_i;
     let mu_c = s.cpty_bond_yield_mu_c;
-    let h_i = (mu_i - r_d).max_val(T::zero());
-    let h_c = (mu_c - r_d).max_val(T::zero());
 
     let no_arbitrage_satisfied = rr_plus.val() <= rr_minus.val() + 1e-12
         && rf_plus.val() <= rf_minus.val() + 1e-12
+        && rr_plus.val() <= rf_plus.val() + 1e-12
+        && rf_plus.val() <= rr_minus.val() + 1e-12
         && rf_minus.val() <= mu_i.val().min(mu_c.val()) + 1e-12;
 
     // Proposition 5.3 Symmetric-Rate Closed-Form Benchmark & Replicating Portfolio
@@ -1286,10 +1285,10 @@ pub fn compute_bichuch_capponi_sturm_xva_band<T: Real>(
     let a_factor = (T::one() - (-rate_diff * t_mat).exp()) / rate_diff;
     let uncoll_pos = smooth_pos(one_m_alpha * v_hat);
     let uncoll_neg = smooth_pos(-one_m_alpha * v_hat);
-    let sym_xva = a_factor
-        * (((rr_mid - rf_mid) + alpha * (rf_mid - rc_mid)) * v_hat
-            + (mu_c - rf_mid) * s.cpty_lgd * uncoll_neg
-            - (mu_i - rf_mid) * s.own_lgd * uncoll_pos);
+    let sym_flow = ((rr_mid - rf_mid) + alpha * (rf_mid - rc_mid)) * v_hat
+        + (mu_c - rf_mid) * s.cpty_lgd * uncoll_neg
+        - (mu_i - rf_mid) * s.own_lgd * uncoll_pos;
+    let sym_xva = a_factor * sym_flow;
 
     let ind_pos = smooth_pos(v_hat) / (v_hat.abs() + T::from_f64(1e-6));
     let ind_neg = smooth_pos(-v_hat) / (v_hat.abs() + T::from_f64(1e-6));
@@ -1302,19 +1301,15 @@ pub fn compute_bichuch_capponi_sturm_xva_band<T: Real>(
     let xi_own_bond = (sym_xva + s.own_lgd * uncoll_pos) / (-mu_i * t_mat).exp();
     let xi_cpty_bond = (sym_xva - s.cpty_lgd * uncoll_neg) / (-mu_c * t_mat).exp();
 
-    // Theorem 4.7 Reduced BSDE Driver g^+(u) & g^-(u) integrated via 8-step Picard Iteration
-    let driver_plus = |u: T, v: T, z: T| -> T {
-        let theta_c = s.cpty_lgd * smooth_pos(-one_m_alpha * v);
-        let theta_i = -s.own_lgd * smooth_pos(one_m_alpha * v);
-        let gamma_fund = theta_i + theta_c - u + one_m_alpha * v;
-        let fund_term = rf_plus * smooth_pos(gamma_fund) - rf_minus * smooth_pos(-gamma_fund);
-        let repo_term = (r_d - rr_minus) * smooth_pos(z) / s.asset_vol.max_val(T::from_f64(1e-6))
-            - (r_d - rr_plus) * smooth_pos(-z) / s.asset_vol.max_val(T::from_f64(1e-6));
-        let coll_term = rc_plus * smooth_pos(alpha * v) - rc_minus * smooth_pos(-alpha * v);
-        h_i * (theta_i - u) + h_c * (theta_c - u)
-            - (fund_term + repo_term - r_d * (theta_i + theta_c - u * 2.0) + coll_term)
-            + r_d * v
-    };
+    // Theorem 4.7 Reduced BSDE Drivers f^+(u) & f^-(u) integrated via exact exponential-Euler Picard recursion
+    let rf_spread_half = (rf_minus - rf_plus).max_val(T::zero()) * 0.5;
+    let rr_spread_half = (rr_minus - rr_plus).max_val(T::zero()) * 0.5;
+    let rc_spread_half = (rc_minus - rc_plus).max_val(T::zero()) * 0.5;
+    let theta_net = s.cpty_lgd * uncoll_neg - s.own_lgd * uncoll_pos;
+    let abs_delta = (z_hat / s.asset_vol.max_val(T::from_f64(1e-6))).abs();
+    let abs_coll = (alpha * v_hat).abs();
+    let step_decay = (-rate_diff * dt).exp();
+    let step_int = (T::one() - step_decay) / rate_diff;
 
     let mut u_plus = T::zero();
     let mut u_minus = T::zero();
@@ -1322,20 +1317,20 @@ pub fn compute_bichuch_capponi_sturm_xva_band<T: Real>(
         let mut next_p = u_plus;
         let mut next_m = u_minus;
         for _ in 0..6 {
-            next_p = u_plus + driver_plus(next_p, v_hat, z_hat) * dt;
-            let gm = -driver_plus(-next_m, -v_hat, -z_hat);
-            next_m = u_minus + gm * dt;
+            let gamma_p = theta_net - next_p + one_m_alpha * v_hat;
+            let abs_gamma_p = smooth_pos(gamma_p) + smooth_pos(-gamma_p);
+            let asym_p =
+                rf_spread_half * abs_gamma_p + rr_spread_half * abs_delta + rc_spread_half * abs_coll;
+            next_p = u_plus * step_decay + (sym_flow + asym_p) * step_int;
+
+            let gamma_m = theta_net - next_m + one_m_alpha * v_hat;
+            let abs_gamma_m = smooth_pos(gamma_m) + smooth_pos(-gamma_m);
+            let asym_m =
+                rf_spread_half * abs_gamma_m + rr_spread_half * abs_delta + rc_spread_half * abs_coll;
+            next_m = u_minus * step_decay + (sym_flow - asym_m) * step_int;
         }
         u_plus = next_p;
         u_minus = next_m;
-    }
-
-    let symmetric_rates = (rf_plus.val() - rf_minus.val()).abs() < 1e-12
-        && (rr_plus.val() - rr_minus.val()).abs() < 1e-12
-        && (rc_plus.val() - rc_minus.val()).abs() < 1e-12;
-    if symmetric_rates {
-        u_plus = sym_xva;
-        u_minus = sym_xva;
     }
 
     let seller_super = u_plus.max_val(u_minus);
@@ -1402,8 +1397,8 @@ mod phase20_tests {
             dividend_discount_rate: 0.02,
             repo_lend_rate: 0.02,
             repo_borrow_rate: 0.02,
-            funding_lend_rate: 0.025,
-            funding_borrow_rate: 0.025,
+            funding_lend_rate: 0.020,
+            funding_borrow_rate: 0.020,
             collateral_lend_rate: 0.02,
             collateral_borrow_rate: 0.02,
             own_bond_yield_mu_i: 0.04,

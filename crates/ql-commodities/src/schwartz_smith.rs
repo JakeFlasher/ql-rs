@@ -676,8 +676,10 @@ pub fn price_hikspoors_jaimungal_mrjd_commodity<T: Real>(
     // Spike attenuation in futures at option expiry vs spot at option expiry
     let atten_f = (-kj * tau_rem).exp();
     let jump_mean_unit = mu_j * (T::one() - (-kj * te).exp()) / (kj * te).max_val(T::from_f64(1e-8));
-    let jump_var_unit = mu_j * mu_j * (T::one() - (-kj * te * 2.0).exp())
+    let jump_second_moment_unit = mu_j * mu_j * (T::one() - (-kj * te * 2.0).exp())
         / (kj * te * 2.0).max_val(T::from_f64(1e-8));
+    let jump_var_unit =
+        (jump_second_moment_unit - jump_mean_unit * jump_mean_unit).max_val(T::zero());
 
     let df = (-spec.risk_free_rate * te).exp();
     let lam_te = lam_j * te;
@@ -718,7 +720,7 @@ pub fn price_hikspoors_jaimungal_mrjd_commodity<T: Real>(
         + spec.mu_y_rn * te
         + spec.j0_spike * (-kj * te).exp()
         + var_s_diff * 0.5
-        + -(lam_j / kj)
+        + (lam_j / kj)
             * ((T::one() - mu_j * (-kj * te).exp()) / (T::one() - mu_j))
                 .max_val(T::from_f64(1e-12))
                 .ln())
@@ -781,9 +783,7 @@ pub fn price_hikspoors_jaimungal_mrjd_commodity<T: Real>(
             spec.is_call,
         );
     let futures_option_price = df * fut_opt_undisc;
-    // Spot options retain the full (unattenuated) spike exposure; enforce the
-    // economically required ordering versus the attenuated futures option.
-    let spot_option_price = (df * spot_opt_undisc).max_val(futures_option_price + T::from_f64(1e-12));
+    let spot_option_price = df * spot_opt_undisc;
     let spike_option_surcharge = futures_option_price - no_spike_opt;
 
     // Effective Black-76 implied volatility of the futures option

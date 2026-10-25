@@ -208,37 +208,30 @@ pub fn evaluate_third_order_speed_vol_expansion<T: Real>(
     let xi0 = spec.xi0.max_val(T::from_f64(1e-8));
     let kappa = spec.strike.max_val(T::from_f64(1e-8));
 
-    // Proposition 7 exact 1F Bergomi integrated kernel moments
+    // Proposition 7 & Eq. (2.18): exact 1F Bergomi integrated kernel moments on [T, T + Delta]
     let kd = k_mr * delta;
-    let two_kd = kd * 2.0;
-    let e_neg_kd = (-kd).exp();
-    let e_neg_2kd = (-two_kd).exp();
-    let e_2kt_m1 = (k_mr * t * 2.0).exp() - T::one();
+    let one_m_e2kt = T::one() - (-k_mr * t * 2.0).exp();
     let om2 = om * om;
+    let a_t = om2 * one_m_e2kt / (k_mr * 2.0);
 
-    let mu_p = -om2 * e_2kt_m1 * (T::one() - e_neg_2kd) / (k_mr * two_kd * 2.0) + xi0.ln();
-    let one_m_ekd = T::one() - e_neg_kd;
-    let sig_p2 = (om2 * e_2kt_m1 * one_m_ekd * one_m_ekd / (k_mr * kd * kd))
-        .max_val(T::from_f64(1e-12));
+    let m1 = (T::one() - (-kd).exp()) / kd;
+    let m2 = (T::one() - (-kd * 2.0).exp()) / (kd * 2.0);
+    let m3 = (T::one() - (-kd * 3.0).exp()) / (kd * 3.0);
+    let m4 = (T::one() - (-kd * 4.0).exp()) / (kd * 4.0);
+
+    let c_bar = (a_t * m1 * m1).max_val(T::from_f64(1e-12));
+    let v_bar = a_t * m2;
+    let mu_p = -v_bar * 0.5 + xi0.ln();
+    let sig_p2 = c_bar;
     let sig_p = sig_p2.sqrt();
 
-    let gamma1 = -om2 * e_2kt_m1 * (T::one() - e_neg_2kd - one_m_ekd * one_m_ekd * 2.0 / kd)
-        / (k_mr * two_kd * 2.0);
-    let gamma2 = om2
-        * om2
-        * e_2kt_m1
-        * e_2kt_m1
-        * (e_neg_kd - T::one())
-        * (e_neg_kd * (kd * kd + kd * 4.0 + T::from_f64(5.0))
-            + e_neg_2kd * (kd + T::one())
-            + kd * 3.0
-            - T::from_f64(6.0))
-        / (k_mr * k_mr * kd.powf(4.0) * 8.0);
-    let gamma3 = om2.powf(3.0)
-        * e_2kt_m1.powf(3.0)
-        * one_m_ekd.powf(3.0)
-        * (T::one() + e_neg_kd - one_m_ekd * 2.0 / kd)
-        / (k_mr.powf(3.0) * kd.powf(5.0) * 16.0);
+    let var_v = (a_t * a_t * (m4 - m2 * m2)).max_val(T::zero());
+    let cov_cv = a_t * a_t * m1 * (m3 - m1 * m2);
+    let var_c = (a_t * a_t * m1 * m1 * (m2 - m1 * m1)).max_val(T::zero());
+
+    let gamma1 = var_v * 0.125 + (v_bar - c_bar) * 0.5;
+    let gamma2 = -cov_cv * 0.5;
+    let gamma3 = var_c * 0.5;
 
     // Corollary 6: x_P, s_P, BS Gamma, BS Speed, and basis functions P_0, P_1, P_2, P_3
     let x_p = (mu_p * 0.5 + sig_p2 * 0.125).exp();
@@ -258,17 +251,12 @@ pub fn evaluate_third_order_speed_vol_expansion<T: Real>(
     let pf1 = x_p * 0.5;
     let pf2 = x_p * 0.25;
     let pf3 = x_p * 0.125;
-    // Keep the truncated expansion in the admissible positive-forward region;
-    // the bounded corrections retain its AD sensitivity while avoiding the
-    // well-known far-wing blow-up of third-order terms.
-    let corr2 = (gamma2 * pf2).max_val(-pf0 * 0.5).min_val(pf0 * 0.5);
-    let corr3 = (gamma3 * pf3).max_val(-pf0 * 0.25).min_val(pf0 * 0.25);
-    let model_forward = (pf0 + gamma1 * pf1 + corr2 + corr3).max_val(T::from_f64(1e-6));
+    let model_forward =
+        (pf0 + gamma1 * pf1 + gamma2 * pf2 + gamma3 * pf3).max_val(T::from_f64(1e-6));
 
     let raw_call = p0_call + gamma1 * p1_call + gamma2 * p2_call + gamma3 * p3_speed_call;
     let intrinsic = (model_forward - kappa).max_val(T::zero());
-    let expansion_floor = spec.xi0.max_val(T::from_f64(1e-8)) * T::from_f64(1e-3);
-    let call_undisc = raw_call.max_val(intrinsic + expansion_floor);
+    let call_undisc = raw_call.max_val(intrinsic);
     let put_undisc = (call_undisc - (model_forward - kappa)).max_val(T::zero());
     let call_price = spec.discount_factor * call_undisc;
     let put_price = spec.discount_factor * put_undisc;

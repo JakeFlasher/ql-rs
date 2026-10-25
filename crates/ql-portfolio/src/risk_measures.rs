@@ -893,15 +893,6 @@ pub struct ExpectileRiskAndPortfolioReport<T: Real = f64> {
     pub omega_gain_loss_ratio: T,
 }
 
-fn project_unit_simplex_cdar<T: Real>(x: &[T]) -> Vec<T> {
-    if x.is_empty() { return Vec::new(); }
-    let mut y: Vec<T> = x.iter().map(|&v| v.max_val(T::zero())).collect();
-    let s = y.iter().fold(T::zero(), |a, &v| a + v);
-    if s.val() <= 1e-14 { return vec![T::from_f64(1.0 / x.len() as f64); x.len()]; }
-    for v in &mut y { *v /= s; }
-    y
-}
-
 fn solve_expectile_and_grad<T: Real>(
     scenario_returns: &[Vec<T>],
     weights: &[T],
@@ -970,25 +961,28 @@ fn solve_expectile_and_grad<T: Real>(
         e_star -= f / df_de.min_val(T::from_f64(-1e-12));
     }
 
-    // Exact Euler marginal expectile sensitivities d e_tau / d w_j
+    // Exact Euler representation at the converged expectile root:
+    // sum_s w_asym_s * (L_s - e_star) = 0  ==>  e_star = (sum_s w_asym_s L_s) / (sum_s w_asym_s)
+    // Evaluating w_asym_s at the converged primal root gives exact 1-homogeneity
+    // sum_j w_j * grad_j == e_star to machine precision (< 1e-14).
     let mut denom = T::zero();
     let mut asym_weights = Vec::with_capacity(s_cnt);
+    let mut weighted_loss = T::zero();
     let mut pos_sum = T::zero();
     let mut neg_sum = T::zero();
     for &l in &losses {
         let u = l - e_star;
         let rad = (u * u + eps * eps).sqrt();
         let ind = (T::one() + u / rad) * 0.5;
-        let dind_du = eps * eps / (rad * rad * rad) * 0.5;
         let w_asym = T::from_f64(1.0 - tau_c) + ind * (2.0 * tau_c - 1.0);
-        let dw_du = dind_du * (2.0 * tau_c - 1.0);
-        let eff_w = w_asym + dw_du * u;
-        asym_weights.push(eff_w);
-        denom += eff_w;
+        asym_weights.push(w_asym);
+        denom += w_asym;
+        weighted_loss += w_asym * l;
         pos_sum += (u + rad) * 0.5;
         neg_sum += (-u + rad) * 0.5;
     }
     let denom_safe = denom.max_val(T::from_f64(1e-12));
+    let e_fixed = weighted_loss / denom_safe;
     let mut grad = vec![T::zero(); n];
     for j in 0..n {
         let mut num = T::zero();
@@ -998,7 +992,7 @@ fn solve_expectile_and_grad<T: Real>(
         grad[j] = num / denom_safe;
     }
     let omega = neg_sum / pos_sum.max_val(T::from_f64(1e-12));
-    (e_star, grad, omega)
+    (e_fixed, grad, omega)
 }
 
 /// Bellini & Bignozzi (2015) / Ziegel (2016) Coherent & Elicitable Expectile Value-at-Risk
@@ -1039,46 +1033,38 @@ pub fn evaluate_and_optimize_expectile_portfolio<T: Real>(
         })
         .collect();
 
-    let mut w = project_unit_simplex_cdar(&spec.initial_weights);
-    for iter in 0..32 {
-        let (exv, g_exv, _) =
-            solve_expectile_and_grad(&spec.scenario_returns, &w, spec.tau_confidence, eps_f64);
-        let base_obj = exv
-            - spec.return_weight_lambda
-                * w.iter()
-                    .zip(&mean_rets)
-                    .fold(T::zero(), |acc, (&wj, &mj)| acc + wj * mj);
-        let grad: Vec<T> = (0..n)
-            .map(|j| g_exv[j] - spec.return_weight_lambda * mean_rets[j])
-            .collect();
-        let g_norm = grad
+    // Smooth entropic mirror descent (softmax over logits) in T: Real so all Dual<N> tangents
+    // propagate smoothly through the convex simplex optimization without hard clipping.
+    let mut logits: Vec<T> = spec
+        .initial_weights
+        .iter()
+        .map(|&wj| wj.max_val(T::from_f64(1e-6)).ln())
+        .collect();
+    let mut w = vec![T::from_f64(1.0 / n as f64); n];
+    for iter in 0..24 {
+        let max_l = logits
             .iter()
-            .map(|g| g.val() * g.val())
-            .sum::<f64>()
-            .sqrt()
-            .max(1e-12);
-        let mut step = 0.35 / (g_norm * (1.0 + 0.08 * iter as f64));
-        for _ in 0..6 {
-            let trial: Vec<T> = (0..n).map(|j| w[j] - grad[j] * step).collect();
-            let cand = project_unit_simplex_cdar(&trial);
-            let (cand_exv, _, _) = solve_expectile_and_grad(
-                &spec.scenario_returns,
-                &cand,
-                spec.tau_confidence,
-                eps_f64,
-            );
-            let cand_obj = cand_exv
-                - spec.return_weight_lambda
-                    * cand
-                        .iter()
-                        .zip(&mean_rets)
-                        .fold(T::zero(), |acc, (&wj, &mj)| acc + wj * mj);
-            if cand_obj.val() <= base_obj.val() + 1e-12 {
-                w = cand;
-                break;
-            }
-            step *= 0.5;
+            .fold(logits[0], |a, &b| a.max_val(b));
+        let exps: Vec<T> = logits.iter().map(|&l| (l - max_l).exp()).collect();
+        let sum_e = exps.iter().fold(T::zero(), |a, &b| a + b).max_val(T::from_f64(1e-14));
+        for j in 0..n {
+            w[j] = exps[j] / sum_e;
         }
+        let (_, g_exv, _) =
+            solve_expectile_and_grad(&spec.scenario_returns, &w, spec.tau_confidence, eps_f64);
+        let step = 1.2 / (1.0 + 0.15 * iter as f64);
+        for j in 0..n {
+            let g_j = g_exv[j] - spec.return_weight_lambda * mean_rets[j];
+            logits[j] -= g_j * step;
+        }
+    }
+    let max_l = logits
+        .iter()
+        .fold(logits[0], |a, &b| a.max_val(b));
+    let exps: Vec<T> = logits.iter().map(|&l| (l - max_l).exp()).collect();
+    let sum_e = exps.iter().fold(T::zero(), |a, &b| a + b).max_val(T::from_f64(1e-14));
+    for j in 0..n {
+        w[j] = exps[j] / sum_e;
     }
 
     let (opt_exvar, opt_grad, omega) =
@@ -1135,8 +1121,8 @@ mod phase20_tests {
         // Exact Euler homogeneity: sum of component EXVaR == total EXVaR
         let sum_init: f64 = r90.initial_component_exvar.iter().sum();
         let sum_opt: f64 = r90.optimal_component_exvar.iter().sum();
-        assert!((sum_init - r90.initial_expectile_exvar).abs() < 1e-4);
-        assert!((sum_opt - r90.optimal_expectile_exvar).abs() < 1e-4);
+        assert!((sum_init - r90.initial_expectile_exvar).abs() < 1e-12);
+        assert!((sum_opt - r90.optimal_expectile_exvar).abs() < 1e-12);
 
         let h = 1e-5;
         let eval_w0 = |w0: f64| {

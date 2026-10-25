@@ -202,3 +202,32 @@ fn phase19_tab29_terminal_renders_and_ticks_cleanly() {
         );
     }
 }
+
+#[test]
+fn phase20_tab30_terminal_renders_and_ticks_cleanly() {
+    assert_eq!(TabId::ALL.len(), 30);
+    assert_eq!(TabId::Phase20Sota.label(), "30 Sinh-OU / BK-FRN / Morini-Brigo / WWM-XVA / mrBergomi / Choi / AFS-LOB / EXVaR");
+    let mut ws = DeskWorkstation::new();
+    let normal = ws.step_tick();
+    assert!(ws
+        .render_dashboard(&normal, false)
+        .contains("30 SinhOU/MB/mrBergomi/Choi/EXVaR"));
+    let next = ws.step_tick();
+    assert_ne!(
+        next.sinhou_mb_rbergomi_choi_afs_expectile_metric,
+        normal.sinhou_mb_rbergomi_choi_afs_expectile_metric
+    );
+    for scenario in [
+        ScenarioKind::RatesPlus50Bp,
+        ScenarioKind::EquityCrashMinus15Pct,
+        ScenarioKind::CreditWideningPlus100Bp,
+        ScenarioKind::StagflationPlus150Bp,
+    ] {
+        ws.set_scenario(scenario);
+        let stressed = ws.step_tick();
+        assert_ne!(
+            stressed.sinhou_mb_rbergomi_choi_afs_expectile_metric,
+            normal.sinhou_mb_rbergomi_choi_afs_expectile_metric
+        );
+    }
+}

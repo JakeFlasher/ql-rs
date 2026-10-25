@@ -637,7 +637,7 @@ pub fn price_sinh_ou_rfr_caplet<T: Real>(
                     * sinh_ou_sigma_rr(alpha, sigma, t1, u))
                 / sqrt_v
         } else {
-            sinh_ou_phi_r(alpha, t1, u) * sig_rr_01.max_val(T::from_f64(1e-16)).sqrt() / sqrt_v
+            (b_star_12 * sinh_ou_phi_r(alpha, t1, u) * sig_rr_01) / sqrt_v
         };
         let psi0 = sinh_ou_psi_r(alpha, sigma, gamma, 0.0, u);
         let psi1 = sinh_ou_psi_r(alpha, sigma, gamma, t1, u);

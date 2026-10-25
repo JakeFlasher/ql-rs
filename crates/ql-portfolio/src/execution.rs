@@ -756,20 +756,26 @@ pub fn solve_alfonsi_fruth_schied_lob_execution<T: Real>(
         + afs_g_cost(q, alpha, x0 - one_m_a * y1 * n_f);
 
     // Model 2 (Spread Resilience): solve h_2(d_0) = d_0 (f(d_0) - a^2 f(a d_0))/(f(d_0) - a f(a d_0)) - F^{-1}(X_0 - N(F(d_0) - F(a d_0))) = 0
+    // Model 2 (Spread Resilience): solve h_2(d_0) = d_0 (f(d_0) - a^2 f(a d_0))/(f(d_0) - a f(a d_0)) - F^{-1}(X_0 - N(F(d_0) - F(a d_0))) = 0
     let mut d0 = afs_f_inv(q, alpha, xi0_block);
-    let h_fd = 1e-6;
     for _ in 0..8 {
-        let eval_h2 = |d: T| -> T {
-            let fd = afs_f_density(q, alpha, d);
-            let fad = afs_f_density(q, alpha, a * d);
-            let num = d * (fd - a * a * fad);
-            let den = (fd - a * fad).max_val(T::from_f64(1e-12));
-            let step_vol = afs_f_cum(q, alpha, d) - afs_f_cum(q, alpha, a * d);
-            let rem = (x0 - step_vol * n_f).max_val(T::from_f64(1e-8));
-            num / den - afs_f_inv(q, alpha, rem)
-        };
-        let r0 = eval_h2(d0);
-        let dr = (eval_h2(d0 + T::from_f64(h_fd)) - eval_h2(d0 - T::from_f64(h_fd))) / (2.0 * h_fd);
+        let fd = afs_f_density(q, alpha, d0);
+        let fad = afs_f_density(q, alpha, a * d0);
+        let dfd = -alpha * q * (d0 + T::one()).pow(-alpha - T::one());
+        let dfad = -alpha * q * (a * d0 + T::one()).pow(-alpha - T::one());
+        let u_num = d0 * (fd - a * a * fad);
+        let v_den = (fd - a * fad).max_val(T::from_f64(1e-12));
+        let du_dd = (fd - a * a * fad) + d0 * (dfd - a * a * a * dfad);
+        let dv_dd = dfd - a * a * dfad;
+        let d_ratio = (du_dd * v_den - u_num * dv_dd) / (v_den * v_den);
+
+        let step_vol = afs_f_cum(q, alpha, d0) - afs_f_cum(q, alpha, a * d0);
+        let rem = (x0 - step_vol * n_f).max_val(T::from_f64(1e-8));
+        let inv_rem = afs_f_inv(q, alpha, rem);
+        let r0 = u_num / v_den - inv_rem;
+        let d_inv_rem = -T::from_f64(n_f) * v_den
+            / afs_f_density(q, alpha, inv_rem).max_val(T::from_f64(1e-12));
+        let dr = d_ratio - d_inv_rem;
         d0 = (d0 - r0 / dr.max_val(T::from_f64(1e-12))).max_val(T::from_f64(1e-6));
     }
     let f_d0 = afs_f_cum(q, alpha, d0);

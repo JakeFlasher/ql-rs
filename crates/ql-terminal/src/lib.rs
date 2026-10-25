@@ -993,13 +993,173 @@ impl DeskWorkstation {
             strike: 0.20,
             discount_factor: (-market.ois_quotes[0] * 0.25).exp(),
         }).call_price.val();
+
+        // Complete Phase 20 telemetry: all fourteen engines consume the live
+        // market/scenario snapshot so rates, equity, credit and tick changes
+        // propagate through the aggregate metric.
+        let cir_metric = ql_rates::price_cirpp_sofr_futures(
+            &ql_rates::CirppSofrFuturesSpec {
+                start_time: 0.5,
+                end_time: 0.75,
+                x0: market.ois_quotes[0] + credit_bump,
+                b_drift: 0.006,
+                beta_mean_reversion: 0.20,
+                sigma: 0.06 + market.eq_vol * 0.02,
+            },
+            &curve,
+        )
+        .futures_rate_3m_compounded
+        .val();
+        let bk_metric = ql_fixed_income::analyze_black_karasinski_callable_frn_oas_ad(
+            &ql_fixed_income::BlackKarasinskiCallableFrnSpec {
+                face_amount: 100.0,
+                quoted_margin: 0.008,
+                cap_rate: 0.055,
+                floor_rate: 0.020,
+                maturity: 2.0,
+                coupon_steps: 6,
+                mean_reversion: 0.15,
+                log_rate_vol: 0.22 + market.eq_vol * 0.005,
+                flat_zero_rate: market.ois_quotes[0],
+                call_price: 100.2,
+                first_call_time: 1.0,
+                target_market_price: 99.8 + credit_bump * 100.0,
+                smoothing_eps: 1e-3,
+            },
+        )
+        .oas_spread
+        .val();
+        let surv = ql_credit::SurvivalProbabilityCurve::new(
+            self.base_market.ref_date,
+            vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            vec![0.025 + credit_bump; 5],
+        );
+        let mb_metric = ql_credit::price_morini_brigo_credit_index_option(
+            &ql_credit::MoriniBrigoIndexOptionSpec {
+                notional: 100.0,
+                strike_spread: 0.025 + credit_bump,
+                option_expiry: 1.0,
+                payment_times: vec![2.0, 3.0, 4.0, 5.0],
+                recovery_rate: 0.40,
+                spread_vol: 0.45 + market.eq_vol * 0.01,
+                num_constituents: 50,
+                systemic_copula_corr: 0.60,
+                is_payer: true,
+            },
+            &curve,
+            &surv,
+        )
+        .npv
+        .val();
+        let wwm_metric = ql_xva::compute_brigo_vrins_wwm_cva(&ql_xva::BrigoVrinsWwmCvaSpec {
+            times: vec![0.5, 1.0, 2.0],
+            discount_rate: market.ois_quotes[0],
+            base_mtm_profile: vec![10.0 + market.eq_spot * 0.01, 12.0, 11.0],
+            exposure_vol_nu: 8.0,
+            is_brownian_bridge_swap: false,
+            y0: 0.02,
+            cir_kappa: 0.35,
+            cir_theta: 0.025,
+            cir_vol: 0.08,
+            intensity_shift_psi: 0.005,
+            wwr_correlation: 0.60,
+            lgd: 0.60,
+        })
+        .wwm_cva
+        .val();
+        let bcs_metric = ql_xva::compute_bichuch_capponi_sturm_xva_band(
+            &ql_xva::AsymmetricRateXvaBandSpec {
+                maturity: 1.0,
+                num_steps: 6,
+                clean_claim_value: 25.0 + market.eq_spot * 0.01,
+                clean_delta_notional: 40.0,
+                asset_vol: 0.20 + market.eq_vol * 0.005,
+                collateral_alpha: 0.50,
+                dividend_discount_rate: 0.02,
+                repo_lend_rate: 0.020,
+                repo_borrow_rate: 0.024,
+                funding_lend_rate: 0.022,
+                funding_borrow_rate: 0.036 + credit_bump,
+                collateral_lend_rate: 0.020,
+                collateral_borrow_rate: 0.022,
+                own_bond_yield_mu_i: 0.042,
+                cpty_bond_yield_mu_c: 0.048 + credit_bump,
+                own_lgd: 0.60,
+                cpty_lgd: 0.60,
+            },
+        )
+        .no_arbitrage_band_width
+        .val();
+        let ldz_metric = ql_exotics::price_li_deng_zhou_multi_spread_option(
+            &ql_exotics::LiDengZhouMultiSpreadSpec {
+                long_spot: market.eq_spot,
+                long_div_yield: 0.01,
+                long_vol: market.eq_vol.max(1e-4),
+                short_spots: vec![0.9 * market.eq_spot, 0.85 * market.eq_spot],
+                short_weights: vec![0.5, 0.5],
+                short_div_yields: vec![0.015, 0.02],
+                short_vols: vec![0.20, 0.22],
+                correlation_matrix: vec![
+                    vec![1.0, 0.5, 0.4],
+                    vec![0.5, 1.0, 0.6],
+                    vec![0.4, 0.6, 1.0],
+                ],
+                strike: 5.0 + credit_bump * 100.0,
+                risk_free_rate: market.ois_quotes[0],
+                expiry: 1.0,
+                is_call: true,
+            },
+        )
+        .price
+        .val();
+        let mrjd_metric = ql_commodities::price_hikspoors_jaimungal_mrjd_commodity(
+            &ql_commodities::HikspoorsJaimungalMrjdSpec {
+                x0: 0.10,
+                y0: 4.20 + market.eq_spot * 0.001,
+                j0_spike: 0.04,
+                seasonal_phi: 0.0,
+                kappa_x: 1.5,
+                sigma_x: 0.35 + market.eq_vol * 0.005,
+                mu_y_rn: 0.02,
+                sigma_y: 0.18,
+                rho_xy: -0.2,
+                kappa_j_spike: 12.0,
+                jump_intensity: 2.5 + credit_bump * 10.0,
+                mean_jump_size: 0.22,
+                option_expiry: 0.5,
+                futures_maturity: 1.0,
+                strike: 70.0,
+                risk_free_rate: market.ois_quotes[0],
+                is_call: true,
+            },
+        )
+        .futures_option_price
+        .val();
+        let pcrp_metric = ql_portfolio::solve_principal_component_risk_parity(
+            &ql_portfolio::FactorEigenRiskParitySpec {
+                covariance: vec![
+                    vec![0.04 + market.eq_vol * 0.0005, 0.02],
+                    vec![0.02, 0.05 + credit_bump * 0.01],
+                ],
+                factor_risk_budgets: vec![0.5, 0.5],
+            },
+        )
+        .weights[0]
+        .val();
         let sinhou_mb_rbergomi_choi_afs_expectile_metric = sinhou_metric
             + mrb_metric
             + choi_metric
             + afs_metric
             + exvar_metric
             + speed_metric
-            + self.tick as f64 * 1e-9;
+            + cir_metric
+            + bk_metric
+            + mb_metric
+            + wwm_metric
+            + bcs_metric
+            + ldz_metric
+            + mrjd_metric
+            + pcrp_metric;
         let fx = FxVannaVolgaSmile::new(
             market.eq_spot,
             0.03,

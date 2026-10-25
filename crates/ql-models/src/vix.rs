@@ -452,40 +452,76 @@ pub fn evaluate_mixed_rough_bergomi_vix<T: Real>(
         .max_val(T::zero())
         .min_val(T::one());
 
-    // Fractional Riemann-Liouville variance integral int_0^T K_H(u, s)^2 ds = u^{2H} - (u - T)^{2H}
-    let mut avg_k2 = T::zero();
-    let mut avg_k_cov = T::zero();
+    // Proposition 9 & Theorem 3.1: fractional Riemann-Liouville kernel K_0(u, t) = sqrt(2H)(u - t)^{H - 1/2}
+    // integrated over t in [0, T] via desingularized substitution t = T(1 - s^2), dt = 2 T s ds on s in [0, 1].
+    let sqrt_2h = two_h.sqrt();
+    let h_minus_half = h - T::from_f64(0.5);
+    let mut u_weights = [0.0_f64; 4];
+    let mut tau_nodes = [0.0_f64; 4];
+    let mut v_nodes = [T::zero(); 4];
+    let mut v_bar = T::zero();
     for i in 0..4 {
         let tau_i = 0.5 * delta * (1.0 + GL4_X[i]);
         let wi = 0.5 * GL4_W[i];
+        tau_nodes[i] = tau_i;
+        u_weights[i] = wi;
         let u_i = t_exp + tau_i;
-        let k2_i = u_i.pow(two_h) - T::from_f64(tau_i).pow(two_h);
-        avg_k2 += k2_i * wi;
-        for j in 0..4 {
-            let tau_j = 0.5 * delta * (1.0 + GL4_X[j]);
-            let wj = 0.5 * GL4_W[j];
-            let u_j = t_exp + tau_j;
-            let k2_j = u_j.pow(two_h) - T::from_f64(tau_j).pow(two_h);
-            // High-correlation fractional kernel overlap across the 30-day VIX window
-            let dt_ij = (tau_i - tau_j).abs();
-            let corr_ij = (T::one() - T::from_f64(0.15 * (dt_ij / delta)).pow(two_h))
-                .max_val(T::from_f64(0.7));
-            avg_k_cov += (k2_i * k2_j).sqrt() * corr_ij * (wi * wj);
+        let v_i = u_i.pow(two_h) - T::from_f64(tau_i).pow(two_h);
+        v_nodes[i] = v_i;
+        v_bar += v_i * wi;
+    }
+
+    let mut c_nodes = [T::zero(); 4];
+    for m in 0..4 {
+        let s_m = 0.5 * (1.0 + GL4_X[m]);
+        let ws_m = 0.5 * GL4_W[m];
+        let dt_m = t_exp * (2.0 * s_m * ws_m);
+        let t_rem_m = t_exp * (s_m * s_m); // T - t_m = T s_m^2
+        let mut k_col = [T::zero(); 4];
+        let mut k_bar_m = T::zero();
+        for i in 0..4 {
+            let k_im = sqrt_2h * (t_rem_m + tau_nodes[i]).pow(h_minus_half);
+            k_col[i] = k_im;
+            k_bar_m += k_im * u_weights[i];
+        }
+        for i in 0..4 {
+            c_nodes[i] += k_col[i] * k_bar_m * dt_m;
         }
     }
 
-    let sigma1 = (spec.nu1 * avg_k_cov.max_val(T::from_f64(1e-14)).sqrt()).max_val(T::from_f64(1e-6));
-    let sigma2 = (spec.nu2 * avg_k_cov.max_val(T::from_f64(1e-14)).sqrt()).max_val(T::from_f64(1e-6));
-    let mu1 = -spec.nu1 * spec.nu1 * avg_k2 * 0.5;
-    let mu2 = -spec.nu2 * spec.nu2 * avg_k2 * 0.5;
+    let mut c_bar = T::zero();
+    for i in 0..4 {
+        c_bar += c_nodes[i] * u_weights[i];
+    }
+    let mut var_v = T::zero();
+    let mut cov_cv = T::zero();
+    let mut var_c = T::zero();
+    for i in 0..4 {
+        let dv = v_nodes[i] - v_bar;
+        let dc = c_nodes[i] - c_bar;
+        let wi = u_weights[i];
+        var_v += dv * dv * wi;
+        cov_cv += dc * dv * wi;
+        var_c += dc * dc * wi;
+    }
 
-    let res_var = (avg_k2 - avg_k_cov).max_val(T::zero());
-    let gamma1_1 = -spec.nu1 * spec.nu1 * res_var * 0.5;
-    let gamma1_2 = -spec.nu2 * spec.nu2 * res_var * 0.5;
-    let gamma2_1 = spec.nu1.powf(4.0) * res_var * avg_k_cov * 0.25;
-    let gamma2_2 = spec.nu2.powf(4.0) * res_var * avg_k_cov * 0.25;
-    let gamma3_1 = spec.nu1.powf(6.0) * res_var * avg_k_cov * avg_k_cov * (1.0 / 12.0);
-    let gamma3_2 = spec.nu2.powf(6.0) * res_var * avg_k_cov * avg_k_cov * (1.0 / 12.0);
+    let c_bar_pos = c_bar.max_val(T::from_f64(1e-14));
+    let sigma1 = (spec.nu1 * c_bar_pos.sqrt()).max_val(T::from_f64(1e-6));
+    let sigma2 = (spec.nu2 * c_bar_pos.sqrt()).max_val(T::from_f64(1e-6));
+    let mu1 = -spec.nu1 * spec.nu1 * v_bar * 0.5;
+    let mu2 = -spec.nu2 * spec.nu2 * v_bar * 0.5;
+
+    let res_vc = (v_bar - c_bar).max_val(T::zero());
+    let nu1_2 = spec.nu1 * spec.nu1;
+    let nu2_2 = spec.nu2 * spec.nu2;
+    let nu1_4 = nu1_2 * nu1_2;
+    let nu2_4 = nu2_2 * nu2_2;
+    let gamma1_1 = nu1_4 * var_v * 0.125 + nu1_2 * res_vc * 0.5;
+    let gamma1_2 = nu2_4 * var_v * 0.125 + nu2_2 * res_vc * 0.5;
+    let gamma2_1 = -nu1_4 * cov_cv * 0.5;
+    let gamma2_2 = -nu2_4 * cov_cv * 0.5;
+    let gamma3_1 = nu1_4 * var_c * 0.5;
+    let gamma3_2 = nu2_4 * var_c * 0.5;
 
     // Express VIX in percentage points (100 * sqrt(V)) matching evaluate_quintic_ou_spx_vix
     let scale_xi0 = spec.xi0.max_val(T::from_f64(1e-10)) * 10_000.0;
