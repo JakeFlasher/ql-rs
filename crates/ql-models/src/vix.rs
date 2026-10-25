@@ -243,8 +243,52 @@ pub fn evaluate_quintic_ou_spx_vix<T: Real>(
     let vix_put_price = vix_call_price - discount_factor * (vix_fut - vix_strike);
     let atm_poly_deriv = p.alpha1 + p.alpha3 * 3.0 + p.alpha5 * 15.0;
     let eff_vvol = (p.nu * atm_poly_deriv.abs() / norm_denom.sqrt()).max_val(T::from_f64(0.05));
-    let moneyness = (vix_strike / vix_fut.max_val(T::from_f64(1e-6))).ln();
-    let vix_iv = eff_vvol * (T::one() + p.alpha3 * 0.15 * moneyness + p.alpha5 * 0.08 * moneyness * moneyness);
+
+    // Invert undiscounted VIX call price via Black-76 + 1D IFT lift
+    let f_val = vix_fut.val().max(1e-8);
+    let k_val = vix_strike.val().max(1e-8);
+    let t_val = t_exp.val().max(1e-8);
+    let intrinsic_val = (f_val - k_val).max(0.0);
+    let target_val = vix_call_undisc.val();
+    let vix_iv = if target_val <= intrinsic_val + 1e-5 {
+        eff_vvol
+    } else {
+        let bs_undisc_f64 = |vol: f64| -> f64 {
+            ql_vol::black_scholes_price(f_val, k_val, vol, t_val, 0.0, 0.0, true)
+        };
+        let mut lo = 1e-4_f64;
+        let mut hi = 5.0_f64;
+        for _ in 0..36 {
+            let mid = 0.5 * (lo + hi);
+            if bs_undisc_f64(mid) < target_val {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let mut iv_root = 0.5 * (lo + hi);
+        let h_iv = 1e-5;
+        for _ in 0..4 {
+            let r = bs_undisc_f64(iv_root) - target_val;
+            let dr = (bs_undisc_f64(iv_root + h_iv) - bs_undisc_f64(iv_root - h_iv)) / (2.0 * h_iv);
+            if dr.abs() > 1e-12 {
+                iv_root = (iv_root - r / dr).clamp(1e-4, 5.0);
+            }
+        }
+        let f_xx = (bs_undisc_f64(iv_root + h_iv) - 2.0 * bs_undisc_f64(iv_root) + bs_undisc_f64(iv_root - h_iv))
+            / (h_iv * h_iv);
+        let iv_t = T::from_f64(iv_root);
+        let h_t = T::from_f64(h_iv);
+        let c_up = ql_vol::black_scholes_price(vix_fut, vix_strike, iv_t + h_t, t_exp, T::zero(), T::zero(), true);
+        let c_dn = ql_vol::black_scholes_price(vix_fut, vix_strike, iv_t - h_t, t_exp, T::zero(), T::zero(), true);
+        let f_x = (c_up - c_dn) / (2.0 * h_iv);
+        ql_ad::ift_lift_1d(
+            iv_root,
+            |s| ql_vol::black_scholes_price(vix_fut, vix_strike, s, t_exp, T::zero(), T::zero(), true) - vix_call_undisc,
+            f_x,
+            f_xx,
+        )
+    };
     let spx_atm_vol = p.xi0.max_val(T::from_f64(1e-12)).sqrt();
     let spx_atm_skew = p.rho * eff_vvol
         * (T::one() - (-p.kappa * t_exp).exp())
@@ -296,6 +340,7 @@ mod phase19_tests {
             (rep.vix_call_price - rep.vix_put_price - 0.985 * (rep.vix_future - 20.0)).abs()
                 < 1e-12
         );
+        assert!((ql_vol::black_scholes_price(rep.vix_future, 20.0, rep.vix_implied_vol, 0.5, 0.0, 0.0, true) * 0.985 - rep.vix_call_price).abs() < 1e-6);
         assert!(rep.spx_atm_skew < 0.0);
 
         let h = 1e-5;

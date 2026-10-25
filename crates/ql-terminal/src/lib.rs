@@ -2925,8 +2925,28 @@ mod phase19_tests {
         assert_eq!(TabId::ALL.len(), 29);
         assert_eq!(TabId::Phase19Sota.label(), "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP");
         let mut ws = DeskWorkstation::new();
-        let frame = ws.step_tick();
-        assert!(frame.burnout_cmcds_quintic_afv_cs_schur_metric.is_finite());
-        assert!(ws.render_dashboard(&frame, false).contains("29 Burnout/CMCDS/Quintic/AFV/Schur"));
+        let normal = ws.step_tick();
+        assert!(normal.burnout_cmcds_quintic_afv_cs_schur_metric.is_finite());
+        let dashboard = ws.render_dashboard(&normal, false);
+        assert!(dashboard.contains("29 Burnout/CMCDS/Quintic/AFV/Schur"));
+        assert!(dashboard.contains("BL / Risk Parity ERC"));
+        let next = ws.step_tick();
+        assert_ne!(
+            next.burnout_cmcds_quintic_afv_cs_schur_metric,
+            normal.burnout_cmcds_quintic_afv_cs_schur_metric
+        );
+        for scenario in [
+            ScenarioKind::RatesPlus50Bp,
+            ScenarioKind::EquityCrashMinus15Pct,
+            ScenarioKind::CreditWideningPlus100Bp,
+            ScenarioKind::StagflationPlus150Bp,
+        ] {
+            ws.set_scenario(scenario);
+            let stressed = ws.step_tick();
+            assert_ne!(
+                stressed.burnout_cmcds_quintic_afv_cs_schur_metric,
+                normal.burnout_cmcds_quintic_afv_cs_schur_metric
+            );
+        }
     }
 }

@@ -200,22 +200,32 @@ pub fn compute_dynamic_simm_mva_and_spike<T: Real>(
         let dt = t - prev_t;
         let rem_frac = (1.0 - t / (t_max + mpor)).max(0.05);
         let mut ws = Vec::with_capacity(nb);
+        let mut crs = Vec::with_capacity(nb);
         for b in 0..nb {
             let s_bt = spec.bucket_sensitivities_t0[b]
                 * (-spec.bucket_decay_rates[b] * t).exp()
                 * rem_frac;
             let thr = spec.concentration_thresholds[b].max(1e-12);
             let ratio = (s_bt * s_bt + T::from_f64(1e-12)).sqrt() / thr;
-            let cr = T::one()
-                + ((ratio - T::one())
-                    + ((ratio - T::one()) * (ratio - T::one()) + T::from_f64(1e-6)).sqrt())
-                    * 0.25;
+            let sqrt_ratio = ratio.sqrt();
+            let diff_cr = sqrt_ratio - T::one();
+            let cr = (T::one()
+                + sqrt_ratio
+                + (diff_cr * diff_cr + T::from_f64(1e-6)).sqrt())
+                * 0.5;
+            crs.push(cr);
             ws.push(s_bt * spec.risk_weights[b] * cr);
         }
         let mut im2 = T::zero();
         for a in 0..nb {
             for b in 0..nb {
-                let rho = if a == b { 1.0 } else { spec.inter_bucket_corr };
+                let rho = if a == b {
+                    T::one()
+                } else {
+                    let lo = crs[a].min_val(crs[b]);
+                    let hi = crs[a].max_val(crs[b]).max_val(T::from_f64(1e-12));
+                    (lo / hi) * spec.inter_bucket_corr
+                };
                 im2 += ws[a] * ws[b] * rho;
             }
         }

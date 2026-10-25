@@ -302,8 +302,10 @@ pub fn price_gamma_swap_and_variance_option<T: Real>(
     let forward = spec.spot * ((spec.rate - spec.div_yield) * t).exp();
     // Neuberger (1994) / Carr-Lee (2010): Gamma Swap weights OTM options by 1 / (K * F) with analytic lognormal tails
     let mut gamma_strip = T::zero();
-    let mut vs_strip = T::zero();
+    let mut gamma_strip_flat0 = T::zero();
+    let mut vs_strip_flat0 = T::zero();
     if spec.quotes.len() >= 2 {
+        let v_ref = spec.quotes[spec.quotes.len() / 2].implied_vol;
         for w in spec.quotes.windows(2) {
             let k0 = w[0].strike;
             let k1 = w[1].strike;
@@ -336,26 +338,96 @@ pub fn price_gamma_swap_and_variance_option<T: Real>(
                 spec.div_yield,
                 k1.val() >= spec.cut_strike.val(),
             );
-            vs_strip += (k1 - k0)
-                * (p0 / (k0 * k0) + pm * 2.0 / (km * km) + p1 / (k1 * k1))
-                * 0.25;
             gamma_strip += (k1 - k0)
                 * (p0 / (k0 * forward) + pm * 2.0 / (km * forward) + p1 / (k1 * forward))
                 * 0.25;
+
+            let p0_f = black_scholes_price(
+                spec.spot,
+                k0,
+                v_ref,
+                t,
+                spec.rate,
+                spec.div_yield,
+                k0.val() >= spec.cut_strike.val(),
+            );
+            let pm_f = black_scholes_price(
+                spec.spot,
+                km,
+                v_ref,
+                t,
+                spec.rate,
+                spec.div_yield,
+                km.val() >= spec.cut_strike.val(),
+            );
+            let p1_f = black_scholes_price(
+                spec.spot,
+                k1,
+                v_ref,
+                t,
+                spec.rate,
+                spec.div_yield,
+                k1.val() >= spec.cut_strike.val(),
+            );
+            vs_strip_flat0 += (k1 - k0)
+                * (p0_f / (k0 * k0) + pm_f * 2.0 / (km * km) + p1_f / (k1 * k1))
+                * 0.25;
+            gamma_strip_flat0 += (k1 - k0)
+                * (p0_f / (k0 * forward) + pm_f * 2.0 / (km * forward) + p1_f / (k1 * forward))
+                * 0.25;
         }
     }
-    let scale = (spec.rate * t).exp() * (T::from_f64(2.0) / t);
-    let flat_smile = spec
-        .quotes
-        .windows(2)
-        .all(|w| (w[1].implied_vol.val() - w[0].implied_vol.val()).abs() < 1e-12);
-    let fair_gamma = if flat_smile {
-        // For a flat Black smile the Carr--Lee gamma weighting collapses to
-        // the replicated variance strike (up to quadrature roundoff).
-        fair_var
+    let gs_drift = T::one() - spec.cut_strike / forward + (spec.cut_strike / forward).ln();
+    let (gs_put_tail, gs_call_tail, quad_bias_corr) = if spec.quotes.len() >= 2 {
+        let k0 = spec.quotes[0].strike;
+        let kn = spec.quotes[spec.quotes.len() - 1].strike;
+        let sqrt_t = t.sqrt();
+        let v0 = (spec.quotes[0].implied_vol * sqrt_t).max_val(T::from_f64(1e-12));
+        let d10 = ((forward / k0).ln() + v0 * v0 * 0.5) / v0;
+        let d20 = d10 - v0;
+        let pt = k0 / forward * (-d20).norm_cdf()
+            - (-d10).norm_cdf()
+            - v0 * (d10.norm_pdf() + (-d10) * (-d10).norm_cdf());
+
+        let vn = (spec.quotes[spec.quotes.len() - 1].implied_vol * sqrt_t).max_val(T::from_f64(1e-12));
+        let d1n = ((forward / kn).ln() + vn * vn * 0.5) / vn;
+        let d2n = d1n - vn;
+        let ct = kn / forward * d2n.norm_cdf()
+            - d1n.norm_cdf()
+            + vn * (d1n.norm_pdf() + d1n * d1n.norm_cdf());
+
+        let v_ref = spec.quotes[spec.quotes.len() / 2].implied_vol;
+        let vr = (v_ref * sqrt_t).max_val(T::from_f64(1e-12));
+        let d10_r = ((forward / k0).ln() + vr * vr * 0.5) / vr;
+        let d20_r = d10_r - vr;
+        let pt_r = k0 / forward * (-d20_r).norm_cdf()
+            - (-d10_r).norm_cdf()
+            - vr * (d10_r.norm_pdf() + (-d10_r) * (-d10_r).norm_cdf());
+        let vs_pt_r = forward / k0 * (-d10_r).norm_cdf() - (-d20_r).norm_cdf()
+            + vr * ((-d20_r) * (-d20_r).norm_cdf() + d20_r.norm_pdf());
+
+        let d1n_r = ((forward / kn).ln() + vr * vr * 0.5) / vr;
+        let d2n_r = d1n_r - vr;
+        let ct_r = kn / forward * d2n_r.norm_cdf()
+            - d1n_r.norm_cdf()
+            + vr * (d1n_r.norm_pdf() + d1n_r * d1n_r.norm_cdf());
+        let vs_ct_r = forward / kn * d1n_r.norm_cdf()
+            - d2n_r.norm_cdf()
+            - vr * (d2n_r * d2n_r.norm_cdf() + d2n_r.norm_pdf());
+
+        let vs_drift = T::one() - forward / spec.cut_strike + (forward / spec.cut_strike).ln();
+        let flat_gs = (gs_drift + pt_r + ct_r + (spec.rate * t).exp() * gamma_strip_flat0)
+            * (T::from_f64(2.0) / t);
+        let flat_vs = (vs_drift + vs_pt_r + vs_ct_r + (spec.rate * t).exp() * vs_strip_flat0)
+            * (T::from_f64(2.0) / t);
+        (pt, ct, flat_vs - flat_gs)
     } else {
-        (fair_var + scale * (gamma_strip - vs_strip)).max_val(T::zero())
+        (T::zero(), T::zero(), T::zero())
     };
+    let fair_gamma = ((gs_drift + gs_put_tail + gs_call_tail + (spec.rate * t).exp() * gamma_strip)
+        * (T::from_f64(2.0) / t)
+        + quad_bias_corr)
+        .max_val(T::zero());
     let skew_spread = fair_var - fair_gamma;
 
     let mean_rv = heston_analytical_fair_variance(

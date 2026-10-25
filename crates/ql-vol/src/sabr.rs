@@ -50,11 +50,10 @@ fn signed_cev_pow<T: Real>(x: T, omb: T) -> T {
     sgn * (abs_x.ln() * omb).exp()
 }
 
-pub fn evaluate_free_boundary_sabr<T: Real>(
+fn fb_sabr_normal_vol_and_call_undisc<T: Real>(
     p: &FreeBoundarySabrParams<T>,
     strike: T,
-    discount_factor: T,
-) -> FreeBoundarySabrQuote<T> {
+) -> (T, T, T) {
     let t = p.expiry.max_val(T::from_f64(1e-8));
     let omb = (T::one() - p.beta).max_val(T::from_f64(0.1));
     let eps = T::from_f64(1e-8);
@@ -63,8 +62,17 @@ pub fn evaluate_free_boundary_sabr<T: Real>(
     let mid_abs = ((f_abs + k_abs) * 0.5).max_val(T::from_f64(1e-6));
     let c_mid = (mid_abs.ln() * p.beta).exp();
 
-    let y_cev = (signed_cev_pow(p.forward, omb) - signed_cev_pow(strike, omb))
-        / (omb * p.alpha.max_val(T::from_f64(1e-8)));
+    let df_cev = (signed_cev_pow(p.forward, omb) - signed_cev_pow(strike, omb)) / omb;
+    let diff = p.forward - strike;
+    // Exact CEV chord (F - K) / int_K^F |u|^{-beta} du with smooth ATM limit c_mid
+    let chord_w = (diff * diff) / (diff * diff + T::from_f64(1e-8));
+    let c_chord = c_mid * (T::one() - chord_w)
+        + (diff / (df_cev + T::from_f64(1e-12)))
+            .abs()
+            .max_val(T::from_f64(1e-8))
+            * chord_w;
+
+    let y_cev = df_cev / p.alpha.max_val(T::from_f64(1e-8));
     let z = p.nu * y_cev;
     let z_over_chi = if z.val().abs() < 1e-4 {
         T::one() - p.rho * z * 0.5
@@ -81,15 +89,31 @@ pub fn evaluate_free_boundary_sabr<T: Real>(
             / (mid_abs * mid_abs / (c_mid * c_mid) * 24.0)
             + p.rho * p.beta * p.nu * p.alpha / (mid_abs / c_mid * 4.0)
             + (T::from_f64(2.0) - p.rho * p.rho * 3.0) * p.nu * p.nu / 24.0);
-    let sigma_n = (p.alpha * c_mid * z_over_chi * time_corr).max_val(T::from_f64(1e-8));
-
+    let sigma_n = (p.alpha * c_chord * z_over_chi * time_corr).max_val(T::from_f64(1e-8));
     let std = sigma_n * t.sqrt();
-    let d = (p.forward - strike) / std;
-    let call_undisc = (p.forward - strike) * d.norm_cdf() + std * d.norm_pdf();
+    let d = diff / std;
+    let call_undisc = diff * d.norm_cdf() + std * d.norm_pdf();
+    (sigma_n, call_undisc, std)
+}
+
+pub fn evaluate_free_boundary_sabr<T: Real>(
+    p: &FreeBoundarySabrParams<T>,
+    strike: T,
+    discount_factor: T,
+) -> FreeBoundarySabrQuote<T> {
+    let eps = T::from_f64(1e-8);
+    let f_abs = (p.forward * p.forward + eps * eps).sqrt();
+    let (sigma_n, call_undisc, std) = fb_sabr_normal_vol_and_call_undisc(p, strike);
     let put_undisc = call_undisc - (p.forward - strike);
     let z0 = -f_abs / std;
     let abs_prob = (z0.norm_cdf() * 2.0).max_val(T::zero()).min_val(T::one());
-    let density = (d.norm_pdf() / std).max_val(T::zero());
+
+    // Breeden-Litzenberger / Hagan (2014) smile-consistent density d^2 C_undisc / dK^2
+    let hk = 1e-4_f64;
+    let hk_t = T::from_f64(hk);
+    let (_, c_up, _) = fb_sabr_normal_vol_and_call_undisc(p, strike + hk_t);
+    let (_, c_dn, _) = fb_sabr_normal_vol_and_call_undisc(p, strike - hk_t);
+    let density = ((c_up - call_undisc * 2.0 + c_dn) / (hk * hk)).max_val(T::zero());
 
     FreeBoundarySabrQuote {
         normal_vol: sigma_n,

@@ -712,10 +712,11 @@ fn invert_spd_generic<T: Real>(mat: &[Vec<T>]) -> Result<Vec<Vec<T>>, Allocation
 
 fn schur_bisect_weights<T: Real>(
     cov: &[Vec<T>],
+    rhs: &[T],
     gamma: T,
 ) -> Result<Vec<T>, AllocationError> {
     let n = cov.len();
-    if n == 0 {
+    if n == 0 || rhs.len() != n {
         return Err(AllocationError::InvalidDimensions);
     }
     if n == 1 {
@@ -745,7 +746,6 @@ fn schur_bisect_weights<T: Real>(
     let a_inv = invert_spd_generic(&a)?;
     let d_inv = invert_spd_generic(&d)?;
 
-    // Compute B D^{-1} C and B D^{-1} 1_{n2}
     let mut bd_inv = vec![vec![T::zero(); n2]; n1];
     for i in 0..n1 {
         for j in 0..n2 {
@@ -754,14 +754,14 @@ fn schur_bisect_weights<T: Real>(
             }
         }
     }
-    let mut a_c = a.clone();
-    let mut b_a = vec![T::one(); n1];
+    let mut a_c = a;
+    let mut rhs_a = vec![T::zero(); n1];
     for i in 0..n1 {
-        let mut row_sum = T::zero();
-        for value in bd_inv[i].iter().take(n2) {
-            row_sum += *value;
+        let mut bd_r = T::zero();
+        for k in 0..n2 {
+            bd_r += bd_inv[i][k] * rhs[n1 + k];
         }
-        b_a[i] = (T::one() - gamma * row_sum).max_val(T::from_f64(1e-4));
+        rhs_a[i] = (rhs[i] - gamma * bd_r).max_val(T::from_f64(1e-4));
         for j in 0..n1 {
             let mut bdc_ij = T::zero();
             for k in 0..n2 {
@@ -780,14 +780,14 @@ fn schur_bisect_weights<T: Real>(
             }
         }
     }
-    let mut d_c = d.clone();
-    let mut b_d = vec![T::one(); n2];
+    let mut d_c = d;
+    let mut rhs_d = vec![T::zero(); n2];
     for i in 0..n2 {
-        let mut row_sum = T::zero();
-        for value in ca_inv[i].iter().take(n1) {
-            row_sum += *value;
+        let mut ca_r = T::zero();
+        for k in 0..n1 {
+            ca_r += ca_inv[i][k] * rhs[k];
         }
-        b_d[i] = (T::one() - gamma * row_sum).max_val(T::from_f64(1e-4));
+        rhs_d[i] = (rhs[n1 + i] - gamma * ca_r).max_val(T::from_f64(1e-4));
         for j in 0..n2 {
             let mut cab_ij = T::zero();
             for k in 0..n1 {
@@ -797,33 +797,26 @@ fn schur_bisect_weights<T: Real>(
         }
     }
 
-    let mut a_aug = vec![vec![T::zero(); n1]; n1];
+    let w_a = schur_bisect_weights(&a_c, &rhs_a, gamma)?;
+    let w_d = schur_bisect_weights(&d_c, &rhs_d, gamma)?;
+    let mut quad_a = T::zero();
+    let mut dot_ra = T::zero();
     for i in 0..n1 {
+        dot_ra += w_a[i] * rhs_a[i];
         for j in 0..n1 {
-            a_aug[i][j] = a_c[i][j] / (b_a[i] * b_a[j]);
+            quad_a += w_a[i] * a_c[i][j] * w_a[j];
         }
     }
-    let mut d_aug = vec![vec![T::zero(); n2]; n2];
+    let mut quad_d = T::zero();
+    let mut dot_rd = T::zero();
     for i in 0..n2 {
+        dot_rd += w_d[i] * rhs_d[i];
         for j in 0..n2 {
-            d_aug[i][j] = d_c[i][j] / (b_d[i] * b_d[j]);
+            quad_d += w_d[i] * d_c[i][j] * w_d[j];
         }
     }
-
-    let w_a = schur_bisect_weights(&a_aug, gamma)?;
-    let w_d = schur_bisect_weights(&d_aug, gamma)?;
-    let mut nu_a = T::zero();
-    for i in 0..n1 {
-        for j in 0..n1 {
-            nu_a += w_a[i] * a_aug[i][j] * w_a[j];
-        }
-    }
-    let mut nu_d = T::zero();
-    for i in 0..n2 {
-        for j in 0..n2 {
-            nu_d += w_d[i] * d_aug[i][j] * w_d[j];
-        }
-    }
+    let nu_a = quad_a / dot_ra.max_val(T::from_f64(1e-16));
+    let nu_d = quad_d / dot_rd.max_val(T::from_f64(1e-16));
     let alpha_a = nu_d / (nu_a + nu_d).max_val(T::from_f64(1e-16));
     let mut out = Vec::with_capacity(n);
     for x in w_a {
@@ -843,20 +836,8 @@ pub fn try_schur_complementary_hrp<T: Real>(
         return Err(AllocationError::InvalidDimensions);
     }
     let g = spec.gamma.max_val(T::zero()).min_val(T::one());
-    let weights = if g.val() >= 1.0 - 1e-12 {
-        // At gamma = 1 Schur-HRP coincides with the long-only minimum
-        // variance allocation, i.e. Sigma^{-1} 1 normalized to unit sum.
-        let ones = vec![T::one(); n];
-        let inv_one = solve_linear_generic(&spec.covariance, &ones)?;
-        let denom = inv_one
-            .iter()
-            .copied()
-            .fold(T::zero(), |a, b| a + b)
-            .max_val(T::from_f64(1e-14));
-        inv_one.into_iter().map(|x| x / denom).collect()
-    } else {
-        schur_bisect_weights(&spec.covariance, g)?
-    };
+    let ones = vec![T::one(); n];
+    let weights = schur_bisect_weights(&spec.covariance, &ones, g)?;
     let mut port_var = T::zero();
     for i in 0..n {
         for j in 0..n {
@@ -950,7 +931,14 @@ pub fn try_oas_and_nonlinear_shrinkage_covariance<T: Real>(
     let mut tr_nl = T::zero();
     for i in 0..p {
         for j in 0..p {
-            nl_raw[i][j] = s[i][j] * (1.0 - c) + reg_inv[i][j] * mu_target * (c * 2.0);
+            let diag_term = if i == j {
+                mu_target * (2.0 * c)
+            } else {
+                T::zero()
+            };
+            nl_raw[i][j] = s[i][j] * (1.0 - c)
+                + diag_term
+                - reg_inv[i][j] * mu_target * (c * (2.0 - c));
         }
         tr_nl += nl_raw[i][i];
     }

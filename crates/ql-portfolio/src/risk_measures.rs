@@ -603,8 +603,9 @@ pub fn optimize_mean_cdar_portfolio<T: Real>(
         };
     }
 
-    let eps = T::from_f64(spec.smoothing_eps.max(1e-4));
-    let tail = (1.0 - spec.confidence.clamp(0.5, 0.99)).max(0.01);
+    let eps_f = spec.smoothing_eps.clamp(1e-5, 2e-4);
+    let eps = T::from_f64(eps_f);
+    let tail = (1.0 - spec.confidence.clamp(0.5, 0.99)).max(1.0 / t_len as f64);
     let mut logits = vec![T::zero(); n];
 
     let eval_drawdowns_and_grad = |w: &[T]| -> (Vec<T>, T, T, Vec<T>) {
@@ -624,32 +625,63 @@ pub fn optimize_mean_cdar_portfolio<T: Real>(
             let rad = (diff * diff + eps * eps).sqrt();
             let w_peak = (T::one() + diff / rad) * 0.5;
             let w_cum = T::one() - w_peak;
-            peak = (peak + cum_w + rad) * 0.5;
+            peak = (peak + cum_w + rad - eps) * 0.5;
             for i in 0..n {
                 d_peak_dw[i] = w_peak * d_peak_dw[i] + w_cum * d_cum_dw[i];
                 d_dd_dw[t][i] = d_peak_dw[i] - d_cum_dw[i];
             }
-            dd.push(peak - cum_w);
+            dd.push((peak - cum_w).max_val(T::zero()));
         }
 
-        // The smoothed tail threshold is initialized at the largest observed
-        // drawdown.  This stable bracketed proxy avoids Newton overshoot on
-        // very small empirical tails while retaining smooth hinge gradients.
-        let zeta = dd
-            .iter()
-            .copied()
-            .fold(T::zero(), |a, b| a.max_val(b));
+        // Solve Rockafellar-Uryasev first-order quantile optimality condition:
+        // sum_t 0.5 * (1 + (dd_t - zeta) / sqrt((dd_t - zeta)^2 + eps^2)) = tail * t_len
+        let max_dd_f = dd.iter().map(|x| x.val()).fold(0.0_f64, f64::max);
+        let target_cnt = tail * t_len as f64;
+        let mut lo = -eps_f;
+        let mut hi = max_dd_f + eps_f;
+        for _ in 0..32 {
+            let mid = 0.5 * (lo + hi);
+            let cnt: f64 = dd
+                .iter()
+                .map(|d_t| {
+                    let u = d_t.val() - mid;
+                    0.5 * (1.0 + u / (u * u + eps_f * eps_f).sqrt())
+                })
+                .sum();
+            if cnt > target_cnt {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let mut zeta = T::from_f64(0.5 * (lo + hi));
+        for _ in 0..6 {
+            let mut sum_prob = T::zero();
+            let mut sum_dens = T::zero();
+            for &d_t in &dd {
+                let u = d_t - zeta;
+                let r = (u * u + eps * eps).sqrt();
+                sum_prob += (T::one() + u / r) * 0.5;
+                sum_dens += (eps * eps) / (r * r * r * 2.0);
+            }
+            let g_z = T::one() - sum_prob / target_cnt;
+            let h_z = (sum_dens / target_cnt).max_val(T::from_f64(1e-6));
+            zeta = (zeta - g_z / h_z)
+                .max_val(T::zero())
+                .min_val(T::from_f64(max_dd_f));
+        }
 
         let mut cdar_val = zeta;
         let mut grad_w = vec![T::zero(); n];
         for i in 0..n {
             grad_w[i] = -spec.expected_returns[i];
         }
-        let scale = T::one() / (tail * t_len as f64);
+        let scale = T::one() / target_cnt;
         for t in 0..t_len {
             let u = dd[t] - zeta;
             let r = (u * u + eps * eps).sqrt();
-            let hinge = (u + r) * 0.5;
+            // Zero-anchored smooth hinge \tilde{h}_eps(u) = (u + sqrt(u^2 + eps^2) - eps) / 2
+            let hinge = (u + r - eps) * 0.5;
             let d_hinge = (T::one() + u / r) * 0.5;
             cdar_val += hinge * scale;
             for i in 0..n {
@@ -812,6 +844,8 @@ mod phase19_tests {
         // Higher CDaR aversion shifts weight toward the low-drawdown asset 1 and lowers portfolio CDaR
         assert!(r_high.cdar <= r_low.cdar);
         assert!(r_high.weights[1] > r_low.weights[1]);
+        assert!(r_high.dar_threshold <= r_high.cdar + 1e-6);
+        assert!(r_high.cdar <= r_high.max_drawdown + 1e-6);
 
         let h = 1e-5;
         let eval_mu0 = |mu0: f64| {
