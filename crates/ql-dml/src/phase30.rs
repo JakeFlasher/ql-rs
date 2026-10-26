@@ -93,7 +93,7 @@ pub fn evaluate_greene_wooldridge_heckman_survivorship_and_gmm<T: Real>(
 
 fn solve3<T: Real>(mut a: [[T; 4]; 3]) -> [T; 3] {
     for col in 0..3 {
-        let piv = if a[col][col].val() >= 0.0 {
+        let piv = if a[col][col] >= T::zero() {
             a[col][col].max_val(T::from_f64(1e-10))
         } else {
             a[col][col].min_val(T::from_f64(-1e-10))

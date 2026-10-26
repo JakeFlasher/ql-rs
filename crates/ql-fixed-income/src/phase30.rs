@@ -31,9 +31,9 @@ pub struct AnDaoquanCliffordChanceResettableCbReport<T: Real = f64> {
 pub fn evaluate_an_daoquan_clifford_chance_resettable_convertible<T: Real>(
     s: &AnDaoquanCliffordChanceResettableCbSpec<T>,
 ) -> AnDaoquanCliffordChanceResettableCbReport<T> {
-    let floor = s.face_value
-        * (-s.credit_spread * s.maturity).exp()
-        * (T::one() + s.coupon_rate * s.maturity * T::from_f64(0.5));
+    let floor = (s.redemption_maturity_price
+        + s.face_value * s.coupon_rate * s.maturity * T::from_f64(0.5))
+        * (-(s.risk_free_rate + s.credit_spread) * s.maturity).exp();
     let init_price = s.initial_conversion_price.max_val(T::from_f64(1e-6));
     let initial = s.face_value / init_price * s.spot_price;
     let candidate = s.avg_20day_price.max_val(s.book_value_per_share_bps);
@@ -47,8 +47,10 @@ pub fn evaluate_an_daoquan_clifford_chance_resettable_convertible<T: Real>(
     let put = (s.put_back_price - initial.min_val(floor)).max_val(T::zero())
         * (-s.risk_free_rate * s.maturity).exp()
         * (T::from_f64(0.25) + T::from_f64(0.5) * reset_weight);
-    let cap = (post - s.initial_conversion_price * s.soft_call_trigger_ratio).max_val(T::zero())
-        * T::from_f64(0.2);
+    let soft_call_threshold = s
+        .soft_call_price
+        .max_val(s.initial_conversion_price * s.soft_call_trigger_ratio);
+    let cap = (post - soft_call_threshold).max_val(T::zero()) * T::from_f64(0.2);
     let fair = floor.max_val(initial) + uplift + put - cap;
     AnDaoquanCliffordChanceResettableCbReport {
         straight_bond_floor: floor,

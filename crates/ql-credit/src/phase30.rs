@@ -59,7 +59,7 @@ pub fn evaluate_damodaran_rsm_country_risk_and_debt_modification<T: Real>(
         .abs()
         .max_val(T::from_f64(1e-12));
     let pct = (pv + s.modification_fees_paid - s.original_debt_carrying_value).abs() / denom;
-    let substantial = pct.val() >= 0.10;
+    let substantial = pct >= T::from_f64(0.10);
     let gain = s.original_debt_carrying_value - pv_fair - s.modification_fees_paid;
     DamodaranRsmCountryRiskAndDebtModReport {
         net_sovereign_default_spread: net,
