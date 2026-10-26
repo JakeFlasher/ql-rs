@@ -43,43 +43,50 @@ pub fn evaluate_baran_bianchetti_mtm_xccy_basis_swap<T: Real>(
         .min(s.dom_ois_discount_factors.len())
         .min(s.for_xccy_discount_factors.len());
     assert!(n > 0);
-    let mut dom_leg = T::zero();
-    let mut for_leg = T::zero();
+    let mut dom_cpn_zero_basis = T::zero();
+    let mut const_dom_zero_basis = T::zero();
+    let mut for_cpn_pv = T::zero();
     let mut reset = T::zero();
     let mut convex = T::zero();
-    let mut ann = T::zero();
-    let mut prev = T::zero();
+    let mut ann_mtm = T::zero();
+    let mut const_ann = T::zero();
+    let mut prev_t = T::zero();
+    let mut dd_prev = T::one();
+    let mut df_prev = T::one();
     for i in 0..n {
         let t = s.payment_times[i];
-        let dt = (t - prev).max_val(T::from_f64(1e-8));
+        let dt = (t - prev_t).max_val(T::from_f64(1e-8));
         let dd = s.dom_ois_discount_factors[i];
         let df = s.for_xccy_discount_factors[i];
         let rd = s.dom_forward_rates.get(i).copied().unwrap_or(T::zero());
         let rf = s.for_forward_rates.get(i).copied().unwrap_or(T::zero());
-        dom_leg += s.foreign_notional * dt * (rd + s.quoted_dom_basis_spread) * dd;
-        let fx_fwd = s.spot_fx_dom_per_for * df / dd.max_val(T::from_f64(1e-12));
-        for_leg += s.foreign_notional * dt * rf * df * fx_fwd;
-        let c = (-s.corr_dom_rate_fx * s.dom_rate_vol * s.fx_spot_vol * prev).exp();
-        let raw_reset = s.foreign_notional * (fx_fwd - s.spot_fx_dom_per_for) * dd;
-        reset += raw_reset;
-        convex += raw_reset * (c - T::one());
-        ann += s.foreign_notional * dt * dd;
-        prev = t;
+        let f_fx = s.spot_fx_dom_per_for * (df_prev / dd_prev.max_val(T::from_f64(1e-12)));
+        let mid_t = (prev_t + t) * T::from_f64(0.5);
+        let c = (-s.corr_dom_rate_fx * s.dom_rate_vol * s.fx_spot_vol * mid_t).exp();
+        let nd = s.foreign_notional * f_fx;
+        reset += nd * (dd_prev - dd);
+        dom_cpn_zero_basis += nd * dt * rd * dd;
+        ann_mtm += nd * c * dt * dd;
+        convex += nd * (c - T::one()) * ((dd_prev - dd) + dt * rd * dd);
+        for_cpn_pv += s.foreign_notional * s.spot_fx_dom_per_for * dt * rf * df;
+        const_dom_zero_basis += s.foreign_notional * s.spot_fx_dom_per_for * dt * rd * dd;
+        const_ann += s.foreign_notional * s.spot_fx_dom_per_for * dt * dd;
+        prev_t = t;
+        dd_prev = dd;
+        df_prev = df;
     }
-    let base = dom_leg + for_leg + reset + convex;
-    let base_without_basis = base - s.quoted_dom_basis_spread * ann;
-    let par_mtm = -base_without_basis / ann.max_val(T::from_f64(1e-12));
-    let const_ann = s.foreign_notional
-        * s.payment_times
-            .iter()
-            .zip(s.dom_ois_discount_factors.iter())
-            .map(|(t, d)| (*t).max_val(T::from_f64(1e-8)) * *d)
-            .fold(T::zero(), |a, x| a + x);
-    let par_const = -(dom_leg + for_leg + reset) / const_ann.max_val(T::from_f64(1e-12));
-    let npv = base_without_basis + s.quoted_dom_basis_spread * ann;
+    let foreign_leg =
+        for_cpn_pv + s.foreign_notional * s.spot_fx_dom_per_for * (T::one() - df_prev);
+    let mtm_dom = dom_cpn_zero_basis + reset + convex + s.quoted_dom_basis_spread * ann_mtm;
+    let npv = mtm_dom - foreign_leg;
+    let par_mtm =
+        (foreign_leg - (dom_cpn_zero_basis + reset + convex)) / ann_mtm.max_val(T::from_f64(1e-12));
+    let const_principal = s.foreign_notional * s.spot_fx_dom_per_for * (T::one() - dd_prev);
+    let par_const = (foreign_leg - (const_dom_zero_basis + const_principal))
+        / const_ann.max_val(T::from_f64(1e-12));
     BaranBianchettiMtmXccyBasisReport {
-        mtm_domestic_leg_pv: dom_leg,
-        foreign_leg_pv_in_dom: for_leg,
+        mtm_domestic_leg_pv: mtm_dom,
+        foreign_leg_pv_in_dom: foreign_leg,
         interim_notional_reset_pv: reset,
         fx_reset_convexity_adjustment_pv: convex,
         mtm_swap_npv_in_dom: npv,

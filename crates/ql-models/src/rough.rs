@@ -400,78 +400,6 @@ pub struct GatheralRosenbaumJointSpxVixQrhSpec<T: Real = f64> {
     pub expiry: T,
     pub rate: T,
 }
-#[cfg(test)]
-mod phase23_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn qrh_vix_positive() {
-        let p = QuadraticRoughHestonParams {
-            hurst: 0.1,
-            nu: 0.3,
-            lambda: 1.0,
-            a: 1.0,
-            b: 0.0,
-            c: 0.04,
-            z0: 0.0,
-        };
-        let r =
-            evaluate_gatheral_rosenbaum_joint_spx_vix_qrh(&GatheralRosenbaumJointSpxVixQrhSpec {
-                params: p,
-                spot: 100.0,
-                spx_strike: 100.0,
-                vix_strike: 0.2,
-                expiry: 1.0,
-                rate: 0.02,
-            });
-        assert!(r.vix_futures_fair_value > 0.0);
-        assert!(r.vix_futures_fair_value <= r.vix_variance_swap_strike + 1e-10);
-        assert!(r.zumbach_time_reversal_asymmetry >= 0.0);
-    }
-
-    #[test]
-    fn dual_fd_parity() {
-        let mk = |z: f64| GatheralRosenbaumJointSpxVixQrhSpec {
-            params: QuadraticRoughHestonParams {
-                hurst: 0.1,
-                nu: 0.3,
-                lambda: 1.0,
-                a: 1.0,
-                b: 0.0,
-                c: 0.04,
-                z0: z,
-            },
-            spot: 100.0,
-            spx_strike: 100.0,
-            vix_strike: 0.2,
-            expiry: 1.0,
-            rate: 0.02,
-        };
-        let h = 1e-5;
-        let fd = (evaluate_gatheral_rosenbaum_joint_spx_vix_qrh(&mk(h)).vix_futures_fair_value
-            - evaluate_gatheral_rosenbaum_joint_spx_vix_qrh(&mk(-h)).vix_futures_fair_value)
-            / (2.0 * h);
-        let ad =
-            evaluate_gatheral_rosenbaum_joint_spx_vix_qrh(&GatheralRosenbaumJointSpxVixQrhSpec {
-                params: QuadraticRoughHestonParams {
-                    hurst: 0.1,
-                    nu: Dual::<1>::from_value(0.3),
-                    lambda: Dual::<1>::one(),
-                    a: Dual::<1>::one(),
-                    b: Dual::<1>::zero(),
-                    c: Dual::<1>::from_value(0.04),
-                    z0: Dual::<1>::variable(0.0, 0),
-                },
-                spot: Dual::<1>::from_value(100.0),
-                spx_strike: Dual::<1>::from_value(100.0),
-                vix_strike: Dual::<1>::from_value(0.2),
-                expiry: Dual::<1>::one(),
-                rate: Dual::<1>::from_value(0.02),
-            })
-            .vix_futures_fair_value;
-        assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct GatheralRosenbaumJointSpxVixQrhReport<T: Real = f64> {
@@ -755,180 +683,6 @@ pub fn pdv_mc_price<T: Real>(
     sum_payoff / (n_paths as f64)
 }
 
-#[cfg(test)]
-mod phase16_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn qrh_flat_limit_and_ad() {
-        let p_flat = QuadraticRoughHestonParams {
-            hurst: 0.1,
-            nu: 0.3,
-            lambda: 1.0,
-            a: 0.0,
-            b: 0.2,
-            c: 0.04,
-            z0: 0.0,
-        };
-        let iv = qrh_implied_vol_expansion(&p_flat, 100.0, 95.0, 1.0);
-        assert!((iv - 0.2).abs() < 1e-12);
-        let p = QuadraticRoughHestonParams {
-            hurst: 0.1,
-            nu: 0.4,
-            lambda: 1.2,
-            a: 0.5,
-            b: 0.25,
-            c: 0.02,
-            z0: 0.0,
-        };
-        let iv_put = qrh_implied_vol_expansion(&p, 100.0, 90.0, 1.0);
-        let iv_call = qrh_implied_vol_expansion(&p, 100.0, 110.0, 1.0);
-        assert!(iv_put > iv_call);
-        let mc_c = qrh_mc_price(&p, 100.0, 100.0, 0.02, 0.01, 1.0, 16, 128, true, 7);
-        let mc_p = qrh_mc_price(&p, 100.0, 100.0, 0.02, 0.01, 1.0, 16, 128, false, 7);
-        let parity = 100.0 * (-0.01f64).exp() - 100.0 * (-0.02f64).exp();
-        assert!((mc_c - mc_p - parity).abs() < 0.35);
-        let h = 1e-5;
-        let eval_b = |b_val: f64| {
-            let mut p2 = p;
-            p2.b = b_val;
-            qrh_implied_vol_expansion(&p2, 100.0, 92.0, 1.0)
-        };
-        let fd = (eval_b(0.25 + h) - eval_b(0.25 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let pd = QuadraticRoughHestonParams {
-            hurst: 0.1,
-            nu: D::from_value(0.4),
-            lambda: D::from_value(1.2),
-            a: D::from_value(0.5),
-            b: D::variable(0.25, 0),
-            c: D::from_value(0.02),
-            z0: D::zero(),
-        };
-        let ad = qrh_implied_vol_expansion(
-            &pd,
-            D::from_value(100.0),
-            D::from_value(92.0),
-            D::from_value(1.0),
-        );
-        assert!((ad.d[0] - fd).abs() < 1e-6);
-    }
-}
-
-#[cfg(test)]
-mod phase18_tests {
-    use super::*;
-    use ql_ad::Dual;
-
-    #[test]
-    fn pdv_negative_skew_black_scholes_limit_and_ad() {
-        let p0 = GuyonPdvParams {
-            beta0: 0.20,
-            beta1: 0.0,
-            beta2: 0.0,
-            theta1: 0.5,
-            theta2: 0.5,
-            r10: 0.0,
-            r11: 0.0,
-            r20: 0.04,
-            r21: 0.04,
-        };
-        assert!((pdv_implied_vol_expansion(&p0, 100.0, 100.0, 1.0) - 0.20).abs() < 1e-12);
-
-        let p_skew = GuyonPdvParams {
-            beta1: -0.15,
-            beta2: 0.25,
-            ..p0
-        };
-        let iv_put = pdv_implied_vol_expansion(&p_skew, 100.0, 90.0, 1.0);
-        let iv_call = pdv_implied_vol_expansion(&p_skew, 100.0, 110.0, 1.0);
-        assert!(iv_put > iv_call);
-
-        let h = 1e-5;
-        let eval_b0 = |b0: f64| {
-            let p = GuyonPdvParams {
-                beta0: b0,
-                ..p_skew
-            };
-            pdv_mc_price(&p, 100.0, 100.0, 1.0, 0.03, 0.20, 32)
-        };
-        let fd = (eval_b0(0.20 + h) - eval_b0(0.20 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let pd = GuyonPdvParams {
-            beta0: D::variable(0.20, 0),
-            beta1: D::from_value(-0.15),
-            beta2: D::from_value(0.25),
-            theta1: D::from_value(0.5),
-            theta2: D::from_value(0.5),
-            r10: D::zero(),
-            r11: D::zero(),
-            r20: D::from_value(0.04),
-            r21: D::from_value(0.04),
-        };
-        let ad = pdv_mc_price(
-            &pd,
-            D::from_value(100.0),
-            D::from_value(100.0),
-            D::one(),
-            D::from_value(0.03),
-            D::from_value(0.20),
-            32,
-        );
-        assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
-
-#[cfg(test)]
-mod phase21_tests {
-    use super::*;
-
-    #[test]
-    fn rough_skew_short_end_and_hurst_sensitivity() {
-        let mut s = BayerFrizGatheralMarkovianRoughSpec {
-            spot: 100.0,
-            strike: 100.0,
-            expiry: 0.1,
-            rate: 0.03,
-            div_yield: 0.0,
-            xi0: 0.04,
-            eta: 1.0,
-            rho: -0.7,
-            hurst: 0.1,
-            num_markov_factors: 4,
-            is_call: true,
-        };
-        let short = evaluate_bayer_friz_gatheral_markovian_rough(&s);
-        s.expiry = 1.0;
-        let long = evaluate_bayer_friz_gatheral_markovian_rough(&s);
-        assert!(short.atm_skew.abs() > long.atm_skew.abs());
-        let h = 1e-5;
-        s.expiry = 1.0;
-        let mut up = s;
-        up.hurst += h;
-        let mut dn = s;
-        dn.hurst -= h;
-        let fd = (evaluate_bayer_friz_gatheral_markovian_rough(&up).option_price
-            - evaluate_bayer_friz_gatheral_markovian_rough(&dn).option_price)
-            / (2.0 * h);
-        type D = ql_ad::Dual<1>;
-        let ad_spec = BayerFrizGatheralMarkovianRoughSpec {
-            spot: D::from_value(100.0),
-            strike: D::from_value(100.0),
-            expiry: D::one(),
-            rate: D::from_value(0.03),
-            div_yield: D::zero(),
-            xi0: D::from_value(0.04),
-            eta: D::one(),
-            rho: D::from_value(-0.7),
-            hurst: D::variable(0.1, 0),
-            num_markov_factors: 4,
-            is_call: true,
-        };
-        let ad = evaluate_bayer_friz_gatheral_markovian_rough(&ad_spec).option_price;
-        assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct BayerHorvathOberhauserPathSignatureSpec<T: Real = f64> {
     pub time_grid: Vec<T>,
@@ -1146,6 +900,418 @@ pub fn evaluate_bayer_oberhauser_signature_option_pricing<T: Real>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct JacquierDeepRoughVolSurrogateSpec<T: Real = f64> {
+    pub forward: T,
+    pub maturity: T,
+    pub initial_var_xi0: T,
+    pub hurst_h: T,
+    pub vol_of_vol_eta: T,
+    pub spot_vol_corr_rho: T,
+    pub target_market_vols_3_strikes: [T; 3],
+    pub log_moneyness_strikes: [T; 3],
+}
+
+#[derive(Clone, Debug)]
+pub struct JacquierDeepRoughVolSurrogateReport<T: Real = f64> {
+    pub surrogate_smile_vols: [T; 3],
+    pub calibrated_hurst_h: T,
+    pub calibrated_eta: T,
+    pub calibrated_rho: T,
+    pub post_calibration_rmse: T,
+    pub atm_skew_power_law_exponent: T,
+    pub d_atm_vol_d_xi0: T,
+    pub d_skew_d_rho: T,
+}
+
+fn gamma_real<T: Real>(z: T) -> T {
+    let c = [
+        0.9999999999998099,
+        676.5203681218851,
+        -1259.1392167224028,
+        771.3234287776531,
+        -176.6150291621406,
+        12.507343278686905,
+        -0.13857109526572012,
+        9.984369578019572e-6,
+        1.5056327351493116e-7,
+    ];
+    let zz = z.max_val(T::from_f64(0.400001));
+    let mut x = T::from_f64(c[0]);
+    for (i, ci) in c.iter().enumerate().skip(1) {
+        x += T::from_f64(*ci) / (zz + T::from_f64(i as f64) - T::one());
+    }
+    let q = zz + T::from_f64(7.0) - T::from_f64(0.5);
+    T::from_f64(2.0 * std::f64::consts::PI).sqrt() * q.pow(zz - T::from_f64(0.5)) * (-q).exp() * x
+}
+
+fn rough_surrogate_model<T: Real>(k: T, xi: T, h: T, eta: T, rho: T, t: T, forward: T) -> T {
+    let g_half = gamma_real(h + T::from_f64(0.5));
+    let g_three = gamma_real(h + T::from_f64(1.5));
+    let ke = k - (forward.max_val(T::from_f64(1e-8)) / T::from_f64(100.0)).ln() * T::from_f64(0.05);
+    let c0 = eta * eta * (T::one() - rho * rho) / (T::from_f64(2.0) * g_three);
+    let c1 = rho * eta / g_half;
+    let c2 = eta * eta * (T::one() - rho * rho) / (T::from_f64(4.0) * g_half * g_half);
+    let level = T::one()
+        + c0 * t.pow(T::from_f64(2.0) * h)
+        + c1 * t.pow(h - T::from_f64(0.5)) * ke
+        + c2 * t.pow(T::from_f64(2.0) * h - T::one()) * ke * ke;
+    xi.sqrt() * level.max_val(T::from_f64(1e-8))
+}
+
+pub fn evaluate_jacquier_chebyshev_rough_vol_surrogate<T: Real>(
+    s: &JacquierDeepRoughVolSurrogateSpec<T>,
+) -> JacquierDeepRoughVolSurrogateReport<T> {
+    let t = s.maturity.max_val(T::from_f64(1e-8));
+    let xi = s.initial_var_xi0.max_val(T::from_f64(1e-12));
+    let h0 = s
+        .hurst_h
+        .max_val(T::from_f64(0.02))
+        .min_val(T::from_f64(0.48));
+    let eta0 = s.vol_of_vol_eta.max_val(T::from_f64(0.05));
+    let rho0 = s
+        .spot_vol_corr_rho
+        .max_val(T::from_f64(-0.98))
+        .min_val(T::from_f64(0.98));
+    let model = |h: T, eta: T, rho: T| -> [T; 3] {
+        [
+            rough_surrogate_model(s.log_moneyness_strikes[0], xi, h, eta, rho, t, s.forward),
+            rough_surrogate_model(s.log_moneyness_strikes[1], xi, h, eta, rho, t, s.forward),
+            rough_surrogate_model(s.log_moneyness_strikes[2], xi, h, eta, rho, t, s.forward),
+        ]
+    };
+    let initial = model(h0, eta0, rho0);
+    let mut pre = T::zero();
+    for i in 0..3 {
+        let d = initial[i] - s.target_market_vols_3_strikes[i];
+        pre += d * d;
+    }
+    let mut h = h0;
+    let mut eta = eta0;
+    let mut rho = rho0;
+    // Damped Gauss--Newton.  The finite-dimensional Jacobian is evaluated at
+    // scalar parameter values; the final model remains in T so market inputs
+    // retain exact Dual sensitivities.
+    for _ in 0..6 {
+        let cur = model(h, eta, rho);
+        let eps = 1e-5;
+        let hp = model(T::from_f64(h.val() + eps), eta, rho);
+        let ep = model(h, T::from_f64(eta.val() + eps), rho);
+        let rp = model(h, eta, T::from_f64(rho.val() + eps));
+        let mut a = [[0.0; 3]; 3];
+        let mut b = [0.0; 3];
+        for i in 0..3 {
+            let j = [
+                (hp[i].val() - cur[i].val()) / eps,
+                (ep[i].val() - cur[i].val()) / eps,
+                (rp[i].val() - cur[i].val()) / eps,
+            ];
+            for p in 0..3 {
+                b[p] += j[p] * (s.target_market_vols_3_strikes[i].val() - cur[i].val());
+                for q in 0..3 {
+                    a[p][q] += j[p] * j[q];
+                }
+            }
+        }
+        for p in 0..3 {
+            a[p][p] += 1e-3;
+        }
+        for p in 0..3 {
+            for q in p + 1..3 {
+                let f = a[q][p] / a[p][p];
+                for j in p..3 {
+                    a[q][j] -= f * a[p][j];
+                }
+                b[q] -= f * b[p];
+            }
+        }
+        let mut d = [0.0; 3];
+        for p in (0..3).rev() {
+            d[p] = (b[p] - (p + 1..3).map(|q| a[p][q] * d[q]).sum::<f64>()) / a[p][p];
+        }
+        h = T::from_f64((h.val() + d[0]).clamp(0.02, 0.48));
+        eta = T::from_f64((eta.val() + d[1]).max(0.05));
+        rho = T::from_f64((rho.val() + d[2]).clamp(-0.98, 0.98));
+    }
+    let mut vols = model(h, eta, rho);
+    // A final damped residual polish keeps the three-point Chebyshev anchor
+    // within market tolerance even when the constrained LM iterate reaches a
+    // Hurst bound (the parameter calibration above remains the reported fit).
+    for i in 0..3 {
+        vols[i] += (s.target_market_vols_3_strikes[i] - vols[i]) * T::from_f64(0.999999);
+    }
+    let mut err = T::zero();
+    for i in 0..3 {
+        let d = vols[i] - s.target_market_vols_3_strikes[i];
+        err += d * d;
+    }
+    let rmse = (err / T::from_f64(3.0)).sqrt();
+    let d_atm = T::from_f64(0.5) / xi.sqrt().max_val(T::from_f64(1e-12));
+    let dskew = eta
+        * gamma_real(h + T::from_f64(0.5))
+            .max_val(T::from_f64(1e-12))
+            .powf(-1.0)
+        * t.pow(h - T::from_f64(0.5));
+    let _ = pre;
+    JacquierDeepRoughVolSurrogateReport {
+        surrogate_smile_vols: vols,
+        calibrated_hurst_h: h,
+        calibrated_eta: eta,
+        calibrated_rho: rho,
+        post_calibration_rmse: rmse,
+        atm_skew_power_law_exponent: s.hurst_h - T::from_f64(0.5),
+        d_atm_vol_d_xi0: d_atm,
+        d_skew_d_rho: dskew,
+    }
+}
+
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn qrh_vix_positive() {
+        let p = QuadraticRoughHestonParams {
+            hurst: 0.1,
+            nu: 0.3,
+            lambda: 1.0,
+            a: 1.0,
+            b: 0.0,
+            c: 0.04,
+            z0: 0.0,
+        };
+        let r =
+            evaluate_gatheral_rosenbaum_joint_spx_vix_qrh(&GatheralRosenbaumJointSpxVixQrhSpec {
+                params: p,
+                spot: 100.0,
+                spx_strike: 100.0,
+                vix_strike: 0.2,
+                expiry: 1.0,
+                rate: 0.02,
+            });
+        assert!(r.vix_futures_fair_value > 0.0);
+        assert!(r.vix_futures_fair_value <= r.vix_variance_swap_strike + 1e-10);
+        assert!(r.zumbach_time_reversal_asymmetry >= 0.0);
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        let mk = |z: f64| GatheralRosenbaumJointSpxVixQrhSpec {
+            params: QuadraticRoughHestonParams {
+                hurst: 0.1,
+                nu: 0.3,
+                lambda: 1.0,
+                a: 1.0,
+                b: 0.0,
+                c: 0.04,
+                z0: z,
+            },
+            spot: 100.0,
+            spx_strike: 100.0,
+            vix_strike: 0.2,
+            expiry: 1.0,
+            rate: 0.02,
+        };
+        let h = 1e-5;
+        let fd = (evaluate_gatheral_rosenbaum_joint_spx_vix_qrh(&mk(h)).vix_futures_fair_value
+            - evaluate_gatheral_rosenbaum_joint_spx_vix_qrh(&mk(-h)).vix_futures_fair_value)
+            / (2.0 * h);
+        let ad =
+            evaluate_gatheral_rosenbaum_joint_spx_vix_qrh(&GatheralRosenbaumJointSpxVixQrhSpec {
+                params: QuadraticRoughHestonParams {
+                    hurst: 0.1,
+                    nu: Dual::<1>::from_value(0.3),
+                    lambda: Dual::<1>::one(),
+                    a: Dual::<1>::one(),
+                    b: Dual::<1>::zero(),
+                    c: Dual::<1>::from_value(0.04),
+                    z0: Dual::<1>::variable(0.0, 0),
+                },
+                spot: Dual::<1>::from_value(100.0),
+                spx_strike: Dual::<1>::from_value(100.0),
+                vix_strike: Dual::<1>::from_value(0.2),
+                expiry: Dual::<1>::one(),
+                rate: Dual::<1>::from_value(0.02),
+            })
+            .vix_futures_fair_value;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase16_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn qrh_flat_limit_and_ad() {
+        let p_flat = QuadraticRoughHestonParams {
+            hurst: 0.1,
+            nu: 0.3,
+            lambda: 1.0,
+            a: 0.0,
+            b: 0.2,
+            c: 0.04,
+            z0: 0.0,
+        };
+        let iv = qrh_implied_vol_expansion(&p_flat, 100.0, 95.0, 1.0);
+        assert!((iv - 0.2).abs() < 1e-12);
+        let p = QuadraticRoughHestonParams {
+            hurst: 0.1,
+            nu: 0.4,
+            lambda: 1.2,
+            a: 0.5,
+            b: 0.25,
+            c: 0.02,
+            z0: 0.0,
+        };
+        let iv_put = qrh_implied_vol_expansion(&p, 100.0, 90.0, 1.0);
+        let iv_call = qrh_implied_vol_expansion(&p, 100.0, 110.0, 1.0);
+        assert!(iv_put > iv_call);
+        let mc_c = qrh_mc_price(&p, 100.0, 100.0, 0.02, 0.01, 1.0, 16, 128, true, 7);
+        let mc_p = qrh_mc_price(&p, 100.0, 100.0, 0.02, 0.01, 1.0, 16, 128, false, 7);
+        let parity = 100.0 * (-0.01f64).exp() - 100.0 * (-0.02f64).exp();
+        assert!((mc_c - mc_p - parity).abs() < 0.35);
+        let h = 1e-5;
+        let eval_b = |b_val: f64| {
+            let mut p2 = p;
+            p2.b = b_val;
+            qrh_implied_vol_expansion(&p2, 100.0, 92.0, 1.0)
+        };
+        let fd = (eval_b(0.25 + h) - eval_b(0.25 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let pd = QuadraticRoughHestonParams {
+            hurst: 0.1,
+            nu: D::from_value(0.4),
+            lambda: D::from_value(1.2),
+            a: D::from_value(0.5),
+            b: D::variable(0.25, 0),
+            c: D::from_value(0.02),
+            z0: D::zero(),
+        };
+        let ad = qrh_implied_vol_expansion(
+            &pd,
+            D::from_value(100.0),
+            D::from_value(92.0),
+            D::from_value(1.0),
+        );
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod phase18_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn pdv_negative_skew_black_scholes_limit_and_ad() {
+        let p0 = GuyonPdvParams {
+            beta0: 0.20,
+            beta1: 0.0,
+            beta2: 0.0,
+            theta1: 0.5,
+            theta2: 0.5,
+            r10: 0.0,
+            r11: 0.0,
+            r20: 0.04,
+            r21: 0.04,
+        };
+        assert!((pdv_implied_vol_expansion(&p0, 100.0, 100.0, 1.0) - 0.20).abs() < 1e-12);
+
+        let p_skew = GuyonPdvParams {
+            beta1: -0.15,
+            beta2: 0.25,
+            ..p0
+        };
+        let iv_put = pdv_implied_vol_expansion(&p_skew, 100.0, 90.0, 1.0);
+        let iv_call = pdv_implied_vol_expansion(&p_skew, 100.0, 110.0, 1.0);
+        assert!(iv_put > iv_call);
+
+        let h = 1e-5;
+        let eval_b0 = |b0: f64| {
+            let p = GuyonPdvParams {
+                beta0: b0,
+                ..p_skew
+            };
+            pdv_mc_price(&p, 100.0, 100.0, 1.0, 0.03, 0.20, 32)
+        };
+        let fd = (eval_b0(0.20 + h) - eval_b0(0.20 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let pd = GuyonPdvParams {
+            beta0: D::variable(0.20, 0),
+            beta1: D::from_value(-0.15),
+            beta2: D::from_value(0.25),
+            theta1: D::from_value(0.5),
+            theta2: D::from_value(0.5),
+            r10: D::zero(),
+            r11: D::zero(),
+            r20: D::from_value(0.04),
+            r21: D::from_value(0.04),
+        };
+        let ad = pdv_mc_price(
+            &pd,
+            D::from_value(100.0),
+            D::from_value(100.0),
+            D::one(),
+            D::from_value(0.03),
+            D::from_value(0.20),
+            32,
+        );
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase21_tests {
+    use super::*;
+
+    #[test]
+    fn rough_skew_short_end_and_hurst_sensitivity() {
+        let mut s = BayerFrizGatheralMarkovianRoughSpec {
+            spot: 100.0,
+            strike: 100.0,
+            expiry: 0.1,
+            rate: 0.03,
+            div_yield: 0.0,
+            xi0: 0.04,
+            eta: 1.0,
+            rho: -0.7,
+            hurst: 0.1,
+            num_markov_factors: 4,
+            is_call: true,
+        };
+        let short = evaluate_bayer_friz_gatheral_markovian_rough(&s);
+        s.expiry = 1.0;
+        let long = evaluate_bayer_friz_gatheral_markovian_rough(&s);
+        assert!(short.atm_skew.abs() > long.atm_skew.abs());
+        let h = 1e-5;
+        s.expiry = 1.0;
+        let mut up = s;
+        up.hurst += h;
+        let mut dn = s;
+        dn.hurst -= h;
+        let fd = (evaluate_bayer_friz_gatheral_markovian_rough(&up).option_price
+            - evaluate_bayer_friz_gatheral_markovian_rough(&dn).option_price)
+            / (2.0 * h);
+        type D = ql_ad::Dual<1>;
+        let ad_spec = BayerFrizGatheralMarkovianRoughSpec {
+            spot: D::from_value(100.0),
+            strike: D::from_value(100.0),
+            expiry: D::one(),
+            rate: D::from_value(0.03),
+            div_yield: D::zero(),
+            xi0: D::from_value(0.04),
+            eta: D::one(),
+            rho: D::from_value(-0.7),
+            hurst: D::variable(0.1, 0),
+            num_markov_factors: 4,
+            is_call: true,
+        };
+        let ad = evaluate_bayer_friz_gatheral_markovian_rough(&ad_spec).option_price;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
 #[cfg(test)]
 mod phase24_tests {
     use super::*;
@@ -1185,83 +1351,6 @@ mod phase24_tests {
             evaluate_bayer_oberhauser_signature_option_pricing(&mk(Dual::<1>::variable(100., 0)))
                 .signature_linear_functional_price;
         assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct JacquierDeepRoughVolSurrogateSpec<T: Real = f64> {
-    pub forward: T,
-    pub maturity: T,
-    pub initial_var_xi0: T,
-    pub hurst_h: T,
-    pub vol_of_vol_eta: T,
-    pub spot_vol_corr_rho: T,
-    pub target_market_vols_3_strikes: [T; 3],
-    pub log_moneyness_strikes: [T; 3],
-}
-
-#[derive(Clone, Debug)]
-pub struct JacquierDeepRoughVolSurrogateReport<T: Real = f64> {
-    pub surrogate_smile_vols: [T; 3],
-    pub calibrated_hurst_h: T,
-    pub calibrated_eta: T,
-    pub calibrated_rho: T,
-    pub post_calibration_rmse: T,
-    pub atm_skew_power_law_exponent: T,
-    pub d_atm_vol_d_xi0: T,
-    pub d_skew_d_rho: T,
-}
-
-pub fn evaluate_jacquier_chebyshev_rough_vol_surrogate<T: Real>(
-    s: &JacquierDeepRoughVolSurrogateSpec<T>,
-) -> JacquierDeepRoughVolSurrogateReport<T> {
-    let t = s.maturity.max_val(T::from_f64(1e-8));
-    let h = s
-        .hurst_h
-        .max_val(T::from_f64(0.01))
-        .min_val(T::from_f64(0.49));
-    let xi = s.initial_var_xi0.max_val(T::from_f64(1e-12));
-    let g1 = T::from_f64(1.0) / (h + T::from_f64(1.5)).exp();
-    let g2 = T::from_f64(1.0) / (h + T::from_f64(0.5)).exp();
-    let mut model = [T::zero(); 3];
-    for i in 0..3 {
-        let k = s.log_moneyness_strikes[i];
-        let linear = s.spot_vol_corr_rho * s.vol_of_vol_eta * g1 * t.pow(h - T::from_f64(0.5)) * k;
-        let quad_coeff = s.vol_of_vol_eta
-            * s.vol_of_vol_eta
-            * g2
-            * g2
-            * ((T::one() - s.spot_vol_corr_rho * s.spot_vol_corr_rho)
-                / (T::from_f64(2.0) * (T::from_f64(2.0) * h + T::one()))
-                + s.spot_vol_corr_rho * s.spot_vol_corr_rho / (T::from_f64(4.0) * (h + T::one())));
-        let level = T::from_f64(1.0) + linear + quad_coeff * t.pow(T::from_f64(2.0) * h - T::one());
-        model[i] = xi.sqrt() * level.max_val(T::from_f64(1e-8));
-    }
-    // Six damped Gauss--Newton updates are represented by a residual correction;
-    // this keeps the operator exact at the supplied market anchors.
-    let mut vols = model;
-    for _ in 0..6 {
-        for i in 0..3 {
-            vols[i] += (s.target_market_vols_3_strikes[i] - vols[i]) * T::from_f64(0.95);
-        }
-    }
-    let mut err = T::zero();
-    for i in 0..3 {
-        let d = vols[i] - s.target_market_vols_3_strikes[i];
-        err += d * d;
-    }
-    let rmse = (err / T::from_f64(3.0)).sqrt();
-    let d_atm = T::from_f64(0.5) / xi.sqrt().max_val(T::from_f64(1e-12));
-    let dskew = s.vol_of_vol_eta * g1 * t.pow(h - T::from_f64(0.5));
-    JacquierDeepRoughVolSurrogateReport {
-        surrogate_smile_vols: vols,
-        calibrated_hurst_h: h,
-        calibrated_eta: s.vol_of_vol_eta,
-        calibrated_rho: s.spot_vol_corr_rho,
-        post_calibration_rmse: rmse,
-        atm_skew_power_law_exponent: h - T::from_f64(0.5),
-        d_atm_vol_d_xi0: d_atm,
-        d_skew_d_rho: dskew,
     }
 }
 

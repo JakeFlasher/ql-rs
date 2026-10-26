@@ -123,17 +123,16 @@ pub fn evaluate_bcbs_d368_six_scenario_irrbb<T: Real>(
     let mut net_1y = T::zero();
     for i in 0..n {
         let t = s.bucket_midpoints_years[i];
-        let dep = if t.val() <= 1.0 {
-            T::one() - beta
-        } else {
-            T::one()
-        };
+        // Smooth short-bucket indicator.  Keeping this in the AD domain is
+        // important: bucket times are calibration variables in the IRRBB
+        // Jacobian and a hard one-year gate would erase their sensitivities.
+        let w_1y = T::one() / (T::one() + (T::from_f64(20.0) * (t - T::one())).exp());
+        let dep = T::one() - beta * w_1y;
         let cf = s.asset_repricing_cashflows[i] - dep * s.liability_repricing_cashflows[i];
         base += cf * (-s.baseline_zero_rates[i] * t).exp();
-        if t.val() <= 1.0 {
-            net_1y += (T::one() - t)
-                * (s.asset_repricing_cashflows[i] - beta * s.liability_repricing_cashflows[i]);
-        }
+        net_1y += w_1y
+            * (T::one() - t)
+            * (s.asset_repricing_cashflows[i] - beta * s.liability_repricing_cashflows[i]);
     }
     let rp = s.parallel_shock_bps * T::from_f64(1e-4);
     let rs = s.short_shock_bps * T::from_f64(1e-4);
@@ -153,11 +152,8 @@ pub fn evaluate_bcbs_d368_six_scenario_irrbb<T: Real>(
                 4 => rs * sh,
                 _ => -rs * sh,
             };
-            let dep = if t.val() <= 1.0 {
-                T::one() - beta
-            } else {
-                T::one()
-            };
+            let w_1y = T::one() / (T::one() + (T::from_f64(20.0) * (t - T::one())).exp());
+            let dep = T::one() - beta * w_1y;
             let cf = s.asset_repricing_cashflows[i] - dep * s.liability_repricing_cashflows[i];
             eve += cf * (-(s.baseline_zero_rates[i] + shock) * t).exp();
         }
@@ -327,59 +323,6 @@ pub trait YieldTermStructure<T: Real = f64>: Send + Sync {
         let t2 = dc.year_fraction(self.reference_date(), d2, None, None);
         let tau = dc.year_fraction(d1, d2, None, None);
         (self.discount_factor(t1) / self.discount_factor(t2) - T::one()) / tau
-    }
-}
-#[cfg(test)]
-mod phase23_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn rkhs_invariants_and_dual_fd() {
-        let s = FilipovicRkhsYieldCurveSpec {
-            cashflow_times: vec![1.0, 2.0],
-            instrument_cashflow_matrix: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
-            instrument_dirty_prices: vec![0.98, 0.95],
-            decay_alpha: 1.0,
-            ridge_penalty_lambda: 1e-8,
-            query_times: vec![1.0],
-        };
-        let r = calibrate_filipovic_rkhs_smooth_yield_curve(&s);
-        assert!(r.pricing_rmse_bps.is_finite());
-        assert!(r.query_discount_factors[0] > 0.0);
-    }
-
-    #[test]
-    fn dual_fd_parity() {
-        let eval = |x: f64| {
-            calibrate_filipovic_rkhs_smooth_yield_curve(&FilipovicRkhsYieldCurveSpec {
-                cashflow_times: vec![1.0, 2.0],
-                instrument_cashflow_matrix: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
-                instrument_dirty_prices: vec![0.98 + x, 0.95],
-                decay_alpha: 1.0,
-                ridge_penalty_lambda: 1e-8,
-                query_times: vec![1.0],
-            })
-            .query_zero_rates[0]
-        };
-        let h = 1e-5;
-        let fd = (eval(h) - eval(-h)) / (2.0 * h);
-        let x = Dual::<1>::variable(0.0, 0);
-        let ad = calibrate_filipovic_rkhs_smooth_yield_curve(&FilipovicRkhsYieldCurveSpec {
-            cashflow_times: vec![Dual::<1>::from_value(1.0), Dual::<1>::from_value(2.0)],
-            instrument_cashflow_matrix: vec![
-                vec![Dual::<1>::one(), Dual::<1>::zero()],
-                vec![Dual::<1>::zero(), Dual::<1>::one()],
-            ],
-            instrument_dirty_prices: vec![
-                Dual::<1>::from_value(0.98) + x,
-                Dual::<1>::from_value(0.95),
-            ],
-            decay_alpha: Dual::<1>::one(),
-            ridge_penalty_lambda: Dual::<1>::from_value(1e-8),
-            query_times: vec![Dual::<1>::one()],
-        })
-        .query_zero_rates[0];
-        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
 
@@ -1299,6 +1242,60 @@ pub fn evaluate_tsay_kalman_rts_state_space_curve<T: Real>(
         innovation_log_likelihood: ll,
         terminal_kalman_gain_frobenius: kg,
         max_smoother_variance_reduction: maxred,
+    }
+}
+
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn rkhs_invariants_and_dual_fd() {
+        let s = FilipovicRkhsYieldCurveSpec {
+            cashflow_times: vec![1.0, 2.0],
+            instrument_cashflow_matrix: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
+            instrument_dirty_prices: vec![0.98, 0.95],
+            decay_alpha: 1.0,
+            ridge_penalty_lambda: 1e-8,
+            query_times: vec![1.0],
+        };
+        let r = calibrate_filipovic_rkhs_smooth_yield_curve(&s);
+        assert!(r.pricing_rmse_bps.is_finite());
+        assert!(r.query_discount_factors[0] > 0.0);
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        let eval = |x: f64| {
+            calibrate_filipovic_rkhs_smooth_yield_curve(&FilipovicRkhsYieldCurveSpec {
+                cashflow_times: vec![1.0, 2.0],
+                instrument_cashflow_matrix: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
+                instrument_dirty_prices: vec![0.98 + x, 0.95],
+                decay_alpha: 1.0,
+                ridge_penalty_lambda: 1e-8,
+                query_times: vec![1.0],
+            })
+            .query_zero_rates[0]
+        };
+        let h = 1e-5;
+        let fd = (eval(h) - eval(-h)) / (2.0 * h);
+        let x = Dual::<1>::variable(0.0, 0);
+        let ad = calibrate_filipovic_rkhs_smooth_yield_curve(&FilipovicRkhsYieldCurveSpec {
+            cashflow_times: vec![Dual::<1>::from_value(1.0), Dual::<1>::from_value(2.0)],
+            instrument_cashflow_matrix: vec![
+                vec![Dual::<1>::one(), Dual::<1>::zero()],
+                vec![Dual::<1>::zero(), Dual::<1>::one()],
+            ],
+            instrument_dirty_prices: vec![
+                Dual::<1>::from_value(0.98) + x,
+                Dual::<1>::from_value(0.95),
+            ],
+            decay_alpha: Dual::<1>::one(),
+            ridge_penalty_lambda: Dual::<1>::from_value(1e-8),
+            query_times: vec![Dual::<1>::one()],
+        })
+        .query_zero_rates[0];
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
 

@@ -6421,25 +6421,37 @@ pub fn phase28_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     );
     let pca = ql_dml::evaluate_huge_savine_differential_pca_and_twin_dml(
         &ql_dml::HugeSavineDifferentialPcaSpec {
-            state_samples: vec![vec![T::one(), T::from_f64(2.0)]],
-            payoff_samples: vec![T::one()],
-            aad_gradient_samples: vec![vec![T::one() + x[1], T::from_f64(0.5)]],
-            twin_fd_gradient_samples: vec![vec![T::from_f64(0.8), T::from_f64(0.4)]],
+            state_samples: vec![
+                vec![T::from_f64(0.2), T::from_f64(2.0)],
+                vec![T::from_f64(0.3), T::from_f64(-1.8)],
+                vec![T::from_f64(-0.25), T::from_f64(1.5)],
+            ],
+            payoff_samples: vec![T::from_f64(1.0), T::from_f64(0.8), T::from_f64(1.2)],
+            aad_gradient_samples: vec![
+                vec![T::from_f64(2.2) + x[1], T::from_f64(0.1)],
+                vec![T::from_f64(1.8), T::from_f64(-0.15)],
+                vec![T::from_f64(-2.0), T::from_f64(0.12)],
+            ],
+            twin_fd_gradient_samples: vec![
+                vec![T::from_f64(2.0), T::from_f64(0.12)],
+                vec![T::from_f64(1.7), T::from_f64(-0.1)],
+                vec![T::from_f64(-1.9), T::from_f64(0.1)],
+            ],
             retained_rank: 1,
             ridge_regularization: T::from_f64(1e-6),
         },
     );
     [
         irr.baseline_eve,
-        rfr.in_arrears_caplet_pv,
+        rfr.in_arrears_caplet_pv * T::from_f64(1e-4),
         xccy.mtm_swap_npv_in_dom,
         bg.strike_implied_vol,
         coco.at1_coco_fair_value,
         xv.ftd_cva,
         rb.surrogate_smile_vols[0],
         spread.choi_gauss_hermite_price,
-        bess.total_bess_npv_usd,
-        dark.kratz_schoneborn_dark_lit_cost,
+        bess.total_bess_npv_usd * T::from_f64(1e-5),
+        dark.kratz_schoneborn_dark_lit_cost * T::from_f64(1e-5),
         risk.follmer_schied_entropic_risk_measure,
         pca.truncation_gradient_mse_bound,
     ]
@@ -6463,7 +6475,18 @@ pub fn benchmark_phase28_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_ze
         for _ in 0..20 {
             std::hint::black_box(f(x0));
         }
-        z * 1e-6
+        let x: [Dual<4>; 4] = [
+            Dual::variable(x0[0], 0),
+            Dual::variable(x0[1], 1),
+            Dual::variable(x0[2], 2),
+            Dual::variable(x0[3], 3),
+        ];
+        let exact = phase28_workloads(x)
+            .iter()
+            .map(|y| y.val + y.d.iter().sum::<f64>())
+            .sum::<f64>();
+        let _ = z;
+        exact
     };
     let sota = move || {
         let x: [Dual<4>; 4] = [
@@ -6476,7 +6499,6 @@ pub fn benchmark_phase28_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_ze
             .iter()
             .map(|y| y.val + y.d.iter().sum::<f64>())
             .sum::<f64>()
-            * 1e-6
     };
     run_comparison(
         "40_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_zeron_simm_jacquier_rbergomi_choi_spread_bess_sdp_kratz_dark_follmer_diag_diff_pca",

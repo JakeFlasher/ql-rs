@@ -878,6 +878,131 @@ pub fn price_li_deng_zhou_multi_spread_option<T: Real>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct ChoiLiDengMultiAssetSpreadBasketSpec<T: Real = f64> {
+    pub long_leg_forward: T,
+    pub long_leg_weight: T,
+    pub long_leg_vol: T,
+    pub short_leg_forwards: Vec<T>,
+    pub short_leg_weights: Vec<T>,
+    pub short_leg_vols: Vec<T>,
+    pub corr_long_short: Vec<T>,
+    pub corr_short_short_equicorr: T,
+    pub strike: T,
+    pub maturity: T,
+    pub risk_free_rate: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct ChoiLiDengMultiAssetSpreadBasketReport<T: Real = f64> {
+    pub choi_gauss_hermite_price: T,
+    pub li_deng_zhou_second_order_price: T,
+    pub kirk_moment_matching_price: T,
+    pub choi_vs_kirk_basis_bps: T,
+    pub li_deng_hessian_trace_correction: T,
+    pub effective_composite_short_vol: T,
+    pub long_leg_delta: T,
+    pub composite_short_leg_delta: T,
+}
+
+pub fn evaluate_choi_li_deng_multi_asset_spread_basket<T: Real>(
+    s: &ChoiLiDengMultiAssetSpreadBasketSpec<T>,
+) -> ChoiLiDengMultiAssetSpreadBasketReport<T> {
+    let n = s
+        .short_leg_forwards
+        .len()
+        .min(s.short_leg_weights.len())
+        .min(s.short_leg_vols.len());
+    assert!(n > 0);
+    let mut short = T::zero();
+    let mut var_s = T::zero();
+    for i in 0..n {
+        short += s.short_leg_weights[i] * s.short_leg_forwards[i];
+    }
+    for i in 0..n {
+        var_s += s.short_leg_weights[i]
+            * s.short_leg_weights[i]
+            * s.short_leg_forwards[i]
+            * s.short_leg_forwards[i]
+            * s.short_leg_vols[i]
+            * s.short_leg_vols[i];
+        for j in 0..i {
+            var_s += T::from_f64(2.0)
+                * s.short_leg_weights[i]
+                * s.short_leg_weights[j]
+                * s.short_leg_forwards[i]
+                * s.short_leg_forwards[j]
+                * s.corr_short_short_equicorr
+                * s.short_leg_vols[i]
+                * s.short_leg_vols[j];
+        }
+    }
+    let eff_short_vol =
+        var_s.max_val(T::from_f64(1e-12)).sqrt() / short.abs().max_val(T::from_f64(1e-8));
+    let cross = (0..n)
+        .map(|i| {
+            s.short_leg_weights[i]
+                * s.short_leg_forwards[i]
+                * s.corr_long_short.get(i).copied().unwrap_or(T::zero())
+                * s.short_leg_vols[i]
+        })
+        .fold(T::zero(), |a, x| a + x);
+    let rho_ls =
+        cross / (short.abs().max_val(T::from_f64(1e-8)) * eff_short_vol.max_val(T::from_f64(1e-8)));
+    let f_long = s.long_leg_weight * s.long_leg_forward;
+    let f_short = short;
+    let k = s.strike;
+    let t = s.maturity.max_val(T::from_f64(1e-8));
+    let k_eff = f_short + k;
+    let sigma_hat = eff_short_vol * f_short / k_eff.max_val(T::from_f64(1e-8));
+    let kirk_vol = (s.long_leg_vol * s.long_leg_vol
+        - T::from_f64(2.0) * rho_ls * s.long_leg_vol * sigma_hat
+        + sigma_hat * sigma_hat)
+        .max_val(T::from_f64(1e-12))
+        .sqrt();
+    let vsqrt = kirk_vol * t.sqrt();
+    let d1 = ((f_long / k_eff.max_val(T::from_f64(1e-8))).ln()
+        + T::from_f64(0.5) * kirk_vol * kirk_vol * t)
+        / vsqrt.max_val(T::from_f64(1e-8));
+    let d2 = d1 - vsqrt;
+    let df = (-s.risk_free_rate * t).exp();
+    let kirk = df * (f_long * d1.norm_cdf() - k_eff * d2.norm_cdf());
+    let mut jyy = f_short * k / (k_eff * k_eff).max_val(T::from_f64(1e-12))
+        * eff_short_vol
+        * eff_short_vol
+        * (T::one() - rho_ls * rho_ls)
+        * t;
+    for i in 0..n {
+        jyy += s.short_leg_weights[i]
+            * s.short_leg_forwards[i]
+            * (s.short_leg_vols[i] * s.short_leg_vols[i] - eff_short_vol * eff_short_vol)
+            * (T::one()
+                - s.corr_long_short
+                    .get(i)
+                    .copied()
+                    .unwrap_or(T::zero())
+                    .powf(2.0))
+            * t
+            / (f_short * f_short).max_val(T::from_f64(1e-12));
+    }
+    let correction = T::from_f64(0.5) * df * k_eff * d2.norm_pdf() * jyy;
+    let choi = kirk + correction;
+    let ldz = kirk + correction;
+    ChoiLiDengMultiAssetSpreadBasketReport {
+        choi_gauss_hermite_price: choi,
+        li_deng_zhou_second_order_price: ldz,
+        kirk_moment_matching_price: kirk,
+        choi_vs_kirk_basis_bps: (choi - kirk) / kirk.abs().max_val(T::from_f64(1e-8))
+            * T::from_f64(1e4),
+        li_deng_hessian_trace_correction: correction,
+        effective_composite_short_vol: eff_short_vol,
+        long_leg_delta: df * s.long_leg_weight * d1.norm_cdf(),
+        composite_short_leg_delta: -df
+            * (f_short / k_eff.max_val(T::from_f64(1e-8)))
+            * d2.norm_cdf(),
+    }
+}
+
 #[cfg(test)]
 mod phase20_tests {
     use super::*;
@@ -966,128 +1091,6 @@ mod phase20_tests {
         };
         let ad = price_li_deng_zhou_multi_spread_option(&spec_d).price;
         assert!((ad.d[0] - fd).abs() < 1e-6);
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct ChoiLiDengMultiAssetSpreadBasketSpec<T: Real = f64> {
-    pub long_leg_forward: T,
-    pub long_leg_weight: T,
-    pub long_leg_vol: T,
-    pub short_leg_forwards: Vec<T>,
-    pub short_leg_weights: Vec<T>,
-    pub short_leg_vols: Vec<T>,
-    pub corr_long_short: Vec<T>,
-    pub corr_short_short_equicorr: T,
-    pub strike: T,
-    pub maturity: T,
-    pub risk_free_rate: T,
-}
-
-#[derive(Clone, Debug)]
-pub struct ChoiLiDengMultiAssetSpreadBasketReport<T: Real = f64> {
-    pub choi_gauss_hermite_price: T,
-    pub li_deng_zhou_second_order_price: T,
-    pub kirk_moment_matching_price: T,
-    pub choi_vs_kirk_basis_bps: T,
-    pub li_deng_hessian_trace_correction: T,
-    pub effective_composite_short_vol: T,
-    pub long_leg_delta: T,
-    pub composite_short_leg_delta: T,
-}
-
-pub fn evaluate_choi_li_deng_multi_asset_spread_basket<T: Real>(
-    s: &ChoiLiDengMultiAssetSpreadBasketSpec<T>,
-) -> ChoiLiDengMultiAssetSpreadBasketReport<T> {
-    let n = s
-        .short_leg_forwards
-        .len()
-        .min(s.short_leg_weights.len())
-        .min(s.short_leg_vols.len());
-    assert!(n > 0);
-    let mut short = T::zero();
-    let mut var_s = T::zero();
-    for i in 0..n {
-        short += s.short_leg_weights[i] * s.short_leg_forwards[i];
-    }
-    for i in 0..n {
-        var_s += s.short_leg_weights[i]
-            * s.short_leg_weights[i]
-            * s.short_leg_vols[i]
-            * s.short_leg_vols[i];
-        for j in 0..i {
-            var_s += T::from_f64(2.0)
-                * s.short_leg_weights[i]
-                * s.short_leg_weights[j]
-                * s.corr_short_short_equicorr
-                * s.short_leg_vols[i]
-                * s.short_leg_vols[j];
-        }
-    }
-    let eff_short_vol =
-        var_s.max_val(T::from_f64(1e-12)).sqrt() / short.abs().max_val(T::from_f64(1e-8));
-    let cross = (0..n)
-        .map(|i| {
-            s.short_leg_weights[i]
-                * s.short_leg_forwards[i]
-                * s.corr_long_short.get(i).copied().unwrap_or(T::zero())
-                * s.long_leg_vol
-                * s.short_leg_vols[i]
-        })
-        .fold(T::zero(), |a, x| a + x);
-    let spread_var = (s.long_leg_vol * s.long_leg_vol
-        + eff_short_vol * eff_short_vol * short * short
-            / (s.long_leg_weight * s.long_leg_weight).max_val(T::from_f64(1e-8))
-        - T::from_f64(2.0) * cross)
-        .max_val(T::from_f64(1e-12));
-    let spread_vol = spread_var.sqrt() / s.long_leg_forward.abs().max_val(T::from_f64(1e-8));
-    let f_long = s.long_leg_weight * s.long_leg_forward;
-    let f_short = short;
-    let k = s.strike;
-    let t = s.maturity.max_val(T::from_f64(1e-8));
-    let margrabe = if k.abs().val() < 1e-12 && n == 1 {
-        let v = (s.long_leg_vol * s.long_leg_vol + s.short_leg_vols[0] * s.short_leg_vols[0]
-            - T::from_f64(2.0) * s.corr_long_short[0] * s.long_leg_vol * s.short_leg_vols[0])
-            .sqrt();
-        let d1 = ((f_long / f_short).ln() + T::from_f64(0.5) * v * v * t)
-            / (v * t.sqrt()).max_val(T::from_f64(1e-8));
-        f_long * d1.norm_cdf() - f_short * (d1 - v * t.sqrt()).norm_cdf()
-    } else {
-        T::zero()
-    };
-    let kirk = if margrabe.val() > 0.0 || (k.abs().val() < 1e-12 && n == 1) {
-        margrabe
-    } else {
-        let adj = (f_short + k).max_val(T::from_f64(1e-8));
-        let f = f_long / adj;
-        let vol = spread_vol.max_val(T::from_f64(1e-8));
-        let d1 = (f.ln() + T::from_f64(0.5) * vol * vol * t) / (vol * t.sqrt());
-        let d2 = d1 - vol * t.sqrt();
-        (f_long * d1.norm_cdf() - adj * d2.norm_cdf()) * (-s.risk_free_rate * t).exp()
-    };
-    let correction = if k.abs().val() < 1e-12 && n == 1 {
-        T::zero()
-    } else {
-        T::from_f64(0.5)
-            * s.long_leg_weight
-            * spread_vol
-            * spread_vol
-            * t
-            * f_long
-            * T::from_f64(0.01)
-    };
-    let choi = kirk + correction;
-    let ldz = kirk + correction * T::from_f64(0.8);
-    ChoiLiDengMultiAssetSpreadBasketReport {
-        choi_gauss_hermite_price: choi,
-        li_deng_zhou_second_order_price: ldz,
-        kirk_moment_matching_price: kirk,
-        choi_vs_kirk_basis_bps: (choi - kirk) / kirk.abs().max_val(T::from_f64(1e-8))
-            * T::from_f64(1e4),
-        li_deng_hessian_trace_correction: correction * T::from_f64(0.8),
-        effective_composite_short_vol: eff_short_vol,
-        long_leg_delta: s.long_leg_weight * T::from_f64(0.5),
-        composite_short_leg_delta: -T::from_f64(0.5),
     }
 }
 

@@ -10,101 +10,6 @@ pub mod cdo;
 pub mod cds_option;
 pub use cdo::*;
 pub use cds_option::*;
-#[cfg(test)]
-mod phase23_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn jlt_rows_stochastic() {
-        let s = JarrowLandoTurnbullRatingMigrationSpec {
-            initial_rating_index: 0,
-            physical_generator_4x4: [
-                [-0.1, 0.08, 0.01, 0.01],
-                [0.02, -0.08, 0.04, 0.02],
-                [0.0, 0.02, -0.05, 0.03],
-                [0.0; 4],
-            ],
-            risk_premium_multipliers: [1.0; 3],
-            recovery_rate: 0.4,
-            risk_free_rate: 0.02,
-            maturity: 5.0,
-            base_coupon_rate: 0.03,
-            hy_downgrade_stepup_spread: 0.01,
-            counterparty_epe_notional: 1.0,
-        };
-        let r = evaluate_jlt_rating_migration_and_crcva(&s);
-        for row in r.transition_matrix_at_maturity {
-            assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-8);
-        }
-    }
-
-    #[test]
-    fn dual_fd_parity() {
-        let mk = |x: f64| {
-            let mut s = JarrowLandoTurnbullRatingMigrationSpec {
-                initial_rating_index: 0,
-                physical_generator_4x4: [
-                    [-0.1, 0.08, 0.01, 0.01],
-                    [0.02, -0.08, 0.04, 0.02],
-                    [0.0, 0.02, -0.05, 0.03],
-                    [0.0; 4],
-                ],
-                risk_premium_multipliers: [1.0, 1.0, 1.0],
-                recovery_rate: 0.4,
-                risk_free_rate: 0.02,
-                maturity: 5.0,
-                base_coupon_rate: 0.03,
-                hy_downgrade_stepup_spread: 0.01,
-                counterparty_epe_notional: 1.0,
-            };
-            s.risk_premium_multipliers[0] = x;
-            s
-        };
-        let h = 1e-5;
-        let fd = (evaluate_jlt_rating_migration_and_crcva(&mk(1.0 + h))
-            .credit_spreads_bps_by_rating[0]
-            - evaluate_jlt_rating_migration_and_crcva(&mk(1.0 - h)).credit_spreads_bps_by_rating
-                [0])
-            / (2.0 * h);
-        let ad = evaluate_jlt_rating_migration_and_crcva(&JarrowLandoTurnbullRatingMigrationSpec {
-            initial_rating_index: 0,
-            physical_generator_4x4: [
-                [
-                    -Dual::<1>::from_value(0.1),
-                    Dual::<1>::from_value(0.08),
-                    Dual::<1>::from_value(0.01),
-                    Dual::<1>::from_value(0.01),
-                ],
-                [
-                    Dual::<1>::from_value(0.02),
-                    -Dual::<1>::from_value(0.08),
-                    Dual::<1>::from_value(0.04),
-                    Dual::<1>::from_value(0.02),
-                ],
-                [
-                    Dual::<1>::zero(),
-                    Dual::<1>::from_value(0.02),
-                    -Dual::<1>::from_value(0.05),
-                    Dual::<1>::from_value(0.03),
-                ],
-                [Dual::<1>::zero(); 4],
-            ],
-            risk_premium_multipliers: [
-                Dual::<1>::variable(1.0, 0),
-                Dual::<1>::one(),
-                Dual::<1>::one(),
-            ],
-            recovery_rate: Dual::<1>::from_value(0.4),
-            risk_free_rate: Dual::<1>::from_value(0.02),
-            maturity: Dual::<1>::from_value(5.0),
-            base_coupon_rate: Dual::<1>::from_value(0.03),
-            hy_downgrade_stepup_spread: Dual::<1>::from_value(0.01),
-            counterparty_epe_notional: Dual::<1>::one(),
-        })
-        .credit_spreads_bps_by_rating[0];
-        assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct JarrowLandoTurnbullRatingMigrationSpec<T: Real = f64> {
@@ -1081,123 +986,6 @@ pub fn evaluate_jlt_rating_migration_credit<T: Real>(
     }
 }
 
-#[cfg(test)]
-mod phase17_tests {
-    use super::*;
-    use ql_ad::Dual;
-
-    #[test]
-    fn black_cox_first_passage_dominance_and_ad() {
-        let s = BlackCoxStructuralSpec {
-            asset_value: 140.0,
-            debt_face_value: 100.0,
-            default_barrier: 100.0 * (-0.02 * 3.0f64).exp(),
-            barrier_growth_rate: 0.02,
-            asset_vol: 0.25,
-            risk_free_rate: 0.03,
-            asset_payout_rate: 0.01,
-            maturity: 3.0,
-            recovery_rate: 0.40,
-        };
-        let rep = analyze_structural_credit_black_cox(&s);
-        assert!(rep.black_cox_survival_prob <= rep.merton_survival_prob + 1e-12);
-        assert!(rep.black_cox_cds_spread > 0.0);
-
-        let h = 1e-5;
-        let eval_v = |v: f64| {
-            let mut sp = s;
-            sp.asset_value = v;
-            analyze_structural_credit_black_cox(&sp).black_cox_cds_spread
-        };
-        let fd = (eval_v(140.0 + h) - eval_v(140.0 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let sd = BlackCoxStructuralSpec {
-            asset_value: D::variable(140.0, 0),
-            debt_face_value: D::from_value(100.0),
-            default_barrier: D::from_value(100.0 * (-0.02 * 3.0f64).exp()),
-            barrier_growth_rate: D::from_value(0.02),
-            asset_vol: D::from_value(0.25),
-            risk_free_rate: D::from_value(0.03),
-            asset_payout_rate: D::from_value(0.01),
-            maturity: D::from_value(3.0),
-            recovery_rate: D::from_value(0.40),
-        };
-        let ad = analyze_structural_credit_black_cox(&sd).black_cox_cds_spread;
-        assert!(ad.d[0] < 0.0);
-        assert!((ad.d[0] - fd).abs() < 1e-6);
-    }
-}
-
-#[cfg(test)]
-mod phase19_tests {
-    use super::*;
-    use ql_ad::Dual;
-
-    #[test]
-    fn jlt_markov_generator_conservation_step_up_uplift_and_ad() {
-        // 4 states: 0 = IG-A, 1 = IG-BBB, 2 = HY-BB, 3 = Default (absorbing)
-        let q = vec![
-            vec![-0.06, 0.045, 0.010, 0.005],
-            vec![0.020, -0.09, 0.055, 0.015],
-            vec![0.005, 0.025, -0.11, 0.080],
-            vec![0.0, 0.0, 0.0, 0.0],
-        ];
-        let spec = JltRatingMigrationSpec {
-            generator_matrix: q.clone(),
-            risk_premium_multipliers: vec![1.2, 1.4, 1.6, 1.0],
-            initial_rating_index: 0,
-            horizon_years: 3.0,
-            payment_times: vec![1.0, 2.0, 3.0],
-            base_coupon_rate: 0.04,
-            downgrade_step_up_spreads: vec![0.0, 0.005, 0.015, 0.0],
-            recovery_rate: 0.40,
-            risk_free_rate: 0.03,
-        };
-        let val = evaluate_jlt_rating_migration_credit(&spec);
-        let row_sum: f64 = val.transition_probabilities.iter().sum();
-        assert!((row_sum - 1.0).abs() < 1e-10);
-        assert!(val.transition_probabilities.iter().all(|&p| p >= 0.0));
-        assert!(val.step_up_coupon_pv_uplift > 0.0);
-
-        let h = 1e-5;
-        let eval_pi0 = |pi0: f64| {
-            let mut s = spec.clone();
-            s.risk_premium_multipliers[0] = pi0;
-            evaluate_jlt_rating_migration_credit(&s).implied_credit_spread
-        };
-        let fd = (eval_pi0(1.2 + h) - eval_pi0(1.2 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let q_d: Vec<Vec<D>> = q
-            .iter()
-            .map(|r| r.iter().map(|&x| D::from_value(x)).collect())
-            .collect();
-        let spec_d = JltRatingMigrationSpec {
-            generator_matrix: q_d,
-            risk_premium_multipliers: vec![
-                D::variable(1.2, 0),
-                D::from_value(1.4),
-                D::from_value(1.6),
-                D::one(),
-            ],
-            initial_rating_index: 0,
-            horizon_years: 3.0,
-            payment_times: vec![1.0, 2.0, 3.0],
-            base_coupon_rate: D::from_value(0.04),
-            downgrade_step_up_spreads: vec![
-                D::zero(),
-                D::from_value(0.005),
-                D::from_value(0.015),
-                D::zero(),
-            ],
-            recovery_rate: D::from_value(0.40),
-            risk_free_rate: D::from_value(0.03),
-        };
-        let ad = evaluate_jlt_rating_migration_credit(&spec_d).implied_credit_spread;
-        assert!(ad.d[0] > 0.0);
-        assert!((ad.d[0] - fd).abs() < 1e-6);
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct DuffieSingletonRecoveryAndCdsBasisSpec<T: Real = f64> {
     pub face_value: T,
@@ -1635,6 +1423,313 @@ pub fn evaluate_lando_cox_affine_default_and_liquidity_decomposition<T: Real>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct FedsDeSpiegeleerAt1CocoDualTriggerSpec<T: Real = f64> {
+    pub notional: T,
+    pub coupon_rate: T,
+    pub maturity: T,
+    pub risk_free_rate: T,
+    pub initial_cet1_ratio: T,
+    pub mechanical_cet1_trigger: T,
+    pub ponv_cet1_trigger: T,
+    pub supervisory_ponv_hazard_lambda: T,
+    pub asset_volatility: T,
+    pub cet1_asset_elasticity: T,
+    pub initial_stock_price: T,
+    pub conversion_price: T,
+    pub floor_stock_price: T,
+    pub existing_common_shares: T,
+    pub write_down_fraction: T,
+    pub is_equity_conversion: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct FedsDeSpiegeleerAt1CocoDualTriggerReport<T: Real = f64> {
+    pub mechanical_cet1_trigger_prob: T,
+    pub total_dual_trigger_prob: T,
+    pub trigger_implied_stock_price: T,
+    pub conversion_share_count: T,
+    pub equity_dilution_fraction: T,
+    pub effective_trigger_recovery_rate: T,
+    pub coupon_leg_pv: T,
+    pub principal_survival_pv: T,
+    pub trigger_recovery_pv: T,
+    pub at1_coco_fair_value: T,
+    pub at1_coco_credit_spread_bps: T,
+    pub write_down_vs_conversion_pv_wedge: T,
+}
+
+pub fn evaluate_feds_despiegeleer_at1_coco_dual_trigger<T: Real>(
+    s: &FedsDeSpiegeleerAt1CocoDualTriggerSpec<T>,
+) -> FedsDeSpiegeleerAt1CocoDualTriggerReport<T> {
+    let t = s.maturity.max_val(T::from_f64(1e-8));
+    let sigma_a = s.asset_volatility.abs().max_val(T::from_f64(1e-8));
+    let b_mech = (s.initial_cet1_ratio - s.mechanical_cet1_trigger).max_val(T::from_f64(1e-6))
+        / s.cet1_asset_elasticity.abs().max_val(T::from_f64(1e-6));
+    let mu_a = s.risk_free_rate - T::from_f64(0.5) * sigma_a * sigma_a;
+    let st = sigma_a * t.sqrt();
+    let mech = ((-b_mech - mu_a * t) / st).norm_cdf()
+        + (-T::from_f64(2.0) * mu_a * b_mech / (sigma_a * sigma_a)).exp()
+            * ((-b_mech + mu_a * t) / st).norm_cdf();
+    let ponv_gap = (s.mechanical_cet1_trigger - s.ponv_cet1_trigger).abs();
+    let sup_hazard = s.supervisory_ponv_hazard_lambda.max_val(T::zero()) * (T::one() + ponv_gap);
+    let sup = T::one() - (-sup_hazard * t).exp();
+    let total = (mech + (T::one() - mech) * sup).min_val(T::one());
+    let trigger_stock = s.initial_stock_price * (-b_mech).exp();
+    let eff_conv_price = trigger_stock
+        .max_val(s.floor_stock_price)
+        .min_val(s.conversion_price.max_val(s.floor_stock_price));
+    let shares = s.notional / eff_conv_price.max_val(T::from_f64(1e-8));
+    let dilution = shares / (s.existing_common_shares + shares).max_val(T::from_f64(1e-12));
+    let diluted_stock = (s.existing_common_shares * trigger_stock + s.notional)
+        / (s.existing_common_shares + shares).max_val(T::from_f64(1e-12));
+    let recovery_conv = (shares * diluted_stock / s.notional.max_val(T::from_f64(1e-12)))
+        .min_val(T::one() - T::from_f64(1e-10));
+    let recovery_wd = (T::one() - s.write_down_fraction).max_val(T::zero());
+    let recovery = if s.is_equity_conversion {
+        recovery_conv
+    } else {
+        recovery_wd
+    };
+    let df = (-s.risk_free_rate * t).exp();
+    let h_trig = -(T::one() - total).max_val(T::from_f64(1e-8)).ln() / t;
+    let rt = s.risk_free_rate + h_trig;
+    let ann_surv = (T::one() - (-rt * t).exp()) / rt.max_val(T::from_f64(1e-10));
+    let coupon = s.notional * s.coupon_rate * ann_surv;
+    let principal = s.notional * (T::one() - total) * df;
+    let recpv = s.notional * total * recovery * df;
+    let fair = coupon + principal + recpv;
+    let spread = h_trig * (T::one() - recovery) * T::from_f64(1e4);
+    let wedge = s.notional * total * df * (recovery_conv - recovery_wd);
+    FedsDeSpiegeleerAt1CocoDualTriggerReport {
+        mechanical_cet1_trigger_prob: mech,
+        total_dual_trigger_prob: total,
+        trigger_implied_stock_price: trigger_stock,
+        conversion_share_count: shares,
+        equity_dilution_fraction: dilution,
+        effective_trigger_recovery_rate: recovery,
+        coupon_leg_pv: coupon,
+        principal_survival_pv: principal,
+        trigger_recovery_pv: recpv,
+        at1_coco_fair_value: fair,
+        at1_coco_credit_spread_bps: spread,
+        write_down_vs_conversion_pv_wedge: wedge,
+    }
+}
+
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn jlt_rows_stochastic() {
+        let s = JarrowLandoTurnbullRatingMigrationSpec {
+            initial_rating_index: 0,
+            physical_generator_4x4: [
+                [-0.1, 0.08, 0.01, 0.01],
+                [0.02, -0.08, 0.04, 0.02],
+                [0.0, 0.02, -0.05, 0.03],
+                [0.0; 4],
+            ],
+            risk_premium_multipliers: [1.0; 3],
+            recovery_rate: 0.4,
+            risk_free_rate: 0.02,
+            maturity: 5.0,
+            base_coupon_rate: 0.03,
+            hy_downgrade_stepup_spread: 0.01,
+            counterparty_epe_notional: 1.0,
+        };
+        let r = evaluate_jlt_rating_migration_and_crcva(&s);
+        for row in r.transition_matrix_at_maturity {
+            assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-8);
+        }
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        let mk = |x: f64| {
+            let mut s = JarrowLandoTurnbullRatingMigrationSpec {
+                initial_rating_index: 0,
+                physical_generator_4x4: [
+                    [-0.1, 0.08, 0.01, 0.01],
+                    [0.02, -0.08, 0.04, 0.02],
+                    [0.0, 0.02, -0.05, 0.03],
+                    [0.0; 4],
+                ],
+                risk_premium_multipliers: [1.0, 1.0, 1.0],
+                recovery_rate: 0.4,
+                risk_free_rate: 0.02,
+                maturity: 5.0,
+                base_coupon_rate: 0.03,
+                hy_downgrade_stepup_spread: 0.01,
+                counterparty_epe_notional: 1.0,
+            };
+            s.risk_premium_multipliers[0] = x;
+            s
+        };
+        let h = 1e-5;
+        let fd = (evaluate_jlt_rating_migration_and_crcva(&mk(1.0 + h))
+            .credit_spreads_bps_by_rating[0]
+            - evaluate_jlt_rating_migration_and_crcva(&mk(1.0 - h)).credit_spreads_bps_by_rating
+                [0])
+            / (2.0 * h);
+        let ad = evaluate_jlt_rating_migration_and_crcva(&JarrowLandoTurnbullRatingMigrationSpec {
+            initial_rating_index: 0,
+            physical_generator_4x4: [
+                [
+                    -Dual::<1>::from_value(0.1),
+                    Dual::<1>::from_value(0.08),
+                    Dual::<1>::from_value(0.01),
+                    Dual::<1>::from_value(0.01),
+                ],
+                [
+                    Dual::<1>::from_value(0.02),
+                    -Dual::<1>::from_value(0.08),
+                    Dual::<1>::from_value(0.04),
+                    Dual::<1>::from_value(0.02),
+                ],
+                [
+                    Dual::<1>::zero(),
+                    Dual::<1>::from_value(0.02),
+                    -Dual::<1>::from_value(0.05),
+                    Dual::<1>::from_value(0.03),
+                ],
+                [Dual::<1>::zero(); 4],
+            ],
+            risk_premium_multipliers: [
+                Dual::<1>::variable(1.0, 0),
+                Dual::<1>::one(),
+                Dual::<1>::one(),
+            ],
+            recovery_rate: Dual::<1>::from_value(0.4),
+            risk_free_rate: Dual::<1>::from_value(0.02),
+            maturity: Dual::<1>::from_value(5.0),
+            base_coupon_rate: Dual::<1>::from_value(0.03),
+            hy_downgrade_stepup_spread: Dual::<1>::from_value(0.01),
+            counterparty_epe_notional: Dual::<1>::one(),
+        })
+        .credit_spreads_bps_by_rating[0];
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase17_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn black_cox_first_passage_dominance_and_ad() {
+        let s = BlackCoxStructuralSpec {
+            asset_value: 140.0,
+            debt_face_value: 100.0,
+            default_barrier: 100.0 * (-0.02 * 3.0f64).exp(),
+            barrier_growth_rate: 0.02,
+            asset_vol: 0.25,
+            risk_free_rate: 0.03,
+            asset_payout_rate: 0.01,
+            maturity: 3.0,
+            recovery_rate: 0.40,
+        };
+        let rep = analyze_structural_credit_black_cox(&s);
+        assert!(rep.black_cox_survival_prob <= rep.merton_survival_prob + 1e-12);
+        assert!(rep.black_cox_cds_spread > 0.0);
+
+        let h = 1e-5;
+        let eval_v = |v: f64| {
+            let mut sp = s;
+            sp.asset_value = v;
+            analyze_structural_credit_black_cox(&sp).black_cox_cds_spread
+        };
+        let fd = (eval_v(140.0 + h) - eval_v(140.0 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let sd = BlackCoxStructuralSpec {
+            asset_value: D::variable(140.0, 0),
+            debt_face_value: D::from_value(100.0),
+            default_barrier: D::from_value(100.0 * (-0.02 * 3.0f64).exp()),
+            barrier_growth_rate: D::from_value(0.02),
+            asset_vol: D::from_value(0.25),
+            risk_free_rate: D::from_value(0.03),
+            asset_payout_rate: D::from_value(0.01),
+            maturity: D::from_value(3.0),
+            recovery_rate: D::from_value(0.40),
+        };
+        let ad = analyze_structural_credit_black_cox(&sd).black_cox_cds_spread;
+        assert!(ad.d[0] < 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod phase19_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn jlt_markov_generator_conservation_step_up_uplift_and_ad() {
+        // 4 states: 0 = IG-A, 1 = IG-BBB, 2 = HY-BB, 3 = Default (absorbing)
+        let q = vec![
+            vec![-0.06, 0.045, 0.010, 0.005],
+            vec![0.020, -0.09, 0.055, 0.015],
+            vec![0.005, 0.025, -0.11, 0.080],
+            vec![0.0, 0.0, 0.0, 0.0],
+        ];
+        let spec = JltRatingMigrationSpec {
+            generator_matrix: q.clone(),
+            risk_premium_multipliers: vec![1.2, 1.4, 1.6, 1.0],
+            initial_rating_index: 0,
+            horizon_years: 3.0,
+            payment_times: vec![1.0, 2.0, 3.0],
+            base_coupon_rate: 0.04,
+            downgrade_step_up_spreads: vec![0.0, 0.005, 0.015, 0.0],
+            recovery_rate: 0.40,
+            risk_free_rate: 0.03,
+        };
+        let val = evaluate_jlt_rating_migration_credit(&spec);
+        let row_sum: f64 = val.transition_probabilities.iter().sum();
+        assert!((row_sum - 1.0).abs() < 1e-10);
+        assert!(val.transition_probabilities.iter().all(|&p| p >= 0.0));
+        assert!(val.step_up_coupon_pv_uplift > 0.0);
+
+        let h = 1e-5;
+        let eval_pi0 = |pi0: f64| {
+            let mut s = spec.clone();
+            s.risk_premium_multipliers[0] = pi0;
+            evaluate_jlt_rating_migration_credit(&s).implied_credit_spread
+        };
+        let fd = (eval_pi0(1.2 + h) - eval_pi0(1.2 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let q_d: Vec<Vec<D>> = q
+            .iter()
+            .map(|r| r.iter().map(|&x| D::from_value(x)).collect())
+            .collect();
+        let spec_d = JltRatingMigrationSpec {
+            generator_matrix: q_d,
+            risk_premium_multipliers: vec![
+                D::variable(1.2, 0),
+                D::from_value(1.4),
+                D::from_value(1.6),
+                D::one(),
+            ],
+            initial_rating_index: 0,
+            horizon_years: 3.0,
+            payment_times: vec![1.0, 2.0, 3.0],
+            base_coupon_rate: D::from_value(0.04),
+            downgrade_step_up_spreads: vec![
+                D::zero(),
+                D::from_value(0.005),
+                D::from_value(0.015),
+                D::zero(),
+            ],
+            recovery_rate: D::from_value(0.40),
+            risk_free_rate: D::from_value(0.03),
+        };
+        let ad = evaluate_jlt_rating_migration_credit(&spec_d).implied_credit_spread;
+        assert!(ad.d[0] > 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}
+
 #[cfg(test)]
 mod phase24_tests {
     use super::*;
@@ -1775,94 +1870,6 @@ mod phase25_tests {
         ))
         .survival_probability;
         assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct FedsDeSpiegeleerAt1CocoDualTriggerSpec<T: Real = f64> {
-    pub notional: T,
-    pub coupon_rate: T,
-    pub maturity: T,
-    pub risk_free_rate: T,
-    pub initial_cet1_ratio: T,
-    pub mechanical_cet1_trigger: T,
-    pub ponv_cet1_trigger: T,
-    pub supervisory_ponv_hazard_lambda: T,
-    pub asset_volatility: T,
-    pub cet1_asset_elasticity: T,
-    pub initial_stock_price: T,
-    pub conversion_price: T,
-    pub floor_stock_price: T,
-    pub existing_common_shares: T,
-    pub write_down_fraction: T,
-    pub is_equity_conversion: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct FedsDeSpiegeleerAt1CocoDualTriggerReport<T: Real = f64> {
-    pub mechanical_cet1_trigger_prob: T,
-    pub total_dual_trigger_prob: T,
-    pub trigger_implied_stock_price: T,
-    pub conversion_share_count: T,
-    pub equity_dilution_fraction: T,
-    pub effective_trigger_recovery_rate: T,
-    pub coupon_leg_pv: T,
-    pub principal_survival_pv: T,
-    pub trigger_recovery_pv: T,
-    pub at1_coco_fair_value: T,
-    pub at1_coco_credit_spread_bps: T,
-    pub write_down_vs_conversion_pv_wedge: T,
-}
-
-pub fn evaluate_feds_despiegeleer_at1_coco_dual_trigger<T: Real>(
-    s: &FedsDeSpiegeleerAt1CocoDualTriggerSpec<T>,
-) -> FedsDeSpiegeleerAt1CocoDualTriggerReport<T> {
-    let t = s.maturity.max_val(T::from_f64(1e-8));
-    let vol_t = s.asset_volatility.max_val(T::from_f64(1e-8)) * t.sqrt();
-    let distance = (s.initial_cet1_ratio - s.mechanical_cet1_trigger)
-        / (s.cet1_asset_elasticity.abs().max_val(T::from_f64(1e-8)) * vol_t);
-    let mech = (-distance).norm_cdf();
-    let ponv_gap = (s.mechanical_cet1_trigger - s.ponv_cet1_trigger).abs();
-    let sup_hazard = s.supervisory_ponv_hazard_lambda.max_val(T::zero()) * (T::one() + ponv_gap);
-    let sup = T::one() - (-sup_hazard * t).exp();
-    let total = mech + (T::one() - mech) * sup;
-    let trigger_stock = s.initial_stock_price
-        * (-(s.cet1_asset_elasticity * (s.initial_cet1_ratio - s.mechanical_cet1_trigger))).exp();
-    let conv_price = s
-        .conversion_price
-        .max_val(s.floor_stock_price.max_val(T::from_f64(1e-8)));
-    let shares = s.notional / conv_price;
-    let dilution = shares / (s.existing_common_shares + shares).max_val(T::from_f64(1e-12));
-    let recovery_conv = (trigger_stock / conv_price)
-        .min_val(T::one())
-        .max_val(T::zero());
-    let recovery = if s.is_equity_conversion {
-        recovery_conv
-    } else {
-        T::one() - s.write_down_fraction
-    };
-    let df = (-s.risk_free_rate * t).exp();
-    let coupon = s.notional * s.coupon_rate * t * df;
-    let survival = s.notional * (T::one() - total) * df;
-    let recpv = s.notional * total * recovery * df;
-    let fair = coupon + survival + recpv;
-    let spread = ((s.notional - fair) / s.notional.max_val(T::from_f64(1e-12)) / t)
-        .max_val(T::from_f64(1e-8))
-        * T::from_f64(1e4);
-    let write_down_value = s.notional * (T::one() - s.write_down_fraction) * total * df;
-    FedsDeSpiegeleerAt1CocoDualTriggerReport {
-        mechanical_cet1_trigger_prob: mech,
-        total_dual_trigger_prob: total.max_val(mech),
-        trigger_implied_stock_price: trigger_stock,
-        conversion_share_count: shares,
-        equity_dilution_fraction: dilution,
-        effective_trigger_recovery_rate: recovery,
-        coupon_leg_pv: coupon,
-        principal_survival_pv: survival,
-        trigger_recovery_pv: recpv,
-        at1_coco_fair_value: fair,
-        at1_coco_credit_spread_bps: spread,
-        write_down_vs_conversion_pv_wedge: write_down_value - recpv,
     }
 }
 

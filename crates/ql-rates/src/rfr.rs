@@ -4,66 +4,6 @@
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
 use ql_vol::black76_price;
-#[cfg(test)]
-mod phase23_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn fmm_caplet_positive() {
-        let s = LyashenkoMercurioFmmSpec {
-            notional: 1.0,
-            exercise_time_t0: 1.0,
-            period_accruals: vec![0.5],
-            forward_rates: vec![0.03],
-            discount_factors: vec![0.98],
-            fmm_volatilities: vec![0.2],
-            displacement_shift: 0.0,
-            inter_period_correlation_decay: 1.0,
-            strike: 0.02,
-            is_payer_or_caplet: true,
-        };
-        let r = price_lyashenko_mercurio_fmm_caplet_and_swaption(&s);
-        assert!(r.backward_looking_rfr_caplet_npv >= r.forward_looking_caplet_npv);
-    }
-
-    #[test]
-    fn dual_fd_parity() {
-        let mk = |x: f64| LyashenkoMercurioFmmSpec {
-            notional: 1.0,
-            exercise_time_t0: 1.0,
-            period_accruals: vec![0.5],
-            forward_rates: vec![x],
-            discount_factors: vec![0.98],
-            fmm_volatilities: vec![0.2],
-            displacement_shift: 0.0,
-            inter_period_correlation_decay: 1.0,
-            strike: 0.02,
-            is_payer_or_caplet: true,
-        };
-        let h = 1e-5;
-        let fd = (price_lyashenko_mercurio_fmm_caplet_and_swaption(&mk(0.03 + h))
-            .backward_looking_rfr_caplet_npv
-            - price_lyashenko_mercurio_fmm_caplet_and_swaption(&mk(0.03 - h))
-                .backward_looking_rfr_caplet_npv)
-            / (2.0 * h);
-        let x = Dual::<1>::variable(0.03, 0);
-        let sd = LyashenkoMercurioFmmSpec {
-            notional: Dual::<1>::one(),
-            exercise_time_t0: Dual::<1>::one(),
-            period_accruals: vec![Dual::<1>::from_value(0.5)],
-            forward_rates: vec![x],
-            discount_factors: vec![Dual::<1>::from_value(0.98)],
-            fmm_volatilities: vec![Dual::<1>::from_value(0.2)],
-            displacement_shift: Dual::<1>::zero(),
-            inter_period_correlation_decay: Dual::<1>::one(),
-            strike: Dual::<1>::from_value(0.02),
-            is_payer_or_caplet: true,
-        };
-        let ad =
-            price_lyashenko_mercurio_fmm_caplet_and_swaption(&sd).backward_looking_rfr_caplet_npv;
-        assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct LyashenkoMercurioFmmSpec<T: Real = f64> {
@@ -209,20 +149,49 @@ pub struct TurfusWillemsRfrInArrearsSmileReport<T: Real = f64> {
     pub in_arrears_volatility_ratio: T,
 }
 
+fn sabr_hagan_vol<T: Real>(f: T, k: T, t_exp: T, alpha: T, beta: T, rho: T, nu: T) -> T {
+    let fk = (f * k).max_val(T::from_f64(1e-12));
+    let log_fk = (f / k).ln();
+    let one_minus_b = T::one() - beta;
+    let fk_pow = fk.pow(one_minus_b * T::from_f64(0.5));
+    let z = (nu / alpha.max_val(T::from_f64(1e-12))) * fk_pow * log_fk;
+    let z_over_chi = if z.abs().val() < 1e-5 {
+        T::one() - T::from_f64(0.5) * rho * z
+            + (T::from_f64(2.0) - T::from_f64(3.0) * rho * rho) * z * z / T::from_f64(12.0)
+    } else {
+        let sq = (T::one() - T::from_f64(2.0) * rho * z + z * z)
+            .max_val(T::from_f64(1e-16))
+            .sqrt();
+        let chi = ((sq + z - rho) / (T::one() - rho).max_val(T::from_f64(1e-12))).ln();
+        z / chi
+    };
+    let denom = fk_pow
+        * (T::one()
+            + one_minus_b * one_minus_b * log_fk * log_fk / T::from_f64(24.0)
+            + one_minus_b.pow(T::from_f64(4.0)) * log_fk.pow(T::from_f64(4.0))
+                / T::from_f64(1920.0));
+    let corr = T::one()
+        + (one_minus_b * one_minus_b * alpha * alpha / (T::from_f64(24.0) * fk.pow(one_minus_b))
+            + T::from_f64(0.25) * rho * beta * nu * alpha / fk_pow
+            + (T::from_f64(2.0) - T::from_f64(3.0) * rho * rho) * nu * nu / T::from_f64(24.0))
+            * t_exp;
+    (alpha / denom) * z_over_chi * corr
+}
+
 pub fn evaluate_turfus_willems_rfr_in_arrears_caplet_smile<T: Real>(
     s: &TurfusWillemsRfrInArrearsSmileSpec<T>,
 ) -> TurfusWillemsRfrInArrearsSmileReport<T> {
     let dt = (s.accrual_end_t2 - s.accrual_start_t1).max_val(T::from_f64(1e-10));
     let t1 = s.accrual_start_t1.max_val(T::zero());
     let t2 = s.accrual_end_t2.max_val(T::from_f64(1e-10));
-    let ratio = ((s.accrual_end_t2 - t1) / dt).max_val(T::zero());
-    let teff = t1 + dt / T::from_f64(3.0) * ratio * ratio * ratio;
-    let alpha_hat = s.sabr_alpha * (teff / t2).max_val(T::zero()).sqrt();
+    let teff = t1 + (t2 - t1) / T::from_f64(3.0);
+    let alpha_hat = s.sabr_alpha * (teff / t2).max_val(T::from_f64(1e-12)).sqrt();
     let nu_hat = s.sabr_nu
-        * ((t1 * t1 + t1 * dt + T::from_f64(0.6) * dt * dt)
-            / (teff * t2).max_val(T::from_f64(1e-12)))
-        .max_val(T::zero())
-        .sqrt();
+        * ((T::from_f64(3.0) * t2 * t2)
+            / (T::from_f64(5.0) * teff * teff).max_val(T::from_f64(1e-12))
+            * (T::one() - T::from_f64(0.2) * (dt / t2)))
+            .max_val(T::from_f64(1e-12))
+            .sqrt();
     let kappa_dt = s.hull_white_mean_reversion * dt;
     let g2 = if kappa_dt.abs().val() < 1e-4 {
         T::one() - kappa_dt / T::from_f64(3.0) + kappa_dt * kappa_dt / T::from_f64(12.0)
@@ -231,47 +200,28 @@ pub fn evaluate_turfus_willems_rfr_in_arrears_caplet_smile<T: Real>(
     };
     let f = s.forward_rfr_rate.max_val(T::from_f64(1e-8));
     let k = s.strike_rate.max_val(T::from_f64(1e-8));
-    let beta = s.sabr_beta;
-    let fk = (f * k).pow((T::one() - beta) / T::from_f64(2.0));
-    let z = nu_hat / alpha_hat.max_val(T::from_f64(1e-12)) * (f - k);
-    let xz = ((T::one() - T::from_f64(2.0) * s.sabr_rho * z + z * z).sqrt() + z - s.sabr_rho)
-        / (T::one() - s.sabr_rho);
-    let base = alpha_hat / fk.max_val(T::from_f64(1e-12))
-        * (T::one()
-            + ((T::one() - beta) * (T::one() - beta) / T::from_f64(24.0)
-                * (alpha_hat * alpha_hat / (f * k).max_val(T::from_f64(1e-12)))
-                + s.sabr_rho * beta * nu_hat * alpha_hat / (T::from_f64(4.0) * fk)
-                + (T::from_f64(2.0) - T::from_f64(3.0) * s.sabr_rho * s.sabr_rho)
-                    * nu_hat
-                    * nu_hat
-                    / T::from_f64(24.0))
-                * teff);
-    let fwd_vol = if (f - k).abs().val() < 1e-8 {
-        base
-    } else {
-        base * z / xz.max_val(T::from_f64(1e-12))
-    };
+    let fwd_vol = sabr_hagan_vol(
+        f,
+        k,
+        t1.max_val(T::from_f64(1e-6)),
+        s.sabr_alpha,
+        s.sabr_beta,
+        s.sabr_rho,
+        s.sabr_nu,
+    );
     let damping = g2.max_val(T::zero());
-    let in_vol = (fwd_vol
-        * (T::one() + s.hull_white_mean_reversion * dt * damping * T::from_f64(0.5)))
-    .max_val(T::from_f64(1e-8));
+    let alpha_arrears = alpha_hat * damping.sqrt();
+    let nu_arrears = nu_hat * damping.sqrt();
+    let in_vol = sabr_hagan_vol(f, k, t2, alpha_arrears, s.sabr_beta, s.sabr_rho, nu_arrears)
+        .max_val(T::from_f64(1e-8));
     let atm_skew = s.sabr_rho * s.sabr_nu * damping / f.max_val(T::from_f64(1e-8));
     let curvature = s.sabr_nu * s.sabr_nu * (T::one() - s.sabr_rho * s.sabr_rho) * damping;
     let pv_fwd = s.notional
         * dt
         * s.discount_factor_t2
-        * black76_price(
-            f,
-            k,
-            fwd_vol,
-            teff.max_val(T::from_f64(1e-8)),
-            T::one(),
-            true,
-        );
-    let pv_arrears = s.notional
-        * dt
-        * s.discount_factor_t2
-        * black76_price(f, k, in_vol, dt.max_val(T::from_f64(1e-8)), T::one(), true);
+        * black76_price(f, k, fwd_vol, t1.max_val(T::from_f64(1e-6)), T::one(), true);
+    let pv_arrears =
+        s.notional * dt * s.discount_factor_t2 * black76_price(f, k, in_vol, t2, T::one(), true);
     TurfusWillemsRfrInArrearsSmileReport {
         accrual_fraction: dt,
         willems_effective_maturity: teff,
@@ -768,54 +718,6 @@ pub fn price_tenor_basis_swap<T: Real>(
     }
 }
 
-#[cfg(test)]
-mod phase18_tests {
-    use super::*;
-    use ql_ad::Dual;
-    use ql_curves::FlatForwardCurve;
-    use ql_time::Date;
-
-    #[test]
-    fn tenor_basis_fair_spread_and_ad() {
-        let d = Date(0);
-        let ois = FlatForwardCurve::new(d, 0.03);
-        let short_c = FlatForwardCurve::new(d, 0.032);
-        let long_c = FlatForwardCurve::new(d, 0.035);
-        let mut s = TenorBasisSwapSpec {
-            notional: 1_000_000.0,
-            short_leg_times: vec![0.25, 0.50, 0.75, 1.0],
-            long_leg_times: vec![0.50, 1.0],
-            short_leg_basis_spread: 0.0,
-            pay_short_leg: true,
-        };
-        let v0 = price_tenor_basis_swap(&s, &ois, &short_c, &long_c);
-        assert!(v0.fair_short_basis_spread > 0.0);
-        s.short_leg_basis_spread = v0.fair_short_basis_spread;
-        let v_par = price_tenor_basis_swap(&s, &ois, &short_c, &long_c);
-        assert!(v_par.npv.abs() < 1e-9);
-
-        let h = 1e-5;
-        let eval_r = |r_long: f64| {
-            let lc = FlatForwardCurve::new(d, r_long);
-            price_tenor_basis_swap(&s, &ois, &short_c, &lc).fair_short_basis_spread
-        };
-        let fd = (eval_r(0.035 + h) - eval_r(0.035 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let ois_d = FlatForwardCurve::new(d, D::from_value(0.03));
-        let sh_d = FlatForwardCurve::new(d, D::from_value(0.032));
-        let lo_d = FlatForwardCurve::new(d, D::variable(0.035, 0));
-        let sd = TenorBasisSwapSpec {
-            notional: D::from_value(1_000_000.0),
-            short_leg_times: vec![0.25, 0.50, 0.75, 1.0],
-            long_leg_times: vec![0.50, 1.0],
-            short_leg_basis_spread: D::zero(),
-            pay_short_leg: true,
-        };
-        let ad = price_tenor_basis_swap(&sd, &ois_d, &sh_d, &lo_d).fair_short_basis_spread;
-        assert!((ad.d[0] - fd).abs() < 1e-6);
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct SinhOuRfrCapletSpec<T: Real = f64> {
     pub notional: T,
@@ -1159,6 +1061,115 @@ pub fn price_cirpp_sofr_futures<T: Real>(
         futures_rate_1m_arithmetic: fut_1m,
         convexity_adjustment_1m: conv_1m,
         shift_integral_l: l_st,
+    }
+}
+
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn fmm_caplet_positive() {
+        let s = LyashenkoMercurioFmmSpec {
+            notional: 1.0,
+            exercise_time_t0: 1.0,
+            period_accruals: vec![0.5],
+            forward_rates: vec![0.03],
+            discount_factors: vec![0.98],
+            fmm_volatilities: vec![0.2],
+            displacement_shift: 0.0,
+            inter_period_correlation_decay: 1.0,
+            strike: 0.02,
+            is_payer_or_caplet: true,
+        };
+        let r = price_lyashenko_mercurio_fmm_caplet_and_swaption(&s);
+        assert!(r.backward_looking_rfr_caplet_npv >= r.forward_looking_caplet_npv);
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        let mk = |x: f64| LyashenkoMercurioFmmSpec {
+            notional: 1.0,
+            exercise_time_t0: 1.0,
+            period_accruals: vec![0.5],
+            forward_rates: vec![x],
+            discount_factors: vec![0.98],
+            fmm_volatilities: vec![0.2],
+            displacement_shift: 0.0,
+            inter_period_correlation_decay: 1.0,
+            strike: 0.02,
+            is_payer_or_caplet: true,
+        };
+        let h = 1e-5;
+        let fd = (price_lyashenko_mercurio_fmm_caplet_and_swaption(&mk(0.03 + h))
+            .backward_looking_rfr_caplet_npv
+            - price_lyashenko_mercurio_fmm_caplet_and_swaption(&mk(0.03 - h))
+                .backward_looking_rfr_caplet_npv)
+            / (2.0 * h);
+        let x = Dual::<1>::variable(0.03, 0);
+        let sd = LyashenkoMercurioFmmSpec {
+            notional: Dual::<1>::one(),
+            exercise_time_t0: Dual::<1>::one(),
+            period_accruals: vec![Dual::<1>::from_value(0.5)],
+            forward_rates: vec![x],
+            discount_factors: vec![Dual::<1>::from_value(0.98)],
+            fmm_volatilities: vec![Dual::<1>::from_value(0.2)],
+            displacement_shift: Dual::<1>::zero(),
+            inter_period_correlation_decay: Dual::<1>::one(),
+            strike: Dual::<1>::from_value(0.02),
+            is_payer_or_caplet: true,
+        };
+        let ad =
+            price_lyashenko_mercurio_fmm_caplet_and_swaption(&sd).backward_looking_rfr_caplet_npv;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase18_tests {
+    use super::*;
+    use ql_ad::Dual;
+    use ql_curves::FlatForwardCurve;
+    use ql_time::Date;
+
+    #[test]
+    fn tenor_basis_fair_spread_and_ad() {
+        let d = Date(0);
+        let ois = FlatForwardCurve::new(d, 0.03);
+        let short_c = FlatForwardCurve::new(d, 0.032);
+        let long_c = FlatForwardCurve::new(d, 0.035);
+        let mut s = TenorBasisSwapSpec {
+            notional: 1_000_000.0,
+            short_leg_times: vec![0.25, 0.50, 0.75, 1.0],
+            long_leg_times: vec![0.50, 1.0],
+            short_leg_basis_spread: 0.0,
+            pay_short_leg: true,
+        };
+        let v0 = price_tenor_basis_swap(&s, &ois, &short_c, &long_c);
+        assert!(v0.fair_short_basis_spread > 0.0);
+        s.short_leg_basis_spread = v0.fair_short_basis_spread;
+        let v_par = price_tenor_basis_swap(&s, &ois, &short_c, &long_c);
+        assert!(v_par.npv.abs() < 1e-9);
+
+        let h = 1e-5;
+        let eval_r = |r_long: f64| {
+            let lc = FlatForwardCurve::new(d, r_long);
+            price_tenor_basis_swap(&s, &ois, &short_c, &lc).fair_short_basis_spread
+        };
+        let fd = (eval_r(0.035 + h) - eval_r(0.035 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let ois_d = FlatForwardCurve::new(d, D::from_value(0.03));
+        let sh_d = FlatForwardCurve::new(d, D::from_value(0.032));
+        let lo_d = FlatForwardCurve::new(d, D::variable(0.035, 0));
+        let sd = TenorBasisSwapSpec {
+            notional: D::from_value(1_000_000.0),
+            short_leg_times: vec![0.25, 0.50, 0.75, 1.0],
+            long_leg_times: vec![0.50, 1.0],
+            short_leg_basis_spread: D::zero(),
+            pay_short_leg: true,
+        };
+        let ad = price_tenor_basis_swap(&sd, &ois_d, &sh_d, &lo_d).fair_short_basis_spread;
+        assert!((ad.d[0] - fd).abs() < 1e-6);
     }
 }
 

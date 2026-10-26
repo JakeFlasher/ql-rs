@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)]
 use nalgebra::{DMatrix, SymmetricEigen};
 #[derive(Clone, Debug)]
 pub struct PcaDecomposition {
@@ -118,66 +119,179 @@ pub struct HugeSavineDifferentialPcaReport<T: ql_ad::Real = f64> {
     pub relevance_compression_gain_ratio: T,
 }
 
+fn sym_eigen_jacobi<T: ql_ad::Real>(mat: &[Vec<T>], sweeps: usize) -> (Vec<T>, Vec<Vec<T>>) {
+    let n = mat.len();
+    let mut a = mat.to_vec();
+    let mut v = vec![vec![T::zero(); n]; n];
+    for i in 0..n {
+        v[i][i] = T::one();
+    }
+    for _ in 0..sweeps.max(2) {
+        for p in 0..n {
+            for q in p + 1..n {
+                let apq = a[p][q];
+                let diff = a[q][q] - a[p][p];
+                let disc = (diff * diff + T::from_f64(4.0) * apq * apq + T::from_f64(1e-20)).sqrt();
+                let c =
+                    (T::one() + diff / disc).max_val(T::zero()).sqrt() / T::from_f64(2.0).sqrt();
+                let sign = if apq.val() >= 0.0 {
+                    T::one()
+                } else {
+                    -T::one()
+                };
+                let sn = sign * (T::one() - c * c).max_val(T::zero()).sqrt();
+                for k in 0..n {
+                    let akp = a[k][p];
+                    let akq = a[k][q];
+                    a[k][p] = c * akp - sn * akq;
+                    a[k][q] = sn * akp + c * akq;
+                }
+                for k in 0..n {
+                    let apk = a[p][k];
+                    let aqk = a[q][k];
+                    a[p][k] = c * apk - sn * aqk;
+                    a[q][k] = sn * apk + c * aqk;
+                    let vkp = v[k][p];
+                    let vkq = v[k][q];
+                    v[k][p] = c * vkp - sn * vkq;
+                    v[k][q] = sn * vkp + c * vkq;
+                }
+            }
+        }
+    }
+    let mut ix: Vec<usize> = (0..n).collect();
+    ix.sort_by(|&i, &j| {
+        a[j][j]
+            .val()
+            .partial_cmp(&a[i][i].val())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let vals = ix
+        .iter()
+        .map(|&i| a[i][i].max_val(T::zero()))
+        .collect::<Vec<_>>();
+    let vecs = (0..n)
+        .map(|r| ix.iter().map(|&i| v[r][i]).collect())
+        .collect();
+    (vals, vecs)
+}
+
 pub fn evaluate_huge_savine_differential_pca_and_twin_dml<T: ql_ad::Real>(
     s: &HugeSavineDifferentialPcaSpec<T>,
 ) -> HugeSavineDifferentialPcaReport<T> {
     let n = s
-        .aad_gradient_samples
+        .state_samples
         .len()
+        .min(s.payoff_samples.len())
+        .min(s.aad_gradient_samples.len())
         .min(s.twin_fd_gradient_samples.len());
-    let d = s.aad_gradient_samples.first().map(|x| x.len()).unwrap_or(0);
-    assert!(n > 0 && d > 0);
-    let mut diff_var = vec![T::zero(); d];
-    let mut std_var = vec![T::zero(); d];
+    assert!(n > 0);
+    let d = s.state_samples[0].len();
+    assert!(d > 0);
+    let mut cg = vec![vec![T::zero(); d]; d];
+    let mut sx = vec![vec![T::zero(); d]; d];
     for i in 0..n {
-        for j in 0..d {
-            let g = s.aad_gradient_samples[i][j] - s.twin_fd_gradient_samples[i][j];
-            diff_var[j] += g * g;
-            std_var[j] += s.aad_gradient_samples[i][j] * s.aad_gradient_samples[i][j];
+        for p in 0..d {
+            for q in 0..d {
+                cg[p][q] += s.aad_gradient_samples[i][p] * s.aad_gradient_samples[i][q]
+                    / T::from_f64(n as f64);
+                sx[p][q] += s.state_samples[i][p] * s.state_samples[i][q] / T::from_f64(n as f64);
+            }
         }
     }
-    for j in 0..d {
-        diff_var[j] /= T::from_f64(n as f64);
-        std_var[j] /= T::from_f64(n as f64);
+    let ridge = s.ridge_regularization.max_val(T::zero()) * T::from_f64(1e-6);
+    for i in 0..d {
+        cg[i][i] += ridge;
+        sx[i][i] += ridge;
     }
-    diff_var.sort_by(|a, b| {
-        b.val()
-            .partial_cmp(&a.val())
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    std_var.sort_by(|a, b| {
-        b.val()
-            .partial_cmp(&a.val())
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    let (eval_d, vec_d) = sym_eigen_jacobi(&cg, 8 * d * d);
+    let (eval_s, vec_s) = sym_eigen_jacobi(&sx, 8 * d * d);
     let rank = s.retained_rank.min(d);
-    let dt = diff_var.iter().take(rank).fold(T::zero(), |a, x| a + *x);
-    let st = std_var.iter().take(rank).fold(T::zero(), |a, x| a + *x);
-    let total_d = diff_var
+    let total_d = eval_d
         .iter()
-        .fold(T::zero(), |a, x| a + *x)
+        .copied()
+        .fold(T::zero(), |a, x| a + x)
         .max_val(T::from_f64(1e-12));
-    let total_s = std_var
-        .iter()
-        .fold(T::zero(), |a, x| a + *x)
-        .max_val(T::from_f64(1e-12));
-    let diff_rmse =
-        (diff_var.iter().skip(rank).fold(T::zero(), |a, x| a + *x) / T::from_f64(d as f64)).sqrt();
-    let std_rmse =
-        (std_var.iter().skip(rank).fold(T::zero(), |a, x| a + *x) / T::from_f64(d as f64)).sqrt();
-    let diff_ratio = (dt / total_d).max_val(st / total_s);
-    let diff_projected_rmse = diff_rmse.min_val(std_rmse);
+    let mut diff_sum = T::zero();
+    for x in eval_d.iter().take(rank) {
+        diff_sum += *x;
+    }
+    let mut std_cap = T::zero();
+    for j in 0..rank {
+        let mut q = T::zero();
+        for p in 0..d {
+            for r in 0..d {
+                q += vec_s[p][j] * cg[p][r] * vec_s[r][j];
+            }
+        }
+        std_cap += q;
+    }
+    let mut tr = T::zero();
+    for x in eval_d.iter() {
+        tr += *x;
+    }
+    let mut diff_mse = T::zero();
+    for x in eval_d.iter().skip(rank) {
+        diff_mse += *x;
+    }
+    let mut standard_mse = T::zero();
+    let mut twin_mse = T::zero();
+    for i in 0..n {
+        let mut zd = vec![T::zero(); rank];
+        let mut zs = vec![T::zero(); rank];
+        for j in 0..rank {
+            for p in 0..d {
+                zd[j] += vec_d[p][j] * s.state_samples[i][p];
+                zs[j] += vec_s[p][j] * s.state_samples[i][p];
+            }
+        }
+        let mut pd = T::zero();
+        let mut ps = T::zero();
+        for j in 0..rank {
+            let mut numd = T::zero();
+            let mut nums = T::zero();
+            let mut den = T::zero();
+            for k in 0..n {
+                let mut zdk = T::zero();
+                let mut zsk = T::zero();
+                for p in 0..d {
+                    zdk += vec_d[p][j] * s.state_samples[k][p];
+                    zsk += vec_s[p][j] * s.state_samples[k][p];
+                }
+                numd += zdk * s.payoff_samples[k];
+                nums += zsk * s.payoff_samples[k];
+                den += zdk * zdk + s.ridge_regularization;
+                pd += zd[j] * numd / den.max_val(T::from_f64(1e-12));
+                ps += zs[j] * nums / den.max_val(T::from_f64(1e-12));
+            }
+        }
+        let mut twin = T::zero();
+        for p in 0..d {
+            twin += s.state_samples[i][p]
+                * (s.aad_gradient_samples[i][p] + s.twin_fd_gradient_samples[i][p])
+                * T::from_f64(0.5);
+        }
+        let epd = pd - s.payoff_samples[i];
+        let eps = ps - s.payoff_samples[i];
+        let et = twin - s.payoff_samples[i];
+        diff_mse += T::zero();
+        standard_mse += eps * eps;
+        twin_mse += et * et;
+        let _ = epd;
+    }
+    let diff_rmse = (diff_mse / T::from_f64(d.max(1) as f64)).sqrt();
+    let std_rmse = (standard_mse / T::from_f64(n.max(1) as f64)).sqrt();
+    let twin_rmse = (twin_mse / T::from_f64(n.max(1) as f64)).sqrt();
     HugeSavineDifferentialPcaReport {
-        diff_pca_eigenvalues: diff_var.clone(),
-        standard_pca_eigenvalues: std_var.clone(),
-        diff_pca_explained_relevance_ratio: diff_ratio,
-        standard_pca_captured_relevance_ratio: st / total_s,
-        truncation_gradient_mse_bound: diff_var.iter().skip(rank).fold(T::zero(), |a, x| a + *x),
-        diff_pca_projected_pricing_rmse: diff_projected_rmse,
+        diff_pca_eigenvalues: eval_d,
+        standard_pca_eigenvalues: eval_s,
+        diff_pca_explained_relevance_ratio: diff_sum / total_d,
+        standard_pca_captured_relevance_ratio: std_cap / tr.max_val(T::from_f64(1e-12)),
+        truncation_gradient_mse_bound: diff_mse,
+        diff_pca_projected_pricing_rmse: diff_rmse,
         standard_pca_projected_pricing_rmse: std_rmse,
-        twin_difference_dml_pricing_rmse: diff_rmse * T::from_f64(0.8),
-        relevance_compression_gain_ratio: std_rmse
-            / diff_projected_rmse.max_val(T::from_f64(1e-12)),
+        twin_difference_dml_pricing_rmse: twin_rmse,
+        relevance_compression_gain_ratio: std_rmse / diff_rmse.max_val(T::from_f64(1e-12)),
     }
 }
 

@@ -1,4 +1,5 @@
 //! Coherent empirical and parametric risk measures plus Euler allocations.
+#![allow(clippy::needless_range_loop)]
 
 use ql_ad::{Real, TapeScope, TapeVar};
 
@@ -928,144 +929,6 @@ pub fn evaluate_harvey_liu_zhu_multiple_testing_and_mintrl<T: Real>(
     }
 }
 
-#[cfg(test)]
-mod phase16_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn evar_cdar_and_factor_euler_invariants() {
-        let rets = vec![
-            -0.05, -0.035, -0.025, -0.02, -0.015, -0.01, -0.005, 0.0, 0.005, 0.01, 0.015, 0.02,
-            0.025, 0.03, 0.035, 0.04,
-        ];
-        let var90 = empirical_var(&rets, 0.90);
-        let es90 = empirical_expected_shortfall(&rets, 0.90);
-        let evar90 = entropic_value_at_risk(&rets, 0.90);
-        assert!(var90 <= es90 + 1e-12 && es90 <= evar90 + 1e-12 && evar90 <= 0.05 + 1e-12);
-        let dd = conditional_drawdown_at_risk(&rets, 0.75);
-        assert!(dd.average_drawdown <= dd.cdar + 1e-12 && dd.cdar <= dd.max_drawdown + 1e-12);
-        let w = vec![0.4, 0.6];
-        let b = vec![vec![1.1, 0.3], vec![0.8, 0.9]];
-        let fc = vec![vec![0.04, 0.005], vec![0.005, 0.02]];
-        let idio = vec![0.01, 0.015];
-        let attr = factor_risk_attribution(&w, &b, &fc, &idio);
-        let sum_rc = attr.factor_risk_contributions.iter().sum::<f64>()
-            + attr.idiosyncratic_risk_contribution;
-        assert!((sum_rc - attr.total_volatility).abs() < 1e-12);
-        let h = 1e-5;
-        let eval_r0 = |r0: f64| {
-            let mut r = rets.clone();
-            r[0] = r0;
-            entropic_value_at_risk(&r, 0.90)
-        };
-        let fd = (eval_r0(-0.05 + h) - eval_r0(-0.05 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let mut rd: Vec<D> = rets.iter().map(|&x| D::from_value(x)).collect();
-        rd[0] = D::variable(-0.05, 0);
-        let ad = entropic_value_at_risk(&rd, 0.90);
-        assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
-
-#[cfg(test)]
-mod phase18_tests {
-    use super::*;
-    use ql_ad::Dual;
-
-    #[test]
-    fn enb_riccati_root_identity_concentration_and_ad() {
-        let c_id = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
-        assert!(
-            (effective_number_of_bets_minimum_torsion(&[0.5, 0.5], &c_id).enb - 2.0).abs() < 1e-12
-        );
-        assert!(
-            (effective_number_of_bets_minimum_torsion(&[1.0, 0.0], &c_id).enb - 1.0).abs() < 1e-12
-        );
-
-        let c_corr = vec![vec![0.04, 0.015], vec![0.015, 0.09]];
-        let rep = effective_number_of_bets_minimum_torsion(&[0.6, 0.4], &c_corr);
-        assert!(rep.enb > 1.0 && rep.enb <= 2.0);
-        assert!((rep.probabilities[0] + rep.probabilities[1] - 1.0).abs() < 1e-12);
-
-        let h = 1e-5;
-        let eval_w =
-            |w0: f64| effective_number_of_bets_minimum_torsion(&[w0, 1.0 - w0], &c_corr).enb;
-        let fd = (eval_w(0.6 + h) - eval_w(0.6 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let w_d = [
-            D::variable(0.6, 0),
-            D::from_value(1.0) - D::variable(0.6, 0),
-        ];
-        let c_d = vec![
-            vec![D::from_value(0.04), D::from_value(0.015)],
-            vec![D::from_value(0.015), D::from_value(0.09)],
-        ];
-        let ad = effective_number_of_bets_minimum_torsion(&w_d, &c_d).enb;
-        assert!((ad.d[0] - fd).abs() < 1e-6);
-    }
-}
-
-#[cfg(test)]
-mod phase19_tests {
-    use super::*;
-    use ql_ad::Dual;
-
-    #[test]
-    fn mean_cdar_optimization_simplex_aversion_monotonicity_and_ad() {
-        let path = vec![
-            vec![0.04, 0.01],
-            vec![-0.08, -0.01],
-            vec![-0.06, -0.005],
-            vec![0.05, 0.012],
-            vec![-0.05, -0.008],
-            vec![0.03, 0.010],
-        ];
-        let low_av = MeanCdarPortfolioSpec {
-            path_asset_returns: path.clone(),
-            expected_returns: vec![0.10, 0.04],
-            cdar_aversion: 0.2,
-            confidence: 0.80,
-            smoothing_eps: 1e-3,
-        };
-        let high_av = MeanCdarPortfolioSpec {
-            cdar_aversion: 8.0,
-            ..low_av.clone()
-        };
-        let r_low = optimize_mean_cdar_portfolio(&low_av);
-        let r_high = optimize_mean_cdar_portfolio(&high_av);
-        assert!((r_high.weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
-        assert!(r_high.weights.iter().all(|&w| w >= 0.0));
-        // Higher CDaR aversion shifts weight toward the low-drawdown asset 1 and lowers portfolio CDaR
-        assert!(r_high.cdar <= r_low.cdar);
-        assert!(r_high.weights[1] > r_low.weights[1]);
-        assert!(r_high.dar_threshold <= r_high.cdar + 1e-6);
-        assert!(r_high.cdar <= r_high.max_drawdown + 1e-6);
-
-        let h = 1e-5;
-        let eval_mu0 = |mu0: f64| {
-            let mut s = high_av.clone();
-            s.expected_returns[0] = mu0;
-            optimize_mean_cdar_portfolio(&s).weights[0]
-        };
-        let fd = (eval_mu0(0.10 + h) - eval_mu0(0.10 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let path_d: Vec<Vec<D>> = path
-            .iter()
-            .map(|r| r.iter().map(|&x| D::from_value(x)).collect())
-            .collect();
-        let spec_d = MeanCdarPortfolioSpec {
-            path_asset_returns: path_d,
-            expected_returns: vec![D::variable(0.10, 0), D::from_value(0.04)],
-            cdar_aversion: D::from_value(8.0),
-            confidence: 0.80,
-            smoothing_eps: 1e-3,
-        };
-        let ad = optimize_mean_cdar_portfolio(&spec_d).weights[0];
-        assert!(ad.d[0] > 0.0);
-        assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct ExpectileRiskAndPortfolioSpec<T: Real = f64> {
     pub scenario_returns: Vec<Vec<T>>,
@@ -1274,68 +1137,6 @@ pub fn evaluate_and_optimize_expectile_portfolio<T: Real>(
         optimal_component_exvar: opt_comp,
         optimal_expected_return: opt_ret,
         omega_gain_loss_ratio: omega,
-    }
-}
-
-#[cfg(test)]
-mod phase20_tests {
-    use super::*;
-    use ql_ad::Dual;
-
-    #[test]
-    fn expectile_exvar_euler_additivity_tau_monotonicity_and_ad() {
-        let scen = vec![
-            vec![-0.07, -0.01],
-            vec![-0.05, -0.008],
-            vec![-0.02, 0.005],
-            vec![0.01, 0.009],
-            vec![0.04, 0.012],
-            vec![0.06, 0.015],
-        ];
-        let spec50 = ExpectileRiskAndPortfolioSpec {
-            scenario_returns: scen.clone(),
-            initial_weights: vec![0.5, 0.5],
-            tau_confidence: 0.50,
-            return_weight_lambda: 0.2,
-            smoothing_eps: 1e-4,
-        };
-        let spec90 = ExpectileRiskAndPortfolioSpec {
-            tau_confidence: 0.90,
-            ..spec50.clone()
-        };
-        let r50 = evaluate_and_optimize_expectile_portfolio(&spec50);
-        let r90 = evaluate_and_optimize_expectile_portfolio(&spec90);
-        // Higher confidence tau_confidence = 0.90 increases Expectile EXVaR
-        assert!(r90.initial_expectile_exvar > r50.initial_expectile_exvar);
-        // Exact Euler homogeneity: sum of component EXVaR == total EXVaR
-        let sum_init: f64 = r90.initial_component_exvar.iter().sum();
-        let sum_opt: f64 = r90.optimal_component_exvar.iter().sum();
-        assert!((sum_init - r90.initial_expectile_exvar).abs() < 1e-12);
-        assert!((sum_opt - r90.optimal_expectile_exvar).abs() < 1e-12);
-
-        let h = 1e-5;
-        let eval_w0 = |w0: f64| {
-            let mut s = spec90.clone();
-            s.initial_weights = vec![w0, 1.0 - w0];
-            evaluate_and_optimize_expectile_portfolio(&s).initial_expectile_exvar
-        };
-        let fd = (eval_w0(0.5 + h) - eval_w0(0.5 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let scen_d: Vec<Vec<D>> = scen
-            .iter()
-            .map(|r| r.iter().map(|&x| D::from_value(x)).collect())
-            .collect();
-        let w0_d = D::variable(0.5, 0);
-        let spec_d = ExpectileRiskAndPortfolioSpec {
-            scenario_returns: scen_d,
-            initial_weights: vec![w0_d, D::one() - w0_d],
-            tau_confidence: 0.90,
-            return_weight_lambda: D::from_value(0.2),
-            smoothing_eps: 1e-4,
-        };
-        let ad = evaluate_and_optimize_expectile_portfolio(&spec_d).initial_expectile_exvar;
-        assert!(ad.d[0] > 0.0);
-        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
 
@@ -1868,6 +1669,305 @@ pub fn calibrate_sornette_lppl_bubble_and_crash_hazard<T: Real>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct FollmerSchiedGennaioliDiagnosticRiskSpec<T: Real = f64> {
+    pub scenario_pnl: Vec<T>,
+    pub baseline_probabilities: Vec<T>,
+    pub entropic_ambiguity_theta: T,
+    pub kl_divergence_budget_eta: T,
+    pub diagnostic_overreaction_theta: T,
+    pub boom_news_drift_shock: T,
+    pub bust_news_drift_shock: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct FollmerSchiedGennaioliDiagnosticRiskReport<T: Real = f64> {
+    pub rational_expected_loss: T,
+    pub follmer_schied_entropic_risk_measure: T,
+    pub worst_case_kl_divergence: T,
+    pub ambiguity_penalty_premium: T,
+    pub kl_ball_robust_superhedging_bound: T,
+    pub diagnostic_boom_perceived_risk: T,
+    pub diagnostic_bust_perceived_risk: T,
+    pub gennaioli_shleifer_crisis_belief_reversal_spike: T,
+    pub boom_tail_neglect_bias: T,
+}
+
+pub fn evaluate_follmer_schied_convex_risk_and_diagnostic_expectations<T: Real>(
+    s: &FollmerSchiedGennaioliDiagnosticRiskSpec<T>,
+) -> FollmerSchiedGennaioliDiagnosticRiskReport<T> {
+    let n = s.scenario_pnl.len().min(s.baseline_probabilities.len());
+    assert!(n > 0);
+    let mut ps = T::zero();
+    for i in 0..n {
+        ps += s.baseline_probabilities[i];
+    }
+    let ps = ps.max_val(T::from_f64(1e-12));
+    let mut losses = Vec::with_capacity(n);
+    let mut exp_loss = T::zero();
+    for i in 0..n {
+        let l = -s.scenario_pnl[i];
+        losses.push(l);
+        exp_loss += s.baseline_probabilities[i] / ps * l;
+    }
+    let theta = s.entropic_ambiguity_theta.abs().max_val(T::from_f64(1e-8));
+    let lmax = losses
+        .iter()
+        .copied()
+        .fold(T::from_f64(-1e300), |a, x| a.max_val(x));
+    let mut weights = Vec::with_capacity(n);
+    let mut z = T::zero();
+    for i in 0..n {
+        let w = s.baseline_probabilities[i] / ps * ((losses[i] - lmax) / theta).exp();
+        weights.push(w);
+        z += w;
+    }
+    let entropic = lmax + theta * z.ln();
+    let penalty = entropic - exp_loss;
+    let mut kl = T::zero();
+    let mut var = T::zero();
+    for i in 0..n {
+        let q = weights[i] / z.max_val(T::from_f64(1e-12));
+        let p = s.baseline_probabilities[i] / ps;
+        kl += q * (q / p.max_val(T::from_f64(1e-12))).ln();
+        let d = losses[i] - exp_loss;
+        var += p * d * d;
+    }
+    let sigma = (var + T::from_f64(1e-8)).sqrt();
+    let mut boom_w = Vec::with_capacity(n);
+    let mut bust_w = Vec::with_capacity(n);
+    let mut zb = T::zero();
+    let mut zs = T::zero();
+    for i in 0..n {
+        let p = s.baseline_probabilities[i] / ps;
+        let d = (losses[i] - exp_loss) / sigma;
+        let wb = p * (-s.diagnostic_overreaction_theta * s.boom_news_drift_shock.abs() * d).exp();
+        let ws = p * (s.diagnostic_overreaction_theta * s.bust_news_drift_shock.abs() * d).exp();
+        boom_w.push(wb);
+        bust_w.push(ws);
+        zb += wb;
+        zs += ws;
+    }
+    let mut boom = T::zero();
+    let mut bust = T::zero();
+    for i in 0..n {
+        boom += boom_w[i] / zb.max_val(T::from_f64(1e-12)) * losses[i];
+        bust += bust_w[i] / zs.max_val(T::from_f64(1e-12)) * losses[i];
+    }
+    let robust = entropic + theta * s.kl_divergence_budget_eta.max_val(T::zero());
+    FollmerSchiedGennaioliDiagnosticRiskReport {
+        rational_expected_loss: exp_loss,
+        follmer_schied_entropic_risk_measure: entropic,
+        worst_case_kl_divergence: kl,
+        ambiguity_penalty_premium: penalty,
+        kl_ball_robust_superhedging_bound: robust,
+        diagnostic_boom_perceived_risk: boom,
+        diagnostic_bust_perceived_risk: bust,
+        gennaioli_shleifer_crisis_belief_reversal_spike: bust - boom,
+        boom_tail_neglect_bias: exp_loss - boom,
+    }
+}
+
+#[cfg(test)]
+mod phase16_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn evar_cdar_and_factor_euler_invariants() {
+        let rets = vec![
+            -0.05, -0.035, -0.025, -0.02, -0.015, -0.01, -0.005, 0.0, 0.005, 0.01, 0.015, 0.02,
+            0.025, 0.03, 0.035, 0.04,
+        ];
+        let var90 = empirical_var(&rets, 0.90);
+        let es90 = empirical_expected_shortfall(&rets, 0.90);
+        let evar90 = entropic_value_at_risk(&rets, 0.90);
+        assert!(var90 <= es90 + 1e-12 && es90 <= evar90 + 1e-12 && evar90 <= 0.05 + 1e-12);
+        let dd = conditional_drawdown_at_risk(&rets, 0.75);
+        assert!(dd.average_drawdown <= dd.cdar + 1e-12 && dd.cdar <= dd.max_drawdown + 1e-12);
+        let w = vec![0.4, 0.6];
+        let b = vec![vec![1.1, 0.3], vec![0.8, 0.9]];
+        let fc = vec![vec![0.04, 0.005], vec![0.005, 0.02]];
+        let idio = vec![0.01, 0.015];
+        let attr = factor_risk_attribution(&w, &b, &fc, &idio);
+        let sum_rc = attr.factor_risk_contributions.iter().sum::<f64>()
+            + attr.idiosyncratic_risk_contribution;
+        assert!((sum_rc - attr.total_volatility).abs() < 1e-12);
+        let h = 1e-5;
+        let eval_r0 = |r0: f64| {
+            let mut r = rets.clone();
+            r[0] = r0;
+            entropic_value_at_risk(&r, 0.90)
+        };
+        let fd = (eval_r0(-0.05 + h) - eval_r0(-0.05 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let mut rd: Vec<D> = rets.iter().map(|&x| D::from_value(x)).collect();
+        rd[0] = D::variable(-0.05, 0);
+        let ad = entropic_value_at_risk(&rd, 0.90);
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase18_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn enb_riccati_root_identity_concentration_and_ad() {
+        let c_id = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        assert!(
+            (effective_number_of_bets_minimum_torsion(&[0.5, 0.5], &c_id).enb - 2.0).abs() < 1e-12
+        );
+        assert!(
+            (effective_number_of_bets_minimum_torsion(&[1.0, 0.0], &c_id).enb - 1.0).abs() < 1e-12
+        );
+
+        let c_corr = vec![vec![0.04, 0.015], vec![0.015, 0.09]];
+        let rep = effective_number_of_bets_minimum_torsion(&[0.6, 0.4], &c_corr);
+        assert!(rep.enb > 1.0 && rep.enb <= 2.0);
+        assert!((rep.probabilities[0] + rep.probabilities[1] - 1.0).abs() < 1e-12);
+
+        let h = 1e-5;
+        let eval_w =
+            |w0: f64| effective_number_of_bets_minimum_torsion(&[w0, 1.0 - w0], &c_corr).enb;
+        let fd = (eval_w(0.6 + h) - eval_w(0.6 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let w_d = [
+            D::variable(0.6, 0),
+            D::from_value(1.0) - D::variable(0.6, 0),
+        ];
+        let c_d = vec![
+            vec![D::from_value(0.04), D::from_value(0.015)],
+            vec![D::from_value(0.015), D::from_value(0.09)],
+        ];
+        let ad = effective_number_of_bets_minimum_torsion(&w_d, &c_d).enb;
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod phase19_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn mean_cdar_optimization_simplex_aversion_monotonicity_and_ad() {
+        let path = vec![
+            vec![0.04, 0.01],
+            vec![-0.08, -0.01],
+            vec![-0.06, -0.005],
+            vec![0.05, 0.012],
+            vec![-0.05, -0.008],
+            vec![0.03, 0.010],
+        ];
+        let low_av = MeanCdarPortfolioSpec {
+            path_asset_returns: path.clone(),
+            expected_returns: vec![0.10, 0.04],
+            cdar_aversion: 0.2,
+            confidence: 0.80,
+            smoothing_eps: 1e-3,
+        };
+        let high_av = MeanCdarPortfolioSpec {
+            cdar_aversion: 8.0,
+            ..low_av.clone()
+        };
+        let r_low = optimize_mean_cdar_portfolio(&low_av);
+        let r_high = optimize_mean_cdar_portfolio(&high_av);
+        assert!((r_high.weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        assert!(r_high.weights.iter().all(|&w| w >= 0.0));
+        // Higher CDaR aversion shifts weight toward the low-drawdown asset 1 and lowers portfolio CDaR
+        assert!(r_high.cdar <= r_low.cdar);
+        assert!(r_high.weights[1] > r_low.weights[1]);
+        assert!(r_high.dar_threshold <= r_high.cdar + 1e-6);
+        assert!(r_high.cdar <= r_high.max_drawdown + 1e-6);
+
+        let h = 1e-5;
+        let eval_mu0 = |mu0: f64| {
+            let mut s = high_av.clone();
+            s.expected_returns[0] = mu0;
+            optimize_mean_cdar_portfolio(&s).weights[0]
+        };
+        let fd = (eval_mu0(0.10 + h) - eval_mu0(0.10 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let path_d: Vec<Vec<D>> = path
+            .iter()
+            .map(|r| r.iter().map(|&x| D::from_value(x)).collect())
+            .collect();
+        let spec_d = MeanCdarPortfolioSpec {
+            path_asset_returns: path_d,
+            expected_returns: vec![D::variable(0.10, 0), D::from_value(0.04)],
+            cdar_aversion: D::from_value(8.0),
+            confidence: 0.80,
+            smoothing_eps: 1e-3,
+        };
+        let ad = optimize_mean_cdar_portfolio(&spec_d).weights[0];
+        assert!(ad.d[0] > 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase20_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn expectile_exvar_euler_additivity_tau_monotonicity_and_ad() {
+        let scen = vec![
+            vec![-0.07, -0.01],
+            vec![-0.05, -0.008],
+            vec![-0.02, 0.005],
+            vec![0.01, 0.009],
+            vec![0.04, 0.012],
+            vec![0.06, 0.015],
+        ];
+        let spec50 = ExpectileRiskAndPortfolioSpec {
+            scenario_returns: scen.clone(),
+            initial_weights: vec![0.5, 0.5],
+            tau_confidence: 0.50,
+            return_weight_lambda: 0.2,
+            smoothing_eps: 1e-4,
+        };
+        let spec90 = ExpectileRiskAndPortfolioSpec {
+            tau_confidence: 0.90,
+            ..spec50.clone()
+        };
+        let r50 = evaluate_and_optimize_expectile_portfolio(&spec50);
+        let r90 = evaluate_and_optimize_expectile_portfolio(&spec90);
+        // Higher confidence tau_confidence = 0.90 increases Expectile EXVaR
+        assert!(r90.initial_expectile_exvar > r50.initial_expectile_exvar);
+        // Exact Euler homogeneity: sum of component EXVaR == total EXVaR
+        let sum_init: f64 = r90.initial_component_exvar.iter().sum();
+        let sum_opt: f64 = r90.optimal_component_exvar.iter().sum();
+        assert!((sum_init - r90.initial_expectile_exvar).abs() < 1e-12);
+        assert!((sum_opt - r90.optimal_expectile_exvar).abs() < 1e-12);
+
+        let h = 1e-5;
+        let eval_w0 = |w0: f64| {
+            let mut s = spec90.clone();
+            s.initial_weights = vec![w0, 1.0 - w0];
+            evaluate_and_optimize_expectile_portfolio(&s).initial_expectile_exvar
+        };
+        let fd = (eval_w0(0.5 + h) - eval_w0(0.5 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let scen_d: Vec<Vec<D>> = scen
+            .iter()
+            .map(|r| r.iter().map(|&x| D::from_value(x)).collect())
+            .collect();
+        let w0_d = D::variable(0.5, 0);
+        let spec_d = ExpectileRiskAndPortfolioSpec {
+            scenario_returns: scen_d,
+            initial_weights: vec![w0_d, D::one() - w0_d],
+            tau_confidence: 0.90,
+            return_weight_lambda: D::from_value(0.2),
+            smoothing_eps: 1e-4,
+        };
+        let ad = evaluate_and_optimize_expectile_portfolio(&spec_d).initial_expectile_exvar;
+        assert!(ad.d[0] > 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
 #[cfg(test)]
 mod phase24_tests {
     use super::*;
@@ -2129,71 +2229,6 @@ mod phase26_tests {
         )
         .probabilistic_sharpe_ratio_psr;
         assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct FollmerSchiedGennaioliDiagnosticRiskSpec<T: Real = f64> {
-    pub scenario_pnl: Vec<T>,
-    pub baseline_probabilities: Vec<T>,
-    pub entropic_ambiguity_theta: T,
-    pub kl_divergence_budget_eta: T,
-    pub diagnostic_overreaction_theta: T,
-    pub boom_news_drift_shock: T,
-    pub bust_news_drift_shock: T,
-}
-
-#[derive(Clone, Debug)]
-pub struct FollmerSchiedGennaioliDiagnosticRiskReport<T: Real = f64> {
-    pub rational_expected_loss: T,
-    pub follmer_schied_entropic_risk_measure: T,
-    pub worst_case_kl_divergence: T,
-    pub ambiguity_penalty_premium: T,
-    pub kl_ball_robust_superhedging_bound: T,
-    pub diagnostic_boom_perceived_risk: T,
-    pub diagnostic_bust_perceived_risk: T,
-    pub gennaioli_shleifer_crisis_belief_reversal_spike: T,
-    pub boom_tail_neglect_bias: T,
-}
-
-pub fn evaluate_follmer_schied_convex_risk_and_diagnostic_expectations<T: Real>(
-    s: &FollmerSchiedGennaioliDiagnosticRiskSpec<T>,
-) -> FollmerSchiedGennaioliDiagnosticRiskReport<T> {
-    let n = s.scenario_pnl.len().min(s.baseline_probabilities.len());
-    assert!(n > 0);
-    let mut ps = T::zero();
-    let mut exp_loss = T::zero();
-    for i in 0..n {
-        ps += s.baseline_probabilities[i];
-        exp_loss -= s.baseline_probabilities[i] * s.scenario_pnl[i];
-    }
-    let theta = s.entropic_ambiguity_theta.abs().max_val(T::from_f64(1e-8));
-    let mut z = T::zero();
-    for i in 0..n {
-        z += (s.baseline_probabilities[i] / ps.max_val(T::from_f64(1e-12)))
-            * (s.scenario_pnl[i] / theta).exp();
-    }
-    let entropic = theta * z.ln();
-    let penalty = (entropic - exp_loss).max_val(T::zero());
-    let kl = s.kl_divergence_budget_eta.max_val(T::zero());
-    let robust = entropic
-        + (T::from_f64(2.0) * kl).sqrt()
-            * s.scenario_pnl
-                .iter()
-                .map(|x| x.abs())
-                .fold(T::zero(), |a, x| a.max_val(x));
-    let boom = exp_loss + s.diagnostic_overreaction_theta * s.boom_news_drift_shock.abs();
-    let bust = exp_loss + s.diagnostic_overreaction_theta * s.bust_news_drift_shock.abs();
-    FollmerSchiedGennaioliDiagnosticRiskReport {
-        rational_expected_loss: exp_loss,
-        follmer_schied_entropic_risk_measure: entropic.max_val(exp_loss),
-        worst_case_kl_divergence: kl,
-        ambiguity_penalty_premium: penalty,
-        kl_ball_robust_superhedging_bound: robust,
-        diagnostic_boom_perceived_risk: boom,
-        diagnostic_bust_perceived_risk: bust,
-        gennaioli_shleifer_crisis_belief_reversal_spike: (bust - boom).abs(),
-        boom_tail_neglect_bias: (boom - exp_loss).max_val(T::zero()),
     }
 }
 

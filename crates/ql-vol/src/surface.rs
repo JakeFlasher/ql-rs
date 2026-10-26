@@ -28,6 +28,29 @@ pub struct BourgeyGatheralBergomiGuyonSmileReport<T: Real = f64> {
     pub second_order_ssr: T,
 }
 
+fn gamma_real<T: Real>(z: T) -> T {
+    // Lanczos approximation, evaluated entirely in the scalar/AD domain.
+    let coeff = [
+        0.9999999999998099,
+        676.5203681218851,
+        -1259.1392167224028,
+        771.3234287776531,
+        -176.6150291621406,
+        12.507343278686905,
+        -0.13857109526572012,
+        9.984369578019572e-6,
+        1.5056327351493116e-7,
+    ];
+    let zz = z.max_val(T::from_f64(0.400001));
+    let mut x = T::from_f64(coeff[0]);
+    for (i, c) in coeff.iter().enumerate().skip(1) {
+        x += T::from_f64(*c) / (zz + T::from_f64(i as f64) - T::one());
+    }
+    let g = T::from_f64(7.0);
+    let q = zz + g - T::from_f64(0.5);
+    T::from_f64(2.0 * std::f64::consts::PI).sqrt() * q.pow(zz - T::from_f64(0.5)) * (-q).exp() * x
+}
+
 pub fn evaluate_bourgey_gatheral_bergomi_guyon_expansion<T: Real>(
     s: &BourgeyGatheralBergomiGuyonSmileSpec<T>,
 ) -> BourgeyGatheralBergomiGuyonSmileReport<T> {
@@ -38,22 +61,48 @@ pub fn evaluate_bourgey_gatheral_bergomi_guyon_expansion<T: Real>(
         .min_val(T::from_f64(0.49));
     let lam = s.mean_reversion_lambda.max_val(T::from_f64(1e-8));
     let lt = lam * t;
-    let decay = (-lt).exp();
-    let cxxi = s.vol_of_vol_eta * s.spot_vol_corr_rho * (T::one() - decay) / lam;
-    let cxi = s.vol_of_vol_eta * s.vol_of_vol_eta * (T::one() - (-T::from_f64(2.0) * lt).exp())
-        / (T::from_f64(2.0) * lam);
-    let cmu = s.vol_of_vol_eta * s.spot_vol_corr_rho * t * t / T::from_f64(2.0);
-    let w = s.initial_instantaneous_vol * s.initial_instantaneous_vol * t
-        + cxi * t
-        + T::from_f64(2.0) * cmu;
-    let atm_vol = (w / t).max_val(T::zero()).sqrt();
-    let skew = s.spot_vol_corr_rho * s.vol_of_vol_eta * t.pow(h - T::from_f64(0.5))
-        / s.initial_instantaneous_vol.max_val(T::from_f64(1e-8));
-    let curvature = s.vol_of_vol_eta
+    let damp1 = if lt.abs().val() < 1e-4 {
+        T::one() - lt / T::from_f64(2.0) + lt * lt / T::from_f64(6.0)
+    } else {
+        (T::one() - (-lt).exp()) / lt
+    };
+    let damp2 = if (T::from_f64(2.0) * lt).abs().val() < 1e-4 {
+        T::one() - lt + T::from_f64(2.0) * lt * lt / T::from_f64(3.0)
+    } else {
+        (T::one() - (-T::from_f64(2.0) * lt).exp()) / (T::from_f64(2.0) * lt)
+    };
+    let sigma0 = s.initial_instantaneous_vol.max_val(T::from_f64(1e-6));
+    let xi0 = sigma0 * sigma0;
+    let gh = gamma_real(h + T::from_f64(0.5));
+    let cxxi = (s.spot_vol_corr_rho * s.vol_of_vol_eta * xi0.pow(T::from_f64(1.5))
+        / (gh * (h + T::from_f64(0.5)) * (h + T::from_f64(1.5))))
+        * t.pow(h + T::from_f64(1.5))
+        * damp1;
+    let cxi = (s.vol_of_vol_eta * s.vol_of_vol_eta * xi0 * xi0
+        / (gh * gh * (T::from_f64(2.0) * h + T::one()) * (h + T::one())))
+        * t.pow(T::from_f64(2.0) * h + T::from_f64(2.0))
+        * damp2;
+    let cmu = (s.spot_vol_corr_rho
+        * s.spot_vol_corr_rho
         * s.vol_of_vol_eta
-        * (T::one() - s.spot_vol_corr_rho * s.spot_vol_corr_rho)
-        * t.pow(T::from_f64(2.0) * h);
-    let strike_vol = s.forward_price * T::from_f64(0.00825);
+        * s.vol_of_vol_eta
+        * xi0
+        * xi0
+        / (gh
+            * gh
+            * (h + T::from_f64(0.5))
+            * (T::from_f64(2.0) * h + T::one())
+            * (h + T::from_f64(2.0))))
+        * t.pow(T::from_f64(2.0) * h + T::from_f64(2.0))
+        * damp1
+        * damp1;
+    let w = xi0 * t + cxi + T::from_f64(2.0) * cxxi + cmu;
+    let atm_vol = (w / t).max_val(T::zero()).sqrt();
+    let skew = cxxi / (T::from_f64(2.0) * xi0 * t * t);
+    let curvature = (cxi + cmu) / (xi0 * t * t).max_val(T::from_f64(1e-12));
+    let k = (s.strike_price / s.forward_price.max_val(T::from_f64(1e-12))).ln();
+    let strike_vol =
+        (atm_vol + skew * k + T::from_f64(0.5) * curvature * k * k).max_val(T::from_f64(1e-6));
     let ssr1 = (h + T::from_f64(1.5)) / (h + T::from_f64(0.5));
     let ssr2 = ssr1 * (T::one() + s.vol_of_vol_eta * s.vol_of_vol_eta * t / T::from_f64(6.0));
     BourgeyGatheralBergomiGuyonSmileReport {
@@ -2091,46 +2140,6 @@ mod phase24_tests {
 }
 
 #[cfg(test)]
-mod phase28_tests {
-    use super::*;
-    use ql_ad::Dual;
-    fn mk<T: Real>(x: T) -> BourgeyGatheralBergomiGuyonSmileSpec<T> {
-        BourgeyGatheralBergomiGuyonSmileSpec {
-            forward_price: T::from_f64(100.0) + x,
-            strike_price: T::from_f64(100.0),
-            maturity: T::one(),
-            initial_instantaneous_vol: T::from_f64(0.2),
-            vol_of_vol_eta: T::from_f64(0.5),
-            spot_vol_corr_rho: T::from_f64(-0.7),
-            hurst_exponent: T::from_f64(0.1),
-            mean_reversion_lambda: T::from_f64(1.0),
-        }
-    }
-    #[test]
-    fn bergomi_guyon_invariants_and_dual() {
-        let mut z = mk(0.0);
-        z.vol_of_vol_eta = 0.0;
-        let r0 = evaluate_bourgey_gatheral_bergomi_guyon_expansion(&z);
-        assert!((r0.atm_implied_vol_second_order - 0.2).abs() < 1e-12);
-        assert!(r0.atm_skew_st.abs() < 1e-12);
-        assert!(
-            (evaluate_bourgey_gatheral_bergomi_guyon_expansion(&mk(0.0)).first_order_ssr
-                - 1.6 / 0.6)
-                .abs()
-                < 1e-12
-        );
-        let h = 1e-5;
-        let fd = (evaluate_bourgey_gatheral_bergomi_guyon_expansion(&mk(h)).strike_implied_vol
-            - evaluate_bourgey_gatheral_bergomi_guyon_expansion(&mk(-h)).strike_implied_vol)
-            / (2.0 * h);
-        let ad =
-            evaluate_bourgey_gatheral_bergomi_guyon_expansion(&mk(Dual::<1>::variable(0.0, 0)))
-                .strike_implied_vol;
-        assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
-
-#[cfg(test)]
 mod phase26_tests {
     use super::*;
     use ql_ad::Dual;
@@ -2168,6 +2177,46 @@ mod phase26_tests {
             Dual::<1>::variable(0.3, 0),
         ))
         .forward_atm_implied_vol;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase28_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn mk<T: Real>(x: T) -> BourgeyGatheralBergomiGuyonSmileSpec<T> {
+        BourgeyGatheralBergomiGuyonSmileSpec {
+            forward_price: T::from_f64(100.0) + x,
+            strike_price: T::from_f64(105.0),
+            maturity: T::one(),
+            initial_instantaneous_vol: T::from_f64(0.2),
+            vol_of_vol_eta: T::from_f64(0.5),
+            spot_vol_corr_rho: T::from_f64(-0.7),
+            hurst_exponent: T::from_f64(0.1),
+            mean_reversion_lambda: T::from_f64(1.0),
+        }
+    }
+    #[test]
+    fn bergomi_guyon_invariants_and_dual() {
+        let mut z = mk(0.0);
+        z.vol_of_vol_eta = 0.0;
+        let r0 = evaluate_bourgey_gatheral_bergomi_guyon_expansion(&z);
+        assert!((r0.atm_implied_vol_second_order - 0.2).abs() < 1e-12);
+        assert!(r0.atm_skew_st.abs() < 1e-12);
+        assert!(
+            (evaluate_bourgey_gatheral_bergomi_guyon_expansion(&mk(0.0)).first_order_ssr
+                - 1.6 / 0.6)
+                .abs()
+                < 1e-12
+        );
+        let h = 1e-5;
+        let fd = (evaluate_bourgey_gatheral_bergomi_guyon_expansion(&mk(h)).strike_implied_vol
+            - evaluate_bourgey_gatheral_bergomi_guyon_expansion(&mk(-h)).strike_implied_vol)
+            / (2.0 * h);
+        let ad =
+            evaluate_bourgey_gatheral_bergomi_guyon_expansion(&mk(Dual::<1>::variable(0.0, 0)))
+                .strike_implied_vol;
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

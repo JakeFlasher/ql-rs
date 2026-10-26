@@ -1,5 +1,7 @@
 use crate::NettingSetSwap;
 use ql_ad::Real;
+use ql_curves::{FlatForwardCurve, YieldTermStructure};
+use ql_models::HullWhite1F;
 
 #[derive(Clone, Debug)]
 pub struct AlbaneseCrepeyZeronBalanceSheetXvaSpec<T: Real = f64> {
@@ -40,54 +42,86 @@ pub fn evaluate_albanese_crepey_zeron_balance_sheet_xva<T: Real>(
     s: &AlbaneseCrepeyZeronBalanceSheetXvaSpec<T>,
 ) -> AlbaneseCrepeyZeronBalanceSheetXvaReport<T> {
     let n = s.num_time_steps.max(1);
+    let dt = s.maturity.max_val(T::from_f64(1e-8)) / T::from_f64(n as f64);
+    let nodes = [
+        1.0_f64,
+        std::f64::consts::FRAC_1_SQRT_2,
+        0.0,
+        -std::f64::consts::FRAC_1_SQRT_2,
+        -1.0,
+    ];
+    let weights = [0.125_f64, 0.25, 0.25, 0.25, 0.125];
     let mut im0 = T::zero();
     let mut peak = T::zero();
+    let mut ftd_cva = T::zero();
+    let mut ftd_dva = T::zero();
+    let mut naive_fva = T::zero();
+    let mut shareholder_deducted = T::zero();
+    let mut mva = T::zero();
+    let mut kva = T::zero();
+    let mut creditor_windfall = T::zero();
     for i in 0..=n {
-        let u = T::from_f64(i as f64 / n as f64);
-        let basis = (T::one() - u) * s.base_unmargined_epe + u * s.base_ene.abs();
-        let im = (s.simm_delta_weight * basis
-            + s.simm_vega_weight * basis
-            + T::from_f64(2.0)
-                * s.simm_delta_vega_corr
-                * s.simm_delta_weight
-                * s.simm_vega_weight
-                * basis
-                * basis)
-            .max_val(T::zero())
-            .sqrt();
-        if i == 0 {
-            im0 = im;
+        let ti = dt * T::from_f64(i as f64);
+        let u = ti / s.maturity.max_val(T::from_f64(1e-8));
+        let phi = (T::one() - T::from_f64(0.5) * u)
+            * (T::one() + T::from_f64(4.0) * u * (T::one() - u)).sqrt();
+        let mut im_bar = T::zero();
+        let epe = s.base_unmargined_epe * phi;
+        let ene = s.base_ene.abs() * (T::one() - u);
+        for j in 0..5 {
+            let x = T::from_f64(nodes[j]);
+            let delta = s.simm_delta_weight
+                * (epe
+                    + T::from_f64(0.25)
+                        * s.base_ene.abs()
+                        * x.abs()
+                        * (u * (T::one() - u) + T::from_f64(1e-8)).sqrt());
+            let vega = s.simm_vega_weight
+                * (epe * (T::one() - T::from_f64(0.3) * u)
+                    + T::from_f64(0.2) * s.base_ene.abs() * x * x);
+            let im = (delta * delta
+                + vega * vega
+                + T::from_f64(2.0) * s.simm_delta_vega_corr * delta * vega)
+                .max_val(T::zero())
+                .sqrt();
+            im_bar += T::from_f64(weights[j]) * im;
         }
-        peak = peak.max_val(im);
+        if i == 0 {
+            im0 = im_bar;
+        }
+        peak = peak.max_val(im_bar);
+        if i > 0 {
+            let df = (-s.risk_free_rate * ti).exp();
+            let surv = (-(s.cpty_hazard_rate + s.bank_hazard_rate) * ti).exp();
+            ftd_cva += dt * df * surv * s.cpty_hazard_rate * (T::one() - s.cpty_recovery) * epe;
+            ftd_dva += dt * df * surv * s.bank_hazard_rate * (T::one() - s.bank_recovery) * ene;
+            let s_db = s.bank_hazard_rate * (T::one() - s.bank_recovery);
+            let s_f = s_db + s.bank_liquidity_basis;
+            naive_fva += dt * df * surv * (s_f + s.im_funding_spread) * epe;
+            let cap = s.regulatory_capital_ratio * (epe + im_bar);
+            shareholder_deducted +=
+                dt * df * surv * s.bank_liquidity_basis * (epe - cap).max_val(T::zero());
+            mva += dt * df * surv * s.im_funding_spread * im_bar;
+            kva += dt * df * surv * s.shareholder_hurdle_rate * cap;
+            creditor_windfall += dt * df * surv * s_db * epe;
+        }
     }
-    let df = (-s.risk_free_rate * s.maturity).exp();
-    let cva =
-        s.base_unmargined_epe * (T::one() - s.cpty_recovery) * s.cpty_hazard_rate * s.maturity * df;
-    let dva =
-        s.base_ene.abs() * (T::one() - s.bank_recovery) * s.bank_hazard_rate * s.maturity * df;
-    let fva = s.base_unmargined_epe * s.im_funding_spread * s.maturity * df;
-    let capital = s.regulatory_capital_ratio * (s.base_unmargined_epe + peak);
-    let shareholder = fva - capital * s.shareholder_hurdle_rate * s.maturity;
-    let mva = im0 * s.im_funding_spread * s.maturity;
-    let kva = capital * s.shareholder_hurdle_rate * s.maturity;
-    let overlap = (mva + kva).min_val(fva.abs()).max_val(T::zero());
+    let overlap = ftd_dva + (naive_fva - shareholder_deducted);
+    let shareholder = ftd_cva + shareholder_deducted + mva + kva;
     AlbaneseCrepeyZeronBalanceSheetXvaReport {
         chebyshev_expected_initial_margin_t0: im0,
         chebyshev_peak_initial_margin: peak,
-        ftd_cva: cva,
-        ftd_dva: dva,
-        naive_fva: fva,
-        shareholder_fva_capital_deducted: shareholder,
+        ftd_cva,
+        ftd_dva,
+        naive_fva,
+        shareholder_fva_capital_deducted: shareholder_deducted,
         mva_chebyshev_simm: mva,
         kva_retained_earnings: kva,
         double_counting_overlap_eliminated: overlap,
-        shareholder_funds_transfer_price_ava: shareholder * T::from_f64(0.5),
-        balance_sheet_wealth_transfer_to_creditors: cva + dva + overlap,
+        shareholder_funds_transfer_price_ava: shareholder,
+        balance_sheet_wealth_transfer_to_creditors: ftd_dva + creditor_windfall,
     }
 }
-use ql_curves::FlatForwardCurve;
-use ql_curves::YieldTermStructure;
-use ql_models::HullWhite1F;
 #[derive(Clone, Debug)]
 pub struct ChebyshevInterpolant1D {
     pub a: f64,
