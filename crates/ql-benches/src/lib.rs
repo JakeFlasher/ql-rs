@@ -1,7 +1,7 @@
 pub mod harness;
 pub mod suites;
 /// Number of registered benchmark suites in the current release.
-pub const SUITE_COUNT: usize = 69;
+pub const SUITE_COUNT: usize = 70;
 pub const SUITE_NAMES: [&str; SUITE_COUNT] = [
     "01_calendar_popcnt",
     "02_leg_simd_soa",
@@ -72,6 +72,7 @@ pub const SUITE_NAMES: [&str; SUITE_COUNT] = [
     "67_piterbarg_ctd_collateral_tuckman_make_whole_bond_brigo_morini_cmcds_hagan_shifted_sabr_green_kenyon_tva_eydeland_interconnector_spread_wystup_clark_fx_strangle_kunitomo_ikeda_curved_barrier_clmx_variance_decomp_kyle_multi_period_lambda_hansen_lunde_overnight_rv_goldstein_pauzner_bank_run",
     "68_mercurio_fva_multi_curve_swap_ingersoll_contingent_call_cb_hull_white_implied_copula_cdo_gatheral_jacquier_svi_jw_burgard_kjaer_semi_replication_xva_benth_seasonal_hdd_cdd_swap_baba_packer_fx_swap_dollar_basis_conze_viswanathan_lookback_he_litterman_bl_posterior_ghs_importance_sampling_cvar_engle_granger_johansen_vecm_gabaix_rare_disasters_resilience",
     "69_ametrano_bianchetti_tenor_basis_fabozzi_hayre_io_po_strip_hull_brigo_wwr_cds_bossens_vanna_volga_barrier_gregory_simm_mva_carmona_clean_dark_spread_reiner_haug_quanto_call_hart_ross_soft_barrier_pastor_stambaugh_alpha_shrinkage_obizhaeva_wang_impulse_lob_diebold_mariano_west_hln_piazzesi_schneider_nominal_tp",
+    "70_smith_wilson_ufr_kalotay_williams_fabozzi_callable_schonbucher_clayton_cdo_buehler_variance_curve_pykhtin_rosen_marginal_cva_hilliard_reis_jump_futures_gabaix_maggiori_fx_carry_cheuk_vorst_shout_option_grossman_zhou_drawdown_kelly_gls_tasche_cornish_fisher_raroc_andrews_ploberger_wald_break_jermann_quadrini_financial_shock",
 ];
 /// Stable alias used by benchmark orchestration and documentation.
 pub const ALL_SUITES: [&str; SUITE_COUNT] = SUITE_NAMES;
@@ -111,6 +112,7 @@ pub use suites::{
     benchmark_rebonato_cms_lm_all_engines,
     benchmark_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml,
     benchmark_romer_taylor_damodaran_crp_christoffersen_var_foucault_lvar_barberis_pt_hart_regret_beneish_mscore_campisi_attr_heckman_gmm_elastic_net_reset_cb_fsb_bailin,
+    benchmark_smith_wilson_ufr_kalotay_williams_fabozzi_callable_schonbucher_clayton_cdo_buehler_variance_curve_pykhtin_rosen_marginal_cva_hilliard_reis_jump_futures_gabaix_maggiori_fx_carry_cheuk_vorst_shout_option_grossman_zhou_drawdown_kelly_gls_tasche_cornish_fisher_raroc_andrews_ploberger_wald_break_jermann_quadrini_financial_shock,
     benchmark_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig,
     benchmark_veronesi_conv_lando_gen_gatheral_corridor_russian_stop_bates_svj_koziol_cb_mckean_mfg_bcbs_floor_cjp_lob_madhavan_etf_qian_ic_glasserman_is,
     run_all_benchmark_suites_with_Config, run_all_benchmark_suites_with_config, run_all_benchmarks,
@@ -121,4 +123,5 @@ pub use suites::{
     suite55_workloads, suite56_workloads, suite57_workloads, suite58_workloads, suite59_workloads,
     suite60_workloads, suite61_workloads, suite62_workloads, suite63_workloads, suite64_workloads,
     suite65_workloads, suite66_workloads, suite67_workloads, suite68_workloads, suite69_workloads,
+    suite70_workloads,
 };

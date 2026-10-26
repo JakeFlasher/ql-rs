@@ -2652,3 +2652,193 @@ pub mod conze_viswanathan_lookback_extremum_mod {
     }
 }
 pub use conze_viswanathan_lookback_extremum_mod::*;
+mod cheuk_vorst_shout_reset_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Cheuk & Vorst (1997, *J. Banking & Finance*) / Haug (2007, §4.14)
+    /// intermediate strike-reset and shout call option valuation model.
+    #[derive(Debug, Clone, Copy)]
+    pub struct CheukVorstShoutResetSpec<T: Real> {
+        /// Spot price $S_0$ (e.g., $100.0$).
+        pub spot_s0: T,
+        /// Initial strike price $K_0$ (e.g., $102.0$).
+        pub initial_strike_k0: T,
+        /// Intermediate reset / shout monitoring date $t_1$ in years (e.g., $0.45$).
+        pub reset_monitoring_time_t1: T,
+        /// Final option maturity $T > t_1$ in years (e.g., $1.0$).
+        pub maturity_years_t: T,
+        /// Risk-free interest rate $r$ (e.g., $0.04$).
+        pub risk_free_rate_r: T,
+        /// Continuous dividend yield $q$ (e.g., $0.015$).
+        pub dividend_yield_q: T,
+        /// Volatility $\sigma$ (e.g., $0.24$).
+        pub volatility_sigma: T,
+    }
+
+    /// Analytics returned by [`evaluate_cheuk_vorst_haug_strike_reset_shout_call_option`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct CheukVorstShoutResetAnalytics<T: Real> {
+        /// Standard European Black–Scholes call value $C_{\text{BS}}(S_0, K_0, T)$.
+        pub vanilla_black_scholes_call: T,
+        /// Unit-spot ATM forward continuation call factor $c_{\text{ATM}}(T - t_1)$ at reset date $t_1$.
+        pub unit_spot_atm_continuation_factor: T,
+        /// Expected present value of the strike-reset / shout feature.
+        pub strike_reset_feature_premium: T,
+        /// Total Cheuk–Vorst / Haug strike-reset call option price.
+        pub strike_reset_call_value: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    #[inline]
+    fn bs_call<T: Real>(s: T, k: T, r: T, q: T, sig: T, tau: T) -> T {
+        let std_dev = sig * tau.sqrt();
+        let d1 = ((s / k).ln() + (r - q + T::from_f64(0.5) * sig * sig) * tau) / std_dev;
+        let d2 = d1 - std_dev;
+        s * (-q * tau).exp() * std_norm_cdf(d1) - k * (-r * tau).exp() * std_norm_cdf(d2)
+    }
+
+    /// Evaluates a strike-reset call option (Cheuk & Vorst 1997; Haug 2007 §4.14) where at intermediate
+    /// date $t_1 \in (0, T)$, if $S_{t_1} < K_0$, the strike resets downward to $S_{t_1}$ (giving
+    /// continuation value $S_{t_1} c_{\text{ATM}}(T - t_1)$ by Merton homogeneity), while if $S_{t_1} \ge K_0$
+    /// the original strike $K_0$ is retained.
+    pub fn evaluate_cheuk_vorst_haug_strike_reset_shout_call_option<T: Real>(
+        spec: &CheukVorstShoutResetSpec<T>,
+    ) -> CheukVorstShoutResetAnalytics<T> {
+        let s0 = spec.spot_s0;
+        let k0 = spec.initial_strike_k0;
+        let t1 = spec.reset_monitoring_time_t1;
+        let t = spec.maturity_years_t;
+        let tau2 = t - t1;
+        let r = spec.risk_free_rate_r;
+        let q = spec.dividend_yield_q;
+        let sig = spec.volatility_sigma;
+        let half = T::from_f64(0.5);
+
+        let vanilla = bs_call(s0, k0, r, q, sig, t);
+
+        // Unit-spot ATM call factor at t1 over remaining maturity tau2 = T - t1
+        let c_atm_unit = bs_call(T::one(), T::one(), r, q, sig, tau2);
+
+        // Under Q at t1, ln(S_{t1}) ~ N(m1, v1^2) with m1 = ln(S0) + (r - q - 0.5*sig^2)*t1, v1 = sig*sqrt(t1)
+        // Reset occurs when S_{t1} < K0, i.e., z < z_k where z_k = (ln(K0/S0) - (r - q - 0.5*sig^2)*t1) / v1.
+        // In the reset region S_{t1} < K0, the holder receives C_BS(S_{t1}, S_{t1}, tau2) - C_BS(S_{t1}, K0, tau2).
+        // We integrate over z in (-4, z_k) via 4-point Gauss-Legendre quadrature.
+        let v1 = sig * t1.sqrt();
+        let m1 = s0.ln() + (r - q - half * sig * sig) * t1;
+        let z_k = (k0.ln() - m1) / v1;
+        let z_low = z_k - T::from_f64(4.0);
+
+        let gl_nodes = [
+            0.069_431_844_202_973_71,
+            0.330_009_478_207_571_87,
+            0.669_990_521_792_428_1,
+            0.930_568_155_797_026_2,
+        ];
+        let gl_weights = [
+            0.173_927_422_568_726_92,
+            0.326_072_577_431_273_1,
+            0.326_072_577_431_273_1,
+            0.173_927_422_568_726_92,
+        ];
+
+        let span = z_k - z_low;
+        let inv_sqrt_2pi = T::from_f64(0.398_942_280_401_432_7);
+        let mut reset_gain_int = T::zero();
+        for idx in 0..4 {
+            let u = T::from_f64(gl_nodes[idx]);
+            let w = T::from_f64(gl_weights[idx]);
+            let z = z_low + u * span;
+            let pdf_z = inv_sqrt_2pi * (-half * z * z).exp();
+            let s_t1 = (m1 + v1 * z).exp();
+            let c_reset = s_t1 * c_atm_unit;
+            let c_orig = bs_call(s_t1, k0, r, q, sig, tau2);
+            reset_gain_int += w * pdf_z * (c_reset - c_orig);
+        }
+
+        let reset_premium = (-r * t1).exp() * span * reset_gain_int;
+        let total_val = vanilla + reset_premium;
+
+        CheukVorstShoutResetAnalytics {
+            vanilla_black_scholes_call: vanilla,
+            unit_spot_atm_continuation_factor: c_atm_unit,
+            strike_reset_feature_premium: reset_premium,
+            strike_reset_call_value: total_val,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn cheuk_vorst_shout_reset_invariants_and_ad_parity() {
+            let base = CheukVorstShoutResetSpec {
+                spot_s0: 100.0_f64,
+                initial_strike_k0: 102.0_f64,
+                reset_monitoring_time_t1: 0.45_f64,
+                maturity_years_t: 1.0_f64,
+                risk_free_rate_r: 0.04_f64,
+                dividend_yield_q: 0.015_f64,
+                volatility_sigma: 0.24_f64,
+            };
+            let res = evaluate_cheuk_vorst_haug_strike_reset_shout_call_option(&base);
+            assert!(res.vanilla_black_scholes_call > 0.0);
+            assert!(res.strike_reset_feature_premium > 0.0);
+            assert!(res.strike_reset_call_value > res.vanilla_black_scholes_call);
+
+            let inputs = [
+                base.spot_s0,
+                base.initial_strike_k0,
+                base.reset_monitoring_time_t1,
+                base.maturity_years_t,
+                base.risk_free_rate_r,
+                base.dividend_yield_q,
+                base.volatility_sigma,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = CheukVorstShoutResetSpec {
+                spot_s0: dual_in[0],
+                initial_strike_k0: dual_in[1],
+                reset_monitoring_time_t1: dual_in[2],
+                maturity_years_t: dual_in[3],
+                risk_free_rate_r: dual_in[4],
+                dividend_yield_q: dual_in[5],
+                volatility_sigma: dual_in[6],
+            };
+            let r_ad = evaluate_cheuk_vorst_haug_strike_reset_shout_call_option(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| CheukVorstShoutResetSpec {
+                    spot_s0: v[0],
+                    initial_strike_k0: v[1],
+                    reset_monitoring_time_t1: v[2],
+                    maturity_years_t: v[3],
+                    risk_free_rate_r: v[4],
+                    dividend_yield_q: v[5],
+                    volatility_sigma: v[6],
+                };
+                let rp = evaluate_cheuk_vorst_haug_strike_reset_shout_call_option(&mk(p));
+                let rm = evaluate_cheuk_vorst_haug_strike_reset_shout_call_option(&mk(m));
+                let fd = (rp.strike_reset_call_value - rm.strike_reset_call_value) / (2.0 * eps);
+                assert!(
+                    r_ad.strike_reset_call_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.strike_reset_call_value.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use cheuk_vorst_shout_reset_mod::*;

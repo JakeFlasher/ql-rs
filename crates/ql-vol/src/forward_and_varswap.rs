@@ -2363,3 +2363,177 @@ pub mod gatheral_jacquier_svi_jump_wing_mod {
     }
 }
 pub use gatheral_jacquier_svi_jump_wing_mod::*;
+mod buehler_variance_curve_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Buehler (2006, *Finance and Stochastics*) / Bergomi (2016)
+    /// consistent double-exponential forward variance curve and vol-of-vol term structure model.
+    #[derive(Debug, Clone, Copy)]
+    pub struct BuehlerVarianceCurveSpec<T: Real> {
+        /// Short-end spot instantaneous variance $\xi_0 = v_0(0)$ (e.g., $0.040$).
+        pub short_variance_xi0: T,
+        /// Long-run asymptotic forward variance $\xi_\infty$ (e.g., $0.048$).
+        pub long_variance_xi_inf: T,
+        /// Intermediate variance hump amplitude $\xi_{\text{hump}}$ (e.g., $0.015$).
+        pub hump_variance_amplitude_xi_hump: T,
+        /// Fast mean-reversion speed $\kappa_1 > 0$ (e.g., $2.4$).
+        pub fast_mean_reversion_kappa1: T,
+        /// Slow/hump mean-reversion speed $\kappa_2 > 0$ (e.g., $0.55$).
+        pub slow_mean_reversion_kappa2: T,
+        /// Fast factor volatility of variance $\omega_1$ (e.g., $1.35$).
+        pub fast_factor_vol_of_vol_omega1: T,
+        /// Slow factor volatility of variance $\omega_2$ (e.g., $0.45$).
+        pub slow_factor_vol_of_vol_omega2: T,
+        /// Factor Brownian correlation $\rho_{12} \in (-1, 1)$ (e.g., $0.35$).
+        pub factor_correlation_rho12: T,
+        /// Option / variance swap maturity $T$ in years (e.g., $1.5$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_buehler_consistent_double_exponential_variance_curve`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct BuehlerVarianceCurveAnalytics<T: Real> {
+        /// Terminal instantaneous forward variance $v_0(T)$.
+        pub terminal_forward_variance: T,
+        /// Integrated total variance $W_0(T) = \int_0^T v_0(u)\,du$.
+        pub integrated_total_variance: T,
+        /// Fair variance swap volatility strike $\sigma_{\text{VS}}(T) = \sqrt{W_0(T)/T}$.
+        pub fair_variance_swap_volatility_strike: T,
+        /// Effective term-structure vol-of-variance $\nu_{\text{eff}}(T)$ on the $T$-maturity variance swap.
+        pub effective_variance_swap_vol_of_vol: T,
+    }
+
+    /// Evaluates the Buehler (2006) / Bergomi (2016) consistent double-exponential forward variance
+    /// curve $v_0(t) = \xi_\infty + (\xi_0 - \xi_\infty)e^{-\kappa_1 t} + \xi_{\text{hump}}\kappa_2 t e^{-\kappa_2 t}$,
+    /// its exact analytical integral $W_0(T)$, fair variance swap strike, and two-factor vol-of-variance.
+    pub fn evaluate_buehler_consistent_double_exponential_variance_curve<T: Real>(
+        spec: &BuehlerVarianceCurveSpec<T>,
+    ) -> BuehlerVarianceCurveAnalytics<T> {
+        let t = spec.maturity_years_t;
+        let k1 = spec.fast_mean_reversion_kappa1;
+        let k2 = spec.slow_mean_reversion_kappa2;
+
+        let e1 = (-k1 * t).exp();
+        let e2 = (-k2 * t).exp();
+
+        let v_t = spec.long_variance_xi_inf
+            + (spec.short_variance_xi0 - spec.long_variance_xi_inf) * e1
+            + spec.hump_variance_amplitude_xi_hump * k2 * t * e2;
+
+        // Exact integral of v_0(u) from 0 to T
+        let int_1 = (T::one() - e1) / k1;
+        let int_hump = (T::one() - (T::one() + k2 * t) * e2) / k2;
+        let w_t = spec.long_variance_xi_inf * t
+            + (spec.short_variance_xi0 - spec.long_variance_xi_inf) * int_1
+            + spec.hump_variance_amplitude_xi_hump * int_hump;
+
+        let raw_vs_vol = (w_t / t).sqrt();
+
+        // Two-factor integrated vol-of-variance swap variance
+        let w1 = spec.fast_factor_vol_of_vol_omega1;
+        let w2 = spec.slow_factor_vol_of_vol_omega2;
+        let rho = spec.factor_correlation_rho12;
+        let two = T::from_f64(2.0);
+
+        let term11 = (w1 * w1) * (T::one() - (-two * k1 * t).exp()) / (two * k1 * t);
+        let term22 = (w2 * w2) * (T::one() - (-two * k2 * t).exp()) / (two * k2 * t);
+        let term12 = two * rho * w1 * w2 * (T::one() - (-(k1 + k2) * t).exp()) / ((k1 + k2) * t);
+        let nu_eff = (term11 + term12 + term22).sqrt();
+
+        // Bergomi (2016) / Brockhaus-Long convexity-adjusted volatility swap strike under vol-of-vol nu_eff
+        let vs_vol = raw_vs_vol * (-T::from_f64(0.125) * nu_eff * nu_eff * t).exp();
+
+        BuehlerVarianceCurveAnalytics {
+            terminal_forward_variance: v_t,
+            integrated_total_variance: w_t,
+            fair_variance_swap_volatility_strike: vs_vol,
+            effective_variance_swap_vol_of_vol: nu_eff,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn buehler_variance_curve_invariants_and_ad_parity() {
+            let base = BuehlerVarianceCurveSpec {
+                short_variance_xi0: 0.040_f64,
+                long_variance_xi_inf: 0.048_f64,
+                hump_variance_amplitude_xi_hump: 0.015_f64,
+                fast_mean_reversion_kappa1: 2.4_f64,
+                slow_mean_reversion_kappa2: 0.55_f64,
+                fast_factor_vol_of_vol_omega1: 1.35_f64,
+                slow_factor_vol_of_vol_omega2: 0.45_f64,
+                factor_correlation_rho12: 0.35_f64,
+                maturity_years_t: 1.5_f64,
+            };
+            let res = evaluate_buehler_consistent_double_exponential_variance_curve(&base);
+            assert!(res.terminal_forward_variance > 0.0);
+            assert!(res.integrated_total_variance > 0.0);
+            assert!(
+                res.fair_variance_swap_volatility_strike > 0.15
+                    && res.fair_variance_swap_volatility_strike < 0.35
+            );
+            assert!(res.effective_variance_swap_vol_of_vol > 0.0);
+
+            let inputs = [
+                base.short_variance_xi0,
+                base.long_variance_xi_inf,
+                base.hump_variance_amplitude_xi_hump,
+                base.fast_mean_reversion_kappa1,
+                base.slow_mean_reversion_kappa2,
+                base.fast_factor_vol_of_vol_omega1,
+                base.slow_factor_vol_of_vol_omega2,
+                base.factor_correlation_rho12,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<9>::from_value(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BuehlerVarianceCurveSpec {
+                short_variance_xi0: dual_in[0],
+                long_variance_xi_inf: dual_in[1],
+                hump_variance_amplitude_xi_hump: dual_in[2],
+                fast_mean_reversion_kappa1: dual_in[3],
+                slow_mean_reversion_kappa2: dual_in[4],
+                fast_factor_vol_of_vol_omega1: dual_in[5],
+                slow_factor_vol_of_vol_omega2: dual_in[6],
+                factor_correlation_rho12: dual_in[7],
+                maturity_years_t: dual_in[8],
+            };
+            let r_ad = evaluate_buehler_consistent_double_exponential_variance_curve(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 9]| BuehlerVarianceCurveSpec {
+                    short_variance_xi0: v[0],
+                    long_variance_xi_inf: v[1],
+                    hump_variance_amplitude_xi_hump: v[2],
+                    fast_mean_reversion_kappa1: v[3],
+                    slow_mean_reversion_kappa2: v[4],
+                    fast_factor_vol_of_vol_omega1: v[5],
+                    slow_factor_vol_of_vol_omega2: v[6],
+                    factor_correlation_rho12: v[7],
+                    maturity_years_t: v[8],
+                };
+                let rp = evaluate_buehler_consistent_double_exponential_variance_curve(&mk(p));
+                let rm = evaluate_buehler_consistent_double_exponential_variance_curve(&mk(m));
+                let fd = (rp.fair_variance_swap_volatility_strike
+                    - rm.fair_variance_swap_volatility_strike)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.fair_variance_swap_volatility_strike.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.fair_variance_swap_volatility_strike.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use buehler_variance_curve_mod::*;

@@ -1471,3 +1471,195 @@ pub mod benth_seasonal_temperature_hdd_cdd_swap_mod {
     }
 }
 pub use benth_seasonal_temperature_hdd_cdd_swap_mod::*;
+mod hilliard_reis_jump_futures_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Hilliard & Reis (1998, *Journal of Finance* 53(1))
+    /// two-factor stochastic convenience-yield and jump-diffusion commodity futures option model.
+    #[derive(Debug, Clone, Copy)]
+    pub struct HilliardReisJumpFuturesSpec<T: Real> {
+        /// Current futures price $F_0(T_{\text{fut}})$ (e.g., $78.0$).
+        pub futures_price_f0: T,
+        /// Option strike price $K$ (e.g., $80.0$).
+        pub strike_price_k: T,
+        /// Spot commodity diffusive volatility $\sigma_S$ (e.g., $0.32$).
+        pub spot_volatility_sigma_s: T,
+        /// Convenience-yield volatility $\sigma_\delta$ (e.g., $0.24$).
+        pub convenience_yield_volatility_sigma_delta: T,
+        /// Convenience-yield mean-reversion speed $\kappa_\delta > 0$ (e.g., $1.60$).
+        pub convenience_yield_mean_reversion_kappa: T,
+        /// Spot-convenience-yield correlation $\rho_{S\delta} \in (-1, 1)$ (e.g., $0.65$).
+        pub spot_convenience_correlation_rho: T,
+        /// Poisson jump arrival intensity $\lambda_J$ per year (e.g., $0.85$).
+        pub jump_intensity_lambda_j: T,
+        /// Log-jump volatility $v_J$ (e.g., $0.18$).
+        pub jump_volatility_v_j: T,
+        /// Risk-free discount rate $r$ across option maturity $T_{\text{opt}} = 0.5$, $T_{\text{fut}} = 1.0$ (e.g., $0.038$).
+        pub risk_free_rate_r: T,
+    }
+
+    /// Analytics returned by [`evaluate_hilliard_reis_stochastic_convenience_yield_jump_futures_option`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct HilliardReisJumpFuturesAnalytics<T: Real> {
+        /// Integrated diffusive futures variance $V_F(T_{\text{opt}}, T_{\text{fut}})$.
+        pub integrated_diffusive_futures_variance: T,
+        /// Effective annualized diffusive futures volatility $\sqrt{V_F / T_{\text{opt}}}$.
+        pub annualized_diffusive_futures_volatility: T,
+        /// Hilliard–Reis jump-diffusion futures call option price.
+        pub jump_diffusion_futures_call_price: T,
+        /// Pure diffusive (zero-jump) futures call option price.
+        pub diffusive_only_futures_call_price: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    #[inline]
+    fn black76_call<T: Real>(f: T, k: T, df: T, total_var: T) -> T {
+        let std_dev = total_var.sqrt();
+        let d1 = ((f / k).ln() + T::from_f64(0.5) * total_var) / std_dev;
+        let d2 = d1 - std_dev;
+        df * (f * std_norm_cdf(d1) - k * std_norm_cdf(d2))
+    }
+
+    /// Evaluates the Hilliard & Reis (1998, Prop. 1 & Prop. 3) commodity futures call option
+    /// under stochastic convenience yield $\delta_t$ and Poisson price jumps over option maturity
+    /// $T_{\text{opt}} = 0.5$ years on a futures contract maturing at $T_{\text{fut}} = 1.0$ year.
+    pub fn evaluate_hilliard_reis_stochastic_convenience_yield_jump_futures_option<T: Real>(
+        spec: &HilliardReisJumpFuturesSpec<T>,
+    ) -> HilliardReisJumpFuturesAnalytics<T> {
+        let t_opt = T::from_f64(0.5);
+        let t_fut = T::from_f64(1.0);
+        let kappa = spec.convenience_yield_mean_reversion_kappa;
+        let sig_s = spec.spot_volatility_sigma_s;
+        let sig_d = spec.convenience_yield_volatility_sigma_delta;
+        let rho = spec.spot_convenience_correlation_rho;
+        let two = T::from_f64(2.0);
+
+        // Integrals of B(T_fut - t) = (1 - exp(-kappa*(T_fut - t))) / kappa over t in [0, T_opt]
+        let e_rem = (-kappa * (t_fut - t_opt)).exp();
+        let e_fut = (-kappa * t_fut).exp();
+        let int_exp1 = (e_rem - e_fut) / kappa;
+        let int_exp2 = (e_rem * e_rem - e_fut * e_fut) / (two * kappa);
+
+        let int_b1 = (t_opt - int_exp1) / kappa;
+        let int_b2 = (t_opt - two * int_exp1 + int_exp2) / (kappa * kappa);
+
+        let v_f =
+            sig_s * sig_s * t_opt - two * rho * sig_s * sig_d * int_b1 + sig_d * sig_d * int_b2;
+
+        let df = (-spec.risk_free_rate_r * t_opt).exp();
+        let call_diff = black76_call(spec.futures_price_f0, spec.strike_price_k, df, v_f);
+
+        // 3-state Poisson jump mixture (n = 0, 1, 2 jumps over T_opt)
+        let lam_t = spec.jump_intensity_lambda_j * t_opt;
+        let vj2 = spec.jump_volatility_v_j * spec.jump_volatility_v_j;
+        let c0 = call_diff;
+        let c1 = black76_call(spec.futures_price_f0, spec.strike_price_k, df, v_f + vj2);
+        let c2 = black76_call(
+            spec.futures_price_f0,
+            spec.strike_price_k,
+            df,
+            v_f + two * vj2,
+        );
+
+        let w0 = (-lam_t).exp();
+        let w1 = lam_t * w0;
+        let w2 = T::one() - w0 - w1;
+        let call_jd = w0 * c0 + w1 * c1 + w2 * c2;
+
+        HilliardReisJumpFuturesAnalytics {
+            integrated_diffusive_futures_variance: v_f,
+            annualized_diffusive_futures_volatility: (v_f / t_opt).sqrt(),
+            jump_diffusion_futures_call_price: call_jd,
+            diffusive_only_futures_call_price: call_diff,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn hilliard_reis_jump_futures_invariants_and_ad_parity() {
+            let base = HilliardReisJumpFuturesSpec {
+                futures_price_f0: 78.0_f64,
+                strike_price_k: 80.0_f64,
+                spot_volatility_sigma_s: 0.32_f64,
+                convenience_yield_volatility_sigma_delta: 0.24_f64,
+                convenience_yield_mean_reversion_kappa: 1.60_f64,
+                spot_convenience_correlation_rho: 0.65_f64,
+                jump_intensity_lambda_j: 0.85_f64,
+                jump_volatility_v_j: 0.18_f64,
+                risk_free_rate_r: 0.038_f64,
+            };
+            let res =
+                evaluate_hilliard_reis_stochastic_convenience_yield_jump_futures_option(&base);
+            assert!(res.integrated_diffusive_futures_variance > 0.0);
+            assert!(res.jump_diffusion_futures_call_price > res.diffusive_only_futures_call_price);
+
+            let inputs = [
+                base.futures_price_f0,
+                base.strike_price_k,
+                base.spot_volatility_sigma_s,
+                base.convenience_yield_volatility_sigma_delta,
+                base.convenience_yield_mean_reversion_kappa,
+                base.spot_convenience_correlation_rho,
+                base.jump_intensity_lambda_j,
+                base.jump_volatility_v_j,
+                base.risk_free_rate_r,
+            ];
+            let mut dual_in = [Dual::<9>::from_value(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = HilliardReisJumpFuturesSpec {
+                futures_price_f0: dual_in[0],
+                strike_price_k: dual_in[1],
+                spot_volatility_sigma_s: dual_in[2],
+                convenience_yield_volatility_sigma_delta: dual_in[3],
+                convenience_yield_mean_reversion_kappa: dual_in[4],
+                spot_convenience_correlation_rho: dual_in[5],
+                jump_intensity_lambda_j: dual_in[6],
+                jump_volatility_v_j: dual_in[7],
+                risk_free_rate_r: dual_in[8],
+            };
+            let r_ad =
+                evaluate_hilliard_reis_stochastic_convenience_yield_jump_futures_option(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 9]| HilliardReisJumpFuturesSpec {
+                    futures_price_f0: v[0],
+                    strike_price_k: v[1],
+                    spot_volatility_sigma_s: v[2],
+                    convenience_yield_volatility_sigma_delta: v[3],
+                    convenience_yield_mean_reversion_kappa: v[4],
+                    spot_convenience_correlation_rho: v[5],
+                    jump_intensity_lambda_j: v[6],
+                    jump_volatility_v_j: v[7],
+                    risk_free_rate_r: v[8],
+                };
+                let rp =
+                    evaluate_hilliard_reis_stochastic_convenience_yield_jump_futures_option(&mk(p));
+                let rm =
+                    evaluate_hilliard_reis_stochastic_convenience_yield_jump_futures_option(&mk(m));
+                let fd = (rp.jump_diffusion_futures_call_price
+                    - rm.jump_diffusion_futures_call_price)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.jump_diffusion_futures_call_price.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.jump_diffusion_futures_call_price.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use hilliard_reis_jump_futures_mod::*;

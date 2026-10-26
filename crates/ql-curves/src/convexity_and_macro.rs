@@ -1832,3 +1832,182 @@ pub mod mercurio_post_crisis_fva_multi_curve_swap_mod {
     }
 }
 pub use mercurio_post_crisis_fva_multi_curve_swap_mod::*;
+mod smith_wilson_ufr_extrapolation_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Smith & Wilson (2001) / EIOPA (2015) Ultimate Forward Rate (UFR)
+    /// yield curve extrapolation model beyond the Last Liquid Point (LLP).
+    #[derive(Debug, Clone, Copy)]
+    pub struct SmithWilsonUfrExtrapolationSpec<T: Real> {
+        /// Intermediate liquid pillar maturity $u_1$ in years (e.g., $10.0$).
+        pub intermediate_pillar_years_u1: T,
+        /// Last Liquid Point (LLP) maturity $u_2 = T_{\text{LLP}}$ in years (e.g., $20.0$).
+        pub last_liquid_point_years_u2: T,
+        /// Extrapolated ultra-long maturity $T_{\text{ext}} > u_2$ in years (e.g., $50.0$).
+        pub extrapolated_maturity_years_t_ext: T,
+        /// Continuously compounded zero rate at intermediate pillar $u_1$ (e.g., $0.028$).
+        pub intermediate_zero_rate_r1: T,
+        /// Continuously compounded zero rate at the Last Liquid Point $u_2$ (e.g., $0.031$).
+        pub last_liquid_point_zero_rate_r2: T,
+        /// Continuously compounded Ultimate Forward Rate $\omega_{\text{UFR}} = \ln(1 + \text{UFR})$ (e.g., $0.0345$).
+        pub ultimate_forward_rate_omega: T,
+        /// Smith–Wilson convergence speed parameter $\alpha > 0$ (e.g., $0.12$).
+        pub convergence_speed_alpha: T,
+    }
+
+    /// Analytics returned by [`evaluate_smith_wilson_eiopa_ultimate_forward_rate_extrapolation`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct SmithWilsonUfrExtrapolationAnalytics<T: Real> {
+        /// Extrapolated zero-coupon discount factor $P_{\text{SW}}(0, T_{\text{ext}})$.
+        pub extrapolated_discount_factor: T,
+        /// Extrapolated continuously compounded zero yield $y_{\text{SW}}(T_{\text{ext}})$.
+        pub extrapolated_zero_yield: T,
+        /// Extrapolated instantaneous forward rate $f_{\text{SW}}(T_{\text{ext}})$.
+        pub extrapolated_instantaneous_forward_rate: T,
+        /// Signed UFR forward convergence gap $\omega_{\text{UFR}} - f_{\text{SW}}(T_{\text{ext}})$.
+        pub ufr_forward_convergence_gap: T,
+    }
+
+    /// Evaluates the Smith & Wilson (2001) / EIOPA Solvency II Ultimate Forward Rate (UFR)
+    /// yield curve extrapolation beyond the Last Liquid Point (LLP) using the exact symmetric
+    /// Wilson kernel $W(t, u)$ calibrated to two liquid zero-coupon pillars $(u_1, u_2)$.
+    pub fn evaluate_smith_wilson_eiopa_ultimate_forward_rate_extrapolation<T: Real>(
+        spec: &SmithWilsonUfrExtrapolationSpec<T>,
+    ) -> SmithWilsonUfrExtrapolationAnalytics<T> {
+        let u1 = spec.intermediate_pillar_years_u1;
+        let u2 = spec.last_liquid_point_years_u2;
+        let t_ext = spec.extrapolated_maturity_years_t_ext;
+        let r1 = spec.intermediate_zero_rate_r1;
+        let r2 = spec.last_liquid_point_zero_rate_r2;
+        let omega = spec.ultimate_forward_rate_omega;
+        let alpha = spec.convergence_speed_alpha;
+        let half = T::from_f64(0.5);
+
+        // Wilson kernel H(min(t,u), max(t,u)) = alpha * t_min - 0.5 * exp(-alpha * t_max) * (exp(alpha * t_min) - exp(-alpha * t_min))
+        // Ordered pillars: 0 < u1 < u2 < t_ext
+        let sinh2_u1 = (alpha * u1).exp() - (-alpha * u1).exp();
+        let sinh2_u2 = (alpha * u2).exp() - (-alpha * u2).exp();
+
+        let h11 = alpha * u1 - half * (-alpha * u1).exp() * sinh2_u1;
+        let h12 = alpha * u1 - half * (-alpha * u2).exp() * sinh2_u1;
+        let h22 = alpha * u2 - half * (-alpha * u2).exp() * sinh2_u2;
+
+        let w11 = (-omega * (u1 + u1)).exp() * h11;
+        let w12 = (-omega * (u1 + u2)).exp() * h12;
+        let w22 = (-omega * (u2 + u2)).exp() * h22;
+
+        // Observed liquid discount factors minus UFR baseline discount factors
+        let d1 = (-r1 * u1).exp() - (-omega * u1).exp();
+        let d2 = (-r2 * u2).exp() - (-omega * u2).exp();
+
+        // Exact 2x2 symmetric kernel linear system W * zeta = d
+        let det = w11 * w22 - w12 * w12;
+        let zeta1 = (w22 * d1 - w12 * d2) / det;
+        let zeta2 = (w11 * d2 - w12 * d1) / det;
+
+        // Evaluate kernel and time derivative at t_ext > u2 > u1
+        let exp_neg_alpha_t = (-alpha * t_ext).exp();
+        let h_t1 = alpha * u1 - half * exp_neg_alpha_t * sinh2_u1;
+        let h_t2 = alpha * u2 - half * exp_neg_alpha_t * sinh2_u2;
+
+        let dh_dt1 = half * alpha * exp_neg_alpha_t * sinh2_u1;
+        let dh_dt2 = half * alpha * exp_neg_alpha_t * sinh2_u2;
+
+        let e_t1 = (-omega * (t_ext + u1)).exp();
+        let e_t2 = (-omega * (t_ext + u2)).exp();
+
+        let w_t1 = e_t1 * h_t1;
+        let w_t2 = e_t2 * h_t2;
+
+        let dw_dt1 = e_t1 * (-omega * h_t1 + dh_dt1);
+        let dw_dt2 = e_t2 * (-omega * h_t2 + dh_dt2);
+
+        let p_ufr_t = (-omega * t_ext).exp();
+        let p_sw = p_ufr_t + zeta1 * w_t1 + zeta2 * w_t2;
+        let dp_sw_dt = -omega * p_ufr_t + zeta1 * dw_dt1 + zeta2 * dw_dt2;
+
+        let y_sw = -p_sw.ln() / t_ext;
+        let f_sw = -dp_sw_dt / p_sw;
+
+        SmithWilsonUfrExtrapolationAnalytics {
+            extrapolated_discount_factor: p_sw,
+            extrapolated_zero_yield: y_sw,
+            extrapolated_instantaneous_forward_rate: f_sw,
+            ufr_forward_convergence_gap: omega - f_sw,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn smith_wilson_ufr_extrapolation_invariants_and_ad_parity() {
+            let base = SmithWilsonUfrExtrapolationSpec {
+                intermediate_pillar_years_u1: 10.0_f64,
+                last_liquid_point_years_u2: 20.0_f64,
+                extrapolated_maturity_years_t_ext: 50.0_f64,
+                intermediate_zero_rate_r1: 0.026_f64,
+                last_liquid_point_zero_rate_r2: 0.029_f64,
+                ultimate_forward_rate_omega: 0.036_f64,
+                convergence_speed_alpha: 0.12_f64,
+            };
+            let res = evaluate_smith_wilson_eiopa_ultimate_forward_rate_extrapolation(&base);
+            assert!(
+                res.extrapolated_discount_factor > 0.0 && res.extrapolated_discount_factor < 1.0
+            );
+            assert!(res.extrapolated_zero_yield > 0.029 && res.extrapolated_zero_yield < 0.036);
+            assert!(res.ufr_forward_convergence_gap.abs() < 0.005);
+
+            let inputs = [
+                base.intermediate_pillar_years_u1,
+                base.last_liquid_point_years_u2,
+                base.extrapolated_maturity_years_t_ext,
+                base.intermediate_zero_rate_r1,
+                base.last_liquid_point_zero_rate_r2,
+                base.ultimate_forward_rate_omega,
+                base.convergence_speed_alpha,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = SmithWilsonUfrExtrapolationSpec {
+                intermediate_pillar_years_u1: dual_in[0],
+                last_liquid_point_years_u2: dual_in[1],
+                extrapolated_maturity_years_t_ext: dual_in[2],
+                intermediate_zero_rate_r1: dual_in[3],
+                last_liquid_point_zero_rate_r2: dual_in[4],
+                ultimate_forward_rate_omega: dual_in[5],
+                convergence_speed_alpha: dual_in[6],
+            };
+            let r_ad = evaluate_smith_wilson_eiopa_ultimate_forward_rate_extrapolation(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| SmithWilsonUfrExtrapolationSpec {
+                    intermediate_pillar_years_u1: v[0],
+                    last_liquid_point_years_u2: v[1],
+                    extrapolated_maturity_years_t_ext: v[2],
+                    intermediate_zero_rate_r1: v[3],
+                    last_liquid_point_zero_rate_r2: v[4],
+                    ultimate_forward_rate_omega: v[5],
+                    convergence_speed_alpha: v[6],
+                };
+                let rp = evaluate_smith_wilson_eiopa_ultimate_forward_rate_extrapolation(&mk(p));
+                let rm = evaluate_smith_wilson_eiopa_ultimate_forward_rate_extrapolation(&mk(m));
+                let fd = (rp.extrapolated_zero_yield - rm.extrapolated_zero_yield) / (2.0 * eps);
+                assert!(
+                    r_ad.extrapolated_zero_yield.d[i].abs() > 1e-7,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.extrapolated_zero_yield.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use smith_wilson_ufr_extrapolation_mod::*;

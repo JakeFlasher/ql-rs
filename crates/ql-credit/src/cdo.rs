@@ -2968,3 +2968,188 @@ pub mod hull_white_implied_copula_cdo_mod {
     }
 }
 pub use hull_white_implied_copula_cdo_mod::*;
+mod schonbucher_clayton_cdo_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Schönbucher (2003, Ch. 10, §10.4) / McNeil, Frey & Embrechts (2015)
+    /// Archimedean Clayton frailty copula CDO tranche valuation model.
+    #[derive(Debug, Clone, Copy)]
+    pub struct SchonbucherClaytonCopulaCdoSpec<T: Real> {
+        /// Pool average default hazard intensity $\lambda$ (e.g., $0.022$).
+        pub pool_hazard_rate_lambda: T,
+        /// Pool recovery rate $R \in (0, 1)$ (e.g., $0.40$).
+        pub recovery_rate_r: T,
+        /// Clayton Archimedean dependence parameter $\theta > 0$ (e.g., $0.65$).
+        pub clayton_dependence_theta: T,
+        /// Tranche attachment point $K_A \in [0, 1)$ (e.g., $0.03$).
+        pub attachment_point_ka: T,
+        /// Tranche detachment point $K_B \in (K_A, 1]$ (e.g., $0.07$).
+        pub detachment_point_kb: T,
+        /// Risk-free discount rate $r$ (e.g., $0.035$).
+        pub risk_free_rate_r: T,
+        /// Tranche maturity $T$ in years (e.g., $5.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_schonbucher_archimedean_clayton_copula_cdo_tranche_loss`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct SchonbucherClaytonCopulaCdoAnalytics<T: Real> {
+        /// Lower-tail dependence coefficient $\lambda_L = 2^{-1/\theta}$ of the Clayton copula.
+        pub lower_tail_dependence_lambda_l: T,
+        /// Kendall's rank correlation $\tau_K = \theta / (\theta + 2)$.
+        pub kendall_rank_correlation_tau: T,
+        /// Expected normalized tranche loss fraction on $[K_A, K_B]$.
+        pub expected_tranche_loss_fraction: T,
+        /// Annualized fair CDO tranche par spread (in decimal).
+        pub fair_tranche_par_spread: T,
+    }
+
+    /// Evaluates a CDO tranche under the Schönbucher (2003, §10.4) Archimedean Clayton frailty
+    /// copula with generator $\psi_\theta(s) = (1 + s)^{-1/\theta}$, where conditional default
+    /// probability given Gamma frailty $Y$ (with $\mathbb{E}[Y]=1, \operatorname{Var}(Y)=\theta$) is
+    /// $p(Y) = 1 - \exp\left(-Y((1 - p_0)^{-\theta} - 1)\right)$.
+    pub fn evaluate_schonbucher_archimedean_clayton_copula_cdo_tranche_loss<T: Real>(
+        spec: &SchonbucherClaytonCopulaCdoSpec<T>,
+    ) -> SchonbucherClaytonCopulaCdoAnalytics<T> {
+        let theta = spec.clayton_dependence_theta;
+        let t = spec.maturity_years_t;
+        let lgd = T::one() - spec.recovery_rate_r;
+
+        // Marginal survival q0 = exp(-lambda * T) and Clayton inverted generator u0 = q0^(-theta) - 1
+        let q0 = (-spec.pool_hazard_rate_lambda * t).exp();
+        let u0 = q0.pow(-theta) - T::one();
+
+        let lambda_l = T::from_f64(2.0).pow(-T::one() / theta);
+        let tau_k = theta / (theta + T::from_f64(2.0));
+
+        // 4-point moment-matched lognormal/Gamma frailty quadrature for Y > 0 with E[Y] = 1, Var(Y) = theta
+        let sigma_y = (T::one() + theta).ln().sqrt();
+        let mu_y = -T::from_f64(0.5) * sigma_y * sigma_y;
+        let gh_z = [
+            -1.650_680_123_885_784_5,
+            -0.524_647_623_275_290_3,
+            0.524_647_623_275_290_3,
+            1.650_680_123_885_784_5,
+        ];
+        let gh_w = [
+            0.081_312_835_447_245_18,
+            0.418_687_164_552_754_8,
+            0.418_687_164_552_754_8,
+            0.081_312_835_447_245_18,
+        ];
+
+        let width = spec.detachment_point_kb - spec.attachment_point_ka;
+        let eps_sm = T::from_f64(1e-6);
+        let half = T::from_f64(0.5);
+
+        let mut exp_tranche_loss = T::zero();
+        for idx in 0..4 {
+            let z = T::from_f64(gh_z[idx]);
+            let w = T::from_f64(gh_w[idx]);
+            let y_frailty = (mu_y + sigma_y * T::from_f64(std::f64::consts::SQRT_2) * z).exp();
+            let cond_pd = T::one() - (-y_frailty * u0).exp();
+            let pool_loss = lgd * cond_pd;
+
+            let d_a = pool_loss - spec.attachment_point_ka;
+            let d_b = pool_loss - spec.detachment_point_kb;
+            let call_a = half * (d_a + (d_a * d_a + eps_sm).sqrt());
+            let call_b = half * (d_b + (d_b * d_b + eps_sm).sqrt());
+            let tranche_loss_frac = (call_a - call_b) / width;
+
+            exp_tranche_loss += w * tranche_loss_frac;
+        }
+
+        let r = spec.risk_free_rate_r;
+        let risky_annuity = (T::one() - (-r * t).exp()) / r * (T::one() - half * exp_tranche_loss);
+        let protection_pv = (-half * r * t).exp() * exp_tranche_loss;
+        let fair_spread = protection_pv / risky_annuity;
+
+        SchonbucherClaytonCopulaCdoAnalytics {
+            lower_tail_dependence_lambda_l: lambda_l,
+            kendall_rank_correlation_tau: tau_k,
+            expected_tranche_loss_fraction: exp_tranche_loss,
+            fair_tranche_par_spread: fair_spread,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn schonbucher_clayton_copula_cdo_invariants_and_ad_parity() {
+            let base = SchonbucherClaytonCopulaCdoSpec {
+                pool_hazard_rate_lambda: 0.022_f64,
+                recovery_rate_r: 0.40_f64,
+                clayton_dependence_theta: 0.65_f64,
+                attachment_point_ka: 0.03_f64,
+                detachment_point_kb: 0.07_f64,
+                risk_free_rate_r: 0.035_f64,
+                maturity_years_t: 5.0_f64,
+            };
+            let res = evaluate_schonbucher_archimedean_clayton_copula_cdo_tranche_loss(&base);
+            assert!(
+                res.lower_tail_dependence_lambda_l > 0.0
+                    && res.lower_tail_dependence_lambda_l < 1.0
+            );
+            assert!(
+                res.kendall_rank_correlation_tau > 0.0 && res.kendall_rank_correlation_tau < 1.0
+            );
+            assert!(
+                res.expected_tranche_loss_fraction > 0.0
+                    && res.expected_tranche_loss_fraction < 1.0
+            );
+            assert!(res.fair_tranche_par_spread > 0.0);
+
+            let inputs = [
+                base.pool_hazard_rate_lambda,
+                base.recovery_rate_r,
+                base.clayton_dependence_theta,
+                base.attachment_point_ka,
+                base.detachment_point_kb,
+                base.risk_free_rate_r,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = SchonbucherClaytonCopulaCdoSpec {
+                pool_hazard_rate_lambda: dual_in[0],
+                recovery_rate_r: dual_in[1],
+                clayton_dependence_theta: dual_in[2],
+                attachment_point_ka: dual_in[3],
+                detachment_point_kb: dual_in[4],
+                risk_free_rate_r: dual_in[5],
+                maturity_years_t: dual_in[6],
+            };
+            let r_ad = evaluate_schonbucher_archimedean_clayton_copula_cdo_tranche_loss(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| SchonbucherClaytonCopulaCdoSpec {
+                    pool_hazard_rate_lambda: v[0],
+                    recovery_rate_r: v[1],
+                    clayton_dependence_theta: v[2],
+                    attachment_point_ka: v[3],
+                    detachment_point_kb: v[4],
+                    risk_free_rate_r: v[5],
+                    maturity_years_t: v[6],
+                };
+                let rp = evaluate_schonbucher_archimedean_clayton_copula_cdo_tranche_loss(&mk(p));
+                let rm = evaluate_schonbucher_archimedean_clayton_copula_cdo_tranche_loss(&mk(m));
+                let fd = (rp.fair_tranche_par_spread - rm.fair_tranche_par_spread) / (2.0 * eps);
+                assert!(
+                    r_ad.fair_tranche_par_spread.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.fair_tranche_par_spread.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use schonbucher_clayton_cdo_mod::*;

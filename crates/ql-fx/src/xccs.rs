@@ -1670,3 +1670,153 @@ pub mod baba_packer_fx_swap_dollar_basis_mod {
     }
 }
 pub use baba_packer_fx_swap_dollar_basis_mod::*;
+mod gabaix_maggiori_fx_carry_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Gabaix & Maggiori (2015, *QJE* 130(3)) imperfect international
+    /// financial markets model of exchange rate determination and FX carry risk premia.
+    #[derive(Debug, Clone, Copy)]
+    pub struct GabaixMaggioriFxCarrySpec<T: Real> {
+        /// Home country gross interest rate $R = 1 + r$ (e.g., $1.045$).
+        pub home_gross_interest_rate_r: T,
+        /// Foreign country gross interest rate $R^* = 1 + r^*$ (e.g., $1.015$).
+        pub foreign_gross_interest_rate_r_star: T,
+        /// Financier risk-bearing friction parameter $\gamma_{\text{fin}} > 0$ (e.g., $0.35$).
+        pub financier_friction_gamma: T,
+        /// Exchange rate return volatility $\sigma_{\text{FX}}$ (e.g., $0.11$).
+        pub fx_volatility_sigma: T,
+        /// Exogenous global portfolio capital flow shock $f_0$ into home currency (e.g., $0.18$).
+        pub capital_flow_demand_f0: T,
+        /// Period-0 trade import/export elasticity $\iota_0$ (e.g., $1.0$).
+        pub trade_flow_elasticity_iota0: T,
+        /// Period-1 fundamental expected trade balance anchor $\iota_1$ (e.g., $1.0$).
+        pub period_1_trade_elasticity_iota1: T,
+    }
+
+    /// Analytics returned by [`evaluate_gabaix_maggiori_imperfect_financial_markets_fx_carry_risk_premium`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct GabaixMaggioriFxCarryAnalytics<T: Real> {
+        /// Effective financier balance-sheet cost parameter $\Gamma = \gamma_{\text{fin}} \sigma_{\text{FX}}^2$.
+        pub financier_risk_penalty_cap_gamma: T,
+        /// Equilibrium period-0 exchange rate $e_0$ (foreign currency per unit of home currency).
+        pub equilibrium_exchange_rate_e0: T,
+        /// Financier-absorbed currency imbalance $q_0$.
+        pub financier_absorbed_imbalance_q0: T,
+        /// Expected FX carry excess return (UIP deviation) $\mathbb{E}_0[\Omega_1] = \Gamma q_0$.
+        pub expected_fx_carry_excess_return: T,
+    }
+
+    /// Solves the Gabaix & Maggiori (2015, Proposition 1 & Section III) two-period Gamma equilibrium
+    /// where global financiers with limited balance-sheet capacity $\Gamma = \gamma_{\text{fin}}\sigma_{\text{FX}}^2$
+    /// absorb net currency demand $q_0$, generating endogenous UIP deviations and FX carry premia.
+    pub fn evaluate_gabaix_maggiori_imperfect_financial_markets_fx_carry_risk_premium<T: Real>(
+        spec: &GabaixMaggioriFxCarrySpec<T>,
+    ) -> GabaixMaggioriFxCarryAnalytics<T> {
+        let cap_gamma =
+            spec.financier_friction_gamma * spec.fx_volatility_sigma * spec.fx_volatility_sigma;
+        let r_home = spec.home_gross_interest_rate_r;
+        let r_for = spec.foreign_gross_interest_rate_r_star;
+        let i0 = spec.trade_flow_elasticity_iota0;
+        let i1 = spec.period_1_trade_elasticity_iota1;
+        let f0 = spec.capital_flow_demand_f0;
+
+        // Under Gabaix-Maggiori (2015, Eqs. 11-14):
+        // Period-0 balance of payments: i0 + f0 - e0 - q0 = 0 => q0 = i0 + f0 - e0
+        // Period-1 balance of payments: i1 - e1 + R * q0 = 0 => E[e1] = i1 + R * q0
+        // Financier optimality condition: (R / R^*) * e0 - E[e1] = Gamma * q0
+        let r_ratio = r_home / r_for;
+        let num = (r_home + cap_gamma) * (i0 + f0) + i1;
+        let den = r_ratio + r_home + cap_gamma;
+        let e0 = num / den;
+
+        let q0 = i0 + f0 - e0;
+        let carry_prem = cap_gamma * q0;
+
+        GabaixMaggioriFxCarryAnalytics {
+            financier_risk_penalty_cap_gamma: cap_gamma,
+            equilibrium_exchange_rate_e0: e0,
+            financier_absorbed_imbalance_q0: q0,
+            expected_fx_carry_excess_return: carry_prem,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn gabaix_maggiori_fx_carry_invariants_and_ad_parity() {
+            let base = GabaixMaggioriFxCarrySpec {
+                home_gross_interest_rate_r: 1.045_f64,
+                foreign_gross_interest_rate_r_star: 1.015_f64,
+                financier_friction_gamma: 0.85_f64,
+                fx_volatility_sigma: 0.14_f64,
+                capital_flow_demand_f0: 0.22_f64,
+                trade_flow_elasticity_iota0: 1.00_f64,
+                period_1_trade_elasticity_iota1: 1.05_f64,
+            };
+            let res =
+                evaluate_gabaix_maggiori_imperfect_financial_markets_fx_carry_risk_premium(&base);
+            assert!(res.financier_risk_penalty_cap_gamma > 0.0);
+            assert!(res.equilibrium_exchange_rate_e0 > 0.5);
+            assert!(res.expected_fx_carry_excess_return > 0.0);
+
+            let inputs = [
+                base.home_gross_interest_rate_r,
+                base.foreign_gross_interest_rate_r_star,
+                base.financier_friction_gamma,
+                base.fx_volatility_sigma,
+                base.capital_flow_demand_f0,
+                base.trade_flow_elasticity_iota0,
+                base.period_1_trade_elasticity_iota1,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = GabaixMaggioriFxCarrySpec {
+                home_gross_interest_rate_r: dual_in[0],
+                foreign_gross_interest_rate_r_star: dual_in[1],
+                financier_friction_gamma: dual_in[2],
+                fx_volatility_sigma: dual_in[3],
+                capital_flow_demand_f0: dual_in[4],
+                trade_flow_elasticity_iota0: dual_in[5],
+                period_1_trade_elasticity_iota1: dual_in[6],
+            };
+            let r_ad = evaluate_gabaix_maggiori_imperfect_financial_markets_fx_carry_risk_premium(
+                &spec_ad,
+            );
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| GabaixMaggioriFxCarrySpec {
+                    home_gross_interest_rate_r: v[0],
+                    foreign_gross_interest_rate_r_star: v[1],
+                    financier_friction_gamma: v[2],
+                    fx_volatility_sigma: v[3],
+                    capital_flow_demand_f0: v[4],
+                    trade_flow_elasticity_iota0: v[5],
+                    period_1_trade_elasticity_iota1: v[6],
+                };
+                let rp = evaluate_gabaix_maggiori_imperfect_financial_markets_fx_carry_risk_premium(
+                    &mk(p),
+                );
+                let rm = evaluate_gabaix_maggiori_imperfect_financial_markets_fx_carry_risk_premium(
+                    &mk(m),
+                );
+                let fd = (rp.expected_fx_carry_excess_return - rm.expected_fx_carry_excess_return)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.expected_fx_carry_excess_return.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.expected_fx_carry_excess_return.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use gabaix_maggiori_fx_carry_mod::*;

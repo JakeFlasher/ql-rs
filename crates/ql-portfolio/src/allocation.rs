@@ -5289,3 +5289,140 @@ pub mod he_litterman_black_litterman_tilt_mod {
     }
 }
 pub use he_litterman_black_litterman_tilt_mod::*;
+mod maclean_thorp_ziemba_drawdown_kelly_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the MacLean, Thorp & Ziemba (2010) / Grossman & Zhou (1993, *Math. Finance*)
+    /// drawdown-constrained fractional Kelly capital growth model.
+    #[derive(Debug, Clone, Copy)]
+    pub struct GrossmanZhouDrawdownKellySpec<T: Real> {
+        /// Risky asset expected return $\mu$ (e.g., $0.115$).
+        pub expected_return_mu: T,
+        /// Risk-free rate $r$ (e.g., $0.035$).
+        pub risk_free_rate_r: T,
+        /// Risky asset volatility $\sigma$ (e.g., $0.19$).
+        pub asset_volatility_sigma: T,
+        /// Maximum permissible high-water-mark drawdown fraction $\delta_{\max} \in (0, 1)$ (e.g., $0.25$).
+        pub max_drawdown_floor_delta: T,
+        /// Cushion relative risk aversion $\gamma_{\text{cushion}} > 1$ (e.g., $2.0$).
+        pub cushion_risk_aversion_gamma: T,
+        /// Current drawdown from peak high-water mark $d_t = 1 - W_t / M_t \in [0, \delta_{\max})$ (e.g., $0.06$).
+        pub current_drawdown_from_peak: T,
+    }
+
+    /// Analytics returned by [`evaluate_maclean_thorp_ziemba_grossman_zhou_fractional_kelly_drawdown`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct GrossmanZhouDrawdownKellyAnalytics<T: Real> {
+        /// Unconstrained full-Kelly portfolio leverage $f_{\text{Kelly}}^* = (\mu - r)/\sigma^2$.
+        pub unconstrained_full_kelly_leverage: T,
+        /// Grossman–Zhou fractional Kelly multiplier $f_{\text{frac}}$ at current drawdown cushion.
+        pub drawdown_adjusted_kelly_fraction: T,
+        /// Optimal dynamic risky asset portfolio weight $w_t^* = f_{\text{frac}} f_{\text{Kelly}}^*$.
+        pub optimal_risky_portfolio_weight: T,
+        /// Expected geometric log-wealth growth rate $g(f_{\text{frac}})$.
+        pub expected_geometric_growth_rate: T,
+    }
+
+    /// Evaluates the MacLean, Thorp & Ziemba (2010) / Grossman & Zhou (1993, Theorem 1)
+    /// drawdown-constrained fractional Kelly allocation where portfolio exposure scales with the
+    /// remaining drawdown cushion $\frac{\delta_{\max} - d_t}{1 - d_t}$ divided by cushion risk aversion $\gamma_{\text{cushion}}$.
+    pub fn evaluate_maclean_thorp_ziemba_grossman_zhou_fractional_kelly_drawdown<T: Real>(
+        spec: &GrossmanZhouDrawdownKellySpec<T>,
+    ) -> GrossmanZhouDrawdownKellyAnalytics<T> {
+        let excess = spec.expected_return_mu - spec.risk_free_rate_r;
+        let var = spec.asset_volatility_sigma * spec.asset_volatility_sigma;
+        let f_kelly = excess / var;
+
+        // Remaining cushion per unit of current wealth: C_t / W_t = (delta_max - d_t) / (1 - d_t)
+        let cushion_ratio = (spec.max_drawdown_floor_delta - spec.current_drawdown_from_peak)
+            / (T::one() - spec.current_drawdown_from_peak);
+        let f_frac = cushion_ratio / spec.cushion_risk_aversion_gamma;
+
+        let w_opt = f_frac * f_kelly;
+        let sr2 = (excess * excess) / var;
+        let g_rate = spec.risk_free_rate_r + f_frac * (T::one() - T::from_f64(0.5) * f_frac) * sr2;
+
+        GrossmanZhouDrawdownKellyAnalytics {
+            unconstrained_full_kelly_leverage: f_kelly,
+            drawdown_adjusted_kelly_fraction: f_frac,
+            optimal_risky_portfolio_weight: w_opt,
+            expected_geometric_growth_rate: g_rate,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn maclean_thorp_ziemba_drawdown_kelly_invariants_and_ad_parity() {
+            let base = GrossmanZhouDrawdownKellySpec {
+                expected_return_mu: 0.115_f64,
+                risk_free_rate_r: 0.035_f64,
+                asset_volatility_sigma: 0.19_f64,
+                max_drawdown_floor_delta: 0.25_f64,
+                cushion_risk_aversion_gamma: 2.0_f64,
+                current_drawdown_from_peak: 0.06_f64,
+            };
+            let res = evaluate_maclean_thorp_ziemba_grossman_zhou_fractional_kelly_drawdown(&base);
+            assert!(res.unconstrained_full_kelly_leverage > 1.0);
+            assert!(
+                res.drawdown_adjusted_kelly_fraction > 0.0
+                    && res.drawdown_adjusted_kelly_fraction < 1.0
+            );
+            assert!(res.optimal_risky_portfolio_weight > 0.0);
+            assert!(res.expected_geometric_growth_rate > base.risk_free_rate_r);
+
+            let inputs = [
+                base.expected_return_mu,
+                base.risk_free_rate_r,
+                base.asset_volatility_sigma,
+                base.max_drawdown_floor_delta,
+                base.cushion_risk_aversion_gamma,
+                base.current_drawdown_from_peak,
+            ];
+            let mut dual_in = [Dual::<6>::from_value(0.0); 6];
+            for i in 0..6 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = GrossmanZhouDrawdownKellySpec {
+                expected_return_mu: dual_in[0],
+                risk_free_rate_r: dual_in[1],
+                asset_volatility_sigma: dual_in[2],
+                max_drawdown_floor_delta: dual_in[3],
+                cushion_risk_aversion_gamma: dual_in[4],
+                current_drawdown_from_peak: dual_in[5],
+            };
+            let r_ad =
+                evaluate_maclean_thorp_ziemba_grossman_zhou_fractional_kelly_drawdown(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..6 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 6]| GrossmanZhouDrawdownKellySpec {
+                    expected_return_mu: v[0],
+                    risk_free_rate_r: v[1],
+                    asset_volatility_sigma: v[2],
+                    max_drawdown_floor_delta: v[3],
+                    cushion_risk_aversion_gamma: v[4],
+                    current_drawdown_from_peak: v[5],
+                };
+                let rp =
+                    evaluate_maclean_thorp_ziemba_grossman_zhou_fractional_kelly_drawdown(&mk(p));
+                let rm =
+                    evaluate_maclean_thorp_ziemba_grossman_zhou_fractional_kelly_drawdown(&mk(m));
+                let fd = (rp.expected_geometric_growth_rate - rm.expected_geometric_growth_rate)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.expected_geometric_growth_rate.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.expected_geometric_growth_rate.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use maclean_thorp_ziemba_drawdown_kelly_mod::*;

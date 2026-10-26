@@ -2999,3 +2999,177 @@ pub mod diebold_mariano_west_hln_mod {
     }
 }
 pub use diebold_mariano_west_hln_mod::*;
+mod andrews_ploberger_wald_break_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Andrews (1993, *Econometrica* 61(4)), Andrews & Ploberger
+    /// (1994, *Econometrica* 62(6)), and Hansen (1997, *JBES* 15(1)) structural break test suite.
+    #[derive(Debug, Clone, Copy)]
+    pub struct AndrewsPlobergerStructuralBreakSpec<T: Real> {
+        /// Total sample size $T_{\text{obs}}$ (e.g., $240.0$).
+        pub sample_size_t_obs: T,
+        /// Pre-break parameter estimate $\hat{\beta}_1$ at interior candidate break (e.g., $0.45$).
+        pub pre_break_slope_beta1: T,
+        /// Post-break parameter estimate $\hat{\beta}_2$ at interior candidate break (e.g., $0.92$).
+        pub post_break_slope_beta2: T,
+        /// Slope drift dispersion $\delta_{\text{profile}}$ across the trimmed candidate grid $[\pi_0, 1-\pi_0]$ (e.g., $0.14$).
+        pub break_profile_dispersion_delta: T,
+        /// Regression error variance $\hat{\sigma}_\varepsilon^2$ (e.g., $0.042$).
+        pub residual_variance_sigma2: T,
+        /// Regressor second moment $\hat{Q}_{XX} = \frac{1}{T}\sum X_t^2$ (e.g., $1.15$).
+        pub regressor_second_moment_q_xx: T,
+        /// Symmetric trimming fraction $\pi_0 \in (0.05, 0.30)$ (e.g., $0.15$).
+        pub trimming_fraction_pi0: T,
+    }
+
+    /// Analytics returned by [`evaluate_andrews_ploberger_hansen_sup_exp_ave_wald_structural_break_test`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct AndrewsPlobergerStructuralBreakAnalytics<T: Real> {
+        /// Andrews & Ploberger (1994) Average Wald statistic $\text{AveW}_T$.
+        pub average_wald_statistic_ave_w: T,
+        /// Andrews & Ploberger (1994) optimal Exponential Wald statistic $\text{ExpW}_T$.
+        pub exponential_wald_statistic_exp_w: T,
+        /// Smooth Andrews (1993) Supremum Wald statistic $\text{SupW}_T$.
+        pub supremum_wald_statistic_sup_w: T,
+        /// Hansen (1997) asymptotic 5% critical-value excess $\text{ExpW}_T - 2.06$.
+        pub hansen_exp_wald_5pct_excess: T,
+    }
+
+    /// Evaluates the Andrews (1993) and Andrews & Ploberger (1994) $\text{AveW}_T$, $\text{ExpW}_T$,
+    /// and smooth $\text{SupW}_T$ structural change test statistics across a 4-point Gauss–Legendre
+    /// quadrature grid on the trimmed break interval $[\pi_0, 1 - \pi_0]$.
+    pub fn evaluate_andrews_ploberger_hansen_sup_exp_ave_wald_structural_break_test<T: Real>(
+        spec: &AndrewsPlobergerStructuralBreakSpec<T>,
+    ) -> AndrewsPlobergerStructuralBreakAnalytics<T> {
+        let t_obs = spec.sample_size_t_obs;
+        let diff_base = spec.post_break_slope_beta2 - spec.pre_break_slope_beta1;
+        let scale = t_obs * spec.regressor_second_moment_q_xx / spec.residual_variance_sigma2;
+        let pi0 = spec.trimming_fraction_pi0;
+        let span = T::one() - T::from_f64(2.0) * pi0;
+
+        let gl_nodes = [
+            0.069_431_844_202_973_71,
+            0.330_009_478_207_571_87,
+            0.669_990_521_792_428_1,
+            0.930_568_155_797_026_2,
+        ];
+        let gl_weights = [
+            0.173_927_422_568_726_92,
+            0.326_072_577_431_273_1,
+            0.326_072_577_431_273_1,
+            0.173_927_422_568_726_92,
+        ];
+
+        let half = T::from_f64(0.5);
+        let eta_sup = T::from_f64(2.0);
+        let mut ave_w = T::zero();
+        let mut exp_half_sum = T::zero();
+        let mut sup_exp_sum = T::zero();
+
+        for idx in 0..4 {
+            let u = T::from_f64(gl_nodes[idx]);
+            let w = T::from_f64(gl_weights[idx]);
+            let pi_k = pi0 + u * span;
+            let centered = pi_k - half;
+            let local_diff = diff_base
+                + spec.break_profile_dispersion_delta * (T::from_f64(0.25) - centered * centered);
+            let w_k = scale * pi_k * (T::one() - pi_k) * local_diff * local_diff;
+
+            ave_w += w * w_k;
+            exp_half_sum += w * (half * w_k).exp();
+            sup_exp_sum += w * (eta_sup * w_k).exp();
+        }
+
+        let exp_w = exp_half_sum.ln();
+        let sup_w = sup_exp_sum.ln() / eta_sup;
+        // Andrews & Ploberger (1994, Table I, p=1, pi0=0.15) 5% critical value for ExpW is 2.06
+        let excess_5pct = exp_w - T::from_f64(2.06);
+
+        AndrewsPlobergerStructuralBreakAnalytics {
+            average_wald_statistic_ave_w: ave_w,
+            exponential_wald_statistic_exp_w: exp_w,
+            supremum_wald_statistic_sup_w: sup_w,
+            hansen_exp_wald_5pct_excess: excess_5pct,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn andrews_ploberger_wald_break_invariants_and_ad_parity() {
+            let base = AndrewsPlobergerStructuralBreakSpec {
+                sample_size_t_obs: 120.0_f64,
+                pre_break_slope_beta1: 0.45_f64,
+                post_break_slope_beta2: 0.72_f64,
+                break_profile_dispersion_delta: 0.14_f64,
+                residual_variance_sigma2: 0.55_f64,
+                regressor_second_moment_q_xx: 1.15_f64,
+                trimming_fraction_pi0: 0.15_f64,
+            };
+            let res =
+                evaluate_andrews_ploberger_hansen_sup_exp_ave_wald_structural_break_test(&base);
+            assert!(res.average_wald_statistic_ave_w > 0.0);
+            assert!(res.exponential_wald_statistic_exp_w > 0.0);
+            assert!(res.supremum_wald_statistic_sup_w > res.average_wald_statistic_ave_w);
+
+            let inputs = [
+                base.sample_size_t_obs,
+                base.pre_break_slope_beta1,
+                base.post_break_slope_beta2,
+                base.break_profile_dispersion_delta,
+                base.residual_variance_sigma2,
+                base.regressor_second_moment_q_xx,
+                base.trimming_fraction_pi0,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = AndrewsPlobergerStructuralBreakSpec {
+                sample_size_t_obs: dual_in[0],
+                pre_break_slope_beta1: dual_in[1],
+                post_break_slope_beta2: dual_in[2],
+                break_profile_dispersion_delta: dual_in[3],
+                residual_variance_sigma2: dual_in[4],
+                regressor_second_moment_q_xx: dual_in[5],
+                trimming_fraction_pi0: dual_in[6],
+            };
+            let r_ad =
+                evaluate_andrews_ploberger_hansen_sup_exp_ave_wald_structural_break_test(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| AndrewsPlobergerStructuralBreakSpec {
+                    sample_size_t_obs: v[0],
+                    pre_break_slope_beta1: v[1],
+                    post_break_slope_beta2: v[2],
+                    break_profile_dispersion_delta: v[3],
+                    residual_variance_sigma2: v[4],
+                    regressor_second_moment_q_xx: v[5],
+                    trimming_fraction_pi0: v[6],
+                };
+                let rp = evaluate_andrews_ploberger_hansen_sup_exp_ave_wald_structural_break_test(
+                    &mk(p),
+                );
+                let rm = evaluate_andrews_ploberger_hansen_sup_exp_ave_wald_structural_break_test(
+                    &mk(m),
+                );
+                let fd = (rp.exponential_wald_statistic_exp_w
+                    - rm.exponential_wald_statistic_exp_w)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.exponential_wald_statistic_exp_w.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.exponential_wald_statistic_exp_w.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use andrews_ploberger_wald_break_mod::*;

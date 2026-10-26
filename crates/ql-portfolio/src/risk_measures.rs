@@ -6083,3 +6083,166 @@ pub mod glasserman_importance_sampling_var_mod {
     }
 }
 pub use glasserman_importance_sampling_var_mod::*;
+mod gls_tasche_cornish_fisher_raroc_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Gouriéroux, Laurent & Scaillet (2000, *J. Empirical Finance*) /
+    /// Tasche (1999; 2008) Cornish–Fisher Modified VaR Euler decomposition and RAROC engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct GlsTascheCornishFisherRarocSpec<T: Real> {
+        /// Portfolio expected excess return $\mu_P$ (e.g., $0.082$).
+        pub portfolio_expected_excess_return_mu_p: T,
+        /// Portfolio volatility $\sigma_P$ (e.g., $0.145$).
+        pub portfolio_volatility_sigma_p: T,
+        /// Portfolio return skewness $S_P$ (negative for crash risk, e.g., $-0.65$).
+        pub portfolio_skewness_s_p: T,
+        /// Portfolio excess kurtosis $K_P$ (e.g., $2.40$).
+        pub portfolio_excess_kurtosis_k_p: T,
+        /// Standard normal tail quantile $z_\alpha > 0$ (e.g., $2.326347874$ for 99% VaR).
+        pub normal_tail_quantile_z_alpha: T,
+        /// Subportfolio expected excess return $\mu_i$ (e.g., $0.105$).
+        pub subportfolio_expected_excess_return_mu_i: T,
+        /// Subportfolio return volatility $\sigma_i$ (e.g., $0.180$).
+        pub subportfolio_volatility_sigma_i: T,
+        /// Correlation $\rho_{i,P}$ between subportfolio $i$ and total portfolio $P$ (e.g., $0.72$).
+        pub subportfolio_portfolio_correlation_rho: T,
+    }
+
+    /// Analytics returned by [`evaluate_gourieroux_laurent_scaillet_tasche_cornish_fisher_euler_var_raroc`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct GlsTascheCornishFisherRarocAnalytics<T: Real> {
+        /// Cornish–Fisher four-moment adjusted tail quantile $z_{\text{CF}}(\alpha)$.
+        pub cornish_fisher_adjusted_quantile: T,
+        /// Portfolio Modified Value-at-Risk $\text{mVaR}_\alpha(P) = -\mu_P + z_{\text{CF}}(\alpha)\sigma_P$.
+        pub portfolio_modified_var: T,
+        /// Marginal Modified VaR $\partial \text{mVaR}_\alpha / \partial w_i$ of subportfolio $i$.
+        pub subportfolio_marginal_modified_var: T,
+        /// Tasche (1999) Euler Risk-Adjusted Return on Capital $\text{RAROC}_i = \mu_i / (\partial \text{mVaR}_\alpha / \partial w_i)$.
+        pub subportfolio_euler_raroc: T,
+    }
+
+    /// Evaluates the Favre & Galeano (2002) / Gouriéroux, Laurent & Scaillet (2000) / Tasche (1999)
+    /// Cornish–Fisher Modified Value-at-Risk, marginal risk contribution $\partial \text{mVaR}_\alpha / \partial w_i$,
+    /// and Euler-consistent RAROC for a skewed, leptokurtic subportfolio.
+    pub fn evaluate_gourieroux_laurent_scaillet_tasche_cornish_fisher_euler_var_raroc<T: Real>(
+        spec: &GlsTascheCornishFisherRarocSpec<T>,
+    ) -> GlsTascheCornishFisherRarocAnalytics<T> {
+        let z = spec.normal_tail_quantile_z_alpha;
+        let z2 = z * z;
+        let z3 = z2 * z;
+        // For left-tail loss (-R_P), loss skewness is -S_P > 0 when return skewness S_P < 0
+        let skew_loss = -spec.portfolio_skewness_s_p;
+        let kurt = spec.portfolio_excess_kurtosis_k_p;
+
+        let z_cf = z
+            + (z2 - T::one()) / T::from_f64(6.0) * skew_loss
+            + (z3 - T::from_f64(3.0) * z) / T::from_f64(24.0) * kurt
+            - (T::from_f64(2.0) * z3 - T::from_f64(5.0) * z) / T::from_f64(36.0)
+                * skew_loss
+                * skew_loss;
+
+        let mvar_p =
+            -spec.portfolio_expected_excess_return_mu_p + z_cf * spec.portfolio_volatility_sigma_p;
+
+        // Portfolio Cornish-Fisher capital intensity factor mVaR_P / (z_alpha * sigma_P)
+        let port_capital_factor = mvar_p / (z * spec.portfolio_volatility_sigma_p);
+        // Marginal volatility contribution d(sigma_P)/dw_i = rho_{i,P} * sigma_i
+        let marg_sigma_i =
+            spec.subportfolio_portfolio_correlation_rho * spec.subportfolio_volatility_sigma_i;
+        let marg_mvar_i = (-spec.subportfolio_expected_excess_return_mu_i + z_cf * marg_sigma_i)
+            * port_capital_factor;
+
+        let raroc_i = spec.subportfolio_expected_excess_return_mu_i / marg_mvar_i;
+
+        GlsTascheCornishFisherRarocAnalytics {
+            cornish_fisher_adjusted_quantile: z_cf,
+            portfolio_modified_var: mvar_p,
+            subportfolio_marginal_modified_var: marg_mvar_i,
+            subportfolio_euler_raroc: raroc_i,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn gls_tasche_cornish_fisher_raroc_invariants_and_ad_parity() {
+            let base = GlsTascheCornishFisherRarocSpec {
+                portfolio_expected_excess_return_mu_p: 0.082_f64,
+                portfolio_volatility_sigma_p: 0.145_f64,
+                portfolio_skewness_s_p: -0.65_f64,
+                portfolio_excess_kurtosis_k_p: 2.40_f64,
+                normal_tail_quantile_z_alpha: 2.326_347_874_f64,
+                subportfolio_expected_excess_return_mu_i: 0.105_f64,
+                subportfolio_volatility_sigma_i: 0.180_f64,
+                subportfolio_portfolio_correlation_rho: 0.72_f64,
+            };
+            let res =
+                evaluate_gourieroux_laurent_scaillet_tasche_cornish_fisher_euler_var_raroc(&base);
+            assert!(res.cornish_fisher_adjusted_quantile > base.normal_tail_quantile_z_alpha);
+            assert!(res.portfolio_modified_var > 0.20);
+            assert!(res.subportfolio_marginal_modified_var > 0.10);
+            assert!(res.subportfolio_euler_raroc > 0.10);
+
+            let inputs = [
+                base.portfolio_expected_excess_return_mu_p,
+                base.portfolio_volatility_sigma_p,
+                base.portfolio_skewness_s_p,
+                base.portfolio_excess_kurtosis_k_p,
+                base.normal_tail_quantile_z_alpha,
+                base.subportfolio_expected_excess_return_mu_i,
+                base.subportfolio_volatility_sigma_i,
+                base.subportfolio_portfolio_correlation_rho,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = GlsTascheCornishFisherRarocSpec {
+                portfolio_expected_excess_return_mu_p: dual_in[0],
+                portfolio_volatility_sigma_p: dual_in[1],
+                portfolio_skewness_s_p: dual_in[2],
+                portfolio_excess_kurtosis_k_p: dual_in[3],
+                normal_tail_quantile_z_alpha: dual_in[4],
+                subportfolio_expected_excess_return_mu_i: dual_in[5],
+                subportfolio_volatility_sigma_i: dual_in[6],
+                subportfolio_portfolio_correlation_rho: dual_in[7],
+            };
+            let r_ad = evaluate_gourieroux_laurent_scaillet_tasche_cornish_fisher_euler_var_raroc(
+                &spec_ad,
+            );
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| GlsTascheCornishFisherRarocSpec {
+                    portfolio_expected_excess_return_mu_p: v[0],
+                    portfolio_volatility_sigma_p: v[1],
+                    portfolio_skewness_s_p: v[2],
+                    portfolio_excess_kurtosis_k_p: v[3],
+                    normal_tail_quantile_z_alpha: v[4],
+                    subportfolio_expected_excess_return_mu_i: v[5],
+                    subportfolio_volatility_sigma_i: v[6],
+                    subportfolio_portfolio_correlation_rho: v[7],
+                };
+                let rp = evaluate_gourieroux_laurent_scaillet_tasche_cornish_fisher_euler_var_raroc(
+                    &mk(p),
+                );
+                let rm = evaluate_gourieroux_laurent_scaillet_tasche_cornish_fisher_euler_var_raroc(
+                    &mk(m),
+                );
+                let fd = (rp.subportfolio_euler_raroc - rm.subportfolio_euler_raroc) / (2.0 * eps);
+                assert!(
+                    r_ad.subportfolio_euler_raroc.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.subportfolio_euler_raroc.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use gls_tasche_cornish_fisher_raroc_mod::*;

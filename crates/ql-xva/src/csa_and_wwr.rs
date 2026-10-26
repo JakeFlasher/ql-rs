@@ -3422,3 +3422,177 @@ pub mod gregory_isda_simm_mva_mod {
     }
 }
 pub use gregory_isda_simm_mva_mod::*;
+mod pykhtin_rosen_marginal_cva_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Pykhtin & Rosen (2010, *Risk*) / Gregory (2020, Ch. 13)
+    /// Euler homogeneous marginal CVA allocation across netting-set subportfolios.
+    #[derive(Debug, Clone, Copy)]
+    pub struct PykhtinRosenMarginalCvaSpec<T: Real> {
+        /// Expected MTM $\mu_1$ of subportfolio 1 (e.g., $12.0$).
+        pub subportfolio_1_expected_mtm_mu1: T,
+        /// Expected MTM $\mu_2$ of subportfolio 2 (e.g., $-4.5$).
+        pub subportfolio_2_expected_mtm_mu2: T,
+        /// MTM volatility $\sigma_1$ of subportfolio 1 (e.g., $28.0$).
+        pub subportfolio_1_volatility_sigma1: T,
+        /// MTM volatility $\sigma_2$ of subportfolio 2 (e.g., $22.0$).
+        pub subportfolio_2_volatility_sigma2: T,
+        /// Cross-subportfolio MTM correlation $\rho_{12} \in (-1, 1)$ (e.g., $-0.35$).
+        pub mtm_correlation_rho12: T,
+        /// Counterparty hazard rate $\lambda_C$ (e.g., $0.024$).
+        pub counterparty_hazard_lambda_c: T,
+        /// Counterparty recovery rate $R_C \in (0, 1)$ (e.g., $0.40$).
+        pub counterparty_recovery_rate_rc: T,
+        /// Risk-free discount rate $r$ (e.g., $0.032$).
+        pub risk_free_rate_r: T,
+    }
+
+    /// Analytics returned by [`evaluate_pykhtin_rosen_euler_marginal_cva_netting_allocation`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct PykhtinRosenMarginalCvaAnalytics<T: Real> {
+        /// Netting-set Expected Positive Exposure $\text{EPE}_P = \mathbb{E}[\max(V_1 + V_2, 0)]$.
+        pub netting_set_epe: T,
+        /// Pykhtin–Rosen Euler marginal CVA allocated to subportfolio 1.
+        pub marginal_cva_subportfolio_1: T,
+        /// Pykhtin–Rosen Euler marginal CVA allocated to subportfolio 2.
+        pub marginal_cva_subportfolio_2: T,
+        /// Total netting-set CVA $\text{CVA}_P = \text{CVA}_1^{\text{marg}} + \text{CVA}_2^{\text{marg}}$.
+        pub total_netting_set_cva: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    #[inline]
+    fn std_norm_pdf<T: Real>(x: T) -> T {
+        T::from_f64(0.398_942_280_401_432_7) * (-T::from_f64(0.5) * x * x).exp()
+    }
+
+    /// Evaluates the exact Pykhtin & Rosen (2010) Euler marginal EPE and CVA decomposition
+    /// $\text{EPE}_i^{\text{marg}} = \mathbb{E}[V_i \mathbf{1}_{\{V_P > 0\}}] = \mu_i \Phi(\mu_P/\sigma_P) + \frac{\operatorname{Cov}(V_i, V_P)}{\sigma_P}\phi(\mu_P/\sigma_P)$,
+    /// satisfying exact Euler additivity $\text{CVA}_1^{\text{marg}} + \text{CVA}_2^{\text{marg}} \equiv \text{CVA}_P$.
+    pub fn evaluate_pykhtin_rosen_euler_marginal_cva_netting_allocation<T: Real>(
+        spec: &PykhtinRosenMarginalCvaSpec<T>,
+    ) -> PykhtinRosenMarginalCvaAnalytics<T> {
+        let mu1 = spec.subportfolio_1_expected_mtm_mu1;
+        let mu2 = spec.subportfolio_2_expected_mtm_mu2;
+        let s1 = spec.subportfolio_1_volatility_sigma1;
+        let s2 = spec.subportfolio_2_volatility_sigma2;
+        let rho = spec.mtm_correlation_rho12;
+
+        let mu_p = mu1 + mu2;
+        let cov_1_p = s1 * s1 + rho * s1 * s2;
+        let cov_2_p = s2 * s2 + rho * s1 * s2;
+        let var_p = cov_1_p + cov_2_p;
+        let sig_p = var_p.sqrt();
+
+        let z = mu_p / sig_p;
+        let phi_cdf = std_norm_cdf(z);
+        let phi_pdf = std_norm_pdf(z);
+
+        let epe_1_marg = mu1 * phi_cdf + (cov_1_p / sig_p) * phi_pdf;
+        let epe_2_marg = mu2 * phi_cdf + (cov_2_p / sig_p) * phi_pdf;
+        let epe_p = epe_1_marg + epe_2_marg;
+
+        // 5-year risky default discount weight (1 - R_C) * (lambda_C / (r + lambda_C)) * (1 - exp(-(r + lambda_C)*5))
+        let lgd_c = T::one() - spec.counterparty_recovery_rate_rc;
+        let lam_c = spec.counterparty_hazard_lambda_c;
+        let r = spec.risk_free_rate_r;
+        let horizon = T::from_f64(5.0);
+        let cva_mult = lgd_c * (lam_c / (r + lam_c)) * (T::one() - (-(r + lam_c) * horizon).exp());
+
+        let cva_1 = cva_mult * epe_1_marg;
+        let cva_2 = cva_mult * epe_2_marg;
+        let cva_tot = cva_1 + cva_2;
+
+        PykhtinRosenMarginalCvaAnalytics {
+            netting_set_epe: epe_p,
+            marginal_cva_subportfolio_1: cva_1,
+            marginal_cva_subportfolio_2: cva_2,
+            total_netting_set_cva: cva_tot,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn pykhtin_rosen_marginal_cva_invariants_and_ad_parity() {
+            let base = PykhtinRosenMarginalCvaSpec {
+                subportfolio_1_expected_mtm_mu1: 12.0_f64,
+                subportfolio_2_expected_mtm_mu2: -4.5_f64,
+                subportfolio_1_volatility_sigma1: 28.0_f64,
+                subportfolio_2_volatility_sigma2: 22.0_f64,
+                mtm_correlation_rho12: -0.35_f64,
+                counterparty_hazard_lambda_c: 0.024_f64,
+                counterparty_recovery_rate_rc: 0.40_f64,
+                risk_free_rate_r: 0.032_f64,
+            };
+            let res = evaluate_pykhtin_rosen_euler_marginal_cva_netting_allocation(&base);
+            assert!(res.netting_set_epe > 0.0);
+            assert!(res.total_netting_set_cva > 0.0);
+            assert!(
+                (res.marginal_cva_subportfolio_1 + res.marginal_cva_subportfolio_2
+                    - res.total_netting_set_cva)
+                    .abs()
+                    < 1e-12
+            );
+
+            let inputs = [
+                base.subportfolio_1_expected_mtm_mu1,
+                base.subportfolio_2_expected_mtm_mu2,
+                base.subportfolio_1_volatility_sigma1,
+                base.subportfolio_2_volatility_sigma2,
+                base.mtm_correlation_rho12,
+                base.counterparty_hazard_lambda_c,
+                base.counterparty_recovery_rate_rc,
+                base.risk_free_rate_r,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = PykhtinRosenMarginalCvaSpec {
+                subportfolio_1_expected_mtm_mu1: dual_in[0],
+                subportfolio_2_expected_mtm_mu2: dual_in[1],
+                subportfolio_1_volatility_sigma1: dual_in[2],
+                subportfolio_2_volatility_sigma2: dual_in[3],
+                mtm_correlation_rho12: dual_in[4],
+                counterparty_hazard_lambda_c: dual_in[5],
+                counterparty_recovery_rate_rc: dual_in[6],
+                risk_free_rate_r: dual_in[7],
+            };
+            let r_ad = evaluate_pykhtin_rosen_euler_marginal_cva_netting_allocation(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| PykhtinRosenMarginalCvaSpec {
+                    subportfolio_1_expected_mtm_mu1: v[0],
+                    subportfolio_2_expected_mtm_mu2: v[1],
+                    subportfolio_1_volatility_sigma1: v[2],
+                    subportfolio_2_volatility_sigma2: v[3],
+                    mtm_correlation_rho12: v[4],
+                    counterparty_hazard_lambda_c: v[5],
+                    counterparty_recovery_rate_rc: v[6],
+                    risk_free_rate_r: v[7],
+                };
+                let rp = evaluate_pykhtin_rosen_euler_marginal_cva_netting_allocation(&mk(p));
+                let rm = evaluate_pykhtin_rosen_euler_marginal_cva_netting_allocation(&mk(m));
+                let fd = (rp.total_netting_set_cva - rm.total_netting_set_cva) / (2.0 * eps);
+                assert!(
+                    r_ad.total_netting_set_cva.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.total_netting_set_cva.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use pykhtin_rosen_marginal_cva_mod::*;

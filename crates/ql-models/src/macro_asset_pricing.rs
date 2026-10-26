@@ -3085,3 +3085,183 @@ pub mod piazzesi_schneider_nominal_tp_mod {
     }
 }
 pub use piazzesi_schneider_nominal_tp_mod::*;
+mod jermann_quadrini_financial_shock_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Jermann & Quadrini (2012, *American Economic Review* 102(1))
+    /// macroeconomic model of financial shocks, debt enforcement constraints, and labor wedges.
+    #[derive(Debug, Clone, Copy)]
+    pub struct JermannQuadriniFinancialShockSpec<T: Real> {
+        /// Firm productive capital stock $k_t$ (e.g., $10.0$).
+        pub capital_stock_k: T,
+        /// Gross intra-period output / working capital requirement $y_t$ (e.g., $2.4$).
+        pub working_capital_output_y: T,
+        /// Financial enforcement pledgeability parameter $\xi_{\text{fin}} \in (0, 1)$ (e.g., $0.42$).
+        pub financial_enforcement_xi: T,
+        /// Risk-free interest rate $r$ (e.g., $0.032$).
+        pub risk_free_rate_r: T,
+        /// Corporate debt interest tax-shield rate $\tau_{\text{tax}} \in (0, 1)$ (e.g., $0.28$).
+        pub corporate_tax_shield_tau: T,
+        /// Representative household stochastic discount factor $\beta_{\text{disc}} \in (0, 1)$ (e.g., $0.975$).
+        pub household_discount_factor_beta: T,
+        /// Quadratic equity payout adjustment cost parameter $\varphi_{\text{eq}} > 0$ (e.g., $0.18$).
+        pub equity_payout_cost_phi: T,
+        /// Equity payout gap $d_t - \bar{d}$ (negative during equity issuance / tightening, e.g., $-0.15$).
+        pub equity_payout_gap_d: T,
+    }
+
+    /// Analytics returned by [`evaluate_jermann_quadrini_financial_shocks_enforcement_constraint_credit_cycle`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct JermannQuadriniFinancialShockAnalytics<T: Real> {
+        /// Binding enforcement-constrained intertemporal debt capacity $b_{\text{bind}}$.
+        pub binding_enforcement_debt_capacity: T,
+        /// Equilibrium debt-to-capital leverage ratio $b_{\text{bind}} / k_t$.
+        pub equilibrium_debt_to_capital_leverage: T,
+        /// Shadow Lagrange multiplier $\mu_{\text{bind}}$ on the enforcement constraint.
+        pub shadow_enforcement_multiplier_mu: T,
+        /// Jermann–Quadrini endogenous financial labor efficiency wedge $\omega_{\text{labor}} \in (0, 1)$.
+        pub endogenous_financial_labor_wedge: T,
+    }
+
+    /// Evaluates the Jermann & Quadrini (2012, Section I, Eqs. 4–12) corporate enforcement constraint
+    /// $\xi_{\text{fin}}(k_t - b_t / (1 + r)) \ge y_t$, marginal cost of equity payout adjustment
+    /// $1 + 2\varphi_{\text{eq}}(d_t - \bar{d})$, shadow multiplier $\mu_{\text{bind}}$, and the resulting
+    /// endogenous labor demand wedge $\omega_{\text{labor}}$.
+    pub fn evaluate_jermann_quadrini_financial_shocks_enforcement_constraint_credit_cycle<
+        T: Real,
+    >(
+        spec: &JermannQuadriniFinancialShockSpec<T>,
+    ) -> JermannQuadriniFinancialShockAnalytics<T> {
+        let gross_r = T::one() + spec.risk_free_rate_r;
+        // Effective after-tax gross debt cost R_eff = 1 + r * (1 - tau_tax)
+        let r_eff = T::one() + spec.risk_free_rate_r * (T::one() - spec.corporate_tax_shield_tau);
+
+        // Binding enforcement constraint: xi * (k - b / (1 + r)) = y  =>  b = (1 + r) * (k - y / xi)
+        let b_bind = gross_r
+            * (spec.capital_stock_k
+                - spec.working_capital_output_y / spec.financial_enforcement_xi);
+        let leverage = b_bind / spec.capital_stock_k;
+
+        // Intratemporal working-capital financing tightness theta_wc = y_t / (xi_fin * k_t)
+        let wc_tightness =
+            spec.working_capital_output_y / (spec.financial_enforcement_xi * spec.capital_stock_k);
+        let effective_payout_gap = spec.equity_payout_gap_d - T::from_f64(0.5) * wc_tightness;
+
+        // Marginal cost of equity funds phi'(d_t) = 1 + 2 * phi_eq * (d_t - d_bar - 0.5 * theta_wc)
+        let marg_eq_cost =
+            T::one() + T::from_f64(2.0) * spec.equity_payout_cost_phi * effective_payout_gap;
+
+        // First-order condition for debt (Eq. 9):
+        // 1 / (R_eff * marg_eq_cost) - beta = xi * mu / (1 + r)
+        let mu_bind = (gross_r / spec.financial_enforcement_xi)
+            * (T::one() / (r_eff * marg_eq_cost) - spec.household_discount_factor_beta);
+
+        // Endogenous labor wedge (Eq. 10-11): MPL = w * (1 + mu * marg_eq_cost) => wedge = (mu * marg_eq_cost) / (1 + mu * marg_eq_cost)
+        let dist = mu_bind * marg_eq_cost;
+        let labor_wedge = dist / (T::one() + dist);
+
+        JermannQuadriniFinancialShockAnalytics {
+            binding_enforcement_debt_capacity: b_bind,
+            equilibrium_debt_to_capital_leverage: leverage,
+            shadow_enforcement_multiplier_mu: mu_bind,
+            endogenous_financial_labor_wedge: labor_wedge,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn jermann_quadrini_financial_shock_invariants_and_ad_parity() {
+            let base = JermannQuadriniFinancialShockSpec {
+                capital_stock_k: 10.0_f64,
+                working_capital_output_y: 2.4_f64,
+                financial_enforcement_xi: 0.42_f64,
+                risk_free_rate_r: 0.032_f64,
+                corporate_tax_shield_tau: 0.28_f64,
+                household_discount_factor_beta: 0.960_f64,
+                equity_payout_cost_phi: 0.18_f64,
+                equity_payout_gap_d: -0.15_f64,
+            };
+            let res =
+                evaluate_jermann_quadrini_financial_shocks_enforcement_constraint_credit_cycle(
+                    &base,
+                );
+            assert!(res.binding_enforcement_debt_capacity > 0.0);
+            assert!(
+                res.equilibrium_debt_to_capital_leverage > 0.0
+                    && res.equilibrium_debt_to_capital_leverage < 1.0
+            );
+            assert!(res.shadow_enforcement_multiplier_mu > 0.0);
+            assert!(
+                res.endogenous_financial_labor_wedge > 0.0
+                    && res.endogenous_financial_labor_wedge < 0.5
+            );
+
+            let inputs = [
+                base.capital_stock_k,
+                base.working_capital_output_y,
+                base.financial_enforcement_xi,
+                base.risk_free_rate_r,
+                base.corporate_tax_shield_tau,
+                base.household_discount_factor_beta,
+                base.equity_payout_cost_phi,
+                base.equity_payout_gap_d,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = JermannQuadriniFinancialShockSpec {
+                capital_stock_k: dual_in[0],
+                working_capital_output_y: dual_in[1],
+                financial_enforcement_xi: dual_in[2],
+                risk_free_rate_r: dual_in[3],
+                corporate_tax_shield_tau: dual_in[4],
+                household_discount_factor_beta: dual_in[5],
+                equity_payout_cost_phi: dual_in[6],
+                equity_payout_gap_d: dual_in[7],
+            };
+            let r_ad =
+                evaluate_jermann_quadrini_financial_shocks_enforcement_constraint_credit_cycle(
+                    &spec_ad,
+                );
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| JermannQuadriniFinancialShockSpec {
+                    capital_stock_k: v[0],
+                    working_capital_output_y: v[1],
+                    financial_enforcement_xi: v[2],
+                    risk_free_rate_r: v[3],
+                    corporate_tax_shield_tau: v[4],
+                    household_discount_factor_beta: v[5],
+                    equity_payout_cost_phi: v[6],
+                    equity_payout_gap_d: v[7],
+                };
+                let rp =
+                    evaluate_jermann_quadrini_financial_shocks_enforcement_constraint_credit_cycle(
+                        &mk(p),
+                    );
+                let rm =
+                    evaluate_jermann_quadrini_financial_shocks_enforcement_constraint_credit_cycle(
+                        &mk(m),
+                    );
+                let fd = (rp.endogenous_financial_labor_wedge
+                    - rm.endogenous_financial_labor_wedge)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.endogenous_financial_labor_wedge.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.endogenous_financial_labor_wedge.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use jermann_quadrini_financial_shock_mod::*;

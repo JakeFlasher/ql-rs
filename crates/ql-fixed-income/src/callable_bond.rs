@@ -2459,3 +2459,184 @@ pub mod tuckman_corporate_make_whole_bond_mod {
     }
 }
 pub use tuckman_corporate_make_whole_bond_mod::*;
+mod kalotay_williams_fabozzi_callable_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Kalotay, Williams & Fabozzi (1993, *FAJ*) lognormal
+    /// short-rate lattice callable bond valuation and refunding efficiency model.
+    #[derive(Debug, Clone, Copy)]
+    pub struct KalotayWilliamsFabozziCallableSpec<T: Real> {
+        /// Initial 1-period benchmark short rate $r_0$ (e.g., $0.042$).
+        pub initial_short_rate_r0: T,
+        /// Annualized short-rate drift $\mu_r$ (e.g., $0.005$).
+        pub short_rate_drift_mu: T,
+        /// Lognormal short-rate volatility $\sigma_r$ (e.g., $0.18$).
+        pub lognormal_short_rate_volatility_sigma: T,
+        /// Option-Adjusted Spread (OAS) $s_{\text{OAS}}$ over benchmark short rates (e.g., $0.011$).
+        pub option_adjusted_spread_oas: T,
+        /// Annual coupon rate $c$ on par $100$ face value (e.g., $0.058$).
+        pub coupon_rate_c: T,
+        /// Call strike price $K_{\text{call}}$ per $100$ par (e.g., $100.5$).
+        pub call_strike_price_k: T,
+        /// Refunding issuance transaction cost per $100$ par $c_{\text{ref}}$ (e.g., $0.65$).
+        pub refunding_transaction_cost: T,
+        /// Lattice period step $\Delta t$ in years (e.g., $1.0$).
+        pub step_years_dt: T,
+    }
+
+    /// Analytics returned by [`evaluate_kalotay_williams_fabozzi_callable_bond_refunding_efficiency`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct KalotayWilliamsFabozziCallableAnalytics<T: Real> {
+        /// Straight (non-callable) option-free bond value per $100$ par.
+        pub straight_option_free_bond_value: T,
+        /// Callable bond value per $100$ par under OAS discounting.
+        pub callable_bond_value: T,
+        /// Embedded issuer call option value $V_{\text{str}} - V_{\text{call}}$.
+        pub embedded_call_option_value: T,
+        /// Kalotay–Williams–Fabozzi net refunding efficiency ratio $\text{PV}(\text{Net Savings}) / V_{\text{opt}}$.
+        pub refunding_efficiency_ratio: T,
+    }
+
+    /// Evaluates a 2-period Kalotay, Williams & Fabozzi (1993) lognormal short-rate lattice
+    /// for a callable corporate/municipal bond, returning the option-free value, callable value,
+    /// embedded call option value, and net refunding efficiency.
+    pub fn evaluate_kalotay_williams_fabozzi_callable_bond_refunding_efficiency<T: Real>(
+        spec: &KalotayWilliamsFabozziCallableSpec<T>,
+    ) -> KalotayWilliamsFabozziCallableAnalytics<T> {
+        let par = T::from_f64(100.0);
+        let dt = spec.step_years_dt;
+        let sqrt_dt = dt.sqrt();
+        let cpn = par * spec.coupon_rate_c * dt;
+
+        // Period-1 lognormal short-rate states r_{1,u} and r_{1,d}
+        let r1_u = spec.initial_short_rate_r0
+            * (spec.short_rate_drift_mu * dt
+                + spec.lognormal_short_rate_volatility_sigma * sqrt_dt)
+                .exp();
+        let r1_d = spec.initial_short_rate_r0
+            * (spec.short_rate_drift_mu * dt
+                - spec.lognormal_short_rate_volatility_sigma * sqrt_dt)
+                .exp();
+
+        let disc0 = T::one()
+            / (T::one() + (spec.initial_short_rate_r0 + spec.option_adjusted_spread_oas) * dt);
+        let disc1_u = T::one() / (T::one() + (r1_u + spec.option_adjusted_spread_oas) * dt);
+        let disc1_d = T::one() / (T::one() + (r1_d + spec.option_adjusted_spread_oas) * dt);
+
+        // Straight ex-coupon continuation values at t = dt
+        let v1_u_str = (par + cpn) * disc1_u;
+        let v1_d_str = (par + cpn) * disc1_d;
+
+        let half = T::from_f64(0.5);
+        let v0_str = disc0 * (cpn + half * (v1_u_str + v1_d_str));
+
+        // Smooth call exercise payoff max(V_1^str - K_call, 0) at t = dt
+        let eps_sm = T::from_f64(1e-6);
+        let diff_u = v1_u_str - spec.call_strike_price_k;
+        let diff_d = v1_d_str - spec.call_strike_price_k;
+        let call_intr_u = half * (diff_u + (diff_u * diff_u + eps_sm).sqrt());
+        let call_intr_d = half * (diff_d + (diff_d * diff_d + eps_sm).sqrt());
+
+        let v1_u_call = v1_u_str - call_intr_u;
+        let v1_d_call = v1_d_str - call_intr_d;
+        let v0_call = disc0 * (cpn + half * (v1_u_call + v1_d_call));
+
+        let v_opt = v0_str - v0_call;
+
+        // Net refunding savings after issuance cost c_ref in states where call is exercised
+        let net_diff_u = v1_u_str - spec.call_strike_price_k - spec.refunding_transaction_cost;
+        let net_diff_d = v1_d_str - spec.call_strike_price_k - spec.refunding_transaction_cost;
+        let net_sav_u = half * (net_diff_u + (net_diff_u * net_diff_u + eps_sm).sqrt());
+        let net_sav_d = half * (net_diff_d + (net_diff_d * net_diff_d + eps_sm).sqrt());
+        let pv_net_savings = disc0 * half * (net_sav_u + net_sav_d);
+
+        let efficiency = pv_net_savings / (v_opt + T::from_f64(1e-8));
+
+        KalotayWilliamsFabozziCallableAnalytics {
+            straight_option_free_bond_value: v0_str,
+            callable_bond_value: v0_call,
+            embedded_call_option_value: v_opt,
+            refunding_efficiency_ratio: efficiency,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn kalotay_williams_fabozzi_callable_invariants_and_ad_parity() {
+            let base = KalotayWilliamsFabozziCallableSpec {
+                initial_short_rate_r0: 0.040_f64,
+                short_rate_drift_mu: 0.002_f64,
+                lognormal_short_rate_volatility_sigma: 0.22_f64,
+                option_adjusted_spread_oas: 0.010_f64,
+                coupon_rate_c: 0.058_f64,
+                call_strike_price_k: 100.2_f64,
+                refunding_transaction_cost: 0.35_f64,
+                step_years_dt: 1.0_f64,
+            };
+            let res = evaluate_kalotay_williams_fabozzi_callable_bond_refunding_efficiency(&base);
+            assert!(res.straight_option_free_bond_value > res.callable_bond_value);
+            assert!(res.embedded_call_option_value > 0.0);
+            assert!(res.refunding_efficiency_ratio > 0.0 && res.refunding_efficiency_ratio < 1.0);
+
+            let inputs = [
+                base.initial_short_rate_r0,
+                base.short_rate_drift_mu,
+                base.lognormal_short_rate_volatility_sigma,
+                base.option_adjusted_spread_oas,
+                base.coupon_rate_c,
+                base.call_strike_price_k,
+                base.refunding_transaction_cost,
+                base.step_years_dt,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = KalotayWilliamsFabozziCallableSpec {
+                initial_short_rate_r0: dual_in[0],
+                short_rate_drift_mu: dual_in[1],
+                lognormal_short_rate_volatility_sigma: dual_in[2],
+                option_adjusted_spread_oas: dual_in[3],
+                coupon_rate_c: dual_in[4],
+                call_strike_price_k: dual_in[5],
+                refunding_transaction_cost: dual_in[6],
+                step_years_dt: dual_in[7],
+            };
+            let r_ad =
+                evaluate_kalotay_williams_fabozzi_callable_bond_refunding_efficiency(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| KalotayWilliamsFabozziCallableSpec {
+                    initial_short_rate_r0: v[0],
+                    short_rate_drift_mu: v[1],
+                    lognormal_short_rate_volatility_sigma: v[2],
+                    option_adjusted_spread_oas: v[3],
+                    coupon_rate_c: v[4],
+                    call_strike_price_k: v[5],
+                    refunding_transaction_cost: v[6],
+                    step_years_dt: v[7],
+                };
+                let rp =
+                    evaluate_kalotay_williams_fabozzi_callable_bond_refunding_efficiency(&mk(p));
+                let rm =
+                    evaluate_kalotay_williams_fabozzi_callable_bond_refunding_efficiency(&mk(m));
+                let fd =
+                    (rp.refunding_efficiency_ratio - rm.refunding_efficiency_ratio) / (2.0 * eps);
+                assert!(
+                    r_ad.refunding_efficiency_ratio.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.refunding_efficiency_ratio.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use kalotay_williams_fabozzi_callable_mod::*;
