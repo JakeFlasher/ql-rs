@@ -8,3 +8,7 @@ pub use crate::phase36::{
     PenmanNissimDuPontReoiValuationReport, PenmanNissimDuPontReoiValuationSpec,
     evaluate_penman_nissim_dupont_and_reoi_valuation,
 };
+pub use crate::phase38::{
+    OhlsonPenmanLinearInfoDynamicsReport, OhlsonPenmanLinearInfoDynamicsSpec,
+    evaluate_ohlson_penman_linear_information_dynamics,
+};

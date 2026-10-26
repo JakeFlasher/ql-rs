@@ -7,7 +7,7 @@ fn benchmarks_verify_parity_and_optional_sota_speedups() {
     // parity paths during normal `cargo test`; timing gates are inherently
     // host-dependent and opt in through QL_RUN_TIMING_GATES=1.
     let rows = run_all_benchmark_suites_with_config(1, 3);
-    assert_eq!(rows.len(), 49);
+    assert_eq!(rows.len(), 50);
     for row in &rows {
         assert!(!row.id.is_empty());
         assert!(!row.description.is_empty());
@@ -179,5 +179,12 @@ fn phase36_suite48_workload_is_registered() {
 fn phase37_suite49_workload_is_registered() {
     assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("49_")));
     let row = ql_benches::benchmark_phase37_brigo_nss_krd_tuckman_tips_floor_schonbucher_rmv_rt_rfv_gatheral_sticky_lv_gregory_simm_ccp_mva_schwartz_smith_kalman_wystup_fx_dnt_bouzoubaa_timer_meucci_bl_woodbury_gueant_ac_sinh_zou_elastic_net_nk_ree(1);
+    assert!(row.parity_ok && row.max_abs_diff < 1e-4);
+}
+
+#[test]
+fn phase38_suite50_workload_is_registered() {
+    assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("50_")));
+    let row = ql_benches::benchmark_phase38_hagan_west_tension_duffie_lando_pac_cmo_fama_macbeth_shanken_gatheral_asvi_bgk_discrete_barrier_bouchaud_cross_impact_karnosky_singer_merton_jump_campbell_viceira_ohlson_lid_griewank_revolve(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-4);
 }

@@ -7,6 +7,10 @@ pub use crate::phase37::{
     GueantAlmgrenChrissHyperbolicReport, GueantAlmgrenChrissHyperbolicSpec,
     evaluate_gueant_almgren_chriss_hyperbolic_liquidation,
 };
+pub use crate::phase38::{
+    BouchaudCrossImpactEigenmodeReport, BouchaudCrossImpactEigenmodeSpec,
+    evaluate_bouchaud_cross_impact_eigenmode_execution,
+};
 
 use super::allocation::AllocationError;
 pub use crate::phase30::*;

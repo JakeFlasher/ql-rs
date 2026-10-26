@@ -8,3 +8,7 @@ pub use crate::phase36::{
     evaluate_ljungqvist_sargent_mccall_bellman_search,
 };
 pub use crate::phase37::*;
+pub use crate::phase38::{
+    BroadieGlassermanKouDiscreteBarrierReport, BroadieGlassermanKouDiscreteBarrierSpec,
+    evaluate_broadie_glasserman_kou_discrete_barrier_lookback,
+};

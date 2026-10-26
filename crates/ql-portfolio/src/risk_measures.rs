@@ -11,6 +11,12 @@ pub use crate::phase36::{
     evaluate_campbell_lo_mackinlay_vr_and_campbell_shiller,
     evaluate_ilmanen_carry_rolldown_and_vmc_factors, evaluate_roncalli_spinu_erc_risk_parity,
 };
+pub use crate::phase38::{
+    CampbellFamaMacbethShankenReport, CampbellFamaMacbethShankenSpec,
+    KarnoskySingerMultiCurrencyReport, KarnoskySingerMultiCurrencySpec,
+    evaluate_campbell_fama_macbeth_and_shanken_eiv,
+    evaluate_karnosky_singer_multicurrency_attribution,
+};
 
 pub use crate::phase30::*;
 pub use crate::phase31::{

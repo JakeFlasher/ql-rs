@@ -21,6 +21,10 @@ pub use crate::phase37::{
     TuckmanFabozziTipsDeflationFloorReport, TuckmanFabozziTipsDeflationFloorSpec,
     evaluate_tuckman_fabozzi_tips_deflation_floor_and_bei,
 };
+pub use crate::phase38::{
+    FabozziPacCompanionCmoReport, FabozziPacCompanionCmoSpec,
+    evaluate_fabozzi_pac_companion_cmo_waterfall,
+};
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
 use ql_inflation::ZeroInflationCurve;

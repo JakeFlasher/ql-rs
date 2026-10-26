@@ -3,6 +3,14 @@ pub use crate::phase37::{
     MeucciBlackLittermanWoodburyReport, MeucciBlackLittermanWoodburySpec,
     evaluate_meucci_black_litterman_woodbury_equivalence,
 };
+pub use crate::phase38::{
+    CampbellFamaMacbethShankenReport, CampbellFamaMacbethShankenSpec,
+    CampbellViceiraIntertemporalSaaReport, CampbellViceiraIntertemporalSaaSpec,
+    KarnoskySingerMultiCurrencyReport, KarnoskySingerMultiCurrencySpec,
+    evaluate_campbell_fama_macbeth_and_shanken_eiv,
+    evaluate_campbell_viceira_intertemporal_hedging_saa,
+    evaluate_karnosky_singer_multicurrency_attribution,
+};
 
 pub use crate::phase30::*;
 pub use crate::phase31::{
