@@ -3359,3 +3359,159 @@ mod evaluate_fabozzi_hayre_mbs_excess_servicing_gfee_strip_module {
     }
 }
 pub use evaluate_fabozzi_hayre_mbs_excess_servicing_gfee_strip_module::*;
+
+mod evaluate_tuckman_cpi_inflation_swap_seasonality_carry_module {
+    // Tuckman & Serrat (2022, Fixed Income Securities, 4th ed., Ch. 20),
+    // Fabozzi (2021, The Handbook of Fixed Income Securities, 9th ed., Ch. 13),
+    // & Deacon, Derry & Mirfendereski (2004, Inflation-Indexed Securities, 2nd ed., Ch. 2 & 6)
+    // ZCIIS & TIPS Breakeven Inflation, Seasonal CPI Indexation Lag & Carry Decomposition Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TuckmanCpiInflationSwapSeasonalitySpec<T: Real = f64> {
+        pub notional_n: T,
+        pub nominal_treasury_yield_y_nom: T,
+        pub tips_real_yield_r_real: T,
+        pub inflation_risk_premium_irp: T,
+        pub tips_liquidity_discount_liq: T,
+        pub monthly_seasonal_cpi_factor_s_m: T,
+        pub swap_maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TuckmanCpiInflationSwapSeasonalityReport<T: Real = f64> {
+        pub fisher_breakeven_inflation_rate: T,
+        pub liquidity_adjusted_expected_inflation: T,
+        pub seasonally_adjusted_cpi_index_ratio: T,
+        pub zciis_seasonal_mark_to_market_npv: T,
+        pub annualized_tips_seasonal_carry_bps: T,
+        pub real_over_nominal_carry_advantage_bps: T,
+    }
+
+    pub fn evaluate_tuckman_cpi_inflation_swap_seasonality_carry<T: Real>(
+        spec: &TuckmanCpiInflationSwapSeasonalitySpec<T>,
+    ) -> TuckmanCpiInflationSwapSeasonalityReport<T> {
+        let n = spec.notional_n.max_val(T::from_f64(1.0));
+        let y_nom = spec.nominal_treasury_yield_y_nom;
+        let r_real = spec.tips_real_yield_r_real;
+        let irp = spec.inflation_risk_premium_irp;
+        let liq = spec.tips_liquidity_discount_liq;
+        let s_m = spec.monthly_seasonal_cpi_factor_s_m;
+        let t = spec.swap_maturity_years_t.max_val(T::from_f64(0.25));
+
+        // Exact compound Fisher equation: (1 + y_nom) = (1 + r_real) * (1 + pi_BEI)
+        let pi_bei = (T::one() + y_nom) / (T::one() + r_real) - T::one();
+        // Tuckman & Serrat (2022, Ch. 20): pi_BEI = pi_exp + IRP - Liq => pi_exp = pi_BEI - IRP + Liq
+        let pi_exp = pi_bei - irp + liq;
+
+        let cpi_ratio = ((T::one() + pi_bei).ln() * t).exp() * (T::one() + s_m);
+        let fixed_leg_ratio = ((T::one() + pi_exp).ln() * t).exp();
+        let df_nom = (-(T::one() + y_nom).ln() * t).exp();
+        let zciis_npv = n * df_nom * (cpi_ratio - fixed_leg_ratio);
+
+        // 1-month TIPS seasonal carry (annualized in bps) vs. nominal Treasury funding yield:
+        let tips_annual_carry = r_real + pi_exp + T::from_f64(12.0) * s_m;
+        let tips_carry_bps = tips_annual_carry * T::from_f64(10_000.0);
+        let net_carry_adv_bps = (tips_annual_carry - y_nom) * T::from_f64(10_000.0);
+
+        TuckmanCpiInflationSwapSeasonalityReport {
+            fisher_breakeven_inflation_rate: pi_bei,
+            liquidity_adjusted_expected_inflation: pi_exp,
+            seasonally_adjusted_cpi_index_ratio: cpi_ratio,
+            zciis_seasonal_mark_to_market_npv: zciis_npv,
+            annualized_tips_seasonal_carry_bps: tips_carry_bps,
+            real_over_nominal_carry_advantage_bps: net_carry_adv_bps,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_tuckman_cpi_inflation_swap_seasonality_carry_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn tuckman_cpi_inflation_swap_seasonality_invariants_and_ad_parity() {
+            let spec = TuckmanCpiInflationSwapSeasonalitySpec {
+                notional_n: 100.0,
+                nominal_treasury_yield_y_nom: 0.043,
+                tips_real_yield_r_real: 0.019,
+                inflation_risk_premium_irp: 0.0025,
+                tips_liquidity_discount_liq: 0.0015,
+                monthly_seasonal_cpi_factor_s_m: 0.0020,
+                swap_maturity_years_t: 5.0,
+            };
+            let rep = evaluate_tuckman_cpi_inflation_swap_seasonality_carry(&spec);
+            assert!(rep.fisher_breakeven_inflation_rate > 0.02);
+            assert!(rep.zciis_seasonal_mark_to_market_npv > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_tuckman_cpi_inflation_swap_seasonality_carry(
+                &TuckmanCpiInflationSwapSeasonalitySpec {
+                    notional_n: Dual::<7>::variable(spec.notional_n, 0),
+                    nominal_treasury_yield_y_nom: Dual::<7>::variable(
+                        spec.nominal_treasury_yield_y_nom,
+                        1,
+                    ),
+                    tips_real_yield_r_real: Dual::<7>::variable(spec.tips_real_yield_r_real, 2),
+                    inflation_risk_premium_irp: Dual::<7>::variable(
+                        spec.inflation_risk_premium_irp,
+                        3,
+                    ),
+                    tips_liquidity_discount_liq: Dual::<7>::variable(
+                        spec.tips_liquidity_discount_liq,
+                        4,
+                    ),
+                    monthly_seasonal_cpi_factor_s_m: Dual::<7>::variable(
+                        spec.monthly_seasonal_cpi_factor_s_m,
+                        5,
+                    ),
+                    swap_maturity_years_t: Dual::<7>::variable(spec.swap_maturity_years_t, 6),
+                },
+            );
+            for i in 0..7 {
+                let mut v = [
+                    spec.notional_n,
+                    spec.nominal_treasury_yield_y_nom,
+                    spec.tips_real_yield_r_real,
+                    spec.inflation_risk_premium_irp,
+                    spec.tips_liquidity_discount_liq,
+                    spec.monthly_seasonal_cpi_factor_s_m,
+                    spec.swap_maturity_years_t,
+                ];
+                v[i] += h;
+                let up = evaluate_tuckman_cpi_inflation_swap_seasonality_carry(
+                    &TuckmanCpiInflationSwapSeasonalitySpec {
+                        notional_n: v[0],
+                        nominal_treasury_yield_y_nom: v[1],
+                        tips_real_yield_r_real: v[2],
+                        inflation_risk_premium_irp: v[3],
+                        tips_liquidity_discount_liq: v[4],
+                        monthly_seasonal_cpi_factor_s_m: v[5],
+                        swap_maturity_years_t: v[6],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_tuckman_cpi_inflation_swap_seasonality_carry(
+                    &TuckmanCpiInflationSwapSeasonalitySpec {
+                        notional_n: v[0],
+                        nominal_treasury_yield_y_nom: v[1],
+                        tips_real_yield_r_real: v[2],
+                        inflation_risk_premium_irp: v[3],
+                        tips_liquidity_discount_liq: v[4],
+                        monthly_seasonal_cpi_factor_s_m: v[5],
+                        swap_maturity_years_t: v[6],
+                    },
+                );
+                let fd = (up.zciis_seasonal_mark_to_market_npv
+                    - dn.zciis_seasonal_mark_to_market_npv)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.zciis_seasonal_mark_to_market_npv.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_tuckman_cpi_inflation_swap_seasonality_carry_module::*;

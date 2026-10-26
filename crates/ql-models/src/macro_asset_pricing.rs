@@ -1877,3 +1877,171 @@ mod evaluate_bernanke_gertler_gilchrist_financial_accelerator_module {
     }
 }
 pub use evaluate_bernanke_gertler_gilchrist_financial_accelerator_module::*;
+
+mod evaluate_kiyotaki_moore_collateral_credit_cycle_multiplier_module {
+    // Kiyotaki & Moore (1997, Journal of Political Economy 105(2), "Credit Cycles",
+    // Section II, Eqs. 6-12) & Brunnermeier & Sannikov (2014, AER 104(2))
+    // Collateral Borrowing Constraint, User Cost Down-Payment & Credit Cycle Multiplier Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct KiyotakiMooreCollateralCycleSpec<T: Real = f64> {
+        pub land_asset_price_q: T,
+        pub expected_next_land_price_q_next: T,
+        pub gross_interest_rate_r_gross: T,
+        pub farmer_productivity_a: T,
+        pub existing_land_holding_k_prev: T,
+        pub inherited_debt_b_prev: T,
+        pub intertemporal_price_elasticity_eta: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct KiyotakiMooreCollateralCycleReport<T: Real = f64> {
+        pub required_down_payment_user_cost: T,
+        pub constrained_farmer_net_worth: T,
+        pub collateral_constrained_land_demand: T,
+        pub maximum_pledgeable_debt_capacity: T,
+        pub static_net_worth_leverage_multiplier: T,
+        pub dynamic_credit_cycle_amplification_multiplier: T,
+    }
+
+    pub fn evaluate_kiyotaki_moore_collateral_credit_cycle_multiplier<T: Real>(
+        spec: &KiyotakiMooreCollateralCycleSpec<T>,
+    ) -> KiyotakiMooreCollateralCycleReport<T> {
+        let q_t = spec.land_asset_price_q.max_val(T::from_f64(1.0));
+        let q_next = spec
+            .expected_next_land_price_q_next
+            .max_val(T::from_f64(0.5));
+        let r_gross = spec.gross_interest_rate_r_gross.max_val(T::from_f64(1.005));
+        let a_prod = spec.farmer_productivity_a.max_val(T::from_f64(0.01));
+        let k_prev = spec.existing_land_holding_k_prev.max_val(T::from_f64(0.1));
+        let b_prev = spec.inherited_debt_b_prev.max_val(T::zero());
+        let eta = spec
+            .intertemporal_price_elasticity_eta
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.50));
+
+        // Kiyotaki & Moore (1997, Section II, Eqs. 6-10):
+        // Down-payment user cost per unit of land u_t = q_t - q_{t+1} / R:
+        let pv_q_next = q_next / r_gross;
+        let user_cost_u = (q_t - pv_q_next).max_val(T::from_f64(0.05));
+
+        // Constrained farmer net worth N_t = (a + q_t) * k_{t-1} - R * b_{t-1}:
+        let net_worth = ((a_prod + q_t) * k_prev - r_gross * b_prev).max_val(T::from_f64(0.1));
+        let k_demand = net_worth / user_cost_u;
+        let max_debt = pv_q_next * k_demand;
+
+        // Static leveraged net-worth multiplier (d ln k_t / d ln q_t) and dynamic credit-cycle multiplier:
+        let mult_static = (q_t * k_prev) / net_worth;
+        let raw_fb = eta * (pv_q_next / user_cost_u);
+        let feedback = (T::from_f64(0.85) * raw_fb) / (T::from_f64(0.85) + raw_fb);
+        let mult_dynamic = mult_static / (T::one() - feedback);
+
+        KiyotakiMooreCollateralCycleReport {
+            required_down_payment_user_cost: user_cost_u,
+            constrained_farmer_net_worth: net_worth,
+            collateral_constrained_land_demand: k_demand,
+            maximum_pledgeable_debt_capacity: max_debt,
+            static_net_worth_leverage_multiplier: mult_static,
+            dynamic_credit_cycle_amplification_multiplier: mult_dynamic,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_kiyotaki_moore_collateral_credit_cycle_multiplier_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn kiyotaki_moore_collateral_cycle_invariants_and_ad_parity() {
+            let spec = KiyotakiMooreCollateralCycleSpec {
+                land_asset_price_q: 100.0,
+                expected_next_land_price_q_next: 101.0,
+                gross_interest_rate_r_gross: 1.05,
+                farmer_productivity_a: 6.0,
+                existing_land_holding_k_prev: 10.0,
+                inherited_debt_b_prev: 880.0,
+                intertemporal_price_elasticity_eta: 0.02,
+            };
+            let rep = evaluate_kiyotaki_moore_collateral_credit_cycle_multiplier(&spec);
+            assert!(rep.required_down_payment_user_cost > 0.0);
+            assert!(
+                rep.dynamic_credit_cycle_amplification_multiplier
+                    > rep.static_net_worth_leverage_multiplier
+            );
+
+            let h = 1e-6;
+            let r_ad = evaluate_kiyotaki_moore_collateral_credit_cycle_multiplier(
+                &KiyotakiMooreCollateralCycleSpec {
+                    land_asset_price_q: Dual::<7>::variable(spec.land_asset_price_q, 0),
+                    expected_next_land_price_q_next: Dual::<7>::variable(
+                        spec.expected_next_land_price_q_next,
+                        1,
+                    ),
+                    gross_interest_rate_r_gross: Dual::<7>::variable(
+                        spec.gross_interest_rate_r_gross,
+                        2,
+                    ),
+                    farmer_productivity_a: Dual::<7>::variable(spec.farmer_productivity_a, 3),
+                    existing_land_holding_k_prev: Dual::<7>::variable(
+                        spec.existing_land_holding_k_prev,
+                        4,
+                    ),
+                    inherited_debt_b_prev: Dual::<7>::variable(spec.inherited_debt_b_prev, 5),
+                    intertemporal_price_elasticity_eta: Dual::<7>::variable(
+                        spec.intertemporal_price_elasticity_eta,
+                        6,
+                    ),
+                },
+            );
+            for i in 0..7 {
+                let mut v = [
+                    spec.land_asset_price_q,
+                    spec.expected_next_land_price_q_next,
+                    spec.gross_interest_rate_r_gross,
+                    spec.farmer_productivity_a,
+                    spec.existing_land_holding_k_prev,
+                    spec.inherited_debt_b_prev,
+                    spec.intertemporal_price_elasticity_eta,
+                ];
+                v[i] += h;
+                let up = evaluate_kiyotaki_moore_collateral_credit_cycle_multiplier(
+                    &KiyotakiMooreCollateralCycleSpec {
+                        land_asset_price_q: v[0],
+                        expected_next_land_price_q_next: v[1],
+                        gross_interest_rate_r_gross: v[2],
+                        farmer_productivity_a: v[3],
+                        existing_land_holding_k_prev: v[4],
+                        inherited_debt_b_prev: v[5],
+                        intertemporal_price_elasticity_eta: v[6],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_kiyotaki_moore_collateral_credit_cycle_multiplier(
+                    &KiyotakiMooreCollateralCycleSpec {
+                        land_asset_price_q: v[0],
+                        expected_next_land_price_q_next: v[1],
+                        gross_interest_rate_r_gross: v[2],
+                        farmer_productivity_a: v[3],
+                        existing_land_holding_k_prev: v[4],
+                        inherited_debt_b_prev: v[5],
+                        intertemporal_price_elasticity_eta: v[6],
+                    },
+                );
+                let fd = (up.dynamic_credit_cycle_amplification_multiplier
+                    - dn.dynamic_credit_cycle_amplification_multiplier)
+                    / (2.0 * h);
+                assert!(
+                    r_ad.dynamic_credit_cycle_amplification_multiplier.d[i].abs() > 1e-6,
+                    "input {i} zero derivative"
+                );
+                assert!(
+                    (r_ad.dynamic_credit_cycle_amplification_multiplier.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_kiyotaki_moore_collateral_credit_cycle_multiplier_module::*;

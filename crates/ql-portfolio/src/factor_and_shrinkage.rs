@@ -3016,3 +3016,174 @@ mod evaluate_asness_moskowitz_pedersen_value_momentum_everywhere_module {
     }
 }
 pub use evaluate_asness_moskowitz_pedersen_value_momentum_everywhere_module::*;
+
+mod evaluate_lewellen_nagel_shanken_gls_cross_sectional_r2_module {
+    // Lewellen, Nagel & Shanken (2010, Journal of Financial Economics 96(2),
+    // "A Skeptical Appraisal of Asset Pricing Tests"), Shanken (1992, RFS 5(1)),
+    // & Gibbons, Ross & Shanken (1989, Econometrica 57(5))
+    // GLS vs. OLS Cross-Sectional R^2, Maximum Sharpe Bound & Shanken EIV Adjustment Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LewellenNagelShankenGlsCrossSectionalSpec<T: Real = f64> {
+        pub factor_tangency_sharpe_sq_theta_f2: T,
+        pub residual_alpha_quadratic_form_q_alpha: T,
+        pub cross_sectional_ols_r2: T,
+        pub factor_risk_premium_lambda: T,
+        pub factor_variance_sigma_f2: T,
+        pub sample_length_t: T,
+        pub test_asset_count_n: T,
+        pub factor_count_k: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LewellenNagelShankenGlsCrossSectionalReport<T: Real = f64> {
+        pub maximum_ex_post_tangency_sharpe_sq: T,
+        pub gls_cross_sectional_r2: T,
+        pub ols_minus_gls_r2_inflation_wedge: T,
+        pub shanken_eiv_covariance_multiplier: T,
+        pub finite_sample_grs_f_statistic: T,
+        pub unexplained_sharpe_ratio_gap: T,
+    }
+
+    pub fn evaluate_lewellen_nagel_shanken_gls_cross_sectional_r2<T: Real>(
+        spec: &LewellenNagelShankenGlsCrossSectionalSpec<T>,
+    ) -> LewellenNagelShankenGlsCrossSectionalReport<T> {
+        let theta_f2 = spec
+            .factor_tangency_sharpe_sq_theta_f2
+            .max_val(T::from_f64(1e-4));
+        let q_alpha = spec
+            .residual_alpha_quadratic_form_q_alpha
+            .max_val(T::from_f64(1e-4));
+        let r2_ols = spec
+            .cross_sectional_ols_r2
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.999));
+        let lam = spec.factor_risk_premium_lambda;
+        let sig_f2 = spec.factor_variance_sigma_f2.max_val(T::from_f64(1e-4));
+        let t_obs = spec.sample_length_t.max_val(T::from_f64(30.0));
+        let n_assets = spec.test_asset_count_n.max_val(T::from_f64(2.0));
+        let k_fac = spec.factor_count_k.max_val(T::one());
+
+        // Gibbons, Ross & Shanken (1989) / Lewellen, Nagel & Shanken (2010, Section 3.2):
+        // theta_max^2 = theta_F^2 + alpha^T Sigma_e^{-1} alpha, and R^2_GLS = theta_F^2 / theta_max^2:
+        let theta_max2 = theta_f2 + q_alpha;
+        let r2_gls = theta_f2 / theta_max2;
+        let r2_wedge = r2_ols - r2_gls;
+
+        // Shanken (1992, Theorem 1) Errors-in-Variables (EIV) factor c = 1 + lambda^2 / sigma_F^2:
+        let c_shanken = T::one() + (lam * lam) / sig_f2;
+
+        // Exact finite-sample GRS F-statistic: ((T - N - K) / N) * (alpha^T Sigma_e^{-1} alpha) / (1 + theta_F^2):
+        let dof_num = (t_obs - n_assets - k_fac).max_val(T::one());
+        let f_grs = (dof_num / n_assets) * (q_alpha / (T::one() + theta_f2));
+        let sharpe_gap = theta_max2.sqrt() - theta_f2.sqrt();
+
+        LewellenNagelShankenGlsCrossSectionalReport {
+            maximum_ex_post_tangency_sharpe_sq: theta_max2,
+            gls_cross_sectional_r2: r2_gls,
+            ols_minus_gls_r2_inflation_wedge: r2_wedge,
+            shanken_eiv_covariance_multiplier: c_shanken,
+            finite_sample_grs_f_statistic: f_grs,
+            unexplained_sharpe_ratio_gap: sharpe_gap,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_lewellen_nagel_shanken_gls_cross_sectional_r2_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn lewellen_nagel_shanken_gls_cross_sectional_invariants_and_ad_parity() {
+            let spec = LewellenNagelShankenGlsCrossSectionalSpec {
+                factor_tangency_sharpe_sq_theta_f2: 0.085,
+                residual_alpha_quadratic_form_q_alpha: 0.140,
+                cross_sectional_ols_r2: 0.78,
+                factor_risk_premium_lambda: 0.0065,
+                factor_variance_sigma_f2: 0.0022,
+                sample_length_t: 240.0,
+                test_asset_count_n: 25.0,
+                factor_count_k: 3.0,
+            };
+            let rep = evaluate_lewellen_nagel_shanken_gls_cross_sectional_r2(&spec);
+            assert!(rep.gls_cross_sectional_r2 > 0.0 && rep.gls_cross_sectional_r2 < 1.0);
+            assert!(rep.ols_minus_gls_r2_inflation_wedge > 0.0);
+            assert!(rep.shanken_eiv_covariance_multiplier > 1.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_lewellen_nagel_shanken_gls_cross_sectional_r2(
+                &LewellenNagelShankenGlsCrossSectionalSpec {
+                    factor_tangency_sharpe_sq_theta_f2: Dual::<8>::variable(
+                        spec.factor_tangency_sharpe_sq_theta_f2,
+                        0,
+                    ),
+                    residual_alpha_quadratic_form_q_alpha: Dual::<8>::variable(
+                        spec.residual_alpha_quadratic_form_q_alpha,
+                        1,
+                    ),
+                    cross_sectional_ols_r2: Dual::<8>::variable(spec.cross_sectional_ols_r2, 2),
+                    factor_risk_premium_lambda: Dual::<8>::variable(
+                        spec.factor_risk_premium_lambda,
+                        3,
+                    ),
+                    factor_variance_sigma_f2: Dual::<8>::variable(spec.factor_variance_sigma_f2, 4),
+                    sample_length_t: Dual::<8>::variable(spec.sample_length_t, 5),
+                    test_asset_count_n: Dual::<8>::variable(spec.test_asset_count_n, 6),
+                    factor_count_k: Dual::<8>::variable(spec.factor_count_k, 7),
+                },
+            );
+            for i in 0..8 {
+                let mut v = [
+                    spec.factor_tangency_sharpe_sq_theta_f2,
+                    spec.residual_alpha_quadratic_form_q_alpha,
+                    spec.cross_sectional_ols_r2,
+                    spec.factor_risk_premium_lambda,
+                    spec.factor_variance_sigma_f2,
+                    spec.sample_length_t,
+                    spec.test_asset_count_n,
+                    spec.factor_count_k,
+                ];
+                v[i] += h;
+                let up = evaluate_lewellen_nagel_shanken_gls_cross_sectional_r2(
+                    &LewellenNagelShankenGlsCrossSectionalSpec {
+                        factor_tangency_sharpe_sq_theta_f2: v[0],
+                        residual_alpha_quadratic_form_q_alpha: v[1],
+                        cross_sectional_ols_r2: v[2],
+                        factor_risk_premium_lambda: v[3],
+                        factor_variance_sigma_f2: v[4],
+                        sample_length_t: v[5],
+                        test_asset_count_n: v[6],
+                        factor_count_k: v[7],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_lewellen_nagel_shanken_gls_cross_sectional_r2(
+                    &LewellenNagelShankenGlsCrossSectionalSpec {
+                        factor_tangency_sharpe_sq_theta_f2: v[0],
+                        residual_alpha_quadratic_form_q_alpha: v[1],
+                        cross_sectional_ols_r2: v[2],
+                        factor_risk_premium_lambda: v[3],
+                        factor_variance_sigma_f2: v[4],
+                        sample_length_t: v[5],
+                        test_asset_count_n: v[6],
+                        factor_count_k: v[7],
+                    },
+                );
+                let val_ad = r_ad.ols_minus_gls_r2_inflation_wedge
+                    + r_ad.shanken_eiv_covariance_multiplier
+                    + r_ad.finite_sample_grs_f_statistic;
+                let fd = ((up.ols_minus_gls_r2_inflation_wedge
+                    + up.shanken_eiv_covariance_multiplier
+                    + up.finite_sample_grs_f_statistic)
+                    - (dn.ols_minus_gls_r2_inflation_wedge
+                        + dn.shanken_eiv_covariance_multiplier
+                        + dn.finite_sample_grs_f_statistic))
+                    / (2.0 * h);
+                assert!((val_ad.d[i] - fd).abs() < 1e-4, "input {i}");
+            }
+        }
+    }
+}
+pub use evaluate_lewellen_nagel_shanken_gls_cross_sectional_r2_module::*;

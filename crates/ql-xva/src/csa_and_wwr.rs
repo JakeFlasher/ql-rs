@@ -2140,3 +2140,193 @@ mod evaluate_hull_white_exponential_hazard_wrong_way_risk_cva_module {
     }
 }
 pub use evaluate_hull_white_exponential_hazard_wrong_way_risk_cva_module::*;
+
+mod evaluate_gregory_albanese_bilateral_cva_dva_first_to_default_survival_module {
+    // Gregory (2020, The xVA Challenge, 4th ed., Ch. 14, Eq. 14.7),
+    // Brigo, Morini & Pallavicini (2013, Counterparty Credit Risk, Collateral and Funding, Ch. 4 & 12),
+    // & Albanese & Andersen (2014) Bilateral CVA/DVA First-to-Default Survival Overlap Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GregoryAlbaneseBilateralFtdCvaDvaSpec<T: Real = f64> {
+        pub expected_positive_exposure_epe: T,
+        pub expected_negative_exposure_ene: T,
+        pub counterparty_hazard_rate_lambda_c: T,
+        pub own_bank_hazard_rate_lambda_b: T,
+        pub counterparty_lgd_c: T,
+        pub own_bank_lgd_b: T,
+        pub ois_discount_rate_r: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GregoryAlbaneseBilateralFtdCvaDvaReport<T: Real = f64> {
+        pub unilateral_cva_charge: T,
+        pub unilateral_dva_benefit: T,
+        pub bilateral_ftd_cva_charge: T,
+        pub bilateral_ftd_dva_benefit: T,
+        pub first_to_default_survival_overlap_reduction: T,
+        pub net_bilateral_bcva: T,
+    }
+
+    pub fn evaluate_gregory_albanese_bilateral_cva_dva_first_to_default_survival<T: Real>(
+        spec: &GregoryAlbaneseBilateralFtdCvaDvaSpec<T>,
+    ) -> GregoryAlbaneseBilateralFtdCvaDvaReport<T> {
+        let epe0 = spec
+            .expected_positive_exposure_epe
+            .max_val(T::from_f64(0.01));
+        let ene0 = spec
+            .expected_negative_exposure_ene
+            .max_val(T::from_f64(0.01));
+        let lam_c = spec
+            .counterparty_hazard_rate_lambda_c
+            .max_val(T::from_f64(1e-4));
+        let lam_b = spec
+            .own_bank_hazard_rate_lambda_b
+            .max_val(T::from_f64(1e-4));
+        let lgd_c = spec
+            .counterparty_lgd_c
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(1.0));
+        let lgd_b = spec
+            .own_bank_lgd_b
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(1.0));
+        let r = spec.ois_discount_rate_r.max_val(T::from_f64(0.001));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.25));
+
+        // 4-point midpoint quadrature over [0, T] with diffusive exposure scaling sqrt(u):
+        let dt = t / T::from_f64(4.0);
+        let mut cva_uni = T::zero();
+        let mut dva_uni = T::zero();
+        let mut cva_ftd = T::zero();
+        let mut dva_ftd = T::zero();
+
+        for k in 0..4 {
+            let uk = dt * (T::from_f64(k as f64) + T::from_f64(0.5));
+            let profile_scale = uk.sqrt();
+            let epe_u = epe0 * profile_scale;
+            let ene_u = ene0 * profile_scale;
+
+            let df_r = (-r * uk).exp();
+            let surv_c = (-lam_c * uk).exp();
+            let surv_b = (-lam_b * uk).exp();
+            let surv_joint = surv_c * surv_b;
+
+            cva_uni += dt * df_r * lgd_c * lam_c * surv_c * epe_u;
+            dva_uni += dt * df_r * lgd_b * lam_b * surv_b * ene_u;
+
+            // Gregory (2020, Eq. 14.7): FtD CVA conditions on bank survival S_B(u),
+            // and FtD DVA conditions on counterparty survival S_C(u):
+            cva_ftd += dt * df_r * lgd_c * lam_c * surv_joint * epe_u;
+            dva_ftd += dt * df_r * lgd_b * lam_b * surv_joint * ene_u;
+        }
+
+        let overlap_red = (cva_uni - cva_ftd) + (dva_uni - dva_ftd);
+        let net_bcva = cva_ftd - dva_ftd;
+
+        GregoryAlbaneseBilateralFtdCvaDvaReport {
+            unilateral_cva_charge: cva_uni,
+            unilateral_dva_benefit: dva_uni,
+            bilateral_ftd_cva_charge: cva_ftd,
+            bilateral_ftd_dva_benefit: dva_ftd,
+            first_to_default_survival_overlap_reduction: overlap_red,
+            net_bilateral_bcva: net_bcva,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_gregory_albanese_bilateral_cva_dva_first_to_default_survival_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn gregory_albanese_bilateral_ftd_cva_dva_invariants_and_ad_parity() {
+            let spec = GregoryAlbaneseBilateralFtdCvaDvaSpec {
+                expected_positive_exposure_epe: 15.0,
+                expected_negative_exposure_ene: 10.0,
+                counterparty_hazard_rate_lambda_c: 0.030,
+                own_bank_hazard_rate_lambda_b: 0.018,
+                counterparty_lgd_c: 0.60,
+                own_bank_lgd_b: 0.60,
+                ois_discount_rate_r: 0.038,
+                maturity_years_t: 5.0,
+            };
+            let rep = evaluate_gregory_albanese_bilateral_cva_dva_first_to_default_survival(&spec);
+            assert!(rep.bilateral_ftd_cva_charge < rep.unilateral_cva_charge);
+            assert!(rep.bilateral_ftd_dva_benefit < rep.unilateral_dva_benefit);
+            assert!(rep.first_to_default_survival_overlap_reduction > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_gregory_albanese_bilateral_cva_dva_first_to_default_survival(
+                &GregoryAlbaneseBilateralFtdCvaDvaSpec {
+                    expected_positive_exposure_epe: Dual::<8>::variable(
+                        spec.expected_positive_exposure_epe,
+                        0,
+                    ),
+                    expected_negative_exposure_ene: Dual::<8>::variable(
+                        spec.expected_negative_exposure_ene,
+                        1,
+                    ),
+                    counterparty_hazard_rate_lambda_c: Dual::<8>::variable(
+                        spec.counterparty_hazard_rate_lambda_c,
+                        2,
+                    ),
+                    own_bank_hazard_rate_lambda_b: Dual::<8>::variable(
+                        spec.own_bank_hazard_rate_lambda_b,
+                        3,
+                    ),
+                    counterparty_lgd_c: Dual::<8>::variable(spec.counterparty_lgd_c, 4),
+                    own_bank_lgd_b: Dual::<8>::variable(spec.own_bank_lgd_b, 5),
+                    ois_discount_rate_r: Dual::<8>::variable(spec.ois_discount_rate_r, 6),
+                    maturity_years_t: Dual::<8>::variable(spec.maturity_years_t, 7),
+                },
+            );
+            for i in 0..8 {
+                let mut v = [
+                    spec.expected_positive_exposure_epe,
+                    spec.expected_negative_exposure_ene,
+                    spec.counterparty_hazard_rate_lambda_c,
+                    spec.own_bank_hazard_rate_lambda_b,
+                    spec.counterparty_lgd_c,
+                    spec.own_bank_lgd_b,
+                    spec.ois_discount_rate_r,
+                    spec.maturity_years_t,
+                ];
+                v[i] += h;
+                let up = evaluate_gregory_albanese_bilateral_cva_dva_first_to_default_survival(
+                    &GregoryAlbaneseBilateralFtdCvaDvaSpec {
+                        expected_positive_exposure_epe: v[0],
+                        expected_negative_exposure_ene: v[1],
+                        counterparty_hazard_rate_lambda_c: v[2],
+                        own_bank_hazard_rate_lambda_b: v[3],
+                        counterparty_lgd_c: v[4],
+                        own_bank_lgd_b: v[5],
+                        ois_discount_rate_r: v[6],
+                        maturity_years_t: v[7],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_gregory_albanese_bilateral_cva_dva_first_to_default_survival(
+                    &GregoryAlbaneseBilateralFtdCvaDvaSpec {
+                        expected_positive_exposure_epe: v[0],
+                        expected_negative_exposure_ene: v[1],
+                        counterparty_hazard_rate_lambda_c: v[2],
+                        own_bank_hazard_rate_lambda_b: v[3],
+                        counterparty_lgd_c: v[4],
+                        own_bank_lgd_b: v[5],
+                        ois_discount_rate_r: v[6],
+                        maturity_years_t: v[7],
+                    },
+                );
+                let fd = (up.net_bilateral_bcva - dn.net_bilateral_bcva) / (2.0 * h);
+                assert!(
+                    (r_ad.net_bilateral_bcva.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_gregory_albanese_bilateral_cva_dva_first_to_default_survival_module::*;

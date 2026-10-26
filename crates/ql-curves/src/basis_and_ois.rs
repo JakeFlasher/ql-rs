@@ -1560,3 +1560,158 @@ mod evaluate_kim_wright_shadow_rate_survey_term_premium_module {
     }
 }
 pub use evaluate_kim_wright_shadow_rate_survey_term_premium_module::*;
+
+mod evaluate_lyashenko_mercurio_fmm_in_arrears_caplet_convexity_module {
+    // Lyashenko & Mercurio (2019, Risk, "Looking Forward to Backward-Looking Rates")
+    // & Andersen & Piterbarg (2010, Interest Rate Modeling, Vol. I & III)
+    // Forward Market Model (FMM) Backward-Looking Compounded-in-Arrears RFR Caplet Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LyashenkoMercurioFmmInArrearsCapletSpec<T: Real = f64> {
+        pub notional_n: T,
+        pub forward_rfr_rate_f0: T,
+        pub caplet_strike_k: T,
+        pub fixing_start_years_t0: T,
+        pub accrual_fraction_tau: T,
+        pub forward_vol_sigma_f: T,
+        pub ois_discount_rate_r: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LyashenkoMercurioFmmInArrearsCapletReport<T: Real = f64> {
+        pub forward_looking_integrated_variance: T,
+        pub in_arrears_integrated_variance: T,
+        pub effective_in_arrears_black_vol: T,
+        pub forward_looking_ibor_caplet_npv: T,
+        pub backward_looking_in_arrears_caplet_npv: T,
+        pub in_arrears_accrual_volatility_premium: T,
+    }
+
+    pub fn evaluate_lyashenko_mercurio_fmm_in_arrears_caplet_convexity<T: Real>(
+        spec: &LyashenkoMercurioFmmInArrearsCapletSpec<T>,
+    ) -> LyashenkoMercurioFmmInArrearsCapletReport<T> {
+        let n = spec.notional_n.max_val(T::from_f64(1.0));
+        let f0 = spec.forward_rfr_rate_f0.max_val(T::from_f64(0.001));
+        let k = spec.caplet_strike_k.max_val(T::from_f64(0.001));
+        let t0 = spec.fixing_start_years_t0.max_val(T::from_f64(0.05));
+        let tau = spec.accrual_fraction_tau.max_val(T::from_f64(0.05));
+        let sig_f = spec.forward_vol_sigma_f.max_val(T::from_f64(0.01));
+        let r = spec.ois_discount_rate_r.max_val(T::from_f64(0.0005));
+
+        let t1 = t0 + tau;
+        let df_t1 = (-r * t1).exp();
+        let sig2 = sig_f * sig_f;
+
+        // Lyashenko & Mercurio (2019, Section 3.2): instantaneous volatility is sigma_F on [0, T0]
+        // and decays linearly as sigma_F * (T1 - t) / tau on [T0, T1], yielding integrated variance
+        // V_arr = sigma_F^2 * (T0 + tau / 3) vs. forward-looking V_fwd = sigma_F^2 * T0:
+        let v_fwd = sig2 * t0;
+        let v_arr = sig2 * (t0 + tau / T::from_f64(3.0));
+        let sig_eff_arr = (v_arr / t1).sqrt();
+
+        let std_fwd = v_fwd.sqrt();
+        let ln_fk = (f0 / k).ln();
+        let d1_fwd = (ln_fk + T::from_f64(0.5) * v_fwd) / std_fwd;
+        let d2_fwd = d1_fwd - std_fwd;
+        let c_fwd = n * tau * df_t1 * (f0 * norm_cdf(d1_fwd) - k * norm_cdf(d2_fwd));
+
+        let std_arr = v_arr.sqrt();
+        let d1_arr = (ln_fk + T::from_f64(0.5) * v_arr) / std_arr;
+        let d2_arr = d1_arr - std_arr;
+        let c_arr = n * tau * df_t1 * (f0 * norm_cdf(d1_arr) - k * norm_cdf(d2_arr));
+
+        let prem = c_arr - c_fwd;
+
+        LyashenkoMercurioFmmInArrearsCapletReport {
+            forward_looking_integrated_variance: v_fwd,
+            in_arrears_integrated_variance: v_arr,
+            effective_in_arrears_black_vol: sig_eff_arr,
+            forward_looking_ibor_caplet_npv: c_fwd,
+            backward_looking_in_arrears_caplet_npv: c_arr,
+            in_arrears_accrual_volatility_premium: prem,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_lyashenko_mercurio_fmm_in_arrears_caplet_convexity_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn lyashenko_mercurio_fmm_in_arrears_caplet_invariants_and_ad_parity() {
+            let spec = LyashenkoMercurioFmmInArrearsCapletSpec {
+                notional_n: 1_000.0,
+                forward_rfr_rate_f0: 0.042,
+                caplet_strike_k: 0.040,
+                fixing_start_years_t0: 0.50,
+                accrual_fraction_tau: 0.25,
+                forward_vol_sigma_f: 0.24,
+                ois_discount_rate_r: 0.040,
+            };
+            let rep = evaluate_lyashenko_mercurio_fmm_in_arrears_caplet_convexity(&spec);
+            assert!(
+                rep.backward_looking_in_arrears_caplet_npv > rep.forward_looking_ibor_caplet_npv
+            );
+            assert!(rep.in_arrears_accrual_volatility_premium > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_lyashenko_mercurio_fmm_in_arrears_caplet_convexity(
+                &LyashenkoMercurioFmmInArrearsCapletSpec {
+                    notional_n: Dual::<7>::variable(spec.notional_n, 0),
+                    forward_rfr_rate_f0: Dual::<7>::variable(spec.forward_rfr_rate_f0, 1),
+                    caplet_strike_k: Dual::<7>::variable(spec.caplet_strike_k, 2),
+                    fixing_start_years_t0: Dual::<7>::variable(spec.fixing_start_years_t0, 3),
+                    accrual_fraction_tau: Dual::<7>::variable(spec.accrual_fraction_tau, 4),
+                    forward_vol_sigma_f: Dual::<7>::variable(spec.forward_vol_sigma_f, 5),
+                    ois_discount_rate_r: Dual::<7>::variable(spec.ois_discount_rate_r, 6),
+                },
+            );
+            for i in 0..7 {
+                let mut v = [
+                    spec.notional_n,
+                    spec.forward_rfr_rate_f0,
+                    spec.caplet_strike_k,
+                    spec.fixing_start_years_t0,
+                    spec.accrual_fraction_tau,
+                    spec.forward_vol_sigma_f,
+                    spec.ois_discount_rate_r,
+                ];
+                v[i] += h;
+                let up = evaluate_lyashenko_mercurio_fmm_in_arrears_caplet_convexity(
+                    &LyashenkoMercurioFmmInArrearsCapletSpec {
+                        notional_n: v[0],
+                        forward_rfr_rate_f0: v[1],
+                        caplet_strike_k: v[2],
+                        fixing_start_years_t0: v[3],
+                        accrual_fraction_tau: v[4],
+                        forward_vol_sigma_f: v[5],
+                        ois_discount_rate_r: v[6],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_lyashenko_mercurio_fmm_in_arrears_caplet_convexity(
+                    &LyashenkoMercurioFmmInArrearsCapletSpec {
+                        notional_n: v[0],
+                        forward_rfr_rate_f0: v[1],
+                        caplet_strike_k: v[2],
+                        fixing_start_years_t0: v[3],
+                        accrual_fraction_tau: v[4],
+                        forward_vol_sigma_f: v[5],
+                        ois_discount_rate_r: v[6],
+                    },
+                );
+                let fd = (up.backward_looking_in_arrears_caplet_npv
+                    - dn.backward_looking_in_arrears_caplet_npv)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.backward_looking_in_arrears_caplet_npv.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_lyashenko_mercurio_fmm_in_arrears_caplet_convexity_module::*;

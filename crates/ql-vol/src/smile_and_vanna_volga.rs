@@ -565,3 +565,199 @@ mod evaluate_derman_sticky_smile_regime_delta_adjustment_module {
     }
 }
 pub use evaluate_derman_sticky_smile_regime_delta_adjustment_module::*;
+
+mod evaluate_fouque_papanicolaou_sircar_multiscale_sv_smile_module {
+    // Fouque, Papanicolaou, Sircar & Solna (2011, Multiscale Stochastic Volatility for Equity,
+    // Interest Rate, and Credit Derivatives, Cambridge Univ. Press, Ch. 4, Eqs. 4.35-4.38)
+    // & Gatheral (2006, Ch. 3) Fast-Scale & Slow-Scale Multiscale SV Implied Volatility Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct FouquePapanicolaouSircarMultiscaleSvSpec<T: Real = f64> {
+        pub spot_price_s0: T,
+        pub strike_price_k: T,
+        pub risk_free_rate_r: T,
+        pub effective_volatility_sigma_bar: T,
+        pub fast_skew_parameter_v3_eps: T,
+        pub fast_convexity_parameter_v2_eps: T,
+        pub slow_skew_parameter_v1_delta: T,
+        pub slow_level_parameter_v0_delta: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct FouquePapanicolaouSircarMultiscaleSvReport<T: Real = f64> {
+        pub fast_timescale_implied_vol_correction: T,
+        pub slow_timescale_implied_vol_correction: T,
+        pub multiscale_asymptotic_implied_volatility: T,
+        pub effective_terminal_skew_slope: T,
+        pub multiscale_sv_call_option_price: T,
+        pub constant_vol_baseline_call_price: T,
+    }
+
+    pub fn evaluate_fouque_papanicolaou_sircar_multiscale_sv_smile<T: Real>(
+        spec: &FouquePapanicolaouSircarMultiscaleSvSpec<T>,
+    ) -> FouquePapanicolaouSircarMultiscaleSvReport<T> {
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(1.0));
+        let k = spec.strike_price_k.max_val(T::from_f64(1.0));
+        let r = spec.risk_free_rate_r;
+        let sig_bar = spec
+            .effective_volatility_sigma_bar
+            .max_val(T::from_f64(0.02));
+        let v3_eps = spec.fast_skew_parameter_v3_eps;
+        let v2_eps = spec.fast_convexity_parameter_v2_eps;
+        let v1_del = spec.slow_skew_parameter_v1_delta;
+        let v0_del = spec.slow_level_parameter_v0_delta;
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+        let sig_bar2 = sig_bar * sig_bar;
+        let sig_bar3 = sig_bar2 * sig_bar;
+        let fwd = s0 * (r * t).exp();
+        let log_m = (k / fwd).ln();
+
+        // Fouque, Papanicolaou, Sircar & Solna (2011, Ch. 4, Eqs. 4.36-4.38):
+        // Using ln(K / S0) - r*T = log_m, the fast-scale O(sqrt(eps)) correction is
+        // a_eps + b_eps * (log_m / T) where a_eps = V2^eps / sigma_bar + V3^eps / (2 * sigma_bar)
+        // and b_eps = V3^eps / sigma_bar^3:
+        let b_eps = v3_eps / sig_bar3;
+        let a_eps = v2_eps / sig_bar + T::from_f64(0.5) * (v3_eps / sig_bar);
+        let fast_corr = a_eps + b_eps * (log_m / t);
+
+        // Slow-scale O(sqrt(delta)) correction is T * a_delta + b_delta * log_m
+        // where a_delta = V0^delta / sigma_bar + V1^delta / (2 * sigma_bar) and b_delta = V1^delta / sigma_bar^3:
+        let b_del = v1_del / sig_bar3;
+        let a_del = v0_del / sig_bar + T::from_f64(0.5) * (v1_del / sig_bar);
+        let slow_corr = t * a_del + b_del * log_m;
+
+        let sig_imp = (sig_bar + fast_corr + slow_corr).max_val(T::from_f64(0.02));
+        let skew_slope = b_eps / t + b_del;
+
+        let df_r = (-r * t).exp();
+        let sqrt_t = t.sqrt();
+
+        let std_0 = sig_bar * sqrt_t;
+        let d1_0 = (-log_m + T::from_f64(0.5) * sig_bar2 * t) / std_0;
+        let d2_0 = d1_0 - std_0;
+        let c_0 = df_r * (fwd * norm_cdf(d1_0) - k * norm_cdf(d2_0));
+
+        let std_m = sig_imp * sqrt_t;
+        let d1_m = (-log_m + T::from_f64(0.5) * sig_imp * sig_imp * t) / std_m;
+        let d2_m = d1_m - std_m;
+        let c_m = df_r * (fwd * norm_cdf(d1_m) - k * norm_cdf(d2_m));
+
+        FouquePapanicolaouSircarMultiscaleSvReport {
+            fast_timescale_implied_vol_correction: fast_corr,
+            slow_timescale_implied_vol_correction: slow_corr,
+            multiscale_asymptotic_implied_volatility: sig_imp,
+            effective_terminal_skew_slope: skew_slope,
+            multiscale_sv_call_option_price: c_m,
+            constant_vol_baseline_call_price: c_0,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_fouque_papanicolaou_sircar_multiscale_sv_smile_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn fouque_papanicolaou_sircar_multiscale_sv_invariants_and_ad_parity() {
+            let spec = FouquePapanicolaouSircarMultiscaleSvSpec {
+                spot_price_s0: 100.0,
+                strike_price_k: 95.0,
+                risk_free_rate_r: 0.04,
+                effective_volatility_sigma_bar: 0.20,
+                fast_skew_parameter_v3_eps: -0.0012,
+                fast_convexity_parameter_v2_eps: 0.0018,
+                slow_skew_parameter_v1_delta: -0.0015,
+                slow_level_parameter_v0_delta: 0.0010,
+                maturity_years_t: 0.75,
+            };
+            let rep = evaluate_fouque_papanicolaou_sircar_multiscale_sv_smile(&spec);
+            assert!(
+                rep.multiscale_asymptotic_implied_volatility > spec.effective_volatility_sigma_bar
+            );
+            assert!(rep.effective_terminal_skew_slope < 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_fouque_papanicolaou_sircar_multiscale_sv_smile(
+                &FouquePapanicolaouSircarMultiscaleSvSpec {
+                    spot_price_s0: Dual::<9>::variable(spec.spot_price_s0, 0),
+                    strike_price_k: Dual::<9>::variable(spec.strike_price_k, 1),
+                    risk_free_rate_r: Dual::<9>::variable(spec.risk_free_rate_r, 2),
+                    effective_volatility_sigma_bar: Dual::<9>::variable(
+                        spec.effective_volatility_sigma_bar,
+                        3,
+                    ),
+                    fast_skew_parameter_v3_eps: Dual::<9>::variable(
+                        spec.fast_skew_parameter_v3_eps,
+                        4,
+                    ),
+                    fast_convexity_parameter_v2_eps: Dual::<9>::variable(
+                        spec.fast_convexity_parameter_v2_eps,
+                        5,
+                    ),
+                    slow_skew_parameter_v1_delta: Dual::<9>::variable(
+                        spec.slow_skew_parameter_v1_delta,
+                        6,
+                    ),
+                    slow_level_parameter_v0_delta: Dual::<9>::variable(
+                        spec.slow_level_parameter_v0_delta,
+                        7,
+                    ),
+                    maturity_years_t: Dual::<9>::variable(spec.maturity_years_t, 8),
+                },
+            );
+            for i in 0..9 {
+                let mut v = [
+                    spec.spot_price_s0,
+                    spec.strike_price_k,
+                    spec.risk_free_rate_r,
+                    spec.effective_volatility_sigma_bar,
+                    spec.fast_skew_parameter_v3_eps,
+                    spec.fast_convexity_parameter_v2_eps,
+                    spec.slow_skew_parameter_v1_delta,
+                    spec.slow_level_parameter_v0_delta,
+                    spec.maturity_years_t,
+                ];
+                v[i] += h;
+                let up = evaluate_fouque_papanicolaou_sircar_multiscale_sv_smile(
+                    &FouquePapanicolaouSircarMultiscaleSvSpec {
+                        spot_price_s0: v[0],
+                        strike_price_k: v[1],
+                        risk_free_rate_r: v[2],
+                        effective_volatility_sigma_bar: v[3],
+                        fast_skew_parameter_v3_eps: v[4],
+                        fast_convexity_parameter_v2_eps: v[5],
+                        slow_skew_parameter_v1_delta: v[6],
+                        slow_level_parameter_v0_delta: v[7],
+                        maturity_years_t: v[8],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_fouque_papanicolaou_sircar_multiscale_sv_smile(
+                    &FouquePapanicolaouSircarMultiscaleSvSpec {
+                        spot_price_s0: v[0],
+                        strike_price_k: v[1],
+                        risk_free_rate_r: v[2],
+                        effective_volatility_sigma_bar: v[3],
+                        fast_skew_parameter_v3_eps: v[4],
+                        fast_convexity_parameter_v2_eps: v[5],
+                        slow_skew_parameter_v1_delta: v[6],
+                        slow_level_parameter_v0_delta: v[7],
+                        maturity_years_t: v[8],
+                    },
+                );
+                let fd = (up.multiscale_sv_call_option_price - dn.multiscale_sv_call_option_price)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.multiscale_sv_call_option_price.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_fouque_papanicolaou_sircar_multiscale_sv_smile_module::*;

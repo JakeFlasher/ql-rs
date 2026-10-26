@@ -1099,3 +1099,191 @@ mod evaluate_wystup_lipton_fx_tarf_target_redemption_cap_module {
     }
 }
 pub use evaluate_wystup_lipton_fx_tarf_target_redemption_cap_module::*;
+
+mod evaluate_wystup_fx_corridor_accrual_range_note_module {
+    // Wystup (2017, FX Options and Structured Products, 2nd ed., Ch. 4, "Range Accrual Notes"),
+    // Clark (2011, Foreign Exchange Option Pricing, Ch. 7), & Breeden & Litzenberger (1978)
+    // FX Corridor Range Accrual Strip & Digital Skew Overhedge Engine.
+
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupFxCorridorAccrualRangeNoteSpec<T: Real = f64> {
+        pub notional_coupon_max: T,
+        pub spot_fx_s0: T,
+        pub lower_corridor_barrier_l: T,
+        pub upper_corridor_barrier_u: T,
+        pub domestic_rate_rd: T,
+        pub foreign_rate_rf: T,
+        pub atm_volatility_sigma: T,
+        pub log_moneyness_skew_slope_xi: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupFxCorridorAccrualRangeNoteReport<T: Real = f64> {
+        pub black_scholes_corridor_accrual_fraction: T,
+        pub smile_adjusted_corridor_accrual_fraction: T,
+        pub black_scholes_range_note_pv: T,
+        pub smile_adjusted_range_note_pv: T,
+        pub digital_skew_overhedge_pv_adjustment: T,
+        pub terminal_corridor_width_ratio: T,
+    }
+
+    pub fn evaluate_wystup_fx_corridor_accrual_range_note<T: Real>(
+        spec: &WystupFxCorridorAccrualRangeNoteSpec<T>,
+    ) -> WystupFxCorridorAccrualRangeNoteReport<T> {
+        let coupon_max = spec.notional_coupon_max.max_val(T::from_f64(1.0));
+        let s0 = spec.spot_fx_s0.max_val(T::from_f64(0.05));
+        let l_bar = spec.lower_corridor_barrier_l.max_val(T::from_f64(0.02));
+        let u_bar = spec
+            .upper_corridor_barrier_u
+            .max_val(l_bar + T::from_f64(0.02));
+        let rd = spec.domestic_rate_rd;
+        let rf = spec.foreign_rate_rf;
+        let sig0 = spec.atm_volatility_sigma.max_val(T::from_f64(0.02));
+        let xi = spec.log_moneyness_skew_slope_xi;
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.10));
+
+        // 4-fixing corridor strip t_j = j * (T / 4) for j = 1, 2, 3, 4:
+        let dt = t / T::from_f64(4.0);
+        let mut frac_bs = T::zero();
+        let mut frac_smile = T::zero();
+
+        for step in 1..=4 {
+            let tj = dt * T::from_f64(step as f64);
+            let sqrt_tj = tj.sqrt();
+            let fwd_j = s0 * ((rd - rf) * tj).exp();
+
+            let sig_l = (sig0 + xi * (l_bar / fwd_j).ln()).max_val(T::from_f64(0.02));
+            let sig_u = (sig0 + xi * (u_bar / fwd_j).ln()).max_val(T::from_f64(0.02));
+
+            let std_l = sig_l * sqrt_tj;
+            let d2_l = ((fwd_j / l_bar).ln() - T::from_f64(0.5) * sig_l * sig_l * tj) / std_l;
+
+            let std_u = sig_u * sqrt_tj;
+            let d2_u = ((fwd_j / u_bar).ln() - T::from_f64(0.5) * sig_u * sig_u * tj) / std_u;
+
+            let p_bs_l = norm_cdf(d2_l);
+            let p_bs_u = norm_cdf(d2_u);
+            let p_corridor_bs = p_bs_l - p_bs_u;
+
+            // Breeden-Litzenberger digital skew adjustment -Vega_BS * (d sigma / dK) = -phi(d2) * sqrt(t_j) * xi:
+            let p_smile_l = p_bs_l - norm_pdf(d2_l) * sqrt_tj * xi;
+            let p_smile_u = p_bs_u - norm_pdf(d2_u) * sqrt_tj * xi;
+            let p_corridor_smile = p_smile_l - p_smile_u;
+
+            frac_bs += T::from_f64(0.25) * p_corridor_bs;
+            frac_smile += T::from_f64(0.25) * p_corridor_smile;
+        }
+
+        let df_rd = (-rd * t).exp();
+        let pv_bs = coupon_max * df_rd * frac_bs;
+        let pv_smile = coupon_max * df_rd * frac_smile;
+        let skew_adj = pv_smile - pv_bs;
+        let width_ratio = (u_bar - l_bar) / s0;
+
+        WystupFxCorridorAccrualRangeNoteReport {
+            black_scholes_corridor_accrual_fraction: frac_bs,
+            smile_adjusted_corridor_accrual_fraction: frac_smile,
+            black_scholes_range_note_pv: pv_bs,
+            smile_adjusted_range_note_pv: pv_smile,
+            digital_skew_overhedge_pv_adjustment: skew_adj,
+            terminal_corridor_width_ratio: width_ratio,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_wystup_fx_corridor_accrual_range_note_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn wystup_fx_corridor_accrual_range_note_invariants_and_ad_parity() {
+            let spec = WystupFxCorridorAccrualRangeNoteSpec {
+                notional_coupon_max: 100.0,
+                spot_fx_s0: 1.10,
+                lower_corridor_barrier_l: 1.04,
+                upper_corridor_barrier_u: 1.18,
+                domestic_rate_rd: 0.045,
+                foreign_rate_rf: 0.030,
+                atm_volatility_sigma: 0.095,
+                log_moneyness_skew_slope_xi: -0.12,
+                maturity_years_t: 1.0,
+            };
+            let rep = evaluate_wystup_fx_corridor_accrual_range_note(&spec);
+            assert!(
+                rep.black_scholes_corridor_accrual_fraction > 0.30
+                    && rep.black_scholes_corridor_accrual_fraction < 1.0
+            );
+            assert!(rep.smile_adjusted_range_note_pv > 30.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_wystup_fx_corridor_accrual_range_note(
+                &WystupFxCorridorAccrualRangeNoteSpec {
+                    notional_coupon_max: Dual::<9>::variable(spec.notional_coupon_max, 0),
+                    spot_fx_s0: Dual::<9>::variable(spec.spot_fx_s0, 1),
+                    lower_corridor_barrier_l: Dual::<9>::variable(spec.lower_corridor_barrier_l, 2),
+                    upper_corridor_barrier_u: Dual::<9>::variable(spec.upper_corridor_barrier_u, 3),
+                    domestic_rate_rd: Dual::<9>::variable(spec.domestic_rate_rd, 4),
+                    foreign_rate_rf: Dual::<9>::variable(spec.foreign_rate_rf, 5),
+                    atm_volatility_sigma: Dual::<9>::variable(spec.atm_volatility_sigma, 6),
+                    log_moneyness_skew_slope_xi: Dual::<9>::variable(
+                        spec.log_moneyness_skew_slope_xi,
+                        7,
+                    ),
+                    maturity_years_t: Dual::<9>::variable(spec.maturity_years_t, 8),
+                },
+            );
+            for i in 0..9 {
+                let mut v = [
+                    spec.notional_coupon_max,
+                    spec.spot_fx_s0,
+                    spec.lower_corridor_barrier_l,
+                    spec.upper_corridor_barrier_u,
+                    spec.domestic_rate_rd,
+                    spec.foreign_rate_rf,
+                    spec.atm_volatility_sigma,
+                    spec.log_moneyness_skew_slope_xi,
+                    spec.maturity_years_t,
+                ];
+                v[i] += h;
+                let up = evaluate_wystup_fx_corridor_accrual_range_note(
+                    &WystupFxCorridorAccrualRangeNoteSpec {
+                        notional_coupon_max: v[0],
+                        spot_fx_s0: v[1],
+                        lower_corridor_barrier_l: v[2],
+                        upper_corridor_barrier_u: v[3],
+                        domestic_rate_rd: v[4],
+                        foreign_rate_rf: v[5],
+                        atm_volatility_sigma: v[6],
+                        log_moneyness_skew_slope_xi: v[7],
+                        maturity_years_t: v[8],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_wystup_fx_corridor_accrual_range_note(
+                    &WystupFxCorridorAccrualRangeNoteSpec {
+                        notional_coupon_max: v[0],
+                        spot_fx_s0: v[1],
+                        lower_corridor_barrier_l: v[2],
+                        upper_corridor_barrier_u: v[3],
+                        domestic_rate_rd: v[4],
+                        foreign_rate_rf: v[5],
+                        atm_volatility_sigma: v[6],
+                        log_moneyness_skew_slope_xi: v[7],
+                        maturity_years_t: v[8],
+                    },
+                );
+                let fd =
+                    (up.smile_adjusted_range_note_pv - dn.smile_adjusted_range_note_pv) / (2.0 * h);
+                assert!(
+                    (r_ad.smile_adjusted_range_note_pv.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_wystup_fx_corridor_accrual_range_note_module::*;

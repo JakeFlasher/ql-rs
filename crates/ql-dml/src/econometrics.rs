@@ -1867,3 +1867,140 @@ mod evaluate_bai_ng_approximate_factor_icp2_diffusion_index_module {
     }
 }
 pub use evaluate_bai_ng_approximate_factor_icp2_diffusion_index_module::*;
+
+mod evaluate_barndorff_nielsen_shephard_realized_quarticity_iv_ci_module {
+    // Barndorff-Nielsen & Shephard (2002, JRSS Series B 64(2), "Econometric Analysis of
+    // Realized Volatility and Its Use in Estimating Stochastic Volatility Models", Section 2.4),
+    // Andersen, Bollerslev, Diebold & Labys (2003, Econometrica 71(2)), & Hansen & Lunde (2006)
+    // Realized Quarticity Asymptotic CLT & Log-Transformed Integrated Variance Confidence Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BarndorffNielsenShephardRealizedQuarticitySpec<T: Real = f64> {
+        pub realized_variance_rv: T,
+        pub realized_quarticity_rq: T,
+        pub intraday_sampling_frequency_m: T,
+        pub first_order_autocovariance_gamma1: T,
+        pub normal_critical_z_alpha: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BarndorffNielsenShephardRealizedQuarticityReport<T: Real = f64> {
+        pub asymptotic_variance_of_rv: T,
+        pub log_rv_asymptotic_standard_error: T,
+        pub log_transformed_iv_lower_bound: T,
+        pub log_transformed_iv_upper_bound: T,
+        pub newey_west_microstructure_corrected_rv: T,
+        pub relative_quarticity_dispersion_ratio: T,
+    }
+
+    pub fn evaluate_barndorff_nielsen_shephard_realized_quarticity_iv_ci<T: Real>(
+        spec: &BarndorffNielsenShephardRealizedQuarticitySpec<T>,
+    ) -> BarndorffNielsenShephardRealizedQuarticityReport<T> {
+        let rv = spec.realized_variance_rv.max_val(T::from_f64(1e-6));
+        let rq = spec.realized_quarticity_rq.max_val(T::from_f64(1e-9));
+        let m = spec.intraday_sampling_frequency_m.max_val(T::from_f64(2.0));
+        let gamma1 = spec.first_order_autocovariance_gamma1;
+        let z_crit = spec.normal_critical_z_alpha.max_val(T::from_f64(0.5));
+
+        // Barndorff-Nielsen & Shephard (2002, Theorem 1 & Eq. 11):
+        // AsymVar(RV_M) = 2 * RQ_M / M, and SE(ln RV_M) = sqrt(2 * RQ_M / (M * RV_M^2)):
+        let asym_var = (T::from_f64(2.0) * rq) / m;
+        let se_log_rv = (asym_var / (rv * rv)).sqrt();
+        let half_width = z_crit * se_log_rv;
+
+        let iv_lower = rv * (-half_width).exp();
+        let iv_upper = rv * half_width.exp();
+
+        // Hansen & Lunde (2006) lag-1 Newey-West microstructure-noise-adjusted realized variance:
+        let rv_nw1 = (rv + T::from_f64(2.0) * gamma1).max_val(T::from_f64(1e-6));
+        let rq_over_rv2 = rq / (rv * rv);
+
+        BarndorffNielsenShephardRealizedQuarticityReport {
+            asymptotic_variance_of_rv: asym_var,
+            log_rv_asymptotic_standard_error: se_log_rv,
+            log_transformed_iv_lower_bound: iv_lower,
+            log_transformed_iv_upper_bound: iv_upper,
+            newey_west_microstructure_corrected_rv: rv_nw1,
+            relative_quarticity_dispersion_ratio: rq_over_rv2,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_barndorff_nielsen_shephard_realized_quarticity_iv_ci_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn barndorff_nielsen_shephard_realized_quarticity_invariants_and_ad_parity() {
+            let spec = BarndorffNielsenShephardRealizedQuarticitySpec {
+                realized_variance_rv: 0.032,
+                realized_quarticity_rq: 0.0014,
+                intraday_sampling_frequency_m: 78.0,
+                first_order_autocovariance_gamma1: -0.0008,
+                normal_critical_z_alpha: 1.96,
+            };
+            let rep = evaluate_barndorff_nielsen_shephard_realized_quarticity_iv_ci(&spec);
+            assert!(
+                rep.log_transformed_iv_lower_bound < spec.realized_variance_rv
+                    && rep.log_transformed_iv_upper_bound > spec.realized_variance_rv
+            );
+
+            let h = 1e-6;
+            let r_ad = evaluate_barndorff_nielsen_shephard_realized_quarticity_iv_ci(
+                &BarndorffNielsenShephardRealizedQuarticitySpec {
+                    realized_variance_rv: Dual::<5>::variable(spec.realized_variance_rv, 0),
+                    realized_quarticity_rq: Dual::<5>::variable(spec.realized_quarticity_rq, 1),
+                    intraday_sampling_frequency_m: Dual::<5>::variable(
+                        spec.intraday_sampling_frequency_m,
+                        2,
+                    ),
+                    first_order_autocovariance_gamma1: Dual::<5>::variable(
+                        spec.first_order_autocovariance_gamma1,
+                        3,
+                    ),
+                    normal_critical_z_alpha: Dual::<5>::variable(spec.normal_critical_z_alpha, 4),
+                },
+            );
+            for i in 0..5 {
+                let mut v = [
+                    spec.realized_variance_rv,
+                    spec.realized_quarticity_rq,
+                    spec.intraday_sampling_frequency_m,
+                    spec.first_order_autocovariance_gamma1,
+                    spec.normal_critical_z_alpha,
+                ];
+                v[i] += h;
+                let up = evaluate_barndorff_nielsen_shephard_realized_quarticity_iv_ci(
+                    &BarndorffNielsenShephardRealizedQuarticitySpec {
+                        realized_variance_rv: v[0],
+                        realized_quarticity_rq: v[1],
+                        intraday_sampling_frequency_m: v[2],
+                        first_order_autocovariance_gamma1: v[3],
+                        normal_critical_z_alpha: v[4],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_barndorff_nielsen_shephard_realized_quarticity_iv_ci(
+                    &BarndorffNielsenShephardRealizedQuarticitySpec {
+                        realized_variance_rv: v[0],
+                        realized_quarticity_rq: v[1],
+                        intraday_sampling_frequency_m: v[2],
+                        first_order_autocovariance_gamma1: v[3],
+                        normal_critical_z_alpha: v[4],
+                    },
+                );
+                let val_ad = r_ad.log_transformed_iv_upper_bound
+                    + r_ad.newey_west_microstructure_corrected_rv;
+                let fd = ((up.log_transformed_iv_upper_bound
+                    + up.newey_west_microstructure_corrected_rv)
+                    - (dn.log_transformed_iv_upper_bound
+                        + dn.newey_west_microstructure_corrected_rv))
+                    / (2.0 * h);
+                assert!((val_ad.d[i] - fd).abs() < 1e-4, "input {i}");
+            }
+        }
+    }
+}
+pub use evaluate_barndorff_nielsen_shephard_realized_quarticity_iv_ci_module::*;

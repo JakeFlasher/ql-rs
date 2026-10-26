@@ -2190,3 +2190,202 @@ mod evaluate_carmona_durrleman_spark_spread_lower_bound_module {
     }
 }
 pub use evaluate_carmona_durrleman_spark_spread_lower_bound_module::*;
+
+mod evaluate_eydeland_wolyniec_virtual_power_plant_heat_rate_strip_module {
+    // Eydeland & Wolyniec (2003, Energy and Power Risk Management, Ch. 8,
+    // "Power Plant Valuation and Tolling Agreements"), Kirk (1995), & Carmona & Durrleman (2003)
+    // Virtual Power Plant (VPP) Heat-Rate Tolling Strip & Startup Friction Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct EydelandWolyniecVppHeatRateStripSpec<T: Real = f64> {
+        pub power_forward_price_f_p: T,
+        pub gas_forward_price_f_g: T,
+        pub plant_heat_rate_h: T,
+        pub variable_om_cost_v_om: T,
+        pub startup_cost_per_mwh_c_start: T,
+        pub power_volatility_sigma_p: T,
+        pub gas_volatility_sigma_g: T,
+        pub power_gas_correlation_rho: T,
+        pub risk_free_rate_r: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct EydelandWolyniecVppHeatRateStripReport<T: Real = f64> {
+        pub effective_all_in_dispatch_strike: T,
+        pub kirk_composite_spread_volatility: T,
+        pub frictionless_spark_spread_call_value: T,
+        pub vpp_startup_adjusted_tolling_value: T,
+        pub startup_cost_option_value_drag: T,
+        pub expected_dispatch_capacity_factor: T,
+    }
+
+    pub fn evaluate_eydeland_wolyniec_virtual_power_plant_heat_rate_strip<T: Real>(
+        spec: &EydelandWolyniecVppHeatRateStripSpec<T>,
+    ) -> EydelandWolyniecVppHeatRateStripReport<T> {
+        let f_p = spec.power_forward_price_f_p.max_val(T::from_f64(5.0));
+        let f_g = spec.gas_forward_price_f_g.max_val(T::from_f64(0.5));
+        let h_rate = spec.plant_heat_rate_h.max_val(T::from_f64(4.0));
+        let v_om = spec.variable_om_cost_v_om.max_val(T::from_f64(0.1));
+        let c_start = spec.startup_cost_per_mwh_c_start.max_val(T::from_f64(0.01));
+        let sig_p = spec.power_volatility_sigma_p.max_val(T::from_f64(0.02));
+        let sig_g = spec.gas_volatility_sigma_g.max_val(T::from_f64(0.02));
+        let rho = spec
+            .power_gas_correlation_rho
+            .max_val(T::from_f64(-0.95))
+            .min_val(T::from_f64(0.95));
+        let r = spec.risk_free_rate_r.max_val(T::from_f64(0.001));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+        let fuel_cost = h_rate * f_g;
+        let k_spark = fuel_cost + v_om;
+        let k_vpp = k_spark + c_start;
+
+        let df = (-r * t).exp();
+        let sqrt_t = t.sqrt();
+
+        // Kirk (1995) / Eydeland-Wolyniec (2003, Ch. 8) composite volatility for frictionless spark spread:
+        let w_g_spark = (fuel_cost / k_spark) * sig_g;
+        let sig_kirk_spark = (sig_p * sig_p - T::from_f64(2.0) * rho * sig_p * w_g_spark
+            + w_g_spark * w_g_spark)
+            .max_val(T::from_f64(1e-4))
+            .sqrt();
+        let std_spark = sig_kirk_spark * sqrt_t;
+        let d1_spark = ((f_p / k_spark).ln()
+            + T::from_f64(0.5) * sig_kirk_spark * sig_kirk_spark * t)
+            / std_spark;
+        let d2_spark = d1_spark - std_spark;
+        let val_spark = df * (f_p * norm_cdf(d1_spark) - k_spark * norm_cdf(d2_spark));
+
+        // Kirk composite volatility for VPP dispatch block including amortized startup cost C_start:
+        let w_g_vpp = (fuel_cost / k_vpp) * sig_g;
+        let sig_kirk_vpp = (sig_p * sig_p - T::from_f64(2.0) * rho * sig_p * w_g_vpp
+            + w_g_vpp * w_g_vpp)
+            .max_val(T::from_f64(1e-4))
+            .sqrt();
+        let std_vpp = sig_kirk_vpp * sqrt_t;
+        let d1_vpp =
+            ((f_p / k_vpp).ln() + T::from_f64(0.5) * sig_kirk_vpp * sig_kirk_vpp * t) / std_vpp;
+        let d2_vpp = d1_vpp - std_vpp;
+        let val_vpp = df * (f_p * norm_cdf(d1_vpp) - k_vpp * norm_cdf(d2_vpp));
+
+        let drag = val_spark - val_vpp;
+        let cap_factor = norm_cdf(d2_vpp);
+
+        EydelandWolyniecVppHeatRateStripReport {
+            effective_all_in_dispatch_strike: k_vpp,
+            kirk_composite_spread_volatility: sig_kirk_vpp,
+            frictionless_spark_spread_call_value: val_spark,
+            vpp_startup_adjusted_tolling_value: val_vpp,
+            startup_cost_option_value_drag: drag,
+            expected_dispatch_capacity_factor: cap_factor,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_eydeland_wolyniec_virtual_power_plant_heat_rate_strip_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn eydeland_wolyniec_vpp_heat_rate_strip_invariants_and_ad_parity() {
+            let spec = EydelandWolyniecVppHeatRateStripSpec {
+                power_forward_price_f_p: 68.0,
+                gas_forward_price_f_g: 7.50,
+                plant_heat_rate_h: 7.80,
+                variable_om_cost_v_om: 3.50,
+                startup_cost_per_mwh_c_start: 2.20,
+                power_volatility_sigma_p: 0.48,
+                gas_volatility_sigma_g: 0.36,
+                power_gas_correlation_rho: 0.72,
+                risk_free_rate_r: 0.04,
+                maturity_years_t: 0.75,
+            };
+            let rep = evaluate_eydeland_wolyniec_virtual_power_plant_heat_rate_strip(&spec);
+            assert!(
+                rep.frictionless_spark_spread_call_value > rep.vpp_startup_adjusted_tolling_value
+            );
+            assert!(rep.startup_cost_option_value_drag > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_eydeland_wolyniec_virtual_power_plant_heat_rate_strip(
+                &EydelandWolyniecVppHeatRateStripSpec {
+                    power_forward_price_f_p: Dual::<10>::variable(spec.power_forward_price_f_p, 0),
+                    gas_forward_price_f_g: Dual::<10>::variable(spec.gas_forward_price_f_g, 1),
+                    plant_heat_rate_h: Dual::<10>::variable(spec.plant_heat_rate_h, 2),
+                    variable_om_cost_v_om: Dual::<10>::variable(spec.variable_om_cost_v_om, 3),
+                    startup_cost_per_mwh_c_start: Dual::<10>::variable(
+                        spec.startup_cost_per_mwh_c_start,
+                        4,
+                    ),
+                    power_volatility_sigma_p: Dual::<10>::variable(
+                        spec.power_volatility_sigma_p,
+                        5,
+                    ),
+                    gas_volatility_sigma_g: Dual::<10>::variable(spec.gas_volatility_sigma_g, 6),
+                    power_gas_correlation_rho: Dual::<10>::variable(
+                        spec.power_gas_correlation_rho,
+                        7,
+                    ),
+                    risk_free_rate_r: Dual::<10>::variable(spec.risk_free_rate_r, 8),
+                    maturity_years_t: Dual::<10>::variable(spec.maturity_years_t, 9),
+                },
+            );
+            for i in 0..10 {
+                let mut v = [
+                    spec.power_forward_price_f_p,
+                    spec.gas_forward_price_f_g,
+                    spec.plant_heat_rate_h,
+                    spec.variable_om_cost_v_om,
+                    spec.startup_cost_per_mwh_c_start,
+                    spec.power_volatility_sigma_p,
+                    spec.gas_volatility_sigma_g,
+                    spec.power_gas_correlation_rho,
+                    spec.risk_free_rate_r,
+                    spec.maturity_years_t,
+                ];
+                v[i] += h;
+                let up = evaluate_eydeland_wolyniec_virtual_power_plant_heat_rate_strip(
+                    &EydelandWolyniecVppHeatRateStripSpec {
+                        power_forward_price_f_p: v[0],
+                        gas_forward_price_f_g: v[1],
+                        plant_heat_rate_h: v[2],
+                        variable_om_cost_v_om: v[3],
+                        startup_cost_per_mwh_c_start: v[4],
+                        power_volatility_sigma_p: v[5],
+                        gas_volatility_sigma_g: v[6],
+                        power_gas_correlation_rho: v[7],
+                        risk_free_rate_r: v[8],
+                        maturity_years_t: v[9],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_eydeland_wolyniec_virtual_power_plant_heat_rate_strip(
+                    &EydelandWolyniecVppHeatRateStripSpec {
+                        power_forward_price_f_p: v[0],
+                        gas_forward_price_f_g: v[1],
+                        plant_heat_rate_h: v[2],
+                        variable_om_cost_v_om: v[3],
+                        startup_cost_per_mwh_c_start: v[4],
+                        power_volatility_sigma_p: v[5],
+                        gas_volatility_sigma_g: v[6],
+                        power_gas_correlation_rho: v[7],
+                        risk_free_rate_r: v[8],
+                        maturity_years_t: v[9],
+                    },
+                );
+                let fd = (up.vpp_startup_adjusted_tolling_value
+                    - dn.vpp_startup_adjusted_tolling_value)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.vpp_startup_adjusted_tolling_value.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_eydeland_wolyniec_virtual_power_plant_heat_rate_strip_module::*;

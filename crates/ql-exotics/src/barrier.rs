@@ -666,3 +666,187 @@ mod evaluate_broadie_glasserman_kou_discrete_lookback_option_module {
     }
 }
 pub use evaluate_broadie_glasserman_kou_discrete_lookback_option_module::*;
+
+mod evaluate_rubinstein_reiner_down_and_out_call_with_rebate_module {
+    // Rubinstein & Reiner (1991, Risk 4(8), "Breaking Down the Barriers"),
+    // Rich (1994, Journal of Derivatives 2(1)), & Haug (2007, The Complete Guide to Option
+    // Pricing Formulas, 2nd ed., Section 4.17.1)
+    // Down-and-Out Call with First-Passage Hit Rebate & In-Out Reflection Parity Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct RubinsteinReinerDownAndOutCallRebateSpec<T: Real = f64> {
+        pub spot_price_s0: T,
+        pub strike_price_k: T,
+        pub lower_barrier_h: T,
+        pub cash_rebate_at_hit_r_rebate: T,
+        pub risk_free_rate_r: T,
+        pub dividend_yield_q: T,
+        pub volatility_sigma: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct RubinsteinReinerDownAndOutCallRebateReport<T: Real = f64> {
+        pub vanilla_black_scholes_call_a: T,
+        pub down_and_in_reflection_call_c: T,
+        pub pure_down_and_out_call_no_rebate: T,
+        pub first_passage_hit_rebate_pv_f: T,
+        pub total_down_and_out_call_with_rebate: T,
+        pub barrier_to_spot_distance_ratio: T,
+    }
+
+    pub fn evaluate_rubinstein_reiner_down_and_out_call_with_rebate<T: Real>(
+        spec: &RubinsteinReinerDownAndOutCallRebateSpec<T>,
+    ) -> RubinsteinReinerDownAndOutCallRebateReport<T> {
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(10.0));
+        let h_bar = spec
+            .lower_barrier_h
+            .max_val(T::from_f64(1.0))
+            .min_val(s0 * T::from_f64(0.98));
+        let k = spec.strike_price_k.max_val(h_bar + T::from_f64(0.5));
+        let rebate = spec.cash_rebate_at_hit_r_rebate.max_val(T::zero());
+        let r = spec.risk_free_rate_r.max_val(T::from_f64(0.001));
+        let q = spec.dividend_yield_q;
+        let sig = spec.volatility_sigma.max_val(T::from_f64(0.02));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+        let b = r - q;
+        let var = sig * sig;
+        let sqrt_t = t.sqrt();
+        let std_t = sig * sqrt_t;
+
+        // Rubinstein & Reiner (1991) / Haug (2007, Section 4.17.1) parameters:
+        let mu = (b - T::from_f64(0.5) * var) / var;
+        let lam = (mu * mu + (T::from_f64(2.0) * r) / var).sqrt();
+
+        let df_r = (-r * t).exp();
+        let df_q = ((b - r) * t).exp();
+        let ln_h_over_s = (h_bar / s0).ln();
+
+        // Term A: Vanilla Black-Scholes Call:
+        let x1 = (s0 / k).ln() / std_t + (T::one() + mu) * std_t;
+        let term_a = s0 * df_q * norm_cdf(x1) - k * df_r * norm_cdf(x1 - std_t);
+
+        // Term C (for K > H): Down-and-In Reflection Call:
+        let y1 = ((h_bar * h_bar) / (s0 * k)).ln() / std_t + (T::one() + mu) * std_t;
+        let hs_2mu = (T::from_f64(2.0) * mu * ln_h_over_s).exp();
+        let hs_2mup2 = (T::from_f64(2.0) * (T::one() + mu) * ln_h_over_s).exp();
+        let term_c = s0 * df_q * hs_2mup2 * norm_cdf(y1) - k * df_r * hs_2mu * norm_cdf(y1 - std_t);
+
+        let do_no_rebate = term_a - term_c;
+
+        // Term F: First-Passage Laplace Transform Cash Rebate Paid at Hit (eta = +1 for down barrier):
+        let z = ln_h_over_s / std_t + lam * std_t;
+        let hs_mu_plus_lam = ((mu + lam) * ln_h_over_s).exp();
+        let hs_mu_minus_lam = ((mu - lam) * ln_h_over_s).exp();
+        let term_f = rebate
+            * (hs_mu_plus_lam * norm_cdf(z)
+                + hs_mu_minus_lam * norm_cdf(z - T::from_f64(2.0) * lam * std_t));
+
+        let total_do = do_no_rebate + term_f;
+        let dist_ratio = (s0 - h_bar) / s0;
+
+        RubinsteinReinerDownAndOutCallRebateReport {
+            vanilla_black_scholes_call_a: term_a,
+            down_and_in_reflection_call_c: term_c,
+            pure_down_and_out_call_no_rebate: do_no_rebate,
+            first_passage_hit_rebate_pv_f: term_f,
+            total_down_and_out_call_with_rebate: total_do,
+            barrier_to_spot_distance_ratio: dist_ratio,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_rubinstein_reiner_down_and_out_call_with_rebate_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn rubinstein_reiner_down_and_out_call_rebate_invariants_and_ad_parity() {
+            let spec = RubinsteinReinerDownAndOutCallRebateSpec {
+                spot_price_s0: 100.0,
+                strike_price_k: 100.0,
+                lower_barrier_h: 90.0,
+                cash_rebate_at_hit_r_rebate: 3.0,
+                risk_free_rate_r: 0.05,
+                dividend_yield_q: 0.02,
+                volatility_sigma: 0.25,
+                maturity_years_t: 1.0,
+            };
+            let rep = evaluate_rubinstein_reiner_down_and_out_call_with_rebate(&spec);
+            assert!(
+                (rep.pure_down_and_out_call_no_rebate + rep.down_and_in_reflection_call_c
+                    - rep.vanilla_black_scholes_call_a)
+                    .abs()
+                    < 1e-12
+            );
+            assert!(rep.first_passage_hit_rebate_pv_f > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_rubinstein_reiner_down_and_out_call_with_rebate(
+                &RubinsteinReinerDownAndOutCallRebateSpec {
+                    spot_price_s0: Dual::<8>::variable(spec.spot_price_s0, 0),
+                    strike_price_k: Dual::<8>::variable(spec.strike_price_k, 1),
+                    lower_barrier_h: Dual::<8>::variable(spec.lower_barrier_h, 2),
+                    cash_rebate_at_hit_r_rebate: Dual::<8>::variable(
+                        spec.cash_rebate_at_hit_r_rebate,
+                        3,
+                    ),
+                    risk_free_rate_r: Dual::<8>::variable(spec.risk_free_rate_r, 4),
+                    dividend_yield_q: Dual::<8>::variable(spec.dividend_yield_q, 5),
+                    volatility_sigma: Dual::<8>::variable(spec.volatility_sigma, 6),
+                    maturity_years_t: Dual::<8>::variable(spec.maturity_years_t, 7),
+                },
+            );
+            for i in 0..8 {
+                let mut v = [
+                    spec.spot_price_s0,
+                    spec.strike_price_k,
+                    spec.lower_barrier_h,
+                    spec.cash_rebate_at_hit_r_rebate,
+                    spec.risk_free_rate_r,
+                    spec.dividend_yield_q,
+                    spec.volatility_sigma,
+                    spec.maturity_years_t,
+                ];
+                v[i] += h;
+                let up = evaluate_rubinstein_reiner_down_and_out_call_with_rebate(
+                    &RubinsteinReinerDownAndOutCallRebateSpec {
+                        spot_price_s0: v[0],
+                        strike_price_k: v[1],
+                        lower_barrier_h: v[2],
+                        cash_rebate_at_hit_r_rebate: v[3],
+                        risk_free_rate_r: v[4],
+                        dividend_yield_q: v[5],
+                        volatility_sigma: v[6],
+                        maturity_years_t: v[7],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_rubinstein_reiner_down_and_out_call_with_rebate(
+                    &RubinsteinReinerDownAndOutCallRebateSpec {
+                        spot_price_s0: v[0],
+                        strike_price_k: v[1],
+                        lower_barrier_h: v[2],
+                        cash_rebate_at_hit_r_rebate: v[3],
+                        risk_free_rate_r: v[4],
+                        dividend_yield_q: v[5],
+                        volatility_sigma: v[6],
+                        maturity_years_t: v[7],
+                    },
+                );
+                let fd = (up.total_down_and_out_call_with_rebate
+                    - dn.total_down_and_out_call_with_rebate)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.total_down_and_out_call_with_rebate.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_rubinstein_reiner_down_and_out_call_with_rebate_module::*;

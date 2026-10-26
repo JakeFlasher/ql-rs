@@ -1851,3 +1851,241 @@ mod evaluate_duffie_singleton_rmv_rfv_credit_triangle_basis_module {
     }
 }
 pub use evaluate_duffie_singleton_rmv_rfv_credit_triangle_basis_module::*;
+
+mod evaluate_brigo_alfonsi_shifted_cir_stochastic_intensity_cds_module {
+    // Brigo & Alfonsi (2005, Finance and Stochastics 9(1), "Credit Default Swap Calibration
+    // and Derivatives Pricing with the SSRD Stochastic Intensity Model"),
+    // Brigo & Mercurio (2006, Interest Rate Models - Theory and Practice, 2nd ed., Ch. 22),
+    // & O'Kane (2008, Ch. 10) Shifted CIR++ Stochastic Intensity & Credit-Rates Correlation CDS Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrigoAlfonsiShiftedCirStochasticIntensitySpec<T: Real = f64> {
+        pub initial_intensity_y0: T,
+        pub mean_reversion_speed_kappa: T,
+        pub long_run_intensity_theta: T,
+        pub intensity_volatility_sigma: T,
+        pub deterministic_shift_psi: T,
+        pub rates_credit_correlation_rho: T,
+        pub short_rate_volatility_sigma_r: T,
+        pub risk_free_rate_r: T,
+        pub recovery_rate_rec: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrigoAlfonsiShiftedCirStochasticIntensityReport<T: Real = f64> {
+        pub terminal_cir_survival_probability: T,
+        pub uncorrelated_cds_fair_spread_bps: T,
+        pub correlated_ssrd_cds_fair_spread_bps: T,
+        pub credit_rates_correlation_convexity_bps: T,
+        pub risky_pv01_annuity: T,
+        pub default_protection_leg_pv: T,
+    }
+
+    pub fn evaluate_brigo_alfonsi_shifted_cir_stochastic_intensity_cds<T: Real>(
+        spec: &BrigoAlfonsiShiftedCirStochasticIntensitySpec<T>,
+    ) -> BrigoAlfonsiShiftedCirStochasticIntensityReport<T> {
+        let y0 = spec.initial_intensity_y0.max_val(T::from_f64(1e-4));
+        let kappa = spec.mean_reversion_speed_kappa.max_val(T::from_f64(0.02));
+        let theta = spec.long_run_intensity_theta.max_val(T::from_f64(1e-4));
+        let sigma = spec.intensity_volatility_sigma.max_val(T::from_f64(0.01));
+        let psi = spec.deterministic_shift_psi;
+        let rho = spec
+            .rates_credit_correlation_rho
+            .max_val(T::from_f64(-0.95))
+            .min_val(T::from_f64(0.95));
+        let sig_r = spec
+            .short_rate_volatility_sigma_r
+            .max_val(T::from_f64(1e-4));
+        let r = spec.risk_free_rate_r.max_val(T::from_f64(0.001));
+        let rec = spec
+            .recovery_rate_rec
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.90));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.25));
+
+        let lgd = T::one() - rec;
+        let sig2 = sigma * sigma;
+        let gamma = (kappa * kappa + T::from_f64(2.0) * sig2).sqrt();
+        let two_k_theta_over_sig2 = (T::from_f64(2.0) * kappa * theta) / sig2;
+
+        let cir_surv = |u: T| -> T {
+            let e_gu = (gamma * u).exp();
+            let denom = (kappa + gamma) * (e_gu - T::one()) + T::from_f64(2.0) * gamma;
+            let base =
+                (T::from_f64(2.0) * gamma * (T::from_f64(0.5) * (kappa + gamma) * u).exp()) / denom;
+            let ln_a = two_k_theta_over_sig2 * base.ln();
+            let b_u = (T::from_f64(2.0) * (e_gu - T::one())) / denom;
+            (ln_a - b_u * y0 - psi * u).exp()
+        };
+
+        // 4-step midpoint integration of CDS protection leg and risky annuity:
+        let dt = t / T::from_f64(4.0);
+        let mut prev_q = T::one();
+        let mut prot_uncorr = T::zero();
+        let mut rpv01_uncorr = T::zero();
+        let mut prot_corr = T::zero();
+        let mut rpv01_corr = T::zero();
+        let sqrt_y0 = y0.sqrt();
+        let lam_init = (y0 + psi).max_val(T::from_f64(1e-4));
+
+        for step in 1..=4 {
+            let tj = dt * T::from_f64(step as f64);
+            let t_mid = tj - T::from_f64(0.5) * dt;
+            let q_j = cir_surv(tj);
+            let df_mid = (-r * t_mid).exp();
+
+            // Brigo & Alfonsi (2005, Section 3) / Brigo & Mercurio (2006, Ch. 22) SSRD covariance:
+            // With B_kappa(t) = (1 - e^{-kappa t}) / kappa and C_kappa(t) = int_0^t (t - u) e^{-kappa(t - u)} du = (t - B_kappa(t)) / kappa,
+            // Cov(-int_0^t r_s ds, -int_0^t y_s ds) = rho * sig_r * sigma * sqrt(y_0) * (0.5 * t^2 - C_kappa(t)) / kappa:
+            let b_kappa = (T::one() - (-kappa * t_mid).exp()) / kappa;
+            let c_kappa = (t_mid - b_kappa) / kappa;
+            let i_kappa = (T::from_f64(0.5) * t_mid * t_mid - c_kappa) / kappa;
+            let surv_cov = (rho * sig_r * sigma * sqrt_y0 * i_kappa).exp();
+            // In protection leg E[exp(-int_0^t (r_s + lam_s) ds) lam_t], conditioning on exp(-int_0^t r_s ds)
+            // shifts E^T[lam_t] by Cov(-int_0^t r_s ds, lam_t) = -rho * sig_r * sigma * sqrt(y_0) * C_kappa(t):
+            let prot_girsanov_mult = (-rho * sig_r * sigma * sqrt_y0 * c_kappa / lam_init).exp();
+
+            let dq = prev_q - q_j;
+            let q_avg = T::from_f64(0.5) * (prev_q + q_j);
+
+            prot_uncorr += lgd * df_mid * dq;
+            rpv01_uncorr += dt * df_mid * q_avg;
+
+            prot_corr += lgd * df_mid * surv_cov * prot_girsanov_mult * dq;
+            rpv01_corr += dt * df_mid * surv_cov * q_avg;
+
+            prev_q = q_j;
+        }
+
+        let s_uncorr_bps =
+            (prot_uncorr / rpv01_uncorr.max_val(T::from_f64(1e-6))) * T::from_f64(10_000.0);
+        let s_corr_bps =
+            (prot_corr / rpv01_corr.max_val(T::from_f64(1e-6))) * T::from_f64(10_000.0);
+        let conv_bps = s_corr_bps - s_uncorr_bps;
+
+        BrigoAlfonsiShiftedCirStochasticIntensityReport {
+            terminal_cir_survival_probability: prev_q,
+            uncorrelated_cds_fair_spread_bps: s_uncorr_bps,
+            correlated_ssrd_cds_fair_spread_bps: s_corr_bps,
+            credit_rates_correlation_convexity_bps: conv_bps,
+            risky_pv01_annuity: rpv01_corr,
+            default_protection_leg_pv: prot_corr,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_brigo_alfonsi_shifted_cir_stochastic_intensity_cds_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn brigo_alfonsi_shifted_cir_cds_invariants_and_ad_parity() {
+            let spec = BrigoAlfonsiShiftedCirStochasticIntensitySpec {
+                initial_intensity_y0: 0.022,
+                mean_reversion_speed_kappa: 0.45,
+                long_run_intensity_theta: 0.028,
+                intensity_volatility_sigma: 0.14,
+                deterministic_shift_psi: 0.004,
+                rates_credit_correlation_rho: -0.35,
+                short_rate_volatility_sigma_r: 0.012,
+                risk_free_rate_r: 0.04,
+                recovery_rate_rec: 0.40,
+                maturity_years_t: 5.0,
+            };
+            let rep = evaluate_brigo_alfonsi_shifted_cir_stochastic_intensity_cds(&spec);
+            assert!(
+                rep.terminal_cir_survival_probability > 0.50
+                    && rep.terminal_cir_survival_probability < 1.0
+            );
+            // Under flight-to-quality (rho < 0), defaults coincide with lower interest rates (higher discount factors),
+            // increasing the fair CDS spread relative to rho = 0:
+            assert!(rep.correlated_ssrd_cds_fair_spread_bps > rep.uncorrelated_cds_fair_spread_bps);
+
+            let h = 1e-6;
+            let r_ad = evaluate_brigo_alfonsi_shifted_cir_stochastic_intensity_cds(
+                &BrigoAlfonsiShiftedCirStochasticIntensitySpec {
+                    initial_intensity_y0: Dual::<10>::variable(spec.initial_intensity_y0, 0),
+                    mean_reversion_speed_kappa: Dual::<10>::variable(
+                        spec.mean_reversion_speed_kappa,
+                        1,
+                    ),
+                    long_run_intensity_theta: Dual::<10>::variable(
+                        spec.long_run_intensity_theta,
+                        2,
+                    ),
+                    intensity_volatility_sigma: Dual::<10>::variable(
+                        spec.intensity_volatility_sigma,
+                        3,
+                    ),
+                    deterministic_shift_psi: Dual::<10>::variable(spec.deterministic_shift_psi, 4),
+                    rates_credit_correlation_rho: Dual::<10>::variable(
+                        spec.rates_credit_correlation_rho,
+                        5,
+                    ),
+                    short_rate_volatility_sigma_r: Dual::<10>::variable(
+                        spec.short_rate_volatility_sigma_r,
+                        6,
+                    ),
+                    risk_free_rate_r: Dual::<10>::variable(spec.risk_free_rate_r, 7),
+                    recovery_rate_rec: Dual::<10>::variable(spec.recovery_rate_rec, 8),
+                    maturity_years_t: Dual::<10>::variable(spec.maturity_years_t, 9),
+                },
+            );
+            for i in 0..10 {
+                let mut v = [
+                    spec.initial_intensity_y0,
+                    spec.mean_reversion_speed_kappa,
+                    spec.long_run_intensity_theta,
+                    spec.intensity_volatility_sigma,
+                    spec.deterministic_shift_psi,
+                    spec.rates_credit_correlation_rho,
+                    spec.short_rate_volatility_sigma_r,
+                    spec.risk_free_rate_r,
+                    spec.recovery_rate_rec,
+                    spec.maturity_years_t,
+                ];
+                v[i] += h;
+                let up = evaluate_brigo_alfonsi_shifted_cir_stochastic_intensity_cds(
+                    &BrigoAlfonsiShiftedCirStochasticIntensitySpec {
+                        initial_intensity_y0: v[0],
+                        mean_reversion_speed_kappa: v[1],
+                        long_run_intensity_theta: v[2],
+                        intensity_volatility_sigma: v[3],
+                        deterministic_shift_psi: v[4],
+                        rates_credit_correlation_rho: v[5],
+                        short_rate_volatility_sigma_r: v[6],
+                        risk_free_rate_r: v[7],
+                        recovery_rate_rec: v[8],
+                        maturity_years_t: v[9],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_brigo_alfonsi_shifted_cir_stochastic_intensity_cds(
+                    &BrigoAlfonsiShiftedCirStochasticIntensitySpec {
+                        initial_intensity_y0: v[0],
+                        mean_reversion_speed_kappa: v[1],
+                        long_run_intensity_theta: v[2],
+                        intensity_volatility_sigma: v[3],
+                        deterministic_shift_psi: v[4],
+                        rates_credit_correlation_rho: v[5],
+                        short_rate_volatility_sigma_r: v[6],
+                        risk_free_rate_r: v[7],
+                        recovery_rate_rec: v[8],
+                        maturity_years_t: v[9],
+                    },
+                );
+                let fd = (up.correlated_ssrd_cds_fair_spread_bps
+                    - dn.correlated_ssrd_cds_fair_spread_bps)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.correlated_ssrd_cds_fair_spread_bps.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_brigo_alfonsi_shifted_cir_stochastic_intensity_cds_module::*;

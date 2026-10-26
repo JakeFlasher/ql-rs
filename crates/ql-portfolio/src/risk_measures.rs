@@ -5323,3 +5323,154 @@ mod evaluate_acerbi_tasche_exponential_spectral_risk_measure_module {
     }
 }
 pub use evaluate_acerbi_tasche_exponential_spectral_risk_measure_module::*;
+
+mod evaluate_bellini_cont_expectile_evar_influence_sensitivity_module {
+    // Bellini, Klar, Müller & Rosazza Gianin (2014, Finance and Stochastics 18(4),
+    // "Generalized Quantiles as Risk Measures"), Newey & Powell (1987, Econometrica 55(4)),
+    // & Cont, Deguest & Scandolo (2010, Mathematical Finance 20(4))
+    // Elicitable Coherent Expectile Risk Measure (EVaR) & Hampel Influence Function Engine.
+
+    use ql_ad::Real;
+    use ql_math::{inv_norm_cdf, norm_cdf, norm_pdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BelliniContExpectileRiskMeasureSpec<T: Real = f64> {
+        pub loss_mean_mu: T,
+        pub loss_volatility_sigma: T,
+        pub tail_asymmetry_tau: T,
+        pub contamination_loss_shock_z: T,
+        pub contamination_weight_eps: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BelliniContExpectileRiskMeasureReport<T: Real = f64> {
+        pub standardized_gaussian_expectile: T,
+        pub coherent_expectile_risk_measure: T,
+        pub gaussian_value_at_risk_benchmark: T,
+        pub hampel_expectile_influence_function: T,
+        pub contaminated_robust_expectile: T,
+        pub expectile_to_var_tail_ratio: T,
+    }
+
+    pub fn evaluate_bellini_cont_expectile_evar_influence_sensitivity<T: Real>(
+        spec: &BelliniContExpectileRiskMeasureSpec<T>,
+    ) -> BelliniContExpectileRiskMeasureReport<T> {
+        let mu = spec.loss_mean_mu;
+        let sig = spec.loss_volatility_sigma.max_val(T::from_f64(1e-4));
+        let tau = spec
+            .tail_asymmetry_tau
+            .max_val(T::from_f64(0.501))
+            .min_val(T::from_f64(0.999));
+        let z_shock = spec.contamination_loss_shock_z;
+        let eps = spec
+            .contamination_weight_eps
+            .max_val(T::from_f64(1e-4))
+            .min_val(T::from_f64(0.20));
+
+        // Solve Newey & Powell (1987) / Bellini et al. (2014) standardized Gaussian expectile equation:
+        // g(e) = (1 - 2*tau)*phi(e) + ((1 - tau)*Phi(e) + tau*(1 - Phi(e)))*e = 0 via 4 Newton steps:
+        let z_q = inv_norm_cdf(tau);
+        let mut e_std = z_q;
+        let one_minus_tau = T::one() - tau;
+        let one_minus_two_tau = T::one() - T::from_f64(2.0) * tau;
+
+        for _ in 0..4 {
+            let phi_e = norm_pdf(e_std);
+            let cdf_e = norm_cdf(e_std);
+            let gp = one_minus_tau * cdf_e + tau * (T::one() - cdf_e);
+            let g = one_minus_two_tau * phi_e + gp * e_std;
+            e_std -= g / gp;
+        }
+
+        let evar = mu + sig * e_std;
+        let var_q = mu + sig * z_q;
+
+        // Cont, Deguest & Scandolo (2010): Hampel influence function of expectile at tail shock z_shock > evar:
+        let cdf_final = norm_cdf(e_std);
+        let denom_if = one_minus_tau * cdf_final + tau * (T::one() - cdf_final);
+        let diff_z = z_shock - evar;
+        let pos_diff = T::from_f64(0.5) * (diff_z + (diff_z * diff_z + T::from_f64(1e-4)).sqrt());
+        let hampel_if = (tau * pos_diff) / denom_if;
+        let evar_contam = evar + eps * hampel_if;
+        let ratio = e_std / z_q.max_val(T::from_f64(1e-4));
+
+        BelliniContExpectileRiskMeasureReport {
+            standardized_gaussian_expectile: e_std,
+            coherent_expectile_risk_measure: evar,
+            gaussian_value_at_risk_benchmark: var_q,
+            hampel_expectile_influence_function: hampel_if,
+            contaminated_robust_expectile: evar_contam,
+            expectile_to_var_tail_ratio: ratio,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_bellini_cont_expectile_evar_influence_sensitivity_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn bellini_cont_expectile_risk_measure_invariants_and_ad_parity() {
+            let spec = BelliniContExpectileRiskMeasureSpec {
+                loss_mean_mu: 0.50,
+                loss_volatility_sigma: 2.20,
+                tail_asymmetry_tau: 0.975,
+                contamination_loss_shock_z: 8.50,
+                contamination_weight_eps: 0.02,
+            };
+            let rep = evaluate_bellini_cont_expectile_evar_influence_sensitivity(&spec);
+            assert!(rep.standardized_gaussian_expectile > 1.0);
+            assert!(rep.contaminated_robust_expectile > rep.coherent_expectile_risk_measure);
+
+            let h = 1e-6;
+            let r_ad = evaluate_bellini_cont_expectile_evar_influence_sensitivity(
+                &BelliniContExpectileRiskMeasureSpec {
+                    loss_mean_mu: Dual::<5>::variable(spec.loss_mean_mu, 0),
+                    loss_volatility_sigma: Dual::<5>::variable(spec.loss_volatility_sigma, 1),
+                    tail_asymmetry_tau: Dual::<5>::variable(spec.tail_asymmetry_tau, 2),
+                    contamination_loss_shock_z: Dual::<5>::variable(
+                        spec.contamination_loss_shock_z,
+                        3,
+                    ),
+                    contamination_weight_eps: Dual::<5>::variable(spec.contamination_weight_eps, 4),
+                },
+            );
+            for i in 0..5 {
+                let mut v = [
+                    spec.loss_mean_mu,
+                    spec.loss_volatility_sigma,
+                    spec.tail_asymmetry_tau,
+                    spec.contamination_loss_shock_z,
+                    spec.contamination_weight_eps,
+                ];
+                v[i] += h;
+                let up = evaluate_bellini_cont_expectile_evar_influence_sensitivity(
+                    &BelliniContExpectileRiskMeasureSpec {
+                        loss_mean_mu: v[0],
+                        loss_volatility_sigma: v[1],
+                        tail_asymmetry_tau: v[2],
+                        contamination_loss_shock_z: v[3],
+                        contamination_weight_eps: v[4],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_bellini_cont_expectile_evar_influence_sensitivity(
+                    &BelliniContExpectileRiskMeasureSpec {
+                        loss_mean_mu: v[0],
+                        loss_volatility_sigma: v[1],
+                        tail_asymmetry_tau: v[2],
+                        contamination_loss_shock_z: v[3],
+                        contamination_weight_eps: v[4],
+                    },
+                );
+                let fd = (up.contaminated_robust_expectile - dn.contaminated_robust_expectile)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.contaminated_robust_expectile.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_bellini_cont_expectile_evar_influence_sensitivity_module::*;
