@@ -25,6 +25,8 @@ pub use crate::phase38::{
     FabozziPacCompanionCmoReport, FabozziPacCompanionCmoSpec,
     evaluate_fabozzi_pac_companion_cmo_waterfall,
 };
+#[allow(unused_imports)]
+pub use crate::phase39::*;
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
 use ql_inflation::ZeroInflationCurve;

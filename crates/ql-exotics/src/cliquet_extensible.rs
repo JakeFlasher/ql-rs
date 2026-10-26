@@ -1,6 +1,8 @@
 use crate::barrier::{BarrierOptionSpec, MonitoringFrequency, price_barrier_option};
 pub use crate::phase35::*;
 pub use crate::phase37::*;
+#[allow(unused_imports)]
+pub use crate::phase39::*;
 use ql_ad::Real;
 use ql_math::bivariate_normal_cdf;
 use ql_vol::black_scholes_price;

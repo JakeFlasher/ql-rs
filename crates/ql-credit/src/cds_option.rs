@@ -1,9 +1,11 @@
-//! Black's option on a forward CDS spread, including front-end protection.
 #![allow(clippy::excessive_precision)]
+//! Black's option on a forward CDS spread, including front-end protection.
 pub use crate::phase35::*;
 pub use crate::phase36::*;
 pub use crate::phase37::*;
 pub use crate::phase38::*;
+#[allow(unused_imports)]
+pub use crate::phase39::*;
 
 use crate::SurvivalProbabilityCurve;
 pub use crate::phase33::*;

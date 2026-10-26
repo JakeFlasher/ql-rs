@@ -11,6 +11,8 @@ pub use crate::phase38::{
     evaluate_campbell_viceira_intertemporal_hedging_saa,
     evaluate_karnosky_singer_multicurrency_attribution,
 };
+#[allow(unused_imports)]
+pub use crate::phase39::*;
 
 pub use crate::phase30::*;
 pub use crate::phase31::{

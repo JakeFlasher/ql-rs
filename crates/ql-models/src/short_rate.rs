@@ -12,3 +12,5 @@ pub use crate::phase38::{
     BroadieGlassermanKouDiscreteBarrierReport, BroadieGlassermanKouDiscreteBarrierSpec,
     evaluate_broadie_glasserman_kou_discrete_barrier_lookback,
 };
+#[allow(unused_imports)]
+pub use crate::phase39::*;
