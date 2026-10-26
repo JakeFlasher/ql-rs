@@ -1162,3 +1162,200 @@ mod evaluate_gregory_kenyon_simm_mva_funding_module {
     }
 }
 pub use evaluate_gregory_kenyon_simm_mva_funding_module::*;
+
+mod evaluate_brigo_capponi_cds_contagion_gap_cva_module {
+    // Brigo, Capponi & Pallavicini (2014, Math. Finance) & Gregory (2020, Ch. 13)
+    // Credit Default Swap (CDS) Counterparty Contagion Jump-to-Default & Gap-Risk CVA Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrigoCapponiCdsContagionGapCvaSpec<T: Real = f64> {
+        pub reference_hazard_rate_lambda_ref: T,
+        pub protection_seller_hazard_rate_lambda_c: T,
+        pub contractual_running_spread_s_cds: T,
+        pub contagion_spread_jump_gamma: T,
+        pub simultaneous_default_prob_p_sim: T,
+        pub reference_recovery_rate_r_ref: T,
+        pub counterparty_recovery_rate_r_c: T,
+        pub ois_discount_rate_r: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrigoCapponiCdsContagionGapCvaReport<T: Real = f64> {
+        pub standalone_par_cds_spread: T,
+        pub post_contagion_reference_spread: T,
+        pub independent_replacement_cva: T,
+        pub contagion_jump_gap_cva_addon: T,
+        pub simultaneous_double_default_loss: T,
+        pub total_contagion_adjusted_cds_cva: T,
+        pub effective_protection_haircut_pct: T,
+    }
+
+    pub fn evaluate_brigo_capponi_cds_contagion_gap_cva<T: Real>(
+        spec: &BrigoCapponiCdsContagionGapCvaSpec<T>,
+    ) -> BrigoCapponiCdsContagionGapCvaReport<T> {
+        let lam_r = spec
+            .reference_hazard_rate_lambda_ref
+            .max_val(T::from_f64(1e-4));
+        let lam_c = spec
+            .protection_seller_hazard_rate_lambda_c
+            .max_val(T::from_f64(1e-4));
+        let s_contract = spec.contractual_running_spread_s_cds;
+        let gam_cont = spec.contagion_spread_jump_gamma.max_val(T::zero());
+        let p_sim = spec
+            .simultaneous_default_prob_p_sim
+            .max_val(T::zero())
+            .min_val(T::from_f64(0.50));
+        let lgd_r = (T::one() - spec.reference_recovery_rate_r_ref).max_val(T::from_f64(0.05));
+        let lgd_c = (T::one() - spec.counterparty_recovery_rate_r_c).max_val(T::from_f64(0.05));
+        let r = spec.ois_discount_rate_r;
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.5));
+
+        let s_par = lam_r * lgd_r;
+        let lam_r_post = lam_r * (T::one() + gam_cont);
+        let s_post = lam_r_post * lgd_r;
+
+        // Risky annuity before and after protection seller default at mid-horizon T/2:
+        let tau_rem = T::from_f64(0.5) * t;
+        let rpv_pre = (T::one() - (-(r + lam_r) * tau_rem).exp()) / (r + lam_r);
+        let rpv_post = (T::one() - (-(r + lam_r_post) * tau_rem).exp()) / (r + lam_r_post);
+
+        let mtm_pre = ((s_par - s_contract) * rpv_pre).max_val(T::from_f64(1e-4));
+        let mtm_post = ((s_post - s_contract) * rpv_post).max_val(mtm_pre);
+
+        let lam_tot = lam_c + lam_r;
+        let pd_seller_first = (lam_c / lam_tot) * (T::one() - (-lam_tot * t).exp());
+        let df_mid = (-r * tau_rem).exp();
+
+        let indep_cva = lgd_c * pd_seller_first * df_mid * mtm_pre;
+        let contagion_addon =
+            lgd_c * pd_seller_first * (T::one() - p_sim) * df_mid * (mtm_post - mtm_pre);
+        let sim_loss = lgd_c * pd_seller_first * p_sim * df_mid * lgd_r;
+        let total_cva = indep_cva + contagion_addon + sim_loss;
+
+        let prot_pv = s_par * (T::one() - (-(r + lam_r) * t).exp()) / (r + lam_r);
+        let haircut_pct = (total_cva / prot_pv.max_val(T::from_f64(1e-4))) * T::from_f64(100.0);
+
+        BrigoCapponiCdsContagionGapCvaReport {
+            standalone_par_cds_spread: s_par,
+            post_contagion_reference_spread: s_post,
+            independent_replacement_cva: indep_cva,
+            contagion_jump_gap_cva_addon: contagion_addon,
+            simultaneous_double_default_loss: sim_loss,
+            total_contagion_adjusted_cds_cva: total_cva,
+            effective_protection_haircut_pct: haircut_pct,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_brigo_capponi_cds_contagion_gap_cva_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn brigo_capponi_cds_contagion_gap_cva_invariants_and_ad_parity() {
+            let spec = BrigoCapponiCdsContagionGapCvaSpec {
+                reference_hazard_rate_lambda_ref: 0.025,
+                protection_seller_hazard_rate_lambda_c: 0.020,
+                contractual_running_spread_s_cds: 0.010,
+                contagion_spread_jump_gamma: 0.85,
+                simultaneous_default_prob_p_sim: 0.06,
+                reference_recovery_rate_r_ref: 0.40,
+                counterparty_recovery_rate_r_c: 0.40,
+                ois_discount_rate_r: 0.038,
+                maturity_years_t: 5.0,
+            };
+            let rep = evaluate_brigo_capponi_cds_contagion_gap_cva(&spec);
+            assert!(rep.contagion_jump_gap_cva_addon > 0.0);
+            assert!(rep.total_contagion_adjusted_cds_cva > rep.independent_replacement_cva);
+            assert!(rep.effective_protection_haircut_pct > 1.0);
+
+            let h = 1e-5;
+            let r_ad =
+                evaluate_brigo_capponi_cds_contagion_gap_cva(&BrigoCapponiCdsContagionGapCvaSpec {
+                    reference_hazard_rate_lambda_ref: Dual::<9>::variable(
+                        spec.reference_hazard_rate_lambda_ref,
+                        0,
+                    ),
+                    protection_seller_hazard_rate_lambda_c: Dual::<9>::variable(
+                        spec.protection_seller_hazard_rate_lambda_c,
+                        1,
+                    ),
+                    contractual_running_spread_s_cds: Dual::<9>::variable(
+                        spec.contractual_running_spread_s_cds,
+                        2,
+                    ),
+                    contagion_spread_jump_gamma: Dual::<9>::variable(
+                        spec.contagion_spread_jump_gamma,
+                        3,
+                    ),
+                    simultaneous_default_prob_p_sim: Dual::<9>::variable(
+                        spec.simultaneous_default_prob_p_sim,
+                        4,
+                    ),
+                    reference_recovery_rate_r_ref: Dual::<9>::variable(
+                        spec.reference_recovery_rate_r_ref,
+                        5,
+                    ),
+                    counterparty_recovery_rate_r_c: Dual::<9>::variable(
+                        spec.counterparty_recovery_rate_r_c,
+                        6,
+                    ),
+                    ois_discount_rate_r: Dual::<9>::variable(spec.ois_discount_rate_r, 7),
+                    maturity_years_t: Dual::<9>::variable(spec.maturity_years_t, 8),
+                });
+            for (idx, &ad) in r_ad.total_contagion_adjusted_cds_cva.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.reference_hazard_rate_lambda_ref += h;
+                        sm.reference_hazard_rate_lambda_ref -= h;
+                    }
+                    1 => {
+                        sp.protection_seller_hazard_rate_lambda_c += h;
+                        sm.protection_seller_hazard_rate_lambda_c -= h;
+                    }
+                    2 => {
+                        sp.contractual_running_spread_s_cds += h;
+                        sm.contractual_running_spread_s_cds -= h;
+                    }
+                    3 => {
+                        sp.contagion_spread_jump_gamma += h;
+                        sm.contagion_spread_jump_gamma -= h;
+                    }
+                    4 => {
+                        sp.simultaneous_default_prob_p_sim += h;
+                        sm.simultaneous_default_prob_p_sim -= h;
+                    }
+                    5 => {
+                        sp.reference_recovery_rate_r_ref += h;
+                        sm.reference_recovery_rate_r_ref -= h;
+                    }
+                    6 => {
+                        sp.counterparty_recovery_rate_r_c += h;
+                        sm.counterparty_recovery_rate_r_c -= h;
+                    }
+                    7 => {
+                        sp.ois_discount_rate_r += h;
+                        sm.ois_discount_rate_r -= h;
+                    }
+                    _ => {
+                        sp.maturity_years_t += h;
+                        sm.maturity_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_brigo_capponi_cds_contagion_gap_cva(&sp)
+                    .total_contagion_adjusted_cds_cva
+                    - evaluate_brigo_capponi_cds_contagion_gap_cva(&sm)
+                        .total_contagion_adjusted_cds_cva)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_brigo_capponi_cds_contagion_gap_cva_module::*;

@@ -1584,3 +1584,150 @@ mod evaluate_gatheral_total_variance_dupire_local_vol_module {
     }
 }
 pub use evaluate_gatheral_total_variance_dupire_local_vol_module::*;
+
+mod evaluate_roger_lee_wing_moment_slope_bound_module {
+    // Roger Lee (2004, J. Financial Econometrics) & Gatheral (2006, The Volatility Surface, Ch. 3)
+    // Moment Formula, Extreme Wing Implied Variance Slopes & Critical Moment Explosion Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct RogerLeeWingMomentSlopeBoundSpec<T: Real = f64> {
+        pub critical_upper_moment_p_tilde: T,
+        pub critical_lower_moment_q_tilde: T,
+        pub atm_total_variance_w0: T,
+        pub extreme_log_moneyness_k: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct RogerLeeWingMomentSlopeBoundReport<T: Real = f64> {
+        pub right_wing_variance_slope_beta_r: T,
+        pub left_wing_variance_slope_beta_l: T,
+        pub inverted_upper_moment_from_slope: T,
+        pub inverted_lower_moment_from_slope: T,
+        pub lee_moment_bijection_residual: T,
+        pub asymptotic_wing_total_variance: T,
+        pub asymptotic_wing_implied_volatility: T,
+    }
+
+    pub fn evaluate_roger_lee_wing_moment_slope_bound<T: Real>(
+        spec: &RogerLeeWingMomentSlopeBoundSpec<T>,
+    ) -> RogerLeeWingMomentSlopeBoundReport<T> {
+        let p = spec
+            .critical_upper_moment_p_tilde
+            .max_val(T::from_f64(0.05));
+        let q = spec
+            .critical_lower_moment_q_tilde
+            .max_val(T::from_f64(0.05));
+        let w0 = spec.atm_total_variance_w0.max_val(T::from_f64(1e-4));
+        let k = spec.extreme_log_moneyness_k;
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+        // Roger Lee (2004, Theorems 3.1 & 3.2):
+        // psi(x) = 2 - 4 * (sqrt(x^2 + x) - x) maps [0, infty) -> (0, 2]
+        let beta_r = T::from_f64(2.0) - T::from_f64(4.0) * ((p * p + p).sqrt() - p);
+        let beta_l = T::from_f64(2.0) - T::from_f64(4.0) * ((q * q + q).sqrt() - q);
+
+        // Exact inverse bijection: x(beta) = beta / 8 + 1 / (2 * beta) - 1 / 2
+        let p_inv =
+            beta_r / T::from_f64(8.0) + T::one() / (T::from_f64(2.0) * beta_r) - T::from_f64(0.5);
+        let q_inv =
+            beta_l / T::from_f64(8.0) + T::one() / (T::from_f64(2.0) * beta_l) - T::from_f64(0.5);
+        let bij_res = (p - p_inv) * (p - p_inv) + (q - q_inv) * (q - q_inv);
+
+        // Smooth two-sided wing total variance combining right slope beta_r and left slope beta_l:
+        let abs_k = (k * k + T::from_f64(1e-4)).sqrt();
+        let pos_k = T::from_f64(0.5) * (abs_k + k);
+        let neg_k = T::from_f64(0.5) * (abs_k - k);
+        let w_wing = w0 + beta_r * pos_k + beta_l * neg_k;
+        let iv_wing = (w_wing / t).sqrt();
+
+        RogerLeeWingMomentSlopeBoundReport {
+            right_wing_variance_slope_beta_r: beta_r,
+            left_wing_variance_slope_beta_l: beta_l,
+            inverted_upper_moment_from_slope: p_inv,
+            inverted_lower_moment_from_slope: q_inv,
+            lee_moment_bijection_residual: bij_res,
+            asymptotic_wing_total_variance: w_wing,
+            asymptotic_wing_implied_volatility: iv_wing,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_roger_lee_wing_moment_slope_bound_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn roger_lee_wing_moment_slope_bound_invariants_and_ad_parity() {
+            let spec = RogerLeeWingMomentSlopeBoundSpec {
+                critical_upper_moment_p_tilde: 3.5,
+                critical_lower_moment_q_tilde: 1.8,
+                atm_total_variance_w0: 0.04,
+                extreme_log_moneyness_k: -0.45,
+                maturity_years_t: 0.50,
+            };
+            let rep = evaluate_roger_lee_wing_moment_slope_bound(&spec);
+            assert!(
+                rep.right_wing_variance_slope_beta_r > 0.0
+                    && rep.right_wing_variance_slope_beta_r < 2.0
+            );
+            assert!(
+                rep.left_wing_variance_slope_beta_l > rep.right_wing_variance_slope_beta_r
+                    && rep.left_wing_variance_slope_beta_l < 2.0
+            );
+            assert!(rep.lee_moment_bijection_residual.abs() < 1e-12);
+
+            let h = 1e-5;
+            let r_ad =
+                evaluate_roger_lee_wing_moment_slope_bound(&RogerLeeWingMomentSlopeBoundSpec {
+                    critical_upper_moment_p_tilde: Dual::<5>::variable(
+                        spec.critical_upper_moment_p_tilde,
+                        0,
+                    ),
+                    critical_lower_moment_q_tilde: Dual::<5>::variable(
+                        spec.critical_lower_moment_q_tilde,
+                        1,
+                    ),
+                    atm_total_variance_w0: Dual::<5>::variable(spec.atm_total_variance_w0, 2),
+                    extreme_log_moneyness_k: Dual::<5>::variable(spec.extreme_log_moneyness_k, 3),
+                    maturity_years_t: Dual::<5>::variable(spec.maturity_years_t, 4),
+                });
+            for (idx, &ad) in r_ad.asymptotic_wing_implied_volatility.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.critical_upper_moment_p_tilde += h;
+                        sm.critical_upper_moment_p_tilde -= h;
+                    }
+                    1 => {
+                        sp.critical_lower_moment_q_tilde += h;
+                        sm.critical_lower_moment_q_tilde -= h;
+                    }
+                    2 => {
+                        sp.atm_total_variance_w0 += h;
+                        sm.atm_total_variance_w0 -= h;
+                    }
+                    3 => {
+                        sp.extreme_log_moneyness_k += h;
+                        sm.extreme_log_moneyness_k -= h;
+                    }
+                    _ => {
+                        sp.maturity_years_t += h;
+                        sm.maturity_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_roger_lee_wing_moment_slope_bound(&sp)
+                    .asymptotic_wing_implied_volatility
+                    - evaluate_roger_lee_wing_moment_slope_bound(&sm)
+                        .asymptotic_wing_implied_volatility)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_roger_lee_wing_moment_slope_bound_module::*;

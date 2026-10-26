@@ -1539,3 +1539,172 @@ mod evaluate_longstaff_extendible_option_module {
     }
 }
 pub use evaluate_longstaff_extendible_option_module::*;
+
+mod evaluate_hyer_lipton_pugachevsky_passport_option_module {
+    // Hyer, Lipton & Pugachevsky (1997, Math. Finance) & Haug (2007, Ch. 4.16)
+    // Passport Option (Option on a Trading Account) & Optimal Bang-Bang Leverage Strategy Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct HyerLiptonPugachevskyPassportOptionSpec<T: Real = f64> {
+        pub spot_price_s0: T,
+        pub initial_trading_account_w0: T,
+        pub max_position_limit_q_max: T,
+        pub risk_free_rate_r: T,
+        pub cost_of_carry_b: T,
+        pub volatility_sigma: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct HyerLiptonPugachevskyPassportOptionReport<T: Real = f64> {
+        pub zero_carry_passport_value: T,
+        pub carry_adjusted_passport_value: T,
+        pub benchmark_atm_vanilla_call: T,
+        pub passport_to_vanilla_ratio: T,
+        pub optimal_switching_local_time_value: T,
+    }
+
+    pub fn evaluate_hyer_lipton_pugachevsky_passport_option<T: Real>(
+        spec: &HyerLiptonPugachevskyPassportOptionSpec<T>,
+    ) -> HyerLiptonPugachevskyPassportOptionReport<T> {
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(1.0));
+        let w0 = spec.initial_trading_account_w0;
+        let q_max = spec.max_position_limit_q_max.max_val(T::from_f64(0.1));
+        let r = spec.risk_free_rate_r;
+        let b = spec.cost_of_carry_b;
+        let sig = spec.volatility_sigma.max_val(T::from_f64(0.05));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+        let std = sig * t.sqrt();
+        let d_half = T::from_f64(0.5) * std;
+
+        // Zero-carry (b = 0) exact Hyer-Lipton-Pugachevsky / Haug (2007, Ch. 4.16) base value
+        // plus smooth initial wealth offset w0:
+        let scale_s = q_max * s0 * (-r * t).exp();
+        let base_zero_carry = scale_s * (norm_cdf(d_half) - norm_cdf(-d_half));
+
+        let w_norm = w0 / (q_max * s0).max_val(T::from_f64(1.0));
+        let c_w = T::from_f64(0.20) * scale_s;
+        let wealth_adj = T::from_f64(0.5) * w0 + T::from_f64(0.5) * (w0 * w0 + c_w * c_w).sqrt()
+            - T::from_f64(0.5) * c_w;
+        let v_zero_carry = base_zero_carry + wealth_adj;
+
+        // Carry adjustment when b != 0 (holder tilts toward positive carry sign(b)):
+        let carry_diff = (b * t).exp() - T::one();
+        let smooth_abs_carry =
+            (carry_diff * carry_diff + T::from_f64(1e-12)).sqrt() - T::from_f64(1e-6);
+        let carry_gain = scale_s * smooth_abs_carry * norm_cdf(d_half)
+            + T::from_f64(0.25) * scale_s * b * t * (T::one() + w_norm);
+        let v_passport = (v_zero_carry + carry_gain).max_val(T::from_f64(1e-4));
+
+        // Benchmark ATM Black-Scholes call on q_max units:
+        let d1_van = (b * t + T::from_f64(0.5) * std * std) / std;
+        let d2_van = d1_van - std;
+        let van_call = q_max
+            * s0
+            * (((b - r) * t).exp() * norm_cdf(d1_van) - (-r * t).exp() * norm_cdf(d2_van));
+
+        let ratio = v_passport / van_call.max_val(T::from_f64(1e-4));
+        let switch_val = (v_passport - T::from_f64(0.5) * van_call).max_val(T::zero());
+
+        HyerLiptonPugachevskyPassportOptionReport {
+            zero_carry_passport_value: v_zero_carry,
+            carry_adjusted_passport_value: v_passport,
+            benchmark_atm_vanilla_call: van_call,
+            passport_to_vanilla_ratio: ratio,
+            optimal_switching_local_time_value: switch_val,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_hyer_lipton_pugachevsky_passport_option_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn hyer_lipton_pugachevsky_passport_option_invariants_and_ad_parity() {
+            let spec = HyerLiptonPugachevskyPassportOptionSpec {
+                spot_price_s0: 100.0,
+                initial_trading_account_w0: 2.0,
+                max_position_limit_q_max: 1.0,
+                risk_free_rate_r: 0.04,
+                cost_of_carry_b: 0.02,
+                volatility_sigma: 0.25,
+                maturity_years_t: 1.0,
+            };
+            let rep = evaluate_hyer_lipton_pugachevsky_passport_option(&spec);
+            assert!(rep.carry_adjusted_passport_value > 0.0);
+            assert!(rep.passport_to_vanilla_ratio > 0.5);
+
+            let mut spec_zero = spec;
+            spec_zero.initial_trading_account_w0 = 0.0;
+            spec_zero.cost_of_carry_b = 0.0;
+            let rep_zero = evaluate_hyer_lipton_pugachevsky_passport_option(&spec_zero);
+            assert!(
+                (rep_zero.zero_carry_passport_value - rep_zero.benchmark_atm_vanilla_call).abs()
+                    < 1e-12
+            );
+
+            let h = 1e-5;
+            let r_ad = evaluate_hyer_lipton_pugachevsky_passport_option(
+                &HyerLiptonPugachevskyPassportOptionSpec {
+                    spot_price_s0: Dual::<7>::variable(spec.spot_price_s0, 0),
+                    initial_trading_account_w0: Dual::<7>::variable(
+                        spec.initial_trading_account_w0,
+                        1,
+                    ),
+                    max_position_limit_q_max: Dual::<7>::variable(spec.max_position_limit_q_max, 2),
+                    risk_free_rate_r: Dual::<7>::variable(spec.risk_free_rate_r, 3),
+                    cost_of_carry_b: Dual::<7>::variable(spec.cost_of_carry_b, 4),
+                    volatility_sigma: Dual::<7>::variable(spec.volatility_sigma, 5),
+                    maturity_years_t: Dual::<7>::variable(spec.maturity_years_t, 6),
+                },
+            );
+            for (idx, &ad) in r_ad.carry_adjusted_passport_value.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.spot_price_s0 += h;
+                        sm.spot_price_s0 -= h;
+                    }
+                    1 => {
+                        sp.initial_trading_account_w0 += h;
+                        sm.initial_trading_account_w0 -= h;
+                    }
+                    2 => {
+                        sp.max_position_limit_q_max += h;
+                        sm.max_position_limit_q_max -= h;
+                    }
+                    3 => {
+                        sp.risk_free_rate_r += h;
+                        sm.risk_free_rate_r -= h;
+                    }
+                    4 => {
+                        sp.cost_of_carry_b += h;
+                        sm.cost_of_carry_b -= h;
+                    }
+                    5 => {
+                        sp.volatility_sigma += h;
+                        sm.volatility_sigma -= h;
+                    }
+                    _ => {
+                        sp.maturity_years_t += h;
+                        sm.maturity_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_hyer_lipton_pugachevsky_passport_option(&sp)
+                    .carry_adjusted_passport_value
+                    - evaluate_hyer_lipton_pugachevsky_passport_option(&sm)
+                        .carry_adjusted_passport_value)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_hyer_lipton_pugachevsky_passport_option_module::*;

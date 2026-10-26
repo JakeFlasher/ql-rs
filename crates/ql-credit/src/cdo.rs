@@ -1668,3 +1668,193 @@ mod evaluate_pedersen_okane_index_option_fep_smile_module {
     }
 }
 pub use evaluate_pedersen_okane_index_option_fep_smile_module::*;
+
+mod evaluate_hull_white_double_t_cdo_tail_copula_module {
+    // Hull & White (2004, J. Derivatives) & O'Kane (2008, Ch. 10) Double-t Heavy-Tailed
+    // Factor Copula CDO Tranche Tail-Dependence & Senior Tranche Spread Wedge Engine.
+
+    use ql_ad::Real;
+    use ql_math::{inv_norm_cdf, norm_cdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct HullWhiteDoubleTCdoTailCopulaSpec<T: Real = f64> {
+        pub portfolio_default_probability_q: T,
+        pub recovery_rate_r: T,
+        pub factor_correlation_rho: T,
+        pub student_t_degrees_of_freedom_nu: T,
+        pub equity_detachment_k1: T,
+        pub senior_attachment_k2: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct HullWhiteDoubleTCdoTailCopulaReport<T: Real = f64> {
+        pub portfolio_expected_loss: T,
+        pub upper_tail_dependence_lambda_u: T,
+        pub gaussian_senior_tranche_expected_loss: T,
+        pub double_t_senior_tranche_expected_loss: T,
+        pub double_t_equity_tranche_expected_loss: T,
+        pub senior_tranche_tail_spread_bps: T,
+        pub senior_heavy_tail_spread_multiplier: T,
+    }
+
+    pub fn evaluate_hull_white_double_t_cdo_tail_copula<T: Real>(
+        spec: &HullWhiteDoubleTCdoTailCopulaSpec<T>,
+    ) -> HullWhiteDoubleTCdoTailCopulaReport<T> {
+        let q = spec
+            .portfolio_default_probability_q
+            .max_val(T::from_f64(1e-4))
+            .min_val(T::from_f64(0.50));
+        let lgd = (T::one() - spec.recovery_rate_r).max_val(T::from_f64(0.10));
+        let rho = spec
+            .factor_correlation_rho
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.90));
+        let nu = spec
+            .student_t_degrees_of_freedom_nu
+            .max_val(T::from_f64(2.5));
+        let k1 = spec.equity_detachment_k1.max_val(T::from_f64(0.01));
+        let k2 = spec.senior_attachment_k2.max_val(k1 + T::from_f64(0.05));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.5));
+
+        let el_port = q * lgd;
+
+        // Asymptotic Student-t / Double-t upper/lower tail dependence coefficient:
+        // lambda_U = 2 * T_{nu+1}(-sqrt((nu + 1)(1 - rho) / (1 + rho))), approximated smoothly:
+        let arg_t = ((nu + T::one()) * (T::one() - rho) / (T::one() + rho)).sqrt();
+        let tail_inflation = T::one() + (arg_t * arg_t) / (T::from_f64(2.0) * (nu + T::one()));
+        let lambda_u = T::from_f64(2.0) * norm_cdf(-arg_t / tail_inflation.sqrt());
+
+        // Vasicek large-portfolio Gaussian senior loss above k2:
+        let z_q = inv_norm_cdf(q);
+        let z_k2 = inv_norm_cdf((k2 / lgd).min_val(T::from_f64(0.95)));
+        let d_sen_gauss = (z_q - (T::one() - rho).sqrt() * z_k2) / rho.sqrt();
+        let el_sen_gauss =
+            (lgd * norm_cdf(d_sen_gauss) * (T::one() - k2)).max_val(T::from_f64(1e-6));
+
+        // Hull-White (2004) Double-t copula inflates common-factor variance by nu / (nu - 2)
+        // and adds tail clustering lambda_u to senior tranche expected loss:
+        let dt_var_scale = nu / (nu - T::from_f64(2.0));
+        let rho_eff = (rho * dt_var_scale) / (T::one() + rho * (dt_var_scale - T::one()));
+        let d_sen_dt = (z_q - (T::one() - rho_eff).sqrt() * z_k2) / rho_eff.sqrt();
+        let el_sen_dt = lgd * norm_cdf(d_sen_dt) * (T::one() - k2)
+            + T::from_f64(0.15) * el_port * lambda_u * (T::one() - k2);
+
+        // By conservation of total portfolio expected loss, higher senior/mezzanine tail loss
+        // reduces expected loss trapped in the equity [0, k1] tranche relative to low-correlation limits:
+        let equity_residual = el_port - el_sen_dt;
+        let equity_cap = k1 * (T::one() - (-el_port / k1).exp());
+        // A smooth minimum keeps the tranche allocation differentiable at the
+        // residual/cap crossover while retaining the conservative upper bound
+        // of the hard minimum.
+        let smooth_min_eps = T::from_f64(0.003);
+        let el_eq_dt = (-smooth_min_eps
+            * ((-equity_residual / smooth_min_eps).exp() + (-equity_cap / smooth_min_eps).exp())
+                .ln())
+        .max_val(T::from_f64(1e-5));
+
+        let sen_notional = (T::one() - k2).max_val(T::from_f64(0.05));
+        let sen_spread_bps = (el_sen_dt / (sen_notional * t)) * T::from_f64(10_000.0);
+        let sen_mult = el_sen_dt / el_sen_gauss;
+
+        HullWhiteDoubleTCdoTailCopulaReport {
+            portfolio_expected_loss: el_port,
+            upper_tail_dependence_lambda_u: lambda_u,
+            gaussian_senior_tranche_expected_loss: el_sen_gauss,
+            double_t_senior_tranche_expected_loss: el_sen_dt,
+            double_t_equity_tranche_expected_loss: el_eq_dt,
+            senior_tranche_tail_spread_bps: sen_spread_bps,
+            senior_heavy_tail_spread_multiplier: sen_mult,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_hull_white_double_t_cdo_tail_copula_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn hull_white_double_t_cdo_tail_copula_invariants_and_ad_parity() {
+            let spec = HullWhiteDoubleTCdoTailCopulaSpec {
+                portfolio_default_probability_q: 0.045,
+                recovery_rate_r: 0.40,
+                factor_correlation_rho: 0.30,
+                student_t_degrees_of_freedom_nu: 4.0,
+                equity_detachment_k1: 0.03,
+                senior_attachment_k2: 0.15,
+                maturity_years_t: 5.0,
+            };
+            let rep = evaluate_hull_white_double_t_cdo_tail_copula(&spec);
+            assert!(rep.upper_tail_dependence_lambda_u > 0.0);
+            assert!(
+                rep.double_t_senior_tranche_expected_loss
+                    > rep.gaussian_senior_tranche_expected_loss
+            );
+            assert!(rep.senior_heavy_tail_spread_multiplier > 1.0);
+
+            let h = 1e-5;
+            let r_ad =
+                evaluate_hull_white_double_t_cdo_tail_copula(&HullWhiteDoubleTCdoTailCopulaSpec {
+                    portfolio_default_probability_q: Dual::<7>::variable(
+                        spec.portfolio_default_probability_q,
+                        0,
+                    ),
+                    recovery_rate_r: Dual::<7>::variable(spec.recovery_rate_r, 1),
+                    factor_correlation_rho: Dual::<7>::variable(spec.factor_correlation_rho, 2),
+                    student_t_degrees_of_freedom_nu: Dual::<7>::variable(
+                        spec.student_t_degrees_of_freedom_nu,
+                        3,
+                    ),
+                    equity_detachment_k1: Dual::<7>::variable(spec.equity_detachment_k1, 4),
+                    senior_attachment_k2: Dual::<7>::variable(spec.senior_attachment_k2, 5),
+                    maturity_years_t: Dual::<7>::variable(spec.maturity_years_t, 6),
+                });
+            let comp_ad = r_ad.senior_tranche_tail_spread_bps
+                + r_ad.double_t_equity_tranche_expected_loss * Dual::<7>::from_value(100.0);
+            for (idx, &ad) in comp_ad.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.portfolio_default_probability_q += h;
+                        sm.portfolio_default_probability_q -= h;
+                    }
+                    1 => {
+                        sp.recovery_rate_r += h;
+                        sm.recovery_rate_r -= h;
+                    }
+                    2 => {
+                        sp.factor_correlation_rho += h;
+                        sm.factor_correlation_rho -= h;
+                    }
+                    3 => {
+                        sp.student_t_degrees_of_freedom_nu += h;
+                        sm.student_t_degrees_of_freedom_nu -= h;
+                    }
+                    4 => {
+                        sp.equity_detachment_k1 += h;
+                        sm.equity_detachment_k1 -= h;
+                    }
+                    5 => {
+                        sp.senior_attachment_k2 += h;
+                        sm.senior_attachment_k2 -= h;
+                    }
+                    _ => {
+                        sp.maturity_years_t += h;
+                        sm.maturity_years_t -= h;
+                    }
+                }
+                let rp = evaluate_hull_white_double_t_cdo_tail_copula(&sp);
+                let rm = evaluate_hull_white_double_t_cdo_tail_copula(&sm);
+                let fp = rp.senior_tranche_tail_spread_bps
+                    + rp.double_t_equity_tranche_expected_loss * 100.0;
+                let fm = rm.senior_tranche_tail_spread_bps
+                    + rm.double_t_equity_tranche_expected_loss * 100.0;
+                let fd = (fp - fm) / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-3);
+            }
+        }
+    }
+}
+pub use evaluate_hull_white_double_t_cdo_tail_copula_module::*;

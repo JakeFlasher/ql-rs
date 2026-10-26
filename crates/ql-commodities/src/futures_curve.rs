@@ -392,3 +392,177 @@ mod evaluate_routledge_seppi_spatt_stockout_backwardation_module {
     }
 }
 pub use evaluate_routledge_seppi_spatt_stockout_backwardation_module::*;
+
+mod evaluate_schwartz_one_factor_mean_reverting_log_futures_module {
+    // Schwartz (1997, J. Finance Model 1) & Geman (2005, Ch. 3) Mean-Reverting Log-Price
+    // Commodity Futures Curve, Samuelson Volatility Attenuation & Futures Option Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct SchwartzOneFactorLogFuturesSpec<T: Real = f64> {
+        pub spot_commodity_price_s0: T,
+        pub risk_neutral_long_run_log_price_mu_star: T,
+        pub mean_reversion_speed_kappa: T,
+        pub spot_log_volatility_sigma: T,
+        pub option_expiry_years_te: T,
+        pub futures_maturity_years_tf: T,
+        pub option_strike_price_k: T,
+        pub risk_free_rate_r: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct SchwartzOneFactorLogFuturesReport<T: Real = f64> {
+        pub exact_log_futures_price: T,
+        pub schwartz_equilibrium_futures_price: T,
+        pub samuelson_terminal_futures_volatility: T,
+        pub integrated_option_log_futures_variance: T,
+        pub effective_black76_futures_vol: T,
+        pub futures_call_option_price: T,
+    }
+
+    pub fn evaluate_schwartz_one_factor_mean_reverting_log_futures<T: Real>(
+        spec: &SchwartzOneFactorLogFuturesSpec<T>,
+    ) -> SchwartzOneFactorLogFuturesReport<T> {
+        let s0 = spec.spot_commodity_price_s0.max_val(T::from_f64(1.0));
+        let mu_star = spec.risk_neutral_long_run_log_price_mu_star;
+        let kap = spec.mean_reversion_speed_kappa.max_val(T::from_f64(0.02));
+        let sig = spec.spot_log_volatility_sigma.max_val(T::from_f64(0.02));
+        let te = spec.option_expiry_years_te.max_val(T::from_f64(0.05));
+        let tf = spec
+            .futures_maturity_years_tf
+            .max_val(te + T::from_f64(0.05));
+        let k = spec.option_strike_price_k.max_val(T::from_f64(1.0));
+        let r = spec.risk_free_rate_r;
+
+        let x0 = s0.ln();
+        let e_ktf = (-kap * tf).exp();
+        let e_2ktf = (-T::from_f64(2.0) * kap * tf).exp();
+
+        // Schwartz (1997, Eq. 8): ln F(0, T_f) = e^{-kappa T_f} ln S_0 + (1 - e^{-kappa T_f}) mu^* + (sigma^2 / (4 kappa))(1 - e^{-2 kappa T_f})
+        let ln_f = e_ktf * x0
+            + (T::one() - e_ktf) * mu_star
+            + (sig * sig / (T::from_f64(4.0) * kap)) * (T::one() - e_2ktf);
+        let f0 = ln_f.exp();
+
+        // Samuelson effect: instantaneous volatility of F(t, T_f) at t = T_e is sigma * exp(-kappa (T_f - T_e)):
+        let sam_vol = sig * (-kap * (tf - te)).exp();
+
+        // Integrated variance of ln F(T_e, T_f) over [0, T_e] (Clewlow & Strickland 2000, Eq. 2.16):
+        let var_ln_f = (sig * sig / (T::from_f64(2.0) * kap))
+            * (-T::from_f64(2.0) * kap * (tf - te)).exp()
+            * (T::one() - (-T::from_f64(2.0) * kap * te).exp());
+        let std_f = var_ln_f.sqrt();
+        let eff_vol = (var_ln_f / te).sqrt();
+
+        let d1 = ((f0 / k).ln() + T::from_f64(0.5) * var_ln_f) / std_f;
+        let d2 = d1 - std_f;
+        let call_val = (-r * te).exp() * (f0 * norm_cdf(d1) - k * norm_cdf(d2));
+
+        SchwartzOneFactorLogFuturesReport {
+            exact_log_futures_price: ln_f,
+            schwartz_equilibrium_futures_price: f0,
+            samuelson_terminal_futures_volatility: sam_vol,
+            integrated_option_log_futures_variance: var_ln_f,
+            effective_black76_futures_vol: eff_vol,
+            futures_call_option_price: call_val,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_schwartz_one_factor_mean_reverting_log_futures_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn schwartz_one_factor_mean_reverting_log_futures_invariants_and_ad_parity() {
+            let spec = SchwartzOneFactorLogFuturesSpec {
+                spot_commodity_price_s0: 76.0,
+                risk_neutral_long_run_log_price_mu_star: 4.25,
+                mean_reversion_speed_kappa: 0.85,
+                spot_log_volatility_sigma: 0.34,
+                option_expiry_years_te: 0.50,
+                futures_maturity_years_tf: 1.00,
+                option_strike_price_k: 74.0,
+                risk_free_rate_r: 0.042,
+            };
+            let rep = evaluate_schwartz_one_factor_mean_reverting_log_futures(&spec);
+            assert!(rep.samuelson_terminal_futures_volatility < spec.spot_log_volatility_sigma);
+            assert!(rep.effective_black76_futures_vol < spec.spot_log_volatility_sigma);
+            assert!(rep.futures_call_option_price > 0.0);
+
+            let h = 1e-5;
+            let r_ad = evaluate_schwartz_one_factor_mean_reverting_log_futures(
+                &SchwartzOneFactorLogFuturesSpec {
+                    spot_commodity_price_s0: Dual::<8>::variable(spec.spot_commodity_price_s0, 0),
+                    risk_neutral_long_run_log_price_mu_star: Dual::<8>::variable(
+                        spec.risk_neutral_long_run_log_price_mu_star,
+                        1,
+                    ),
+                    mean_reversion_speed_kappa: Dual::<8>::variable(
+                        spec.mean_reversion_speed_kappa,
+                        2,
+                    ),
+                    spot_log_volatility_sigma: Dual::<8>::variable(
+                        spec.spot_log_volatility_sigma,
+                        3,
+                    ),
+                    option_expiry_years_te: Dual::<8>::variable(spec.option_expiry_years_te, 4),
+                    futures_maturity_years_tf: Dual::<8>::variable(
+                        spec.futures_maturity_years_tf,
+                        5,
+                    ),
+                    option_strike_price_k: Dual::<8>::variable(spec.option_strike_price_k, 6),
+                    risk_free_rate_r: Dual::<8>::variable(spec.risk_free_rate_r, 7),
+                },
+            );
+            for (idx, &ad) in r_ad.futures_call_option_price.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.spot_commodity_price_s0 += h;
+                        sm.spot_commodity_price_s0 -= h;
+                    }
+                    1 => {
+                        sp.risk_neutral_long_run_log_price_mu_star += h;
+                        sm.risk_neutral_long_run_log_price_mu_star -= h;
+                    }
+                    2 => {
+                        sp.mean_reversion_speed_kappa += h;
+                        sm.mean_reversion_speed_kappa -= h;
+                    }
+                    3 => {
+                        sp.spot_log_volatility_sigma += h;
+                        sm.spot_log_volatility_sigma -= h;
+                    }
+                    4 => {
+                        sp.option_expiry_years_te += h;
+                        sm.option_expiry_years_te -= h;
+                    }
+                    5 => {
+                        sp.futures_maturity_years_tf += h;
+                        sm.futures_maturity_years_tf -= h;
+                    }
+                    6 => {
+                        sp.option_strike_price_k += h;
+                        sm.option_strike_price_k -= h;
+                    }
+                    _ => {
+                        sp.risk_free_rate_r += h;
+                        sm.risk_free_rate_r -= h;
+                    }
+                }
+                let fd = (evaluate_schwartz_one_factor_mean_reverting_log_futures(&sp)
+                    .futures_call_option_price
+                    - evaluate_schwartz_one_factor_mean_reverting_log_futures(&sm)
+                        .futures_call_option_price)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_schwartz_one_factor_mean_reverting_log_futures_module::*;

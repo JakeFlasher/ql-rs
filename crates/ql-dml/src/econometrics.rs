@@ -1074,3 +1074,165 @@ mod evaluate_engle_granger_cointegration_ecm_half_life_module {
     }
 }
 pub use evaluate_engle_granger_cointegration_ecm_half_life_module::*;
+
+mod evaluate_barndorff_nielsen_shephard_bipower_jump_har_cj_module {
+    // Barndorff-Nielsen & Shephard (BNS, 2004 / 2006, J. Financial Econometrics) &
+    // Andersen, Bollerslev & Diebold (HAR-CJ, 2007, Econometrica) Realized Bipower Variation (BV),
+    // Jump Detection Z-Test & Continuous-Jump HAR-CJ Volatility Forecast Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BarndorffNielsenShephardHarCjSpec<T: Real = f64> {
+        pub daily_realized_variance_rv: T,
+        pub daily_bipower_variation_bv: T,
+        pub daily_tripower_quarticity_tq: T,
+        pub weekly_continuous_bv_w: T,
+        pub monthly_continuous_bv_m: T,
+        pub intraday_sampling_frequency_m: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BarndorffNielsenShephardHarCjReport<T: Real = f64> {
+        pub continuous_integrated_variance_est: T,
+        pub realized_jump_quadratic_variation: T,
+        pub relative_jump_contribution_rj: T,
+        pub bns_asymptotic_jump_z_statistic: T,
+        pub har_cj_next_day_variance_forecast: T,
+        pub har_cj_annualized_volatility_forecast: T,
+    }
+
+    pub fn evaluate_barndorff_nielsen_shephard_bipower_jump_har_cj<T: Real>(
+        spec: &BarndorffNielsenShephardHarCjSpec<T>,
+    ) -> BarndorffNielsenShephardHarCjReport<T> {
+        let rv = spec.daily_realized_variance_rv.max_val(T::from_f64(1e-6));
+        let bv = spec
+            .daily_bipower_variation_bv
+            .max_val(T::from_f64(1e-6))
+            .min_val(rv);
+        let tq = spec.daily_tripower_quarticity_tq.max_val(bv * bv);
+        let bv_w = spec.weekly_continuous_bv_w.max_val(T::from_f64(1e-6));
+        let bv_m = spec.monthly_continuous_bv_m.max_val(T::from_f64(1e-6));
+        let m_obs = spec
+            .intraday_sampling_frequency_m
+            .max_val(T::from_f64(12.0));
+
+        let raw_jump = rv - bv;
+        let eps = T::from_f64(1e-6);
+        let jump_qv = T::from_f64(0.5) * (raw_jump + (raw_jump * raw_jump + eps * eps).sqrt());
+        let rj = (rv - bv) / rv;
+
+        // Barndorff-Nielsen & Shephard (2006) relative jump test variance constant:
+        // theta_BNS = (pi / 2)^2 + pi - 5 = 0.60906898
+        let theta_bns = T::from_f64(0.609_068_98);
+        let quart_ratio = (tq / (bv * bv)).max_val(T::one());
+        let z_bns = rj / ((theta_bns / m_obs) * quart_ratio).sqrt();
+
+        // Andersen, Bollerslev & Diebold (2007) HAR-CJ forecast:
+        // E_t[RV_{t+1}] = beta_0 + beta_d * C_d + beta_w * C_w + beta_m * C_m + beta_j * J_d
+        let har_cj_var = T::from_f64(0.000015)
+            + T::from_f64(0.38) * bv
+            + T::from_f64(0.34) * bv_w
+            + T::from_f64(0.20) * bv_m
+            + T::from_f64(0.08) * jump_qv;
+        let har_cj_ann_vol = (har_cj_var * T::from_f64(252.0)).sqrt();
+
+        BarndorffNielsenShephardHarCjReport {
+            continuous_integrated_variance_est: bv,
+            realized_jump_quadratic_variation: jump_qv,
+            relative_jump_contribution_rj: rj,
+            bns_asymptotic_jump_z_statistic: z_bns,
+            har_cj_next_day_variance_forecast: har_cj_var,
+            har_cj_annualized_volatility_forecast: har_cj_ann_vol,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_barndorff_nielsen_shephard_bipower_jump_har_cj_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn barndorff_nielsen_shephard_bipower_jump_har_cj_invariants_and_ad_parity() {
+            let spec = BarndorffNielsenShephardHarCjSpec {
+                daily_realized_variance_rv: 0.00042,
+                daily_bipower_variation_bv: 0.00028,
+                daily_tripower_quarticity_tq: 1.15e-7,
+                weekly_continuous_bv_w: 0.00024,
+                monthly_continuous_bv_m: 0.00020,
+                intraday_sampling_frequency_m: 78.0,
+            };
+            let rep = evaluate_barndorff_nielsen_shephard_bipower_jump_har_cj(&spec);
+            assert!(rep.realized_jump_quadratic_variation > 0.0);
+            assert!(rep.bns_asymptotic_jump_z_statistic > 2.0);
+            assert!(rep.har_cj_annualized_volatility_forecast > 0.10);
+
+            let h = 1e-8;
+            let r_ad = evaluate_barndorff_nielsen_shephard_bipower_jump_har_cj(
+                &BarndorffNielsenShephardHarCjSpec {
+                    daily_realized_variance_rv: Dual::<6>::variable(
+                        spec.daily_realized_variance_rv,
+                        0,
+                    ),
+                    daily_bipower_variation_bv: Dual::<6>::variable(
+                        spec.daily_bipower_variation_bv,
+                        1,
+                    ),
+                    daily_tripower_quarticity_tq: Dual::<6>::variable(
+                        spec.daily_tripower_quarticity_tq,
+                        2,
+                    ),
+                    weekly_continuous_bv_w: Dual::<6>::variable(spec.weekly_continuous_bv_w, 3),
+                    monthly_continuous_bv_m: Dual::<6>::variable(spec.monthly_continuous_bv_m, 4),
+                    intraday_sampling_frequency_m: Dual::<6>::variable(
+                        spec.intraday_sampling_frequency_m,
+                        5,
+                    ),
+                },
+            );
+            let comp_ad = r_ad.bns_asymptotic_jump_z_statistic * Dual::<6>::from_value(1e-3)
+                + r_ad.har_cj_annualized_volatility_forecast;
+            for (idx, &ad) in comp_ad.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                let step = if idx == 2 { 1e-11 } else { h };
+                match idx {
+                    0 => {
+                        sp.daily_realized_variance_rv += step;
+                        sm.daily_realized_variance_rv -= step;
+                    }
+                    1 => {
+                        sp.daily_bipower_variation_bv += step;
+                        sm.daily_bipower_variation_bv -= step;
+                    }
+                    2 => {
+                        sp.daily_tripower_quarticity_tq += step;
+                        sm.daily_tripower_quarticity_tq -= step;
+                    }
+                    3 => {
+                        sp.weekly_continuous_bv_w += step;
+                        sm.weekly_continuous_bv_w -= step;
+                    }
+                    4 => {
+                        sp.monthly_continuous_bv_m += step;
+                        sm.monthly_continuous_bv_m -= step;
+                    }
+                    _ => {
+                        sp.intraday_sampling_frequency_m += step;
+                        sm.intraday_sampling_frequency_m -= step;
+                    }
+                }
+                let rp = evaluate_barndorff_nielsen_shephard_bipower_jump_har_cj(&sp);
+                let rm = evaluate_barndorff_nielsen_shephard_bipower_jump_har_cj(&sm);
+                let fp = rp.bns_asymptotic_jump_z_statistic * 1e-3
+                    + rp.har_cj_annualized_volatility_forecast;
+                let fm = rm.bns_asymptotic_jump_z_statistic * 1e-3
+                    + rm.har_cj_annualized_volatility_forecast;
+                let fd = (fp - fm) / (2.0 * step);
+                assert!(ad.abs() > 1e-5);
+                assert!((ad - fd).abs() / ad.abs().max(1.0) < 1e-3);
+            }
+        }
+    }
+}
+pub use evaluate_barndorff_nielsen_shephard_bipower_jump_har_cj_module::*;

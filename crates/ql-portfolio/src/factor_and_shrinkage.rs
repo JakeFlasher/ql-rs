@@ -2236,3 +2236,135 @@ mod evaluate_pastor_stambaugh_factor_prior_shrinkage_module {
     }
 }
 pub use evaluate_pastor_stambaugh_factor_prior_shrinkage_module::*;
+
+mod evaluate_gibbons_ross_shanken_multivariate_factor_ftest_module {
+    // Gibbons, Ross & Shanken (GRS, 1989, Econometrica) & Cochrane (2005, Ch. 12)
+    // Exact Finite-Sample Multivariate Factor Pricing F-Test & Tangency Sharpe Efficiency Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GibbonsRossShankenFactorFTestSpec<T: Real = f64> {
+        pub alpha_quadratic_form_sr_alpha2: T,
+        pub benchmark_factor_sharpe_ratio_sr_f: T,
+        pub sample_observations_t: T,
+        pub test_assets_count_n: T,
+        pub factor_count_k: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GibbonsRossShankenFactorFTestReport<T: Real = f64> {
+        pub grs_f_statistic: T,
+        pub hotelling_t2_statistic: T,
+        pub max_ex_post_tangency_sharpe: T,
+        pub benchmark_factor_efficiency_share: T,
+        pub finite_sample_dof_scaling: T,
+    }
+
+    pub fn evaluate_gibbons_ross_shanken_multivariate_factor_ftest<T: Real>(
+        spec: &GibbonsRossShankenFactorFTestSpec<T>,
+    ) -> GibbonsRossShankenFactorFTestReport<T> {
+        let sr_a2 = spec
+            .alpha_quadratic_form_sr_alpha2
+            .max_val(T::from_f64(1e-6));
+        let sr_f = spec.benchmark_factor_sharpe_ratio_sr_f;
+        let t_obs = spec.sample_observations_t.max_val(T::from_f64(20.0));
+        let n_assets = spec.test_assets_count_n.max_val(T::one());
+        let k_fac = spec.factor_count_k.max_val(T::one());
+
+        let sr_f2 = sr_f * sr_f;
+        let dof_num = (t_obs - n_assets - k_fac).max_val(T::one());
+        let dof_scale = dof_num / n_assets;
+
+        // Gibbons, Ross & Shanken (1989, Eq. 5):
+        // F_GRS = ((T - N - K) / N) * (alpha' Sigma^{-1} alpha) / (1 + SR_f^2)
+        let f_grs = dof_scale * (sr_a2 / (T::one() + sr_f2));
+        let hotelling_t2 = t_obs * (sr_a2 / (T::one() + sr_f2));
+
+        let sr_max2 = sr_f2 + sr_a2;
+        let sr_max = sr_max2.sqrt();
+        let eff_share = sr_f2 / sr_max2;
+
+        GibbonsRossShankenFactorFTestReport {
+            grs_f_statistic: f_grs,
+            hotelling_t2_statistic: hotelling_t2,
+            max_ex_post_tangency_sharpe: sr_max,
+            benchmark_factor_efficiency_share: eff_share,
+            finite_sample_dof_scaling: dof_num / t_obs,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_gibbons_ross_shanken_multivariate_factor_ftest_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn gibbons_ross_shanken_multivariate_factor_ftest_invariants_and_ad_parity() {
+            let spec = GibbonsRossShankenFactorFTestSpec {
+                alpha_quadratic_form_sr_alpha2: 0.145,
+                benchmark_factor_sharpe_ratio_sr_f: 0.42,
+                sample_observations_t: 180.0,
+                test_assets_count_n: 25.0,
+                factor_count_k: 3.0,
+            };
+            let rep = evaluate_gibbons_ross_shanken_multivariate_factor_ftest(&spec);
+            assert!(rep.grs_f_statistic > 0.5);
+            assert!(rep.max_ex_post_tangency_sharpe > spec.benchmark_factor_sharpe_ratio_sr_f);
+            assert!(
+                rep.benchmark_factor_efficiency_share > 0.0
+                    && rep.benchmark_factor_efficiency_share < 1.0
+            );
+
+            let h = 1e-5;
+            let r_ad = evaluate_gibbons_ross_shanken_multivariate_factor_ftest(
+                &GibbonsRossShankenFactorFTestSpec {
+                    alpha_quadratic_form_sr_alpha2: Dual::<5>::variable(
+                        spec.alpha_quadratic_form_sr_alpha2,
+                        0,
+                    ),
+                    benchmark_factor_sharpe_ratio_sr_f: Dual::<5>::variable(
+                        spec.benchmark_factor_sharpe_ratio_sr_f,
+                        1,
+                    ),
+                    sample_observations_t: Dual::<5>::variable(spec.sample_observations_t, 2),
+                    test_assets_count_n: Dual::<5>::variable(spec.test_assets_count_n, 3),
+                    factor_count_k: Dual::<5>::variable(spec.factor_count_k, 4),
+                },
+            );
+            for (idx, &ad) in r_ad.grs_f_statistic.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.alpha_quadratic_form_sr_alpha2 += h;
+                        sm.alpha_quadratic_form_sr_alpha2 -= h;
+                    }
+                    1 => {
+                        sp.benchmark_factor_sharpe_ratio_sr_f += h;
+                        sm.benchmark_factor_sharpe_ratio_sr_f -= h;
+                    }
+                    2 => {
+                        sp.sample_observations_t += h;
+                        sm.sample_observations_t -= h;
+                    }
+                    3 => {
+                        sp.test_assets_count_n += h;
+                        sm.test_assets_count_n -= h;
+                    }
+                    _ => {
+                        sp.factor_count_k += h;
+                        sm.factor_count_k -= h;
+                    }
+                }
+                let fd = (evaluate_gibbons_ross_shanken_multivariate_factor_ftest(&sp)
+                    .grs_f_statistic
+                    - evaluate_gibbons_ross_shanken_multivariate_factor_ftest(&sm).grs_f_statistic)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_gibbons_ross_shanken_multivariate_factor_ftest_module::*;

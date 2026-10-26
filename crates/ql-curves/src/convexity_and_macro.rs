@@ -712,3 +712,179 @@ mod evaluate_andersen_piterbarg_cms_replication_convexity_module {
     }
 }
 pub use evaluate_andersen_piterbarg_cms_replication_convexity_module::*;
+
+mod evaluate_litterman_scheinkman_butterfly_pca_carry_rolldown_module {
+    // Litterman & Scheinkman (1991, J. Fixed Income) & Piazzesi (2010) Yield Curve
+    // Principal-Component Butterfly (Duration & PCA-Slope Neutral Barbell) & Carry-Roll-Down Convexity Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LittermanScheinkmanButterflyPcaSpec<T: Real = f64> {
+        pub short_wing_duration_d1: T,
+        pub belly_duration_d2: T,
+        pub long_wing_duration_d3: T,
+        pub short_wing_slope_loading_s1: T,
+        pub belly_slope_loading_s2: T,
+        pub long_wing_slope_loading_s3: T,
+        pub short_wing_convexity_c1: T,
+        pub belly_convexity_c2: T,
+        pub long_wing_convexity_c3: T,
+        pub parallel_yield_shift_bps: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LittermanScheinkmanButterflyPcaReport<T: Real = f64> {
+        pub optimal_short_wing_weight_w1: T,
+        pub optimal_long_wing_weight_w3: T,
+        pub duration_neutral_fifty_fifty_w1: T,
+        pub duration_neutral_fifty_fifty_w3: T,
+        pub net_butterfly_convexity_exposure: T,
+        pub convexity_pnl_advantage_bps: T,
+        pub residual_duration_exposure: T,
+    }
+
+    pub fn evaluate_litterman_scheinkman_butterfly_pca_carry_rolldown<T: Real>(
+        spec: &LittermanScheinkmanButterflyPcaSpec<T>,
+    ) -> LittermanScheinkmanButterflyPcaReport<T> {
+        let d1 = spec.short_wing_duration_d1.max_val(T::from_f64(0.5));
+        let d2 = spec.belly_duration_d2.max_val(T::from_f64(1.0));
+        let d3 = spec.long_wing_duration_d3.max_val(T::from_f64(2.0));
+        let s1 = spec.short_wing_slope_loading_s1;
+        let s2 = spec.belly_slope_loading_s2;
+        let s3 = spec.long_wing_slope_loading_s3;
+        let dy = spec.parallel_yield_shift_bps * T::from_f64(1e-4);
+
+        // Solve 2x2 system for unit short belly (-1 unit of leg 2):
+        // w1 * d1 + w3 * d3 = d2  (duration neutrality)
+        // w1 * d1 * s1 + w3 * d3 * s3 = d2 * s2  (PCA slope-factor dollar neutrality)
+        let ds31 = (s3 - s1).max_val(T::from_f64(0.05));
+        let w1 = (d2 * (s3 - s2)) / (d1 * ds31);
+        let w3 = (d2 * (s2 - s1)) / (d3 * ds31);
+
+        // Standard 50-50 duration-weighted butterfly weights:
+        let w1_50 = T::from_f64(0.5) * d2 / d1;
+        let w3_50 = T::from_f64(0.5) * d2 / d3;
+
+        let net_conv = w1 * spec.short_wing_convexity_c1 - spec.belly_convexity_c2
+            + w3 * spec.long_wing_convexity_c3;
+        let conv_pnl_bps = T::from_f64(0.5) * net_conv * dy * dy * T::from_f64(10_000.0);
+        let res_dur = w1 * d1 - d2 + w3 * d3;
+
+        LittermanScheinkmanButterflyPcaReport {
+            optimal_short_wing_weight_w1: w1,
+            optimal_long_wing_weight_w3: w3,
+            duration_neutral_fifty_fifty_w1: w1_50,
+            duration_neutral_fifty_fifty_w3: w3_50,
+            net_butterfly_convexity_exposure: net_conv,
+            convexity_pnl_advantage_bps: conv_pnl_bps,
+            residual_duration_exposure: res_dur,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_litterman_scheinkman_butterfly_pca_carry_rolldown_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn litterman_scheinkman_butterfly_pca_invariants_and_ad_parity() {
+            let spec = LittermanScheinkmanButterflyPcaSpec {
+                short_wing_duration_d1: 1.92,
+                belly_duration_d2: 4.55,
+                long_wing_duration_d3: 8.40,
+                short_wing_slope_loading_s1: -0.65,
+                belly_slope_loading_s2: -0.10,
+                long_wing_slope_loading_s3: 0.48,
+                short_wing_convexity_c1: 4.2,
+                belly_convexity_c2: 23.5,
+                long_wing_convexity_c3: 82.0,
+                parallel_yield_shift_bps: 50.0,
+            };
+            let rep = evaluate_litterman_scheinkman_butterfly_pca_carry_rolldown(&spec);
+            assert!(rep.optimal_short_wing_weight_w1 > 0.0);
+            assert!(rep.optimal_long_wing_weight_w3 > 0.0);
+            assert!(rep.net_butterfly_convexity_exposure > 0.0);
+            assert!(rep.residual_duration_exposure.abs() < 1e-6);
+
+            let h = 1e-5;
+            let r_ad = evaluate_litterman_scheinkman_butterfly_pca_carry_rolldown(
+                &LittermanScheinkmanButterflyPcaSpec {
+                    short_wing_duration_d1: Dual::<10>::variable(spec.short_wing_duration_d1, 0),
+                    belly_duration_d2: Dual::<10>::variable(spec.belly_duration_d2, 1),
+                    long_wing_duration_d3: Dual::<10>::variable(spec.long_wing_duration_d3, 2),
+                    short_wing_slope_loading_s1: Dual::<10>::variable(
+                        spec.short_wing_slope_loading_s1,
+                        3,
+                    ),
+                    belly_slope_loading_s2: Dual::<10>::variable(spec.belly_slope_loading_s2, 4),
+                    long_wing_slope_loading_s3: Dual::<10>::variable(
+                        spec.long_wing_slope_loading_s3,
+                        5,
+                    ),
+                    short_wing_convexity_c1: Dual::<10>::variable(spec.short_wing_convexity_c1, 6),
+                    belly_convexity_c2: Dual::<10>::variable(spec.belly_convexity_c2, 7),
+                    long_wing_convexity_c3: Dual::<10>::variable(spec.long_wing_convexity_c3, 8),
+                    parallel_yield_shift_bps: Dual::<10>::variable(
+                        spec.parallel_yield_shift_bps,
+                        9,
+                    ),
+                },
+            );
+            for (idx, &ad) in r_ad.convexity_pnl_advantage_bps.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.short_wing_duration_d1 += h;
+                        sm.short_wing_duration_d1 -= h;
+                    }
+                    1 => {
+                        sp.belly_duration_d2 += h;
+                        sm.belly_duration_d2 -= h;
+                    }
+                    2 => {
+                        sp.long_wing_duration_d3 += h;
+                        sm.long_wing_duration_d3 -= h;
+                    }
+                    3 => {
+                        sp.short_wing_slope_loading_s1 += h;
+                        sm.short_wing_slope_loading_s1 -= h;
+                    }
+                    4 => {
+                        sp.belly_slope_loading_s2 += h;
+                        sm.belly_slope_loading_s2 -= h;
+                    }
+                    5 => {
+                        sp.long_wing_slope_loading_s3 += h;
+                        sm.long_wing_slope_loading_s3 -= h;
+                    }
+                    6 => {
+                        sp.short_wing_convexity_c1 += h;
+                        sm.short_wing_convexity_c1 -= h;
+                    }
+                    7 => {
+                        sp.belly_convexity_c2 += h;
+                        sm.belly_convexity_c2 -= h;
+                    }
+                    8 => {
+                        sp.long_wing_convexity_c3 += h;
+                        sm.long_wing_convexity_c3 -= h;
+                    }
+                    _ => {
+                        sp.parallel_yield_shift_bps += h;
+                        sm.parallel_yield_shift_bps -= h;
+                    }
+                }
+                let fd = (evaluate_litterman_scheinkman_butterfly_pca_carry_rolldown(&sp)
+                    .convexity_pnl_advantage_bps
+                    - evaluate_litterman_scheinkman_butterfly_pca_carry_rolldown(&sm)
+                        .convexity_pnl_advantage_bps)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_litterman_scheinkman_butterfly_pca_carry_rolldown_module::*;

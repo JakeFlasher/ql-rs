@@ -1087,3 +1087,157 @@ mod evaluate_epstein_zin_weil_recursive_utility_sdf_module {
     }
 }
 pub use evaluate_epstein_zin_weil_recursive_utility_sdf_module::*;
+
+mod evaluate_lettau_ludvigson_cay_consumption_wealth_forecast_module {
+    // Lettau & Ludvigson (2001, J. Finance) & Cochrane (2005, Ch. 20) Cointegrated
+    // Consumption-Wealth Ratio (cay), Human-Capital Labor Share & Conditional Equity Premium Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LettauLudvigsonCayForecastSpec<T: Real = f64> {
+        pub log_consumption_c: T,
+        pub log_asset_wealth_a: T,
+        pub log_labor_income_y: T,
+        pub asset_wealth_cointegrating_share_omega: T,
+        pub unconditional_equity_premium_gamma0: T,
+        pub cay_predictive_slope_beta_cay: T,
+        pub conditional_market_volatility_sigma_m: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LettauLudvigsonCayForecastReport<T: Real = f64> {
+        pub human_capital_cointegrating_share: T,
+        pub cointegrating_residual_cay: T,
+        pub forecasted_annual_equity_risk_premium: T,
+        pub conditional_market_sharpe_ratio: T,
+        pub kelly_optimal_equity_allocation: T,
+    }
+
+    pub fn evaluate_lettau_ludvigson_cay_consumption_wealth_forecast<T: Real>(
+        spec: &LettauLudvigsonCayForecastSpec<T>,
+    ) -> LettauLudvigsonCayForecastReport<T> {
+        let c = spec.log_consumption_c;
+        let a = spec.log_asset_wealth_a;
+        let y = spec.log_labor_income_y;
+        let omega = spec
+            .asset_wealth_cointegrating_share_omega
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.95));
+        let gam0 = spec.unconditional_equity_premium_gamma0;
+        let beta_cay = spec.cay_predictive_slope_beta_cay;
+        let sig_m = spec
+            .conditional_market_volatility_sigma_m
+            .max_val(T::from_f64(0.05));
+
+        let human_share = T::one() - omega;
+        // Lettau & Ludvigson (2001, Eq. 6): cay_t = c_t - omega * a_t - (1 - omega) * y_t:
+        let cay = c - omega * a - human_share * y;
+
+        // Predictive regression for next-year excess stock market return:
+        let erp = gam0 + beta_cay * cay;
+        let cond_sr = erp / sig_m;
+        let kelly_w = erp / (sig_m * sig_m * T::from_f64(3.0));
+
+        LettauLudvigsonCayForecastReport {
+            human_capital_cointegrating_share: human_share,
+            cointegrating_residual_cay: cay,
+            forecasted_annual_equity_risk_premium: erp,
+            conditional_market_sharpe_ratio: cond_sr,
+            kelly_optimal_equity_allocation: kelly_w,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_lettau_ludvigson_cay_consumption_wealth_forecast_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn lettau_ludvigson_cay_consumption_wealth_forecast_invariants_and_ad_parity() {
+            let spec = LettauLudvigsonCayForecastSpec {
+                log_consumption_c: 9.865,
+                log_asset_wealth_a: 11.20,
+                log_labor_income_y: 9.25,
+                asset_wealth_cointegrating_share_omega: 0.31,
+                unconditional_equity_premium_gamma0: 0.062,
+                cay_predictive_slope_beta_cay: 2.15,
+                conditional_market_volatility_sigma_m: 0.16,
+            };
+            let rep = evaluate_lettau_ludvigson_cay_consumption_wealth_forecast(&spec);
+            assert!(rep.cointegrating_residual_cay > 0.0);
+            assert!(
+                rep.forecasted_annual_equity_risk_premium
+                    > spec.unconditional_equity_premium_gamma0
+            );
+            assert!(rep.conditional_market_sharpe_ratio > 0.3);
+
+            let h = 1e-5;
+            let r_ad = evaluate_lettau_ludvigson_cay_consumption_wealth_forecast(
+                &LettauLudvigsonCayForecastSpec {
+                    log_consumption_c: Dual::<7>::variable(spec.log_consumption_c, 0),
+                    log_asset_wealth_a: Dual::<7>::variable(spec.log_asset_wealth_a, 1),
+                    log_labor_income_y: Dual::<7>::variable(spec.log_labor_income_y, 2),
+                    asset_wealth_cointegrating_share_omega: Dual::<7>::variable(
+                        spec.asset_wealth_cointegrating_share_omega,
+                        3,
+                    ),
+                    unconditional_equity_premium_gamma0: Dual::<7>::variable(
+                        spec.unconditional_equity_premium_gamma0,
+                        4,
+                    ),
+                    cay_predictive_slope_beta_cay: Dual::<7>::variable(
+                        spec.cay_predictive_slope_beta_cay,
+                        5,
+                    ),
+                    conditional_market_volatility_sigma_m: Dual::<7>::variable(
+                        spec.conditional_market_volatility_sigma_m,
+                        6,
+                    ),
+                },
+            );
+            for (idx, &ad) in r_ad.conditional_market_sharpe_ratio.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.log_consumption_c += h;
+                        sm.log_consumption_c -= h;
+                    }
+                    1 => {
+                        sp.log_asset_wealth_a += h;
+                        sm.log_asset_wealth_a -= h;
+                    }
+                    2 => {
+                        sp.log_labor_income_y += h;
+                        sm.log_labor_income_y -= h;
+                    }
+                    3 => {
+                        sp.asset_wealth_cointegrating_share_omega += h;
+                        sm.asset_wealth_cointegrating_share_omega -= h;
+                    }
+                    4 => {
+                        sp.unconditional_equity_premium_gamma0 += h;
+                        sm.unconditional_equity_premium_gamma0 -= h;
+                    }
+                    5 => {
+                        sp.cay_predictive_slope_beta_cay += h;
+                        sm.cay_predictive_slope_beta_cay -= h;
+                    }
+                    _ => {
+                        sp.conditional_market_volatility_sigma_m += h;
+                        sm.conditional_market_volatility_sigma_m -= h;
+                    }
+                }
+                let fd = (evaluate_lettau_ludvigson_cay_consumption_wealth_forecast(&sp)
+                    .conditional_market_sharpe_ratio
+                    - evaluate_lettau_ludvigson_cay_consumption_wealth_forecast(&sm)
+                        .conditional_market_sharpe_ratio)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_lettau_ludvigson_cay_consumption_wealth_forecast_module::*;

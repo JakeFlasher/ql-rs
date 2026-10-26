@@ -694,3 +694,157 @@ mod evaluate_baba_packer_cip_cross_currency_basis_wedge_module {
     }
 }
 pub use evaluate_baba_packer_cip_cross_currency_basis_wedge_module::*;
+
+mod evaluate_wystup_dual_currency_deposit_yield_enhancement_module {
+    // Wystup (2017, FX Options and Structured Products, 2nd ed., Ch. 2.7)
+    // FX Dual-Currency Deposit (DCD) Yield Enhancement & Embedded Short-Put Strike-Conversion Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupDualCurrencyDepositYieldSpec<T: Real = f64> {
+        pub spot_fx_s0: T,
+        pub conversion_strike_fx_k: T,
+        pub domestic_deposit_rate_rd: T,
+        pub foreign_deposit_rate_rf: T,
+        pub fx_volatility_sigma: T,
+        pub deposit_tenor_years_t: T,
+        pub bank_structuring_margin_pct: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupDualCurrencyDepositYieldReport<T: Real = f64> {
+        pub embedded_foreign_put_pv_pct: T,
+        pub net_investor_option_premium_pct: T,
+        pub annualized_yield_enhancement_bps: T,
+        pub enhanced_dcd_coupon_rate: T,
+        pub risk_neutral_conversion_prob: T,
+        pub expected_redemption_value_pct: T,
+    }
+
+    pub fn evaluate_wystup_dual_currency_deposit_yield_enhancement<T: Real>(
+        spec: &WystupDualCurrencyDepositYieldSpec<T>,
+    ) -> WystupDualCurrencyDepositYieldReport<T> {
+        let s0 = spec.spot_fx_s0.max_val(T::from_f64(1e-4));
+        let k = spec.conversion_strike_fx_k.max_val(T::from_f64(1e-4));
+        let rd = spec.domestic_deposit_rate_rd;
+        let rf = spec.foreign_deposit_rate_rf;
+        let sig = spec.fx_volatility_sigma.max_val(T::from_f64(0.01));
+        let t = spec.deposit_tenor_years_t.max_val(T::from_f64(0.02));
+        let margin = spec.bank_structuring_margin_pct.max_val(T::zero());
+
+        let std = sig * t.sqrt();
+        let d1 = ((s0 / k).ln() + (rd - rf + T::from_f64(0.5) * sig * sig) * t) / std;
+        let d2 = d1 - std;
+
+        // In a DCD with domestic principal N_d = 1, the investor sells (1 / K) units of a Garman-Kohlhagen put:
+        let gk_put_per_unit =
+            k * (-rd * t).exp() * norm_cdf(-d2) - s0 * (-rf * t).exp() * norm_cdf(-d1);
+        let put_pv_pct = (gk_put_per_unit / k) * T::from_f64(100.0);
+        let net_prem_pct = (put_pv_pct - margin).max_val(T::from_f64(0.01));
+
+        // Future-valued annualized yield enhancement over deposit tenor T:
+        let df_d = (-rd * t).exp();
+        let yield_enh = (net_prem_pct / T::from_f64(100.0)) / (df_d * t);
+        let yield_enh_bps = yield_enh * T::from_f64(10_000.0);
+        let enhanced_rate = rd + yield_enh;
+        let conv_prob = norm_cdf(-d2);
+
+        let exp_redemption_pct = (T::one() + enhanced_rate * t
+            - (put_pv_pct / T::from_f64(100.0)) / df_d)
+            * T::from_f64(100.0);
+
+        WystupDualCurrencyDepositYieldReport {
+            embedded_foreign_put_pv_pct: put_pv_pct,
+            net_investor_option_premium_pct: net_prem_pct,
+            annualized_yield_enhancement_bps: yield_enh_bps,
+            enhanced_dcd_coupon_rate: enhanced_rate,
+            risk_neutral_conversion_prob: conv_prob,
+            expected_redemption_value_pct: exp_redemption_pct,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_wystup_dual_currency_deposit_yield_enhancement_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn wystup_dual_currency_deposit_yield_enhancement_invariants_and_ad_parity() {
+            let spec = WystupDualCurrencyDepositYieldSpec {
+                spot_fx_s0: 1.0850,
+                conversion_strike_fx_k: 1.0700,
+                domestic_deposit_rate_rd: 0.045,
+                foreign_deposit_rate_rf: 0.030,
+                fx_volatility_sigma: 0.105,
+                deposit_tenor_years_t: 0.25,
+                bank_structuring_margin_pct: 0.15,
+            };
+            let rep = evaluate_wystup_dual_currency_deposit_yield_enhancement(&spec);
+            assert!(rep.annualized_yield_enhancement_bps > 50.0);
+            assert!(rep.enhanced_dcd_coupon_rate > spec.domestic_deposit_rate_rd);
+            assert!(
+                rep.risk_neutral_conversion_prob > 0.0 && rep.risk_neutral_conversion_prob < 1.0
+            );
+
+            let h = 1e-5;
+            let r_ad = evaluate_wystup_dual_currency_deposit_yield_enhancement(
+                &WystupDualCurrencyDepositYieldSpec {
+                    spot_fx_s0: Dual::<7>::variable(spec.spot_fx_s0, 0),
+                    conversion_strike_fx_k: Dual::<7>::variable(spec.conversion_strike_fx_k, 1),
+                    domestic_deposit_rate_rd: Dual::<7>::variable(spec.domestic_deposit_rate_rd, 2),
+                    foreign_deposit_rate_rf: Dual::<7>::variable(spec.foreign_deposit_rate_rf, 3),
+                    fx_volatility_sigma: Dual::<7>::variable(spec.fx_volatility_sigma, 4),
+                    deposit_tenor_years_t: Dual::<7>::variable(spec.deposit_tenor_years_t, 5),
+                    bank_structuring_margin_pct: Dual::<7>::variable(
+                        spec.bank_structuring_margin_pct,
+                        6,
+                    ),
+                },
+            );
+            for (idx, &ad) in r_ad.enhanced_dcd_coupon_rate.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.spot_fx_s0 += h;
+                        sm.spot_fx_s0 -= h;
+                    }
+                    1 => {
+                        sp.conversion_strike_fx_k += h;
+                        sm.conversion_strike_fx_k -= h;
+                    }
+                    2 => {
+                        sp.domestic_deposit_rate_rd += h;
+                        sm.domestic_deposit_rate_rd -= h;
+                    }
+                    3 => {
+                        sp.foreign_deposit_rate_rf += h;
+                        sm.foreign_deposit_rate_rf -= h;
+                    }
+                    4 => {
+                        sp.fx_volatility_sigma += h;
+                        sm.fx_volatility_sigma -= h;
+                    }
+                    5 => {
+                        sp.deposit_tenor_years_t += h;
+                        sm.deposit_tenor_years_t -= h;
+                    }
+                    _ => {
+                        sp.bank_structuring_margin_pct += h;
+                        sm.bank_structuring_margin_pct -= h;
+                    }
+                }
+                let fd = (evaluate_wystup_dual_currency_deposit_yield_enhancement(&sp)
+                    .enhanced_dcd_coupon_rate
+                    - evaluate_wystup_dual_currency_deposit_yield_enhancement(&sm)
+                        .enhanced_dcd_coupon_rate)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_wystup_dual_currency_deposit_yield_enhancement_module::*;

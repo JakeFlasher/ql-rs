@@ -3444,3 +3444,166 @@ mod evaluate_jagannathan_ma_no_short_sale_shrinkage_module {
     }
 }
 pub use evaluate_jagannathan_ma_no_short_sale_shrinkage_module::*;
+
+mod evaluate_bouchaud_gatheral_square_root_metaorder_impact_module {
+    // Bouchaud, Bonart, Donier & Gould (2018, Trades, Quotes and Prices, Ch. 12) & Gatheral (2010)
+    // Square-Root Metaorder Market Impact Law & Power-Law Post-Execution Decay Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BouchaudGatheralSquareRootImpactSpec<T: Real = f64> {
+        pub metaorder_shares_q: T,
+        pub average_daily_volume_adv: T,
+        pub daily_return_volatility_sigma_d: T,
+        pub y_prefactor_constant: T,
+        pub impact_concavity_exponent_delta: T,
+        pub propagator_decay_exponent_beta: T,
+        pub post_trade_elapsed_ratio_tau_over_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BouchaudGatheralSquareRootImpactReport<T: Real = f64> {
+        pub volume_participation_fraction: T,
+        pub peak_metaorder_impact_bps: T,
+        pub average_execution_slippage_bps: T,
+        pub post_trade_decayed_impact_bps: T,
+        pub gatheral_no_arbitrage_margin: T,
+        pub permanent_to_peak_retention_ratio: T,
+    }
+
+    pub fn evaluate_bouchaud_gatheral_square_root_metaorder_impact<T: Real>(
+        spec: &BouchaudGatheralSquareRootImpactSpec<T>,
+    ) -> BouchaudGatheralSquareRootImpactReport<T> {
+        let q = spec.metaorder_shares_q.max_val(T::from_f64(1.0));
+        let adv = spec.average_daily_volume_adv.max_val(T::from_f64(100.0));
+        let sig_d = spec
+            .daily_return_volatility_sigma_d
+            .max_val(T::from_f64(1e-4));
+        let y_const = spec.y_prefactor_constant.max_val(T::from_f64(0.05));
+        let delta = spec
+            .impact_concavity_exponent_delta
+            .max_val(T::from_f64(0.1));
+        let beta = spec
+            .propagator_decay_exponent_beta
+            .max_val(T::from_f64(0.1));
+        let tau_ratio = spec
+            .post_trade_elapsed_ratio_tau_over_t
+            .max_val(T::from_f64(0.01));
+
+        let part = q / adv;
+        // Peak temporary impact at completion of metaorder: I_peak = Y * sigma_D * (Q / ADV)^delta
+        let i_peak = y_const * sig_d * (delta * part.ln()).exp();
+        let i_peak_bps = i_peak * T::from_f64(10_000.0);
+
+        // Average execution slippage integrated over [0, T] under constant participation rate:
+        // (1 / (1 + delta)) * I_peak
+        let avg_slip_bps = i_peak_bps / (T::one() + delta);
+
+        // Post-execution power-law propagator relaxation (Bouchaud et al. 2018, Eq. 12.14):
+        let decay_factor = ((-beta) * (T::one() + tau_ratio).ln()).exp();
+        let post_impact_bps = i_peak_bps * decay_factor;
+
+        // Gatheral (2010) no-price-manipulation condition: delta + beta >= 1:
+        let no_arb_margin = delta + beta - T::one();
+
+        BouchaudGatheralSquareRootImpactReport {
+            volume_participation_fraction: part,
+            peak_metaorder_impact_bps: i_peak_bps,
+            average_execution_slippage_bps: avg_slip_bps,
+            post_trade_decayed_impact_bps: post_impact_bps,
+            gatheral_no_arbitrage_margin: no_arb_margin,
+            permanent_to_peak_retention_ratio: decay_factor,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_bouchaud_gatheral_square_root_metaorder_impact_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn bouchaud_gatheral_square_root_metaorder_impact_invariants_and_ad_parity() {
+            let spec = BouchaudGatheralSquareRootImpactSpec {
+                metaorder_shares_q: 250_000.0,
+                average_daily_volume_adv: 5_000_000.0,
+                daily_return_volatility_sigma_d: 0.018,
+                y_prefactor_constant: 0.65,
+                impact_concavity_exponent_delta: 0.50,
+                propagator_decay_exponent_beta: 0.55,
+                post_trade_elapsed_ratio_tau_over_t: 1.0,
+            };
+            let rep = evaluate_bouchaud_gatheral_square_root_metaorder_impact(&spec);
+            assert!(rep.peak_metaorder_impact_bps > rep.average_execution_slippage_bps);
+            assert!(rep.post_trade_decayed_impact_bps < rep.peak_metaorder_impact_bps);
+            assert!(rep.gatheral_no_arbitrage_margin >= 0.0);
+
+            let h = 1e-5;
+            let r_ad = evaluate_bouchaud_gatheral_square_root_metaorder_impact(
+                &BouchaudGatheralSquareRootImpactSpec {
+                    metaorder_shares_q: Dual::<7>::variable(spec.metaorder_shares_q, 0),
+                    average_daily_volume_adv: Dual::<7>::variable(spec.average_daily_volume_adv, 1),
+                    daily_return_volatility_sigma_d: Dual::<7>::variable(
+                        spec.daily_return_volatility_sigma_d,
+                        2,
+                    ),
+                    y_prefactor_constant: Dual::<7>::variable(spec.y_prefactor_constant, 3),
+                    impact_concavity_exponent_delta: Dual::<7>::variable(
+                        spec.impact_concavity_exponent_delta,
+                        4,
+                    ),
+                    propagator_decay_exponent_beta: Dual::<7>::variable(
+                        spec.propagator_decay_exponent_beta,
+                        5,
+                    ),
+                    post_trade_elapsed_ratio_tau_over_t: Dual::<7>::variable(
+                        spec.post_trade_elapsed_ratio_tau_over_t,
+                        6,
+                    ),
+                },
+            );
+            for (idx, &ad) in r_ad.post_trade_decayed_impact_bps.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.metaorder_shares_q += h;
+                        sm.metaorder_shares_q -= h;
+                    }
+                    1 => {
+                        sp.average_daily_volume_adv += h;
+                        sm.average_daily_volume_adv -= h;
+                    }
+                    2 => {
+                        sp.daily_return_volatility_sigma_d += h;
+                        sm.daily_return_volatility_sigma_d -= h;
+                    }
+                    3 => {
+                        sp.y_prefactor_constant += h;
+                        sm.y_prefactor_constant -= h;
+                    }
+                    4 => {
+                        sp.impact_concavity_exponent_delta += h;
+                        sm.impact_concavity_exponent_delta -= h;
+                    }
+                    5 => {
+                        sp.propagator_decay_exponent_beta += h;
+                        sm.propagator_decay_exponent_beta -= h;
+                    }
+                    _ => {
+                        sp.post_trade_elapsed_ratio_tau_over_t += h;
+                        sm.post_trade_elapsed_ratio_tau_over_t -= h;
+                    }
+                }
+                let fd = (evaluate_bouchaud_gatheral_square_root_metaorder_impact(&sp)
+                    .post_trade_decayed_impact_bps
+                    - evaluate_bouchaud_gatheral_square_root_metaorder_impact(&sm)
+                        .post_trade_decayed_impact_bps)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-8);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_bouchaud_gatheral_square_root_metaorder_impact_module::*;

@@ -1432,3 +1432,184 @@ mod evaluate_despiegeleer_cb_soft_call_make_whole_module {
     }
 }
 pub use evaluate_despiegeleer_cb_soft_call_make_whole_module::*;
+
+mod evaluate_tsiveriotis_fernandes_split_discount_convertible_module {
+    // Tsiveriotis & Fernandes (1998, J. Fixed Income) & De Spiegeleer-Schoutens (2011, Ch. 7)
+    // Credit-Blended Convertible Bond (Split Cash-Only Debt vs. Equity-Conversion Discounting) Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TsiveriotisFernandesSplitConvertibleSpec<T: Real = f64> {
+        pub stock_price_s0: T,
+        pub conversion_ratio_cr: T,
+        pub par_redemption_value: T,
+        pub annual_coupon_rate_c: T,
+        pub risk_free_rate_r: T,
+        pub credit_spread_sc: T,
+        pub dividend_yield_q: T,
+        pub equity_volatility_sigma: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TsiveriotisFernandesSplitConvertibleReport<T: Real = f64> {
+        pub parity_conversion_value: T,
+        pub risky_straight_bond_floor: T,
+        pub risk_neutral_conversion_probability: T,
+        pub equity_settled_component_pv: T,
+        pub cash_only_debt_component_pv: T,
+        pub tsiveriotis_fernandes_convertible_value: T,
+        pub blended_effective_discount_rate: T,
+        pub single_rate_risky_discount_wedge: T,
+    }
+
+    pub fn evaluate_tsiveriotis_fernandes_split_discount_convertible<T: Real>(
+        spec: &TsiveriotisFernandesSplitConvertibleSpec<T>,
+    ) -> TsiveriotisFernandesSplitConvertibleReport<T> {
+        let s0 = spec.stock_price_s0.max_val(T::from_f64(1.0));
+        let cr = spec.conversion_ratio_cr.max_val(T::from_f64(0.01));
+        let par = spec.par_redemption_value.max_val(T::from_f64(10.0));
+        let c = spec.annual_coupon_rate_c.max_val(T::zero());
+        let r = spec.risk_free_rate_r;
+        let sc = spec.credit_spread_sc.max_val(T::from_f64(1e-4));
+        let q = spec.dividend_yield_q;
+        let sig = spec.equity_volatility_sigma.max_val(T::from_f64(0.05));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.25));
+
+        let parity = cr * s0;
+        let r_risky = r + sc;
+        let coupon_pv_risky =
+            par * c * (T::one() - (-r_risky * t).exp()) / r_risky.max_val(T::from_f64(1e-4));
+        let bond_floor = coupon_pv_risky + par * (-r_risky * t).exp();
+
+        let k_conv = par / cr;
+        let std = sig * t.sqrt();
+        let d1 = ((s0 / k_conv).ln() + (r - q + T::from_f64(0.5) * sig * sig) * t) / std;
+        let d2 = d1 - std;
+        let p_conv = norm_cdf(d2);
+
+        // Tsiveriotis-Fernandes (1998) split:
+        // Equity-settled component E_0 is discounted at risk-free rate r (no credit spread on own stock delivery);
+        // Cash-only debt component U_0 (non-conversion principal + coupons) is discounted at r + s_c:
+        let eq_comp = cr * s0 * (-q * t).exp() * norm_cdf(d1);
+        let cash_comp = coupon_pv_risky + par * (-r_risky * t).exp() * (T::one() - p_conv);
+        let tf_val = eq_comp + cash_comp;
+
+        // Naive single-rate risky discounting applies (r + s_c) to the embedded call as well:
+        let call_risky = (-r_risky * t).exp()
+            * (cr * s0 * ((r - q) * t).exp() * norm_cdf(d1) - par * norm_cdf(d2));
+        let single_risky_val = bond_floor + call_risky;
+        let wedge = tf_val - single_risky_val;
+
+        let w_eq = eq_comp / tf_val.max_val(T::from_f64(1.0));
+        let r_blended = (T::one() - w_eq) * r_risky + w_eq * r;
+
+        TsiveriotisFernandesSplitConvertibleReport {
+            parity_conversion_value: parity,
+            risky_straight_bond_floor: bond_floor,
+            risk_neutral_conversion_probability: p_conv,
+            equity_settled_component_pv: eq_comp,
+            cash_only_debt_component_pv: cash_comp,
+            tsiveriotis_fernandes_convertible_value: tf_val,
+            blended_effective_discount_rate: r_blended,
+            single_rate_risky_discount_wedge: wedge,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_tsiveriotis_fernandes_split_discount_convertible_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn tsiveriotis_fernandes_split_convertible_invariants_and_ad_parity() {
+            let spec = TsiveriotisFernandesSplitConvertibleSpec {
+                stock_price_s0: 96.0,
+                conversion_ratio_cr: 1.0,
+                par_redemption_value: 100.0,
+                annual_coupon_rate_c: 0.035,
+                risk_free_rate_r: 0.040,
+                credit_spread_sc: 0.025,
+                dividend_yield_q: 0.012,
+                equity_volatility_sigma: 0.28,
+                maturity_years_t: 3.0,
+            };
+            let rep = evaluate_tsiveriotis_fernandes_split_discount_convertible(&spec);
+            assert!(rep.tsiveriotis_fernandes_convertible_value > rep.risky_straight_bond_floor);
+            assert!(rep.tsiveriotis_fernandes_convertible_value > rep.parity_conversion_value);
+            assert!(rep.single_rate_risky_discount_wedge > 0.0);
+
+            let h = 1e-5;
+            let r_ad = evaluate_tsiveriotis_fernandes_split_discount_convertible(
+                &TsiveriotisFernandesSplitConvertibleSpec {
+                    stock_price_s0: Dual::<9>::variable(spec.stock_price_s0, 0),
+                    conversion_ratio_cr: Dual::<9>::variable(spec.conversion_ratio_cr, 1),
+                    par_redemption_value: Dual::<9>::variable(spec.par_redemption_value, 2),
+                    annual_coupon_rate_c: Dual::<9>::variable(spec.annual_coupon_rate_c, 3),
+                    risk_free_rate_r: Dual::<9>::variable(spec.risk_free_rate_r, 4),
+                    credit_spread_sc: Dual::<9>::variable(spec.credit_spread_sc, 5),
+                    dividend_yield_q: Dual::<9>::variable(spec.dividend_yield_q, 6),
+                    equity_volatility_sigma: Dual::<9>::variable(spec.equity_volatility_sigma, 7),
+                    maturity_years_t: Dual::<9>::variable(spec.maturity_years_t, 8),
+                },
+            );
+            for (idx, &ad) in r_ad
+                .tsiveriotis_fernandes_convertible_value
+                .d
+                .iter()
+                .enumerate()
+            {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.stock_price_s0 += h;
+                        sm.stock_price_s0 -= h;
+                    }
+                    1 => {
+                        sp.conversion_ratio_cr += h;
+                        sm.conversion_ratio_cr -= h;
+                    }
+                    2 => {
+                        sp.par_redemption_value += h;
+                        sm.par_redemption_value -= h;
+                    }
+                    3 => {
+                        sp.annual_coupon_rate_c += h;
+                        sm.annual_coupon_rate_c -= h;
+                    }
+                    4 => {
+                        sp.risk_free_rate_r += h;
+                        sm.risk_free_rate_r -= h;
+                    }
+                    5 => {
+                        sp.credit_spread_sc += h;
+                        sm.credit_spread_sc -= h;
+                    }
+                    6 => {
+                        sp.dividend_yield_q += h;
+                        sm.dividend_yield_q -= h;
+                    }
+                    7 => {
+                        sp.equity_volatility_sigma += h;
+                        sm.equity_volatility_sigma -= h;
+                    }
+                    _ => {
+                        sp.maturity_years_t += h;
+                        sm.maturity_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_tsiveriotis_fernandes_split_discount_convertible(&sp)
+                    .tsiveriotis_fernandes_convertible_value
+                    - evaluate_tsiveriotis_fernandes_split_discount_convertible(&sm)
+                        .tsiveriotis_fernandes_convertible_value)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-3);
+            }
+        }
+    }
+}
+pub use evaluate_tsiveriotis_fernandes_split_discount_convertible_module::*;
