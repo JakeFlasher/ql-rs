@@ -160,8 +160,17 @@ fn phase33_suite45_and_invariants() {
 
 #[test]
 fn phase34_suite46_and_invariants() {
-    let x = [0.2_f64, -0.1, 0.3, -0.2];
-    let y = ql_benches::phase34_workloads(x);
-    assert_eq!(y.len(), 12);
-    assert!(y.iter().all(|v| v.is_finite()));
+    use ql_ad::Dual;
+    let x: [Dual<4>; 4] = [
+        Dual::variable(0.2, 0),
+        Dual::variable(-0.1, 1),
+        Dual::variable(0.3, 2),
+        Dual::variable(-0.2, 3),
+    ];
+    for y in ql_benches::phase34_workloads(x) {
+        assert!(y.d.iter().map(|v| v.abs()).sum::<f64>() > 1e-9);
+    }
+    assert_eq!(ql_benches::SUITE_COUNT, 46);
+    let row = ql_benches::benchmark_phase34_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig(1);
+    assert!(row.parity_ok && row.max_abs_diff < 1e-4 && row.speedup > 1.0);
 }

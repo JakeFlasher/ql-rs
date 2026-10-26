@@ -508,8 +508,139 @@ pub fn evaluate_wakker_prelec_rdu_and_choquet_ambiguity<T: Real>(
 
 #[cfg(test)]
 mod phase34_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn eval_all<T: Real>(x: T) -> [T; 7] {
+        let dx = x * T::from_f64(0.01);
+        let kyle = evaluate_foucault_kyle_lambda_and_ekop_pin(&FoucaultKyleEkopPinSpec {
+            prior_price_p0: T::from_f64(100.0),
+            insider_valuation_v: T::from_f64(105.0) + x,
+            fundamental_std_sigma_v: T::from_f64(2.0),
+            noise_order_std_sigma_u: T::from_f64(10.0),
+            event_prob_alpha: T::from_f64(0.3),
+            bad_news_prob_delta: T::from_f64(0.4),
+            informed_arrival_mu: T::from_f64(40.0),
+            uninformed_buy_eps_b: T::from_f64(50.0),
+            uninformed_sell_eps_s: T::from_f64(50.0),
+            observed_buys_b: T::from_f64(75.0),
+            observed_sells_s: T::from_f64(45.0),
+        });
+        let gp =
+            evaluate_garleanu_pedersen_dynamic_aim_portfolio(&GarleanuPedersenDynamicAimSpec {
+                current_weights: [T::from_f64(0.1), T::from_f64(0.2)],
+                alpha_signals: [T::from_f64(0.06) + dx, T::from_f64(0.04)],
+                alpha_decay_phi: [T::from_f64(0.2), T::from_f64(0.15)],
+                return_cov_2x2: [
+                    [T::from_f64(0.04), T::from_f64(0.01)],
+                    [T::from_f64(0.01), T::from_f64(0.03)],
+                ],
+                impact_lambda_2x2: [
+                    [T::from_f64(0.02), T::from_f64(0.002)],
+                    [T::from_f64(0.002), T::from_f64(0.015)],
+                ],
+                risk_aversion_gamma: T::from_f64(2.0),
+                discount_factor_rho: T::from_f64(0.05),
+            });
+        let gjr = evaluate_tsay_gjr_and_dcc_garch_dynamic_correlation(&TsayGjrDccGarchSpec {
+            asset1_returns: vec![
+                T::from_f64(-0.02) + dx,
+                T::from_f64(-0.03),
+                T::from_f64(0.015),
+            ],
+            asset2_returns: vec![T::from_f64(-0.018), T::from_f64(-0.025), T::from_f64(0.012)],
+            gjr_omega: [T::from_f64(0.00002), T::from_f64(0.00002)],
+            gjr_alpha: [T::from_f64(0.08), T::from_f64(0.07)],
+            gjr_gamma_leverage: [T::from_f64(0.12), T::from_f64(0.10)],
+            gjr_beta: [T::from_f64(0.82), T::from_f64(0.83)],
+            dcc_a: T::from_f64(0.06),
+            dcc_b: T::from_f64(0.90),
+            unconditional_corr_rho0: T::from_f64(0.5),
+        });
+        let lppl = evaluate_sornette_jls_lppl_crash_hazard(&SornetteJlsLpplBubbleSpec {
+            observation_times: vec![T::from_f64(0.1), T::from_f64(0.4), T::from_f64(0.7)],
+            observed_log_prices: vec![T::from_f64(4.5), T::from_f64(4.65), T::from_f64(4.85)],
+            eval_time_t: T::from_f64(0.8),
+            critical_time_tc: T::from_f64(1.05),
+            power_exponent_m: T::from_f64(0.45),
+            log_periodic_omega: T::from_f64(7.5),
+            phase_phi: T::from_f64(0.5),
+            jls_Compensation_kappa: T::from_f64(0.15) + dx,
+            baseline_hazard_h0: T::from_f64(0.05),
+        });
+        let spec = evaluate_follmer_schied_entropic_and_spectral_risk(
+            &FollmerSchiedEntropicSpectralRiskSpec {
+                scenario_losses: vec![
+                    T::from_f64(-0.03),
+                    T::from_f64(0.01),
+                    T::from_f64(0.04),
+                    T::from_f64(0.09) + dx,
+                ],
+                scenario_probabilities: vec![
+                    T::from_f64(0.25),
+                    T::from_f64(0.25),
+                    T::from_f64(0.25),
+                    T::from_f64(0.25),
+                ],
+                entropic_risk_aversion_theta: T::from_f64(5.0),
+                spectral_aversion_gamma: T::from_f64(2.0),
+                tail_threshold_alpha: T::from_f64(0.5),
+            },
+        );
+        let brin =
+            evaluate_bacon_brinson_fachler_and_carino_linking(&BaconBrinsonFachlerCarinoSpec {
+                period1_port_weights: [T::from_f64(0.4), T::from_f64(0.35), T::from_f64(0.25)],
+                period1_bench_weights: [T::from_f64(0.33), T::from_f64(0.33), T::from_f64(0.34)],
+                period1_port_returns: [
+                    T::from_f64(0.05) + dx,
+                    T::from_f64(0.03),
+                    T::from_f64(0.02),
+                ],
+                period1_bench_returns: [T::from_f64(0.04), T::from_f64(0.025), T::from_f64(0.015)],
+                period2_port_weights: [T::from_f64(0.45), T::from_f64(0.30), T::from_f64(0.25)],
+                period2_bench_weights: [T::from_f64(0.35), T::from_f64(0.35), T::from_f64(0.30)],
+                period2_port_returns: [T::from_f64(0.04), T::from_f64(0.02), T::from_f64(0.03)],
+                period2_bench_returns: [T::from_f64(0.03), T::from_f64(0.02), T::from_f64(0.025)],
+            });
+        let prel = evaluate_wakker_prelec_rdu_and_choquet_ambiguity(&WakkerPrelecChoquetSpec {
+            state_outcomes: [
+                T::from_f64(-20.0),
+                T::from_f64(-5.0),
+                T::from_f64(10.0),
+                T::from_f64(30.0) + x,
+            ],
+            state_probabilities: [
+                T::from_f64(0.15),
+                T::from_f64(0.25),
+                T::from_f64(0.35),
+                T::from_f64(0.25),
+            ],
+            prelec_curvature_alpha: T::from_f64(0.65),
+            prelec_elevation_beta: T::from_f64(1.0),
+            tversky_gain_power: T::from_f64(0.88),
+            tversky_loss_power: T::from_f64(0.88),
+            loss_aversion_lambda: T::from_f64(2.25),
+            neo_additive_optimism_a: T::from_f64(0.1),
+            neo_additive_pessimism_b: T::from_f64(0.25),
+        });
+        [
+            kyle.kyle_lambda_price_impact + kyle.ekop_pin_probability,
+            gp.expected_net_utility_gain,
+            gjr.terminal_equal_weight_portfolio_vol,
+            lppl.lppl_fitted_price,
+            spec.entropic_convex_risk_measure + spec.kusuoka_power_spectral_risk_measure,
+            brin.carino_smoothed_active_return,
+            prel.prospect_certainty_equivalent,
+        ]
+    }
     #[test]
-    fn phase34_smoke() {
-        assert!(std::hint::black_box(1u8) == 1);
+    fn phase34_portfolio_invariants_and_dual_fd() {
+        let h = 1e-6;
+        let p = eval_all(h);
+        let m = eval_all(-h);
+        let ad = eval_all(Dual::<1>::variable(0.0, 0));
+        for i in 0..7 {
+            let fd = (p[i] - m[i]) / (2.0 * h);
+            assert!(ad[i].d[0].abs() > 1e-7 && (ad[i].d[0] - fd).abs() < 1e-4);
+        }
     }
 }

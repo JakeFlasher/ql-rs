@@ -61,8 +61,35 @@ pub fn evaluate_crepey_burgard_kjaer_bilateral_xva_and_fva<T: Real>(
 
 #[cfg(test)]
 mod phase34_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn spec<T: Real>(x: T) -> CrepeyBurgardKjaerBilateralFvaSpec<T> {
+        CrepeyBurgardKjaerBilateralFvaSpec {
+            time_grid: vec![T::from_f64(0.5), T::one(), T::from_f64(2.0)],
+            epe_profile: vec![T::from_f64(10.0) + x, T::from_f64(12.0), T::from_f64(8.0)],
+            ene_profile: vec![T::from_f64(6.0), T::from_f64(7.0), T::from_f64(5.0)],
+            cpty_hazard_rate: T::from_f64(0.02),
+            bank_hazard_rate: T::from_f64(0.015),
+            cpty_recovery_rate: T::from_f64(0.4),
+            bank_recovery_rate: T::from_f64(0.4),
+            risk_free_rate: T::from_f64(0.03),
+            liquidity_funding_spread: T::from_f64(0.008),
+            burgard_kjaer_alpha: T::from_f64(0.5),
+        }
+    }
     #[test]
-    fn phase34_smoke() {
-        assert!(std::hint::black_box(1u8) == 1);
+    fn phase34_credit_invariants_and_dual_fd() {
+        let r = evaluate_crepey_burgard_kjaer_bilateral_xva_and_fva(&spec(0.0));
+        assert!(r.bilateral_cva > 0.0 && r.bilateral_dva > 0.0);
+        let h = 1e-6;
+        let fd = (evaluate_crepey_burgard_kjaer_bilateral_xva_and_fva(&spec(h))
+            .total_burgard_kjaer_xva_charge
+            - evaluate_crepey_burgard_kjaer_bilateral_xva_and_fva(&spec(-h))
+                .total_burgard_kjaer_xva_charge)
+            / (2.0 * h);
+        let ad =
+            evaluate_crepey_burgard_kjaer_bilateral_xva_and_fva(&spec(Dual::<1>::variable(0.0, 0)))
+                .total_burgard_kjaer_xva_charge;
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
     }
 }

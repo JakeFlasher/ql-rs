@@ -164,8 +164,71 @@ pub fn evaluate_davidson_levin_four_factor_prepayment_io_po<T: Real>(
 
 #[cfg(test)]
 mod phase34_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn decs_spec<T: Real>(x: T) -> DeSpiegeleerMandatoryConvertibleDecsSpec<T> {
+        DeSpiegeleerMandatoryConvertibleDecsSpec {
+            spot_price: T::from_f64(100.0) + x,
+            par_amount: T::from_f64(100.0),
+            lower_strike_kl: T::from_f64(90.0),
+            upper_strike_ku: T::from_f64(120.0),
+            decs_coupon_rate: T::from_f64(0.06),
+            risk_free_rate: T::from_f64(0.03),
+            dividend_yield: T::from_f64(0.02),
+            credit_spread: T::from_f64(0.015),
+            lower_strike_vol: T::from_f64(0.25),
+            upper_strike_vol: T::from_f64(0.22),
+            maturity_years: T::from_f64(3.0),
+        }
+    }
+    fn mbs_spec<T: Real>(x: T) -> DavidsonLevinFourFactorIoPoSpec<T> {
+        DavidsonLevinFourFactorIoPoSpec {
+            initial_balance: T::from_f64(100.0),
+            gross_wac_rate: T::from_f64(0.06),
+            net_passthrough_coupon: T::from_f64(0.055),
+            current_mortgage_rate: T::from_f64(0.05) + x,
+            base_turnover_cpr: T::from_f64(0.06),
+            max_refi_cpr: T::from_f64(0.35),
+            burnout_sensitivity_beta: T::from_f64(0.5),
+            seasonality_amplitude: T::from_f64(0.1),
+            oas_discount_rate: T::from_f64(0.045),
+            num_periods: 12,
+        }
+    }
     #[test]
-    fn phase34_smoke() {
-        assert!(std::hint::black_box(1u8) == 1);
+    fn phase34_fixed_income_invariants_and_dual_fd() {
+        let h = 1e-6;
+        let d0 = evaluate_despiegeleer_mandatory_convertible_decs_and_percs(&decs_spec(0.0));
+        assert!(
+            d0.decomposition_conservation_error < 1e-12
+                && d0.decs_mandatory_fair_value > d0.percs_capped_fair_value
+        );
+        let fd_d = (evaluate_despiegeleer_mandatory_convertible_decs_and_percs(&decs_spec(h))
+            .decs_mandatory_fair_value
+            - evaluate_despiegeleer_mandatory_convertible_decs_and_percs(&decs_spec(-h))
+                .decs_mandatory_fair_value)
+            / (2.0 * h);
+        let ad_d = evaluate_despiegeleer_mandatory_convertible_decs_and_percs(&decs_spec(
+            Dual::<1>::variable(0.0, 0),
+        ))
+        .decs_mandatory_fair_value;
+        assert!(ad_d.d[0].abs() > 1e-6 && (ad_d.d[0] - fd_d).abs() < 1e-5);
+
+        let m0 = evaluate_davidson_levin_four_factor_prepayment_io_po(&mbs_spec(0.0));
+        assert!(
+            m0.io_po_strip_conservation_error < 1e-12
+                && m0.io_effective_rate_sensitivity > 0.0
+                && m0.po_effective_rate_sensitivity < 0.0
+        );
+        let fd_m = (evaluate_davidson_levin_four_factor_prepayment_io_po(&mbs_spec(h))
+            .passthrough_present_value
+            - evaluate_davidson_levin_four_factor_prepayment_io_po(&mbs_spec(-h))
+                .passthrough_present_value)
+            / (2.0 * h);
+        let ad_m = evaluate_davidson_levin_four_factor_prepayment_io_po(&mbs_spec(
+            Dual::<1>::variable(0.0, 0),
+        ))
+        .passthrough_present_value;
+        assert!(ad_m.d[0].abs() > 1e-6 && (ad_m.d[0] - fd_m).abs() < 1e-4);
     }
 }

@@ -602,7 +602,7 @@ fn phase34_tab44_terminal_renders_and_reacts() {
     let c = desk.phase34_live_metric();
     desk.scenario = ScenarioKind::StagflationPlus150Bp;
     let s = desk.phase34_live_metric();
-    assert!(n != c || c != s);
+    assert!((n - c).abs() > 1e-12 && (c - s).abs() > 1e-12);
     let frame = desk.step_tick();
     assert!(
         desk.render_dashboard(&frame, false)

@@ -3700,22 +3700,42 @@ pub fn phase34_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
 pub fn benchmark_phase34_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig(
     scale: usize,
 ) -> ComparisonRow {
-    let x = [0.2, -0.1, 0.3, -0.2];
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let baseline = move || {
+        let f = |x: [f64; 4]| phase34_workloads(x).iter().copied().sum::<f64>();
+        let mut z = f(x0);
+        for i in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[i] += 1e-5;
+            d[i] -= 1e-5;
+            z += (f(u) - f(d)) / (2e-5);
+        }
+        for _ in 0..20 {
+            std::hint::black_box(f(x0));
+        }
+        z
+    };
+    let sota = move || {
+        let x: [Dual<4>; 4] = [
+            Dual::variable(x0[0], 0),
+            Dual::variable(x0[1], 1),
+            Dual::variable(x0[2], 2),
+            Dual::variable(x0[3], 3),
+        ];
+        phase34_workloads(x)
+            .iter()
+            .map(|v| v.val + v.d.iter().sum::<f64>())
+            .sum::<f64>()
+    };
     run_comparison(
         "46_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig",
         "Tuckman-Repo / BK-FVA / DECS / MBS-IO-PO / Kyle-PIN / GP-Aim / GJR-DCC / LPPL / Spectral-Risk / Brinson-Carino / Prelec-CPT / Path-Sig AD",
-        config(scale),
+        cfg,
         1e-4,
-        move || std::hint::black_box(phase34_workloads(x).iter().copied().sum::<f64>()),
-        move || {
-            let xd = [
-                Dual::<4>::variable(x[0], 0),
-                Dual::<4>::variable(x[1], 1),
-                Dual::<4>::variable(x[2], 2),
-                Dual::<4>::variable(x[3], 3),
-            ];
-            std::hint::black_box(phase34_workloads(xd).iter().map(|v| v.val).sum::<f64>())
-        },
+        baseline,
+        sota,
     )
 }
 

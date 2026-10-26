@@ -70,8 +70,42 @@ pub fn evaluate_bayer_path_signature_chen_and_levy_area<T: Real>(
 
 #[cfg(test)]
 mod phase34_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn spec<T: Real>(x: T) -> BayerPathSignatureChenLevyAreaSpec<T> {
+        BayerPathSignatureChenLevyAreaSpec {
+            time_grid: vec![T::zero(), T::from_f64(0.5), T::one()],
+            spot_path: vec![
+                T::from_f64(100.0) + x,
+                T::from_f64(104.0),
+                T::from_f64(102.0),
+            ],
+            linear_functional_weights: [
+                T::from_f64(0.1),
+                T::from_f64(0.2),
+                T::from_f64(0.3),
+                T::from_f64(0.4),
+                T::from_f64(-0.2),
+                T::from_f64(0.1),
+            ],
+        }
+    }
     #[test]
-    fn phase34_smoke() {
-        assert!(std::hint::black_box(1u8) == 1);
+    fn phase34_dml_invariants_and_dual_fd() {
+        let r = evaluate_bayer_path_signature_chen_and_levy_area(&spec(0.0));
+        assert!(
+            r.signed_levy_area.abs() > 1e-6
+                && r.chen_identity_l1_error < 1e-12
+                && r.shuffle_product_identity_error < 1e-12
+        );
+        let h = 1e-6;
+        let fd = (evaluate_bayer_path_signature_chen_and_levy_area(&spec(h))
+            .signature_linear_payoff
+            - evaluate_bayer_path_signature_chen_and_levy_area(&spec(-h)).signature_linear_payoff)
+            / (2.0 * h);
+        let ad =
+            evaluate_bayer_path_signature_chen_and_levy_area(&spec(Dual::<1>::variable(0.0, 0)))
+                .signature_linear_payoff;
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
     }
 }

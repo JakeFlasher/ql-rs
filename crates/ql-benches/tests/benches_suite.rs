@@ -156,6 +156,7 @@ fn phase33_suite45_workload_is_registered() {
 
 #[test]
 fn phase34_suite46_workload_is_registered() {
-    let y = ql_benches::phase34_workloads([0.2_f64, -0.1, 0.3, -0.2]);
-    assert_eq!(y.len(), 12);
+    assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("46_")));
+    let row = ql_benches::benchmark_phase34_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig(1);
+    assert!(row.parity_ok && row.max_abs_diff < 1e-4);
 }
