@@ -1624,3 +1624,186 @@ mod evaluate_eydeland_crack_spread_three_asset_kirk_module {
     }
 }
 pub use evaluate_eydeland_crack_spread_three_asset_kirk_module::*;
+
+mod evaluate_bessembinder_lemmon_power_forward_premium_module {
+    // Geman (2005) & Bessembinder–Lemmon (2002) Equilibrium Electricity Forward Risk
+    // Premium (`Variance vs. Positive Spike Skewness`) & Reserve-Margin Convexity Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BessembinderLemmonPowerForwardPremiumSpec<T: Real = f64> {
+        pub baseline_marginal_fuel_cost_c0: T,
+        pub expected_load_to_capacity_ratio_u: T,
+        pub load_shock_volatility_sigma_u: T,
+        pub supply_stack_convexity_exponent_gamma: T,
+        pub peaking_merit_slope_alpha: T,
+        pub producer_variance_aversion_a_var: T,
+        pub retailer_spike_skew_preference_b_skew: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BessembinderLemmonPowerForwardPremiumReport<T: Real = f64> {
+        pub expected_spot_electricity_price: T,
+        pub spot_price_variance: T,
+        pub spot_price_cubic_skewness_moment: T,
+        pub variance_hedging_discount_component: T,
+        pub spike_skewness_premium_component: T,
+        pub net_equilibrium_forward_risk_premium: T,
+        pub equilibrium_power_forward_price: T,
+        pub reserve_margin_tightness_index: T,
+    }
+
+    pub fn evaluate_bessembinder_lemmon_power_forward_premium<T: Real>(
+        spec: &BessembinderLemmonPowerForwardPremiumSpec<T>,
+    ) -> BessembinderLemmonPowerForwardPremiumReport<T> {
+        let c0 = spec
+            .baseline_marginal_fuel_cost_c0
+            .max_val(T::from_f64(5.0));
+        let u = spec
+            .expected_load_to_capacity_ratio_u
+            .max_val(T::from_f64(0.20))
+            .min_val(T::from_f64(0.98));
+        let sig_u = spec
+            .load_shock_volatility_sigma_u
+            .max_val(T::from_f64(0.01));
+        let gam = spec
+            .supply_stack_convexity_exponent_gamma
+            .max_val(T::from_f64(1.5));
+        let alpha = spec.peaking_merit_slope_alpha.max_val(T::from_f64(1.0));
+        let a_var = spec.producer_variance_aversion_a_var.max_val(T::zero());
+        let b_skew = spec
+            .retailer_spike_skew_preference_b_skew
+            .max_val(T::zero());
+
+        // Convex generation stack P(U) = c0 + alpha * U^gamma:
+        // Using Taylor-Itô expansion around expected utilization u:
+        let u_pow_g = (gam * u.ln()).exp();
+        let p_at_mean = c0 + alpha * u_pow_g;
+        let p1 = alpha * gam * (u_pow_g / u);
+        let p2 = alpha * gam * (gam - T::one()) * (u_pow_g / (u * u));
+
+        let exp_spot = p_at_mean + T::from_f64(0.5) * p2 * sig_u * sig_u;
+        let var_spot =
+            p1 * p1 * sig_u * sig_u + T::from_f64(0.5) * p2 * p2 * sig_u * sig_u * sig_u * sig_u;
+        // Third central moment E[(S - E[S])^3] = 3 p1^2 p2 sigma_u^4 + p2^3 sigma_u^6 > 0 for convex stack (gamma > 1):
+        let skew3_spot = T::from_f64(3.0) * p1 * p1 * p2 * sig_u * sig_u * sig_u * sig_u
+            + p2 * p2 * p2 * sig_u * sig_u * sig_u * sig_u * sig_u * sig_u;
+
+        // Bessembinder & Lemmon (2002, JF Eq. 8): F - E[S] = -a_var * Var(S) + b_skew * Skew_3(S)
+        let var_comp = -a_var * var_spot;
+        let skew_comp = b_skew * skew3_spot;
+        let net_prem = var_comp + skew_comp;
+        let fwd_price = exp_spot + net_prem;
+        let tightness = u / (T::one() - u).max_val(T::from_f64(0.02));
+
+        BessembinderLemmonPowerForwardPremiumReport {
+            expected_spot_electricity_price: exp_spot,
+            spot_price_variance: var_spot,
+            spot_price_cubic_skewness_moment: skew3_spot,
+            variance_hedging_discount_component: var_comp,
+            spike_skewness_premium_component: skew_comp,
+            net_equilibrium_forward_risk_premium: net_prem,
+            equilibrium_power_forward_price: fwd_price,
+            reserve_margin_tightness_index: tightness,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_bessembinder_lemmon_power_forward_premium_module_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn bessembinder_lemmon_power_forward_premium_invariants_and_ad_parity() {
+            let spec = BessembinderLemmonPowerForwardPremiumSpec {
+                baseline_marginal_fuel_cost_c0: 28.0,
+                expected_load_to_capacity_ratio_u: 0.84,
+                load_shock_volatility_sigma_u: 0.12,
+                supply_stack_convexity_exponent_gamma: 4.5,
+                peaking_merit_slope_alpha: 65.0,
+                producer_variance_aversion_a_var: 0.015,
+                retailer_spike_skew_preference_b_skew: 0.0045,
+            };
+            let rep = evaluate_bessembinder_lemmon_power_forward_premium(&spec);
+            assert!(rep.spot_price_cubic_skewness_moment > 0.0);
+            assert!(rep.net_equilibrium_forward_risk_premium > 0.0);
+            assert!(rep.equilibrium_power_forward_price > rep.expected_spot_electricity_price);
+
+            let h = 1e-6;
+            let r_ad = evaluate_bessembinder_lemmon_power_forward_premium(
+                &BessembinderLemmonPowerForwardPremiumSpec {
+                    baseline_marginal_fuel_cost_c0: Dual::<7>::variable(
+                        spec.baseline_marginal_fuel_cost_c0,
+                        0,
+                    ),
+                    expected_load_to_capacity_ratio_u: Dual::<7>::variable(
+                        spec.expected_load_to_capacity_ratio_u,
+                        1,
+                    ),
+                    load_shock_volatility_sigma_u: Dual::<7>::variable(
+                        spec.load_shock_volatility_sigma_u,
+                        2,
+                    ),
+                    supply_stack_convexity_exponent_gamma: Dual::<7>::variable(
+                        spec.supply_stack_convexity_exponent_gamma,
+                        3,
+                    ),
+                    peaking_merit_slope_alpha: Dual::<7>::variable(
+                        spec.peaking_merit_slope_alpha,
+                        4,
+                    ),
+                    producer_variance_aversion_a_var: Dual::<7>::variable(
+                        spec.producer_variance_aversion_a_var,
+                        5,
+                    ),
+                    retailer_spike_skew_preference_b_skew: Dual::<7>::variable(
+                        spec.retailer_spike_skew_preference_b_skew,
+                        6,
+                    ),
+                },
+            );
+            for (idx, &ad_deriv) in r_ad.equilibrium_power_forward_price.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.baseline_marginal_fuel_cost_c0 += h;
+                        sm.baseline_marginal_fuel_cost_c0 -= h;
+                    }
+                    1 => {
+                        sp.expected_load_to_capacity_ratio_u += h;
+                        sm.expected_load_to_capacity_ratio_u -= h;
+                    }
+                    2 => {
+                        sp.load_shock_volatility_sigma_u += h;
+                        sm.load_shock_volatility_sigma_u -= h;
+                    }
+                    3 => {
+                        sp.supply_stack_convexity_exponent_gamma += h;
+                        sm.supply_stack_convexity_exponent_gamma -= h;
+                    }
+                    4 => {
+                        sp.peaking_merit_slope_alpha += h;
+                        sm.peaking_merit_slope_alpha -= h;
+                    }
+                    5 => {
+                        sp.producer_variance_aversion_a_var += h;
+                        sm.producer_variance_aversion_a_var -= h;
+                    }
+                    _ => {
+                        sp.retailer_spike_skew_preference_b_skew += h;
+                        sm.retailer_spike_skew_preference_b_skew -= h;
+                    }
+                }
+                let fd = (evaluate_bessembinder_lemmon_power_forward_premium(&sp)
+                    .equilibrium_power_forward_price
+                    - evaluate_bessembinder_lemmon_power_forward_premium(&sm)
+                        .equilibrium_power_forward_price)
+                    / (2.0 * h);
+                assert!((ad_deriv - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_bessembinder_lemmon_power_forward_premium_module::*;

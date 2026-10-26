@@ -3491,6 +3491,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_andersen_cms_replication_tuckman_special_repo_okane_cds_upfront_gatheral_ssr_tanaka_gregory_saccr_kva_eydeland_crack_spread_wystup_prdc_cap_haug_eso_dilution_qian_spinu_erc_rockafellar_cvar_htf_pls_krylov_piazzesi_fomc(scale),
         benchmark_darbyshire_step_ois_turn_despiegeleer_cb_soft_call_okane_cds_index_skew_gatheral_varswap_truncation_gregory_fva_overlap_geman_working_storage_wystup_malz_fx_fly_goldman_sosin_lookback_ledoit_wolf_shrinkage_almgren_chriss_cara_tsay_estar_acm_cp(scale),
         benchmark_henrard_tenor_basis_fabozzi_msr_recapture_okane_cdo_base_corr_gatheral_fwd_start_smile_gregory_pykhtin_csa_mta_eydeland_gas_swing_wystup_fx_kiko_stulz_rainbow_jagannathan_ma_obizhaeva_wang_newey_west_hac_gabaix_disaster(scale),
+        benchmark_brigo_diff_swap_quanto_fabozzi_callable_muni_ytw_bielecki_step_up_bond_bkm_moment_strip_gregory_break_clause_cva_bessembinder_power_skew_wystup_fx_fader_longstaff_extendible_kan_zhou_3fund_sharpe_rbsa_diebold_mariano_hln_laubach_williams_rstar(scale),
     ]
 }
 
@@ -10230,6 +10231,232 @@ pub fn benchmark_henrard_tenor_basis_fabozzi_msr_recapture_okane_cdo_base_corr_g
     run_comparison(
         "55_henrard_tenor_basis_fabozzi_msr_recapture_okane_cdo_base_corr_gatheral_fwd_start_smile_gregory_pykhtin_csa_mta_eydeland_gas_swing_wystup_fx_kiko_stulz_rainbow_jagannathan_ma_obizhaeva_wang_newey_west_hac_gabaix_disaster",
         "Tenor-Basis-Mult / MSR-Recapture / CDO-Base-Corr / Fwd-Start-Smile / CSA-MTA-CVA / Gas-Swing / FX-Window-KIKO / Stulz-Rainbow / Jagannathan-Ma / Obizhaeva-Wang / Newey-West-HAC / Gabaix-Disaster AD",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
+}
+
+pub fn suite56_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+    let s = T::from_f64(0.005);
+    let dx0 = x[0] * s;
+    let dx1 = x[1] * s;
+    let dx2 = x[2] * s;
+    let dx3 = x[3] * s;
+
+    let dswap = ql_curves::evaluate_brigo_differential_swap_quanto_fra(
+        &ql_curves::BrigoDifferentialSwapQuantoFraSpec {
+            domestic_ois_rate_rd: T::from_f64(0.042) + dx0,
+            domestic_forward_rate_ld: T::from_f64(0.044) + dx1,
+            foreign_forward_rate_lf: T::from_f64(0.032) + dx2,
+            foreign_rate_vol_sigma_lf: T::from_f64(0.22) + dx3,
+            fx_spot_vol_sigma_fx: T::from_f64(0.12),
+            rate_fx_correlation_rho: T::from_f64(-0.45),
+            reset_time_years_t1: T::from_f64(2.0),
+            accrual_fraction_tau: T::from_f64(0.50),
+        },
+    );
+
+    let muni = ql_fixed_income::evaluate_fabozzi_callable_muni_ytw_refunding(
+        &ql_fixed_income::FabozziCallableMuniYtwRefundingSpec {
+            tax_exempt_coupon_rate_c: T::from_f64(0.050) + dx0,
+            muni_mmd_benchmark_yield_ym: T::from_f64(0.031) + dx1,
+            treasury_yield_y_ust: T::from_f64(0.044) + dx2,
+            statutory_marginal_tax_rate_tau: T::from_f64(0.37),
+            call_protection_years_tc: T::from_f64(5.0),
+            final_maturity_years_t: T::from_f64(10.0),
+            call_price_par: T::from_f64(100.0),
+            muni_yield_volatility_sigma: T::from_f64(0.18) + dx3,
+        },
+    );
+
+    let step_cb = ql_credit::evaluate_bielecki_rating_step_up_coupon_bond(
+        &ql_credit::BieleckiRatingStepUpCouponBondSpec {
+            base_coupon_rate_c0: T::from_f64(0.045) + dx0,
+            downgrade_step_up_spread_dc: T::from_f64(0.0125) + dx1,
+            ig_to_hy_downgrade_intensity_lambda_down: T::from_f64(0.08) + dx2,
+            hy_to_ig_upgrade_intensity_lambda_up: T::from_f64(0.03),
+            ig_default_hazard_rate_lambda_d_ig: T::from_f64(0.005),
+            hy_default_hazard_rate_lambda_d_hy: T::from_f64(0.035) + dx3,
+            recovery_rate_r: T::from_f64(0.40),
+            ois_discount_rate_r: T::from_f64(0.038),
+            maturity_years_t: T::from_f64(5.0),
+        },
+    );
+
+    let bkm = ql_vol::evaluate_bakshi_kapadia_madan_moment_strip(
+        &ql_vol::BakshiKapadiaMadanMomentStripSpec {
+            spot_price_s0: T::from_f64(100.0) + x[0],
+            atm_implied_vol_sigma0: T::from_f64(0.20) + dx1,
+            smile_skew_slope_beta: T::from_f64(-0.25) + dx2,
+            smile_curvature_gamma: T::from_f64(0.40) + dx3,
+            risk_free_rate_r: T::from_f64(0.04),
+            dividend_yield_q: T::from_f64(0.015),
+            maturity_years_t: T::from_f64(0.25),
+        },
+    );
+
+    let brk_cva = ql_xva::evaluate_gregory_break_clause_extinguishable_cva(
+        &ql_xva::GregoryBreakClauseExtinguishableCvaSpec {
+            unmitigated_swap_epe_profile: [
+                T::from_f64(18.0) + x[0],
+                T::from_f64(32.0) + x[1],
+                T::from_f64(45.0) + x[2],
+            ],
+            break_clause_date_years_tb: T::from_f64(2.0),
+            final_maturity_years_t: T::from_f64(5.0),
+            counterparty_hazard_rate_lambda: T::from_f64(0.025) + dx3,
+            break_execution_probability_p_exec: T::from_f64(0.85),
+            break_settlement_slippage_fraction: T::from_f64(0.08),
+            recovery_rate_r: T::from_f64(0.40),
+            ois_discount_rate_r: T::from_f64(0.038),
+        },
+    );
+
+    let pwr = ql_commodities::evaluate_bessembinder_lemmon_power_forward_premium(
+        &ql_commodities::BessembinderLemmonPowerForwardPremiumSpec {
+            baseline_marginal_fuel_cost_c0: T::from_f64(28.0) + x[0],
+            expected_load_to_capacity_ratio_u: T::from_f64(0.84) + dx1,
+            load_shock_volatility_sigma_u: T::from_f64(0.12) + dx2,
+            supply_stack_convexity_exponent_gamma: T::from_f64(4.5) + dx3,
+            peaking_merit_slope_alpha: T::from_f64(65.0),
+            producer_variance_aversion_a_var: T::from_f64(0.015),
+            retailer_spike_skew_preference_b_skew: T::from_f64(0.0045),
+        },
+    );
+
+    let fader =
+        ql_fx::evaluate_wystup_fx_fader_range_accrual(&ql_fx::WystupFxFaderRangeAccrualSpec {
+            spot_fx_s0: T::from_f64(1.085) + dx0,
+            strike_fx_k: T::from_f64(1.080),
+            accrual_corridor_lower_l: T::from_f64(1.040),
+            accrual_corridor_upper_u: T::from_f64(1.130),
+            domestic_rate_rd: T::from_f64(0.045) + dx1,
+            foreign_rate_rf: T::from_f64(0.030) + dx2,
+            volatility_sigma: T::from_f64(0.095) + dx3,
+            maturity_years_t: T::from_f64(1.0),
+        });
+
+    let ext_opt = ql_exotics::evaluate_longstaff_extendible_option(
+        &ql_exotics::LongstaffExtendibleOptionSpec {
+            spot_price_s0: T::from_f64(100.0) + x[0],
+            initial_strike_k1: T::from_f64(102.0) + x[1],
+            extended_strike_k2: T::from_f64(105.0),
+            initial_maturity_t1: T::from_f64(0.50),
+            extended_maturity_t2: T::from_f64(1.25),
+            holder_extension_fee_a: T::from_f64(1.50),
+            risk_free_rate_r: T::from_f64(0.045) + dx2,
+            dividend_yield_q: T::from_f64(0.015),
+            volatility_sigma: T::from_f64(0.25) + dx3,
+        },
+    );
+
+    let kz = ql_portfolio::evaluate_kan_zhou_three_fund_combine(
+        &ql_portfolio::KanZhouThreeFundCombineSpec {
+            sample_sharpe_squared_theta2: T::from_f64(0.28) + dx0,
+            gmv_sharpe_squared_theta_g2: T::from_f64(0.12) + dx1,
+            equal_weight_sharpe_squared_theta_ew2: T::from_f64(0.16) + dx2,
+            number_of_assets_n: T::from_f64(25.0),
+            sample_observations_t: T::from_f64(120.0) + x[3],
+            risk_aversion_gamma: T::from_f64(3.0),
+        },
+    );
+
+    let rbsa = ql_portfolio::evaluate_sharpe_return_based_style_analysis(
+        &ql_portfolio::SharpeReturnBasedStyleAnalysisSpec {
+            fund_mean_return_mu_p: T::from_f64(0.105) + dx0,
+            fund_return_variance_var_p: T::from_f64(0.032) + dx1,
+            style_benchmark_means: [
+                T::from_f64(0.095) + dx2,
+                T::from_f64(0.075),
+                T::from_f64(0.045),
+            ],
+            style_benchmark_variances: [
+                T::from_f64(0.040),
+                T::from_f64(0.028) + dx3,
+                T::from_f64(0.010),
+            ],
+            fund_style_covariances: [T::from_f64(0.024), T::from_f64(0.011), T::from_f64(-0.002)],
+        },
+    );
+
+    let dm_hln = ql_dml::evaluate_diebold_mariano_hln_forecast_test(
+        &ql_dml::DieboldMarianoHlnForecastTestSpec {
+            model1_mse_loss_l1: T::from_f64(0.025) + dx0,
+            model2_mse_loss_l2: T::from_f64(0.036) + dx1,
+            forecast_error_correlation_rho12: T::from_f64(0.45) + dx2,
+            loss_differential_autocov_lag1: T::from_f64(0.0004) + dx3 * T::from_f64(0.01),
+            forecast_horizon_steps_h: T::from_f64(3.0),
+            evaluation_sample_size_t: T::from_f64(80.0),
+        },
+    );
+
+    let lw_rstar = ql_models::evaluate_laubach_williams_natural_rate_r_star(
+        &ql_models::LaubachWilliamsNaturalRateRStarSpec {
+            prior_trend_growth_g0: T::from_f64(0.018) + dx0,
+            prior_other_factor_z0: T::from_f64(-0.004) + dx1,
+            nominal_policy_rate_i: T::from_f64(0.0525) + dx2,
+            expected_inflation_pi_e: T::from_f64(0.024),
+            realized_core_inflation_pi: T::from_f64(0.028) + dx3,
+            is_curve_surprise_dy: T::from_f64(0.006),
+            is_rate_sensitivity_a_r: T::from_f64(0.09),
+            phillips_slope_b_y: T::from_f64(0.15),
+            signal_to_noise_ratio_lambda_z: T::from_f64(0.042),
+        },
+    );
+
+    [
+        dswap.domestic_discounted_diff_swaplet_pv,
+        muni.callable_muni_market_price,
+        step_cb.step_up_covenanted_bond_value,
+        bkm.cboe_skew_index_level,
+        brk_cva.break_clause_mitigated_cva,
+        pwr.equilibrium_power_forward_price,
+        fader.fade_in_call_value,
+        ext_opt.writer_extendible_call_value,
+        kz.three_fund_expected_out_of_sample_utility,
+        rbsa.active_information_ratio,
+        dm_hln.hln_corrected_dm_statistic,
+        lw_rstar.taylor_rule_implied_nominal_rate,
+    ]
+}
+
+pub fn benchmark_brigo_diff_swap_quanto_fabozzi_callable_muni_ytw_bielecki_step_up_bond_bkm_moment_strip_gregory_break_clause_cva_bessembinder_power_skew_wystup_fx_fader_longstaff_extendible_kan_zhou_3fund_sharpe_rbsa_diebold_mariano_hln_laubach_williams_rstar(
+    scale: usize,
+) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let baseline = move || {
+        let f = |x: [f64; 4]| suite56_workloads(x).iter().copied().sum::<f64>();
+        let mut z = f(x0);
+        for i in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[i] += 1e-5;
+            d[i] -= 1e-5;
+            z += (f(u) - f(d)) / (2e-5);
+        }
+        for _ in 0..20 {
+            std::hint::black_box(f(x0));
+        }
+        z
+    };
+    let sota = move || {
+        let x: [Dual<4>; 4] = [
+            Dual::variable(x0[0], 0),
+            Dual::variable(x0[1], 1),
+            Dual::variable(x0[2], 2),
+            Dual::variable(x0[3], 3),
+        ];
+        suite56_workloads(x)
+            .iter()
+            .map(|v| v.val + v.d.iter().sum::<f64>())
+            .sum::<f64>()
+    };
+    run_comparison(
+        "56_brigo_diff_swap_quanto_fabozzi_callable_muni_ytw_bielecki_step_up_bond_bkm_moment_strip_gregory_break_clause_cva_bessembinder_power_skew_wystup_fx_fader_longstaff_extendible_kan_zhou_3fund_sharpe_rbsa_diebold_mariano_hln_laubach_williams_rstar",
+        "Diff-Swap-Quanto / Callable-Muni-YTW / Step-Up-Bond / BKM-SKEW / Break-Clause-CVA / Power-Skew / FX-Fader / Longstaff-Extendible / Kan-Zhou-3Fund / Sharpe-RBSA / Diebold-Mariano-HLN / Laubach-Williams-r* AD",
         cfg,
         1e-4,
         baseline,

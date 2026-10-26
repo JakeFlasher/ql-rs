@@ -929,3 +929,233 @@ mod evaluate_duffie_lando_noisy_accounting_credit_spread_module {
     }
 }
 pub use evaluate_duffie_lando_noisy_accounting_credit_spread_module::*;
+
+mod evaluate_bielecki_rating_step_up_coupon_bond_module {
+    // Bielecki & Rutkowski (2002) & Lando (2004) Corporate Bond Rating-Trigger Step-Up
+    // Coupon Covenant & Downgrade Convexity Hedge Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BieleckiRatingStepUpCouponBondSpec<T: Real = f64> {
+        pub base_coupon_rate_c0: T,
+        pub downgrade_step_up_spread_dc: T,
+        pub ig_to_hy_downgrade_intensity_lambda_down: T,
+        pub hy_to_ig_upgrade_intensity_lambda_up: T,
+        pub ig_default_hazard_rate_lambda_d_ig: T,
+        pub hy_default_hazard_rate_lambda_d_hy: T,
+        pub recovery_rate_r: T,
+        pub ois_discount_rate_r: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BieleckiRatingStepUpCouponBondReport<T: Real = f64> {
+        pub terminal_ig_survival_probability: T,
+        pub terminal_hy_downgraded_probability: T,
+        pub cumulative_default_probability: T,
+        pub uncovenanted_straight_bond_value: T,
+        pub step_up_coupon_protection_pv: T,
+        pub step_up_covenanted_bond_value: T,
+        pub downgrade_loss_hedge_ratio: T,
+    }
+
+    pub fn evaluate_bielecki_rating_step_up_coupon_bond<T: Real>(
+        spec: &BieleckiRatingStepUpCouponBondSpec<T>,
+    ) -> BieleckiRatingStepUpCouponBondReport<T> {
+        let c0 = spec.base_coupon_rate_c0.max_val(T::from_f64(1e-4));
+        let dc = spec.downgrade_step_up_spread_dc.max_val(T::zero());
+        let l_down = spec
+            .ig_to_hy_downgrade_intensity_lambda_down
+            .max_val(T::from_f64(1e-4));
+        let l_up = spec
+            .hy_to_ig_upgrade_intensity_lambda_up
+            .max_val(T::from_f64(1e-4));
+        let ld_ig = spec
+            .ig_default_hazard_rate_lambda_d_ig
+            .max_val(T::from_f64(1e-4));
+        let ld_hy = spec
+            .hy_default_hazard_rate_lambda_d_hy
+            .max_val(ld_ig + T::from_f64(1e-4));
+        let rec = spec
+            .recovery_rate_r
+            .max_val(T::zero())
+            .min_val(T::from_f64(0.95));
+        let r = spec.ois_discount_rate_r.max_val(T::from_f64(1e-4));
+        let t_mat = spec.maturity_years_t.max_val(T::from_f64(0.5));
+
+        // Exact 4-step Markov generator integration across [0, T] starting in IG state (1, 0):
+        let dt = t_mat / T::from_f64(4.0);
+        let mut p_ig = T::one();
+        let mut p_hy = T::zero();
+        let mut p_def = T::zero();
+
+        let mut pv_base_coupons = T::zero();
+        let mut pv_step_up_coupons = T::zero();
+        let mut pv_recovery = T::zero();
+        let mut pv_pure_ig_coupons = T::zero();
+        let mut p_pure_ig = T::one();
+
+        // Exact 2x2 continuous-time Markov chain matrix exponential P(dt) = exp(Q * dt) via Sylvester's formula:
+        let out_ig = l_down + ld_ig;
+        let out_hy = l_up + ld_hy;
+        let diff_q = out_ig - out_hy;
+        let disc = (diff_q * diff_q + T::from_f64(4.0) * l_down * l_up)
+            .max_val(T::from_f64(1e-12))
+            .sqrt();
+        let mu1 = T::from_f64(-0.5) * (out_ig + out_hy - disc);
+        let mu2 = T::from_f64(-0.5) * (out_ig + out_hy + disc);
+        let e1 = (mu1 * dt).exp();
+        let e2 = (mu2 * dt).exp();
+        let p_ig_ig = ((mu1 + out_hy) * e1 - (mu2 + out_hy) * e2) / disc;
+        let p_ig_hy = l_down * (e1 - e2) / disc;
+        let p_hy_ig = l_up * (e1 - e2) / disc;
+        let p_hy_hy = ((mu1 + out_ig) * e1 - (mu2 + out_ig) * e2) / disc;
+
+        for step in 1..=4 {
+            let tk = dt * T::from_f64(step as f64);
+            let df = (-r * tk).exp();
+
+            let next_ig = p_ig * p_ig_ig + p_hy * p_hy_ig;
+            let next_hy = p_ig * p_ig_hy + p_hy * p_hy_hy;
+            let surv = next_ig + next_hy;
+            let d_def = ((p_ig + p_hy) - surv).max_val(T::zero());
+
+            p_ig = next_ig;
+            p_hy = next_hy;
+            p_def += d_def;
+
+            let next_pure_ig = p_pure_ig * (-ld_ig * dt).exp();
+            let d_pure_def = p_pure_ig - next_pure_ig;
+            p_pure_ig = next_pure_ig;
+
+            pv_base_coupons += df * dt * T::from_f64(100.0) * c0 * (p_ig + p_hy);
+            pv_step_up_coupons += df * dt * T::from_f64(100.0) * dc * p_hy;
+            pv_recovery += df * T::from_f64(100.0) * rec * d_def;
+            pv_pure_ig_coupons += df * dt * T::from_f64(100.0) * c0 * p_pure_ig
+                + df * T::from_f64(100.0) * rec * d_pure_def;
+        }
+
+        let df_t = (-r * t_mat).exp();
+        let straight_val =
+            pv_base_coupons + pv_recovery + T::from_f64(100.0) * df_t * (p_ig + p_hy);
+        let pure_ig_val = pv_pure_ig_coupons + T::from_f64(100.0) * df_t * p_pure_ig;
+        let covenanted_val = straight_val + pv_step_up_coupons;
+
+        let downgrade_drag = (pure_ig_val - straight_val).max_val(T::from_f64(1e-4));
+        let hedge_ratio = pv_step_up_coupons / downgrade_drag;
+
+        BieleckiRatingStepUpCouponBondReport {
+            terminal_ig_survival_probability: p_ig,
+            terminal_hy_downgraded_probability: p_hy,
+            cumulative_default_probability: p_def,
+            uncovenanted_straight_bond_value: straight_val,
+            step_up_coupon_protection_pv: pv_step_up_coupons,
+            step_up_covenanted_bond_value: covenanted_val,
+            downgrade_loss_hedge_ratio: hedge_ratio,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_bielecki_rating_step_up_coupon_bond_module_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn bielecki_rating_step_up_coupon_bond_invariants_and_ad_parity() {
+            let spec = BieleckiRatingStepUpCouponBondSpec {
+                base_coupon_rate_c0: 0.045,
+                downgrade_step_up_spread_dc: 0.0125,
+                ig_to_hy_downgrade_intensity_lambda_down: 0.08,
+                hy_to_ig_upgrade_intensity_lambda_up: 0.03,
+                ig_default_hazard_rate_lambda_d_ig: 0.005,
+                hy_default_hazard_rate_lambda_d_hy: 0.035,
+                recovery_rate_r: 0.40,
+                ois_discount_rate_r: 0.038,
+                maturity_years_t: 5.0,
+            };
+            let rep = evaluate_bielecki_rating_step_up_coupon_bond(&spec);
+            assert!(rep.step_up_covenanted_bond_value > rep.uncovenanted_straight_bond_value);
+            assert!(rep.step_up_coupon_protection_pv > 0.0);
+            assert!(rep.downgrade_loss_hedge_ratio > 0.1);
+
+            let h = 1e-6;
+            let r_ad =
+                evaluate_bielecki_rating_step_up_coupon_bond(&BieleckiRatingStepUpCouponBondSpec {
+                    base_coupon_rate_c0: Dual::<9>::variable(spec.base_coupon_rate_c0, 0),
+                    downgrade_step_up_spread_dc: Dual::<9>::variable(
+                        spec.downgrade_step_up_spread_dc,
+                        1,
+                    ),
+                    ig_to_hy_downgrade_intensity_lambda_down: Dual::<9>::variable(
+                        spec.ig_to_hy_downgrade_intensity_lambda_down,
+                        2,
+                    ),
+                    hy_to_ig_upgrade_intensity_lambda_up: Dual::<9>::variable(
+                        spec.hy_to_ig_upgrade_intensity_lambda_up,
+                        3,
+                    ),
+                    ig_default_hazard_rate_lambda_d_ig: Dual::<9>::variable(
+                        spec.ig_default_hazard_rate_lambda_d_ig,
+                        4,
+                    ),
+                    hy_default_hazard_rate_lambda_d_hy: Dual::<9>::variable(
+                        spec.hy_default_hazard_rate_lambda_d_hy,
+                        5,
+                    ),
+                    recovery_rate_r: Dual::<9>::variable(spec.recovery_rate_r, 6),
+                    ois_discount_rate_r: Dual::<9>::variable(spec.ois_discount_rate_r, 7),
+                    maturity_years_t: Dual::<9>::variable(spec.maturity_years_t, 8),
+                });
+            for (idx, &ad_deriv) in r_ad.step_up_covenanted_bond_value.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.base_coupon_rate_c0 += h;
+                        sm.base_coupon_rate_c0 -= h;
+                    }
+                    1 => {
+                        sp.downgrade_step_up_spread_dc += h;
+                        sm.downgrade_step_up_spread_dc -= h;
+                    }
+                    2 => {
+                        sp.ig_to_hy_downgrade_intensity_lambda_down += h;
+                        sm.ig_to_hy_downgrade_intensity_lambda_down -= h;
+                    }
+                    3 => {
+                        sp.hy_to_ig_upgrade_intensity_lambda_up += h;
+                        sm.hy_to_ig_upgrade_intensity_lambda_up -= h;
+                    }
+                    4 => {
+                        sp.ig_default_hazard_rate_lambda_d_ig += h;
+                        sm.ig_default_hazard_rate_lambda_d_ig -= h;
+                    }
+                    5 => {
+                        sp.hy_default_hazard_rate_lambda_d_hy += h;
+                        sm.hy_default_hazard_rate_lambda_d_hy -= h;
+                    }
+                    6 => {
+                        sp.recovery_rate_r += h;
+                        sm.recovery_rate_r -= h;
+                    }
+                    7 => {
+                        sp.ois_discount_rate_r += h;
+                        sm.ois_discount_rate_r -= h;
+                    }
+                    _ => {
+                        sp.maturity_years_t += h;
+                        sm.maturity_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_bielecki_rating_step_up_coupon_bond(&sp)
+                    .step_up_covenanted_bond_value
+                    - evaluate_bielecki_rating_step_up_coupon_bond(&sm)
+                        .step_up_covenanted_bond_value)
+                    / (2.0 * h);
+                assert!((ad_deriv - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_bielecki_rating_step_up_coupon_bond_module::*;

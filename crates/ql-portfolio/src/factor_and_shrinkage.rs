@@ -1806,3 +1806,259 @@ mod evaluate_qian_risk_parity_spinu_log_barrier_module {
     }
 }
 pub use evaluate_qian_risk_parity_spinu_log_barrier_module::*;
+
+mod evaluate_kan_zhou_and_sharpe_rbsa_module {
+    // Engine 5A: Kan & Zhou (2007) & DeMiguel–Garlappi–Uppal (2009) Three-Fund Optimal
+    // Combine (`1/N` + Sample Tangency + Minimum-Variance) Estimation-Risk Shrinkage Engine.
+    // Engine 5B: Sharpe (1992) & Bacon (2008) Return-Based Style Analysis (`RBSA`) Constrained
+    // Quadratic Tracking-Error, Style `R^2` & Active Selection Return Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct KanZhouThreeFundCombineSpec<T: Real = f64> {
+        pub sample_sharpe_squared_theta2: T,
+        pub gmv_sharpe_squared_theta_g2: T,
+        pub equal_weight_sharpe_squared_theta_ew2: T,
+        pub number_of_assets_n: T,
+        pub sample_observations_t: T,
+        pub risk_aversion_gamma: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct KanZhouThreeFundCombineReport<T: Real = f64> {
+        pub plug_in_expected_out_of_sample_utility: T,
+        pub kan_zhou_tangency_shrinkage_weight_c1: T,
+        pub kan_zhou_gmv_combine_weight_c2: T,
+        pub demiguel_equal_weight_blend_c3: T,
+        pub three_fund_expected_out_of_sample_utility: T,
+        pub estimation_risk_utility_gain: T,
+        pub critical_sample_length_for_plug_in: T,
+    }
+
+    pub fn evaluate_kan_zhou_three_fund_combine<T: Real>(
+        spec: &KanZhouThreeFundCombineSpec<T>,
+    ) -> KanZhouThreeFundCombineReport<T> {
+        let th2 = spec.sample_sharpe_squared_theta2.max_val(T::from_f64(0.01));
+        let th_g2 = spec
+            .gmv_sharpe_squared_theta_g2
+            .max_val(T::from_f64(0.005))
+            .min_val(th2);
+        let th_ew2 = spec
+            .equal_weight_sharpe_squared_theta_ew2
+            .max_val(T::from_f64(0.005));
+        let n = spec.number_of_assets_n.max_val(T::from_f64(3.0));
+        let t_obs = spec.sample_observations_t.max_val(n + T::from_f64(5.0));
+        let gam = spec.risk_aversion_gamma.max_val(T::from_f64(0.5));
+
+        // Kan & Zhou (2007, JFQA Eqs. 23 & 40) finite-sample moments of plug-in Markowitz rule:
+        let k_mult = (t_obs / (t_obs - n - T::from_f64(2.0))).max_val(T::one());
+        let u_plugin = (th2 / (T::from_f64(2.0) * gam))
+            * (T::from_f64(2.0)
+                - k_mult * ((t_obs - T::from_f64(2.0)) / (t_obs - n - T::from_f64(1.0))))
+            - (n * t_obs)
+                / (T::from_f64(2.0)
+                    * gam
+                    * (t_obs - n - T::from_f64(1.0))
+                    * (t_obs - n - T::from_f64(2.0)));
+
+        // Excess ex-ante tangency over GMV dispersion psi^2 = theta^2 - theta_g^2:
+        let psi2 = (th2 - th_g2).max_val(T::from_f64(0.005));
+        let c_kz_scale = ((t_obs - n - T::from_f64(1.0)) * (t_obs - n - T::from_f64(4.0)))
+            / (t_obs * (t_obs - T::from_f64(2.0)));
+
+        let w_tan = c_kz_scale * (psi2 / (psi2 + n / t_obs));
+        let w_gmv = c_kz_scale * ((n / t_obs) / (psi2 + n / t_obs));
+        let w_ew =
+            (T::one() - w_tan - w_gmv).max_val(T::from_f64(0.02)) * (th_ew2 / (th2 + th_ew2));
+
+        let u_three_fund = (T::one() / (T::from_f64(2.0) * gam))
+            * (w_tan * psi2 + c_kz_scale * th_g2 + T::from_f64(0.25) * w_ew * th_ew2);
+        let util_gain = u_three_fund - u_plugin;
+        let t_crit = n * (T::one() + T::from_f64(2.0) / psi2);
+
+        KanZhouThreeFundCombineReport {
+            plug_in_expected_out_of_sample_utility: u_plugin,
+            kan_zhou_tangency_shrinkage_weight_c1: w_tan,
+            kan_zhou_gmv_combine_weight_c2: w_gmv,
+            demiguel_equal_weight_blend_c3: w_ew,
+            three_fund_expected_out_of_sample_utility: u_three_fund,
+            estimation_risk_utility_gain: util_gain,
+            critical_sample_length_for_plug_in: t_crit,
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct SharpeReturnBasedStyleAnalysisSpec<T: Real = f64> {
+        pub fund_mean_return_mu_p: T,
+        pub fund_return_variance_var_p: T,
+        pub style_benchmark_means: [T; 3],
+        pub style_benchmark_variances: [T; 3],
+        pub fund_style_covariances: [T; 3],
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct SharpeReturnBasedStyleAnalysisReport<T: Real = f64> {
+        pub constrained_style_weights: [T; 3],
+        pub tracking_error_variance: T,
+        pub annualized_tracking_error: T,
+        pub sharpe_style_r_squared: T,
+        pub passive_style_benchmark_return: T,
+        pub active_selection_alpha_return: T,
+        pub active_information_ratio: T,
+    }
+
+    pub fn evaluate_sharpe_return_based_style_analysis<T: Real>(
+        spec: &SharpeReturnBasedStyleAnalysisSpec<T>,
+    ) -> SharpeReturnBasedStyleAnalysisReport<T> {
+        let var_p = spec.fund_return_variance_var_p.max_val(T::from_f64(1e-4));
+        let v0 = spec.style_benchmark_variances[0].max_val(T::from_f64(1e-4));
+        let v1 = spec.style_benchmark_variances[1].max_val(T::from_f64(1e-4));
+        let v2 = spec.style_benchmark_variances[2].max_val(T::from_f64(1e-4));
+
+        let c0 = spec.fund_style_covariances[0];
+        let c1 = spec.fund_style_covariances[1];
+        let c2 = spec.fund_style_covariances[2];
+
+        // Unconstrained beta_i = c_i / v_i, projected smoothly onto simplex {w_i >= 0, sum w_i = 1}:
+        let b0 = c0 / v0;
+        let b1 = c1 / v1;
+        let b2 = c2 / v2;
+
+        let eps = T::from_f64(1e-4);
+        let smooth_pos = |x: T| T::from_f64(0.5) * (x + (x * x + eps * eps).sqrt());
+        let smooth_dpos = |x: T| T::from_f64(0.5) * (T::one() + x / (x * x + eps * eps).sqrt());
+
+        let mut mu_s = (b0 + b1 + b2 - T::one()) / T::from_f64(3.0);
+        for _ in 0..10 {
+            let x0 = b0 - mu_s / v0;
+            let x1 = b1 - mu_s / v1;
+            let x2 = b2 - mu_s / v2;
+            let w0_t = smooth_pos(x0);
+            let w1_t = smooth_pos(x1);
+            let w2_t = smooth_pos(x2);
+            let jac = (smooth_dpos(x0) / v0 + smooth_dpos(x1) / v1 + smooth_dpos(x2) / v2)
+                .max_val(T::from_f64(1e-4));
+            mu_s += ((w0_t + w1_t + w2_t) - T::one()) / jac;
+        }
+
+        let mut w0 = smooth_pos(b0 - mu_s / v0);
+        let mut w1 = smooth_pos(b1 - mu_s / v1);
+        let mut w2 = smooth_pos(b2 - mu_s / v2);
+        let sw = (w0 + w1 + w2).max_val(T::from_f64(1e-6));
+        w0 /= sw;
+        w1 /= sw;
+        w2 /= sw;
+
+        let style_var = w0 * w0 * v0 + w1 * w1 * v1 + w2 * w2 * v2;
+        let cross_cov = w0 * c0 + w1 * c1 + w2 * c2;
+        let te_var = (var_p + style_var - T::from_f64(2.0) * cross_cov).max_val(T::from_f64(1e-6));
+        let te_vol = te_var.sqrt();
+
+        // Sharpe (1992, JPM Eq. 4) Style R^2 = 1 - Var(e_p) / Var(R_p):
+        let r2 = (T::one() - te_var / var_p)
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.999));
+
+        let style_ret = w0 * spec.style_benchmark_means[0]
+            + w1 * spec.style_benchmark_means[1]
+            + w2 * spec.style_benchmark_means[2];
+        let sel_alpha = spec.fund_mean_return_mu_p - style_ret;
+        let info_ratio = sel_alpha / te_vol;
+
+        SharpeReturnBasedStyleAnalysisReport {
+            constrained_style_weights: [w0, w1, w2],
+            tracking_error_variance: te_var,
+            annualized_tracking_error: te_vol,
+            sharpe_style_r_squared: r2,
+            passive_style_benchmark_return: style_ret,
+            active_selection_alpha_return: sel_alpha,
+            active_information_ratio: info_ratio,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_kan_zhou_and_sharpe_rbsa_module_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn kan_zhou_and_sharpe_rbsa_invariants_and_ad_parity() {
+            let s1 = KanZhouThreeFundCombineSpec {
+                sample_sharpe_squared_theta2: 0.28,
+                gmv_sharpe_squared_theta_g2: 0.12,
+                equal_weight_sharpe_squared_theta_ew2: 0.16,
+                number_of_assets_n: 25.0,
+                sample_observations_t: 120.0,
+                risk_aversion_gamma: 3.0,
+            };
+            let r1 = evaluate_kan_zhou_three_fund_combine(&s1);
+            assert!(
+                r1.three_fund_expected_out_of_sample_utility
+                    > r1.plug_in_expected_out_of_sample_utility
+            );
+            assert!(r1.estimation_risk_utility_gain > 0.0);
+
+            let h = 1e-6;
+            let r1_ad = evaluate_kan_zhou_three_fund_combine(&KanZhouThreeFundCombineSpec {
+                sample_sharpe_squared_theta2: Dual::<1>::variable(
+                    s1.sample_sharpe_squared_theta2,
+                    0,
+                ),
+                gmv_sharpe_squared_theta_g2: Dual::<1>::from_value(s1.gmv_sharpe_squared_theta_g2),
+                equal_weight_sharpe_squared_theta_ew2: Dual::<1>::from_value(
+                    s1.equal_weight_sharpe_squared_theta_ew2,
+                ),
+                number_of_assets_n: Dual::<1>::from_value(s1.number_of_assets_n),
+                sample_observations_t: Dual::<1>::from_value(s1.sample_observations_t),
+                risk_aversion_gamma: Dual::<1>::from_value(s1.risk_aversion_gamma),
+            });
+            let mut s1p = s1;
+            s1p.sample_sharpe_squared_theta2 += h;
+            let mut s1m = s1;
+            s1m.sample_sharpe_squared_theta2 -= h;
+            let fd1 = (evaluate_kan_zhou_three_fund_combine(&s1p)
+                .three_fund_expected_out_of_sample_utility
+                - evaluate_kan_zhou_three_fund_combine(&s1m)
+                    .three_fund_expected_out_of_sample_utility)
+                / (2.0 * h);
+            assert!((r1_ad.three_fund_expected_out_of_sample_utility.d[0] - fd1).abs() < 1e-6);
+
+            let s2 = SharpeReturnBasedStyleAnalysisSpec {
+                fund_mean_return_mu_p: 0.105,
+                fund_return_variance_var_p: 0.032,
+                style_benchmark_means: [0.095, 0.075, 0.045],
+                style_benchmark_variances: [0.040, 0.028, 0.010],
+                fund_style_covariances: [0.024, 0.011, -0.002],
+            };
+            let r2 = evaluate_sharpe_return_based_style_analysis(&s2);
+            let w_sum = r2.constrained_style_weights[0]
+                + r2.constrained_style_weights[1]
+                + r2.constrained_style_weights[2];
+            assert!((w_sum - 1.0).abs() < 1e-10);
+            assert!(r2.sharpe_style_r_squared > 0.5 && r2.sharpe_style_r_squared < 1.0);
+
+            let r2_ad =
+                evaluate_sharpe_return_based_style_analysis(&SharpeReturnBasedStyleAnalysisSpec {
+                    fund_mean_return_mu_p: Dual::<1>::variable(s2.fund_mean_return_mu_p, 0),
+                    fund_return_variance_var_p: Dual::<1>::from_value(
+                        s2.fund_return_variance_var_p,
+                    ),
+                    style_benchmark_means: s2.style_benchmark_means.map(Dual::<1>::from_value),
+                    style_benchmark_variances: s2
+                        .style_benchmark_variances
+                        .map(Dual::<1>::from_value),
+                    fund_style_covariances: s2.fund_style_covariances.map(Dual::<1>::from_value),
+                });
+            let mut s2p = s2;
+            s2p.fund_mean_return_mu_p += h;
+            let mut s2m = s2;
+            s2m.fund_mean_return_mu_p -= h;
+            let fd2 = (evaluate_sharpe_return_based_style_analysis(&s2p).active_information_ratio
+                - evaluate_sharpe_return_based_style_analysis(&s2m).active_information_ratio)
+                / (2.0 * h);
+            assert!((r2_ad.active_information_ratio.d[0] - fd2).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_kan_zhou_and_sharpe_rbsa_module::*;

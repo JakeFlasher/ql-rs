@@ -768,3 +768,137 @@ mod evaluate_gabaix_rare_disaster_resilience_module {
     }
 }
 pub use evaluate_gabaix_rare_disaster_resilience_module::*;
+
+mod evaluate_laubach_williams_natural_rate_r_star_module {
+    // Laubach & Williams (2003) & Holston–Laubach–Williams (`HLW`, 2017) Natural Rate of
+    // Interest (`r^*`), Output-Gap Kalman Filter & Real Monetary Stance Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LaubachWilliamsNaturalRateRStarSpec<T: Real = f64> {
+        pub prior_trend_growth_g0: T,
+        pub prior_other_factor_z0: T,
+        pub nominal_policy_rate_i: T,
+        pub expected_inflation_pi_e: T,
+        pub realized_core_inflation_pi: T,
+        pub is_curve_surprise_dy: T,
+        pub is_rate_sensitivity_a_r: T,
+        pub phillips_slope_b_y: T,
+        pub signal_to_noise_ratio_lambda_z: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LaubachWilliamsNaturalRateRStarReport<T: Real = f64> {
+        pub prior_natural_real_rate_r_star: T,
+        pub posterior_natural_real_rate_r_star: T,
+        pub ex_ante_real_policy_rate: T,
+        pub real_monetary_policy_stance_gap: T,
+        pub filtered_output_gap_pct: T,
+        pub kalman_gain_on_r_star: T,
+        pub taylor_rule_implied_nominal_rate: T,
+    }
+
+    pub fn evaluate_laubach_williams_natural_rate_r_star<T: Real>(
+        spec: &LaubachWilliamsNaturalRateRStarSpec<T>,
+    ) -> LaubachWilliamsNaturalRateRStarReport<T> {
+        let g0 = spec.prior_trend_growth_g0;
+        let z0 = spec.prior_other_factor_z0;
+        let r_star_prior = g0 + z0;
+
+        let real_rate = spec.nominal_policy_rate_i - spec.expected_inflation_pi_e;
+        let a_r = spec.is_rate_sensitivity_a_r.max_val(T::from_f64(0.02));
+        let b_y = spec.phillips_slope_b_y.max_val(T::from_f64(0.02));
+        let lam_z = spec
+            .signal_to_noise_ratio_lambda_z
+            .max_val(T::from_f64(0.005));
+
+        // Steady-state Riccati Kalman gain K_z from signal-to-noise ratio lambda_z = a_r * sigma_z / sigma_y:
+        let p_ss = T::from_f64(0.5)
+            * (lam_z * lam_z
+                + (lam_z * lam_z * lam_z * lam_z + T::from_f64(4.0) * lam_z * lam_z).sqrt());
+        let k_is = (a_r * p_ss) / (T::one() + a_r * a_r * p_ss + b_y * b_y * p_ss);
+        let k_pc = (b_y * p_ss) / (T::one() + a_r * a_r * p_ss + b_y * b_y * p_ss);
+
+        // IS-curve and Phillips-curve innovations:
+        let pi_surprise = spec.realized_core_inflation_pi - spec.expected_inflation_pi_e;
+        let is_implied_gap = spec.is_curve_surprise_dy + a_r * (real_rate - r_star_prior);
+        let filtered_y_gap =
+            T::from_f64(0.65) * is_implied_gap + T::from_f64(0.35) * (pi_surprise / b_y);
+
+        // Posterior natural rate r*_t|t updated positively when output/inflation exceed IS prior:
+        let r_star_post = r_star_prior + k_is * is_implied_gap + k_pc * pi_surprise;
+        let stance_gap = real_rate - r_star_post;
+
+        // Laubach-Williams augmented Taylor rule: i_TR = r*_post + pi + 0.5 * (pi - 0.02) + 0.5 * y_gap
+        let taylor_nom = r_star_post
+            + spec.realized_core_inflation_pi
+            + T::from_f64(0.5) * (spec.realized_core_inflation_pi - T::from_f64(0.02))
+            + T::from_f64(0.5) * filtered_y_gap;
+
+        LaubachWilliamsNaturalRateRStarReport {
+            prior_natural_real_rate_r_star: r_star_prior,
+            posterior_natural_real_rate_r_star: r_star_post,
+            ex_ante_real_policy_rate: real_rate,
+            real_monetary_policy_stance_gap: stance_gap,
+            filtered_output_gap_pct: filtered_y_gap * T::from_f64(100.0),
+            kalman_gain_on_r_star: k_is,
+            taylor_rule_implied_nominal_rate: taylor_nom,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_laubach_williams_natural_rate_r_star_module_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn laubach_williams_natural_rate_r_star_invariants_and_ad_parity() {
+            let spec = LaubachWilliamsNaturalRateRStarSpec {
+                prior_trend_growth_g0: 0.018,
+                prior_other_factor_z0: -0.004,
+                nominal_policy_rate_i: 0.0525,
+                expected_inflation_pi_e: 0.024,
+                realized_core_inflation_pi: 0.028,
+                is_curve_surprise_dy: 0.006,
+                is_rate_sensitivity_a_r: 0.09,
+                phillips_slope_b_y: 0.15,
+                signal_to_noise_ratio_lambda_z: 0.042,
+            };
+            let rep = evaluate_laubach_williams_natural_rate_r_star(&spec);
+            assert!(rep.posterior_natural_real_rate_r_star > rep.prior_natural_real_rate_r_star);
+            assert!(rep.real_monetary_policy_stance_gap > 0.0);
+            assert!(rep.kalman_gain_on_r_star > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_laubach_williams_natural_rate_r_star(
+                &LaubachWilliamsNaturalRateRStarSpec {
+                    prior_trend_growth_g0: Dual::<1>::variable(spec.prior_trend_growth_g0, 0),
+                    prior_other_factor_z0: Dual::<1>::from_value(spec.prior_other_factor_z0),
+                    nominal_policy_rate_i: Dual::<1>::from_value(spec.nominal_policy_rate_i),
+                    expected_inflation_pi_e: Dual::<1>::from_value(spec.expected_inflation_pi_e),
+                    realized_core_inflation_pi: Dual::<1>::from_value(
+                        spec.realized_core_inflation_pi,
+                    ),
+                    is_curve_surprise_dy: Dual::<1>::from_value(spec.is_curve_surprise_dy),
+                    is_rate_sensitivity_a_r: Dual::<1>::from_value(spec.is_rate_sensitivity_a_r),
+                    phillips_slope_b_y: Dual::<1>::from_value(spec.phillips_slope_b_y),
+                    signal_to_noise_ratio_lambda_z: Dual::<1>::from_value(
+                        spec.signal_to_noise_ratio_lambda_z,
+                    ),
+                },
+            );
+            let mut sp = spec;
+            sp.prior_trend_growth_g0 += h;
+            let mut sm = spec;
+            sm.prior_trend_growth_g0 -= h;
+            let fd = (evaluate_laubach_williams_natural_rate_r_star(&sp)
+                .taylor_rule_implied_nominal_rate
+                - evaluate_laubach_williams_natural_rate_r_star(&sm)
+                    .taylor_rule_implied_nominal_rate)
+                / (2.0 * h);
+            assert!((r_ad.taylor_rule_implied_nominal_rate.d[0] - fd).abs() < 1e-6);
+        }
+    }
+}
+pub use evaluate_laubach_williams_natural_rate_r_star_module::*;

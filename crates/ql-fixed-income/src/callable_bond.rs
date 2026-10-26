@@ -1510,3 +1510,218 @@ mod evaluate_tuckman_special_repo_fail_penalty_ctd_module {
     }
 }
 pub use evaluate_tuckman_special_repo_fail_penalty_ctd_module::*;
+
+mod evaluate_fabozzi_callable_muni_ytw_refunding_module {
+    // Fabozzi (2012) & Kalotay–Dorigan Tax-Exempt Callable Municipal Bond Yield-to-Worst
+    // (`YTW`), Refunding Efficiency & Implied Marginal Tax-Rate (`Muni/UST`) Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct FabozziCallableMuniYtwRefundingSpec<T: Real = f64> {
+        pub tax_exempt_coupon_rate_c: T,
+        pub muni_mmd_benchmark_yield_ym: T,
+        pub treasury_yield_y_ust: T,
+        pub statutory_marginal_tax_rate_tau: T,
+        pub call_protection_years_tc: T,
+        pub final_maturity_years_t: T,
+        pub call_price_par: T,
+        pub muni_yield_volatility_sigma: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct FabozziCallableMuniYtwRefundingReport<T: Real = f64> {
+        pub option_free_muni_bond_price: T,
+        pub embedded_refunding_call_value: T,
+        pub callable_muni_market_price: T,
+        pub yield_to_call_ytc: T,
+        pub yield_to_maturity_ytm: T,
+        pub smooth_yield_to_worst_ytw: T,
+        pub muni_to_treasury_yield_ratio: T,
+        pub implied_breakeven_marginal_tax_rate: T,
+        pub kalotay_refunding_efficiency: T,
+    }
+
+    fn bond_pv_and_dpv_cont<T: Real>(c: T, y: T, mat: T, par: T) -> (T, T) {
+        let r = y.max_val(T::from_f64(1e-4));
+        let df = (-r * mat).exp();
+        let ann = (T::one() - df) / r;
+        let pv = par * c * ann + par * df;
+        let d_ann = (mat * df - ann) / r;
+        let dpv_dy = par * c * d_ann - par * mat * df;
+        (pv, dpv_dy)
+    }
+
+    fn solve_yield_cont<T: Real>(c: T, target_pv: T, mat: T, par: T, y_init: T) -> T {
+        let mut y = y_init.max_val(T::from_f64(1e-3));
+        for _ in 0..3 {
+            let (pv, dpv) = bond_pv_and_dpv_cont(c, y, mat, par);
+            let denom = dpv.min_val(T::from_f64(-1e-4));
+            y = (y - (pv - target_pv) / denom).max_val(T::from_f64(1e-3));
+        }
+        y
+    }
+
+    pub fn evaluate_fabozzi_callable_muni_ytw_refunding<T: Real>(
+        spec: &FabozziCallableMuniYtwRefundingSpec<T>,
+    ) -> FabozziCallableMuniYtwRefundingReport<T> {
+        let c = spec.tax_exempt_coupon_rate_c.max_val(T::from_f64(0.005));
+        let ym = spec.muni_mmd_benchmark_yield_ym.max_val(T::from_f64(0.005));
+        let y_ust = spec.treasury_yield_y_ust.max_val(T::from_f64(0.005));
+        let tau_tax = spec
+            .statutory_marginal_tax_rate_tau
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.60));
+        let tc = spec.call_protection_years_tc.max_val(T::from_f64(0.5));
+        let t_mat = spec.final_maturity_years_t.max_val(tc + T::from_f64(1.0));
+        let par = spec.call_price_par.max_val(T::from_f64(50.0));
+        let sig = spec.muni_yield_volatility_sigma.max_val(T::from_f64(0.02));
+
+        // After-tax Treasury rate vs Muni rate wedge:
+        let after_tax_ust = y_ust * (T::one() - tau_tax);
+        let tax_exempt_disc = T::from_f64(0.75) * ym + T::from_f64(0.25) * after_tax_ust;
+
+        let (p_opt_free, _) = bond_pv_and_dpv_cont(c, tax_exempt_disc, t_mat, par);
+
+        // Forward bond value and exact forward modified duration at call date tc over remaining life (t_mat - tc):
+        let rem_tenor = t_mat - tc;
+        let (fwd_bond_tc, d_fwd_dy) = bond_pv_and_dpv_cont(c, tax_exempt_disc, rem_tenor, par);
+        let fwd_mod_dur = (-d_fwd_dy) / fwd_bond_tc.max_val(T::from_f64(1e-4));
+        let df_tc = (-tax_exempt_disc * tc).exp();
+
+        // Black-76 swaption/bond-option on forward municipal bond at tc using exact duration mapping:
+        let price_vol = sig * tax_exempt_disc * fwd_mod_dur;
+        let std_b = (price_vol * tc.sqrt()).max_val(T::from_f64(1e-4));
+        let d1 = ((fwd_bond_tc / par).ln() + T::from_f64(0.5) * std_b * std_b) / std_b;
+        let d2 = d1 - std_b;
+        let call_val = df_tc * (fwd_bond_tc * norm_cdf(d1) - par * norm_cdf(d2));
+        let p_callable = p_opt_free - call_val;
+
+        // Exact continuous-compounding YTC (over tc) and YTM (over t_mat) via 3 smooth Newton steps:
+        let ann_tc = (T::one() - (-tax_exempt_disc * tc).exp()) / tax_exempt_disc;
+        let ann_tm = (T::one() - (-tax_exempt_disc * t_mat).exp()) / tax_exempt_disc;
+        let ytc_init = c - (p_callable - par) / (par * ann_tc);
+        let ytm_init = c - (p_callable - par) / (par * ann_tm);
+        let ytc = solve_yield_cont(c, p_callable, tc, par, ytc_init);
+        let ytm = solve_yield_cont(c, p_callable, t_mat, par, ytm_init);
+
+        let eps = T::from_f64(1e-4);
+        let diff_y = ytc - ytm;
+        let ytw = T::from_f64(0.5) * (ytc + ytm - (diff_y * diff_y + eps * eps).sqrt());
+
+        let muni_ust_ratio = ytw / y_ust;
+        let implied_tax_rate = T::one() - muni_ust_ratio;
+
+        let intrinsic_ref_savings = df_tc
+            * T::from_f64(0.5)
+            * ((fwd_bond_tc - par)
+                + ((fwd_bond_tc - par) * (fwd_bond_tc - par) + eps * eps).sqrt());
+        let kalotay_eff = intrinsic_ref_savings / call_val.max_val(T::from_f64(1e-4));
+
+        FabozziCallableMuniYtwRefundingReport {
+            option_free_muni_bond_price: p_opt_free,
+            embedded_refunding_call_value: call_val,
+            callable_muni_market_price: p_callable,
+            yield_to_call_ytc: ytc,
+            yield_to_maturity_ytm: ytm,
+            smooth_yield_to_worst_ytw: ytw,
+            muni_to_treasury_yield_ratio: muni_ust_ratio,
+            implied_breakeven_marginal_tax_rate: implied_tax_rate,
+            kalotay_refunding_efficiency: kalotay_eff,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_fabozzi_callable_muni_ytw_refunding_module_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn fabozzi_callable_muni_ytw_refunding_invariants_and_ad_parity() {
+            let spec = FabozziCallableMuniYtwRefundingSpec {
+                tax_exempt_coupon_rate_c: 0.050,
+                muni_mmd_benchmark_yield_ym: 0.031,
+                treasury_yield_y_ust: 0.044,
+                statutory_marginal_tax_rate_tau: 0.37,
+                call_protection_years_tc: 5.0,
+                final_maturity_years_t: 10.0,
+                call_price_par: 100.0,
+                muni_yield_volatility_sigma: 0.18,
+            };
+            let rep = evaluate_fabozzi_callable_muni_ytw_refunding(&spec);
+            assert!(rep.callable_muni_market_price < rep.option_free_muni_bond_price);
+            assert!(rep.smooth_yield_to_worst_ytw <= rep.yield_to_maturity_ytm + 1e-4);
+            assert!(
+                rep.kalotay_refunding_efficiency > 0.5 && rep.kalotay_refunding_efficiency <= 1.0
+            );
+
+            let h = 1e-6;
+            let r_ad = evaluate_fabozzi_callable_muni_ytw_refunding(
+                &FabozziCallableMuniYtwRefundingSpec {
+                    tax_exempt_coupon_rate_c: Dual::<8>::variable(spec.tax_exempt_coupon_rate_c, 0),
+                    muni_mmd_benchmark_yield_ym: Dual::<8>::variable(
+                        spec.muni_mmd_benchmark_yield_ym,
+                        1,
+                    ),
+                    treasury_yield_y_ust: Dual::<8>::variable(spec.treasury_yield_y_ust, 2),
+                    statutory_marginal_tax_rate_tau: Dual::<8>::variable(
+                        spec.statutory_marginal_tax_rate_tau,
+                        3,
+                    ),
+                    call_protection_years_tc: Dual::<8>::variable(spec.call_protection_years_tc, 4),
+                    final_maturity_years_t: Dual::<8>::variable(spec.final_maturity_years_t, 5),
+                    call_price_par: Dual::<8>::variable(spec.call_price_par, 6),
+                    muni_yield_volatility_sigma: Dual::<8>::variable(
+                        spec.muni_yield_volatility_sigma,
+                        7,
+                    ),
+                },
+            );
+            for (idx, &ad_deriv) in r_ad.callable_muni_market_price.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.tax_exempt_coupon_rate_c += h;
+                        sm.tax_exempt_coupon_rate_c -= h;
+                    }
+                    1 => {
+                        sp.muni_mmd_benchmark_yield_ym += h;
+                        sm.muni_mmd_benchmark_yield_ym -= h;
+                    }
+                    2 => {
+                        sp.treasury_yield_y_ust += h;
+                        sm.treasury_yield_y_ust -= h;
+                    }
+                    3 => {
+                        sp.statutory_marginal_tax_rate_tau += h;
+                        sm.statutory_marginal_tax_rate_tau -= h;
+                    }
+                    4 => {
+                        sp.call_protection_years_tc += h;
+                        sm.call_protection_years_tc -= h;
+                    }
+                    5 => {
+                        sp.final_maturity_years_t += h;
+                        sm.final_maturity_years_t -= h;
+                    }
+                    6 => {
+                        sp.call_price_par += h;
+                        sm.call_price_par -= h;
+                    }
+                    _ => {
+                        sp.muni_yield_volatility_sigma += h;
+                        sm.muni_yield_volatility_sigma -= h;
+                    }
+                }
+                let fd = (evaluate_fabozzi_callable_muni_ytw_refunding(&sp)
+                    .callable_muni_market_price
+                    - evaluate_fabozzi_callable_muni_ytw_refunding(&sm).callable_muni_market_price)
+                    / (2.0 * h);
+                assert!((ad_deriv - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_fabozzi_callable_muni_ytw_refunding_module::*;

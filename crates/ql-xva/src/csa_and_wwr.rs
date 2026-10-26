@@ -795,3 +795,205 @@ mod evaluate_gregory_pykhtin_csa_threshold_mta_cva_module {
     }
 }
 pub use evaluate_gregory_pykhtin_csa_threshold_mta_cva_module::*;
+
+mod evaluate_gregory_break_clause_extinguishable_cva_module {
+    // Gregory (2020) & Brigo–Mercurio (2006) Mandatory/Optional Early-Termination
+    // Break-Clause (`ATB`) & Extinguishable Swap `CVA` Reduction Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GregoryBreakClauseExtinguishableCvaSpec<T: Real = f64> {
+        pub unmitigated_swap_epe_profile: [T; 3],
+        pub break_clause_date_years_tb: T,
+        pub final_maturity_years_t: T,
+        pub counterparty_hazard_rate_lambda: T,
+        pub break_execution_probability_p_exec: T,
+        pub break_settlement_slippage_fraction: T,
+        pub recovery_rate_r: T,
+        pub ois_discount_rate_r: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GregoryBreakClauseExtinguishableCvaReport<T: Real = f64> {
+        pub unmitigated_full_horizon_cva: T,
+        pub pre_break_truncated_cva: T,
+        pub post_break_unexercised_leakage_cva: T,
+        pub break_clause_mitigated_cva: T,
+        pub extinguishable_swap_survival_discount: T,
+        pub cva_reduction_from_break_clause: T,
+        pub break_clause_hedge_effectiveness: T,
+    }
+
+    pub fn evaluate_gregory_break_clause_extinguishable_cva<T: Real>(
+        spec: &GregoryBreakClauseExtinguishableCvaSpec<T>,
+    ) -> GregoryBreakClauseExtinguishableCvaReport<T> {
+        let e0 = spec.unmitigated_swap_epe_profile[0].max_val(T::from_f64(1e-4));
+        let e1 = spec.unmitigated_swap_epe_profile[1].max_val(T::from_f64(1e-4));
+        let e2 = spec.unmitigated_swap_epe_profile[2].max_val(T::from_f64(1e-4));
+        let tb = spec.break_clause_date_years_tb.max_val(T::from_f64(0.25));
+        let t_mat = spec.final_maturity_years_t.max_val(tb + T::from_f64(0.5));
+        let lam = spec
+            .counterparty_hazard_rate_lambda
+            .max_val(T::from_f64(1e-4));
+        let p_exec = spec
+            .break_execution_probability_p_exec
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.99));
+        let slip = spec
+            .break_settlement_slippage_fraction
+            .max_val(T::zero())
+            .min_val(T::from_f64(0.50));
+        let lgd = (T::one() - spec.recovery_rate_r).max_val(T::from_f64(0.05));
+        let r = spec.ois_discount_rate_r.max_val(T::from_f64(1e-4));
+
+        let t1 = T::from_f64(0.5) * tb;
+        let t2 = tb;
+        let t3 = T::from_f64(0.5) * (tb + t_mat);
+
+        let s0 = T::one();
+        let s1 = (-lam * t1).exp();
+        let s2 = (-lam * t2).exp();
+        let s3 = (-lam * t_mat).exp();
+
+        let d1 = (-r * t1).exp() * (s0 - s1);
+        let d2 = (-r * t2).exp() * (s1 - s2);
+        let d3 = (-r * t3).exp() * (s2 - s3);
+
+        let cva_p1 = lgd * e0 * d1;
+        let cva_p2 = lgd * e1 * d2;
+        let cva_p3 = lgd * e2 * d3;
+
+        let cva_unmit = cva_p1 + cva_p2 + cva_p3;
+        let cva_pre_break = cva_p1 + cva_p2;
+
+        // Post-break exposure survives with probability (1 - p_exec) plus close-out settlement slippage scaled by EPE(tb)/EPE_post:
+        let closeout_ratio = (T::from_f64(2.0) * e1) / (e1 + e2);
+        let post_weight =
+            ((T::one() - p_exec) + p_exec * slip * closeout_ratio).min_val(T::from_f64(0.99));
+        let cva_post_leakage = cva_p3 * post_weight;
+        let cva_mitigated = cva_pre_break + cva_post_leakage;
+
+        let cva_saved = cva_unmit - cva_mitigated;
+        let eff = cva_saved / cva_unmit.max_val(T::from_f64(1e-6));
+        // Exact risky OIS survival/extinguishment discount factor at T:
+        let ext_surv = (-r * t_mat).exp() * (p_exec * s2 + (T::one() - p_exec) * s3);
+
+        GregoryBreakClauseExtinguishableCvaReport {
+            unmitigated_full_horizon_cva: cva_unmit,
+            pre_break_truncated_cva: cva_pre_break,
+            post_break_unexercised_leakage_cva: cva_post_leakage,
+            break_clause_mitigated_cva: cva_mitigated,
+            extinguishable_swap_survival_discount: ext_surv,
+            cva_reduction_from_break_clause: cva_saved,
+            break_clause_hedge_effectiveness: eff,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_gregory_break_clause_extinguishable_cva_module_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn gregory_break_clause_extinguishable_cva_invariants_and_ad_parity() {
+            let spec = GregoryBreakClauseExtinguishableCvaSpec {
+                unmitigated_swap_epe_profile: [18.0, 32.0, 45.0],
+                break_clause_date_years_tb: 2.0,
+                final_maturity_years_t: 5.0,
+                counterparty_hazard_rate_lambda: 0.025,
+                break_execution_probability_p_exec: 0.85,
+                break_settlement_slippage_fraction: 0.08,
+                recovery_rate_r: 0.40,
+                ois_discount_rate_r: 0.038,
+            };
+            let rep = evaluate_gregory_break_clause_extinguishable_cva(&spec);
+            assert!(rep.break_clause_mitigated_cva < rep.unmitigated_full_horizon_cva);
+            assert!(rep.cva_reduction_from_break_clause > 0.0);
+            assert!(rep.break_clause_hedge_effectiveness > 0.30);
+
+            let h = 1e-6;
+            let r_ad = evaluate_gregory_break_clause_extinguishable_cva(
+                &GregoryBreakClauseExtinguishableCvaSpec {
+                    unmitigated_swap_epe_profile: [
+                        Dual::<10>::variable(spec.unmitigated_swap_epe_profile[0], 0),
+                        Dual::<10>::variable(spec.unmitigated_swap_epe_profile[1], 1),
+                        Dual::<10>::variable(spec.unmitigated_swap_epe_profile[2], 2),
+                    ],
+                    break_clause_date_years_tb: Dual::<10>::variable(
+                        spec.break_clause_date_years_tb,
+                        3,
+                    ),
+                    final_maturity_years_t: Dual::<10>::variable(spec.final_maturity_years_t, 4),
+                    counterparty_hazard_rate_lambda: Dual::<10>::variable(
+                        spec.counterparty_hazard_rate_lambda,
+                        5,
+                    ),
+                    break_execution_probability_p_exec: Dual::<10>::variable(
+                        spec.break_execution_probability_p_exec,
+                        6,
+                    ),
+                    break_settlement_slippage_fraction: Dual::<10>::variable(
+                        spec.break_settlement_slippage_fraction,
+                        7,
+                    ),
+                    recovery_rate_r: Dual::<10>::variable(spec.recovery_rate_r, 8),
+                    ois_discount_rate_r: Dual::<10>::variable(spec.ois_discount_rate_r, 9),
+                },
+            );
+            for (idx, &ad_deriv) in r_ad.break_clause_mitigated_cva.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.unmitigated_swap_epe_profile[0] += h;
+                        sm.unmitigated_swap_epe_profile[0] -= h;
+                    }
+                    1 => {
+                        sp.unmitigated_swap_epe_profile[1] += h;
+                        sm.unmitigated_swap_epe_profile[1] -= h;
+                    }
+                    2 => {
+                        sp.unmitigated_swap_epe_profile[2] += h;
+                        sm.unmitigated_swap_epe_profile[2] -= h;
+                    }
+                    3 => {
+                        sp.break_clause_date_years_tb += h;
+                        sm.break_clause_date_years_tb -= h;
+                    }
+                    4 => {
+                        sp.final_maturity_years_t += h;
+                        sm.final_maturity_years_t -= h;
+                    }
+                    5 => {
+                        sp.counterparty_hazard_rate_lambda += h;
+                        sm.counterparty_hazard_rate_lambda -= h;
+                    }
+                    6 => {
+                        sp.break_execution_probability_p_exec += h;
+                        sm.break_execution_probability_p_exec -= h;
+                    }
+                    7 => {
+                        sp.break_settlement_slippage_fraction += h;
+                        sm.break_settlement_slippage_fraction -= h;
+                    }
+                    8 => {
+                        sp.recovery_rate_r += h;
+                        sm.recovery_rate_r -= h;
+                    }
+                    _ => {
+                        sp.ois_discount_rate_r += h;
+                        sm.ois_discount_rate_r -= h;
+                    }
+                }
+                let fd = (evaluate_gregory_break_clause_extinguishable_cva(&sp)
+                    .break_clause_mitigated_cva
+                    - evaluate_gregory_break_clause_extinguishable_cva(&sm)
+                        .break_clause_mitigated_cva)
+                    / (2.0 * h);
+                assert!((ad_deriv - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use evaluate_gregory_break_clause_extinguishable_cva_module::*;

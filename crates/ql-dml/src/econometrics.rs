@@ -776,3 +776,136 @@ mod evaluate_newey_west_andrews_hac_variance_module {
     }
 }
 pub use evaluate_newey_west_andrews_hac_variance_module::*;
+
+mod evaluate_diebold_mariano_hln_forecast_test_module {
+    // Diebold & Mariano (1995) & Harvey–Leybourne–Newbold (`HLN`, 1997) Predictive Accuracy
+    // Loss-Differential Test & Bates–Granger Optimal Forecast Combination Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct DieboldMarianoHlnForecastTestSpec<T: Real = f64> {
+        pub model1_mse_loss_l1: T,
+        pub model2_mse_loss_l2: T,
+        pub forecast_error_correlation_rho12: T,
+        pub loss_differential_autocov_lag1: T,
+        pub forecast_horizon_steps_h: T,
+        pub evaluation_sample_size_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct DieboldMarianoHlnForecastTestReport<T: Real = f64> {
+        pub mean_loss_differential_dbar: T,
+        pub long_run_loss_differential_variance: T,
+        pub raw_diebold_mariano_statistic: T,
+        pub hln_small_sample_correction_factor: T,
+        pub hln_corrected_dm_statistic: T,
+        pub bates_granger_optimal_weight_model1: T,
+        pub combined_forecast_mse_reduction: T,
+    }
+
+    pub fn evaluate_diebold_mariano_hln_forecast_test<T: Real>(
+        spec: &DieboldMarianoHlnForecastTestSpec<T>,
+    ) -> DieboldMarianoHlnForecastTestReport<T> {
+        let l1 = spec.model1_mse_loss_l1.max_val(T::from_f64(1e-6));
+        let l2 = spec.model2_mse_loss_l2.max_val(T::from_f64(1e-6));
+        let rho = spec
+            .forecast_error_correlation_rho12
+            .max_val(T::from_f64(-0.95))
+            .min_val(T::from_f64(0.95));
+        let gam1 = spec.loss_differential_autocov_lag1;
+        let h_step = spec.forecast_horizon_steps_h.max_val(T::one());
+        let t_obs = spec.evaluation_sample_size_t.max_val(T::from_f64(15.0));
+
+        let d_bar = l1 - l2;
+        let sig1 = l1.sqrt();
+        let sig2 = l2.sqrt();
+        let cov12 = rho * sig1 * sig2;
+
+        // Variance of squared-error loss differential d_t = e_{1,t}^2 - e_{2,t}^2 under Gaussian errors:
+        // Var(d_t) = 2 (sigma_1^4 + sigma_2^4 - 2 cov_{12}^2)
+        let gamma0 = T::from_f64(2.0) * (l1 * l1 + l2 * l2 - T::from_f64(2.0) * cov12 * cov12);
+        let m_trunc = (h_step - T::one()).max_val(T::zero());
+        let w_h = m_trunc / (m_trunc + T::one());
+        let lrv = (gamma0 + T::from_f64(2.0) * w_h * gam1).max_val(T::from_f64(1e-6));
+
+        let se_dm = (lrv / t_obs).sqrt();
+        let dm_raw = d_bar / se_dm;
+
+        // Harvey, Leybourne & Newbold (1997, IJF Eq. 3) small-sample bias correction:
+        let hln_num = (t_obs + T::one() - T::from_f64(2.0) * h_step
+            + (h_step * (h_step - T::one())) / t_obs)
+            .max_val(T::from_f64(1.0));
+        let hln_factor = (hln_num / t_obs).sqrt();
+        let dm_hln = dm_raw * hln_factor;
+
+        // Bates & Granger (1969) optimal combination weight w1* minimizing combined MSE:
+        let denom_bg = (l1 + l2 - T::from_f64(2.0) * cov12).max_val(T::from_f64(1e-6));
+        let w1_opt = ((l2 - cov12) / denom_bg)
+            .max_val(T::zero())
+            .min_val(T::one());
+        let w2_opt = T::one() - w1_opt;
+        let mse_comb = w1_opt * w1_opt * l1
+            + w2_opt * w2_opt * l2
+            + T::from_f64(2.0) * w1_opt * w2_opt * cov12;
+        let mse_min = l1.min_val(l2);
+        let mse_red = (mse_min - mse_comb).max_val(T::zero());
+
+        DieboldMarianoHlnForecastTestReport {
+            mean_loss_differential_dbar: d_bar,
+            long_run_loss_differential_variance: lrv,
+            raw_diebold_mariano_statistic: dm_raw,
+            hln_small_sample_correction_factor: hln_factor,
+            hln_corrected_dm_statistic: dm_hln,
+            bates_granger_optimal_weight_model1: w1_opt,
+            combined_forecast_mse_reduction: mse_red,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_diebold_mariano_hln_forecast_test_module_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn diebold_mariano_hln_forecast_test_invariants_and_ad_parity() {
+            let spec = DieboldMarianoHlnForecastTestSpec {
+                model1_mse_loss_l1: 0.025,
+                model2_mse_loss_l2: 0.036,
+                forecast_error_correlation_rho12: 0.45,
+                loss_differential_autocov_lag1: 0.0004,
+                forecast_horizon_steps_h: 3.0,
+                evaluation_sample_size_t: 80.0,
+            };
+            let rep = evaluate_diebold_mariano_hln_forecast_test(&spec);
+            assert!(rep.raw_diebold_mariano_statistic < 0.0);
+            assert!(rep.hln_small_sample_correction_factor < 1.0);
+            assert!(rep.bates_granger_optimal_weight_model1 > 0.5);
+            assert!(rep.combined_forecast_mse_reduction > 0.0);
+
+            let h = 1e-6;
+            let r_ad =
+                evaluate_diebold_mariano_hln_forecast_test(&DieboldMarianoHlnForecastTestSpec {
+                    model1_mse_loss_l1: Dual::<1>::variable(spec.model1_mse_loss_l1, 0),
+                    model2_mse_loss_l2: Dual::<1>::from_value(spec.model2_mse_loss_l2),
+                    forecast_error_correlation_rho12: Dual::<1>::from_value(
+                        spec.forecast_error_correlation_rho12,
+                    ),
+                    loss_differential_autocov_lag1: Dual::<1>::from_value(
+                        spec.loss_differential_autocov_lag1,
+                    ),
+                    forecast_horizon_steps_h: Dual::<1>::from_value(spec.forecast_horizon_steps_h),
+                    evaluation_sample_size_t: Dual::<1>::from_value(spec.evaluation_sample_size_t),
+                });
+            let mut sp = spec;
+            sp.model1_mse_loss_l1 += h;
+            let mut sm = spec;
+            sm.model1_mse_loss_l1 -= h;
+            let fd = (evaluate_diebold_mariano_hln_forecast_test(&sp).hln_corrected_dm_statistic
+                - evaluate_diebold_mariano_hln_forecast_test(&sm).hln_corrected_dm_statistic)
+                / (2.0 * h);
+            assert!((r_ad.hln_corrected_dm_statistic.d[0] - fd).abs() < 1e-4);
+        }
+    }
+}
+pub use evaluate_diebold_mariano_hln_forecast_test_module::*;

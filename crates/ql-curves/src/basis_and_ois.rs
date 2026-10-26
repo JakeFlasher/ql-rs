@@ -842,3 +842,166 @@ mod evaluate_henrard_tenor_basis_multiplicative_spread_module {
     }
 }
 pub use evaluate_henrard_tenor_basis_multiplicative_spread_module::*;
+
+mod evaluate_brigo_differential_swap_quanto_fra_module {
+    // Brigo & Mercurio (2006, Ch. 13) & Piterbarg (2012) Differential Swap (`Diff-Swap`)
+    // & Quanto FRA FX-Rate Covariance Convexity Adjustment Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrigoDifferentialSwapQuantoFraSpec<T: Real = f64> {
+        pub domestic_ois_rate_rd: T,
+        pub domestic_forward_rate_ld: T,
+        pub foreign_forward_rate_lf: T,
+        pub foreign_rate_vol_sigma_lf: T,
+        pub fx_spot_vol_sigma_fx: T,
+        pub rate_fx_correlation_rho: T,
+        pub reset_time_years_t1: T,
+        pub accrual_fraction_tau: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrigoDifferentialSwapQuantoFraReport<T: Real = f64> {
+        pub unadjusted_foreign_forward_rate: T,
+        pub quanto_drift_multiplier: T,
+        pub timing_in_arrears_convexity_bps: T,
+        pub quanto_covariance_adjustment_bps: T,
+        pub quanto_adjusted_foreign_rate: T,
+        pub fair_differential_swap_spread_bps: T,
+        pub domestic_discounted_diff_swaplet_pv: T,
+    }
+
+    pub fn evaluate_brigo_differential_swap_quanto_fra<T: Real>(
+        spec: &BrigoDifferentialSwapQuantoFraSpec<T>,
+    ) -> BrigoDifferentialSwapQuantoFraReport<T> {
+        let rd = spec.domestic_ois_rate_rd.max_val(T::from_f64(1e-4));
+        let ld = spec.domestic_forward_rate_ld.max_val(T::from_f64(1e-4));
+        let lf = spec.foreign_forward_rate_lf.max_val(T::from_f64(1e-4));
+        let sig_lf = spec.foreign_rate_vol_sigma_lf.max_val(T::from_f64(1e-4));
+        let sig_fx = spec.fx_spot_vol_sigma_fx.max_val(T::from_f64(1e-4));
+        let rho = spec
+            .rate_fx_correlation_rho
+            .max_val(T::from_f64(-0.98))
+            .min_val(T::from_f64(0.98));
+        let t1 = spec.reset_time_years_t1.max_val(T::from_f64(0.05));
+        let tau = spec.accrual_fraction_tau.max_val(T::from_f64(0.05));
+
+        // Brigo & Mercurio (2006, Section 13.4) Girsanov quanto measure change:
+        // Under domestic forward measure Q_d^{T2}, foreign rate L_f acquires drift -rho * sigma_Lf * sigma_FX
+        let quanto_mult = (-rho * sig_lf * sig_fx * t1).exp();
+        let lf_quanto_only = lf * quanto_mult;
+        let quanto_adj_bps = (lf_quanto_only - lf) * T::from_f64(10_000.0);
+
+        // Sub-period payment-lag convexity adjustment:
+        let w_tau = (tau * lf) / (T::one() + tau * lf);
+        let timing_mult = (w_tau * sig_lf * sig_lf * t1).exp();
+        let lf_all_in = lf * quanto_mult * timing_mult;
+        let timing_bps = (lf_all_in - lf_quanto_only) * T::from_f64(10_000.0);
+
+        // Fair spread s_diff added to domestic leg so E_d[L_f^{quanto} - (L_d + s_diff)] = 0:
+        let diff_spread_bps = (lf_all_in - ld) * T::from_f64(10_000.0);
+        let df_d = (-rd * (t1 + tau)).exp();
+        let pv_swaplet = T::from_f64(10_000.0) * tau * df_d * (lf_all_in - ld);
+
+        BrigoDifferentialSwapQuantoFraReport {
+            unadjusted_foreign_forward_rate: lf,
+            quanto_drift_multiplier: quanto_mult,
+            timing_in_arrears_convexity_bps: timing_bps,
+            quanto_covariance_adjustment_bps: quanto_adj_bps,
+            quanto_adjusted_foreign_rate: lf_all_in,
+            fair_differential_swap_spread_bps: diff_spread_bps,
+            domestic_discounted_diff_swaplet_pv: pv_swaplet,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_brigo_differential_swap_quanto_fra_module_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn brigo_differential_swap_quanto_fra_invariants_and_ad_parity() {
+            let spec = BrigoDifferentialSwapQuantoFraSpec {
+                domestic_ois_rate_rd: 0.042,
+                domestic_forward_rate_ld: 0.044,
+                foreign_forward_rate_lf: 0.032,
+                foreign_rate_vol_sigma_lf: 0.22,
+                fx_spot_vol_sigma_fx: 0.12,
+                rate_fx_correlation_rho: -0.45,
+                reset_time_years_t1: 2.0,
+                accrual_fraction_tau: 0.50,
+            };
+            let rep = evaluate_brigo_differential_swap_quanto_fra(&spec);
+            assert!(rep.quanto_covariance_adjustment_bps > 0.0);
+            assert!(rep.timing_in_arrears_convexity_bps > 0.0);
+            assert!(rep.quanto_adjusted_foreign_rate > rep.unadjusted_foreign_forward_rate);
+
+            let h = 1e-6;
+            let r_ad =
+                evaluate_brigo_differential_swap_quanto_fra(&BrigoDifferentialSwapQuantoFraSpec {
+                    domestic_ois_rate_rd: Dual::<8>::variable(spec.domestic_ois_rate_rd, 0),
+                    domestic_forward_rate_ld: Dual::<8>::variable(spec.domestic_forward_rate_ld, 1),
+                    foreign_forward_rate_lf: Dual::<8>::variable(spec.foreign_forward_rate_lf, 2),
+                    foreign_rate_vol_sigma_lf: Dual::<8>::variable(
+                        spec.foreign_rate_vol_sigma_lf,
+                        3,
+                    ),
+                    fx_spot_vol_sigma_fx: Dual::<8>::variable(spec.fx_spot_vol_sigma_fx, 4),
+                    rate_fx_correlation_rho: Dual::<8>::variable(spec.rate_fx_correlation_rho, 5),
+                    reset_time_years_t1: Dual::<8>::variable(spec.reset_time_years_t1, 6),
+                    accrual_fraction_tau: Dual::<8>::variable(spec.accrual_fraction_tau, 7),
+                });
+            for (idx, &ad_deriv) in r_ad
+                .domestic_discounted_diff_swaplet_pv
+                .d
+                .iter()
+                .enumerate()
+            {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.domestic_ois_rate_rd += h;
+                        sm.domestic_ois_rate_rd -= h;
+                    }
+                    1 => {
+                        sp.domestic_forward_rate_ld += h;
+                        sm.domestic_forward_rate_ld -= h;
+                    }
+                    2 => {
+                        sp.foreign_forward_rate_lf += h;
+                        sm.foreign_forward_rate_lf -= h;
+                    }
+                    3 => {
+                        sp.foreign_rate_vol_sigma_lf += h;
+                        sm.foreign_rate_vol_sigma_lf -= h;
+                    }
+                    4 => {
+                        sp.fx_spot_vol_sigma_fx += h;
+                        sm.fx_spot_vol_sigma_fx -= h;
+                    }
+                    5 => {
+                        sp.rate_fx_correlation_rho += h;
+                        sm.rate_fx_correlation_rho -= h;
+                    }
+                    6 => {
+                        sp.reset_time_years_t1 += h;
+                        sm.reset_time_years_t1 -= h;
+                    }
+                    _ => {
+                        sp.accrual_fraction_tau += h;
+                        sm.accrual_fraction_tau -= h;
+                    }
+                }
+                let fd = (evaluate_brigo_differential_swap_quanto_fra(&sp)
+                    .domestic_discounted_diff_swaplet_pv
+                    - evaluate_brigo_differential_swap_quanto_fra(&sm)
+                        .domestic_discounted_diff_swaplet_pv)
+                    / (2.0 * h);
+                assert!((ad_deriv - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_brigo_differential_swap_quanto_fra_module::*;

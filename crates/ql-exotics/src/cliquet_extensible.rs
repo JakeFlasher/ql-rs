@@ -1328,3 +1328,214 @@ mod evaluate_haug_eso_vesting_barrier_dilution_module {
     }
 }
 pub use evaluate_haug_eso_vesting_barrier_dilution_module::*;
+
+mod evaluate_longstaff_extendible_option_module {
+    // Haug (2007, Ch. 4.9) & Longstaff (1990) Writer-Extendible & Holder-Extendible Option
+    // Bivariate Normal Valuation Engine.
+
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    #[inline]
+    fn smax<T: Real>(a: T, b: T, eps: T) -> T {
+        let d = a - b;
+        T::from_f64(0.5) * (a + b + (d * d + eps * eps).sqrt())
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LongstaffExtendibleOptionSpec<T: Real = f64> {
+        pub spot_price_s0: T,
+        pub initial_strike_k1: T,
+        pub extended_strike_k2: T,
+        pub initial_maturity_t1: T,
+        pub extended_maturity_t2: T,
+        pub holder_extension_fee_a: T,
+        pub risk_free_rate_r: T,
+        pub dividend_yield_q: T,
+        pub volatility_sigma: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LongstaffExtendibleOptionReport<T: Real = f64> {
+        pub base_vanilla_call_t1: T,
+        pub writer_extension_probability: T,
+        pub writer_extension_value_addon: T,
+        pub writer_extendible_call_value: T,
+        pub holder_extendible_call_value: T,
+        pub holder_over_writer_optionality_spread: T,
+    }
+
+    fn bvn_cdf_gl8<T: Real>(a: T, b: T, rho: T) -> T {
+        let nodes = [
+            -0.960_289_856_497_536_3,
+            -0.796_666_477_413_626_7,
+            -0.525_532_409_916_329,
+            -0.183_434_642_495_649_8,
+            0.183_434_642_495_649_8,
+            0.525_532_409_916_329,
+            0.796_666_477_413_626_7,
+            0.960_289_856_497_536_3,
+        ];
+        let weights = [
+            0.101_228_536_290_376_3,
+            0.222_381_034_453_374_5,
+            0.313_706_645_877_887_3,
+            0.362_683_783_378_362,
+            0.362_683_783_378_362,
+            0.313_706_645_877_887_3,
+            0.222_381_034_453_374_5,
+            0.101_228_536_290_376_3,
+        ];
+        let r = rho.max_val(T::from_f64(-0.995)).min_val(T::from_f64(0.995));
+        let half_r = T::from_f64(0.5) * r;
+        let inv_two_pi = T::from_f64(0.159_154_943_091_895);
+        let mut integral = T::zero();
+        for (&node, &weight) in nodes.iter().zip(weights.iter()) {
+            let xi = half_r * (T::from_f64(node) + T::one());
+            let omx2 = (T::one() - xi * xi).max_val(T::from_f64(1e-8));
+            let num = -(a * a - T::from_f64(2.0) * xi * a * b + b * b) / (T::from_f64(2.0) * omx2);
+            integral += T::from_f64(weight) * num.exp() / omx2.sqrt();
+        }
+        norm_cdf(a) * norm_cdf(b) + half_r * inv_two_pi * integral
+    }
+
+    pub fn evaluate_longstaff_extendible_option<T: Real>(
+        spec: &LongstaffExtendibleOptionSpec<T>,
+    ) -> LongstaffExtendibleOptionReport<T> {
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(1e-4));
+        let k1 = spec.initial_strike_k1.max_val(T::from_f64(1e-4));
+        let k2 = spec.extended_strike_k2.max_val(T::from_f64(1e-4));
+        let t1 = spec.initial_maturity_t1.max_val(T::from_f64(0.05));
+        let t2 = spec.extended_maturity_t2.max_val(t1 + T::from_f64(0.10));
+        let fee_a = spec.holder_extension_fee_a.max_val(T::zero());
+        let r = spec.risk_free_rate_r;
+        let q = spec.dividend_yield_q;
+        let sig = spec.volatility_sigma.max_val(T::from_f64(1e-4));
+
+        let sqrt_t1 = t1.sqrt();
+        let sqrt_t2 = t2.sqrt();
+        let rho = (t1 / t2).sqrt();
+
+        let z1 = ((s0 / k2).ln() + (r - q + T::from_f64(0.5) * sig * sig) * t2) / (sig * sqrt_t2);
+        let z2 = ((s0 / k1).ln() + (r - q + T::from_f64(0.5) * sig * sig) * t1) / (sig * sqrt_t1);
+
+        // Base vanilla call C(S0, K1, t1):
+        let base_call = s0 * (-q * t1).exp() * norm_cdf(z2)
+            - k1 * (-r * t1).exp() * norm_cdf(z2 - sig * sqrt_t1);
+
+        // Longstaff (1990) / Haug (2007, Sec. 4.9.1) Writer-Extendible Call:
+        // Extends to (K2, t2) automatically if S(t1) < K1 (out of the money at t1)
+        let p_ext_writer = norm_cdf(-(z2 - sig * sqrt_t1));
+        let writer_addon = s0 * (-q * t2).exp() * bvn_cdf_gl8(z1, -z2, -rho)
+            - k2 * (-r * t2).exp() * bvn_cdf_gl8(z1 - sig * sqrt_t2, -(z2 - sig * sqrt_t1), -rho);
+        let writer_ext_call = base_call + writer_addon;
+
+        // Longstaff (1990) / Haug (2007, Sec. 4.9.2) Holder-Extendible Call:
+        // At t1, holder chooses max(S(t1) - K1, C_BS(S(t1), K2, t2 - t1) - A, 0)
+        // Evaluated via 8-point Gauss-Legendre quadrature over standard normal z in [-4.5, 4.5]:
+        let gl_nodes = [
+            -0.960_289_856_497_536_3,
+            -0.796_666_477_413_626_7,
+            -0.525_532_409_916_329,
+            -0.183_434_642_495_649_8,
+            0.183_434_642_495_649_8,
+            0.525_532_409_916_329,
+            0.796_666_477_413_626_7,
+            0.960_289_856_497_536_3,
+        ];
+        let gl_weights = [
+            0.101_228_536_290_376_3,
+            0.222_381_034_453_374_5,
+            0.313_706_645_877_887_3,
+            0.362_683_783_378_362,
+            0.362_683_783_378_362,
+            0.313_706_645_877_887_3,
+            0.222_381_034_453_374_5,
+            0.101_228_536_290_376_3,
+        ];
+        let dt = t2 - t1;
+        let sqrt_dt = dt.sqrt();
+        let half_span = T::from_f64(4.5);
+        let eps = T::from_f64(1e-4);
+        let drift_t1 = (r - q - T::from_f64(0.5) * sig * sig) * t1;
+        let mut holder_expectation = T::zero();
+        for (&node, &weight) in gl_nodes.iter().zip(gl_weights.iter()) {
+            let z = half_span * T::from_f64(node);
+            let s_t1 = s0 * (drift_t1 + sig * sqrt_t1 * z).exp();
+            let d1_rem =
+                ((s_t1 / k2).ln() + (r - q + T::from_f64(0.5) * sig * sig) * dt) / (sig * sqrt_dt);
+            let d2_rem = d1_rem - sig * sqrt_dt;
+            let c_rem =
+                s_t1 * (-q * dt).exp() * norm_cdf(d1_rem) - k2 * (-r * dt).exp() * norm_cdf(d2_rem);
+            let imm_ex = s_t1 - k1;
+            let ext_val = c_rem - fee_a;
+            let best_active = smax(imm_ex, ext_val, eps);
+            let payoff_t1 = smax(best_active, T::zero(), eps);
+            holder_expectation += T::from_f64(weight) * half_span * norm_pdf(z) * payoff_t1;
+        }
+        let holder_ext_call = (-r * t1).exp() * holder_expectation;
+        let holder_over_writer = holder_ext_call - writer_ext_call;
+
+        LongstaffExtendibleOptionReport {
+            base_vanilla_call_t1: base_call,
+            writer_extension_probability: p_ext_writer,
+            writer_extension_value_addon: writer_addon,
+            writer_extendible_call_value: writer_ext_call,
+            holder_extendible_call_value: holder_ext_call,
+            holder_over_writer_optionality_spread: holder_over_writer,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_longstaff_extendible_option_module_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn longstaff_extendible_option_invariants_and_ad_parity() {
+            let spec = LongstaffExtendibleOptionSpec {
+                spot_price_s0: 100.0,
+                initial_strike_k1: 102.0,
+                extended_strike_k2: 105.0,
+                initial_maturity_t1: 0.50,
+                extended_maturity_t2: 1.25,
+                holder_extension_fee_a: 1.50,
+                risk_free_rate_r: 0.045,
+                dividend_yield_q: 0.015,
+                volatility_sigma: 0.25,
+            };
+            let rep = evaluate_longstaff_extendible_option(&spec);
+            assert!(rep.writer_extendible_call_value > rep.base_vanilla_call_t1);
+            assert!(rep.holder_extendible_call_value > rep.base_vanilla_call_t1);
+            let mut spec_zero_fee = spec;
+            spec_zero_fee.holder_extension_fee_a = 0.0;
+            let rep_zero_fee = evaluate_longstaff_extendible_option(&spec_zero_fee);
+            assert!(
+                rep_zero_fee.holder_extendible_call_value
+                    > rep_zero_fee.writer_extendible_call_value
+            );
+
+            let h = 1e-6;
+            let r_ad = evaluate_longstaff_extendible_option(&LongstaffExtendibleOptionSpec {
+                spot_price_s0: Dual::<1>::variable(spec.spot_price_s0, 0),
+                initial_strike_k1: Dual::<1>::from_value(spec.initial_strike_k1),
+                extended_strike_k2: Dual::<1>::from_value(spec.extended_strike_k2),
+                initial_maturity_t1: Dual::<1>::from_value(spec.initial_maturity_t1),
+                extended_maturity_t2: Dual::<1>::from_value(spec.extended_maturity_t2),
+                holder_extension_fee_a: Dual::<1>::from_value(spec.holder_extension_fee_a),
+                risk_free_rate_r: Dual::<1>::from_value(spec.risk_free_rate_r),
+                dividend_yield_q: Dual::<1>::from_value(spec.dividend_yield_q),
+                volatility_sigma: Dual::<1>::from_value(spec.volatility_sigma),
+            });
+            let mut sp = spec;
+            sp.spot_price_s0 += h;
+            let mut sm = spec;
+            sm.spot_price_s0 -= h;
+            let fd = (evaluate_longstaff_extendible_option(&sp).writer_extendible_call_value
+                - evaluate_longstaff_extendible_option(&sm).writer_extendible_call_value)
+                / (2.0 * h);
+            assert!((r_ad.writer_extendible_call_value.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_longstaff_extendible_option_module::*;

@@ -563,3 +563,190 @@ mod evaluate_wystup_fx_window_kiko_barrier_module {
     }
 }
 pub use evaluate_wystup_fx_window_kiko_barrier_module::*;
+
+mod evaluate_wystup_fx_fader_range_accrual_module {
+    // Wystup (2017) & Rubinstein (1994) FX Fader Option (`Fade-In` / `Fade-Out`
+    // Proportionally Accruing Corridor Option) & Range Accrual Forward Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupFxFaderRangeAccrualSpec<T: Real = f64> {
+        pub spot_fx_s0: T,
+        pub strike_fx_k: T,
+        pub accrual_corridor_lower_l: T,
+        pub accrual_corridor_upper_u: T,
+        pub domestic_rate_rd: T,
+        pub foreign_rate_rf: T,
+        pub volatility_sigma: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupFxFaderRangeAccrualReport<T: Real = f64> {
+        pub garman_kohlhagen_vanilla_call: T,
+        pub expected_corridor_accrual_fraction: T,
+        pub fade_in_call_value: T,
+        pub fade_out_call_value: T,
+        pub fade_in_plus_fade_out_parity_residual: T,
+        pub range_accrual_forward_pv: T,
+        pub terminal_spot_corridor_covariance_wedge: T,
+    }
+
+    fn bvn_cdf_gl8<T: Real>(a: T, b: T, rho: T) -> T {
+        let nodes = [
+            -0.960_289_856_497_536_3,
+            -0.796_666_477_413_626_7,
+            -0.525_532_409_916_329,
+            -0.183_434_642_495_649_8,
+            0.183_434_642_495_649_8,
+            0.525_532_409_916_329,
+            0.796_666_477_413_626_7,
+            0.960_289_856_497_536_3,
+        ];
+        let weights = [
+            0.101_228_536_290_376_3,
+            0.222_381_034_453_374_5,
+            0.313_706_645_877_887_3,
+            0.362_683_783_378_362,
+            0.362_683_783_378_362,
+            0.313_706_645_877_887_3,
+            0.222_381_034_453_374_5,
+            0.101_228_536_290_376_3,
+        ];
+        let r = rho.max_val(T::from_f64(-0.995)).min_val(T::from_f64(0.995));
+        let half_r = T::from_f64(0.5) * r;
+        let inv_two_pi = T::from_f64(0.159_154_943_091_895);
+        let mut integral = T::zero();
+        for (&node, &weight) in nodes.iter().zip(weights.iter()) {
+            let xi = half_r * (T::from_f64(node) + T::one());
+            let omx2 = (T::one() - xi * xi).max_val(T::from_f64(1e-8));
+            let num = -(a * a - T::from_f64(2.0) * xi * a * b + b * b) / (T::from_f64(2.0) * omx2);
+            integral += T::from_f64(weight) * num.exp() / omx2.sqrt();
+        }
+        norm_cdf(a) * norm_cdf(b) + half_r * inv_two_pi * integral
+    }
+
+    pub fn evaluate_wystup_fx_fader_range_accrual<T: Real>(
+        spec: &WystupFxFaderRangeAccrualSpec<T>,
+    ) -> WystupFxFaderRangeAccrualReport<T> {
+        let s0 = spec.spot_fx_s0.max_val(T::from_f64(0.05));
+        let k = spec.strike_fx_k.max_val(T::from_f64(0.05));
+        let l = spec.accrual_corridor_lower_l.max_val(T::from_f64(0.02));
+        let u = spec.accrual_corridor_upper_u.max_val(l + T::from_f64(0.02));
+        let rd = spec.domestic_rate_rd;
+        let rf = spec.foreign_rate_rf;
+        let sig = spec.volatility_sigma.max_val(T::from_f64(1e-4));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+        let sqrt_t = t.sqrt();
+
+        let mu2 = rd - rf - T::from_f64(0.5) * sig * sig;
+        let mu1 = mu2 + sig * sig;
+        let d1 = ((s0 / k).ln() + mu1 * t) / (sig * sqrt_t);
+        let d2 = d1 - sig * sqrt_t;
+
+        let pv_s = s0 * (-rf * t).exp();
+        let pv_k = k * (-rd * t).exp();
+        let vanilla_call = pv_s * norm_cdf(d1) - pv_k * norm_cdf(d2);
+
+        // 3 fixing dates t_m = {0.25 T, 0.50 T, 0.75 T}:
+        let fracs = [0.25, 0.50, 0.75];
+        let mut acc_prob = T::zero();
+        let mut fade_in_call = T::zero();
+        let mut fade_out_call = T::zero();
+        let mut range_fwd_pv = T::zero();
+
+        for &frac in &fracs {
+            let tm = t * T::from_f64(frac);
+            let sqrt_tm = tm.sqrt();
+            let rho_m = T::from_f64(frac).sqrt();
+
+            // Domestic digital thresholds at t_m:
+            let u2_m = ((u / s0).ln() - mu2 * tm) / (sig * sqrt_tm);
+            let l2_m = ((l / s0).ln() - mu2 * tm) / (sig * sqrt_tm);
+            // Foreign numeraire thresholds at t_m:
+            let u1_m = ((u / s0).ln() - mu1 * tm) / (sig * sqrt_tm);
+            let l1_m = ((l / s0).ln() - mu1 * tm) / (sig * sqrt_tm);
+
+            let p_in_q2 = norm_cdf(u2_m) - norm_cdf(l2_m);
+            let p_in_q1 = norm_cdf(u1_m) - norm_cdf(l1_m);
+            acc_prob += p_in_q2 / T::from_f64(3.0);
+
+            // Wystup (2017, Sec. 1.6) exact BVN Fader Call contribution at fixing t_m:
+            let j1_in = bvn_cdf_gl8(d1, u1_m, -rho_m) - bvn_cdf_gl8(d1, l1_m, -rho_m);
+            let j2_in = bvn_cdf_gl8(d2, u2_m, -rho_m) - bvn_cdf_gl8(d2, l2_m, -rho_m);
+            let c_in_m = pv_s * j1_in - pv_k * j2_in;
+
+            // Independent Fade-Out BVN quadrature (lower tail S(t_m) < L plus upper tail S(t_m) > U):
+            let j1_out = bvn_cdf_gl8(d1, l1_m, -rho_m) + bvn_cdf_gl8(d1, -u1_m, rho_m);
+            let j2_out = bvn_cdf_gl8(d2, l2_m, -rho_m) + bvn_cdf_gl8(d2, -u2_m, rho_m);
+            let c_out_m = pv_s * j1_out - pv_k * j2_out;
+
+            fade_in_call += c_in_m / T::from_f64(3.0);
+            fade_out_call += c_out_m / T::from_f64(3.0);
+            range_fwd_pv += (pv_s * p_in_q1 - pv_k * p_in_q2) / T::from_f64(3.0);
+        }
+
+        let parity_res = (fade_in_call + fade_out_call) - vanilla_call;
+        let naive_product = acc_prob * vanilla_call;
+        let cov_wedge = fade_in_call - naive_product;
+
+        WystupFxFaderRangeAccrualReport {
+            garman_kohlhagen_vanilla_call: vanilla_call,
+            expected_corridor_accrual_fraction: acc_prob,
+            fade_in_call_value: fade_in_call,
+            fade_out_call_value: fade_out_call,
+            fade_in_plus_fade_out_parity_residual: parity_res,
+            range_accrual_forward_pv: range_fwd_pv,
+            terminal_spot_corridor_covariance_wedge: cov_wedge,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_wystup_fx_fader_range_accrual_module_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn wystup_fx_fader_range_accrual_invariants_and_ad_parity() {
+            let spec = WystupFxFaderRangeAccrualSpec {
+                spot_fx_s0: 1.085,
+                strike_fx_k: 1.080,
+                accrual_corridor_lower_l: 1.040,
+                accrual_corridor_upper_u: 1.130,
+                domestic_rate_rd: 0.045,
+                foreign_rate_rf: 0.030,
+                volatility_sigma: 0.095,
+                maturity_years_t: 1.0,
+            };
+            let rep = evaluate_wystup_fx_fader_range_accrual(&spec);
+            assert!(
+                rep.fade_in_call_value > 0.0
+                    && rep.fade_in_call_value < rep.garman_kohlhagen_vanilla_call
+            );
+            assert!(rep.fade_in_plus_fade_out_parity_residual.abs() < 1e-12);
+
+            let h = 1e-6;
+            let r_ad = evaluate_wystup_fx_fader_range_accrual(&WystupFxFaderRangeAccrualSpec {
+                spot_fx_s0: Dual::<1>::variable(spec.spot_fx_s0, 0),
+                strike_fx_k: Dual::<1>::from_value(spec.strike_fx_k),
+                accrual_corridor_lower_l: Dual::<1>::from_value(spec.accrual_corridor_lower_l),
+                accrual_corridor_upper_u: Dual::<1>::from_value(spec.accrual_corridor_upper_u),
+                domestic_rate_rd: Dual::<1>::from_value(spec.domestic_rate_rd),
+                foreign_rate_rf: Dual::<1>::from_value(spec.foreign_rate_rf),
+                volatility_sigma: Dual::<1>::from_value(spec.volatility_sigma),
+                maturity_years_t: Dual::<1>::from_value(spec.maturity_years_t),
+            });
+            let mut sp = spec;
+            sp.spot_fx_s0 += h;
+            let mut sm = spec;
+            sm.spot_fx_s0 -= h;
+            let fd = (evaluate_wystup_fx_fader_range_accrual(&sp).fade_in_call_value
+                - evaluate_wystup_fx_fader_range_accrual(&sm).fade_in_call_value)
+                / (2.0 * h);
+            assert!((r_ad.fade_in_call_value.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_wystup_fx_fader_range_accrual_module::*;

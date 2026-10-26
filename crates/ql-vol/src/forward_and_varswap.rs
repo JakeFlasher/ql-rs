@@ -1248,3 +1248,189 @@ mod evaluate_gatheral_forward_start_cliquet_smile_module {
     }
 }
 pub use evaluate_gatheral_forward_start_cliquet_smile_module::*;
+
+mod evaluate_bakshi_kapadia_madan_moment_strip_module {
+    // Bakshi, Kapadia & Madan (`BKM`, 2003) & Gatheral (2006) Model-Free Risk-Neutral
+    // Volatility, Cubic Skewness (`W_t`), Quartic Kurtosis (`X_t`) & CBOE `SKEW` Index Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BakshiKapadiaMadanMomentStripSpec<T: Real = f64> {
+        pub spot_price_s0: T,
+        pub atm_implied_vol_sigma0: T,
+        pub smile_skew_slope_beta: T,
+        pub smile_curvature_gamma: T,
+        pub risk_free_rate_r: T,
+        pub dividend_yield_q: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BakshiKapadiaMadanMomentStripReport<T: Real = f64> {
+        pub bkm_quadratic_volatility_contract_v: T,
+        pub bkm_cubic_skewness_contract_w: T,
+        pub bkm_quartic_kurtosis_contract_x: T,
+        pub model_free_annualized_volatility: T,
+        pub model_free_risk_neutral_skewness: T,
+        pub model_free_risk_neutral_kurtosis: T,
+        pub cboe_skew_index_level: T,
+    }
+
+    fn bs_otm_price<T: Real>(s0: T, k: T, r: T, q: T, t: T, sig: T, is_call: bool) -> T {
+        let std = (sig * t.sqrt()).max_val(T::from_f64(1e-6));
+        let d1 = ((s0 / k).ln() + (r - q + T::from_f64(0.5) * sig * sig) * t) / std;
+        let d2 = d1 - std;
+        if is_call {
+            s0 * (-q * t).exp() * norm_cdf(d1) - k * (-r * t).exp() * norm_cdf(d2)
+        } else {
+            k * (-r * t).exp() * norm_cdf(-d2) - s0 * (-q * t).exp() * norm_cdf(-d1)
+        }
+    }
+
+    pub fn evaluate_bakshi_kapadia_madan_moment_strip<T: Real>(
+        spec: &BakshiKapadiaMadanMomentStripSpec<T>,
+    ) -> BakshiKapadiaMadanMomentStripReport<T> {
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(1.0));
+        let sig0 = spec.atm_implied_vol_sigma0.max_val(T::from_f64(0.02));
+        let beta = spec.smile_skew_slope_beta;
+        let gam = spec.smile_curvature_gamma.max_val(T::zero());
+        let r = spec.risk_free_rate_r;
+        let q = spec.dividend_yield_q;
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+        // Uniform 8-strike OTM strip (4 OTM puts K < 100, 4 OTM calls K > 100) with uniform spacing dk = 7.0:
+        let base_strikes = [75.5, 82.5, 89.5, 96.5, 103.5, 110.5, 117.5, 124.5];
+        let dk = T::from_f64(7.0);
+
+        let mut v_strip = T::zero();
+        let mut w_strip = T::zero();
+        let mut x_strip = T::zero();
+
+        for (i, &k_raw) in base_strikes.iter().enumerate() {
+            let ki = T::from_f64(k_raw);
+            let m = (ki / s0).ln();
+            let sig_k =
+                (sig0 + beta * m + T::from_f64(0.5) * gam * m * m).max_val(T::from_f64(0.03));
+            let is_call = i >= 4;
+            let q_k = bs_otm_price(s0, ki, r, q, t, sig_k, is_call);
+            let inv_k2 = T::one() / (ki * ki);
+
+            // Bakshi-Kapadia-Madan (2003, Eqs. 7-9) quadratic, cubic, and quartic kernel weights:
+            let w_v = T::from_f64(2.0) * (T::one() - m) * inv_k2;
+            let w_w = (T::from_f64(6.0) * m - T::from_f64(3.0) * m * m) * inv_k2;
+            let w_x = (T::from_f64(12.0) * m * m - T::from_f64(4.0) * m * m * m) * inv_k2;
+
+            v_strip += w_v * q_k * dk;
+            w_strip += w_w * q_k * dk;
+            x_strip += w_x * q_k * dk;
+        }
+
+        let ert = (r * t).exp();
+        let erqt = ((r - q) * t).exp();
+        let mu = erqt
+            - T::one()
+            - T::from_f64(0.5) * ert * v_strip
+            - (ert * w_strip) / T::from_f64(6.0)
+            - (ert * x_strip) / T::from_f64(24.0);
+
+        let var_rn = (ert * v_strip - mu * mu).max_val(T::from_f64(1e-6));
+        let std_rn = var_rn.sqrt();
+        let skew_rn = (ert * w_strip - T::from_f64(3.0) * mu * ert * v_strip
+            + T::from_f64(2.0) * mu * mu * mu)
+            / (var_rn * std_rn);
+        let kurt_rn = (ert * x_strip - T::from_f64(4.0) * mu * ert * w_strip
+            + T::from_f64(6.0) * ert * mu * mu * v_strip
+            - T::from_f64(3.0) * mu * mu * mu * mu)
+            / (var_rn * var_rn);
+
+        let ann_vol = (var_rn / t).sqrt();
+        // CBOE SKEW Index definition: SKEW = 100 - 10 * Skew_RN
+        let cboe_skew = T::from_f64(100.0) - T::from_f64(10.0) * skew_rn;
+
+        BakshiKapadiaMadanMomentStripReport {
+            bkm_quadratic_volatility_contract_v: v_strip,
+            bkm_cubic_skewness_contract_w: w_strip,
+            bkm_quartic_kurtosis_contract_x: x_strip,
+            model_free_annualized_volatility: ann_vol,
+            model_free_risk_neutral_skewness: skew_rn,
+            model_free_risk_neutral_kurtosis: kurt_rn,
+            cboe_skew_index_level: cboe_skew,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_bakshi_kapadia_madan_moment_strip_module_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn bakshi_kapadia_madan_moment_strip_invariants_and_ad_parity() {
+            let spec = BakshiKapadiaMadanMomentStripSpec {
+                spot_price_s0: 100.0,
+                atm_implied_vol_sigma0: 0.20,
+                smile_skew_slope_beta: -0.25,
+                smile_curvature_gamma: 0.40,
+                risk_free_rate_r: 0.04,
+                dividend_yield_q: 0.015,
+                maturity_years_t: 0.25,
+            };
+            let rep = evaluate_bakshi_kapadia_madan_moment_strip(&spec);
+            assert!(rep.bkm_quadratic_volatility_contract_v > 0.0);
+            assert!(rep.model_free_risk_neutral_skewness < 0.0);
+            assert!(rep.cboe_skew_index_level > 100.0);
+
+            let h = 1e-6;
+            let r_ad =
+                evaluate_bakshi_kapadia_madan_moment_strip(&BakshiKapadiaMadanMomentStripSpec {
+                    spot_price_s0: Dual::<7>::variable(spec.spot_price_s0, 0),
+                    atm_implied_vol_sigma0: Dual::<7>::variable(spec.atm_implied_vol_sigma0, 1),
+                    smile_skew_slope_beta: Dual::<7>::variable(spec.smile_skew_slope_beta, 2),
+                    smile_curvature_gamma: Dual::<7>::variable(spec.smile_curvature_gamma, 3),
+                    risk_free_rate_r: Dual::<7>::variable(spec.risk_free_rate_r, 4),
+                    dividend_yield_q: Dual::<7>::variable(spec.dividend_yield_q, 5),
+                    maturity_years_t: Dual::<7>::variable(spec.maturity_years_t, 6),
+                });
+            for (idx, &ad_deriv) in r_ad.cboe_skew_index_level.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.spot_price_s0 += h;
+                        sm.spot_price_s0 -= h;
+                    }
+                    1 => {
+                        sp.atm_implied_vol_sigma0 += h;
+                        sm.atm_implied_vol_sigma0 -= h;
+                    }
+                    2 => {
+                        sp.smile_skew_slope_beta += h;
+                        sm.smile_skew_slope_beta -= h;
+                    }
+                    3 => {
+                        sp.smile_curvature_gamma += h;
+                        sm.smile_curvature_gamma -= h;
+                    }
+                    4 => {
+                        sp.risk_free_rate_r += h;
+                        sm.risk_free_rate_r -= h;
+                    }
+                    5 => {
+                        sp.dividend_yield_q += h;
+                        sm.dividend_yield_q -= h;
+                    }
+                    _ => {
+                        sp.maturity_years_t += h;
+                        sm.maturity_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_bakshi_kapadia_madan_moment_strip(&sp).cboe_skew_index_level
+                    - evaluate_bakshi_kapadia_madan_moment_strip(&sm).cboe_skew_index_level)
+                    / (2.0 * h);
+                assert!((ad_deriv - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_bakshi_kapadia_madan_moment_strip_module::*;
