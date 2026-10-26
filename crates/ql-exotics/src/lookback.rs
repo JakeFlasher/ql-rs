@@ -323,13 +323,15 @@ pub fn price_shepp_shiryaev_shreve_perpetual_russian_and_mckean<T: Real>(
         .sqrt();
     let g1 = (-b - disc) / sig2.max_val(T::from_f64(1e-10));
     let g2 = (-b + disc) / sig2.max_val(T::from_f64(1e-10));
-    let z =
-        (((T::one() - T::one() / g1) / (g2 - T::one()) * g2 / g1).abs()).pow(T::one() / (g2 - g1));
+    let z = T::one()
+        / (((T::one() - T::one() / g1) / (g2 - T::one()) * g2 / g1).abs())
+            .pow(T::one() / (g2 - g1));
     let ratio = (s.spot / s.running_max.max_val(T::from_f64(1e-10))).max_val(T::from_f64(1e-10));
-    let russian = if ratio <= z {
+    let russian = if ratio.val() <= z.val() {
         s.running_max
     } else {
-        s.running_max * (ratio / z).pow(g1)
+        let u = ratio / z;
+        s.running_max * (g2 * u.pow(g1) - g1 * u.pow(g2)) / (g2 - g1).max_val(T::from_f64(1e-10))
     };
     let boundary = s.fixed_put_strike * g1 / (g1 - T::one());
     let put = if s.spot <= boundary {
@@ -397,21 +399,36 @@ mod phase26_tests {
 #[cfg(test)]
 mod phase29_tests {
     use super::*;
+    use ql_ad::Dual;
     #[test]
     fn russian_invariants_and_dual() {
-        let mk = |x| SheppShiryaevShrevePerpetualRussianSpec {
-            spot: x,
-            running_max: 110.0,
-            fixed_put_strike: 100.0,
-            risk_free_rate: 0.03,
-            dividend_yield: 0.01,
-            volatility: 0.2,
-        };
+        fn mk<T: Real>(x: T) -> SheppShiryaevShrevePerpetualRussianSpec<T> {
+            SheppShiryaevShrevePerpetualRussianSpec {
+                spot: x,
+                running_max: T::from_f64(110.0),
+                fixed_put_strike: T::from_f64(100.0),
+                risk_free_rate: T::from_f64(0.03),
+                dividend_yield: T::from_f64(0.01),
+                volatility: T::from_f64(0.2),
+            }
+        }
         let r = price_shepp_shiryaev_shreve_perpetual_russian_and_mckean(&mk(100.0));
         assert!(
             r.quadratic_root_gamma1 < 0.0
                 && r.quadratic_root_gamma2 > 1.0
-                && r.perpetual_russian_option_value >= 110.0
+                && r.perpetual_russian_option_value > 110.0
         );
+        assert!(r.smooth_pasting_derivative_residual < 1e-12);
+        let h = 1e-5;
+        let fd = (price_shepp_shiryaev_shreve_perpetual_russian_and_mckean(&mk(100.0 + h))
+            .perpetual_russian_option_value
+            - price_shepp_shiryaev_shreve_perpetual_russian_and_mckean(&mk(100.0 - h))
+                .perpetual_russian_option_value)
+            / (2.0 * h);
+        let ad = price_shepp_shiryaev_shreve_perpetual_russian_and_mckean(&mk(
+            Dual::<1>::variable(100.0, 0),
+        ))
+        .perpetual_russian_option_value;
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
     }
 }

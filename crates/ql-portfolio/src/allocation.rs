@@ -3793,7 +3793,8 @@ pub fn evaluate_madhavan_abner_hill_etf_ap_arbitrage_and_tax_alpha<T: Real>(
         net_ap_creation_redemption_profit_bps: profit,
         optimal_ap_creation_intensity: intensity,
         annual_in_kind_heartbeat_tax_alpha_bps: tax.max_val(T::zero()),
-        etf_vs_mutual_fund_after_tax_advantage_bps: tax - s.ap_creation_fee_bps,
+        etf_vs_mutual_fund_after_tax_advantage_bps: tax
+            - s.annual_redemption_turnover * s.ap_creation_fee_bps,
     }
 }
 
@@ -3833,11 +3834,21 @@ pub fn evaluate_grinold_qian_christopherson_ic_decay_and_timing<T: Real>(
         * (-(T::from_f64(2.0).ln()) * s.rebalance_horizon_months
             / s.slow_signal_half_life_months.max_val(T::from_f64(1e-8)))
         .exp();
-    let wf = (fd / (fd.abs() + sd.abs() + s.transaction_cost_penalty.abs() + T::from_f64(1e-8)))
-        .max_val(T::zero())
-        .min_val(T::one());
+    let kf = T::from_f64(2.0).ln() / s.fast_signal_half_life_months.max_val(T::from_f64(1e-8));
+    let ks = T::from_f64(2.0).ln() / s.slow_signal_half_life_months.max_val(T::from_f64(1e-8));
+    let rho = s.signal_correlation;
+    let af = T::one() + s.transaction_cost_penalty * ks;
+    let as_ = T::one() + s.transaction_cost_penalty * kf;
+    let den = (af * as_ - rho * rho).max_val(T::from_f64(1e-8));
+    let twf = (fd * af - rho * sd) / den;
+    let tws = (sd * as_ - rho * fd) / den;
+    let twsum = (twf + tws).max_val(T::from_f64(1e-8));
+    let wf = twf / twsum;
     let ws = T::one() - wf;
-    let blend = (wf * fd + ws * sd) * (T::one() + s.signal_correlation) / 2.0;
+    let norm = (wf * wf + ws * ws + T::from_f64(2.0) * rho * wf * ws)
+        .max_val(T::from_f64(1e-12))
+        .sqrt();
+    let blend = (wf * fd + ws * sd) / norm;
     let ir = blend / (T::one() + s.transaction_cost_penalty.abs());
     let mut policy = T::zero();
     let mut timing = T::zero();
@@ -4647,23 +4658,38 @@ mod phase27_tests {
 #[cfg(test)]
 mod phase29_tests {
     use super::*;
+    use ql_ad::Dual;
     #[test]
     fn etf_and_ic_invariants_and_dual() {
-        let mk = |x| MadhavanAbnerHillEtfApArbitrageSpec {
-            etf_market_price: x,
-            reported_inav: 100.0,
-            futures_beta_return: 0.01,
-            stale_underlying_weight: 0.4,
-            ap_creation_fee_bps: 5.0,
-            basket_bid_ask_spread_bps: 8.0,
-            creation_unit_volatility_bps: 10.0,
-            ap_risk_aversion: 0.5,
-            embedded_unrealized_gain_fraction: 0.3,
-            annual_redemption_turnover: 0.2,
-            capital_gains_tax_rate: 0.25,
-        };
+        fn mk<T: Real>(x: T) -> MadhavanAbnerHillEtfApArbitrageSpec<T> {
+            MadhavanAbnerHillEtfApArbitrageSpec {
+                etf_market_price: x,
+                reported_inav: T::from_f64(100.0),
+                futures_beta_return: T::from_f64(0.01),
+                stale_underlying_weight: T::from_f64(0.4),
+                ap_creation_fee_bps: T::from_f64(5.0),
+                basket_bid_ask_spread_bps: T::from_f64(8.0),
+                creation_unit_volatility_bps: T::from_f64(10.0),
+                ap_risk_aversion: T::from_f64(0.5),
+                embedded_unrealized_gain_fraction: T::from_f64(0.3),
+                annual_redemption_turnover: T::from_f64(0.2),
+                capital_gains_tax_rate: T::from_f64(0.25),
+            }
+        }
         let r = evaluate_madhavan_abner_hill_etf_ap_arbitrage_and_tax_alpha(&mk(101.0));
         assert!(r.annual_in_kind_heartbeat_tax_alpha_bps > 0.0);
+        assert!(r.true_arbitrage_basis_bps.abs() < r.illusionary_inav_premium_bps.abs());
+        let h = 1e-5;
+        let fd = (evaluate_madhavan_abner_hill_etf_ap_arbitrage_and_tax_alpha(&mk(101.0 + h))
+            .true_arbitrage_basis_bps
+            - evaluate_madhavan_abner_hill_etf_ap_arbitrage_and_tax_alpha(&mk(101.0 - h))
+                .true_arbitrage_basis_bps)
+            / (2.0 * h);
+        let ad = evaluate_madhavan_abner_hill_etf_ap_arbitrage_and_tax_alpha(&mk(
+            Dual::<1>::variable(101.0, 0),
+        ))
+        .true_arbitrage_basis_bps;
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
         let s = GrinoldQianChristophersonAlphaDecaySpec {
             fast_signal_ic0: 0.1,
             fast_signal_half_life_months: 3.0,
@@ -4684,5 +4710,36 @@ mod phase29_tests {
                     .abs()
                     < 1e-12
         );
+        let sd = GrinoldQianChristophersonAlphaDecaySpec {
+            fast_signal_ic0: Dual::<1>::variable(0.1, 0),
+            fast_signal_half_life_months: Dual::from_value(3.0),
+            slow_signal_ic0: Dual::from_value(0.08),
+            slow_signal_half_life_months: Dual::from_value(12.0),
+            signal_correlation: Dual::from_value(0.2),
+            rebalance_horizon_months: Dual::from_value(1.0),
+            transaction_cost_penalty: Dual::from_value(0.01),
+            factor_active_exposures: vec![Dual::from_value(0.1)],
+            factor_benchmark_returns: vec![Dual::from_value(0.02)],
+            normal_factor_exposures: vec![Dual::from_value(0.05)],
+        };
+        let h = 1e-5;
+        let fd_ic = (evaluate_grinold_qian_christopherson_ic_decay_and_timing(
+            &GrinoldQianChristophersonAlphaDecaySpec {
+                fast_signal_ic0: 0.1 + h,
+                ..s.clone()
+            },
+        )
+        .composite_blended_ic
+            - evaluate_grinold_qian_christopherson_ic_decay_and_timing(
+                &GrinoldQianChristophersonAlphaDecaySpec {
+                    fast_signal_ic0: 0.1 - h,
+                    ..s.clone()
+                },
+            )
+            .composite_blended_ic)
+            / (2.0 * h);
+        let ad_ic =
+            evaluate_grinold_qian_christopherson_ic_decay_and_timing(&sd).composite_blended_ic;
+        assert!(ad_ic.d[0].abs() > 1e-6 && (ad_ic.d[0] - fd_ic).abs() < 1e-5);
     }
 }

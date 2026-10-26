@@ -2556,6 +2556,10 @@ impl DeskWorkstation {
     }
 
     pub fn phase29_live_metric_from_market(m: &MarketSnapshot) -> f64 {
+        Self::phase29_live_metric_from_market_with_bump(m, 0.0)
+    }
+
+    pub fn phase29_live_metric_from_market_with_bump(m: &MarketSnapshot, credit_bump: f64) -> f64 {
         let r = m.ois_quotes.first().copied().unwrap_or(0.03);
         let spot = m.eq_spot.max(1e-6);
         let vol = m.eq_vol.max(1e-4);
@@ -2583,7 +2587,7 @@ impl DeskWorkstation {
                 series_order_k: 12,
                 fractional_horizon_years: 0.5,
                 recovery_rate: 0.4,
-                risk_free_rate: r,
+                risk_free_rate: r + credit_bump,
             },
         );
         let c = ql_vol::evaluate_gatheral_demeterfi_corridor_variance_and_skew(
@@ -2649,7 +2653,7 @@ impl DeskWorkstation {
         );
         let g = ql_models::solve_carmona_delarue_mean_field_systemic_interbank_game(
             &ql_models::CarmonaDelarueMeanFieldSystemicSpec {
-                initial_log_reserve_spread: 0.01,
+                initial_log_reserve_spread: 0.01 + credit_bump,
                 interbank_mean_reversion_a: 0.4,
                 control_quadratic_penalty_q: 0.2,
                 systemic_risk_preference_epsilon: 0.3,
@@ -2744,7 +2748,12 @@ impl DeskWorkstation {
     }
 
     pub fn phase29_live_metric(&self) -> f64 {
-        Self::phase29_live_metric_from_market(&self.scenario_market())
+        let credit_bump = if self.scenario == ScenarioKind::CreditWideningPlus100Bp {
+            0.01
+        } else {
+            0.0
+        };
+        Self::phase29_live_metric_from_market_with_bump(&self.scenario_market(), credit_bump)
     }
 
     pub fn phase28_live_metric_from_market(m: &MarketSnapshot) -> f64 {
@@ -5105,7 +5114,10 @@ impl DeskWorkstation {
                 Self::phase25_live_metric_from_market(&market, credit_bump),
             phase26_sota_metric: Self::phase26_live_metric_from_market(&market, credit_bump),
             phase27_sota_metric: Self::phase27_live_metric_from_market(&market, credit_bump),
-            phase29_sota_metric: Self::phase29_live_metric_from_market(&market),
+            phase29_sota_metric: Self::phase29_live_metric_from_market_with_bump(
+                &market,
+                credit_bump,
+            ),
             phase28_sota_metric: Self::phase28_live_metric_from_market_with_bump(
                 &market,
                 if self.scenario == ScenarioKind::CreditWideningPlus100Bp {

@@ -366,37 +366,43 @@ pub struct CarmonaDelarueMeanFieldSystemicReport<T: Real = f64> {
 pub fn solve_carmona_delarue_mean_field_systemic_interbank_game<T: Real>(
     s: &CarmonaDelarueMeanFieldSystemicSpec<T>,
 ) -> CarmonaDelarueMeanFieldSystemicReport<T> {
-    let eta = s.terminal_systemic_penalty_c * (-s.interbank_mean_reversion_a * s.horizon_t).exp()
-        + s.systemic_risk_preference_epsilon;
-    let closed = s.interbank_mean_reversion_a
-        + (s.systemic_risk_preference_epsilon
-            - s.control_quadratic_penalty_q * s.control_quadratic_penalty_q)
-            .max_val(T::zero())
-            * 0.5;
-    let lending = -eta * s.initial_log_reserve_spread;
-    let corr = s
-        .common_noise_corr_rho0
-        .max_val(T::from_f64(-0.999))
-        .min_val(T::from_f64(0.999));
-    let var_unc = s.idiosyncratic_vol_sigma * s.idiosyncratic_vol_sigma
+    let aq = s.interbank_mean_reversion_a + s.control_quadratic_penalty_q;
+    let one_m_rho2 =
+        (T::one() - s.common_noise_corr_rho0 * s.common_noise_corr_rho0).max_val(T::from_f64(1e-6));
+    let disc = (aq * aq
+        + one_m_rho2
+            * (s.systemic_risk_preference_epsilon
+                - s.control_quadratic_penalty_q * s.control_quadratic_penalty_q))
+        .max_val(T::from_f64(1e-12))
+        .sqrt();
+    let eta_plus = (-aq + disc) / one_m_rho2;
+    let eta_minus = (-aq - disc) / one_m_rho2;
+    let e_2dt = (-T::from_f64(2.0) * disc * s.horizon_t).exp();
+    let c_term = s.terminal_systemic_penalty_c;
+    let num = eta_plus * (c_term - eta_minus) - eta_minus * (c_term - eta_plus) * e_2dt;
+    let den = (c_term - eta_minus) - (c_term - eta_plus) * e_2dt;
+    let eta = num / den.max_val(T::from_f64(1e-12));
+    let closed = s.interbank_mean_reversion_a + s.control_quadratic_penalty_q + one_m_rho2 * eta;
+    let lending =
+        -(s.control_quadratic_penalty_q + one_m_rho2 * eta) * s.initial_log_reserve_spread;
+    let sigma2 = s.idiosyncratic_vol_sigma * s.idiosyncratic_vol_sigma;
+    let var_unc = sigma2
         / (T::from_f64(2.0)
             * s.interbank_mean_reversion_a
                 .abs()
                 .max_val(T::from_f64(1e-8)));
-    let var = var_unc * (T::one() - corr * corr)
-        / (closed.abs()
-            / s.interbank_mean_reversion_a
-                .abs()
-                .max_val(T::from_f64(1e-8)))
-        .max_val(T::one());
-    let z =
-        (s.distress_barrier_d - s.initial_log_reserve_spread) / (var.sqrt() + T::from_f64(1e-8));
-    let pd = (-z.abs()).exp() * (T::one() - corr.abs()) * 0.5;
+    let var = sigma2 * one_m_rho2 / (T::from_f64(2.0) * closed.abs().max_val(T::from_f64(1e-8)))
+        * (T::one() - (-T::from_f64(2.0) * closed * s.horizon_t).exp())
+        + sigma2 * s.common_noise_corr_rho0 * s.common_noise_corr_rho0 * s.horizon_t;
+    let mean_t = s.initial_log_reserve_spread * (-closed * s.horizon_t).exp();
+    let z = (s.distress_barrier_d - mean_t) / var.max_val(T::from_f64(1e-12)).sqrt();
+    let pd = z.norm_cdf();
     CarmonaDelarueMeanFieldSystemicReport {
         riccati_equilibrium_eta_t0: eta,
         effective_closed_loop_mean_reversion: closed,
         optimal_interbank_lending_rate: lending,
-        stationary_cross_sectional_variance: var.min_val(var_unc),
+        stationary_cross_sectional_variance: sigma2 * one_m_rho2
+            / (T::from_f64(2.0) * closed.abs().max_val(T::from_f64(1e-8))),
         uncorrelated_no_flocking_variance: var_unc,
         systemic_default_probability: pd.max_val(T::zero()).min_val(T::one()),
         mean_field_value_function_cost: eta
@@ -458,23 +464,37 @@ mod phase27_tests {
 #[cfg(test)]
 mod phase29_tests {
     use super::*;
+    use ql_ad::Dual;
     #[test]
     fn mfg_invariants_and_dual() {
-        let mk = |x| CarmonaDelarueMeanFieldSystemicSpec {
-            initial_log_reserve_spread: x,
-            interbank_mean_reversion_a: 0.4,
-            control_quadratic_penalty_q: 0.2,
-            systemic_risk_preference_epsilon: 0.3,
-            terminal_systemic_penalty_c: 1.0,
-            idiosyncratic_vol_sigma: 0.2,
-            common_noise_corr_rho0: 0.2,
-            distress_barrier_d: -0.1,
-            horizon_t: 1.0,
-        };
+        fn mk<T: Real>(x: T) -> CarmonaDelarueMeanFieldSystemicSpec<T> {
+            CarmonaDelarueMeanFieldSystemicSpec {
+                initial_log_reserve_spread: x,
+                interbank_mean_reversion_a: T::from_f64(0.4),
+                control_quadratic_penalty_q: T::from_f64(0.2),
+                systemic_risk_preference_epsilon: T::from_f64(0.3),
+                terminal_systemic_penalty_c: T::one(),
+                idiosyncratic_vol_sigma: T::from_f64(0.2),
+                common_noise_corr_rho0: T::from_f64(0.2),
+                distress_barrier_d: T::from_f64(-0.1),
+                horizon_t: T::one(),
+            }
+        }
         let r = solve_carmona_delarue_mean_field_systemic_interbank_game(&mk(0.01));
         assert!(
             r.effective_closed_loop_mean_reversion > 0.4
                 && r.stationary_cross_sectional_variance < r.uncorrelated_no_flocking_variance
         );
+        let h = 1e-5;
+        let fd = (solve_carmona_delarue_mean_field_systemic_interbank_game(&mk(0.01 + h))
+            .optimal_interbank_lending_rate
+            - solve_carmona_delarue_mean_field_systemic_interbank_game(&mk(0.01 - h))
+                .optimal_interbank_lending_rate)
+            / (2.0 * h);
+        let ad = solve_carmona_delarue_mean_field_systemic_interbank_game(&mk(
+            Dual::<1>::variable(0.01, 0),
+        ))
+        .optimal_interbank_lending_rate;
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
     }
 }

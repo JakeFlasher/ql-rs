@@ -846,10 +846,11 @@ pub fn evaluate_veronesi_fabozzi_futures_convexity_and_prepayment<T: Real>(
     let age = s.pool_age_months.max_val(T::zero());
     let ramp = s.psa_ramp_months.max_val(T::from_f64(1e-10));
     let u = age / ramp;
-    let psa = u
-        .smooth_heaviside(T::one(), 0.02)
-        .max_val(T::zero())
-        .min_val(T::one());
+    let smooth_min =
+        |a: T, b: T| (a + b - ((a - b) * (a - b) + T::from_f64(1e-8)).sqrt()) / T::from_f64(2.0);
+    let smooth_max =
+        |a: T, b: T| (a + b + ((a - b) * (a - b) + T::from_f64(1e-8)).sqrt()) / T::from_f64(2.0);
+    let psa = smooth_max(T::zero(), smooth_min(u, T::one()));
     let incentive = s.wac_coupon - s.current_mortgage_rate;
     let logistic = T::one()
         / (T::one() + (-s.refi_steepness_gamma * (incentive - s.refi_incentive_threshold)).exp());
@@ -866,76 +867,11 @@ pub fn evaluate_veronesi_fabozzi_futures_convexity_and_prepayment<T: Real>(
         refi_incentive_spread: incentive,
         scurve_cpr: cpr,
         single_monthly_mortality_smm: smm,
-        effective_prepayment_duration: T::one() / (T::one() - smm),
-    }
-}
-
-#[cfg(test)]
-mod phase15_tests {
-    use super::*;
-    use ql_ad::Dual;
-    use ql_curves::FlatForwardCurve;
-    use ql_time::Date;
-    #[test]
-    fn specified_pool_and_tba_invariants() {
-        let d = Date::from_ymd(2024, 1, 1).unwrap();
-        let c = FlatForwardCurve::new(d, 0.03);
-        let s = TbaDollarRollSpec {
-            front_clean_price: 99.0,
-            back_clean_price: 98.5,
-            wac: 0.04,
-            pass_through_rate: 0.035,
-            remaining_months: 120,
-            front_accrued_fraction: 0.5,
-            back_accrued_fraction: 0.5,
-            roll_period_years: 1.0 / 12.0,
-            assumed_cpr: 0.06,
-            repo_rate: 0.02,
-        };
-        let r = analyze_tba_dollar_roll(&s);
-        let mut s2 = s;
-        s2.back_clean_price = 99.0 - r.breakeven_drop;
-        let r2 = analyze_tba_dollar_roll(&s2);
-        assert!(r2.net_roll_advantage.abs() < 1e-10);
-        assert!((r2.implied_repo_rate - s.repo_rate).abs() < 1e-10);
-        let h = 1e-5;
-        let mut s_up = s;
-        let mut s_dn = s;
-        s_up.front_clean_price += h;
-        s_dn.front_clean_price -= h;
-        let fd = (analyze_tba_dollar_roll(&s_up).implied_repo_rate
-            - analyze_tba_dollar_roll(&s_dn).implied_repo_rate)
-            / (2.0 * h);
-        let sd = TbaDollarRollSpec::<Dual<1>> {
-            front_clean_price: Dual::variable(99.0, 0),
-            back_clean_price: Dual::from_value(98.5),
-            wac: Dual::from_value(0.04),
-            pass_through_rate: Dual::from_value(0.035),
-            remaining_months: 120,
-            front_accrued_fraction: 0.5,
-            back_accrued_fraction: 0.5,
-            roll_period_years: 1.0 / 12.0,
-            assumed_cpr: Dual::from_value(0.06),
-            repo_rate: Dual::from_value(0.02),
-        };
-        let ad = analyze_tba_dollar_roll(&sd).implied_repo_rate;
-        assert!((ad.d[0] - fd).abs() < 1e-6);
-        let m = SpecifiedPoolMbsSpec {
-            original_balance: 100.0,
-            wac: 0.04,
-            pass_through_rate: 0.035,
-            term_months: 12,
-            seasoning_months: 30,
-            cpr_min: 0.06,
-            cpr_max: 0.06,
-            refi_slope: 0.0,
-            refi_inflection: 0.0,
-            primary_secondary_spread: 0.0,
-            cdr: 0.01,
-            loss_severity: 0.4,
-        };
-        let val = price_specified_pool_mbs(&m, &c, 0.0);
-        assert!(val.pv > 90.0 && val.wal > 0.4 && val.wal <= 1.0);
+        effective_prepayment_duration: {
+            let rem_years = (T::from_f64(30.0) - age / T::from_f64(12.0)).max_val(T::one());
+            let eff_hazard = (s.current_mortgage_rate + cpr).max_val(T::from_f64(1e-6));
+            (T::one() - (-eff_hazard * rem_years).exp()) / eff_hazard
+        },
     }
 }
 
@@ -1239,113 +1175,6 @@ pub fn price_cmo_waterfall<T: Real>(
         tranches,
         io_strip_pv: io_pv,
         total_structure_pv: sum_tr_pv,
-    }
-}
-
-#[cfg(test)]
-mod phase16_tests {
-    use super::*;
-    use ql_ad::Dual;
-    use ql_curves::FlatForwardCurve;
-    use ql_time::Date;
-    #[test]
-    fn treasury_ctd_and_cmo_waterfall_conservation() {
-        let d = Date::from_ymd(2024, 1, 1).unwrap();
-        let c = FlatForwardCurve::new(d, 0.035);
-        let basket = TreasuryFuturesBasketSpec {
-            futures_price: 98.5,
-            delivery_time: 0.25,
-            repo_rate: 0.03,
-            notional_standard_yield: 0.06,
-            deliverables: vec![
-                TreasuryFutureDeliverable {
-                    clean_price: 99.2,
-                    coupon_rate: 0.06,
-                    remaining_semiannual_periods: 16,
-                    accrued_interest_spot: 0.5,
-                    accrued_interest_delivery: 1.0,
-                    interim_coupon: 0.0,
-                    yield_vol: 0.008,
-                    modified_duration: 6.5,
-                },
-                TreasuryFutureDeliverable {
-                    clean_price: 89.0,
-                    coupon_rate: 0.045,
-                    remaining_semiannual_periods: 18,
-                    accrued_interest_spot: 0.4,
-                    accrued_interest_delivery: 0.8,
-                    interim_coupon: 0.0,
-                    yield_vol: 0.008,
-                    modified_duration: 7.2,
-                },
-            ],
-        };
-        let ctd = analyze_treasury_futures_ctd(&basket);
-        assert!((ctd.bond_metrics[0].conversion_factor - 1.0).abs() < 1e-12);
-        let dirty0 =
-            basket.deliverables[0].clean_price + basket.deliverables[0].accrued_interest_spot;
-        let bnoc0 = dirty0
-            * basket.delivery_time
-            * (basket.repo_rate - ctd.bond_metrics[0].implied_repo_rate);
-        assert!((ctd.bond_metrics[0].net_basis - bnoc0).abs() < 1e-12);
-        assert!(ctd.switch_option_value > 0.0);
-        let cmo = CmoWaterfallSpec {
-            original_balance: 100.0,
-            wac: 0.055,
-            pass_through_rate: 0.05,
-            term_months: 60,
-            psa_speed: 150.0,
-            pac_collar_psa: Some((100.0, 300.0)),
-            tranches: vec![
-                CmoTrancheSpec {
-                    initial_balance: 60.0,
-                    coupon_rate: 0.045,
-                    is_pac: true,
-                },
-                CmoTrancheSpec {
-                    initial_balance: 40.0,
-                    coupon_rate: 0.045,
-                    is_pac: false,
-                },
-            ],
-        };
-        let w1 = price_cmo_waterfall(&cmo, &c, 0.0);
-        let mut cmo2 = cmo.clone();
-        cmo2.psa_speed = 250.0;
-        let w2 = price_cmo_waterfall(&cmo2, &c, 0.0);
-        assert!((w1.total_structure_pv - w1.pool_pv).abs() < 1e-10);
-        assert!((w1.tranches[0].wal - w2.tranches[0].wal).abs() < 1e-10);
-        let h = 1e-5;
-        let mut b_up = basket.clone();
-        let mut b_dn = basket.clone();
-        b_up.futures_price += h;
-        b_dn.futures_price -= h;
-        let fd = (analyze_treasury_futures_ctd(&b_up).ctd_implied_repo_rate
-            - analyze_treasury_futures_ctd(&b_dn).ctd_implied_repo_rate)
-            / (2.0 * h);
-        type D = Dual<1>;
-        let bd = TreasuryFuturesBasketSpec {
-            futures_price: D::variable(98.5, 0),
-            delivery_time: 0.25,
-            repo_rate: D::from_value(0.03),
-            notional_standard_yield: 0.06,
-            deliverables: basket
-                .deliverables
-                .iter()
-                .map(|x| TreasuryFutureDeliverable {
-                    clean_price: D::from_value(x.clean_price),
-                    coupon_rate: D::from_value(x.coupon_rate),
-                    remaining_semiannual_periods: x.remaining_semiannual_periods,
-                    accrued_interest_spot: D::from_value(x.accrued_interest_spot),
-                    accrued_interest_delivery: D::from_value(x.accrued_interest_delivery),
-                    interim_coupon: D::from_value(x.interim_coupon),
-                    yield_vol: D::from_value(x.yield_vol),
-                    modified_duration: D::from_value(x.modified_duration),
-                })
-                .collect(),
-        };
-        let ad = analyze_treasury_futures_ctd(&bd).ctd_implied_repo_rate;
-        assert!((ad.d[0] - fd).abs() < 1e-6);
     }
 }
 
@@ -1742,24 +1571,221 @@ mod phase26_tests {
 #[cfg(test)]
 mod phase29_tests {
     use super::*;
+    use ql_ad::Dual;
     #[test]
     fn veronesi_invariants_and_dual() {
-        let mk = |x| VeronesiFabozziConvexityPrepaymentSpec {
-            forward_rate: x,
-            short_rate_vol: 0.2,
-            mean_reversion_kappa: 0.1,
-            fixing_time_t1: 1.0,
-            maturity_time_t2: 2.0,
-            wac_coupon: 0.05,
-            current_mortgage_rate: 0.04,
-            min_cpr_turnover: 0.02,
-            max_cpr_refi: 0.3,
-            refi_steepness_gamma: 8.0,
-            refi_incentive_threshold: 0.0,
-            pool_age_months: 24.0,
-            psa_ramp_months: 30.0,
-        };
+        fn mk<T: Real>(x: T) -> VeronesiFabozziConvexityPrepaymentSpec<T> {
+            VeronesiFabozziConvexityPrepaymentSpec {
+                forward_rate: x,
+                short_rate_vol: T::from_f64(0.2),
+                mean_reversion_kappa: T::from_f64(0.1),
+                fixing_time_t1: T::one(),
+                maturity_time_t2: T::from_f64(2.0),
+                wac_coupon: T::from_f64(0.05),
+                current_mortgage_rate: T::from_f64(0.04),
+                min_cpr_turnover: T::from_f64(0.02),
+                max_cpr_refi: T::from_f64(0.3),
+                refi_steepness_gamma: T::from_f64(8.0),
+                refi_incentive_threshold: T::zero(),
+                pool_age_months: T::from_f64(24.0),
+                psa_ramp_months: T::from_f64(30.0),
+            }
+        }
         let r = evaluate_veronesi_fabozzi_futures_convexity_and_prepayment(&mk(0.03));
         assert!(r.futures_forward_convexity_bias_bps > 0.0);
+        let h = 1e-5;
+        let fd = (evaluate_veronesi_fabozzi_futures_convexity_and_prepayment(&mk(0.03 + h))
+            .implied_futures_rate
+            - evaluate_veronesi_fabozzi_futures_convexity_and_prepayment(&mk(0.03 - h))
+                .implied_futures_rate)
+            / (2.0 * h);
+        let ad = evaluate_veronesi_fabozzi_futures_convexity_and_prepayment(&mk(
+            Dual::<1>::variable(0.03, 0),
+        ))
+        .implied_futures_rate;
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
+        let mut zero = mk(0.03);
+        zero.short_rate_vol = 0.0;
+        let rz = evaluate_veronesi_fabozzi_futures_convexity_and_prepayment(&zero);
+        assert!(rz.futures_forward_convexity_bias_bps.abs() < 1e-12);
+        assert!(
+            (1.0 - (1.0 - rz.single_monthly_mortality_smm).powi(12) - rz.scurve_cpr).abs() < 1e-12
+        );
+    }
+}
+
+#[cfg(test)]
+mod phase15_tests {
+    use super::*;
+    use ql_ad::Dual;
+    use ql_curves::FlatForwardCurve;
+    use ql_time::Date;
+    #[test]
+    fn specified_pool_and_tba_invariants() {
+        let d = Date::from_ymd(2024, 1, 1).unwrap();
+        let c = FlatForwardCurve::new(d, 0.03);
+        let s = TbaDollarRollSpec {
+            front_clean_price: 99.0,
+            back_clean_price: 98.5,
+            wac: 0.04,
+            pass_through_rate: 0.035,
+            remaining_months: 120,
+            front_accrued_fraction: 0.5,
+            back_accrued_fraction: 0.5,
+            roll_period_years: 1.0 / 12.0,
+            assumed_cpr: 0.06,
+            repo_rate: 0.02,
+        };
+        let r = analyze_tba_dollar_roll(&s);
+        let mut s2 = s;
+        s2.back_clean_price = 99.0 - r.breakeven_drop;
+        let r2 = analyze_tba_dollar_roll(&s2);
+        assert!(r2.net_roll_advantage.abs() < 1e-10);
+        assert!((r2.implied_repo_rate - s.repo_rate).abs() < 1e-10);
+        let h = 1e-5;
+        let mut s_up = s;
+        let mut s_dn = s;
+        s_up.front_clean_price += h;
+        s_dn.front_clean_price -= h;
+        let fd = (analyze_tba_dollar_roll(&s_up).implied_repo_rate
+            - analyze_tba_dollar_roll(&s_dn).implied_repo_rate)
+            / (2.0 * h);
+        let sd = TbaDollarRollSpec::<Dual<1>> {
+            front_clean_price: Dual::variable(99.0, 0),
+            back_clean_price: Dual::from_value(98.5),
+            wac: Dual::from_value(0.04),
+            pass_through_rate: Dual::from_value(0.035),
+            remaining_months: 120,
+            front_accrued_fraction: 0.5,
+            back_accrued_fraction: 0.5,
+            roll_period_years: 1.0 / 12.0,
+            assumed_cpr: Dual::from_value(0.06),
+            repo_rate: Dual::from_value(0.02),
+        };
+        let ad = analyze_tba_dollar_roll(&sd).implied_repo_rate;
+        assert!((ad.d[0] - fd).abs() < 1e-6);
+        let m = SpecifiedPoolMbsSpec {
+            original_balance: 100.0,
+            wac: 0.04,
+            pass_through_rate: 0.035,
+            term_months: 12,
+            seasoning_months: 30,
+            cpr_min: 0.06,
+            cpr_max: 0.06,
+            refi_slope: 0.0,
+            refi_inflection: 0.0,
+            primary_secondary_spread: 0.0,
+            cdr: 0.01,
+            loss_severity: 0.4,
+        };
+        let val = price_specified_pool_mbs(&m, &c, 0.0);
+        assert!(val.pv > 90.0 && val.wal > 0.4 && val.wal <= 1.0);
+    }
+}
+
+#[cfg(test)]
+mod phase16_tests {
+    use super::*;
+    use ql_ad::Dual;
+    use ql_curves::FlatForwardCurve;
+    use ql_time::Date;
+    #[test]
+    fn treasury_ctd_and_cmo_waterfall_conservation() {
+        let d = Date::from_ymd(2024, 1, 1).unwrap();
+        let c = FlatForwardCurve::new(d, 0.035);
+        let basket = TreasuryFuturesBasketSpec {
+            futures_price: 98.5,
+            delivery_time: 0.25,
+            repo_rate: 0.03,
+            notional_standard_yield: 0.06,
+            deliverables: vec![
+                TreasuryFutureDeliverable {
+                    clean_price: 99.2,
+                    coupon_rate: 0.06,
+                    remaining_semiannual_periods: 16,
+                    accrued_interest_spot: 0.5,
+                    accrued_interest_delivery: 1.0,
+                    interim_coupon: 0.0,
+                    yield_vol: 0.008,
+                    modified_duration: 6.5,
+                },
+                TreasuryFutureDeliverable {
+                    clean_price: 89.0,
+                    coupon_rate: 0.045,
+                    remaining_semiannual_periods: 18,
+                    accrued_interest_spot: 0.4,
+                    accrued_interest_delivery: 0.8,
+                    interim_coupon: 0.0,
+                    yield_vol: 0.008,
+                    modified_duration: 7.2,
+                },
+            ],
+        };
+        let ctd = analyze_treasury_futures_ctd(&basket);
+        assert!((ctd.bond_metrics[0].conversion_factor - 1.0).abs() < 1e-12);
+        let dirty0 =
+            basket.deliverables[0].clean_price + basket.deliverables[0].accrued_interest_spot;
+        let bnoc0 = dirty0
+            * basket.delivery_time
+            * (basket.repo_rate - ctd.bond_metrics[0].implied_repo_rate);
+        assert!((ctd.bond_metrics[0].net_basis - bnoc0).abs() < 1e-12);
+        assert!(ctd.switch_option_value > 0.0);
+        let cmo = CmoWaterfallSpec {
+            original_balance: 100.0,
+            wac: 0.055,
+            pass_through_rate: 0.05,
+            term_months: 60,
+            psa_speed: 150.0,
+            pac_collar_psa: Some((100.0, 300.0)),
+            tranches: vec![
+                CmoTrancheSpec {
+                    initial_balance: 60.0,
+                    coupon_rate: 0.045,
+                    is_pac: true,
+                },
+                CmoTrancheSpec {
+                    initial_balance: 40.0,
+                    coupon_rate: 0.045,
+                    is_pac: false,
+                },
+            ],
+        };
+        let w1 = price_cmo_waterfall(&cmo, &c, 0.0);
+        let mut cmo2 = cmo.clone();
+        cmo2.psa_speed = 250.0;
+        let w2 = price_cmo_waterfall(&cmo2, &c, 0.0);
+        assert!((w1.total_structure_pv - w1.pool_pv).abs() < 1e-10);
+        assert!((w1.tranches[0].wal - w2.tranches[0].wal).abs() < 1e-10);
+        let h = 1e-5;
+        let mut b_up = basket.clone();
+        let mut b_dn = basket.clone();
+        b_up.futures_price += h;
+        b_dn.futures_price -= h;
+        let fd = (analyze_treasury_futures_ctd(&b_up).ctd_implied_repo_rate
+            - analyze_treasury_futures_ctd(&b_dn).ctd_implied_repo_rate)
+            / (2.0 * h);
+        type D = Dual<1>;
+        let bd = TreasuryFuturesBasketSpec {
+            futures_price: D::variable(98.5, 0),
+            delivery_time: 0.25,
+            repo_rate: D::from_value(0.03),
+            notional_standard_yield: 0.06,
+            deliverables: basket
+                .deliverables
+                .iter()
+                .map(|x| TreasuryFutureDeliverable {
+                    clean_price: D::from_value(x.clean_price),
+                    coupon_rate: D::from_value(x.coupon_rate),
+                    remaining_semiannual_periods: x.remaining_semiannual_periods,
+                    accrued_interest_spot: D::from_value(x.accrued_interest_spot),
+                    accrued_interest_delivery: D::from_value(x.accrued_interest_delivery),
+                    interim_coupon: D::from_value(x.interim_coupon),
+                    yield_vol: D::from_value(x.yield_vol),
+                    modified_duration: D::from_value(x.modified_duration),
+                })
+                .collect(),
+        };
+        let ad = analyze_treasury_futures_ctd(&bd).ctd_implied_repo_rate;
+        assert!((ad.d[0] - fd).abs() < 1e-6);
     }
 }

@@ -17,7 +17,7 @@ fn phase21_suite33_and_invariants() {
     let row = with_config_override(1, 3, || {
         benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(1)
     });
-    assert!(row.max_abs_diff < 1e-4);
+    assert!(row.parity_ok && row.max_abs_diff < 1e-4);
     assert!(row.parity_ok);
 }
 

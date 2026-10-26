@@ -2003,32 +2003,59 @@ pub fn evaluate_gatheral_demeterfi_corridor_variance_and_skew<T: Real>(
     let f = s.forward.max_val(T::from_f64(1e-8));
     let t = s.maturity.max_val(T::from_f64(1e-8));
     let vol = s.atm_vol.max_val(T::from_f64(1e-8));
-    let full = vol * vol * t;
-    let uplift = (s.smile_curvature.abs() + s.atm_skew * s.atm_skew) * t * 0.5;
+    let uplift = (s.smile_curvature.abs() + s.atm_skew * s.atm_skew) * 0.5;
     let k0 = s.corridor_lower_strike.max_val(T::from_f64(1e-8));
     let k1 = s.corridor_upper_strike.max_val(k0 + T::from_f64(1e-8));
-    let mut strip = T::zero();
-    for n in 0..16 {
-        let k = (k0 + k1) / 2.0 + (k1 - k0) / 2.0 * X[n];
+    let integrate_otm_strip = |a: T, b: T| -> T {
+        let mut total = T::zero();
+        let integrate = |lo: T, hi: T, is_put: bool| -> T {
+            if hi.val() <= lo.val() {
+                return T::zero();
+            }
+            let mid = (lo + hi) / T::from_f64(2.0);
+            let half = (hi - lo) / T::from_f64(2.0);
+            let mut acc = T::zero();
+            for n in 0..16 {
+                let k = mid + half * T::from_f64(X[n]);
+                let lk = (f / k).ln();
+                let smile = (s.atm_vol
+                    + s.atm_skew * (k / f).ln()
+                    + s.smile_curvature * (k / f).ln().powf(2.0))
+                .max_val(T::from_f64(1e-6));
+                let vsqrt = smile * t.sqrt();
+                let d1 = (lk + T::from_f64(0.5) * vsqrt * vsqrt) / vsqrt;
+                let d2 = d1 - vsqrt;
+                let q = if is_put {
+                    k * (-d2).norm_cdf() - f * (-d1).norm_cdf()
+                } else {
+                    f * d1.norm_cdf() - k * d2.norm_cdf()
+                };
+                acc += T::from_f64(W[n]) * q / (k * k);
+            }
+            acc * half
+        };
+        let f_hi = b.min_val(f);
+        total += integrate(a, f_hi, true);
+        total += integrate(f.max_val(a), b, false);
+        total * T::from_f64(2.0) / t
+    };
+    let corridor_var = integrate_otm_strip(k0, k1);
+    let full_var = integrate_otm_strip(f * T::from_f64(0.25), f * T::from_f64(2.5));
+    let d2_at = |k: T| {
         let lk = (k / f).ln();
-        let smile =
+        let sv =
             (s.atm_vol + s.atm_skew * lk + s.smile_curvature * lk * lk).max_val(T::from_f64(1e-6));
-        let d = lk / (smile * t.sqrt());
-        let put = k * (-d + smile * t.sqrt()).norm_cdf() - f * (-d).norm_cdf();
-        let call = f * (d + smile * t.sqrt()).norm_cdf() - k * d.norm_cdf();
-        strip += T::from_f64(W[n] * 2.0) * (put + call) / (k * k);
-    }
-    let corridor = (k1 - k0) / 2.0 * strip / t;
-    let mid = ((k0 + k1) / 2.0 / f).ln();
-    let sd = vol * t.sqrt();
-    let occ = ((mid + sd).norm_cdf() - (mid - sd).norm_cdf())
+        ((f / k).ln() - T::from_f64(0.5) * sv * sv * t) / (sv * t.sqrt())
+    };
+    let d2_lo = d2_at(k0);
+    let d2_hi = d2_at(k1);
+    let occ = (d2_lo.norm_cdf() - d2_hi.norm_cdf())
         .max_val(T::zero())
         .min_val(T::one());
-    let corridor_var = corridor.max_val(T::zero()).min_val(full + uplift);
     let corr = (vol * vol * t) / (s.sampling_steps_n.max(1) as f64) * 0.5;
     GatheralDemeterfiCorridorVarianceSkewReport {
-        full_variance_swap_strike_var: full + uplift,
-        full_variance_swap_fair_vol: ((full + uplift) / t).sqrt(),
+        full_variance_swap_strike_var: full_var,
+        full_variance_swap_fair_vol: full_var.sqrt(),
         smile_convexity_uplift_var: uplift,
         corridor_variance_swap_strike_var: corridor_var,
         corridor_occupancy_probability: occ,
@@ -2326,22 +2353,36 @@ mod phase28_tests {
 #[cfg(test)]
 mod phase29_tests {
     use super::*;
+    use ql_ad::Dual;
     #[test]
     fn gatheral_invariants_and_dual() {
-        let mk = |x| GatheralDemeterfiCorridorVarianceSkewSpec {
-            forward: 100.0 + x,
-            maturity: 1.0,
-            atm_vol: 0.2,
-            atm_skew: -0.2,
-            smile_curvature: 0.1,
-            corridor_lower_strike: 90.0,
-            corridor_upper_strike: 110.0,
-            sampling_steps_n: 12,
-            vol_of_vol_eta: 0.5,
-            lsv_mixing_weight: 0.3,
-        };
+        fn mk<T: Real>(x: T) -> GatheralDemeterfiCorridorVarianceSkewSpec<T> {
+            GatheralDemeterfiCorridorVarianceSkewSpec {
+                forward: T::from_f64(100.0) + x,
+                maturity: T::one(),
+                atm_vol: T::from_f64(0.2),
+                atm_skew: T::from_f64(-0.2),
+                smile_curvature: T::from_f64(0.1),
+                corridor_lower_strike: T::from_f64(90.0),
+                corridor_upper_strike: T::from_f64(110.0),
+                sampling_steps_n: 12,
+                vol_of_vol_eta: T::from_f64(0.5),
+                lsv_mixing_weight: T::from_f64(0.3),
+            }
+        }
         let r = evaluate_gatheral_demeterfi_corridor_variance_and_skew(&mk(0.0));
         assert!(r.corridor_variance_swap_strike_var <= r.full_variance_swap_strike_var);
         assert!((r.gatheral_dupire_atm_local_vol_skew + 0.4).abs() < 1e-12);
+        let h = 1e-5;
+        let fd = (evaluate_gatheral_demeterfi_corridor_variance_and_skew(&mk(h))
+            .corridor_variance_swap_strike_var
+            - evaluate_gatheral_demeterfi_corridor_variance_and_skew(&mk(-h))
+                .corridor_variance_swap_strike_var)
+            / (2.0 * h);
+        let ad = evaluate_gatheral_demeterfi_corridor_variance_and_skew(&mk(Dual::<1>::variable(
+            0.0, 0,
+        )))
+        .corridor_variance_swap_strike_var;
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
     }
 }

@@ -1460,30 +1460,50 @@ pub fn solve_cartea_jaimungal_penalva_lob_fill_hjb<T: Real>(
     s: &CarteaJaimungalPenalvaLobFillHjbSpec<T>,
 ) -> CarteaJaimungalPenalvaLobFillHjbReport<T> {
     let n = s.initial_inventory + 1;
-    let mut vals = Vec::with_capacity(n);
+    let horizon = s.horizon_seconds.max_val(T::from_f64(1e-8));
+    let dt = horizon / T::from_f64(32.0);
+    let mut vals = (0..n)
+        .map(|q| -s.terminal_liquidation_penalty_alpha * T::from_f64((q * q) as f64))
+        .collect::<Vec<_>>();
+    vals[0] = T::zero();
+    let kappa = s.fill_decay_kappa.max_val(T::from_f64(1e-8));
+    for _ in 0..32 {
+        let old = vals.clone();
+        for q in 1..n {
+            let qi = T::from_f64(q as f64);
+            let diff = old[q - 1] - old[q];
+            let intensity = s.base_arrival_rate_lambda
+                * (-T::one() - kappa * s.adverse_selection_cost + kappa * diff).exp();
+            let dh = s.running_inventory_penalty_phi * qi * qi
+                - s.ofi_short_term_drift * qi
+                - intensity / kappa;
+            vals[q] = old[q] - dt * dh;
+        }
+        vals[0] = T::zero();
+    }
     let mut depths = Vec::with_capacity(n);
     let mut intens = Vec::with_capacity(n);
-    let h = s.horizon_seconds.max_val(T::from_f64(1e-8));
-    for q in 0..=s.initial_inventory {
-        let qi = T::from_f64(q as f64);
-        let depth = (T::one() + s.adverse_selection_cost)
-            / (s.fill_decay_kappa.max_val(T::from_f64(1e-8))
-                * (T::one() + s.running_inventory_penalty_phi * qi));
-        let lam = s.base_arrival_rate_lambda * (-s.fill_decay_kappa * depth).exp();
-        let value = -(s.running_inventory_penalty_phi * qi * qi * h / 2.0)
-            - s.terminal_liquidation_penalty_alpha * qi * qi * (-lam * h).exp();
-        depths.push(depth);
-        intens.push(lam);
-        vals.push(value);
+    let smooth_max =
+        |a: T, b: T| (a + b + ((a - b) * (a - b) + T::from_f64(1e-8)).sqrt()) / T::from_f64(2.0);
+    for q in 0..n {
+        if q == 0 {
+            depths.push(T::zero());
+            intens.push(s.base_arrival_rate_lambda);
+        } else {
+            let raw_delta = T::one() / kappa + s.adverse_selection_cost + vals[q] - vals[q - 1];
+            let delta = smooth_max(raw_delta, T::from_f64(1e-4));
+            depths.push(delta);
+            intens.push(s.base_arrival_rate_lambda * (-kappa * delta).exp());
+        }
     }
     let expected = T::from_f64(s.initial_inventory as f64)
-        * (-intens.last().copied().unwrap_or(T::zero()) * h).exp();
+        * (-intens.last().copied().unwrap_or(T::zero()) * horizon).exp();
     CarteaJaimungalPenalvaLobFillHjbReport {
         hjb_value_functions_by_q: vals,
         optimal_limit_depths_by_q: depths,
         optimal_fill_intensities_by_q: intens,
         expected_terminal_inventory: expected,
-        limit_vs_market_order_pickup: s.base_arrival_rate_lambda * h,
+        limit_vs_market_order_pickup: s.base_arrival_rate_lambda * horizon,
         ofi_alpha_reservation_shift: s.ofi_short_term_drift - s.adverse_selection_cost,
     }
 }
@@ -2056,19 +2076,31 @@ mod phase28_tests {
 #[cfg(test)]
 mod phase29_tests {
     use super::*;
+    use ql_ad::Dual;
     #[test]
     fn lob_invariants_and_dual() {
-        let mk = |x| CarteaJaimungalPenalvaLobFillHjbSpec {
-            initial_inventory: 10,
-            horizon_seconds: x,
-            base_arrival_rate_lambda: 0.5,
-            fill_decay_kappa: 1.0,
-            running_inventory_penalty_phi: 0.01,
-            terminal_liquidation_penalty_alpha: 0.1,
-            ofi_short_term_drift: 0.02,
-            adverse_selection_cost: 0.01,
-        };
+        fn mk<T: Real>(x: T) -> CarteaJaimungalPenalvaLobFillHjbSpec<T> {
+            CarteaJaimungalPenalvaLobFillHjbSpec {
+                initial_inventory: 10,
+                horizon_seconds: x,
+                base_arrival_rate_lambda: T::from_f64(0.5),
+                fill_decay_kappa: T::one(),
+                running_inventory_penalty_phi: T::from_f64(0.01),
+                terminal_liquidation_penalty_alpha: T::from_f64(0.1),
+                ofi_short_term_drift: T::from_f64(0.02),
+                adverse_selection_cost: T::from_f64(0.01),
+            }
+        }
         let r = solve_cartea_jaimungal_penalva_lob_fill_hjb(&mk(60.0));
         assert!(r.optimal_limit_depths_by_q[1] > r.optimal_limit_depths_by_q[10]);
+        let h = 1e-5;
+        let fd = (solve_cartea_jaimungal_penalva_lob_fill_hjb(&mk(60.0 + h))
+            .optimal_limit_depths_by_q[1]
+            - solve_cartea_jaimungal_penalva_lob_fill_hjb(&mk(60.0 - h)).optimal_limit_depths_by_q
+                [1])
+            / (2.0 * h);
+        let ad = solve_cartea_jaimungal_penalva_lob_fill_hjb(&mk(Dual::<1>::variable(60.0, 0)))
+            .optimal_limit_depths_by_q[1];
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
     }
 }

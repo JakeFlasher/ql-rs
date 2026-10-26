@@ -397,11 +397,27 @@ pub fn evaluate_bcbs_d424_output_floor_and_sma_op_risk<T: Real>(
     s: &BcbsD424OutputFloorAndSmaOpRiskSpec<T>,
 ) -> BcbsD424OutputFloorAndSmaOpRiskReport<T> {
     let bi = s.interest_lease_dividend_component + s.services_component + s.financial_component;
-    let bic = bi * 0.12;
-    let loss_cap = s.average_annual_operational_loss * 15.0;
-    let ilm = (loss_cap / bic.max_val(T::from_f64(1e-10)))
-        .max_val(T::from_f64(0.8))
-        .min_val(T::from_f64(1.2));
+    let smooth_min = |a: T, b: T| {
+        if (a - b).val().abs() > 1e-4 {
+            a.min_val(b)
+        } else {
+            (a + b - ((a - b) * (a - b) + T::from_f64(1e-8)).sqrt()) / T::from_f64(2.0)
+        }
+    };
+    let smooth_max = |a: T, b: T| {
+        if (a - b).val().abs() > 1e-4 {
+            a.max_val(b)
+        } else {
+            (a + b + ((a - b) * (a - b) + T::from_f64(1e-8)).sqrt()) / T::from_f64(2.0)
+        }
+    };
+    let b1 = smooth_min(bi, T::one());
+    let b2 = smooth_min(smooth_max(bi - T::one(), T::zero()), T::from_f64(29.0));
+    let b3 = smooth_max(bi - T::from_f64(30.0), T::zero());
+    let bic = b1 * T::from_f64(0.12) + b2 * T::from_f64(0.15) + b3 * T::from_f64(0.18);
+    let loss_cap = s.average_annual_operational_loss * T::from_f64(15.0);
+    let ratio = (loss_cap / bic.max_val(T::from_f64(1e-10))).max_val(T::from_f64(1e-10));
+    let ilm = (T::from_f64(std::f64::consts::E - 1.0) + ratio.powf(0.8)).ln();
     let capital = bic * ilm;
     let op_rwa = capital * 12.5;
     let unfloored = s.irb_credit_rwa + s.ima_market_rwa + op_rwa;
@@ -420,7 +436,9 @@ pub fn evaluate_bcbs_d424_output_floor_and_sma_op_risk<T: Real>(
         floored_total_rwa: floored,
         output_floor_rwa_add_on: (floored - unfloored).max_val(T::zero()),
         floored_cet1_ratio: s.cet1_capital / floored.max_val(T::from_f64(1e-10)),
-        tlac_to_floored_rwa_ratio: (s.at1_and_tier2_capital + s.eligible_tlac_senior_debt)
+        tlac_to_floored_rwa_ratio: (s.cet1_capital
+            + s.at1_and_tier2_capital
+            + s.eligible_tlac_senior_debt)
             / floored.max_val(T::from_f64(1e-10)),
     }
 }
@@ -428,24 +446,38 @@ pub fn evaluate_bcbs_d424_output_floor_and_sma_op_risk<T: Real>(
 #[cfg(test)]
 mod phase29_tests {
     use super::*;
+    use ql_ad::Dual;
     #[test]
     fn bcbs_invariants_and_dual() {
-        let mk = |x| BcbsD424OutputFloorAndSmaOpRiskSpec {
-            irb_credit_rwa: 100.0 + x,
-            ima_market_rwa: 50.0,
-            standardized_credit_rwa: 120.0,
-            standardized_market_rwa: 60.0,
-            standardized_cva_rwa: 20.0,
-            output_floor_multiplier: 0.725,
-            interest_lease_dividend_component: 20.0,
-            services_component: 15.0,
-            financial_component: 30.0,
-            average_annual_operational_loss: 2.0,
-            cet1_capital: 20.0,
-            at1_and_tier2_capital: 10.0,
-            eligible_tlac_senior_debt: 40.0,
-        };
+        fn mk<T: Real>(x: T) -> BcbsD424OutputFloorAndSmaOpRiskSpec<T> {
+            BcbsD424OutputFloorAndSmaOpRiskSpec {
+                irb_credit_rwa: T::from_f64(100.0) + x,
+                ima_market_rwa: T::from_f64(50.0),
+                standardized_credit_rwa: T::from_f64(120.0),
+                standardized_market_rwa: T::from_f64(60.0),
+                standardized_cva_rwa: T::from_f64(20.0),
+                output_floor_multiplier: T::from_f64(0.725),
+                interest_lease_dividend_component: T::from_f64(20.0),
+                services_component: T::from_f64(15.0),
+                financial_component: T::from_f64(30.0),
+                average_annual_operational_loss: T::from_f64(2.0),
+                cet1_capital: T::from_f64(20.0),
+                at1_and_tier2_capital: T::from_f64(10.0),
+                eligible_tlac_senior_debt: T::from_f64(40.0),
+            }
+        }
         let r = evaluate_bcbs_d424_output_floor_and_sma_op_risk(&mk(0.0));
         assert!(r.floored_total_rwa >= r.unfloored_total_rwa);
+        let h = 1e-5;
+        let fd = (evaluate_bcbs_d424_output_floor_and_sma_op_risk(&mk(h)).unfloored_total_rwa
+            - evaluate_bcbs_d424_output_floor_and_sma_op_risk(&mk(-h)).unfloored_total_rwa)
+            / (2.0 * h);
+        let ad = evaluate_bcbs_d424_output_floor_and_sma_op_risk(&mk(Dual::<1>::variable(0.0, 0)))
+            .unfloored_total_rwa;
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
+        let mut ilms = mk(0.0);
+        ilms.average_annual_operational_loss = 10.77 / 15.0;
+        let r0 = evaluate_bcbs_d424_output_floor_and_sma_op_risk(&ilms);
+        assert!((r0.internal_loss_multiplier_ilm - 1.0).abs() < 1e-12);
     }
 }

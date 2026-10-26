@@ -1597,12 +1597,15 @@ pub fn compute_lando_israel_generator_logarithm_and_migration<T: Real>(
     }
     let mut reg = [[T::zero(); 3]; 3];
     let mut repaired = T::zero();
+    let smooth_max = |a: T, b: T, eps: f64| {
+        (a + b + ((a - b) * (a - b) + T::from_f64(eps * eps)).sqrt()) / T::from_f64(2.0)
+    };
     for i in 0..3 {
         let mut row = T::zero();
         for j in 0..3 {
             if i != j {
-                let v = raw[i][j].max_val(T::zero());
-                repaired += (T::zero() - raw[i][j]).max_val(T::zero());
+                let v = smooth_max(raw[i][j], T::zero(), 1e-6);
+                repaired += smooth_max(T::zero() - raw[i][j], T::zero(), 1e-6);
                 reg[i][j] = v;
                 row += v;
             }
@@ -1620,8 +1623,13 @@ pub fn compute_lando_israel_generator_logarithm_and_migration<T: Real>(
     let frac = lando_exp3(&reg, s.fractional_horizon_years);
     let igpd = frac[0][2].max_val(T::zero());
     let hypd = frac[1][2].max_val(T::zero());
-    let spread = (-reg[0][0]) * (T::one() - s.recovery_rate).max_val(T::zero()) * 10000.0
-        + s.risk_free_rate * 10000.0;
+    let tau = s.fractional_horizon_years.max_val(T::from_f64(1e-6));
+    let cum_pd = frac[0][2]
+        .min_val(T::from_f64(0.999999))
+        .max_val(T::from_f64(1e-12));
+    let lgd = T::one() - s.recovery_rate;
+    let risky_annuity_adj = T::one() + s.risk_free_rate * tau * T::from_f64(0.5);
+    let spread = -(T::one() - lgd * cum_pd).ln() / tau * risky_annuity_adj * T::from_f64(10000.0);
     LandoIsraelGeneratorLogarithmReport {
         raw_generator_matrix: raw,
         regularized_generator_matrix: reg,
@@ -2033,18 +2041,37 @@ mod phase28_tests {
 #[cfg(test)]
 mod phase29_tests {
     use super::*;
+    use ql_ad::Dual;
     #[test]
     fn lando_invariants_and_dual() {
-        let mk = |x| LandoIsraelGeneratorLogarithmSpec {
-            transition_matrix_3x3: [[0.9, 0.08, 0.02], [0.03, 0.92, 0.05], [0.0, 0.0, 1.0]],
-            series_order_k: 12,
-            fractional_horizon_years: x,
-            recovery_rate: 0.4,
-            risk_free_rate: 0.03,
-        };
+        fn mk<T: Real>(x: T) -> LandoIsraelGeneratorLogarithmSpec<T> {
+            LandoIsraelGeneratorLogarithmSpec {
+                transition_matrix_3x3: [
+                    [T::from_f64(0.9), T::from_f64(0.08), T::from_f64(0.02)],
+                    [T::from_f64(0.03), T::from_f64(0.92), T::from_f64(0.05)],
+                    [T::zero(), T::zero(), T::one()],
+                ],
+                series_order_k: 12,
+                fractional_horizon_years: x,
+                recovery_rate: T::from_f64(0.4),
+                risk_free_rate: T::from_f64(0.03),
+            }
+        }
         let r = compute_lando_israel_generator_logarithm_and_migration(&mk(0.5));
         for row in r.fractional_transition_matrix {
             assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-10);
         }
+        assert!(r.generator_row_sum_max_error < 1e-12);
+        let h = 1e-5;
+        let fd = (compute_lando_israel_generator_logarithm_and_migration(&mk(0.5 + h))
+            .migration_adjusted_ig_spread_bps
+            - compute_lando_israel_generator_logarithm_and_migration(&mk(0.5 - h))
+                .migration_adjusted_ig_spread_bps)
+            / (2.0 * h);
+        let ad = compute_lando_israel_generator_logarithm_and_migration(&mk(Dual::<1>::variable(
+            0.5, 0,
+        )))
+        .migration_adjusted_ig_spread_bps;
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
     }
 }

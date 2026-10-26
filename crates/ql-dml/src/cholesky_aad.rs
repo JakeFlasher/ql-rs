@@ -994,14 +994,39 @@ pub fn evaluate_glasserman_saddlepoint_is_and_stratified_lhs_aad<T: Real>(
     let t = s.maturity.max_val(T::from_f64(1e-8));
     let v = s.volatility.max_val(T::from_f64(1e-8));
     let bs = glasserman_bs(s.spot, s.deep_otm_strike, s.risk_free_rate, v, t);
-    let d = (s.deep_otm_strike / s.spot).ln();
-    let theta = (d / (v * v * t)).max_val(T::zero());
-    let isvar = (bs * bs + T::from_f64(1e-12)) / (T::one() + theta.abs());
-    let naive = (bs * bs + s.spot * s.spot * v * v * t).max_val(T::from_f64(1e-12));
-    let is_price = bs * (T::one() + theta * T::from_f64(1e-12));
-    let rf = (naive / isvar).max_val(T::one() + T::from_f64(1e-6));
-    let lhs = (s.num_strata.max(1) as f64).sqrt().max(1.1);
     let st = t.sqrt();
+    let z0 = ((s.deep_otm_strike / s.spot).ln()
+        - (s.risk_free_rate - T::from_f64(0.5) * v * v) * t)
+        / (v * st);
+    let theta =
+        (z0 + (z0 * z0 + T::from_f64(4.0)).sqrt()) / T::from_f64(2.0) + T::from_f64(0.5) * v * st;
+    let m = s.num_strata.max(8);
+    let dz = T::from_f64(8.0 / m as f64);
+    let disc = (-s.risk_free_rate * t).exp();
+    let phi =
+        |z: T| (-T::from_f64(0.5) * z * z).exp() / T::from_f64((2.0 * std::f64::consts::PI).sqrt());
+    let mut is_price = T::zero();
+    let mut is_second = T::zero();
+    let mut naive_second = T::zero();
+    for j in 0..m {
+        let a = z0 + dz * T::from_f64(j as f64);
+        let b = a + dz;
+        let mid = (a + b) / T::from_f64(2.0);
+        let half = dz / T::from_f64(2.0);
+        for sign in [-1.0_f64, 1.0_f64] {
+            let z = mid + half * T::from_f64(sign / 3.0_f64.sqrt());
+            let st_z =
+                s.spot * ((s.risk_free_rate - T::from_f64(0.5) * v * v) * t + v * st * z).exp();
+            let payoff = (st_z - s.deep_otm_strike).max_val(T::zero());
+            let l = (-theta * z + T::from_f64(0.5) * theta * theta).exp();
+            is_price += half * disc * payoff * phi(z);
+            is_second += half * disc * disc * payoff * payoff * l * phi(z);
+            naive_second += half * disc * disc * payoff * payoff * phi(z);
+        }
+    }
+    let rf =
+        (naive_second - bs * bs) / (is_second - is_price * is_price).max_val(T::from_f64(1e-12));
+    let lhs = T::from_f64((m as f64).sqrt().max(1.1));
     let d1 = ((s.spot / s.deep_otm_strike).ln() + (s.risk_free_rate + v * v / 2.0) * t) / (v * st);
     let delta = d1.norm_cdf();
     let vega = s.spot * st * d1.norm_pdf();
@@ -1010,36 +1035,12 @@ pub fn evaluate_glasserman_saddlepoint_is_and_stratified_lhs_aad<T: Real>(
         importance_sampled_call_price: is_price,
         analytical_bs_call_price: bs,
         is_price_abs_error: (is_price - bs).abs(),
-        is_second_moment: isvar,
-        naive_mc_second_moment: naive,
+        is_second_moment: is_second,
+        naive_mc_second_moment: naive_second,
         is_variance_reduction_factor: rf,
-        stratified_lhs_variance_reduction_factor: T::from_f64(lhs),
+        stratified_lhs_variance_reduction_factor: lhs,
         is_pathwise_delta: delta,
         is_likelihood_ratio_vega: vega,
-    }
-}
-
-#[cfg(test)]
-mod phase21_tests {
-    use super::*;
-
-    #[test]
-    fn checkpointed_reverse_matches_full_tape() {
-        let s = GlassermanMalliavinCheckpointedMcSpec {
-            spot: 100.0,
-            strike: 100.0,
-            rate: 0.03,
-            div_yield: 0.0,
-            base_vol: 0.2,
-            local_vol_skew: 0.1,
-            expiry: 1.0,
-            num_steps: 16,
-            num_checkpoints: 4,
-        };
-        let r = evaluate_glasserman_malliavin_checkpointed_aad(&s);
-        assert!(r.call_price.val() >= 0.0);
-        assert!(r.checkpoint_vs_full_tape_max_error.val() < 1e-14);
-        assert!(r.peak_memory_states_saved_ratio > 1.0);
     }
 }
 
@@ -1364,21 +1365,59 @@ mod phase26_tests {
 #[cfg(test)]
 mod phase29_tests {
     use super::*;
+    use ql_ad::Dual;
     #[test]
     fn glasserman_invariants_and_dual() {
-        let mk = |x| GlassermanSaddlepointIsStratifiedLhsSpec {
-            spot: x,
-            deep_otm_strike: 130.0,
-            risk_free_rate: 0.03,
-            volatility: 0.2,
-            maturity: 1.0,
-            num_strata: 16,
-        };
+        fn mk<T: Real>(x: T) -> GlassermanSaddlepointIsStratifiedLhsSpec<T> {
+            GlassermanSaddlepointIsStratifiedLhsSpec {
+                spot: x,
+                deep_otm_strike: T::from_f64(130.0),
+                risk_free_rate: T::from_f64(0.03),
+                volatility: T::from_f64(0.2),
+                maturity: T::one(),
+                num_strata: 16,
+            }
+        }
         let r = evaluate_glasserman_saddlepoint_is_and_stratified_lhs_aad(&mk(100.0));
         assert!(
             r.is_price_abs_error < 1e-3
                 && r.is_variance_reduction_factor > 1.0
                 && r.stratified_lhs_variance_reduction_factor > 1.0
         );
+        let h = 1e-5;
+        let fd = (evaluate_glasserman_saddlepoint_is_and_stratified_lhs_aad(&mk(100.0 + h))
+            .importance_sampled_call_price
+            - evaluate_glasserman_saddlepoint_is_and_stratified_lhs_aad(&mk(100.0 - h))
+                .importance_sampled_call_price)
+            / (2.0 * h);
+        let ad = evaluate_glasserman_saddlepoint_is_and_stratified_lhs_aad(&mk(
+            Dual::<1>::variable(100.0, 0),
+        ))
+        .importance_sampled_call_price;
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase21_tests {
+    use super::*;
+
+    #[test]
+    fn checkpointed_reverse_matches_full_tape() {
+        let s = GlassermanMalliavinCheckpointedMcSpec {
+            spot: 100.0,
+            strike: 100.0,
+            rate: 0.03,
+            div_yield: 0.0,
+            base_vol: 0.2,
+            local_vol_skew: 0.1,
+            expiry: 1.0,
+            num_steps: 16,
+            num_checkpoints: 4,
+        };
+        let r = evaluate_glasserman_malliavin_checkpointed_aad(&s);
+        assert!(r.call_price.val() >= 0.0);
+        assert!(r.checkpoint_vs_full_tape_max_error.val() < 1e-14);
+        assert!(r.peak_memory_states_saved_ratio > 1.0);
     }
 }

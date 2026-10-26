@@ -2,46 +2,46 @@
 
 | Benchmark ID | Architectural Comparison | Legacy Baseline (ns/op) | ql-rs SOTA (ns/op) | Speedup (x) | Parity Diff |
 |---|---|---:|---:|---:|---:|
-| 01_calendar_popcnt | day-by-day holidays vs. packed POPCNT calendar | 474938.20 (IQR 489367.00) | 18453.00 (IQR 5428.60) | 25.74x | 0.000e0 |
-| 02_leg_simd_soa | boxed AoS virtual dispatch vs. contiguous SIMD SoA | 183074.20 (IQR 24027.00) | 11289.60 (IQR 134.60) | 16.22x | 1.490e-7 |
-| 03_multicurve_ift_dv01 | 12 bump-and-rebootstrap valuations vs. cached IFT VJP | 758328.00 (IQR 676092.20) | 8681.40 (IQR 919.60) | 87.35x | 5.797e-5 |
-| 04_implied_vol_ift_dual2 | nine Jäckel finite-difference solves vs. one Dual2 IFT solve | 137953.40 (IQR 28893.80) | 35141.80 (IQR 3208.00) | 3.93x | 1.350e-5 |
-| 05_heston_cos_dual5 | ten central COS valuations vs. one Dual5 COS valuation | 1915313.20 (IQR 13676.00) | 648495.40 (IQR 1043.60) | 2.95x | 2.821e-4 |
-| 06_gbm_mc_simd8 | scalar Philox path loop vs. 8-lane antithetic GBM | 426783.80 (IQR 8887.00) | 149124.80 (IQR 244.40) | 2.86x | 7.393e-11 |
-| 07_scripted_autocall_fuzzy_aad | nine bumped scripted MC runs vs. one four-input fuzzy-AAD run | 806542.40 (IQR 6986.40) | 197525.60 (IQR 4885.40) | 4.08x | 2.914e-5 |
-| 08_portfolio_dag_incremental | full bootstrap/revaluation vs. content-addressed incremental DAG | 2996492.60 (IQR 219969.20) | 295714.80 (IQR 78185.00) | 10.13x | 0.000e0 |
-| 09_credit_cds_ift_cs01 | ten bump-and-rebootstrap CDS strips vs. cached hazard IFT CS01 | 385082.60 (IQR 438.60) | 17223.00 (IQR 658.40) | 22.36x | 7.626e-10 |
-| 10_fx_vanna_volga_dual3 | seven scalar FX smile quote bumps vs. one Dual3 smile pass | 62201.40 (IQR 231.40) | 21733.80 (IQR 51.20) | 2.86x | 7.653e-7 |
-| 11_capriotti_giles_cholesky_corr_aad | 66 correlation bumps vs. one adjoint Cholesky pass | 19397238.60 (IQR 73700.40) | 209023.40 (IQR 13650.00) | 92.80x | 8.326e-9 |
-| 12_chebyshev_dynamic_simm_mva | brute-force dynamic margin vs. Chebyshev model-space margin | 1805604.20 (IQR 49643.00) | 217482.40 (IQR 3785.60) | 8.30x | 9.006e-10 |
-| 13_reiner_rubinstein_barrier_dual5 | six finite-difference barrier bumps vs. one Dual5 analytical pass | 35617.40 (IQR 2250.60) | 10934.60 (IQR 478.20) | 3.26x | 1.854e-7 |
-| 14_burley_owen_rqmc_variance_reduction | pseudo-random Asian paths vs. Burley--Owen Sobol Brownian-bridge RQMC | 13289580.40 (IQR 240043.00) | 1177184.60 (IQR 12172.80) | 11.29x | 2.719e-3 |
-| 15_levy_cos_vg_dual5 | finite-difference VG COS strip Greeks vs. one Dual5 COS pass | 537094.00 (IQR 10178.80) | 126956.20 (IQR 1712.60) | 4.23x | 4.346e-7 |
-| 16_asb_cdo_tranche_recursion_dual | eleven ASB loss recursions vs. one Dual5 tranche pass | 203348.20 (IQR 3629.80) | 53788.80 (IQR 3388.20) | 3.78x | 2.850e-10 |
-| 17_rfr_sabr_caplet_strip_dual4 | scalar RFR SABR strip bumps vs Dual4 effective-SABR strip | 28499.40 (IQR 667.00) | 5898.60 (IQR 184.60) | 4.83x | 8.401e-9 |
-| 18_xccs_multicurrency_ift_dv01 | XCCS bump/bootstrap versus cached IFT basis risk | 1900772.00 (IQR 16652.00) | 11479.80 (IQR 443.60) | 165.58x | 4.775e-9 |
-| 19_american_baw_ju_ift_dual5 | Ju/BAW scalar bumps versus one IFT Dual5 American pass | 511181.80 (IQR 8724.40) | 54188.20 (IQR 432.60) | 9.43x | 5.363e-8 |
-| 20_risk_parity_ift_allocation_aad | ninety covariance/budget bumps versus one IFT risk-parity solve | 7523595.00 (IQR 306894.80) | 150494.20 (IQR 3211.40) | 49.99x | 4.402e-9 |
-| 21_bermudan_hw1f_tree_ift_dv01 | Bermudan Hull--White tree quote and parameter finite differences versus AD | 548670.80 (IQR 1621.00) | 261143.20 (IQR 2463.60) | 2.10x | 2.140e-9 |
-| 22_sabr_svi_ift_and_qp_kkt_aad | SABR quote recalibration and constrained Markowitz finite differences versus IFT/KKT AD | 520367.40 (IQR 7457.00) | 8183.80 (IQR 979.80) | 63.59x | 2.947e-7 |
-| 23_slv_rbergomi_and_autocallable_cega_aad | SLV/rBergomi and worst-of autocallable sensitivities | 899665.60 (IQR 22742.20) | 147380.80 (IQR 3055.00) | 6.10x | 2.027e-6 |
-| 24_frtb_sbm_ima_and_cvar_execution_aad | FRTB/CVaR and optimal execution KKT sensitivities | 6597.00 (IQR 371.60) | 1348.20 (IQR 121.40) | 4.89x | 3.105e-7 |
-| 25_monotone_convex_vix_parisian_robust_aad | monotone-convex curve plus VIX/Parisian and robust Markowitz AD | 306667.40 (IQR 740.20) | 46886.80 (IQR 1614.00) | 6.54x | 1.502e-7 |
-| 26_double_heston_tarf_coco_hrp_aad | Double Heston/TARF/CoCo/HRP single-pass AD | 326667.40 (IQR 184.20) | 69407.60 (IQR 5721.20) | 4.71x | 1.206e-5 |
-| 27_jy_inflation_tba_bergomi_nco_aad | JY-Inflation/TBA-Roll/Bergomi2F/NCO single-pass AD | 131382.60 (IQR 830.40) | 62266.40 (IQR 1910.00) | 2.11x | 1.614e-7 |
-| 28_cheyette_cmo_qrh_basecorr_cdar_aad | Cheyette/CMO/QRH/BaseCorr/EVaR single-pass AD | 3749798.60 (IQR 3925.60) | 430301.20 (IQR 3216.60) | 8.71x | 2.529e-9 |
-| 29_asw_mf1f_ah_bess_ep_aad | ASW-Z/MF1F/AH-LV/BESS/Idzorek-DP single-pass AD | 85815.40 (IQR 2432.40) | 16704.00 (IQR 1171.00) | 5.14x | 1.679e-9 |
-| 30_mtmxccs_colva_zabr_pdv_weather_enb_aad | MtM-XCCS/CTD-COLVA/ZABR-PDV/Weather/ENB single-pass AD | 353395.00 (IQR 2814.20) | 42793.60 (IQR 438.20) | 8.26x | 2.986e-9 |
-| 31_burnout_cmcds_quintic_afv_cs_schur_aad | Burnout-MBS/CMCDS/Quintic-OU/AFV-CB/CS-Swaption/Schur-HRP AD | 973801.20 (IQR 11813.20) | 138255.00 (IQR 5197.80) | 7.04x | 3.734e-9 |
-| 32_sinhou_mb_rbergomi_choi_afs_expectile_aad | SinhOU/BK-FRN/MoriniBrigo/WWM/mrBergomi/Choi/AFS/EXVaR single-pass AD | 1657821.00 (IQR 26807.60) | 225507.20 (IQR 1673.40) | 7.35x | 1.505e-8 |
-| 33_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad | Phase21 institutional 12-engine AAD vs FD | 479141.00 (IQR 351.40) | 74864.80 (IQR 1657.00) | 6.40x | 6.899e-9 |
-| 34_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad | Phase22 KRD/LPI/CoCo/Bergomi/CGMY/Guéant/Meucci/AAD | 2553658.40 (IQR 9134.80) | 666176.20 (IQR 5685.00) | 3.83x | 1.979e-9 |
-| 35_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml | Phase23 RKHS/FMM/VV/LSV/JLT/CTD/QRH/Parisian/Aïd/Propagator/NCO/DML | 93734.00 (IQR 600.60) | 25611.60 (IQR 3599.80) | 3.66x | 1.167e-9 |
-| 36_mbs_io_po_rmv_mo_xva_dilution_sig_garch_pot_rie_pin_gp_brinson_ierp | MBS-IO/PO / RMV-Basis / MO-XVA / Dilution-CB / Sig / HN-DCC-GARCH / POT-GPD / RIE / PIN / GP-Aim / Brinson-Carino / IFT-IERP AD | 1346057.60 (IQR 8605.20) | 156660.80 (IQR 1533.40) | 8.59x | 2.234e-7 |
-| 37_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin | Phase25 Kalman/RTS/VECM/HJ-SDF/IFRS9/CPT/Hasbrouck/FV/Lando/LPPL/CB-Arb/Causal/Malliavin | 136169.00 (IQR 163.80) | 16530.20 (IQR 1709.60) | 8.24x | 8.967e-6 |
-| 38_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_frtb_cva_lookback_vta_flam_acd_hlz_mlmc | Phase26 MF-Rates/Wildcard/CTD/Pivot-TARF/Bergomi/Schönbucher/FRTB-CVA/Lookback/VTA/FLAM/ACD/HLZ/MLMC | 1105841.60 (IQR 3733.60) | 47897.40 (IQR 1076.00) | 23.09x | 4.996e-9 |
-| 39_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt | Phase27 SOTA FTPL/G2/eSSVI/Offshore-CB/CoCo/MPOR/Double-Heston/Curran/Warin/Roll-Corwin/Busseti-Kelly/Diff-QP | 658880.20 (IQR 2968.40) | 36847.20 (IQR 2655.40) | 17.88x | 4.423e-10 |
-| 40_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_zeron_simm_jacquier_rbergomi_choi_spread_bess_sdp_kratz_dark_follmer_diag_diff_pca | Phase28 BCBS/IRRBB/Turfus-RFR/Baran-MtM/Bourgey-BG/FEDS-PONV/Zeron-SIMM/Jacquier-rBergomi/Choi-Spread/BESS-SDP/Kratz-Dark/Föllmer/Diff-PCA | 269642.40 (IQR 641.00) | 29391.20 (IQR 3427.60) | 9.17x | 1.803e-9 |
-| 41_veronesi_conv_lando_gen_gatheral_corridor_russian_stop_bates_svj_koziol_cb_mckean_mfg_bcbs_floor_cjp_lob_madhavan_etf_qian_ic_glasserman_is | Phase29 Veronesi/Lando/Gatheral/Russian/Bates/Koziol/MFG/BCBS/CJP/ETF/Qian/Glasserman | 28421.40 (IQR 117.80) | 3942.00 (IQR 196.60) | 7.21x | 9.818e-11 |
+| 01_calendar_popcnt | day-by-day holidays vs. packed POPCNT calendar | 225010.80 (IQR 52666.00) | 3047.60 (IQR 105.60) | 73.83x | 0.000e0 |
+| 02_leg_simd_soa | boxed AoS virtual dispatch vs. contiguous SIMD SoA | 35841.20 (IQR 5963.60) | 2157.00 (IQR 27.60) | 16.62x | 1.490e-7 |
+| 03_multicurve_ift_dv01 | 12 bump-and-rebootstrap valuations vs. cached IFT VJP | 254393.00 (IQR 1254.40) | 4785.80 (IQR 396.80) | 53.16x | 5.797e-5 |
+| 04_implied_vol_ift_dual2 | nine Jäckel finite-difference solves vs. one Dual2 IFT solve | 95871.80 (IQR 472.80) | 30825.20 (IQR 374.20) | 3.11x | 1.350e-5 |
+| 05_heston_cos_dual5 | ten central COS valuations vs. one Dual5 COS valuation | 1989324.40 (IQR 2432.60) | 723330.00 (IQR 10720.40) | 2.75x | 2.821e-4 |
+| 06_gbm_mc_simd8 | scalar Philox path loop vs. 8-lane antithetic GBM | 434107.80 (IQR 8274.20) | 151860.20 (IQR 643.60) | 2.86x | 7.393e-11 |
+| 07_scripted_autocall_fuzzy_aad | nine bumped scripted MC runs vs. one four-input fuzzy-AAD run | 802995.60 (IQR 2475.80) | 196382.60 (IQR 3631.80) | 4.09x | 2.914e-5 |
+| 08_portfolio_dag_incremental | full bootstrap/revaluation vs. content-addressed incremental DAG | 2956301.80 (IQR 59692.00) | 381453.40 (IQR 63766.40) | 7.75x | 0.000e0 |
+| 09_credit_cds_ift_cs01 | ten bump-and-rebootstrap CDS strips vs. cached hazard IFT CS01 | 384297.80 (IQR 212.80) | 17095.40 (IQR 597.40) | 22.48x | 7.626e-10 |
+| 10_fx_vanna_volga_dual3 | seven scalar FX smile quote bumps vs. one Dual3 smile pass | 61957.80 (IQR 141.40) | 21588.20 (IQR 88.40) | 2.87x | 7.653e-7 |
+| 11_capriotti_giles_cholesky_corr_aad | 66 correlation bumps vs. one adjoint Cholesky pass | 19456574.80 (IQR 89360.80) | 206933.80 (IQR 9953.00) | 94.02x | 8.326e-9 |
+| 12_chebyshev_dynamic_simm_mva | brute-force dynamic margin vs. Chebyshev model-space margin | 1767855.60 (IQR 11031.20) | 214119.80 (IQR 3296.80) | 8.26x | 9.006e-10 |
+| 13_reiner_rubinstein_barrier_dual5 | six finite-difference barrier bumps vs. one Dual5 analytical pass | 37136.00 (IQR 2636.80) | 13220.60 (IQR 1010.80) | 2.81x | 1.854e-7 |
+| 14_burley_owen_rqmc_variance_reduction | pseudo-random Asian paths vs. Burley--Owen Sobol Brownian-bridge RQMC | 13547328.40 (IQR 35440.00) | 1193659.00 (IQR 2037.40) | 11.35x | 2.719e-3 |
+| 15_levy_cos_vg_dual5 | finite-difference VG COS strip Greeks vs. one Dual5 COS pass | 546662.00 (IQR 681.40) | 128348.60 (IQR 1054.80) | 4.26x | 4.346e-7 |
+| 16_asb_cdo_tranche_recursion_dual | eleven ASB loss recursions vs. one Dual5 tranche pass | 206626.00 (IQR 386.00) | 53799.40 (IQR 1148.60) | 3.84x | 2.850e-10 |
+| 17_rfr_sabr_caplet_strip_dual4 | scalar RFR SABR strip bumps vs Dual4 effective-SABR strip | 29061.60 (IQR 332.20) | 6010.20 (IQR 217.80) | 4.84x | 8.401e-9 |
+| 18_xccs_multicurrency_ift_dv01 | XCCS bump/bootstrap versus cached IFT basis risk | 1920283.60 (IQR 1094.60) | 11731.80 (IQR 325.80) | 163.68x | 4.775e-9 |
+| 19_american_baw_ju_ift_dual5 | Ju/BAW scalar bumps versus one IFT Dual5 American pass | 525262.00 (IQR 740.80) | 56674.00 (IQR 424.60) | 9.27x | 5.363e-8 |
+| 20_risk_parity_ift_allocation_aad | ninety covariance/budget bumps versus one IFT risk-parity solve | 6964294.40 (IQR 117014.60) | 147183.20 (IQR 3314.40) | 47.32x | 4.402e-9 |
+| 21_bermudan_hw1f_tree_ift_dv01 | Bermudan Hull--White tree quote and parameter finite differences versus AD | 534108.20 (IQR 2525.80) | 258823.60 (IQR 1112.00) | 2.06x | 2.140e-9 |
+| 22_sabr_svi_ift_and_qp_kkt_aad | SABR quote recalibration and constrained Markowitz finite differences versus IFT/KKT AD | 508383.40 (IQR 9184.20) | 7847.80 (IQR 1072.80) | 64.78x | 2.947e-7 |
+| 23_slv_rbergomi_and_autocallable_cega_aad | SLV/rBergomi and worst-of autocallable sensitivities | 796009.20 (IQR 10568.60) | 134165.60 (IQR 3887.60) | 5.93x | 2.027e-6 |
+| 24_frtb_sbm_ima_and_cvar_execution_aad | FRTB/CVaR and optimal execution KKT sensitivities | 6597.60 (IQR 292.80) | 1303.80 (IQR 154.00) | 5.06x | 3.105e-7 |
+| 25_monotone_convex_vix_parisian_robust_aad | monotone-convex curve plus VIX/Parisian and robust Markowitz AD | 299306.20 (IQR 3860.40) | 45311.00 (IQR 2274.00) | 6.61x | 1.502e-7 |
+| 26_double_heston_tarf_coco_hrp_aad | Double Heston/TARF/CoCo/HRP single-pass AD | 320734.20 (IQR 2851.00) | 75468.40 (IQR 4269.80) | 4.25x | 1.206e-5 |
+| 27_jy_inflation_tba_bergomi_nco_aad | JY-Inflation/TBA-Roll/Bergomi2F/NCO single-pass AD | 130578.00 (IQR 780.80) | 61390.60 (IQR 2480.40) | 2.13x | 1.614e-7 |
+| 28_cheyette_cmo_qrh_basecorr_cdar_aad | Cheyette/CMO/QRH/BaseCorr/EVaR single-pass AD | 3814012.40 (IQR 32132.00) | 437580.80 (IQR 896.60) | 8.72x | 2.529e-9 |
+| 29_asw_mf1f_ah_bess_ep_aad | ASW-Z/MF1F/AH-LV/BESS/Idzorek-DP single-pass AD | 82178.40 (IQR 2793.80) | 16940.40 (IQR 1094.20) | 4.85x | 1.679e-9 |
+| 30_mtmxccs_colva_zabr_pdv_weather_enb_aad | MtM-XCCS/CTD-COLVA/ZABR-PDV/Weather/ENB single-pass AD | 303709.20 (IQR 4412.40) | 40106.60 (IQR 957.00) | 7.57x | 2.986e-9 |
+| 31_burnout_cmcds_quintic_afv_cs_schur_aad | Burnout-MBS/CMCDS/Quintic-OU/AFV-CB/CS-Swaption/Schur-HRP AD | 972469.60 (IQR 705.40) | 137754.80 (IQR 4134.00) | 7.06x | 3.734e-9 |
+| 32_sinhou_mb_rbergomi_choi_afs_expectile_aad | SinhOU/BK-FRN/MoriniBrigo/WWM/mrBergomi/Choi/AFS/EXVaR single-pass AD | 1625904.60 (IQR 3583.00) | 226533.00 (IQR 1403.60) | 7.18x | 1.505e-8 |
+| 33_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad | Phase21 institutional 12-engine AAD vs FD | 485491.20 (IQR 2737.80) | 76189.20 (IQR 1981.40) | 6.37x | 6.899e-9 |
+| 34_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad | Phase22 KRD/LPI/CoCo/Bergomi/CGMY/Guéant/Meucci/AAD | 2583989.00 (IQR 2612.00) | 694764.80 (IQR 12625.40) | 3.72x | 1.979e-9 |
+| 35_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml | Phase23 RKHS/FMM/VV/LSV/JLT/CTD/QRH/Parisian/Aïd/Propagator/NCO/DML | 95346.80 (IQR 721.60) | 25966.40 (IQR 1113.40) | 3.67x | 1.167e-9 |
+| 36_mbs_io_po_rmv_mo_xva_dilution_sig_garch_pot_rie_pin_gp_brinson_ierp | MBS-IO/PO / RMV-Basis / MO-XVA / Dilution-CB / Sig / HN-DCC-GARCH / POT-GPD / RIE / PIN / GP-Aim / Brinson-Carino / IFT-IERP AD | 1362109.00 (IQR 768.00) | 158803.60 (IQR 934.40) | 8.58x | 2.234e-7 |
+| 37_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin | Phase25 Kalman/RTS/VECM/HJ-SDF/IFRS9/CPT/Hasbrouck/FV/Lando/LPPL/CB-Arb/Causal/Malliavin | 139344.00 (IQR 472.20) | 17765.20 (IQR 2360.40) | 7.84x | 8.967e-6 |
+| 38_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_frtb_cva_lookback_vta_flam_acd_hlz_mlmc | Phase26 MF-Rates/Wildcard/CTD/Pivot-TARF/Bergomi/Schönbucher/FRTB-CVA/Lookback/VTA/FLAM/ACD/HLZ/MLMC | 1121036.00 (IQR 1024.60) | 49112.00 (IQR 1014.00) | 22.83x | 4.996e-9 |
+| 39_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt | Phase27 SOTA FTPL/G2/eSSVI/Offshore-CB/CoCo/MPOR/Double-Heston/Curran/Warin/Roll-Corwin/Busseti-Kelly/Diff-QP | 674701.00 (IQR 1700.40) | 37530.00 (IQR 6490.20) | 17.98x | 4.423e-10 |
+| 40_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_zeron_simm_jacquier_rbergomi_choi_spread_bess_sdp_kratz_dark_follmer_diag_diff_pca | Phase28 BCBS/IRRBB/Turfus-RFR/Baran-MtM/Bourgey-BG/FEDS-PONV/Zeron-SIMM/Jacquier-rBergomi/Choi-Spread/BESS-SDP/Kratz-Dark/Föllmer/Diff-PCA | 273439.80 (IQR 1639.80) | 27247.40 (IQR 3805.80) | 10.04x | 1.803e-9 |
+| 41_veronesi_conv_lando_gen_gatheral_corridor_russian_stop_bates_svj_koziol_cb_mckean_mfg_bcbs_floor_cjp_lob_madhavan_etf_qian_ic_glasserman_is | Phase29 Veronesi/Lando/Gatheral/Russian/Bates/Koziol/MFG/BCBS/CJP/ETF/Qian/Glasserman | 10483464.00 (IQR 1512.20) | 1221148.20 (IQR 7414.20) | 8.58x | 9.758e-7 |
 
-Summary: 41 benchmark suites; speedups range from **2.10x** to **165.58x** (median **7.21x**, mean **18.21x**). All parity checks pass their domain tolerances; latest suite parity is **9.818e-11**.
+Summary: 41 benchmark suites; speedups range from **2.06x** to **163.68x** (median **7.18x**, mean **18.41x**). All parity checks pass their domain tolerances; latest suite parity is **9.758e-7**.

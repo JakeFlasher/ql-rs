@@ -50,7 +50,7 @@ Date / Calendar / Convention
 
 ### 3.6 Delivery, measurements, and workstation
 
-`ql-benches` is an offline statistical harness with fixed workloads, warmups, medians, IQRs, speedups, and hard parity assertions across 41 suites (`01_calendar_popcnt` through `40_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_zeron_simm_jacquier_rbergomi_choi_spread_bess_sdp_kratz_dark_follmer_diag_diff_pca`). `ql-terminal` re-exports `ql_terminal::prelude::*` and renders a zero-dependency 39-tab risk workstation: a $2 \times 4$ sub-pixel `BrailleCanvas`, 24-bit ANSI TrueColor ladders, live blotter values, XVA/SIMM/MVA/SA-CCR/BA-CVA/KVA/FRTB, and calibrated chart series.
+`ql-benches` is an offline statistical harness with fixed workloads, warmups, medians, IQRs, speedups, and hard parity assertions across 41 suites (`01_calendar_popcnt` through `41_veronesi_conv_lando_gen_gatheral_corridor_russian_stop_bates_svj_koziol_cb_mckean_mfg_bcbs_floor_cjp_lob_madhavan_etf_qian_ic_glasserman_is`). `ql-terminal` re-exports `ql_terminal::prelude::*` and renders a zero-dependency 39-tab risk workstation: a $2 \times 4$ sub-pixel `BrailleCanvas`, 24-bit ANSI TrueColor ladders, live blotter values, XVA/SIMM/MVA/SA-CCR/BA-CVA/KVA/FRTB, and calibrated chart series.
 
 ## 4. Subsystem Architecture Matrix
 
@@ -69,7 +69,7 @@ Date / Calendar / Convention
 ## Phase 18–19 Institutional Expansion
 The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB, entropy pooling, dynamic SIMM/MVA, Schur-HRP/OAS nonlinear shrinkage. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic OU SPX/VIX, AFV convertibles, Clewlow–Strickland swaptions, JLT rating migration, free-boundary SABR, gamma/variance swaps and Avellaneda–Stoikov/CDaR allocation. The workstation now exposes Tab 36 and the benchmark suite contains 38 AD parity workloads.
 
-Phase 20 and Phase 21 institutional engines are now integrated end-to-end: every workload is deterministic, differentiable through `Dual<N>`, covered by collapse/arbitrage invariants, and surfaced in the 39-tab terminal and synchronized 40-row benchmark suite.
+Phase 20 and Phase 21 institutional engines are now integrated end-to-end: every workload is deterministic, differentiable through `Dual<N>`, covered by collapse/arbitrage invariants, and surfaced in the 39-tab terminal and synchronized 41-row benchmark suite.
 
 Phase 26 extends the release to Suite 38 and workstation Tab 36 (Tab 36 Phase 26 SOTA; `BOTTOM_ROWS = 33`).
 

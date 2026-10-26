@@ -6684,6 +6684,7 @@ pub fn phase29_workloads<T: Real>(x: [T; 4]) -> T {
         + i.expected_terminal_inventory * 0.001
         + j.net_ap_creation_redemption_profit_bps * 0.001
         + k.total_factor_contribution
+        + k.turnover_adjusted_information_ratio
         + l.importance_sampled_call_price
 }
 

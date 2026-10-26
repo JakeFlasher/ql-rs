@@ -475,4 +475,11 @@ fn phase29_tab39_terminal_renders_and_reacts() {
     assert_eq!(TabId::ALL.len(), 39);
     assert!(dashboard.contains("39 Phase29 SOTA"));
     assert!(frame.phase29_sota_metric.is_finite());
+    let base = ws.phase29_live_metric();
+    ws.set_scenario(ScenarioKind::CreditWideningPlus100Bp);
+    let credit = ws.phase29_live_metric();
+    assert!((credit - base).abs() > 1e-12);
+    ws.set_scenario(ScenarioKind::StagflationPlus150Bp);
+    let stag = ws.phase29_live_metric();
+    assert!((stag - base).abs() > 1e-12);
 }

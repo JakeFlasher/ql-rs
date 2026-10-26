@@ -310,17 +310,34 @@ pub fn evaluate_koziol_asquith_fasb_strategic_convertible<T: Real>(
 ) -> KoziolAsquithFasbStrategicConvertibleReport<T> {
     let total = (s.existing_shares + s.new_shares_blockholder1 + s.new_shares_blockholder2)
         .max_val(T::from_f64(1e-10));
-    let d1 = T::one()
-        - s.new_shares_blockholder1
-            / (s.existing_shares + s.new_shares_blockholder1).max_val(T::from_f64(1e-10));
-    let dj = T::one() - (s.new_shares_blockholder1 + s.new_shares_blockholder2) / total;
-    let pre = s.debt_face_value
-        + s.call_price * s.base_conversion_ratio
-        + s.firm_value * s.dividend_yield * s.maturity * 0.01;
-    let coop = pre + s.cash_sweetener_amount + s.stock_price * s.induced_sweetened_conversion_ratio;
+    let alpha1_solo = s.new_shares_blockholder1
+        / (s.existing_shares + s.new_shares_blockholder1).max_val(T::from_f64(1e-10));
+    let alpha1_joint = s.new_shares_blockholder1 / total;
+    let alpha2_joint = s.new_shares_blockholder2 / total;
+    let d1 = T::one() - alpha1_solo;
+    let dj = T::one() - alpha1_joint - alpha2_joint;
+    let sig2 = s.firm_volatility * s.firm_volatility;
+    let beta_base =
+        T::from_f64(0.5) - (s.risk_free_rate - s.dividend_yield) / sig2.max_val(T::from_f64(1e-10));
+    let beta = beta_base
+        + (beta_base * beta_base
+            + T::from_f64(2.0) * s.risk_free_rate / sig2.max_val(T::from_f64(1e-10)))
+        .sqrt();
+    let coop =
+        beta / (beta - T::one()).max_val(T::from_f64(1e-10)) * T::from_f64(2.0) * s.debt_face_value
+            / (alpha1_joint + alpha2_joint).max_val(T::from_f64(1e-10));
+    let pre = coop
+        * (alpha1_joint / alpha1_solo.max_val(T::from_f64(1e-10)))
+            .max_val(T::from_f64(1e-10))
+            .powf((T::one() / beta.max_val(T::from_f64(1e-10))).val());
     let wedge = (coop - pre).abs();
-    let tax_adv = s.call_price * s.coupon_rate * s.maturity * s.corporate_tax_rate;
-    let trigger = s.dividend_yield + s.coupon_rate * (T::one() - s.corporate_tax_rate);
+    let annuity = (T::one() - (-s.risk_free_rate * s.maturity).exp())
+        / s.risk_free_rate.max_val(T::from_f64(1e-10));
+    let tax_adv = (s.dividend_yield * s.base_conversion_ratio * s.stock_price
+        - (T::one() - s.corporate_tax_rate) * s.coupon_rate * s.debt_face_value)
+        * annuity;
+    let trigger = (T::one() - s.corporate_tax_rate) * s.coupon_rate * s.debt_face_value
+        / (s.base_conversion_ratio * s.stock_price).max_val(T::from_f64(1e-10));
     let expense = (s.induced_sweetened_conversion_ratio - s.base_conversion_ratio)
         .max_val(T::zero())
         * s.stock_price
@@ -334,9 +351,9 @@ pub fn evaluate_koziol_asquith_fasb_strategic_convertible<T: Real>(
         s.dividend_yield,
         true,
     );
-    let fair = s.debt_face_value * (-(s.risk_free_rate + s.coupon_rate) * s.maturity).exp()
-        + option
-        + s.base_conversion_ratio * s.stock_price;
+    let floor = s.debt_face_value * (-s.risk_free_rate * s.maturity).exp()
+        + s.coupon_rate * s.debt_face_value * annuity;
+    let fair = floor + option + expense.max_val(T::zero());
     KoziolAsquithFasbStrategicConvertibleReport {
         blockholder1_dilution_factor: d1,
         joint_conversion_dilution_factor: dj,
@@ -347,71 +364,6 @@ pub fn evaluate_koziol_asquith_fasb_strategic_convertible<T: Real>(
         asquith_breakeven_dividend_call_trigger: trigger,
         fasb_asu2024_04_induced_conversion_expense: expense.max_val(T::zero()),
         strategic_convertible_fair_value: fair,
-    }
-}
-
-#[cfg(test)]
-mod phase19_tests {
-    use super::*;
-    use ql_ad::Dual;
-
-    #[test]
-    fn afv_convertible_bond_pde_bounds_hazard_monotonicity_and_ad() {
-        let spec = AfvConvertibleBondSpec {
-            spot: 100.0,
-            conversion_ratio: 1.0,
-            face_value: 100.0,
-            coupon_rate: 0.03,
-            maturity: 2.0,
-            rate: 0.04,
-            div_yield: 0.01,
-            vol: 0.25,
-            base_hazard_rate: 0.02,
-            hazard_equity_elasticity: 1.2,
-            equity_loss_on_default_eta: 0.5,
-            bond_recovery_rate: 0.40,
-            call_price: Some(115.0),
-            soft_call_trigger_spot: Some(130.0),
-            put_price: Some(95.0),
-        };
-        let v = price_convertible_bond_afv_pde(&spec, 21, 16);
-        assert!(v.total_price >= v.bond_floor);
-        assert!(v.total_price >= spec.conversion_ratio * spec.spot - 1e-2);
-        assert!(v.equity_option_value > 0.0);
-
-        let mut high_haz = spec.clone();
-        high_haz.base_hazard_rate = 0.06;
-        let v_high = price_convertible_bond_afv_pde(&high_haz, 21, 16);
-        assert!(v_high.bond_floor < v.bond_floor);
-
-        let h = 1e-5;
-        let eval_s = |s0: f64| {
-            let mut sp = spec.clone();
-            sp.spot = s0;
-            price_convertible_bond_afv_pde(&sp, 21, 16).total_price
-        };
-        let fd = (eval_s(100.0 + h) - eval_s(100.0 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let spec_d = AfvConvertibleBondSpec {
-            spot: D::variable(100.0, 0),
-            conversion_ratio: D::one(),
-            face_value: D::from_value(100.0),
-            coupon_rate: D::from_value(0.03),
-            maturity: D::from_value(2.0),
-            rate: D::from_value(0.04),
-            div_yield: D::from_value(0.01),
-            vol: D::from_value(0.25),
-            base_hazard_rate: D::from_value(0.02),
-            hazard_equity_elasticity: D::from_value(1.2),
-            equity_loss_on_default_eta: D::from_value(0.5),
-            bond_recovery_rate: D::from_value(0.40),
-            call_price: Some(D::from_value(115.0)),
-            soft_call_trigger_spot: Some(D::from_value(130.0)),
-            put_price: Some(D::from_value(95.0)),
-        };
-        let ad = price_convertible_bond_afv_pde(&spec_d, 21, 16).total_price;
-        assert!(ad.d[0] > 0.0);
-        assert!((ad.d[0] - fd).abs() < 1e-4);
     }
 }
 
@@ -712,26 +664,29 @@ mod phase25_tests {
 #[cfg(test)]
 mod phase29_tests {
     use super::*;
+    use ql_ad::Dual;
     #[test]
     fn koziol_invariants_and_dual() {
-        let mk = |x| KoziolAsquithFasbStrategicConvertibleSpec {
-            firm_value: 10000.0,
-            debt_face_value: 8000.0,
-            existing_shares: 100.0,
-            new_shares_blockholder1: 10.0,
-            new_shares_blockholder2: 8.0,
-            coupon_rate: 0.04,
-            corporate_tax_rate: 0.25,
-            dividend_yield: 0.01,
-            stock_price: x,
-            base_conversion_ratio: 1.0,
-            induced_sweetened_conversion_ratio: 1.1,
-            cash_sweetener_amount: 1.0,
-            call_price: 120.0,
-            firm_volatility: 0.2,
-            risk_free_rate: 0.03,
-            maturity: 5.0,
-        };
+        fn mk<T: Real>(x: T) -> KoziolAsquithFasbStrategicConvertibleSpec<T> {
+            KoziolAsquithFasbStrategicConvertibleSpec {
+                firm_value: T::from_f64(10000.0),
+                debt_face_value: T::from_f64(8000.0),
+                existing_shares: T::from_f64(100.0),
+                new_shares_blockholder1: T::from_f64(10.0),
+                new_shares_blockholder2: T::from_f64(8.0),
+                coupon_rate: T::from_f64(0.04),
+                corporate_tax_rate: T::from_f64(0.25),
+                dividend_yield: T::from_f64(0.01),
+                stock_price: x,
+                base_conversion_ratio: T::one(),
+                induced_sweetened_conversion_ratio: T::from_f64(1.1),
+                cash_sweetener_amount: T::one(),
+                call_price: T::from_f64(120.0),
+                firm_volatility: T::from_f64(0.2),
+                risk_free_rate: T::from_f64(0.03),
+                maturity: T::from_f64(5.0),
+            }
+        }
         let r = evaluate_koziol_asquith_fasb_strategic_convertible(&mk(100.0));
         assert!(
             r.blockholder1_dilution_factor > r.joint_conversion_dilution_factor
@@ -739,5 +694,80 @@ mod phase29_tests {
                     < r.koziol_cooperative_threshold_firm_value
                 && r.fasb_asu2024_04_induced_conversion_expense >= 0.0
         );
+        let h = 1e-5;
+        let fd = (evaluate_koziol_asquith_fasb_strategic_convertible(&mk(100.0 + h))
+            .strategic_convertible_fair_value
+            - evaluate_koziol_asquith_fasb_strategic_convertible(&mk(100.0 - h))
+                .strategic_convertible_fair_value)
+            / (2.0 * h);
+        let ad =
+            evaluate_koziol_asquith_fasb_strategic_convertible(&mk(Dual::<1>::variable(100.0, 0)))
+                .strategic_convertible_fair_value;
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase19_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn afv_convertible_bond_pde_bounds_hazard_monotonicity_and_ad() {
+        let spec = AfvConvertibleBondSpec {
+            spot: 100.0,
+            conversion_ratio: 1.0,
+            face_value: 100.0,
+            coupon_rate: 0.03,
+            maturity: 2.0,
+            rate: 0.04,
+            div_yield: 0.01,
+            vol: 0.25,
+            base_hazard_rate: 0.02,
+            hazard_equity_elasticity: 1.2,
+            equity_loss_on_default_eta: 0.5,
+            bond_recovery_rate: 0.40,
+            call_price: Some(115.0),
+            soft_call_trigger_spot: Some(130.0),
+            put_price: Some(95.0),
+        };
+        let v = price_convertible_bond_afv_pde(&spec, 21, 16);
+        assert!(v.total_price >= v.bond_floor);
+        assert!(v.total_price >= spec.conversion_ratio * spec.spot - 1e-2);
+        assert!(v.equity_option_value > 0.0);
+
+        let mut high_haz = spec.clone();
+        high_haz.base_hazard_rate = 0.06;
+        let v_high = price_convertible_bond_afv_pde(&high_haz, 21, 16);
+        assert!(v_high.bond_floor < v.bond_floor);
+
+        let h = 1e-5;
+        let eval_s = |s0: f64| {
+            let mut sp = spec.clone();
+            sp.spot = s0;
+            price_convertible_bond_afv_pde(&sp, 21, 16).total_price
+        };
+        let fd = (eval_s(100.0 + h) - eval_s(100.0 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let spec_d = AfvConvertibleBondSpec {
+            spot: D::variable(100.0, 0),
+            conversion_ratio: D::one(),
+            face_value: D::from_value(100.0),
+            coupon_rate: D::from_value(0.03),
+            maturity: D::from_value(2.0),
+            rate: D::from_value(0.04),
+            div_yield: D::from_value(0.01),
+            vol: D::from_value(0.25),
+            base_hazard_rate: D::from_value(0.02),
+            hazard_equity_elasticity: D::from_value(1.2),
+            equity_loss_on_default_eta: D::from_value(0.5),
+            bond_recovery_rate: D::from_value(0.40),
+            call_price: Some(D::from_value(115.0)),
+            soft_call_trigger_spot: Some(D::from_value(130.0)),
+            put_price: Some(D::from_value(95.0)),
+        };
+        let ad = price_convertible_bond_afv_pde(&spec_d, 21, 16).total_price;
+        assert!(ad.d[0] > 0.0);
+        assert!((ad.d[0] - fd).abs() < 1e-4);
     }
 }
