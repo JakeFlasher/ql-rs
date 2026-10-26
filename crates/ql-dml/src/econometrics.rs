@@ -1236,3 +1236,160 @@ mod evaluate_barndorff_nielsen_shephard_bipower_jump_har_cj_module {
     }
 }
 pub use evaluate_barndorff_nielsen_shephard_bipower_jump_har_cj_module::*;
+
+mod evaluate_pesaran_timmermann_directional_timing_hit_ratio_test_module {
+    // Pesaran & Timmermann (1992, J. Business & Economic Statistics, "A Simple Nonparametric Test
+    // of Predictive Performance") & Anatolyev-Gerko (2005) Directional Market-Timing Hit-Ratio Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct PesaranTimmermannDirectionalTimingSpec<T: Real = f64> {
+        pub true_positive_up_fraction_p11: T,
+        pub true_negative_down_fraction_p00: T,
+        pub false_positive_up_fraction_p01: T,
+        pub sample_observations_t: T,
+        pub mean_absolute_return_move_bps: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct PesaranTimmermannDirectionalTimingReport<T: Real = f64> {
+        pub empirical_directional_hit_ratio_p_hat: T,
+        pub independent_benchmark_hit_ratio_p_star: T,
+        pub kuipers_henriksson_merton_skill_score: T,
+        pub pesaran_timmermann_z_statistic: T,
+        pub directional_timing_expected_edge_bps: T,
+    }
+
+    pub fn evaluate_pesaran_timmermann_directional_timing_hit_ratio_test<T: Real>(
+        spec: &PesaranTimmermannDirectionalTimingSpec<T>,
+    ) -> PesaranTimmermannDirectionalTimingReport<T> {
+        let p11 = spec
+            .true_positive_up_fraction_p11
+            .max_val(T::from_f64(0.05));
+        let p00 = spec
+            .true_negative_down_fraction_p00
+            .max_val(T::from_f64(0.05));
+        let p01 = spec
+            .false_positive_up_fraction_p01
+            .max_val(T::from_f64(0.02));
+        let n_obs = spec.sample_observations_t.max_val(T::from_f64(20.0));
+        let abs_move_bps = spec.mean_absolute_return_move_bps.max_val(T::from_f64(1.0));
+
+        let p10 = (T::one() - p11 - p00 - p01).max_val(T::from_f64(0.02));
+        let p_hat = p11 + p00;
+        let p_y = p11 + p10;
+        let p_yhat = p11 + p01;
+
+        // Null benchmark hit rate under independence between y_t and \hat{y}_t:
+        let p_star = p_y * p_yhat + (T::one() - p_y) * (T::one() - p_yhat);
+
+        // Pesaran & Timmermann (1992, Eqs. 5-6) exact finite-sample variances:
+        let var_p_hat = (p_star * (T::one() - p_star)) / n_obs;
+        let two_py_m1 = T::from_f64(2.0) * p_y - T::one();
+        let two_pyhat_m1 = T::from_f64(2.0) * p_yhat - T::one();
+        let var_p_star = (two_py_m1 * two_py_m1 * p_yhat * (T::one() - p_yhat)
+            + two_pyhat_m1 * two_pyhat_m1 * p_y * (T::one() - p_y)
+            + (T::from_f64(4.0) / n_obs) * p_y * p_yhat * (T::one() - p_y) * (T::one() - p_yhat))
+            / n_obs;
+
+        let var_diff = (var_p_hat - var_p_star).max_val(T::from_f64(1e-8));
+        let pt_stat = (p_hat - p_star) / var_diff.sqrt();
+
+        let kss = (p11 / p_y) - (p01 / (T::one() - p_y));
+        let edge_bps = (T::from_f64(2.0) * (p_hat - p_star)) * abs_move_bps;
+
+        PesaranTimmermannDirectionalTimingReport {
+            empirical_directional_hit_ratio_p_hat: p_hat,
+            independent_benchmark_hit_ratio_p_star: p_star,
+            kuipers_henriksson_merton_skill_score: kss,
+            pesaran_timmermann_z_statistic: pt_stat,
+            directional_timing_expected_edge_bps: edge_bps,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_pesaran_timmermann_directional_timing_hit_ratio_test_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn pesaran_timmermann_directional_timing_invariants_and_ad_parity() {
+            let spec = PesaranTimmermannDirectionalTimingSpec {
+                true_positive_up_fraction_p11: 0.34,
+                true_negative_down_fraction_p00: 0.25,
+                false_positive_up_fraction_p01: 0.20,
+                sample_observations_t: 250.0,
+                mean_absolute_return_move_bps: 85.0,
+            };
+            let rep = evaluate_pesaran_timmermann_directional_timing_hit_ratio_test(&spec);
+            assert!(
+                rep.empirical_directional_hit_ratio_p_hat
+                    > rep.independent_benchmark_hit_ratio_p_star
+            );
+            assert!(rep.kuipers_henriksson_merton_skill_score > 0.10);
+            assert!(rep.pesaran_timmermann_z_statistic > 2.0);
+
+            let h = 1e-5;
+            let r_ad = evaluate_pesaran_timmermann_directional_timing_hit_ratio_test(
+                &PesaranTimmermannDirectionalTimingSpec {
+                    true_positive_up_fraction_p11: Dual::<5>::variable(
+                        spec.true_positive_up_fraction_p11,
+                        0,
+                    ),
+                    true_negative_down_fraction_p00: Dual::<5>::variable(
+                        spec.true_negative_down_fraction_p00,
+                        1,
+                    ),
+                    false_positive_up_fraction_p01: Dual::<5>::variable(
+                        spec.false_positive_up_fraction_p01,
+                        2,
+                    ),
+                    sample_observations_t: Dual::<5>::variable(spec.sample_observations_t, 3),
+                    mean_absolute_return_move_bps: Dual::<5>::variable(
+                        spec.mean_absolute_return_move_bps,
+                        4,
+                    ),
+                },
+            );
+            let comp_ad =
+                r_ad.pesaran_timmermann_z_statistic + r_ad.directional_timing_expected_edge_bps;
+            for (idx, &ad) in comp_ad.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.true_positive_up_fraction_p11 += h;
+                        sm.true_positive_up_fraction_p11 -= h;
+                    }
+                    1 => {
+                        sp.true_negative_down_fraction_p00 += h;
+                        sm.true_negative_down_fraction_p00 -= h;
+                    }
+                    2 => {
+                        sp.false_positive_up_fraction_p01 += h;
+                        sm.false_positive_up_fraction_p01 -= h;
+                    }
+                    3 => {
+                        sp.sample_observations_t += h;
+                        sm.sample_observations_t -= h;
+                    }
+                    _ => {
+                        sp.mean_absolute_return_move_bps += h;
+                        sm.mean_absolute_return_move_bps -= h;
+                    }
+                }
+                let rp = evaluate_pesaran_timmermann_directional_timing_hit_ratio_test(&sp);
+                let rm = evaluate_pesaran_timmermann_directional_timing_hit_ratio_test(&sm);
+                let fd = ((rp.pesaran_timmermann_z_statistic
+                    + rp.directional_timing_expected_edge_bps)
+                    - (rm.pesaran_timmermann_z_statistic
+                        + rm.directional_timing_expected_edge_bps))
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_pesaran_timmermann_directional_timing_hit_ratio_test_module::*;

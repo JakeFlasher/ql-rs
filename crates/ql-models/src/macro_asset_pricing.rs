@@ -1241,3 +1241,162 @@ mod evaluate_lettau_ludvigson_cay_consumption_wealth_forecast_module {
     }
 }
 pub use evaluate_lettau_ludvigson_cay_consumption_wealth_forecast_module::*;
+
+mod evaluate_lucas_mehra_prescott_endowment_tree_equity_premium_module {
+    // Lucas (1978, Econometrica, "Asset Prices in an Exchange Economy") & Mehra & Prescott (1985,
+    // J. Monetary Economics, "The Equity Premium: A Puzzle") Endowment Tree CRRA Pricing Kernel Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LucasMehraPrescottEndowmentTreeSpec<T: Real = f64> {
+        pub mean_consumption_growth_mu_c: T,
+        pub consumption_growth_vol_sigma_c: T,
+        pub dividend_consumption_leverage_lambda: T,
+        pub crra_risk_aversion_gamma: T,
+        pub subjective_discount_factor_beta: T,
+        pub historical_observed_equity_premium: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LucasMehraPrescottEndowmentTreeReport<T: Real = f64> {
+        pub equilibrium_log_risk_free_rate: T,
+        pub precautionary_savings_rate_drag: T,
+        pub theoretical_crra_equity_risk_premium: T,
+        pub mehra_prescott_equity_premium_puzzle_wedge: T,
+        pub implied_puzzle_risk_aversion_gamma: T,
+        pub lucas_tree_price_dividend_ratio: T,
+    }
+
+    pub fn evaluate_lucas_mehra_prescott_endowment_tree_equity_premium<T: Real>(
+        spec: &LucasMehraPrescottEndowmentTreeSpec<T>,
+    ) -> LucasMehraPrescottEndowmentTreeReport<T> {
+        let mu_c = spec.mean_consumption_growth_mu_c;
+        let sig_c = spec
+            .consumption_growth_vol_sigma_c
+            .max_val(T::from_f64(0.005));
+        let lam_d = spec
+            .dividend_consumption_leverage_lambda
+            .max_val(T::from_f64(0.5));
+        let gamma = spec.crra_risk_aversion_gamma.max_val(T::from_f64(0.5));
+        let beta = spec
+            .subjective_discount_factor_beta
+            .max_val(T::from_f64(0.85))
+            .min_val(T::from_f64(0.999));
+        let erp_hist = spec.historical_observed_equity_premium;
+
+        let rho_time = -beta.ln();
+        let sig_c2 = sig_c * sig_c;
+        let prec_savings = T::from_f64(0.5) * gamma * gamma * sig_c2;
+
+        // Lucas (1978) / Mehra-Prescott (1985) log risk-free rate and CRRA equity premium:
+        let r_f = rho_time + gamma * mu_c - prec_savings;
+        let erp_crra = gamma * lam_d * sig_c2;
+        let puzzle_wedge = erp_hist - erp_crra;
+        let gamma_implied = erp_hist / (lam_d * sig_c2);
+
+        let discount_minus_growth = (r_f + erp_crra - mu_c).max_val(T::from_f64(0.01));
+        let pd_ratio = T::one() / discount_minus_growth;
+
+        LucasMehraPrescottEndowmentTreeReport {
+            equilibrium_log_risk_free_rate: r_f,
+            precautionary_savings_rate_drag: prec_savings,
+            theoretical_crra_equity_risk_premium: erp_crra,
+            mehra_prescott_equity_premium_puzzle_wedge: puzzle_wedge,
+            implied_puzzle_risk_aversion_gamma: gamma_implied,
+            lucas_tree_price_dividend_ratio: pd_ratio,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_lucas_mehra_prescott_endowment_tree_equity_premium_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn lucas_mehra_prescott_endowment_tree_invariants_and_ad_parity() {
+            let spec = LucasMehraPrescottEndowmentTreeSpec {
+                mean_consumption_growth_mu_c: 0.018,
+                consumption_growth_vol_sigma_c: 0.036,
+                dividend_consumption_leverage_lambda: 3.0,
+                crra_risk_aversion_gamma: 2.5,
+                subjective_discount_factor_beta: 0.99,
+                historical_observed_equity_premium: 0.0618,
+            };
+            let rep = evaluate_lucas_mehra_prescott_endowment_tree_equity_premium(&spec);
+            assert!(rep.equilibrium_log_risk_free_rate > 0.0);
+            assert!(rep.mehra_prescott_equity_premium_puzzle_wedge > 0.04);
+            assert!(rep.implied_puzzle_risk_aversion_gamma > 10.0);
+            assert!(rep.lucas_tree_price_dividend_ratio > 10.0);
+
+            let h = 1e-5;
+            let r_ad = evaluate_lucas_mehra_prescott_endowment_tree_equity_premium(
+                &LucasMehraPrescottEndowmentTreeSpec {
+                    mean_consumption_growth_mu_c: Dual::<6>::variable(
+                        spec.mean_consumption_growth_mu_c,
+                        0,
+                    ),
+                    consumption_growth_vol_sigma_c: Dual::<6>::variable(
+                        spec.consumption_growth_vol_sigma_c,
+                        1,
+                    ),
+                    dividend_consumption_leverage_lambda: Dual::<6>::variable(
+                        spec.dividend_consumption_leverage_lambda,
+                        2,
+                    ),
+                    crra_risk_aversion_gamma: Dual::<6>::variable(spec.crra_risk_aversion_gamma, 3),
+                    subjective_discount_factor_beta: Dual::<6>::variable(
+                        spec.subjective_discount_factor_beta,
+                        4,
+                    ),
+                    historical_observed_equity_premium: Dual::<6>::variable(
+                        spec.historical_observed_equity_premium,
+                        5,
+                    ),
+                },
+            );
+            let comp_ad = r_ad.lucas_tree_price_dividend_ratio
+                + r_ad.mehra_prescott_equity_premium_puzzle_wedge * Dual::<6>::from_value(100.0);
+            for (idx, &ad) in comp_ad.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.mean_consumption_growth_mu_c += h;
+                        sm.mean_consumption_growth_mu_c -= h;
+                    }
+                    1 => {
+                        sp.consumption_growth_vol_sigma_c += h;
+                        sm.consumption_growth_vol_sigma_c -= h;
+                    }
+                    2 => {
+                        sp.dividend_consumption_leverage_lambda += h;
+                        sm.dividend_consumption_leverage_lambda -= h;
+                    }
+                    3 => {
+                        sp.crra_risk_aversion_gamma += h;
+                        sm.crra_risk_aversion_gamma -= h;
+                    }
+                    4 => {
+                        sp.subjective_discount_factor_beta += h;
+                        sm.subjective_discount_factor_beta -= h;
+                    }
+                    _ => {
+                        sp.historical_observed_equity_premium += h;
+                        sm.historical_observed_equity_premium -= h;
+                    }
+                }
+                let rp = evaluate_lucas_mehra_prescott_endowment_tree_equity_premium(&sp);
+                let rm = evaluate_lucas_mehra_prescott_endowment_tree_equity_premium(&sm);
+                let fd = ((rp.lucas_tree_price_dividend_ratio
+                    + rp.mehra_prescott_equity_premium_puzzle_wedge * 100.0)
+                    - (rm.lucas_tree_price_dividend_ratio
+                        + rm.mehra_prescott_equity_premium_puzzle_wedge * 100.0))
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-3);
+            }
+        }
+    }
+}
+pub use evaluate_lucas_mehra_prescott_endowment_tree_equity_premium_module::*;

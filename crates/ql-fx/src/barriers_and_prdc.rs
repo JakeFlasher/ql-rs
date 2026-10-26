@@ -750,3 +750,185 @@ mod evaluate_wystup_fx_fader_range_accrual_module {
     }
 }
 pub use evaluate_wystup_fx_fader_range_accrual_module::*;
+
+mod evaluate_wystup_fx_digital_call_spread_skew_overhedge_module {
+    // Wystup (2017, FX Options and Structured Products, 2nd ed., Ch. 1.6) & Castagna (2010, Ch. 4)
+    // FX Digital Option Smile-Skew Vega Correction, Call-Spread Over-Hedge & Pin-Risk Gamma Bound Engine.
+
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupFxDigitalSkewOverhedgeSpec<T: Real = f64> {
+        pub spot_fx_s0: T,
+        pub digital_strike_k: T,
+        pub domestic_rate_rd: T,
+        pub foreign_rate_rf: T,
+        pub atm_or_strike_vol_sigma_k: T,
+        pub smile_slope_dsigma_dk: T,
+        pub call_spread_half_width_dk: T,
+        pub expiry_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupFxDigitalSkewOverhedgeReport<T: Real = f64> {
+        pub flat_smile_digital_call_price: T,
+        pub vanilla_garman_kohlhagen_vega: T,
+        pub smile_skew_digital_correction: T,
+        pub skew_adjusted_digital_call_price: T,
+        pub call_spread_overhedge_notional_gearing: T,
+        pub call_spread_replicated_digital_price: T,
+    }
+
+    fn gk_call_with_vol<T: Real>(s0: T, k: T, rd: T, rf: T, sig: T, t: T) -> T {
+        let std = sig * t.sqrt();
+        let d1 = ((s0 / k).ln() + (rd - rf + T::from_f64(0.5) * sig * sig) * t) / std;
+        let d2 = d1 - std;
+        s0 * (-rf * t).exp() * norm_cdf(d1) - k * (-rd * t).exp() * norm_cdf(d2)
+    }
+
+    pub fn evaluate_wystup_fx_digital_call_spread_skew_overhedge<T: Real>(
+        spec: &WystupFxDigitalSkewOverhedgeSpec<T>,
+    ) -> WystupFxDigitalSkewOverhedgeReport<T> {
+        let s0 = spec.spot_fx_s0.max_val(T::from_f64(1e-4));
+        let k = spec.digital_strike_k.max_val(T::from_f64(1e-4));
+        let rd = spec.domestic_rate_rd;
+        let rf = spec.foreign_rate_rf;
+        let sig_k = spec.atm_or_strike_vol_sigma_k.max_val(T::from_f64(0.01));
+        let dsig_dk = spec.smile_slope_dsigma_dk;
+        let dk = spec.call_spread_half_width_dk.max_val(T::from_f64(1e-4));
+        let t = spec.expiry_years_t.max_val(T::from_f64(0.02));
+
+        let sqrt_t = t.sqrt();
+        let std = sig_k * sqrt_t;
+        let d1 = ((s0 / k).ln() + (rd - rf + T::from_f64(0.5) * sig_k * sig_k) * t) / std;
+        let d2 = d1 - std;
+
+        let df_d = (-rd * t).exp();
+        let df_f = (-rf * t).exp();
+
+        let dig_flat = df_d * norm_cdf(d2);
+        let vega_gk = s0 * df_f * norm_pdf(d1) * sqrt_t;
+
+        // Wystup (2017, Ch. 1.6, Eq. 1.38): D_skew(K) = -dC_mkt/dK = D_BS(K) - Vega_GK(K) * (dsigma / dK):
+        let skew_corr = -vega_gk * dsig_dk;
+        let dig_skew = dig_flat + skew_corr;
+
+        // Symmetric call-spread static over-hedge [C(K - dk, sigma(K - dk)) - C(K + dk, sigma(K + dk))] / (2 * dk):
+        let k_lo = (k - dk).max_val(T::from_f64(1e-4));
+        let k_hi = k + dk;
+        let sig_lo = (sig_k - dsig_dk * dk).max_val(T::from_f64(0.01));
+        let sig_hi = (sig_k + dsig_dk * dk).max_val(T::from_f64(0.01));
+        let c_lo = gk_call_with_vol(s0, k_lo, rd, rf, sig_lo, t);
+        let c_hi = gk_call_with_vol(s0, k_hi, rd, rf, sig_hi, t);
+        let gearing = T::one() / (T::from_f64(2.0) * dk);
+        let cs_replicated = (c_lo - c_hi) * gearing;
+
+        WystupFxDigitalSkewOverhedgeReport {
+            flat_smile_digital_call_price: dig_flat,
+            vanilla_garman_kohlhagen_vega: vega_gk,
+            smile_skew_digital_correction: skew_corr,
+            skew_adjusted_digital_call_price: dig_skew,
+            call_spread_overhedge_notional_gearing: gearing,
+            call_spread_replicated_digital_price: cs_replicated,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_wystup_fx_digital_call_spread_skew_overhedge_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn wystup_fx_digital_call_spread_skew_overhedge_invariants_and_ad_parity() {
+            let spec = WystupFxDigitalSkewOverhedgeSpec {
+                spot_fx_s0: 1.0850,
+                digital_strike_k: 1.1000,
+                domestic_rate_rd: 0.045,
+                foreign_rate_rf: 0.030,
+                atm_or_strike_vol_sigma_k: 0.095,
+                smile_slope_dsigma_dk: -0.18,
+                call_spread_half_width_dk: 0.0050,
+                expiry_years_t: 0.50,
+            };
+            let rep = evaluate_wystup_fx_digital_call_spread_skew_overhedge(&spec);
+            assert!(rep.smile_skew_digital_correction > 0.0);
+            assert!(rep.skew_adjusted_digital_call_price > rep.flat_smile_digital_call_price);
+            assert!(
+                (rep.skew_adjusted_digital_call_price - rep.call_spread_replicated_digital_price)
+                    .abs()
+                    < 5e-3
+            );
+
+            let h = 1e-5;
+            let r_ad = evaluate_wystup_fx_digital_call_spread_skew_overhedge(
+                &WystupFxDigitalSkewOverhedgeSpec {
+                    spot_fx_s0: Dual::<8>::variable(spec.spot_fx_s0, 0),
+                    digital_strike_k: Dual::<8>::variable(spec.digital_strike_k, 1),
+                    domestic_rate_rd: Dual::<8>::variable(spec.domestic_rate_rd, 2),
+                    foreign_rate_rf: Dual::<8>::variable(spec.foreign_rate_rf, 3),
+                    atm_or_strike_vol_sigma_k: Dual::<8>::variable(
+                        spec.atm_or_strike_vol_sigma_k,
+                        4,
+                    ),
+                    smile_slope_dsigma_dk: Dual::<8>::variable(spec.smile_slope_dsigma_dk, 5),
+                    call_spread_half_width_dk: Dual::<8>::variable(
+                        spec.call_spread_half_width_dk,
+                        6,
+                    ),
+                    expiry_years_t: Dual::<8>::variable(spec.expiry_years_t, 7),
+                },
+            );
+            let comp_ad =
+                r_ad.skew_adjusted_digital_call_price + r_ad.call_spread_replicated_digital_price;
+            for (idx, &ad) in comp_ad.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.spot_fx_s0 += h;
+                        sm.spot_fx_s0 -= h;
+                    }
+                    1 => {
+                        sp.digital_strike_k += h;
+                        sm.digital_strike_k -= h;
+                    }
+                    2 => {
+                        sp.domestic_rate_rd += h;
+                        sm.domestic_rate_rd -= h;
+                    }
+                    3 => {
+                        sp.foreign_rate_rf += h;
+                        sm.foreign_rate_rf -= h;
+                    }
+                    4 => {
+                        sp.atm_or_strike_vol_sigma_k += h;
+                        sm.atm_or_strike_vol_sigma_k -= h;
+                    }
+                    5 => {
+                        sp.smile_slope_dsigma_dk += h;
+                        sm.smile_slope_dsigma_dk -= h;
+                    }
+                    6 => {
+                        sp.call_spread_half_width_dk += h;
+                        sm.call_spread_half_width_dk -= h;
+                    }
+                    _ => {
+                        sp.expiry_years_t += h;
+                        sm.expiry_years_t -= h;
+                    }
+                }
+                let rp = evaluate_wystup_fx_digital_call_spread_skew_overhedge(&sp);
+                let rm = evaluate_wystup_fx_digital_call_spread_skew_overhedge(&sm);
+                let fd = ((rp.skew_adjusted_digital_call_price
+                    + rp.call_spread_replicated_digital_price)
+                    - (rm.skew_adjusted_digital_call_price
+                        + rm.call_spread_replicated_digital_price))
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_wystup_fx_digital_call_spread_skew_overhedge_module::*;

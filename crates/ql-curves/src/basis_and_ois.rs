@@ -1161,3 +1161,203 @@ mod evaluate_andersen_sofr_futures_fra_convexity_module {
     }
 }
 pub use evaluate_andersen_sofr_futures_fra_convexity_module::*;
+
+mod evaluate_piterbarg_collateral_choice_option_funding_wedge_module {
+    // Piterbarg (2010, Risk, "Funding Beyond Discounting: Collateral Agreements and Derivatives Pricing")
+    // & Andersen-Piterbarg (2010, Vol. I) Collateralized vs. Uncollateralized Option Discounting & Funding Wedge Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct PiterbargCollateralOptionFundingWedgeSpec<T: Real = f64> {
+        pub spot_price_s0: T,
+        pub strike_price_k: T,
+        pub csa_collateral_rate_r_c: T,
+        pub equity_repo_financing_rate_r_r: T,
+        pub unsecured_funding_spread_s_f: T,
+        pub dividend_yield_q: T,
+        pub equity_volatility_sigma_s: T,
+        pub funding_spread_volatility_sigma_f: T,
+        pub equity_funding_correlation_rho_sf: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct PiterbargCollateralOptionFundingWedgeReport<T: Real = f64> {
+        pub repo_implied_forward_price: T,
+        pub csa_collateralized_call_price: T,
+        pub uncollateralized_funding_discounted_call_price: T,
+        pub deterministic_funding_discount_wedge: T,
+        pub funding_equity_correlation_convexity_adj: T,
+        pub total_piterbarg_funding_adjusted_call_price: T,
+        pub implied_funding_value_adjustment_fva: T,
+    }
+
+    pub fn evaluate_piterbarg_collateral_choice_option_funding_wedge<T: Real>(
+        spec: &PiterbargCollateralOptionFundingWedgeSpec<T>,
+    ) -> PiterbargCollateralOptionFundingWedgeReport<T> {
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(1.0));
+        let k = spec.strike_price_k.max_val(T::from_f64(1.0));
+        let r_c = spec.csa_collateral_rate_r_c;
+        let r_r = spec.equity_repo_financing_rate_r_r;
+        let s_f = spec.unsecured_funding_spread_s_f.max_val(T::from_f64(1e-4));
+        let q = spec.dividend_yield_q;
+        let sig_s = spec.equity_volatility_sigma_s.max_val(T::from_f64(0.05));
+        let sig_f = spec.funding_spread_volatility_sigma_f.max_val(T::zero());
+        let rho_sf = spec
+            .equity_funding_correlation_rho_sf
+            .max_val(T::from_f64(-0.95))
+            .min_val(T::from_f64(0.95));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+        let r_f = r_c + s_f;
+        let f_repo = s0 * ((r_r - q) * t).exp();
+        let std = sig_s * t.sqrt();
+        let d1 = ((f_repo / k).ln() + T::from_f64(0.5) * sig_s * sig_s * t) / std;
+        let d2 = d1 - std;
+
+        let fwd_call = f_repo * norm_cdf(d1) - k * norm_cdf(d2);
+        let df_csa = (-r_c * t).exp();
+        let df_fund = (-r_f * t).exp();
+
+        let v_csa = df_csa * fwd_call;
+        let v_uncoll = df_fund * fwd_call;
+        let det_wedge = v_csa - v_uncoll;
+
+        // Funding-equity correlation convexity adjustment (1/2 * T^2 Girsanov measure-change integral):
+        let conv_adj =
+            -T::from_f64(0.5) * df_fund * f_repo * norm_cdf(d1) * rho_sf * sig_s * sig_f * t * t;
+        let v_total = v_uncoll + conv_adj;
+        let fva = v_csa - v_total;
+
+        PiterbargCollateralOptionFundingWedgeReport {
+            repo_implied_forward_price: f_repo,
+            csa_collateralized_call_price: v_csa,
+            uncollateralized_funding_discounted_call_price: v_uncoll,
+            deterministic_funding_discount_wedge: det_wedge,
+            funding_equity_correlation_convexity_adj: conv_adj,
+            total_piterbarg_funding_adjusted_call_price: v_total,
+            implied_funding_value_adjustment_fva: fva,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_piterbarg_collateral_choice_option_funding_wedge_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn piterbarg_collateral_option_funding_wedge_invariants_and_ad_parity() {
+            let spec = PiterbargCollateralOptionFundingWedgeSpec {
+                spot_price_s0: 100.0,
+                strike_price_k: 100.0,
+                csa_collateral_rate_r_c: 0.038,
+                equity_repo_financing_rate_r_r: 0.042,
+                unsecured_funding_spread_s_f: 0.015,
+                dividend_yield_q: 0.015,
+                equity_volatility_sigma_s: 0.24,
+                funding_spread_volatility_sigma_f: 0.008,
+                equity_funding_correlation_rho_sf: -0.35,
+                maturity_years_t: 2.0,
+            };
+            let rep = evaluate_piterbarg_collateral_choice_option_funding_wedge(&spec);
+            assert!(
+                rep.csa_collateralized_call_price
+                    > rep.uncollateralized_funding_discounted_call_price
+            );
+            assert!(rep.deterministic_funding_discount_wedge > 0.0);
+            assert!(rep.funding_equity_correlation_convexity_adj > 0.0);
+
+            let h = 1e-5;
+            let r_ad = evaluate_piterbarg_collateral_choice_option_funding_wedge(
+                &PiterbargCollateralOptionFundingWedgeSpec {
+                    spot_price_s0: Dual::<10>::variable(spec.spot_price_s0, 0),
+                    strike_price_k: Dual::<10>::variable(spec.strike_price_k, 1),
+                    csa_collateral_rate_r_c: Dual::<10>::variable(spec.csa_collateral_rate_r_c, 2),
+                    equity_repo_financing_rate_r_r: Dual::<10>::variable(
+                        spec.equity_repo_financing_rate_r_r,
+                        3,
+                    ),
+                    unsecured_funding_spread_s_f: Dual::<10>::variable(
+                        spec.unsecured_funding_spread_s_f,
+                        4,
+                    ),
+                    dividend_yield_q: Dual::<10>::variable(spec.dividend_yield_q, 5),
+                    equity_volatility_sigma_s: Dual::<10>::variable(
+                        spec.equity_volatility_sigma_s,
+                        6,
+                    ),
+                    funding_spread_volatility_sigma_f: Dual::<10>::variable(
+                        spec.funding_spread_volatility_sigma_f,
+                        7,
+                    ),
+                    equity_funding_correlation_rho_sf: Dual::<10>::variable(
+                        spec.equity_funding_correlation_rho_sf,
+                        8,
+                    ),
+                    maturity_years_t: Dual::<10>::variable(spec.maturity_years_t, 9),
+                },
+            );
+            for (idx, &ad) in r_ad
+                .total_piterbarg_funding_adjusted_call_price
+                .d
+                .iter()
+                .enumerate()
+            {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.spot_price_s0 += h;
+                        sm.spot_price_s0 -= h;
+                    }
+                    1 => {
+                        sp.strike_price_k += h;
+                        sm.strike_price_k -= h;
+                    }
+                    2 => {
+                        sp.csa_collateral_rate_r_c += h;
+                        sm.csa_collateral_rate_r_c -= h;
+                    }
+                    3 => {
+                        sp.equity_repo_financing_rate_r_r += h;
+                        sm.equity_repo_financing_rate_r_r -= h;
+                    }
+                    4 => {
+                        sp.unsecured_funding_spread_s_f += h;
+                        sm.unsecured_funding_spread_s_f -= h;
+                    }
+                    5 => {
+                        sp.dividend_yield_q += h;
+                        sm.dividend_yield_q -= h;
+                    }
+                    6 => {
+                        sp.equity_volatility_sigma_s += h;
+                        sm.equity_volatility_sigma_s -= h;
+                    }
+                    7 => {
+                        sp.funding_spread_volatility_sigma_f += h;
+                        sm.funding_spread_volatility_sigma_f -= h;
+                    }
+                    8 => {
+                        sp.equity_funding_correlation_rho_sf += h;
+                        sm.equity_funding_correlation_rho_sf -= h;
+                    }
+                    _ => {
+                        sp.maturity_years_t += h;
+                        sm.maturity_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_piterbarg_collateral_choice_option_funding_wedge(&sp)
+                    .total_piterbarg_funding_adjusted_call_price
+                    - evaluate_piterbarg_collateral_choice_option_funding_wedge(&sm)
+                        .total_piterbarg_funding_adjusted_call_price)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-3);
+            }
+        }
+    }
+}
+pub use evaluate_piterbarg_collateral_choice_option_funding_wedge_module::*;

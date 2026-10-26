@@ -1529,3 +1529,168 @@ mod evaluate_okane_cds_index_intrinsic_skew_basis_module {
     }
 }
 pub use evaluate_okane_cds_index_intrinsic_skew_basis_module::*;
+
+mod evaluate_merton_kmv_distance_to_default_credit_equity_hedge_module {
+    // Merton (1974, J. Finance) & Crosbie-Bohn (Moody's KMV, 2003, Modeling Default Risk)
+    // Structural Distance-to-Default (DD), Expected Default Frequency (EDF) & Credit-Equity Hedge Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct MertonKmvDistanceToDefaultHedgeSpec<T: Real = f64> {
+        pub asset_value_v_a: T,
+        pub short_term_debt_std: T,
+        pub long_term_debt_ltd: T,
+        pub physical_asset_drift_mu_a: T,
+        pub risk_free_rate_r: T,
+        pub asset_volatility_sigma_a: T,
+        pub horizon_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct MertonKmvDistanceToDefaultHedgeReport<T: Real = f64> {
+        pub kmv_default_point_dp: T,
+        pub physical_distance_to_default_dd: T,
+        pub physical_expected_default_freq_edf: T,
+        pub merton_equity_value: T,
+        pub merton_risky_debt_value: T,
+        pub structural_credit_spread_bps: T,
+        pub implied_equity_volatility_sigma_e: T,
+        pub debt_to_equity_hedge_ratio_delta: T,
+    }
+
+    pub fn evaluate_merton_kmv_distance_to_default_credit_equity_hedge<T: Real>(
+        spec: &MertonKmvDistanceToDefaultHedgeSpec<T>,
+    ) -> MertonKmvDistanceToDefaultHedgeReport<T> {
+        let va = spec.asset_value_v_a.max_val(T::from_f64(1.0));
+        let std_debt = spec.short_term_debt_std.max_val(T::from_f64(0.1));
+        let ltd_debt = spec.long_term_debt_ltd.max_val(T::zero());
+        let mu_a = spec.physical_asset_drift_mu_a;
+        let r = spec.risk_free_rate_r;
+        let sig_a = spec.asset_volatility_sigma_a.max_val(T::from_f64(0.02));
+        let t = spec.horizon_years_t.max_val(T::from_f64(0.1));
+
+        // Crosbie-Bohn (2003) Moody's KMV default point DP = STD + 0.5 * LTD:
+        let dp = std_debt + T::from_f64(0.5) * ltd_debt;
+        let vol_sqrt_t = sig_a * t.sqrt();
+
+        let dd_phys = ((va / dp).ln() + (mu_a - T::from_f64(0.5) * sig_a * sig_a) * t) / vol_sqrt_t;
+        let edf_phys = norm_cdf(-dd_phys);
+
+        let d2 = ((va / dp).ln() + (r - T::from_f64(0.5) * sig_a * sig_a) * t) / vol_sqrt_t;
+        let d1 = d2 + vol_sqrt_t;
+        let nd1 = norm_cdf(d1);
+        let nd2 = norm_cdf(d2);
+
+        let df = (-r * t).exp();
+        let eq_val = (va * nd1 - dp * df * nd2).max_val(T::from_f64(1e-4));
+        let debt_val = va - eq_val;
+
+        // Merton (1974) structural credit spread s_M = -(1/T) * ln(D / (DP * e^{-rT})):
+        let risky_df_ratio = (debt_val / (dp * df))
+            .min_val(T::one())
+            .max_val(T::from_f64(1e-6));
+        let credit_spread_bps = (-risky_df_ratio.ln() / t) * T::from_f64(10_000.0);
+
+        let sig_e = (va / eq_val) * nd1 * sig_a;
+        let hedge_ratio = (T::one() - nd1) / nd1.max_val(T::from_f64(1e-4));
+
+        MertonKmvDistanceToDefaultHedgeReport {
+            kmv_default_point_dp: dp,
+            physical_distance_to_default_dd: dd_phys,
+            physical_expected_default_freq_edf: edf_phys,
+            merton_equity_value: eq_val,
+            merton_risky_debt_value: debt_val,
+            structural_credit_spread_bps: credit_spread_bps,
+            implied_equity_volatility_sigma_e: sig_e,
+            debt_to_equity_hedge_ratio_delta: hedge_ratio,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_merton_kmv_distance_to_default_credit_equity_hedge_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn merton_kmv_distance_to_default_invariants_and_ad_parity() {
+            let spec = MertonKmvDistanceToDefaultHedgeSpec {
+                asset_value_v_a: 165.0,
+                short_term_debt_std: 45.0,
+                long_term_debt_ltd: 90.0,
+                physical_asset_drift_mu_a: 0.075,
+                risk_free_rate_r: 0.040,
+                asset_volatility_sigma_a: 0.24,
+                horizon_years_t: 3.0,
+            };
+            let rep = evaluate_merton_kmv_distance_to_default_credit_equity_hedge(&spec);
+            assert!((rep.kmv_default_point_dp - 90.0).abs() < 1e-12);
+            assert!(rep.physical_distance_to_default_dd > 1.0);
+            assert!(rep.structural_credit_spread_bps > 10.0);
+            assert!(rep.implied_equity_volatility_sigma_e > spec.asset_volatility_sigma_a);
+
+            let h = 1e-5;
+            let r_ad = evaluate_merton_kmv_distance_to_default_credit_equity_hedge(
+                &MertonKmvDistanceToDefaultHedgeSpec {
+                    asset_value_v_a: Dual::<7>::variable(spec.asset_value_v_a, 0),
+                    short_term_debt_std: Dual::<7>::variable(spec.short_term_debt_std, 1),
+                    long_term_debt_ltd: Dual::<7>::variable(spec.long_term_debt_ltd, 2),
+                    physical_asset_drift_mu_a: Dual::<7>::variable(
+                        spec.physical_asset_drift_mu_a,
+                        3,
+                    ),
+                    risk_free_rate_r: Dual::<7>::variable(spec.risk_free_rate_r, 4),
+                    asset_volatility_sigma_a: Dual::<7>::variable(spec.asset_volatility_sigma_a, 5),
+                    horizon_years_t: Dual::<7>::variable(spec.horizon_years_t, 6),
+                },
+            );
+            let comp_ad = r_ad.structural_credit_spread_bps
+                + r_ad.physical_distance_to_default_dd * Dual::<7>::from_value(10.0);
+            for (idx, &ad) in comp_ad.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.asset_value_v_a += h;
+                        sm.asset_value_v_a -= h;
+                    }
+                    1 => {
+                        sp.short_term_debt_std += h;
+                        sm.short_term_debt_std -= h;
+                    }
+                    2 => {
+                        sp.long_term_debt_ltd += h;
+                        sm.long_term_debt_ltd -= h;
+                    }
+                    3 => {
+                        sp.physical_asset_drift_mu_a += h;
+                        sm.physical_asset_drift_mu_a -= h;
+                    }
+                    4 => {
+                        sp.risk_free_rate_r += h;
+                        sm.risk_free_rate_r -= h;
+                    }
+                    5 => {
+                        sp.asset_volatility_sigma_a += h;
+                        sm.asset_volatility_sigma_a -= h;
+                    }
+                    _ => {
+                        sp.horizon_years_t += h;
+                        sm.horizon_years_t -= h;
+                    }
+                }
+                let rp = evaluate_merton_kmv_distance_to_default_credit_equity_hedge(&sp);
+                let rm = evaluate_merton_kmv_distance_to_default_credit_equity_hedge(&sm);
+                let fd = ((rp.structural_credit_spread_bps
+                    + rp.physical_distance_to_default_dd * 10.0)
+                    - (rm.structural_credit_spread_bps
+                        + rm.physical_distance_to_default_dd * 10.0))
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-3);
+            }
+        }
+    }
+}
+pub use evaluate_merton_kmv_distance_to_default_credit_equity_hedge_module::*;

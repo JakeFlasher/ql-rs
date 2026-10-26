@@ -1807,3 +1807,197 @@ mod evaluate_bessembinder_lemmon_power_forward_premium_module {
     }
 }
 pub use evaluate_bessembinder_lemmon_power_forward_premium_module::*;
+
+mod evaluate_deng_johnson_locational_transmission_congestion_option_module {
+    // Deng, Johnson & Sogomonian (2001, Energy Economics) & Eydeland-Wolyniec (2003, Ch. 9)
+    // Locational Electricity Transmission Congestion Option (FTR), Line-Loss Factor & Congestion Rent Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct DengJohnsonTransmissionCongestionOptionSpec<T: Real = f64> {
+        pub sink_hub_forward_price_fb: T,
+        pub source_hub_forward_price_fa: T,
+        pub transmission_loss_factor_eta: T,
+        pub wheeling_tariff_strike_k_trans: T,
+        pub sink_hub_volatility_sigma_b: T,
+        pub source_hub_volatility_sigma_a: T,
+        pub hub_price_correlation_rho_ab: T,
+        pub risk_free_rate_r: T,
+        pub expiry_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct DengJohnsonTransmissionCongestionOptionReport<T: Real = f64> {
+        pub loss_adjusted_sink_forward: T,
+        pub kirk_effective_spread_volatility: T,
+        pub ftr_option_value_per_mwh: T,
+        pub ftr_obligation_value_per_mwh: T,
+        pub counterflow_optionality_value_per_mwh: T,
+        pub sink_hub_shadow_delta: T,
+    }
+
+    pub fn evaluate_deng_johnson_locational_transmission_congestion_option<T: Real>(
+        spec: &DengJohnsonTransmissionCongestionOptionSpec<T>,
+    ) -> DengJohnsonTransmissionCongestionOptionReport<T> {
+        let fb = spec.sink_hub_forward_price_fb.max_val(T::from_f64(1.0));
+        let fa = spec.source_hub_forward_price_fa.max_val(T::from_f64(1.0));
+        let eta = spec
+            .transmission_loss_factor_eta
+            .max_val(T::from_f64(0.50))
+            .min_val(T::one());
+        let k_tr = spec
+            .wheeling_tariff_strike_k_trans
+            .max_val(T::from_f64(0.1));
+        let sig_b = spec.sink_hub_volatility_sigma_b.max_val(T::from_f64(0.05));
+        let sig_a = spec
+            .source_hub_volatility_sigma_a
+            .max_val(T::from_f64(0.05));
+        let rho = spec
+            .hub_price_correlation_rho_ab
+            .max_val(T::from_f64(-0.95))
+            .min_val(T::from_f64(0.95));
+        let r = spec.risk_free_rate_r;
+        let t = spec.expiry_years_t.max_val(T::from_f64(0.05));
+
+        let fb_eff = eta * fb;
+        let f_comp = fa + k_tr;
+        let w_a = fa / f_comp;
+
+        let var_kirk = (sig_b * sig_b - T::from_f64(2.0) * w_a * rho * sig_a * sig_b
+            + w_a * w_a * sig_a * sig_a)
+            .max_val(T::from_f64(1e-4));
+        let sig_kirk = var_kirk.sqrt();
+        let std = sig_kirk * t.sqrt();
+
+        let d1 = ((fb_eff / f_comp).ln() + T::from_f64(0.5) * var_kirk * t) / std;
+        let d2 = d1 - std;
+
+        let df = (-r * t).exp();
+        let ftr_opt = df * (fb_eff * norm_cdf(d1) - f_comp * norm_cdf(d2));
+        let ftr_ob = df * (fb_eff - f_comp);
+        let counterflow_opt = ftr_opt - ftr_ob;
+        let sink_delta = eta * df * norm_cdf(d1);
+
+        DengJohnsonTransmissionCongestionOptionReport {
+            loss_adjusted_sink_forward: fb_eff,
+            kirk_effective_spread_volatility: sig_kirk,
+            ftr_option_value_per_mwh: ftr_opt,
+            ftr_obligation_value_per_mwh: ftr_ob,
+            counterflow_optionality_value_per_mwh: counterflow_opt,
+            sink_hub_shadow_delta: sink_delta,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_deng_johnson_locational_transmission_congestion_option_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn deng_johnson_locational_transmission_option_invariants_and_ad_parity() {
+            let spec = DengJohnsonTransmissionCongestionOptionSpec {
+                sink_hub_forward_price_fb: 68.0,
+                source_hub_forward_price_fa: 54.0,
+                transmission_loss_factor_eta: 0.96,
+                wheeling_tariff_strike_k_trans: 4.5,
+                sink_hub_volatility_sigma_b: 0.48,
+                source_hub_volatility_sigma_a: 0.42,
+                hub_price_correlation_rho_ab: 0.78,
+                risk_free_rate_r: 0.04,
+                expiry_years_t: 0.50,
+            };
+            let rep = evaluate_deng_johnson_locational_transmission_congestion_option(&spec);
+            assert!(rep.ftr_option_value_per_mwh > rep.ftr_obligation_value_per_mwh);
+            assert!(rep.counterflow_optionality_value_per_mwh > 0.0);
+            assert!(rep.sink_hub_shadow_delta > 0.0);
+
+            let h = 1e-5;
+            let r_ad = evaluate_deng_johnson_locational_transmission_congestion_option(
+                &DengJohnsonTransmissionCongestionOptionSpec {
+                    sink_hub_forward_price_fb: Dual::<9>::variable(
+                        spec.sink_hub_forward_price_fb,
+                        0,
+                    ),
+                    source_hub_forward_price_fa: Dual::<9>::variable(
+                        spec.source_hub_forward_price_fa,
+                        1,
+                    ),
+                    transmission_loss_factor_eta: Dual::<9>::variable(
+                        spec.transmission_loss_factor_eta,
+                        2,
+                    ),
+                    wheeling_tariff_strike_k_trans: Dual::<9>::variable(
+                        spec.wheeling_tariff_strike_k_trans,
+                        3,
+                    ),
+                    sink_hub_volatility_sigma_b: Dual::<9>::variable(
+                        spec.sink_hub_volatility_sigma_b,
+                        4,
+                    ),
+                    source_hub_volatility_sigma_a: Dual::<9>::variable(
+                        spec.source_hub_volatility_sigma_a,
+                        5,
+                    ),
+                    hub_price_correlation_rho_ab: Dual::<9>::variable(
+                        spec.hub_price_correlation_rho_ab,
+                        6,
+                    ),
+                    risk_free_rate_r: Dual::<9>::variable(spec.risk_free_rate_r, 7),
+                    expiry_years_t: Dual::<9>::variable(spec.expiry_years_t, 8),
+                },
+            );
+            for (idx, &ad) in r_ad.ftr_option_value_per_mwh.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.sink_hub_forward_price_fb += h;
+                        sm.sink_hub_forward_price_fb -= h;
+                    }
+                    1 => {
+                        sp.source_hub_forward_price_fa += h;
+                        sm.source_hub_forward_price_fa -= h;
+                    }
+                    2 => {
+                        sp.transmission_loss_factor_eta += h;
+                        sm.transmission_loss_factor_eta -= h;
+                    }
+                    3 => {
+                        sp.wheeling_tariff_strike_k_trans += h;
+                        sm.wheeling_tariff_strike_k_trans -= h;
+                    }
+                    4 => {
+                        sp.sink_hub_volatility_sigma_b += h;
+                        sm.sink_hub_volatility_sigma_b -= h;
+                    }
+                    5 => {
+                        sp.source_hub_volatility_sigma_a += h;
+                        sm.source_hub_volatility_sigma_a -= h;
+                    }
+                    6 => {
+                        sp.hub_price_correlation_rho_ab += h;
+                        sm.hub_price_correlation_rho_ab -= h;
+                    }
+                    7 => {
+                        sp.risk_free_rate_r += h;
+                        sm.risk_free_rate_r -= h;
+                    }
+                    _ => {
+                        sp.expiry_years_t += h;
+                        sm.expiry_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_deng_johnson_locational_transmission_congestion_option(&sp)
+                    .ftr_option_value_per_mwh
+                    - evaluate_deng_johnson_locational_transmission_congestion_option(&sm)
+                        .ftr_option_value_per_mwh)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_deng_johnson_locational_transmission_congestion_option_module::*;

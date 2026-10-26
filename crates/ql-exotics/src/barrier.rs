@@ -354,3 +354,142 @@ mod evaluate_carr_chou_put_call_symmetry_barrier_replication_module {
     }
 }
 pub use evaluate_carr_chou_put_call_symmetry_barrier_replication_module::*;
+
+mod evaluate_conze_viswanathan_fixed_strike_lookback_excursion_module {
+    // Conze & Viswanathan (1991, J. Finance, "Path Dependent Options: The Case of Lookback Options")
+    // & Haug (2007, Ch. 4.15.1) Fixed-Strike Lookback Call Option & Running-Maximum Excursion Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct ConzeViswanathanFixedStrikeLookbackSpec<T: Real = f64> {
+        pub spot_price_s0: T,
+        pub fixed_strike_k: T,
+        pub risk_free_rate_r: T,
+        pub dividend_yield_q: T,
+        pub volatility_sigma: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct ConzeViswanathanFixedStrikeLookbackReport<T: Real = f64> {
+        pub standard_european_call_value: T,
+        pub maximum_excursion_reflection_premium: T,
+        pub fixed_strike_lookback_call_value: T,
+        pub lookback_to_european_call_multiplier: T,
+        pub reflection_scale_exponent_lambda: T,
+    }
+
+    pub fn evaluate_conze_viswanathan_fixed_strike_lookback_excursion<T: Real>(
+        spec: &ConzeViswanathanFixedStrikeLookbackSpec<T>,
+    ) -> ConzeViswanathanFixedStrikeLookbackReport<T> {
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(1.0));
+        let k = spec.fixed_strike_k.max_val(s0);
+        let r = spec.risk_free_rate_r;
+        let q = spec.dividend_yield_q;
+        let sig = spec.volatility_sigma.max_val(T::from_f64(0.05));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+        let b = (r - q).max_val(T::from_f64(0.005));
+        let sig2 = sig * sig;
+        let std = sig * t.sqrt();
+
+        let d1 = ((s0 / k).ln() + (b + T::from_f64(0.5) * sig2) * t) / std;
+        let d2 = d1 - std;
+
+        let df_r = (-r * t).exp();
+        let df_q = (-q * t).exp();
+
+        let euro_call = s0 * df_q * norm_cdf(d1) - k * df_r * norm_cdf(d2);
+
+        // Conze & Viswanathan (1991, Eq. 9) / Haug (2007, Ch. 4.15.1) for K >= M_0:
+        let lambda = (T::from_f64(2.0) * b) / sig2;
+        let d3 = d1 - lambda * std;
+        let excursion_prem = (s0 / lambda)
+            * df_r
+            * ((b * t).exp() * norm_cdf(d1) - (s0 / k).pow(-lambda) * norm_cdf(d3));
+        let lookback_call = euro_call + excursion_prem;
+        let mult = lookback_call / euro_call.max_val(T::from_f64(1e-4));
+
+        ConzeViswanathanFixedStrikeLookbackReport {
+            standard_european_call_value: euro_call,
+            maximum_excursion_reflection_premium: excursion_prem,
+            fixed_strike_lookback_call_value: lookback_call,
+            lookback_to_european_call_multiplier: mult,
+            reflection_scale_exponent_lambda: lambda,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_conze_viswanathan_fixed_strike_lookback_excursion_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn conze_viswanathan_fixed_strike_lookback_invariants_and_ad_parity() {
+            let spec = ConzeViswanathanFixedStrikeLookbackSpec {
+                spot_price_s0: 100.0,
+                fixed_strike_k: 105.0,
+                risk_free_rate_r: 0.050,
+                dividend_yield_q: 0.015,
+                volatility_sigma: 0.25,
+                maturity_years_t: 1.0,
+            };
+            let rep = evaluate_conze_viswanathan_fixed_strike_lookback_excursion(&spec);
+            assert!(rep.maximum_excursion_reflection_premium > 0.0);
+            assert!(rep.fixed_strike_lookback_call_value > rep.standard_european_call_value);
+            assert!(rep.lookback_to_european_call_multiplier > 1.5);
+
+            let h = 1e-5;
+            let r_ad = evaluate_conze_viswanathan_fixed_strike_lookback_excursion(
+                &ConzeViswanathanFixedStrikeLookbackSpec {
+                    spot_price_s0: Dual::<6>::variable(spec.spot_price_s0, 0),
+                    fixed_strike_k: Dual::<6>::variable(spec.fixed_strike_k, 1),
+                    risk_free_rate_r: Dual::<6>::variable(spec.risk_free_rate_r, 2),
+                    dividend_yield_q: Dual::<6>::variable(spec.dividend_yield_q, 3),
+                    volatility_sigma: Dual::<6>::variable(spec.volatility_sigma, 4),
+                    maturity_years_t: Dual::<6>::variable(spec.maturity_years_t, 5),
+                },
+            );
+            for (idx, &ad) in r_ad.fixed_strike_lookback_call_value.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.spot_price_s0 += h;
+                        sm.spot_price_s0 -= h;
+                    }
+                    1 => {
+                        sp.fixed_strike_k += h;
+                        sm.fixed_strike_k -= h;
+                    }
+                    2 => {
+                        sp.risk_free_rate_r += h;
+                        sm.risk_free_rate_r -= h;
+                    }
+                    3 => {
+                        sp.dividend_yield_q += h;
+                        sm.dividend_yield_q -= h;
+                    }
+                    4 => {
+                        sp.volatility_sigma += h;
+                        sm.volatility_sigma -= h;
+                    }
+                    _ => {
+                        sp.maturity_years_t += h;
+                        sm.maturity_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_conze_viswanathan_fixed_strike_lookback_excursion(&sp)
+                    .fixed_strike_lookback_call_value
+                    - evaluate_conze_viswanathan_fixed_strike_lookback_excursion(&sm)
+                        .fixed_strike_lookback_call_value)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_conze_viswanathan_fixed_strike_lookback_excursion_module::*;

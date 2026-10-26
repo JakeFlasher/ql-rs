@@ -1725,3 +1725,188 @@ mod evaluate_fabozzi_callable_muni_ytw_refunding_module {
     }
 }
 pub use evaluate_fabozzi_callable_muni_ytw_refunding_module::*;
+
+mod evaluate_tuckman_par_spot_forward_rolldown_horizon_return_module {
+    // Tuckman & Serrat (2012, Fixed Income Securities, 3rd ed., Ch. 4-5) & Fabozzi (2021)
+    // Par-Spot-Forward Roll-Down Horizon Return, Carry-Convexity Pickup & Breakeven Yield Widening Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TuckmanRolldownHorizonReturnSpec<T: Real = f64> {
+        pub initial_maturity_years_t: T,
+        pub holding_horizon_years_dt: T,
+        pub current_bond_yield_y_t: T,
+        pub rolled_maturity_yield_y_t_minus_dt: T,
+        pub short_financing_rate_r_dt: T,
+        pub annual_coupon_rate_c: T,
+        pub modified_duration_at_horizon_d_mod: T,
+        pub convexity_at_horizon_conv: T,
+        pub expected_parallel_shift_bps: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TuckmanRolldownHorizonReturnReport<T: Real = f64> {
+        pub implied_forward_rate_f_dt_t: T,
+        pub annualized_rolldown_yield_pickup_bps: T,
+        pub rolldown_price_appreciation_pct: T,
+        pub convexity_return_pickup_pct: T,
+        pub horizon_expected_excess_return_pct: T,
+        pub breakeven_yield_widening_bps: T,
+    }
+
+    pub fn evaluate_tuckman_par_spot_forward_rolldown_horizon_return<T: Real>(
+        spec: &TuckmanRolldownHorizonReturnSpec<T>,
+    ) -> TuckmanRolldownHorizonReturnReport<T> {
+        let t = spec.initial_maturity_years_t.max_val(T::from_f64(1.0));
+        let dt = spec
+            .holding_horizon_years_dt
+            .max_val(T::from_f64(0.05))
+            .min_val(t - T::from_f64(0.25));
+        let y_t = spec.current_bond_yield_y_t;
+        let y_roll = spec.rolled_maturity_yield_y_t_minus_dt;
+        let r_fin = spec.short_financing_rate_r_dt;
+        let c = spec.annual_coupon_rate_c;
+        let d_mod = spec
+            .modified_duration_at_horizon_d_mod
+            .max_val(T::from_f64(0.25));
+        let conv = spec.convexity_at_horizon_conv.max_val(T::zero());
+        let dy_view = spec.expected_parallel_shift_bps * T::from_f64(1e-4);
+
+        let rem_t = (t - dt).max_val(T::from_f64(0.25));
+        let f_impl = (y_t * t - r_fin * dt) / rem_t;
+
+        let rolldown_dy = y_t - y_roll;
+        let rolldown_bps = rolldown_dy * T::from_f64(10_000.0);
+        let rolldown_price_pct = d_mod * rolldown_dy * T::from_f64(100.0);
+
+        let dy_total = (y_roll - y_t) + dy_view;
+        let conv_pct = T::from_f64(0.5) * conv * dy_total * dy_total * T::from_f64(100.0);
+
+        let y_safe = y_t.max_val(T::from_f64(1e-4));
+        let ann_t = (T::one() - (-y_safe * t).exp()) / y_safe;
+        let ann_rem = (T::one() - (-y_safe * rem_t).exp()) / y_safe;
+        let p_0 = T::one() + (c - y_t) * ann_t;
+        let p_const_y = T::one() + (c - y_t) * ann_rem;
+        let carry_excess = (c * dt + (p_const_y - p_0)) / p_0 - r_fin * dt;
+        let total_excess_pct = (carry_excess - d_mod * dy_total
+            + T::from_f64(0.5) * conv * dy_total * dy_total)
+            * T::from_f64(100.0);
+
+        let breakeven_bps = ((carry_excess + d_mod * rolldown_dy) / d_mod) * T::from_f64(10_000.0);
+
+        TuckmanRolldownHorizonReturnReport {
+            implied_forward_rate_f_dt_t: f_impl,
+            annualized_rolldown_yield_pickup_bps: rolldown_bps,
+            rolldown_price_appreciation_pct: rolldown_price_pct,
+            convexity_return_pickup_pct: conv_pct,
+            horizon_expected_excess_return_pct: total_excess_pct,
+            breakeven_yield_widening_bps: breakeven_bps,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_tuckman_par_spot_forward_rolldown_horizon_return_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn tuckman_par_spot_forward_rolldown_invariants_and_ad_parity() {
+            let spec = TuckmanRolldownHorizonReturnSpec {
+                initial_maturity_years_t: 7.0,
+                holding_horizon_years_dt: 1.0,
+                current_bond_yield_y_t: 0.0445,
+                rolled_maturity_yield_y_t_minus_dt: 0.0420,
+                short_financing_rate_r_dt: 0.0380,
+                annual_coupon_rate_c: 0.0450,
+                modified_duration_at_horizon_d_mod: 5.20,
+                convexity_at_horizon_conv: 32.5,
+                expected_parallel_shift_bps: 15.0,
+            };
+            let rep = evaluate_tuckman_par_spot_forward_rolldown_horizon_return(&spec);
+            assert!(rep.annualized_rolldown_yield_pickup_bps > 0.0);
+            assert!(rep.rolldown_price_appreciation_pct > 0.0);
+            assert!(rep.breakeven_yield_widening_bps > 20.0);
+
+            let h = 1e-5;
+            let r_ad = evaluate_tuckman_par_spot_forward_rolldown_horizon_return(
+                &TuckmanRolldownHorizonReturnSpec {
+                    initial_maturity_years_t: Dual::<9>::variable(spec.initial_maturity_years_t, 0),
+                    holding_horizon_years_dt: Dual::<9>::variable(spec.holding_horizon_years_dt, 1),
+                    current_bond_yield_y_t: Dual::<9>::variable(spec.current_bond_yield_y_t, 2),
+                    rolled_maturity_yield_y_t_minus_dt: Dual::<9>::variable(
+                        spec.rolled_maturity_yield_y_t_minus_dt,
+                        3,
+                    ),
+                    short_financing_rate_r_dt: Dual::<9>::variable(
+                        spec.short_financing_rate_r_dt,
+                        4,
+                    ),
+                    annual_coupon_rate_c: Dual::<9>::variable(spec.annual_coupon_rate_c, 5),
+                    modified_duration_at_horizon_d_mod: Dual::<9>::variable(
+                        spec.modified_duration_at_horizon_d_mod,
+                        6,
+                    ),
+                    convexity_at_horizon_conv: Dual::<9>::variable(
+                        spec.convexity_at_horizon_conv,
+                        7,
+                    ),
+                    expected_parallel_shift_bps: Dual::<9>::variable(
+                        spec.expected_parallel_shift_bps,
+                        8,
+                    ),
+                },
+            );
+            for (idx, &ad) in r_ad.horizon_expected_excess_return_pct.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.initial_maturity_years_t += h;
+                        sm.initial_maturity_years_t -= h;
+                    }
+                    1 => {
+                        sp.holding_horizon_years_dt += h;
+                        sm.holding_horizon_years_dt -= h;
+                    }
+                    2 => {
+                        sp.current_bond_yield_y_t += h;
+                        sm.current_bond_yield_y_t -= h;
+                    }
+                    3 => {
+                        sp.rolled_maturity_yield_y_t_minus_dt += h;
+                        sm.rolled_maturity_yield_y_t_minus_dt -= h;
+                    }
+                    4 => {
+                        sp.short_financing_rate_r_dt += h;
+                        sm.short_financing_rate_r_dt -= h;
+                    }
+                    5 => {
+                        sp.annual_coupon_rate_c += h;
+                        sm.annual_coupon_rate_c -= h;
+                    }
+                    6 => {
+                        sp.modified_duration_at_horizon_d_mod += h;
+                        sm.modified_duration_at_horizon_d_mod -= h;
+                    }
+                    7 => {
+                        sp.convexity_at_horizon_conv += h;
+                        sm.convexity_at_horizon_conv -= h;
+                    }
+                    _ => {
+                        sp.expected_parallel_shift_bps += h;
+                        sm.expected_parallel_shift_bps -= h;
+                    }
+                }
+                let rp = evaluate_tuckman_par_spot_forward_rolldown_horizon_return(&sp);
+                let rm = evaluate_tuckman_par_spot_forward_rolldown_horizon_return(&sm);
+                let fd = (rp.horizon_expected_excess_return_pct
+                    - rm.horizon_expected_excess_return_pct)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_tuckman_par_spot_forward_rolldown_horizon_return_module::*;

@@ -1359,3 +1359,207 @@ mod evaluate_brigo_capponi_cds_contagion_gap_cva_module {
     }
 }
 pub use evaluate_brigo_capponi_cds_contagion_gap_cva_module::*;
+
+mod evaluate_pykhtin_brownian_bridge_mpor_cashflow_spike_epe_module {
+    // Pykhtin (2009, J. Credit Risk) & Andersen, Pykhtin & Sokol (2017, Risk, "Rethinking Margin Period of Risk")
+    // Margin Period of Risk (MPoR) Brownian-Bridge Unpaid Cashflow Spike & Collateralized EPE Engine.
+
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct PykhtinMporCashflowSpikeEpeSpec<T: Real = f64> {
+        pub annualized_portfolio_mtm_volatility_sigma: T,
+        pub margin_period_of_risk_years_tau_mpor: T,
+        pub csa_threshold_plus_mta: T,
+        pub independent_amount_held_ia: T,
+        pub contractual_cashflow_paid_in_mpor: T,
+        pub post_payment_lookback_weight_theta: T,
+        pub counterparty_hazard_rate_lambda: T,
+        pub counterparty_recovery_rate_r: T,
+        pub ois_discount_rate_r: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct PykhtinMporCashflowSpikeEpeReport<T: Real = f64> {
+        pub mpor_exposure_volatility_sigma_mpor: T,
+        pub classical_continuous_collateralized_epe: T,
+        pub unpaid_cashflow_spike_collateralized_epe: T,
+        pub epe_spike_amplification_ratio: T,
+        pub incremental_cashflow_spike_cva: T,
+        pub total_mpor_collateralized_cva: T,
+    }
+
+    fn bachelier_positive_part_expectation<T: Real>(mu: T, sigma: T) -> T {
+        let d = mu / sigma;
+        mu * norm_cdf(d) + sigma * norm_pdf(d)
+    }
+
+    pub fn evaluate_pykhtin_brownian_bridge_mpor_cashflow_spike_epe<T: Real>(
+        spec: &PykhtinMporCashflowSpikeEpeSpec<T>,
+    ) -> PykhtinMporCashflowSpikeEpeReport<T> {
+        let sig = spec
+            .annualized_portfolio_mtm_volatility_sigma
+            .max_val(T::from_f64(0.1));
+        let tau = spec
+            .margin_period_of_risk_years_tau_mpor
+            .max_val(T::from_f64(1.0 / 365.0));
+        let h_mta = spec.csa_threshold_plus_mta;
+        let ia = spec.independent_amount_held_ia;
+        let cf_paid = spec.contractual_cashflow_paid_in_mpor.max_val(T::zero());
+        let theta = spec
+            .post_payment_lookback_weight_theta
+            .max_val(T::from_f64(0.05))
+            .min_val(T::one());
+        let lam = spec
+            .counterparty_hazard_rate_lambda
+            .max_val(T::from_f64(1e-4));
+        let lgd = (T::one() - spec.counterparty_recovery_rate_r).max_val(T::from_f64(0.05));
+        let r = spec.ois_discount_rate_r;
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.25));
+
+        let sig_mpor = sig * tau.sqrt();
+        let mu_classical = h_mta - ia;
+        let mu_spike = mu_classical + theta * cf_paid;
+
+        let epe_classical = bachelier_positive_part_expectation(mu_classical, sig_mpor);
+        let epe_spike = bachelier_positive_part_expectation(mu_spike, sig_mpor);
+        let amp_ratio = epe_spike / epe_classical.max_val(T::from_f64(1e-4));
+
+        let pd = T::one() - (-lam * t).exp();
+        let df_mid = (-r * T::from_f64(0.5) * t).exp();
+        let cva_classical = lgd * pd * df_mid * epe_classical;
+        let cva_total = lgd * pd * df_mid * epe_spike;
+        let cva_spike_addon = cva_total - cva_classical;
+
+        PykhtinMporCashflowSpikeEpeReport {
+            mpor_exposure_volatility_sigma_mpor: sig_mpor,
+            classical_continuous_collateralized_epe: epe_classical,
+            unpaid_cashflow_spike_collateralized_epe: epe_spike,
+            epe_spike_amplification_ratio: amp_ratio,
+            incremental_cashflow_spike_cva: cva_spike_addon,
+            total_mpor_collateralized_cva: cva_total,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_pykhtin_brownian_bridge_mpor_cashflow_spike_epe_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn pykhtin_brownian_bridge_mpor_cashflow_spike_invariants_and_ad_parity() {
+            let spec = PykhtinMporCashflowSpikeEpeSpec {
+                annualized_portfolio_mtm_volatility_sigma: 28.0,
+                margin_period_of_risk_years_tau_mpor: 10.0 / 252.0,
+                csa_threshold_plus_mta: 2.5,
+                independent_amount_held_ia: 1.0,
+                contractual_cashflow_paid_in_mpor: 6.0,
+                post_payment_lookback_weight_theta: 0.60,
+                counterparty_hazard_rate_lambda: 0.022,
+                counterparty_recovery_rate_r: 0.40,
+                ois_discount_rate_r: 0.038,
+                maturity_years_t: 5.0,
+            };
+            let rep = evaluate_pykhtin_brownian_bridge_mpor_cashflow_spike_epe(&spec);
+            assert!(
+                rep.unpaid_cashflow_spike_collateralized_epe
+                    > rep.classical_continuous_collateralized_epe
+            );
+            assert!(rep.epe_spike_amplification_ratio > 1.2);
+            assert!(rep.incremental_cashflow_spike_cva > 0.0);
+
+            let h = 1e-5;
+            let r_ad = evaluate_pykhtin_brownian_bridge_mpor_cashflow_spike_epe(
+                &PykhtinMporCashflowSpikeEpeSpec {
+                    annualized_portfolio_mtm_volatility_sigma: Dual::<10>::variable(
+                        spec.annualized_portfolio_mtm_volatility_sigma,
+                        0,
+                    ),
+                    margin_period_of_risk_years_tau_mpor: Dual::<10>::variable(
+                        spec.margin_period_of_risk_years_tau_mpor,
+                        1,
+                    ),
+                    csa_threshold_plus_mta: Dual::<10>::variable(spec.csa_threshold_plus_mta, 2),
+                    independent_amount_held_ia: Dual::<10>::variable(
+                        spec.independent_amount_held_ia,
+                        3,
+                    ),
+                    contractual_cashflow_paid_in_mpor: Dual::<10>::variable(
+                        spec.contractual_cashflow_paid_in_mpor,
+                        4,
+                    ),
+                    post_payment_lookback_weight_theta: Dual::<10>::variable(
+                        spec.post_payment_lookback_weight_theta,
+                        5,
+                    ),
+                    counterparty_hazard_rate_lambda: Dual::<10>::variable(
+                        spec.counterparty_hazard_rate_lambda,
+                        6,
+                    ),
+                    counterparty_recovery_rate_r: Dual::<10>::variable(
+                        spec.counterparty_recovery_rate_r,
+                        7,
+                    ),
+                    ois_discount_rate_r: Dual::<10>::variable(spec.ois_discount_rate_r, 8),
+                    maturity_years_t: Dual::<10>::variable(spec.maturity_years_t, 9),
+                },
+            );
+            for (idx, &ad) in r_ad.total_mpor_collateralized_cva.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.annualized_portfolio_mtm_volatility_sigma += h;
+                        sm.annualized_portfolio_mtm_volatility_sigma -= h;
+                    }
+                    1 => {
+                        sp.margin_period_of_risk_years_tau_mpor += h;
+                        sm.margin_period_of_risk_years_tau_mpor -= h;
+                    }
+                    2 => {
+                        sp.csa_threshold_plus_mta += h;
+                        sm.csa_threshold_plus_mta -= h;
+                    }
+                    3 => {
+                        sp.independent_amount_held_ia += h;
+                        sm.independent_amount_held_ia -= h;
+                    }
+                    4 => {
+                        sp.contractual_cashflow_paid_in_mpor += h;
+                        sm.contractual_cashflow_paid_in_mpor -= h;
+                    }
+                    5 => {
+                        sp.post_payment_lookback_weight_theta += h;
+                        sm.post_payment_lookback_weight_theta -= h;
+                    }
+                    6 => {
+                        sp.counterparty_hazard_rate_lambda += h;
+                        sm.counterparty_hazard_rate_lambda -= h;
+                    }
+                    7 => {
+                        sp.counterparty_recovery_rate_r += h;
+                        sm.counterparty_recovery_rate_r -= h;
+                    }
+                    8 => {
+                        sp.ois_discount_rate_r += h;
+                        sm.ois_discount_rate_r -= h;
+                    }
+                    _ => {
+                        sp.maturity_years_t += h;
+                        sm.maturity_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_pykhtin_brownian_bridge_mpor_cashflow_spike_epe(&sp)
+                    .total_mpor_collateralized_cva
+                    - evaluate_pykhtin_brownian_bridge_mpor_cashflow_spike_epe(&sm)
+                        .total_mpor_collateralized_cva)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_pykhtin_brownian_bridge_mpor_cashflow_spike_epe_module::*;

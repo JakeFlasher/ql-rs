@@ -4956,3 +4956,188 @@ mod evaluate_treynor_black_appraisal_portfolio_module {
     }
 }
 pub use evaluate_treynor_black_appraisal_portfolio_module::*;
+
+mod evaluate_tasche_litterman_hot_spots_best_hedge_es_decomposition_module {
+    // Litterman (1996, Risk, "Hot Spots and Hedges") & Tasche (2002, J. Banking & Finance)
+    // Component Expected Shortfall (Hot Spots), Best-Hedge Trade Sizing & Post-Hedge Risk Reduction Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TascheLittermanHotSpotsBestHedgeSpec<T: Real = f64> {
+        pub focal_position_weight_w1: T,
+        pub core_portfolio_weight_w2: T,
+        pub focal_asset_volatility_sigma1: T,
+        pub core_portfolio_volatility_sigma2: T,
+        pub asset_core_correlation_rho12: T,
+        pub focal_expected_return_mu1: T,
+        pub core_expected_return_mu2: T,
+        pub gaussian_es_tail_multiplier_m_alpha: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TascheLittermanHotSpotsBestHedgeReport<T: Real = f64> {
+        pub total_portfolio_expected_shortfall: T,
+        pub focal_marginal_expected_shortfall: T,
+        pub focal_component_expected_shortfall: T,
+        pub focal_hot_spot_percentage_share: T,
+        pub litterman_best_hedge_trade_delta_w1: T,
+        pub post_best_hedge_expected_shortfall: T,
+        pub best_hedge_es_reduction: T,
+    }
+
+    pub fn evaluate_tasche_litterman_hot_spots_best_hedge_es_decomposition<T: Real>(
+        spec: &TascheLittermanHotSpotsBestHedgeSpec<T>,
+    ) -> TascheLittermanHotSpotsBestHedgeReport<T> {
+        let w1 = spec.focal_position_weight_w1;
+        let w2 = spec.core_portfolio_weight_w2;
+        let sig1 = spec
+            .focal_asset_volatility_sigma1
+            .max_val(T::from_f64(0.01));
+        let sig2 = spec
+            .core_portfolio_volatility_sigma2
+            .max_val(T::from_f64(0.01));
+        let rho = spec
+            .asset_core_correlation_rho12
+            .max_val(T::from_f64(-0.95))
+            .min_val(T::from_f64(0.95));
+        let mu1 = spec.focal_expected_return_mu1;
+        let mu2 = spec.core_expected_return_mu2;
+        let m_alpha = spec
+            .gaussian_es_tail_multiplier_m_alpha
+            .max_val(T::from_f64(1.5));
+
+        let cov1p = w1 * sig1 * sig1 + w2 * rho * sig1 * sig2;
+        let var_p = (w1 * w1 * sig1 * sig1
+            + T::from_f64(2.0) * w1 * w2 * rho * sig1 * sig2
+            + w2 * w2 * sig2 * sig2)
+            .max_val(T::from_f64(1e-6));
+        let sig_p = var_p.sqrt();
+
+        let es_total = m_alpha * sig_p - (w1 * mu1 + w2 * mu2);
+        let mes1 = m_alpha * (cov1p / sig_p) - mu1;
+        let ces1 = w1 * mes1;
+        let hot_spot_pct = (ces1 / es_total.max_val(T::from_f64(1e-4))) * T::from_f64(100.0);
+
+        // Litterman (1996) Best-Hedge trade size in asset 1 that orthogonalizes portfolio against asset 1:
+        let delta_w1_best = -cov1p / (sig1 * sig1);
+        let w1_hedged = w1 + delta_w1_best;
+        let sig_p_hedged =
+            (w2.abs() * sig2 * (T::one() - rho * rho).sqrt()).max_val(T::from_f64(1e-4));
+        let es_hedged = m_alpha * sig_p_hedged - (w1_hedged * mu1 + w2 * mu2);
+        let es_reduction = es_total - es_hedged;
+
+        TascheLittermanHotSpotsBestHedgeReport {
+            total_portfolio_expected_shortfall: es_total,
+            focal_marginal_expected_shortfall: mes1,
+            focal_component_expected_shortfall: ces1,
+            focal_hot_spot_percentage_share: hot_spot_pct,
+            litterman_best_hedge_trade_delta_w1: delta_w1_best,
+            post_best_hedge_expected_shortfall: es_hedged,
+            best_hedge_es_reduction: es_reduction,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_tasche_litterman_hot_spots_best_hedge_es_decomposition_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn tasche_litterman_hot_spots_best_hedge_invariants_and_ad_parity() {
+            let spec = TascheLittermanHotSpotsBestHedgeSpec {
+                focal_position_weight_w1: 0.45,
+                core_portfolio_weight_w2: 0.55,
+                focal_asset_volatility_sigma1: 0.28,
+                core_portfolio_volatility_sigma2: 0.16,
+                asset_core_correlation_rho12: 0.50,
+                focal_expected_return_mu1: 0.08,
+                core_expected_return_mu2: 0.06,
+                gaussian_es_tail_multiplier_m_alpha: 2.338,
+            };
+            let rep = evaluate_tasche_litterman_hot_spots_best_hedge_es_decomposition(&spec);
+            assert!(rep.focal_hot_spot_percentage_share > 50.0);
+            assert!(rep.litterman_best_hedge_trade_delta_w1 < -0.45);
+            assert!(rep.best_hedge_es_reduction > 0.0);
+
+            let h = 1e-5;
+            let r_ad = evaluate_tasche_litterman_hot_spots_best_hedge_es_decomposition(
+                &TascheLittermanHotSpotsBestHedgeSpec {
+                    focal_position_weight_w1: Dual::<8>::variable(spec.focal_position_weight_w1, 0),
+                    core_portfolio_weight_w2: Dual::<8>::variable(spec.core_portfolio_weight_w2, 1),
+                    focal_asset_volatility_sigma1: Dual::<8>::variable(
+                        spec.focal_asset_volatility_sigma1,
+                        2,
+                    ),
+                    core_portfolio_volatility_sigma2: Dual::<8>::variable(
+                        spec.core_portfolio_volatility_sigma2,
+                        3,
+                    ),
+                    asset_core_correlation_rho12: Dual::<8>::variable(
+                        spec.asset_core_correlation_rho12,
+                        4,
+                    ),
+                    focal_expected_return_mu1: Dual::<8>::variable(
+                        spec.focal_expected_return_mu1,
+                        5,
+                    ),
+                    core_expected_return_mu2: Dual::<8>::variable(spec.core_expected_return_mu2, 6),
+                    gaussian_es_tail_multiplier_m_alpha: Dual::<8>::variable(
+                        spec.gaussian_es_tail_multiplier_m_alpha,
+                        7,
+                    ),
+                },
+            );
+            let comp_ad =
+                r_ad.total_portfolio_expected_shortfall + r_ad.focal_component_expected_shortfall;
+            for (idx, &ad) in comp_ad.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.focal_position_weight_w1 += h;
+                        sm.focal_position_weight_w1 -= h;
+                    }
+                    1 => {
+                        sp.core_portfolio_weight_w2 += h;
+                        sm.core_portfolio_weight_w2 -= h;
+                    }
+                    2 => {
+                        sp.focal_asset_volatility_sigma1 += h;
+                        sm.focal_asset_volatility_sigma1 -= h;
+                    }
+                    3 => {
+                        sp.core_portfolio_volatility_sigma2 += h;
+                        sm.core_portfolio_volatility_sigma2 -= h;
+                    }
+                    4 => {
+                        sp.asset_core_correlation_rho12 += h;
+                        sm.asset_core_correlation_rho12 -= h;
+                    }
+                    5 => {
+                        sp.focal_expected_return_mu1 += h;
+                        sm.focal_expected_return_mu1 -= h;
+                    }
+                    6 => {
+                        sp.core_expected_return_mu2 += h;
+                        sm.core_expected_return_mu2 -= h;
+                    }
+                    _ => {
+                        sp.gaussian_es_tail_multiplier_m_alpha += h;
+                        sm.gaussian_es_tail_multiplier_m_alpha -= h;
+                    }
+                }
+                let rp = evaluate_tasche_litterman_hot_spots_best_hedge_es_decomposition(&sp);
+                let rm = evaluate_tasche_litterman_hot_spots_best_hedge_es_decomposition(&sm);
+                let fd = ((rp.total_portfolio_expected_shortfall
+                    + rp.focal_component_expected_shortfall)
+                    - (rm.total_portfolio_expected_shortfall
+                        + rm.focal_component_expected_shortfall))
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_tasche_litterman_hot_spots_best_hedge_es_decomposition_module::*;

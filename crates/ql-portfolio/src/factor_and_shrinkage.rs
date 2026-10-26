@@ -2368,3 +2368,168 @@ mod evaluate_gibbons_ross_shanken_multivariate_factor_ftest_module {
     }
 }
 pub use evaluate_gibbons_ross_shanken_multivariate_factor_ftest_module::*;
+
+mod evaluate_frazzini_pedersen_betting_against_beta_zero_beta_capm_module {
+    // Black (1972, J. Business) & Frazzini & Pedersen (2014, J. Financial Economics, "Betting Against Beta")
+    // Leverage-Constrained Zero-Beta CAPM, Security Market Line Flattening & BAB Factor Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct FrazziniPedersenBettingAgainstBetaSpec<T: Real = f64> {
+        pub low_beta_portfolio_beta_l: T,
+        pub high_beta_portfolio_beta_h: T,
+        pub low_beta_expected_return_r_l: T,
+        pub high_beta_expected_return_r_h: T,
+        pub risk_free_rate_r_f: T,
+        pub shadow_funding_constraint_spread_psi: T,
+        pub bab_factor_volatility_sigma_bab: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct FrazziniPedersenBettingAgainstBetaReport<T: Real = f64> {
+        pub long_low_beta_leverage_weight_w_l: T,
+        pub short_high_beta_delevered_weight_w_h: T,
+        pub realized_bab_factor_excess_return: T,
+        pub theoretical_funding_constrained_bab_alpha: T,
+        pub empirical_security_market_line_slope: T,
+        pub bab_factor_sharpe_ratio: T,
+    }
+
+    pub fn evaluate_frazzini_pedersen_betting_against_beta_zero_beta_capm<T: Real>(
+        spec: &FrazziniPedersenBettingAgainstBetaSpec<T>,
+    ) -> FrazziniPedersenBettingAgainstBetaReport<T> {
+        let beta_l = spec.low_beta_portfolio_beta_l.max_val(T::from_f64(0.10));
+        let beta_h = spec
+            .high_beta_portfolio_beta_h
+            .max_val(beta_l + T::from_f64(0.10));
+        let r_l = spec.low_beta_expected_return_r_l;
+        let r_h = spec.high_beta_expected_return_r_h;
+        let r_f = spec.risk_free_rate_r_f;
+        let psi = spec.shadow_funding_constraint_spread_psi.max_val(T::zero());
+        let sig_bab = spec
+            .bab_factor_volatility_sigma_bab
+            .max_val(T::from_f64(0.01));
+
+        // Frazzini & Pedersen (2014, Eq. 6): r_BAB = (1/beta_L)*(r_L - r_f) - (1/beta_H)*(r_H - r_f):
+        let w_l = T::one() / beta_l;
+        let w_h = T::one() / beta_h;
+        let r_bab = w_l * (r_l - r_f) - w_h * (r_h - r_f);
+
+        // Proposition 1: E[r_BAB] = ((beta_H - beta_L) / (beta_L * beta_H)) * psi:
+        let alpha_fp = ((beta_h - beta_l) / (beta_l * beta_h)) * psi;
+        let sml_slope = (r_h - r_l) / (beta_h - beta_l);
+        let sr_bab = r_bab / sig_bab;
+
+        FrazziniPedersenBettingAgainstBetaReport {
+            long_low_beta_leverage_weight_w_l: w_l,
+            short_high_beta_delevered_weight_w_h: w_h,
+            realized_bab_factor_excess_return: r_bab,
+            theoretical_funding_constrained_bab_alpha: alpha_fp,
+            empirical_security_market_line_slope: sml_slope,
+            bab_factor_sharpe_ratio: sr_bab,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_frazzini_pedersen_betting_against_beta_zero_beta_capm_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn frazzini_pedersen_betting_against_beta_invariants_and_ad_parity() {
+            let spec = FrazziniPedersenBettingAgainstBetaSpec {
+                low_beta_portfolio_beta_l: 0.65,
+                high_beta_portfolio_beta_h: 1.45,
+                low_beta_expected_return_r_l: 0.088,
+                high_beta_expected_return_r_h: 0.118,
+                risk_free_rate_r_f: 0.038,
+                shadow_funding_constraint_spread_psi: 0.022,
+                bab_factor_volatility_sigma_bab: 0.105,
+            };
+            let rep = evaluate_frazzini_pedersen_betting_against_beta_zero_beta_capm(&spec);
+            assert!(
+                rep.long_low_beta_leverage_weight_w_l > rep.short_high_beta_delevered_weight_w_h
+            );
+            assert!(rep.realized_bab_factor_excess_return > 0.0);
+            assert!(rep.theoretical_funding_constrained_bab_alpha > 0.0);
+            assert!(rep.bab_factor_sharpe_ratio > 0.20);
+
+            let h = 1e-5;
+            let r_ad = evaluate_frazzini_pedersen_betting_against_beta_zero_beta_capm(
+                &FrazziniPedersenBettingAgainstBetaSpec {
+                    low_beta_portfolio_beta_l: Dual::<7>::variable(
+                        spec.low_beta_portfolio_beta_l,
+                        0,
+                    ),
+                    high_beta_portfolio_beta_h: Dual::<7>::variable(
+                        spec.high_beta_portfolio_beta_h,
+                        1,
+                    ),
+                    low_beta_expected_return_r_l: Dual::<7>::variable(
+                        spec.low_beta_expected_return_r_l,
+                        2,
+                    ),
+                    high_beta_expected_return_r_h: Dual::<7>::variable(
+                        spec.high_beta_expected_return_r_h,
+                        3,
+                    ),
+                    risk_free_rate_r_f: Dual::<7>::variable(spec.risk_free_rate_r_f, 4),
+                    shadow_funding_constraint_spread_psi: Dual::<7>::variable(
+                        spec.shadow_funding_constraint_spread_psi,
+                        5,
+                    ),
+                    bab_factor_volatility_sigma_bab: Dual::<7>::variable(
+                        spec.bab_factor_volatility_sigma_bab,
+                        6,
+                    ),
+                },
+            );
+            let comp_ad =
+                r_ad.bab_factor_sharpe_ratio + r_ad.theoretical_funding_constrained_bab_alpha;
+            for (idx, &ad) in comp_ad.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.low_beta_portfolio_beta_l += h;
+                        sm.low_beta_portfolio_beta_l -= h;
+                    }
+                    1 => {
+                        sp.high_beta_portfolio_beta_h += h;
+                        sm.high_beta_portfolio_beta_h -= h;
+                    }
+                    2 => {
+                        sp.low_beta_expected_return_r_l += h;
+                        sm.low_beta_expected_return_r_l -= h;
+                    }
+                    3 => {
+                        sp.high_beta_expected_return_r_h += h;
+                        sm.high_beta_expected_return_r_h -= h;
+                    }
+                    4 => {
+                        sp.risk_free_rate_r_f += h;
+                        sm.risk_free_rate_r_f -= h;
+                    }
+                    5 => {
+                        sp.shadow_funding_constraint_spread_psi += h;
+                        sm.shadow_funding_constraint_spread_psi -= h;
+                    }
+                    _ => {
+                        sp.bab_factor_volatility_sigma_bab += h;
+                        sm.bab_factor_volatility_sigma_bab -= h;
+                    }
+                }
+                let rp = evaluate_frazzini_pedersen_betting_against_beta_zero_beta_capm(&sp);
+                let rm = evaluate_frazzini_pedersen_betting_against_beta_zero_beta_capm(&sm);
+                let fd = ((rp.bab_factor_sharpe_ratio
+                    + rp.theoretical_funding_constrained_bab_alpha)
+                    - (rm.bab_factor_sharpe_ratio + rm.theoretical_funding_constrained_bab_alpha))
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_frazzini_pedersen_betting_against_beta_zero_beta_capm_module::*;
