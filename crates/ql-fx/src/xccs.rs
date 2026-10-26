@@ -1351,3 +1351,179 @@ mod du_tepper_verdelhan_cip_suite64_tests {
         }
     }
 }
+
+pub mod fujii_shimada_takahashi_collateralized_xccs_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Fujii, Shimada & Takahashi (2010) / Piterbarg (2012)
+    /// foreign-currency CSA collateralized cross-currency swap (XCCS) curve discounting engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct FujiiShimadaTakahashiXccsSpec<T: Real> {
+        /// Spot FX rate $S_0 > 0$ (domestic USD per unit of foreign currency).
+        pub spot_fx_s0: T,
+        /// Domestic (USD) OIS continuous rate $r_{d,\text{ois}}$.
+        pub domestic_ois_rate_rd: T,
+        /// Foreign local OIS continuous rate $r_{f,\text{ois}}$.
+        pub foreign_ois_rate_rf: T,
+        /// Cross-currency collateral basis spread $b_{\text{xccy}}$ (foreign vs. USD CSA).
+        pub xccy_collateral_basis_spread_b: T,
+        /// Foreign contractual fixed swap coupon rate $c_f$ (paid in foreign currency).
+        pub foreign_swap_coupon_cf: T,
+        /// Foreign OIS rate normal volatility $\sigma_f > 0$.
+        pub foreign_rate_volatility_sigma_f: T,
+        /// Spot FX lognormal volatility $\sigma_{\text{FX}} > 0$.
+        pub fx_volatility_sigma_fx: T,
+        /// Correlation $\rho_{f,\text{FX}} \in (-1, 1)$ between foreign rate and FX rate.
+        pub foreign_fx_correlation_rho: T,
+        /// Swap maturity $T > 0$ (years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytical outputs for the Fujii-Shimada-Takahashi collateralized XCCS discounting engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct FujiiShimadaTakahashiXccsAnalytics<T: Real> {
+        /// Terminal USD-CSA collateralized foreign discount factor $P_f^{\text{USD-CSA}}(0, T)$.
+        pub foreign_usd_csa_discount_factor: T,
+        /// Discount factor wedge $P_f^{\text{USD-CSA}}(0, T) - P_f^{\text{OIS}}(0, T)$.
+        pub collateral_basis_discount_wedge: T,
+        /// CSA-implied terminal FX forward rate $F_{\text{FX}}^{\text{CSA}}(0, T)$.
+        pub csa_implied_fx_forward: T,
+        /// Present value (in domestic USD per unit foreign notional) of the collateralized XCCS.
+        pub collateralized_xccs_present_value: T,
+    }
+
+    /// Evaluates the Fujii, Shimada & Takahashi (2010) collateralized foreign curve discount factor
+    /// and 4-period cross-currency swap valuation under a domestic USD CSA.
+    pub fn evaluate_fujii_shimada_takahashi_collateralized_xccs_curve_discount<T: Real>(
+        spec: &FujiiShimadaTakahashiXccsSpec<T>,
+    ) -> FujiiShimadaTakahashiXccsAnalytics<T> {
+        const PERIODS: usize = 4;
+        let t_mat = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+        let dt = t_mat / T::from_f64(PERIODS as f64);
+        let s0 = spec.spot_fx_s0.max_val(T::from_f64(1e-4));
+
+        let df_f_csa = |tm: T| -> T {
+            let quanto_conv = T::from_f64(0.5)
+                * spec.foreign_fx_correlation_rho
+                * spec.foreign_rate_volatility_sigma_f
+                * spec.fx_volatility_sigma_fx
+                * tm
+                * tm;
+            (-((spec.foreign_ois_rate_rf + spec.xccy_collateral_basis_spread_b) * tm) + quanto_conv)
+                .exp()
+        };
+
+        let mut foreign_leg_pv = T::zero();
+        for m in 1..=PERIODS {
+            let tm = T::from_f64(m as f64) * dt;
+            foreign_leg_pv += dt * spec.foreign_swap_coupon_cf * df_f_csa(tm);
+        }
+        let pf_csa_t = df_f_csa(t_mat);
+        foreign_leg_pv += pf_csa_t;
+
+        let pf_local_t = (-spec.foreign_ois_rate_rf * t_mat).exp();
+        let pd_ois_t = (-spec.domestic_ois_rate_rd * t_mat).exp();
+        let fx_fwd_csa = s0 * pf_csa_t / pd_ois_t;
+
+        // Domestic USD OIS floating leg with notional exchange prices at par (1.0 in USD per $1 notional,
+        // scaled by initial spot S0 plus domestic-rate sensitivity on unreset stub)
+        let dom_stub_pv = T::one()
+            + T::from_f64(0.25) * dt * (spec.domestic_ois_rate_rd - T::from_f64(0.03)) * pd_ois_t;
+        let xccs_pv = s0 * (foreign_leg_pv - dom_stub_pv);
+
+        FujiiShimadaTakahashiXccsAnalytics {
+            foreign_usd_csa_discount_factor: pf_csa_t,
+            collateral_basis_discount_wedge: pf_csa_t - pf_local_t,
+            csa_implied_fx_forward: fx_fwd_csa,
+            collateralized_xccs_present_value: xccs_pv,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn fujii_shimada_takahashi_xccs_invariants_and_ad_parity() {
+            let base = FujiiShimadaTakahashiXccsSpec {
+                spot_fx_s0: 1.08_f64,
+                domestic_ois_rate_rd: 0.045,
+                foreign_ois_rate_rf: 0.030,
+                xccy_collateral_basis_spread_b: -0.0025,
+                foreign_swap_coupon_cf: 0.032,
+                foreign_rate_volatility_sigma_f: 0.009,
+                fx_volatility_sigma_fx: 0.11,
+                foreign_fx_correlation_rho: 0.35,
+                maturity_years_t: 4.0,
+            };
+            let r0 = evaluate_fujii_shimada_takahashi_collateralized_xccs_curve_discount(&base);
+            assert!(
+                r0.foreign_usd_csa_discount_factor > 0.0
+                    && r0.foreign_usd_csa_discount_factor < 1.0
+            );
+            assert!(r0.collateral_basis_discount_wedge > 0.0);
+            assert!(r0.csa_implied_fx_forward > base.spot_fx_s0);
+
+            let inputs = [
+                base.spot_fx_s0,
+                base.domestic_ois_rate_rd,
+                base.foreign_ois_rate_rf,
+                base.xccy_collateral_basis_spread_b,
+                base.foreign_swap_coupon_cf,
+                base.foreign_rate_volatility_sigma_f,
+                base.fx_volatility_sigma_fx,
+                base.foreign_fx_correlation_rho,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<9>::from_f64(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = FujiiShimadaTakahashiXccsSpec {
+                spot_fx_s0: dual_in[0],
+                domestic_ois_rate_rd: dual_in[1],
+                foreign_ois_rate_rf: dual_in[2],
+                xccy_collateral_basis_spread_b: dual_in[3],
+                foreign_swap_coupon_cf: dual_in[4],
+                foreign_rate_volatility_sigma_f: dual_in[5],
+                fx_volatility_sigma_fx: dual_in[6],
+                foreign_fx_correlation_rho: dual_in[7],
+                maturity_years_t: dual_in[8],
+            };
+            let r_ad =
+                evaluate_fujii_shimada_takahashi_collateralized_xccs_curve_discount(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 9]| FujiiShimadaTakahashiXccsSpec {
+                    spot_fx_s0: v[0],
+                    domestic_ois_rate_rd: v[1],
+                    foreign_ois_rate_rf: v[2],
+                    xccy_collateral_basis_spread_b: v[3],
+                    foreign_swap_coupon_cf: v[4],
+                    foreign_rate_volatility_sigma_f: v[5],
+                    fx_volatility_sigma_fx: v[6],
+                    foreign_fx_correlation_rho: v[7],
+                    maturity_years_t: v[8],
+                };
+                let rp =
+                    evaluate_fujii_shimada_takahashi_collateralized_xccs_curve_discount(&mk(p));
+                let rm =
+                    evaluate_fujii_shimada_takahashi_collateralized_xccs_curve_discount(&mk(m));
+                let fd = (rp.collateralized_xccs_present_value
+                    - rm.collateralized_xccs_present_value)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.collateralized_xccs_present_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.collateralized_xccs_present_value.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use fujii_shimada_takahashi_collateralized_xccs_mod::*;

@@ -1445,3 +1445,207 @@ mod jsz_gdtsm_suite64_tests {
         }
     }
 }
+
+pub mod andersen_piterbarg_lsrm_cms_spread_mod {
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    /// Specification for the Andersen & Piterbarg (2010, Vol. III, Ch. 16-17) / Hagan (1999)
+    /// Linear Swap Rate Model (LSRM) CMS spread call option.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct AndersenPiterbargCmsSpreadSpec<T: Real> {
+        /// Forward par swap rate $S_{1,0}$ of the long-tenor CMS leg (e.g. 10Y swap rate).
+        pub cms1_forward_swap_rate_s1: T,
+        /// Swap tenor $\tau_1$ (years) of the first CMS rate.
+        pub cms1_tenor_years_tau1: T,
+        /// Normal volatility $\sigma_{n,1}$ of the first swap rate.
+        pub cms1_normal_volatility_sigma1: T,
+        /// Forward par swap rate $S_{2,0}$ of the short-tenor CMS leg (e.g. 2Y swap rate).
+        pub cms2_forward_swap_rate_s2: T,
+        /// Swap tenor $\tau_2$ (years) of the second CMS rate.
+        pub cms2_tenor_years_tau2: T,
+        /// Normal volatility $\sigma_{n,2}$ of the second swap rate.
+        pub cms2_normal_volatility_sigma2: T,
+        /// Instantaneous correlation $\rho_{12} \in (-1, 1)$ between the two swap rates.
+        pub swap_rate_correlation_rho12: T,
+        /// Gearing weight $w_1 > 0$ on the first CMS rate.
+        pub leg1_gearing_w1: T,
+        /// Gearing weight $w_2 > 0$ on the second CMS rate.
+        pub leg2_gearing_w2: T,
+        /// Spread call strike $K$.
+        pub spread_strike_k: T,
+        /// Short-rate mean-reversion speed $\kappa > 0$ governing LSRM annuity slope.
+        pub mean_reversion_kappa: T,
+        /// Continuous OIS discount rate $r_{\text{ois}}$ to fixing/payment date $T_0$.
+        pub ois_discount_rate_r: T,
+        /// Option fixing and payment horizon $T_0 > 0$ (years).
+        pub fixing_horizon_years_t0: T,
+    }
+
+    /// Analytical outputs for the Andersen-Piterbarg LSRM CMS spread option engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct AndersenPiterbargCmsSpreadAnalytics<T: Real> {
+        /// Convexity-adjusted forward CMS rate $\mu_1 = \mathbb{E}^{T_0}[S_1(T_0)]$.
+        pub convexity_adjusted_cms1_forward: T,
+        /// Convexity-adjusted forward CMS rate $\mu_2 = \mathbb{E}^{T_0}[S_2(T_0)]$.
+        pub convexity_adjusted_cms2_forward: T,
+        /// Net LSRM convexity drift wedge $w_1(\mu_1 - S_{1,0}) - w_2(\mu_2 - S_{2,0})$.
+        pub cms_spread_convexity_wedge: T,
+        /// Discounted Bachelier CMS spread call option present value.
+        pub cms_spread_call_present_value: T,
+    }
+
+    /// Evaluates the Andersen & Piterbarg (2010) Linear Swap Rate Model (LSRM) CMS spread call option.
+    pub fn evaluate_andersen_piterbarg_lsrm_cms_spread_option<T: Real>(
+        spec: &AndersenPiterbargCmsSpreadSpec<T>,
+    ) -> AndersenPiterbargCmsSpreadAnalytics<T> {
+        let t0 = spec.fixing_horizon_years_t0.max_val(T::from_f64(1e-4));
+        let kappa = spec.mean_reversion_kappa.max_val(T::from_f64(1e-4));
+        let tau1 = spec.cms1_tenor_years_tau1.max_val(T::from_f64(0.25));
+        let tau2 = spec.cms2_tenor_years_tau2.max_val(T::from_f64(0.25));
+
+        // Hagan (1999) / Andersen-Piterbarg (2010) LSRM annuity mapping coefficient q_i:
+        // d(A(0)/A(S_i))/dS_i|_{S_{i,0}} approximated smoothly via mean-reverting duration factor
+        let b1 = (T::one() - (-kappa * tau1).exp()) / (kappa * tau1);
+        let b2 = (T::one() - (-kappa * tau2).exp()) / (kappa * tau2);
+        let q1 = (tau1 / (T::one() + tau1 * spec.cms1_forward_swap_rate_s1))
+            * (T::from_f64(0.5) * (T::one() + b1));
+        let q2 = (tau2 / (T::one() + tau2 * spec.cms2_forward_swap_rate_s2))
+            * (T::from_f64(0.5) * (T::one() + b2));
+
+        let sig1 = spec
+            .cms1_normal_volatility_sigma1
+            .max_val(T::from_f64(1e-5));
+        let sig2 = spec
+            .cms2_normal_volatility_sigma2
+            .max_val(T::from_f64(1e-5));
+
+        let conv1 = q1 * sig1 * sig1 * t0;
+        let conv2 = q2 * sig2 * sig2 * t0;
+        let mu1 = spec.cms1_forward_swap_rate_s1 + conv1;
+        let mu2 = spec.cms2_forward_swap_rate_s2 + conv2;
+
+        let spread_wedge = spec.leg1_gearing_w1 * conv1 - spec.leg2_gearing_w2 * conv2;
+        let mu_spread = spec.leg1_gearing_w1 * mu1 - spec.leg2_gearing_w2 * mu2;
+
+        let rho = spec
+            .swap_rate_correlation_rho12
+            .max_val(T::from_f64(-0.99))
+            .min_val(T::from_f64(0.99));
+        let w1_s1 = spec.leg1_gearing_w1 * sig1;
+        let w2_s2 = spec.leg2_gearing_w2 * sig2;
+        let var_spread = (w1_s1 * w1_s1 + w2_s2 * w2_s2 - T::from_f64(2.0) * rho * w1_s1 * w2_s2)
+            .max_val(T::from_f64(1e-10))
+            * t0;
+        let std_spread = var_spread.sqrt();
+
+        let d = (mu_spread - spec.spread_strike_k) / std_spread;
+        let df = (-spec.ois_discount_rate_r * t0).exp();
+        let pv = df * ((mu_spread - spec.spread_strike_k) * norm_cdf(d) + std_spread * norm_pdf(d));
+
+        AndersenPiterbargCmsSpreadAnalytics {
+            convexity_adjusted_cms1_forward: mu1,
+            convexity_adjusted_cms2_forward: mu2,
+            cms_spread_convexity_wedge: spread_wedge,
+            cms_spread_call_present_value: pv,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn andersen_piterbarg_lsrm_cms_spread_invariants_and_ad_parity() {
+            let base = AndersenPiterbargCmsSpreadSpec {
+                cms1_forward_swap_rate_s1: 0.042_f64,
+                cms1_tenor_years_tau1: 10.0,
+                cms1_normal_volatility_sigma1: 0.0085,
+                cms2_forward_swap_rate_s2: 0.034,
+                cms2_tenor_years_tau2: 2.0,
+                cms2_normal_volatility_sigma2: 0.0095,
+                swap_rate_correlation_rho12: 0.78,
+                leg1_gearing_w1: 1.0,
+                leg2_gearing_w2: 1.0,
+                spread_strike_k: 0.005,
+                mean_reversion_kappa: 0.08,
+                ois_discount_rate_r: 0.035,
+                fixing_horizon_years_t0: 3.0,
+            };
+            let r0 = evaluate_andersen_piterbarg_lsrm_cms_spread_option(&base);
+            assert!(r0.convexity_adjusted_cms1_forward > base.cms1_forward_swap_rate_s1);
+            assert!(r0.convexity_adjusted_cms2_forward > base.cms2_forward_swap_rate_s2);
+            assert!(r0.cms_spread_convexity_wedge > 0.0);
+            assert!(r0.cms_spread_call_present_value > 0.0);
+
+            let inputs = [
+                base.cms1_forward_swap_rate_s1,
+                base.cms1_tenor_years_tau1,
+                base.cms1_normal_volatility_sigma1,
+                base.cms2_forward_swap_rate_s2,
+                base.cms2_tenor_years_tau2,
+                base.cms2_normal_volatility_sigma2,
+                base.swap_rate_correlation_rho12,
+                base.leg1_gearing_w1,
+                base.leg2_gearing_w2,
+                base.spread_strike_k,
+                base.mean_reversion_kappa,
+                base.ois_discount_rate_r,
+                base.fixing_horizon_years_t0,
+            ];
+            let mut dual_in = [Dual::<13>::from_f64(0.0); 13];
+            for i in 0..13 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = AndersenPiterbargCmsSpreadSpec {
+                cms1_forward_swap_rate_s1: dual_in[0],
+                cms1_tenor_years_tau1: dual_in[1],
+                cms1_normal_volatility_sigma1: dual_in[2],
+                cms2_forward_swap_rate_s2: dual_in[3],
+                cms2_tenor_years_tau2: dual_in[4],
+                cms2_normal_volatility_sigma2: dual_in[5],
+                swap_rate_correlation_rho12: dual_in[6],
+                leg1_gearing_w1: dual_in[7],
+                leg2_gearing_w2: dual_in[8],
+                spread_strike_k: dual_in[9],
+                mean_reversion_kappa: dual_in[10],
+                ois_discount_rate_r: dual_in[11],
+                fixing_horizon_years_t0: dual_in[12],
+            };
+            let r_ad = evaluate_andersen_piterbarg_lsrm_cms_spread_option(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..13 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 13]| AndersenPiterbargCmsSpreadSpec {
+                    cms1_forward_swap_rate_s1: v[0],
+                    cms1_tenor_years_tau1: v[1],
+                    cms1_normal_volatility_sigma1: v[2],
+                    cms2_forward_swap_rate_s2: v[3],
+                    cms2_tenor_years_tau2: v[4],
+                    cms2_normal_volatility_sigma2: v[5],
+                    swap_rate_correlation_rho12: v[6],
+                    leg1_gearing_w1: v[7],
+                    leg2_gearing_w2: v[8],
+                    spread_strike_k: v[9],
+                    mean_reversion_kappa: v[10],
+                    ois_discount_rate_r: v[11],
+                    fixing_horizon_years_t0: v[12],
+                };
+                let rp = evaluate_andersen_piterbarg_lsrm_cms_spread_option(&mk(p));
+                let rm = evaluate_andersen_piterbarg_lsrm_cms_spread_option(&mk(m));
+                let fd = (rp.cms_spread_call_present_value - rm.cms_spread_call_present_value)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.cms_spread_call_present_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.cms_spread_call_present_value.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use andersen_piterbarg_lsrm_cms_spread_mod::*;

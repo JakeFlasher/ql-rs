@@ -5634,3 +5634,234 @@ mod ahmadi_javid_evar_suite64_tests {
         }
     }
 }
+
+pub mod rockafellar_uryasev_mixed_cvar_quadrangle_mod {
+    use ql_ad::Real;
+    use ql_math::norm_pdf;
+
+    /// Specification for the Rockafellar & Uryasev (2013, SORMS) / Föllmer & Schied (2016, Ch. 4)
+    /// Fundamental Risk Quadrangle Mixed-CVaR spectral risk, deviation, and regret engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct RockafellarUryasevMixedCvarSpec<T: Real> {
+        /// Expected portfolio loss mean $\mu_L$.
+        pub mean_loss_mu: T,
+        /// Portfolio loss scale / standard deviation $\sigma_L > 0$.
+        pub loss_volatility_sigma: T,
+        /// Moderate tail confidence level $\alpha_1 \in (0.5, 0.99)$ (e.g. 0.95).
+        pub moderate_confidence_alpha1: T,
+        /// Extreme tail confidence level $\alpha_2 \in (\alpha_1, 0.999)$ (e.g. 0.99).
+        pub extreme_confidence_alpha2: T,
+        /// Spectral mixture weight $\lambda_1 \in (0, 1)$ on $\text{CVaR}_{\alpha_1}$ (with $\lambda_2 = 1 - \lambda_1$).
+        pub moderate_spectral_weight_lambda1: T,
+        /// Excess tail kurtosis amplification $\kappa_{\text{tail}} \ge 0$.
+        pub tail_kurtosis_amplification_kappa: T,
+    }
+
+    /// Analytical outputs for the Rockafellar-Uryasev Mixed-CVaR Risk Quadrangle engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct RockafellarUryasevMixedCvarAnalytics<T: Real> {
+        /// Moderate tail Conditional Value-at-Risk $\text{CVaR}_{\alpha_1}(L)$.
+        pub moderate_tail_cvar_alpha1: T,
+        /// Extreme tail Conditional Value-at-Risk $\text{CVaR}_{\alpha_2}(L)$.
+        pub extreme_tail_cvar_alpha2: T,
+        /// Quadrangle Mixed-CVaR Deviation $\mathcal{D}(L) = \mathcal{R}(L - \mathbb{E}[L])$.
+        pub quadrangle_mixed_deviation: T,
+        /// Coherent Mixed-CVaR Spectral Risk $\mathcal{R}(L) = \lambda_1 \text{CVaR}_{\alpha_1} + (1-\lambda_1)\text{CVaR}_{\alpha_2}$.
+        pub quadrangle_mixed_cvar_risk: T,
+    }
+
+    #[allow(clippy::excessive_precision)]
+    fn inv_norm_cdf_tail<T: Real>(p: T) -> T {
+        let p_clamped = p
+            .max_val(T::from_f64(1e-9))
+            .min_val(T::from_f64(1.0 - 1e-9));
+        let q = p_clamped - T::from_f64(0.5);
+        if q.abs() <= T::from_f64(0.425) {
+            let r = T::from_f64(0.180625) - q * q;
+            let num = ((((((T::from_f64(2.5090809287301227e3) * r
+                + T::from_f64(3.3430575583588128e4))
+                * r
+                + T::from_f64(6.7265770927008700e4))
+                * r
+                + T::from_f64(4.5921953931549871e4))
+                * r
+                + T::from_f64(1.3731693765509461e4))
+                * r
+                + T::from_f64(1.9715909503065514e3))
+                * r
+                + T::from_f64(1.3314166789178437e2))
+                * r
+                + T::from_f64(3.3871328727963666e0);
+            let den = ((((((T::from_f64(5.2264952788528545e3) * r
+                + T::from_f64(2.8729085735721942e4))
+                * r
+                + T::from_f64(3.9307895800092710e4))
+                * r
+                + T::from_f64(2.1213794301586595e4))
+                * r
+                + T::from_f64(5.3941960214247511e3))
+                * r
+                + T::from_f64(6.8718700749205790e2))
+                * r
+                + T::from_f64(4.2313330701600911e1))
+                * r
+                + T::one();
+            q * num / den
+        } else {
+            let r_tail = if q < T::zero() {
+                p_clamped
+            } else {
+                T::one() - p_clamped
+            };
+            let s = (-r_tail.ln()).sqrt() - T::from_f64(1.6);
+            let num = ((((((T::from_f64(7.7454501427834140e-4) * s
+                + T::from_f64(2.2723844989269184e-2))
+                * s
+                + T::from_f64(2.4178072517745061e-1))
+                * s
+                + T::from_f64(1.2704582524523683e0))
+                * s
+                + T::from_f64(3.6478483247632046e0))
+                * s
+                + T::from_f64(5.7694972214606914e0))
+                * s
+                + T::from_f64(4.6303378461565452e0))
+                * s
+                + T::from_f64(1.4234371107496835e0);
+            let den = ((((((T::from_f64(1.0507500716444168e-9) * s
+                + T::from_f64(5.4759380849953449e-4))
+                * s
+                + T::from_f64(1.5198666563616457e-2))
+                * s
+                + T::from_f64(1.4810397642748007e-1))
+                * s
+                + T::from_f64(6.8976733498510000e-1))
+                * s
+                + T::from_f64(1.6763848301838038e0))
+                * s
+                + T::from_f64(2.0531916266377588e0))
+                * s
+                + T::one();
+            let z = num / den;
+            if q < T::zero() { -z } else { z }
+        }
+    }
+
+    /// Evaluates the Rockafellar & Uryasev (2013) Mixed-CVaR Risk Quadrangle functional.
+    pub fn evaluate_rockafellar_uryasev_mixed_cvar_risk_quadrangle<T: Real>(
+        spec: &RockafellarUryasevMixedCvarSpec<T>,
+    ) -> RockafellarUryasevMixedCvarAnalytics<T> {
+        let sig = spec.loss_volatility_sigma.max_val(T::from_f64(1e-5));
+        let a1 = spec
+            .moderate_confidence_alpha1
+            .max_val(T::from_f64(0.55))
+            .min_val(T::from_f64(0.985));
+        let a2 = spec
+            .extreme_confidence_alpha2
+            .max_val(T::from_f64(0.90))
+            .min_val(T::from_f64(0.999));
+        let lam1 = spec
+            .moderate_spectral_weight_lambda1
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.99));
+        let kap = spec.tail_kurtosis_amplification_kappa.max_val(T::zero());
+
+        let z1 = inv_norm_cdf_tail(a1);
+        let z2 = inv_norm_cdf_tail(a2);
+
+        let es1_std = (norm_pdf(z1) / (T::one() - a1))
+            * (T::one() + (kap / T::from_f64(24.0)) * (z1 * z1 * z1 - T::from_f64(3.0) * z1));
+        let es2_std = (norm_pdf(z2) / (T::one() - a2))
+            * (T::one() + (kap / T::from_f64(24.0)) * (z2 * z2 * z2 - T::from_f64(3.0) * z2));
+
+        let cvar1 = spec.mean_loss_mu + sig * es1_std;
+        let cvar2 = spec.mean_loss_mu + sig * es2_std;
+
+        let mixed_dev = sig * (lam1 * es1_std + (T::one() - lam1) * es2_std);
+        let mixed_risk = spec.mean_loss_mu + mixed_dev;
+
+        RockafellarUryasevMixedCvarAnalytics {
+            moderate_tail_cvar_alpha1: cvar1,
+            extreme_tail_cvar_alpha2: cvar2,
+            quadrangle_mixed_deviation: mixed_dev,
+            quadrangle_mixed_cvar_risk: mixed_risk,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn rockafellar_uryasev_mixed_cvar_invariants_and_ad_parity() {
+            let base = RockafellarUryasevMixedCvarSpec {
+                mean_loss_mu: 0.012_f64,
+                loss_volatility_sigma: 0.045,
+                moderate_confidence_alpha1: 0.95,
+                extreme_confidence_alpha2: 0.99,
+                moderate_spectral_weight_lambda1: 0.60,
+                tail_kurtosis_amplification_kappa: 1.50,
+            };
+            let r0 = evaluate_rockafellar_uryasev_mixed_cvar_risk_quadrangle(&base);
+            assert!(r0.extreme_tail_cvar_alpha2 > r0.moderate_tail_cvar_alpha1);
+            assert!(
+                r0.quadrangle_mixed_cvar_risk > r0.moderate_tail_cvar_alpha1
+                    && r0.quadrangle_mixed_cvar_risk < r0.extreme_tail_cvar_alpha2
+            );
+            assert!(
+                (r0.quadrangle_mixed_cvar_risk
+                    - (base.mean_loss_mu + r0.quadrangle_mixed_deviation))
+                    .abs()
+                    < 1e-12
+            );
+
+            let inputs = [
+                base.mean_loss_mu,
+                base.loss_volatility_sigma,
+                base.moderate_confidence_alpha1,
+                base.extreme_confidence_alpha2,
+                base.moderate_spectral_weight_lambda1,
+                base.tail_kurtosis_amplification_kappa,
+            ];
+            let mut dual_in = [Dual::<6>::from_f64(0.0); 6];
+            for i in 0..6 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = RockafellarUryasevMixedCvarSpec {
+                mean_loss_mu: dual_in[0],
+                loss_volatility_sigma: dual_in[1],
+                moderate_confidence_alpha1: dual_in[2],
+                extreme_confidence_alpha2: dual_in[3],
+                moderate_spectral_weight_lambda1: dual_in[4],
+                tail_kurtosis_amplification_kappa: dual_in[5],
+            };
+            let r_ad = evaluate_rockafellar_uryasev_mixed_cvar_risk_quadrangle(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..6 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 6]| RockafellarUryasevMixedCvarSpec {
+                    mean_loss_mu: v[0],
+                    loss_volatility_sigma: v[1],
+                    moderate_confidence_alpha1: v[2],
+                    extreme_confidence_alpha2: v[3],
+                    moderate_spectral_weight_lambda1: v[4],
+                    tail_kurtosis_amplification_kappa: v[5],
+                };
+                let rp = evaluate_rockafellar_uryasev_mixed_cvar_risk_quadrangle(&mk(p));
+                let rm = evaluate_rockafellar_uryasev_mixed_cvar_risk_quadrangle(&mk(m));
+                let fd =
+                    (rp.quadrangle_mixed_cvar_risk - rm.quadrangle_mixed_cvar_risk) / (2.0 * eps);
+                assert!(
+                    r_ad.quadrangle_mixed_cvar_risk.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.quadrangle_mixed_cvar_risk.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use rockafellar_uryasev_mixed_cvar_quadrangle_mod::*;

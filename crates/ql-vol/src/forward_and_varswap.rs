@@ -2057,3 +2057,151 @@ mod broadie_jain_varswap_suite64_tests {
         }
     }
 }
+
+pub mod carr_lee_volatility_swap_convexity_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Carr & Lee (2009, Annual Review of Financial Economics) /
+    /// Gatheral (2006, Ch. 11) volatility swap convexity correction and variance dispersion engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct CarrLeeVolatilitySwapSpec<T: Real> {
+        /// Initial instantaneous variance $v_0 > 0$.
+        pub initial_variance_v0: T,
+        /// Long-run mean-reverting variance level $\theta > 0$.
+        pub long_run_variance_theta: T,
+        /// Variance mean-reversion speed $\kappa > 0$.
+        pub mean_reversion_speed_kappa: T,
+        /// Volatility of variance (vol-of-vol) $\xi > 0$.
+        pub vol_of_vol_xi: T,
+        /// Standardized skewness $\gamma_{\text{skew}}$ of realized variance distribution.
+        pub realized_variance_skewness_gamma: T,
+        /// Maturity $T > 0$ (years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytical outputs for the Carr-Lee volatility swap convexity engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct CarrLeeVolatilitySwapAnalytics<T: Real> {
+        /// Fair variance swap volatility strike $K_{\text{var}} = \sqrt{\mathbb{E}[RV_{[0,T]}]}$.
+        pub variance_swap_fair_strike_k_var: T,
+        /// Exact integrated variance-of-variance $\text{Var}(RV_{[0,T]})$.
+        pub integrated_variance_of_variance: T,
+        /// Convexity correction wedge $K_{\text{var}} - K_{\text{vol}} > 0$.
+        pub volatility_swap_convexity_wedge: T,
+        /// Fair volatility swap strike $K_{\text{vol}} = \mathbb{E}[\sqrt{RV_{[0,T]}}]$.
+        pub volatility_swap_fair_strike_k_vol: T,
+    }
+
+    /// Evaluates the Carr & Lee (2009) / Gatheral (2006) volatility swap strike and convexity
+    /// wedge from the Heston variance-of-variance and third-order Laplace skewness correction.
+    pub fn evaluate_carr_lee_robust_volatility_swap_convexity_correction<T: Real>(
+        spec: &CarrLeeVolatilitySwapSpec<T>,
+    ) -> CarrLeeVolatilitySwapAnalytics<T> {
+        let t = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+        let kappa = spec.mean_reversion_speed_kappa.max_val(T::from_f64(1e-4));
+        let v0 = spec.initial_variance_v0.max_val(T::from_f64(1e-6));
+        let theta = spec.long_run_variance_theta.max_val(T::from_f64(1e-6));
+        let xi = spec.vol_of_vol_xi.max_val(T::from_f64(1e-5));
+
+        let kt = kappa * t;
+        let e_kt = (-kt).exp();
+        let e_2kt = (-T::from_f64(2.0) * kt).exp();
+
+        let e_rv = theta + (v0 - theta) * (T::one() - e_kt) / kt;
+        let k_var = e_rv.sqrt();
+
+        // Exact Heston variance of annualized integrated variance RV_{[0,T]} = (1/T) \int_0^T v_s ds
+        let term_theta =
+            kt - T::from_f64(2.0) * (T::one() - e_kt) + T::from_f64(0.5) * (T::one() - e_2kt);
+        let term_v0 = (T::one() - e_2kt) - T::from_f64(2.0) * kt * e_kt;
+        let var_rv = (xi * xi / (kappa * kappa * kappa * t * t))
+            * (theta * term_theta + (v0 - theta) * term_v0).max_val(T::from_f64(1e-12));
+
+        let k_var3 = k_var * k_var * k_var;
+        let k_var5 = k_var3 * k_var * k_var;
+
+        // Second-order Brockhaus-Long / Carr-Lee convexity minus third-order skewness correction
+        let second_order = var_rv / (T::from_f64(8.0) * k_var3);
+        let third_order = (spec.realized_variance_skewness_gamma * var_rv * var_rv.sqrt())
+            / (T::from_f64(16.0) * k_var5);
+        let wedge = second_order - third_order;
+        let k_vol = (k_var - wedge).max_val(T::from_f64(1e-4));
+
+        CarrLeeVolatilitySwapAnalytics {
+            variance_swap_fair_strike_k_var: k_var,
+            integrated_variance_of_variance: var_rv,
+            volatility_swap_convexity_wedge: wedge,
+            volatility_swap_fair_strike_k_vol: k_vol,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn carr_lee_volatility_swap_invariants_and_ad_parity() {
+            let base = CarrLeeVolatilitySwapSpec {
+                initial_variance_v0: 0.045_f64,
+                long_run_variance_theta: 0.040,
+                mean_reversion_speed_kappa: 1.80,
+                vol_of_vol_xi: 0.45,
+                realized_variance_skewness_gamma: 0.65,
+                maturity_years_t: 1.0,
+            };
+            let r0 = evaluate_carr_lee_robust_volatility_swap_convexity_correction(&base);
+            assert!(r0.variance_swap_fair_strike_k_var > r0.volatility_swap_fair_strike_k_vol);
+            assert!(r0.volatility_swap_convexity_wedge > 0.0);
+            assert!(r0.integrated_variance_of_variance > 0.0);
+
+            let inputs = [
+                base.initial_variance_v0,
+                base.long_run_variance_theta,
+                base.mean_reversion_speed_kappa,
+                base.vol_of_vol_xi,
+                base.realized_variance_skewness_gamma,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<6>::from_f64(0.0); 6];
+            for i in 0..6 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = CarrLeeVolatilitySwapSpec {
+                initial_variance_v0: dual_in[0],
+                long_run_variance_theta: dual_in[1],
+                mean_reversion_speed_kappa: dual_in[2],
+                vol_of_vol_xi: dual_in[3],
+                realized_variance_skewness_gamma: dual_in[4],
+                maturity_years_t: dual_in[5],
+            };
+            let r_ad = evaluate_carr_lee_robust_volatility_swap_convexity_correction(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..6 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 6]| CarrLeeVolatilitySwapSpec {
+                    initial_variance_v0: v[0],
+                    long_run_variance_theta: v[1],
+                    mean_reversion_speed_kappa: v[2],
+                    vol_of_vol_xi: v[3],
+                    realized_variance_skewness_gamma: v[4],
+                    maturity_years_t: v[5],
+                };
+                let rp = evaluate_carr_lee_robust_volatility_swap_convexity_correction(&mk(p));
+                let rm = evaluate_carr_lee_robust_volatility_swap_convexity_correction(&mk(m));
+                let fd = (rp.volatility_swap_fair_strike_k_vol
+                    - rm.volatility_swap_fair_strike_k_vol)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.volatility_swap_fair_strike_k_vol.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.volatility_swap_fair_strike_k_vol.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use carr_lee_volatility_swap_convexity_mod::*;

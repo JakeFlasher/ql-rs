@@ -3501,6 +3501,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_lyashenko_fmm_caplet_tuckman_cpi_seasonality_brigo_alfonsi_cir_cds_fouque_multiscale_sv_gregory_bilateral_ftd_eydeland_vpp_heat_rate_wystup_fx_corridor_rubinstein_reiner_barrier_lns_gls_r2_bellini_expectile_bns_quarticity_kiyotaki_moore_cycle(scale),
         benchmark_jsz_canonical_gdtsm_tsiveriotis_fernandes_cb_laurent_gregory_cdo_broadie_jain_varswap_albanese_sa_ccr_kva_rss_equilibrium_storage_du_tepper_verdelhan_cip_wilmott_cliquet_bsv_parametric_portfolio_ahmadi_javid_evar_engle_kroner_bekk_gabaix_disaster(scale),
         benchmark_bianchetti_two_curve_quanto_bdt_callable_bond_schonbucher_cds_swaption_bates_svj_smile_brigo_pallavicini_ccp_xva_dmt_cointegrated_crack_piterbarg_prdc_tarn_bgk_discrete_barrier_connor_korajczyk_apt_afs_transient_impact_hamilton_markov_switching_bansal_yaron_lrr(scale),
+        benchmark_andersen_piterbarg_cms_spread_fabozzi_z_bond_cmo_duffie_garleanu_affine_cdo_carr_lee_vol_swap_green_leverage_ratio_kva_cortazar_schwartz_3f_oil_fujii_collateralized_xccs_pechtl_haug_time_switch_boudt_cornish_fisher_mvar_rockafellar_quadrangle_hasbrouck_info_share_he_krishnamurthy_sdf(scale),
     ]
 }
 
@@ -12475,6 +12476,241 @@ pub fn benchmark_bianchetti_two_curve_quanto_bdt_callable_bond_schonbucher_cds_s
     run_comparison(
         "65_bianchetti_two_curve_quanto_bdt_callable_bond_schonbucher_cds_swaption_bates_svj_smile_brigo_pallavicini_ccp_xva_dmt_cointegrated_crack_piterbarg_prdc_tarn_bgk_discrete_barrier_connor_korajczyk_apt_afs_transient_impact_hamilton_markov_switching_bansal_yaron_lrr",
         "Bianchetti-Two-Curve-Quanto / BDT-Callable-Bond / Schonbucher-CDS-Swaption / Bates-SVJ-Smile / Brigo-Pallavicini-CCP-XVA / DMT-Cointegrated-Crack / Piterbarg-PRDC-TARN / BGK-Discrete-Barrier / Connor-Korajczyk-APT / AFS-Transient-Impact / Hamilton-Markov-Switching / Bansal-Yaron-LRR AD",
+        cfg,
+        1e-3,
+        baseline,
+        sota,
+    )
+}
+
+pub fn suite66_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+    let dx0 = x[0] * T::from_f64(0.01);
+    let dx1 = x[1] * T::from_f64(0.01);
+    let dx2 = x[2] * T::from_f64(0.01);
+    let dx3 = x[3] * T::from_f64(0.01);
+
+    let ap_cms = ql_curves::evaluate_andersen_piterbarg_lsrm_cms_spread_option(
+        &ql_curves::AndersenPiterbargCmsSpreadSpec {
+            cms1_forward_swap_rate_s1: T::from_f64(0.042) + dx0,
+            cms1_tenor_years_tau1: T::from_f64(10.0),
+            cms1_normal_volatility_sigma1: T::from_f64(0.0085) + dx2 * T::from_f64(0.1),
+            cms2_forward_swap_rate_s2: T::from_f64(0.034) + dx1,
+            cms2_tenor_years_tau2: T::from_f64(2.0),
+            cms2_normal_volatility_sigma2: T::from_f64(0.0095),
+            swap_rate_correlation_rho12: T::from_f64(0.78),
+            leg1_gearing_w1: T::one(),
+            leg2_gearing_w2: T::one(),
+            spread_strike_k: T::from_f64(0.005) + dx3 * T::from_f64(0.1),
+            mean_reversion_kappa: T::from_f64(0.08),
+            ois_discount_rate_r: T::from_f64(0.035),
+            fixing_horizon_years_t0: T::from_f64(3.0),
+        },
+    );
+
+    let fab_z = ql_fixed_income::evaluate_fabozzi_cmo_accrual_z_bond_sequential_lockout_tranche(
+        &ql_fixed_income::FabozziCmoAccrualZBondSpec {
+            senior_tranche_initial_balance_ba: T::from_f64(75.0) + x[0],
+            z_bond_initial_balance_bz: T::from_f64(25.0) + x[1],
+            tranche_coupon_rate_c: T::from_f64(0.055),
+            conditional_prepayment_rate_cpr: T::from_f64(0.16) + dx2,
+            scheduled_amortization_rate: T::from_f64(0.12),
+            base_discount_yield_y: T::from_f64(0.042),
+            z_bond_oas_spread: T::from_f64(0.012) + dx3,
+        },
+    );
+
+    let dg_cdo = ql_credit::evaluate_duffie_garleanu_affine_jump_intensity_cdo_tranche(
+        &ql_credit::DuffieGarleanuAffineJumpCdoSpec {
+            initial_common_intensity_lambda_c0: T::from_f64(0.015) + dx0 * T::from_f64(0.1),
+            common_reversion_speed_kappa_c: T::from_f64(0.45),
+            common_long_run_theta_c: T::from_f64(0.018),
+            common_feller_volatility_sigma_c: T::from_f64(0.09) + dx1,
+            common_jump_arrival_rate_mu_j: T::from_f64(0.25) + dx2,
+            common_mean_jump_size_eta_j: T::from_f64(0.03),
+            idiosyncratic_intensity_lambda_id: T::from_f64(0.012) + dx3 * T::from_f64(0.1),
+            loss_given_default_lgd: T::from_f64(0.60),
+            attachment_point_ka: T::from_f64(0.03),
+            detachment_point_kd: T::from_f64(0.07),
+            risk_free_rate_r: T::from_f64(0.035),
+            maturity_years_t: T::from_f64(5.0),
+        },
+    );
+
+    let cl_vol = ql_vol::evaluate_carr_lee_robust_volatility_swap_convexity_correction(
+        &ql_vol::CarrLeeVolatilitySwapSpec {
+            initial_variance_v0: T::from_f64(0.045) + dx0 * T::from_f64(0.1),
+            long_run_variance_theta: T::from_f64(0.040) + dx1 * T::from_f64(0.1),
+            mean_reversion_speed_kappa: T::from_f64(1.80),
+            vol_of_vol_xi: T::from_f64(0.45) + dx2,
+            realized_variance_skewness_gamma: T::from_f64(0.65) + dx3,
+            maturity_years_t: T::one(),
+        },
+    );
+
+    let gr_kva = ql_xva::evaluate_green_basel_leverage_ratio_rwa_hurdle_kva(
+        &ql_xva::GreenBaselLeverageRatioKvaSpec {
+            initial_sa_ccr_ead0: T::from_f64(18.0) + x[0],
+            gross_trade_notional: T::from_f64(500.0) + x[1],
+            sa_ccr_addon_factor_psi: T::from_f64(0.04),
+            counterparty_risk_weight_w: T::from_f64(0.50),
+            cet1_capital_ratio_k: T::from_f64(0.105),
+            leverage_ratio_requirement_gamma: T::from_f64(0.035) + dx2 * T::from_f64(0.1),
+            cva_capital_loading_beta: T::from_f64(0.08),
+            capital_hurdle_rate_h: T::from_f64(0.11) + dx3,
+            capital_funding_offset_phi: T::from_f64(0.35),
+            counterparty_hazard_rate_lambda: T::from_f64(0.015),
+            ois_discount_rate_r: T::from_f64(0.035),
+            maturity_years_t: T::from_f64(5.0),
+        },
+    );
+
+    let cs_oil = ql_commodities::evaluate_cortazar_schwartz_three_factor_oil_futures_curve(
+        &ql_commodities::CortazarSchwartzThreeFactorSpec {
+            spot_price_s0: T::from_f64(78.0) + x[0],
+            initial_convenience_yield_delta0: T::from_f64(0.08) + dx1,
+            initial_long_term_drift_v0: T::from_f64(0.035) + dx2,
+            risk_neutral_convenience_mean_alpha2: T::from_f64(0.05),
+            risk_neutral_long_run_drift_vbar: T::from_f64(0.03),
+            convenience_reversion_speed_kappa2: T::from_f64(1.40),
+            drift_reversion_speed_kappa3: T::from_f64(0.35),
+            spot_volatility_sigma1: T::from_f64(0.32) + dx3,
+            convenience_volatility_sigma2: T::from_f64(0.24),
+            drift_volatility_sigma3: T::from_f64(0.08),
+            spot_convenience_correlation_rho12: T::from_f64(0.72),
+            maturity_years_tau: T::from_f64(2.5),
+        },
+    );
+
+    let fst_xccs = ql_fx::evaluate_fujii_shimada_takahashi_collateralized_xccs_curve_discount(
+        &ql_fx::FujiiShimadaTakahashiXccsSpec {
+            spot_fx_s0: T::from_f64(1.08) + dx0,
+            domestic_ois_rate_rd: T::from_f64(0.045),
+            foreign_ois_rate_rf: T::from_f64(0.030) + dx1,
+            xccy_collateral_basis_spread_b: T::from_f64(-0.0025) + dx2 * T::from_f64(0.1),
+            foreign_swap_coupon_cf: T::from_f64(0.032) + dx3,
+            foreign_rate_volatility_sigma_f: T::from_f64(0.009),
+            fx_volatility_sigma_fx: T::from_f64(0.11),
+            foreign_fx_correlation_rho: T::from_f64(0.35),
+            maturity_years_t: T::from_f64(4.0),
+        },
+    );
+
+    let ph_tsw = ql_exotics::evaluate_pechtl_haug_discrete_time_switch_accumulator_option(
+        &ql_exotics::PechtlHaugTimeSwitchSpec {
+            spot_price_s0: T::from_f64(104.0) + x[0],
+            strike_price_k: T::from_f64(100.0) + x[1],
+            accrual_rate_a: T::from_f64(25.0),
+            accumulated_occupation_time_t_acc: T::from_f64(0.25),
+            risk_free_rate_r: T::from_f64(0.04),
+            dividend_yield_q: T::from_f64(0.015),
+            volatility_sigma: T::from_f64(0.22) + dx2,
+            smile_skew_slope_nu: T::from_f64(-0.08) + dx3,
+            maturity_years_t: T::from_f64(1.5),
+        },
+    );
+
+    let bcf_mvar = ql_portfolio::evaluate_boudt_cornish_fisher_modified_var_risk_budget_allocation(
+        &ql_portfolio::BoudtCornishFisherMvarSpec {
+            initial_weight_w1: T::from_f64(0.60) + dx0,
+            target_risk_budget_b1: T::from_f64(0.50) + dx1,
+            volatility_sigma1: T::from_f64(0.22) + dx2,
+            volatility_sigma2: T::from_f64(0.14),
+            return_correlation_rho: T::from_f64(0.35),
+            loss_skewness_loading_s1: T::from_f64(0.45) + dx3,
+            loss_skewness_loading_s2: T::from_f64(0.15),
+            excess_kurtosis_loading_k1: T::from_f64(1.80),
+            excess_kurtosis_loading_k2: T::from_f64(0.60),
+            normal_tail_quantile_z: T::from_f64(2.3263),
+        },
+    );
+
+    let ru_quad = ql_portfolio::evaluate_rockafellar_uryasev_mixed_cvar_risk_quadrangle(
+        &ql_portfolio::RockafellarUryasevMixedCvarSpec {
+            mean_loss_mu: T::from_f64(0.012) + dx0,
+            loss_volatility_sigma: T::from_f64(0.045) + dx1,
+            moderate_confidence_alpha1: T::from_f64(0.95),
+            extreme_confidence_alpha2: T::from_f64(0.99),
+            moderate_spectral_weight_lambda1: T::from_f64(0.60) + dx2,
+            tail_kurtosis_amplification_kappa: T::from_f64(1.50) + dx3,
+        },
+    );
+
+    let hgg_is = ql_dml::evaluate_hasbrouck_gonzalo_granger_price_discovery_information_share(
+        &ql_dml::HasbrouckGonzaloGrangerSpec {
+            venue1_error_correction_speed_alpha1: T::from_f64(0.08) + dx0,
+            venue2_error_correction_speed_alpha2: T::from_f64(0.24) + dx1,
+            venue1_innovation_volatility_sigma1: T::from_f64(0.015) + dx2 * T::from_f64(0.1),
+            venue2_innovation_volatility_sigma2: T::from_f64(0.018),
+            cross_venue_innovation_correlation_rho: T::from_f64(0.55) + dx3,
+        },
+    );
+
+    let hk_sdf = ql_models::evaluate_he_krishnamurthy_intermediary_capital_constraint_sdf(
+        &ql_models::HeKrishnamurthyIntermediarySdfSpec {
+            intermediary_wealth_share_wi: T::from_f64(0.14) + dx0,
+            capital_constraint_threshold_w_star: T::from_f64(0.28) + dx1,
+            equity_intermediation_pledgeability_m: T::from_f64(0.35),
+            specialist_risk_aversion_gamma: T::from_f64(2.20) + dx2,
+            fundamental_growth_rate_ga: T::from_f64(0.020),
+            asset_return_volatility_sigma_a: T::from_f64(0.15) + dx3,
+            subjective_discount_rate_rho: T::from_f64(0.025),
+        },
+    );
+
+    [
+        ap_cms.cms_spread_call_present_value * T::from_f64(100.0),
+        // Include both the Z-bond PV and senior sequential WAL so the benchmark
+        // exercises the balance/CPR and discount/OAS sensitivities of the waterfall.
+        fab_z.z_bond_present_value * T::from_f64(0.1)
+            + fab_z.senior_tranche_wal_years * T::from_f64(0.1),
+        dg_cdo.tranche_expected_loss_pv * T::from_f64(10.0),
+        cl_vol.volatility_swap_fair_strike_k_vol * T::from_f64(10.0),
+        gr_kva.total_dual_constraint_kva,
+        cs_oil.three_factor_futures_price * T::from_f64(0.1),
+        fst_xccs.collateralized_xccs_present_value * T::from_f64(10.0),
+        ph_tsw.time_switch_option_present_value,
+        bcf_mvar.tail_risk_parity_weight_w1 * T::from_f64(10.0),
+        ru_quad.quadrangle_mixed_cvar_risk * T::from_f64(10.0),
+        hgg_is.hasbrouck_midpoint_information_share * T::from_f64(10.0),
+        hk_sdf.conditional_intermediary_equity_premium * T::from_f64(100.0),
+    ]
+}
+
+pub fn benchmark_andersen_piterbarg_cms_spread_fabozzi_z_bond_cmo_duffie_garleanu_affine_cdo_carr_lee_vol_swap_green_leverage_ratio_kva_cortazar_schwartz_3f_oil_fujii_collateralized_xccs_pechtl_haug_time_switch_boudt_cornish_fisher_mvar_rockafellar_quadrangle_hasbrouck_info_share_he_krishnamurthy_sdf(
+    scale: usize,
+) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let baseline = move || {
+        let f = |x: [f64; 4]| suite66_workloads(x).iter().copied().sum::<f64>();
+        let mut z = f(x0);
+        for i in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[i] += 1e-5;
+            d[i] -= 1e-5;
+            z += (f(u) - f(d)) / (2e-5);
+        }
+        for _ in 0..20 {
+            std::hint::black_box(f(x0));
+        }
+        z
+    };
+    let sota = move || {
+        let x: [Dual<4>; 4] = [
+            Dual::variable(x0[0], 0),
+            Dual::variable(x0[1], 1),
+            Dual::variable(x0[2], 2),
+            Dual::variable(x0[3], 3),
+        ];
+        suite66_workloads(x)
+            .iter()
+            .map(|v| v.val + v.d.iter().sum::<f64>())
+            .sum::<f64>()
+    };
+    run_comparison(
+        "66_andersen_piterbarg_cms_spread_fabozzi_z_bond_cmo_duffie_garleanu_affine_cdo_carr_lee_vol_swap_green_leverage_ratio_kva_cortazar_schwartz_3f_oil_fujii_collateralized_xccs_pechtl_haug_time_switch_boudt_cornish_fisher_mvar_rockafellar_quadrangle_hasbrouck_info_share_he_krishnamurthy_sdf",
+        "Andersen-Piterbarg-CMS-Spread / Fabozzi-Z-Bond-CMO / Duffie-Garleanu-Affine-CDO / Carr-Lee-Vol-Swap / Green-Leverage-Ratio-KVA / Cortazar-Schwartz-3F-Oil / Fujii-Collateralized-XCCS / Pechtl-Haug-Time-Switch / Boudt-Cornish-Fisher-MVaR / Rockafellar-Quadrangle / Hasbrouck-Info-Share / He-Krishnamurthy-SDF AD",
         cfg,
         1e-3,
         baseline,

@@ -2289,3 +2289,174 @@ mod wilmott_carr_cliquet_suite64_tests {
         }
     }
 }
+
+pub mod pechtl_haug_time_switch_option_mod {
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    /// Specification for the Pechtl (1995) / Haug (2007, Ch. 4.16) discrete time-switch
+    /// occupation-time accumulator option with smile skew correction.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct PechtlHaugTimeSwitchSpec<T: Real> {
+        /// Underlying spot price $S_0 > 0$.
+        pub spot_price_s0: T,
+        /// Threshold strike price $K > 0$ for in-the-money occupation accrual.
+        pub strike_price_k: T,
+        /// Annualized accrual payout rate $A > 0$ per unit occupation time.
+        pub accrual_rate_a: T,
+        /// Already-accumulated in-the-money occupation time $t_{\text{acc}} \ge 0$ (years).
+        pub accumulated_occupation_time_t_acc: T,
+        /// Continuous risk-free rate $r$.
+        pub risk_free_rate_r: T,
+        /// Continuous dividend yield $q$.
+        pub dividend_yield_q: T,
+        /// Black-Scholes volatility $\sigma > 0$.
+        pub volatility_sigma: T,
+        /// Risk-reversal smile skew slope $\nu_{\text{skew}} = \partial \sigma(K)/\partial \ln K$.
+        pub smile_skew_slope_nu: T,
+        /// Remaining maturity $T > 0$ (years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytical outputs for the Pechtl-Haug discrete time-switch accumulator option engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct PechtlHaugTimeSwitchAnalytics<T: Real> {
+        /// Expected future in-the-money occupation time $\sum_{m=1}^M \Delta t \, \mathbb{Q}(S(t_m) > K)$.
+        pub expected_in_the_money_occupation_time: T,
+        /// Present value of already-accumulated occupation time $A \cdot t_{\text{acc}} e^{-r T}$.
+        pub already_accumulated_present_value: T,
+        /// Smile skew digital probability adjustment wedge.
+        pub smile_skew_occupation_adjustment: T,
+        /// Total discounted present value of the discrete time-switch option.
+        pub time_switch_option_present_value: T,
+    }
+
+    /// Evaluates the Pechtl (1995) / Haug (2007, Ch. 4.16) discrete time-switch accumulator option
+    /// across $M = 8$ monitoring dates with digital smile skew correction.
+    pub fn evaluate_pechtl_haug_discrete_time_switch_accumulator_option<T: Real>(
+        spec: &PechtlHaugTimeSwitchSpec<T>,
+    ) -> PechtlHaugTimeSwitchAnalytics<T> {
+        const MON_DATES: usize = 8;
+        let t_mat = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+        let dt = t_mat / T::from_f64(MON_DATES as f64);
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(1e-4));
+        let k = spec.strike_price_k.max_val(T::from_f64(1e-4));
+        let sig = spec.volatility_sigma.max_val(T::from_f64(1e-4));
+        let log_sk = (s0 / k).ln();
+        let drift = spec.risk_free_rate_r - spec.dividend_yield_q - T::from_f64(0.5) * sig * sig;
+
+        let mut occ_time = T::zero();
+        let mut skew_wedge_pv = T::zero();
+        let mut future_accrual_pv = T::zero();
+        let df_t = (-spec.risk_free_rate_r * t_mat).exp();
+
+        for m in 1..=MON_DATES {
+            let tm = T::from_f64(m as f64) * dt;
+            let v_sqrt = sig * tm.sqrt();
+            let d2 = (log_sk + drift * tm) / v_sqrt;
+
+            // Digital call probability under smile skew: Phi(d2) - (d sigma / d ln K) * sqrt(t_m) * phi(d2)
+            let p_bs = norm_cdf(d2);
+            let skew_corr = -spec.smile_skew_slope_nu * tm.sqrt() * norm_pdf(d2);
+            let p_adj = p_bs + skew_corr;
+
+            occ_time += dt * p_adj;
+            skew_wedge_pv += df_t * spec.accrual_rate_a * dt * skew_corr;
+            future_accrual_pv += df_t * spec.accrual_rate_a * dt * p_adj;
+        }
+
+        let acc_pv = df_t * spec.accrual_rate_a * spec.accumulated_occupation_time_t_acc;
+
+        PechtlHaugTimeSwitchAnalytics {
+            expected_in_the_money_occupation_time: occ_time,
+            already_accumulated_present_value: acc_pv,
+            smile_skew_occupation_adjustment: skew_wedge_pv,
+            time_switch_option_present_value: future_accrual_pv + acc_pv,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn pechtl_haug_time_switch_invariants_and_ad_parity() {
+            let base = PechtlHaugTimeSwitchSpec {
+                spot_price_s0: 104.0_f64,
+                strike_price_k: 100.0,
+                accrual_rate_a: 25.0,
+                accumulated_occupation_time_t_acc: 0.25,
+                risk_free_rate_r: 0.04,
+                dividend_yield_q: 0.015,
+                volatility_sigma: 0.22,
+                smile_skew_slope_nu: -0.08,
+                maturity_years_t: 1.5,
+            };
+            let r0 = evaluate_pechtl_haug_discrete_time_switch_accumulator_option(&base);
+            assert!(
+                r0.expected_in_the_money_occupation_time > 0.0
+                    && r0.expected_in_the_money_occupation_time < base.maturity_years_t
+            );
+            assert!(r0.already_accumulated_present_value > 0.0);
+            assert!(r0.time_switch_option_present_value > r0.already_accumulated_present_value);
+
+            let inputs = [
+                base.spot_price_s0,
+                base.strike_price_k,
+                base.accrual_rate_a,
+                base.accumulated_occupation_time_t_acc,
+                base.risk_free_rate_r,
+                base.dividend_yield_q,
+                base.volatility_sigma,
+                base.smile_skew_slope_nu,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<9>::from_f64(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = PechtlHaugTimeSwitchSpec {
+                spot_price_s0: dual_in[0],
+                strike_price_k: dual_in[1],
+                accrual_rate_a: dual_in[2],
+                accumulated_occupation_time_t_acc: dual_in[3],
+                risk_free_rate_r: dual_in[4],
+                dividend_yield_q: dual_in[5],
+                volatility_sigma: dual_in[6],
+                smile_skew_slope_nu: dual_in[7],
+                maturity_years_t: dual_in[8],
+            };
+            let r_ad = evaluate_pechtl_haug_discrete_time_switch_accumulator_option(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 9]| PechtlHaugTimeSwitchSpec {
+                    spot_price_s0: v[0],
+                    strike_price_k: v[1],
+                    accrual_rate_a: v[2],
+                    accumulated_occupation_time_t_acc: v[3],
+                    risk_free_rate_r: v[4],
+                    dividend_yield_q: v[5],
+                    volatility_sigma: v[6],
+                    smile_skew_slope_nu: v[7],
+                    maturity_years_t: v[8],
+                };
+                let rp = evaluate_pechtl_haug_discrete_time_switch_accumulator_option(&mk(p));
+                let rm = evaluate_pechtl_haug_discrete_time_switch_accumulator_option(&mk(m));
+                let fd = (rp.time_switch_option_present_value
+                    - rm.time_switch_option_present_value)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.time_switch_option_present_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.time_switch_option_present_value.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use pechtl_haug_time_switch_option_mod::*;

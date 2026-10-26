@@ -3515,3 +3515,190 @@ mod evaluate_tuckman_cpi_inflation_swap_seasonality_carry_module {
     }
 }
 pub use evaluate_tuckman_cpi_inflation_swap_seasonality_carry_module::*;
+
+pub mod fabozzi_cmo_accrual_z_bond_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Fabozzi, Bhattacharya & Berliner (2011, Ch. 8-10) / Hayre (2001)
+    /// sequential CMO with an Accrual (Z-Bond) lockout tranche.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct FabozziCmoAccrualZBondSpec<T: Real> {
+        /// Initial principal balance $B_{A,0}$ of the Senior Sequential Tranche $A$.
+        pub senior_tranche_initial_balance_ba: T,
+        /// Initial principal balance $B_{Z,0}$ of the Accrual (Z-Bond) Tranche $Z$.
+        pub z_bond_initial_balance_bz: T,
+        /// Net pass-through and tranche coupon rate $c > 0$.
+        pub tranche_coupon_rate_c: T,
+        /// Conditional Prepayment Rate $\text{CPR} \in (0, 1)$ per annum.
+        pub conditional_prepayment_rate_cpr: T,
+        /// Scheduled amortization fraction $\alpha_{\text{sched}}$ of remaining pool per period.
+        pub scheduled_amortization_rate: T,
+        /// Base Treasury/OIS discount yield $y_{\text{disc}}$.
+        pub base_discount_yield_y: T,
+        /// Option-adjusted spread $\text{OAS}_Z$ for discounting Z-bond cashflows.
+        pub z_bond_oas_spread: T,
+    }
+
+    /// Analytical outputs for the Fabozzi CMO Accrual Z-Bond waterfall engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct FabozziCmoAccrualZBondAnalytics<T: Real> {
+        /// Weighted Average Life (WAL, years) of Senior Sequential Tranche $A$.
+        pub senior_tranche_wal_years: T,
+        /// Weighted Average Life (WAL, years) of the Accrual Z-Bond Tranche $Z$.
+        pub z_bond_wal_years: T,
+        /// Peak compounded Z-Bond principal multiplier $\max_t B_{Z,t} / B_{Z,0}$.
+        pub z_bond_accrued_peak_multiplier: T,
+        /// Discounted present value of the Accrual Z-Bond Tranche $Z$.
+        pub z_bond_present_value: T,
+    }
+
+    /// Evaluates a 6-period sequential CMO waterfall where the Z-Bond accrues compounded
+    /// principal during the lockout phase and redirects its cash interest to retire Tranche $A$.
+    pub fn evaluate_fabozzi_cmo_accrual_z_bond_sequential_lockout_tranche<T: Real>(
+        spec: &FabozziCmoAccrualZBondSpec<T>,
+    ) -> FabozziCmoAccrualZBondAnalytics<T> {
+        const PERIODS: usize = 6;
+        let ba0 = spec
+            .senior_tranche_initial_balance_ba
+            .max_val(T::from_f64(1.0));
+        let bz0 = spec.z_bond_initial_balance_bz.max_val(T::from_f64(1.0));
+        let c = spec.tranche_coupon_rate_c.max_val(T::from_f64(1e-4));
+        let cpr = spec
+            .conditional_prepayment_rate_cpr
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.85));
+        let sched = spec
+            .scheduled_amortization_rate
+            .max_val(T::from_f64(0.02))
+            .min_val(T::from_f64(0.50));
+
+        let mut pool_bal = ba0 + bz0;
+        let mut ba = ba0;
+        let mut bz = bz0;
+
+        let mut wal_a_num = T::zero();
+        let mut wal_z_num = T::zero();
+        let mut z_prin_total = T::zero();
+        let mut z_pv = T::zero();
+        let mut max_bz = bz0;
+
+        let eps = T::from_f64(1e-4);
+        let smooth_min = |a: T, b: T| -> T {
+            T::from_f64(0.5) * (a + b - ((a - b) * (a - b) + eps * eps).sqrt())
+        };
+        let smooth_max = |a: T, b: T| -> T {
+            T::from_f64(0.5) * (a + b + ((a - b) * (a - b) + eps * eps).sqrt())
+        };
+
+        let r_z = spec.base_discount_yield_y + spec.z_bond_oas_spread;
+
+        for m in 1..=PERIODS {
+            let tm = T::from_f64(m as f64);
+            let pay_rate = sched + (T::one() - sched) * cpr;
+            let coll_prin = if m == PERIODS {
+                pool_bal
+            } else {
+                pool_bal * pay_rate
+            };
+            pool_bal = (pool_bal - coll_prin).max_val(T::zero());
+
+            // Z-Bond interest accrual redirected to accelerate Senior Tranche A retirement.
+            let z_accrued_int = c * bz;
+            let z_compounded_target = bz + z_accrued_int;
+
+            let cash_avail_for_a = coll_prin + z_accrued_int;
+            let prin_a = smooth_min(ba, cash_avail_for_a);
+            ba = smooth_max(T::zero(), ba - prin_a);
+            wal_a_num += tm * prin_a;
+
+            // Any cash in excess of retiring Tranche A flows to the Z-Bond
+            let cash_to_z = smooth_max(T::zero(), cash_avail_for_a - prin_a);
+            bz = smooth_max(T::zero(), z_compounded_target - cash_to_z);
+            max_bz = smooth_max(max_bz, bz);
+
+            let df_z = (-r_z * tm).exp();
+            z_pv += df_z * cash_to_z;
+            wal_z_num += tm * cash_to_z;
+            z_prin_total += cash_to_z;
+        }
+
+        FabozziCmoAccrualZBondAnalytics {
+            senior_tranche_wal_years: wal_a_num / ba0,
+            z_bond_wal_years: wal_z_num / z_prin_total.max_val(T::from_f64(1e-6)),
+            z_bond_accrued_peak_multiplier: max_bz / bz0,
+            z_bond_present_value: z_pv,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn fabozzi_cmo_accrual_z_bond_invariants_and_ad_parity() {
+            let base = FabozziCmoAccrualZBondSpec {
+                senior_tranche_initial_balance_ba: 75.0_f64,
+                z_bond_initial_balance_bz: 25.0,
+                tranche_coupon_rate_c: 0.055,
+                conditional_prepayment_rate_cpr: 0.16,
+                scheduled_amortization_rate: 0.12,
+                base_discount_yield_y: 0.042,
+                z_bond_oas_spread: 0.012,
+            };
+            let r0 = evaluate_fabozzi_cmo_accrual_z_bond_sequential_lockout_tranche(&base);
+            assert!(r0.z_bond_wal_years > r0.senior_tranche_wal_years);
+            assert!(r0.z_bond_accrued_peak_multiplier > 1.0);
+            assert!(r0.z_bond_present_value > 0.0);
+
+            let inputs = [
+                base.senior_tranche_initial_balance_ba,
+                base.z_bond_initial_balance_bz,
+                base.tranche_coupon_rate_c,
+                base.conditional_prepayment_rate_cpr,
+                base.scheduled_amortization_rate,
+                base.base_discount_yield_y,
+                base.z_bond_oas_spread,
+            ];
+            let mut dual_in = [Dual::<7>::from_f64(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = FabozziCmoAccrualZBondSpec {
+                senior_tranche_initial_balance_ba: dual_in[0],
+                z_bond_initial_balance_bz: dual_in[1],
+                tranche_coupon_rate_c: dual_in[2],
+                conditional_prepayment_rate_cpr: dual_in[3],
+                scheduled_amortization_rate: dual_in[4],
+                base_discount_yield_y: dual_in[5],
+                z_bond_oas_spread: dual_in[6],
+            };
+            let r_ad = evaluate_fabozzi_cmo_accrual_z_bond_sequential_lockout_tranche(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| FabozziCmoAccrualZBondSpec {
+                    senior_tranche_initial_balance_ba: v[0],
+                    z_bond_initial_balance_bz: v[1],
+                    tranche_coupon_rate_c: v[2],
+                    conditional_prepayment_rate_cpr: v[3],
+                    scheduled_amortization_rate: v[4],
+                    base_discount_yield_y: v[5],
+                    z_bond_oas_spread: v[6],
+                };
+                let rp = evaluate_fabozzi_cmo_accrual_z_bond_sequential_lockout_tranche(&mk(p));
+                let rm = evaluate_fabozzi_cmo_accrual_z_bond_sequential_lockout_tranche(&mk(m));
+                let fd = (rp.z_bond_present_value - rm.z_bond_present_value) / (2.0 * eps);
+                assert!(
+                    r_ad.z_bond_present_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.z_bond_present_value.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use fabozzi_cmo_accrual_z_bond_mod::*;

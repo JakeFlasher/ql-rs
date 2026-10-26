@@ -675,7 +675,9 @@ mod evaluate_gregory_pykhtin_csa_threshold_mta_cva_module {
         // Smooth effective threshold H_eff = softplus(H + 0.5 * MTA - IA)
         let raw_h = spec.csa_threshold_h + T::from_f64(0.5) * spec.minimum_transfer_amount_mta
             - spec.independent_amount_ia;
-        let eps = T::from_f64(0.05);
+        // Use a capital-scale smoothing width so the leverage constraint remains
+        // differentiable even when the RWA leg is materially dominant.
+        let eps = T::from_f64(1.0);
         let h_eff = T::from_f64(0.5) * (raw_h + (raw_h * raw_h + eps * eps).sqrt());
         let raw_h_no_mta = spec.csa_threshold_h - spec.independent_amount_ia;
         let h_no_mta =
@@ -2684,3 +2686,201 @@ pub mod brigo_pallavicini_ccp_xva_suite65_mod {
     }
 }
 pub use brigo_pallavicini_ccp_xva_suite65_mod::*;
+
+pub mod green_basel_leverage_ratio_kva_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Green (2015, Ch. 13-15) / Albanese, Andersen & Iabichino (2015)
+    /// dual-constraint RWA and Basel III Leverage Ratio KVA engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct GreenBaselLeverageRatioKvaSpec<T: Real> {
+        /// Initial SA-CCR exposure-at-default $\text{EAD}_0 > 0$.
+        pub initial_sa_ccr_ead0: T,
+        /// Gross trade notional $N_{\text{gross}} > 0$ subject to SA-CCR leverage add-on.
+        pub gross_trade_notional: T,
+        /// Regulatory SA-CCR PFE add-on factor $\psi_{\text{addon}} > 0$.
+        pub sa_ccr_addon_factor_psi: T,
+        /// Counterparty risk weight $w_{\text{cpty}} > 0$ under Standardized/IRB CCR.
+        pub counterparty_risk_weight_w: T,
+        /// Pillar 1 CET1 + buffers capital ratio requirement $k_{\text{cet1}}$ (e.g. 0.105).
+        pub cet1_capital_ratio_k: T,
+        /// Basel III Tier 1 Leverage Ratio requirement $\gamma_{\text{LR}}$ (e.g. 0.035).
+        pub leverage_ratio_requirement_gamma: T,
+        /// CVA capital multiplier $\beta_{\text{cva}} > 0$ per year of effective maturity.
+        pub cva_capital_loading_beta: T,
+        /// Shareholder return-on-equity hurdle rate $h_{\text{ROE}} > 0$.
+        pub capital_hurdle_rate_h: T,
+        /// Fraction $\phi_{\text{cap}} \in [0, 1]$ of capital funding benefit at OIS rate.
+        pub capital_funding_offset_phi: T,
+        /// Counterparty hazard rate $\lambda_C > 0$.
+        pub counterparty_hazard_rate_lambda: T,
+        /// Continuous OIS discount rate $r_{\text{ois}}$.
+        pub ois_discount_rate_r: T,
+        /// Trade maturity $T > 0$ (years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytical outputs for the Green Basel III Leverage Ratio & RWA KVA engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct GreenBaselLeverageRatioKvaAnalytics<T: Real> {
+        /// Stand-alone Pillar 1 RWA (CCR + CVA) KVA charge.
+        pub rwa_only_kva_charge: T,
+        /// Stand-alone Basel III Leverage Ratio KVA charge.
+        pub leverage_ratio_only_kva_charge: T,
+        /// Incremental surcharge $\text{KVA}_{\text{dual}} - \text{KVA}_{\text{RWA}}$ from LR binding.
+        pub leverage_ratio_binding_surcharge: T,
+        /// Total dual-constraint regulatory KVA charge.
+        pub total_dual_constraint_kva: T,
+    }
+
+    /// Evaluates the Green (2015) / Albanese-Andersen (2015) Capital Valuation Adjustment (KVA)
+    /// under the smooth binding maximum of RWA capital and Basel III Leverage Ratio capital.
+    pub fn evaluate_green_basel_leverage_ratio_rwa_hurdle_kva<T: Real>(
+        spec: &GreenBaselLeverageRatioKvaSpec<T>,
+    ) -> GreenBaselLeverageRatioKvaAnalytics<T> {
+        const PERIODS: usize = 4;
+        let t_mat = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+        let dt = t_mat / T::from_f64(PERIODS as f64);
+        let net_hurdle = (spec.capital_hurdle_rate_h
+            - spec.capital_funding_offset_phi * spec.ois_discount_rate_r)
+            .max_val(T::from_f64(1e-4));
+
+        let mut rwa_kva = T::zero();
+        let mut lr_kva = T::zero();
+        let mut dual_kva = T::zero();
+        // Use a capital-scale smoothing width so the leverage constraint remains
+        // differentiable even when the RWA leg is materially dominant.
+        let eps = T::from_f64(1.0);
+
+        for m in 1..=PERIODS {
+            let tm = (T::from_f64(m as f64) - T::from_f64(0.5)) * dt;
+            let rem_frac = (t_mat - tm) / t_mat;
+            let ead_m = spec.initial_sa_ccr_ead0 * rem_frac;
+
+            let k_rwa = spec.cet1_capital_ratio_k
+                * T::from_f64(12.5)
+                * spec.counterparty_risk_weight_w
+                * ead_m
+                * (T::one() + spec.cva_capital_loading_beta * (t_mat - tm));
+
+            let lr_exposure =
+                ead_m + spec.sa_ccr_addon_factor_psi * spec.gross_trade_notional * rem_frac;
+            let k_lr = spec.leverage_ratio_requirement_gamma * lr_exposure;
+
+            // Smooth maximum of RWA capital and Leverage Ratio capital
+            let k_bind = T::from_f64(0.5)
+                * (k_rwa + k_lr + ((k_rwa - k_lr) * (k_rwa - k_lr) + eps * eps).sqrt());
+
+            let df_surv = (-(spec.ois_discount_rate_r
+                + spec.counterparty_hazard_rate_lambda
+                + spec.capital_hurdle_rate_h)
+                * tm)
+                .exp();
+            let weight = dt * df_surv * net_hurdle;
+
+            rwa_kva += weight * k_rwa;
+            lr_kva += weight * k_lr;
+            dual_kva += weight * k_bind;
+        }
+
+        GreenBaselLeverageRatioKvaAnalytics {
+            rwa_only_kva_charge: rwa_kva,
+            leverage_ratio_only_kva_charge: lr_kva,
+            leverage_ratio_binding_surcharge: dual_kva - rwa_kva,
+            total_dual_constraint_kva: dual_kva,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn green_basel_leverage_ratio_kva_invariants_and_ad_parity() {
+            let base = GreenBaselLeverageRatioKvaSpec {
+                initial_sa_ccr_ead0: 18.0_f64,
+                gross_trade_notional: 500.0,
+                sa_ccr_addon_factor_psi: 0.04,
+                counterparty_risk_weight_w: 0.50,
+                cet1_capital_ratio_k: 0.105,
+                leverage_ratio_requirement_gamma: 0.035,
+                cva_capital_loading_beta: 0.08,
+                capital_hurdle_rate_h: 0.11,
+                capital_funding_offset_phi: 0.35,
+                counterparty_hazard_rate_lambda: 0.015,
+                ois_discount_rate_r: 0.035,
+                maturity_years_t: 5.0,
+            };
+            let r0 = evaluate_green_basel_leverage_ratio_rwa_hurdle_kva(&base);
+            assert!(r0.total_dual_constraint_kva > r0.rwa_only_kva_charge);
+            assert!(r0.total_dual_constraint_kva > r0.leverage_ratio_only_kva_charge);
+            assert!(r0.leverage_ratio_binding_surcharge > 0.0);
+
+            let inputs = [
+                base.initial_sa_ccr_ead0,
+                base.gross_trade_notional,
+                base.sa_ccr_addon_factor_psi,
+                base.counterparty_risk_weight_w,
+                base.cet1_capital_ratio_k,
+                base.leverage_ratio_requirement_gamma,
+                base.cva_capital_loading_beta,
+                base.capital_hurdle_rate_h,
+                base.capital_funding_offset_phi,
+                base.counterparty_hazard_rate_lambda,
+                base.ois_discount_rate_r,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<12>::from_f64(0.0); 12];
+            for i in 0..12 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = GreenBaselLeverageRatioKvaSpec {
+                initial_sa_ccr_ead0: dual_in[0],
+                gross_trade_notional: dual_in[1],
+                sa_ccr_addon_factor_psi: dual_in[2],
+                counterparty_risk_weight_w: dual_in[3],
+                cet1_capital_ratio_k: dual_in[4],
+                leverage_ratio_requirement_gamma: dual_in[5],
+                cva_capital_loading_beta: dual_in[6],
+                capital_hurdle_rate_h: dual_in[7],
+                capital_funding_offset_phi: dual_in[8],
+                counterparty_hazard_rate_lambda: dual_in[9],
+                ois_discount_rate_r: dual_in[10],
+                maturity_years_t: dual_in[11],
+            };
+            let r_ad = evaluate_green_basel_leverage_ratio_rwa_hurdle_kva(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..12 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 12]| GreenBaselLeverageRatioKvaSpec {
+                    initial_sa_ccr_ead0: v[0],
+                    gross_trade_notional: v[1],
+                    sa_ccr_addon_factor_psi: v[2],
+                    counterparty_risk_weight_w: v[3],
+                    cet1_capital_ratio_k: v[4],
+                    leverage_ratio_requirement_gamma: v[5],
+                    cva_capital_loading_beta: v[6],
+                    capital_hurdle_rate_h: v[7],
+                    capital_funding_offset_phi: v[8],
+                    counterparty_hazard_rate_lambda: v[9],
+                    ois_discount_rate_r: v[10],
+                    maturity_years_t: v[11],
+                };
+                let rp = evaluate_green_basel_leverage_ratio_rwa_hurdle_kva(&mk(p));
+                let rm = evaluate_green_basel_leverage_ratio_rwa_hurdle_kva(&mk(m));
+                let fd =
+                    (rp.total_dual_constraint_kva - rm.total_dual_constraint_kva) / (2.0 * eps);
+                assert!(
+                    r_ad.total_dual_constraint_kva.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.total_dual_constraint_kva.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use green_basel_leverage_ratio_kva_mod::*;

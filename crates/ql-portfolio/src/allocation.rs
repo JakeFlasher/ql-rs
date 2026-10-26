@@ -4896,3 +4896,213 @@ mod bsv_ppp_suite64_tests {
         }
     }
 }
+
+pub mod boudt_cornish_fisher_mvar_allocation_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Boudt, Peterson & Croux (2008, J. Risk) / Litterman (2003, Ch. 7)
+    /// Cornish-Fisher fourth-moment Modified-VaR (MVaR) tail-risk budget allocation engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct BoudtCornishFisherMvarSpec<T: Real> {
+        /// Initial weight $w_1 \in (0, 1)$ of asset 1 (with $w_2 = 1 - w_1$).
+        pub initial_weight_w1: T,
+        /// Target tail-risk budget share $b_1 \in (0, 1)$ for asset 1.
+        pub target_risk_budget_b1: T,
+        /// Volatility $\sigma_1 > 0$ of asset 1.
+        pub volatility_sigma1: T,
+        /// Volatility $\sigma_2 > 0$ of asset 2.
+        pub volatility_sigma2: T,
+        /// Return correlation $\rho \in (-1, 1)$ between assets 1 and 2.
+        pub return_correlation_rho: T,
+        /// Marginal loss skewness loading $s_1$ of asset 1 ($s_i > 0$ means right-skewed loss / crash risk).
+        pub loss_skewness_loading_s1: T,
+        /// Marginal loss skewness loading $s_2$ of asset 2.
+        pub loss_skewness_loading_s2: T,
+        /// Marginal excess kurtosis loading $k_1 \ge 0$ of asset 1.
+        pub excess_kurtosis_loading_k1: T,
+        /// Marginal excess kurtosis loading $k_2 \ge 0$ of asset 2.
+        pub excess_kurtosis_loading_k2: T,
+        /// Standard normal upper tail quantile $z_\alpha > 1$ (e.g. $2.3263$ for 99% VaR).
+        pub normal_tail_quantile_z: T,
+    }
+
+    /// Analytical outputs for the Boudt-Cornish-Fisher Modified-VaR risk budgeting engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct BoudtCornishFisherMvarAnalytics<T: Real> {
+        /// Cornish-Fisher fourth-moment quantile multiplier $z_{\text{CF}}(\alpha, S_p, K_p)$.
+        pub cornish_fisher_quantile_z_cf: T,
+        /// Portfolio Modified Value-at-Risk $\text{MVaR}_\alpha = \sigma_p z_{\text{CF}}$.
+        pub portfolio_modified_var: T,
+        /// Euler percentage Modified-VaR contribution share $RC_1 / \text{MVaR}_\alpha$ of asset 1.
+        pub asset1_modified_var_contribution_share: T,
+        /// Updated tail-risk parity weight $w_1^{\text{MVRP}}$ after one multiplicative risk-budget step.
+        pub tail_risk_parity_weight_w1: T,
+    }
+
+    /// Evaluates the Boudt, Peterson & Croux (2008) Euler decomposition of Cornish-Fisher
+    /// Modified VaR and computes the tail-risk budget portfolio weight update.
+    pub fn evaluate_boudt_cornish_fisher_modified_var_risk_budget_allocation<T: Real>(
+        spec: &BoudtCornishFisherMvarSpec<T>,
+    ) -> BoudtCornishFisherMvarAnalytics<T> {
+        let w1 = spec
+            .initial_weight_w1
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.95));
+        let w2 = T::one() - w1;
+        let b1 = spec
+            .target_risk_budget_b1
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.95));
+        let b2 = T::one() - b1;
+
+        let sig1 = spec.volatility_sigma1.max_val(T::from_f64(1e-4));
+        let sig2 = spec.volatility_sigma2.max_val(T::from_f64(1e-4));
+        let rho = spec
+            .return_correlation_rho
+            .max_val(T::from_f64(-0.95))
+            .min_val(T::from_f64(0.95));
+
+        let var_p = (w1 * w1 * sig1 * sig1
+            + w2 * w2 * sig2 * sig2
+            + T::from_f64(2.0) * rho * w1 * w2 * sig1 * sig2)
+            .max_val(T::from_f64(1e-10));
+        let sig_p = var_p.sqrt();
+
+        // Marginal volatility contributions d sigma_p / d w_i
+        let d_sig_w1 = (w1 * sig1 * sig1 + rho * w2 * sig1 * sig2) / sig_p;
+        let d_sig_w2 = (w2 * sig2 * sig2 + rho * w1 * sig1 * sig2) / sig_p;
+
+        // Homogeneous degree-zero co-skewness / co-kurtosis attribution normalized by (w1 + w2)
+        let w_sum = w1 + w2;
+        let sp = (w1 * spec.loss_skewness_loading_s1 + w2 * spec.loss_skewness_loading_s2) / w_sum;
+        let kp =
+            (w1 * spec.excess_kurtosis_loading_k1 + w2 * spec.excess_kurtosis_loading_k2) / w_sum;
+
+        let z = spec.normal_tail_quantile_z.max_val(T::from_f64(1.28));
+        let z2 = z * z;
+        let z3 = z2 * z;
+        let c_s = (z2 - T::one()) / T::from_f64(6.0);
+        let c_k = (z3 - T::from_f64(3.0) * z) / T::from_f64(24.0);
+        let c_s2 = (T::from_f64(2.0) * z3 - T::from_f64(5.0) * z) / T::from_f64(36.0);
+
+        let z_cf = (z + c_s * sp + c_k * kp - c_s2 * sp * sp).max_val(T::from_f64(0.5));
+        let mvar = sig_p * z_cf;
+
+        // Euler marginal Modified-VaR contributions including third/fourth moment gradients
+        let dz_ds = c_s - T::from_f64(2.0) * c_s2 * sp;
+        let m_mvar1 = (d_sig_w1 * z_cf
+            + sig_p
+                * (dz_ds * (spec.loss_skewness_loading_s1 - sp)
+                    + c_k * (spec.excess_kurtosis_loading_k1 - kp)))
+            .max_val(T::from_f64(1e-5));
+        let m_mvar2 = (d_sig_w2 * z_cf
+            + sig_p
+                * (dz_ds * (spec.loss_skewness_loading_s2 - sp)
+                    + c_k * (spec.excess_kurtosis_loading_k2 - kp)))
+            .max_val(T::from_f64(1e-5));
+
+        let rc1 = w1 * m_mvar1;
+        let rc2 = w2 * m_mvar2;
+        let rc_tot = (rc1 + rc2).max_val(T::from_f64(1e-8));
+        let share1 = rc1 / rc_tot;
+
+        let u1 = w1 * (b1 / share1.max_val(T::from_f64(1e-4))).sqrt();
+        let u2 = w2 * (b2 / (T::one() - share1).max_val(T::from_f64(1e-4))).sqrt();
+        let w1_new = u1 / (u1 + u2);
+
+        BoudtCornishFisherMvarAnalytics {
+            cornish_fisher_quantile_z_cf: z_cf,
+            portfolio_modified_var: mvar,
+            asset1_modified_var_contribution_share: share1,
+            tail_risk_parity_weight_w1: w1_new,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn boudt_cornish_fisher_mvar_invariants_and_ad_parity() {
+            let base = BoudtCornishFisherMvarSpec {
+                initial_weight_w1: 0.60_f64,
+                target_risk_budget_b1: 0.50,
+                volatility_sigma1: 0.22,
+                volatility_sigma2: 0.14,
+                return_correlation_rho: 0.35,
+                loss_skewness_loading_s1: 0.45,
+                loss_skewness_loading_s2: 0.15,
+                excess_kurtosis_loading_k1: 1.80,
+                excess_kurtosis_loading_k2: 0.60,
+                normal_tail_quantile_z: 2.3263,
+            };
+            let r0 = evaluate_boudt_cornish_fisher_modified_var_risk_budget_allocation(&base);
+            assert!(r0.cornish_fisher_quantile_z_cf > base.normal_tail_quantile_z);
+            assert!(r0.portfolio_modified_var > 0.0);
+            assert!(
+                r0.asset1_modified_var_contribution_share > 0.50
+                    && r0.tail_risk_parity_weight_w1 < base.initial_weight_w1
+            );
+
+            let inputs = [
+                base.initial_weight_w1,
+                base.target_risk_budget_b1,
+                base.volatility_sigma1,
+                base.volatility_sigma2,
+                base.return_correlation_rho,
+                base.loss_skewness_loading_s1,
+                base.loss_skewness_loading_s2,
+                base.excess_kurtosis_loading_k1,
+                base.excess_kurtosis_loading_k2,
+                base.normal_tail_quantile_z,
+            ];
+            let mut dual_in = [Dual::<10>::from_f64(0.0); 10];
+            for i in 0..10 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BoudtCornishFisherMvarSpec {
+                initial_weight_w1: dual_in[0],
+                target_risk_budget_b1: dual_in[1],
+                volatility_sigma1: dual_in[2],
+                volatility_sigma2: dual_in[3],
+                return_correlation_rho: dual_in[4],
+                loss_skewness_loading_s1: dual_in[5],
+                loss_skewness_loading_s2: dual_in[6],
+                excess_kurtosis_loading_k1: dual_in[7],
+                excess_kurtosis_loading_k2: dual_in[8],
+                normal_tail_quantile_z: dual_in[9],
+            };
+            let r_ad = evaluate_boudt_cornish_fisher_modified_var_risk_budget_allocation(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..10 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 10]| BoudtCornishFisherMvarSpec {
+                    initial_weight_w1: v[0],
+                    target_risk_budget_b1: v[1],
+                    volatility_sigma1: v[2],
+                    volatility_sigma2: v[3],
+                    return_correlation_rho: v[4],
+                    loss_skewness_loading_s1: v[5],
+                    loss_skewness_loading_s2: v[6],
+                    excess_kurtosis_loading_k1: v[7],
+                    excess_kurtosis_loading_k2: v[8],
+                    normal_tail_quantile_z: v[9],
+                };
+                let rp = evaluate_boudt_cornish_fisher_modified_var_risk_budget_allocation(&mk(p));
+                let rm = evaluate_boudt_cornish_fisher_modified_var_risk_budget_allocation(&mk(m));
+                let fd =
+                    (rp.tail_risk_parity_weight_w1 - rm.tail_risk_parity_weight_w1) / (2.0 * eps);
+                assert!(
+                    r_ad.tail_risk_parity_weight_w1.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.tail_risk_parity_weight_w1.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use boudt_cornish_fisher_mvar_allocation_mod::*;

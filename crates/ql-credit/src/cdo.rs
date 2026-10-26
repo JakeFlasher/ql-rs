@@ -2498,3 +2498,275 @@ mod laurent_gregory_cdo_suite64_tests {
         }
     }
 }
+
+pub mod duffie_garleanu_affine_jump_cdo_mod {
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    /// Specification for the Duffie & Garleanu (2001, FAJ) / Schönbucher (2003, Ch. 10)
+    /// Basic Affine Jump-Diffusion (BAJD) correlated default intensity CDO tranche model.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct DuffieGarleanuAffineJumpCdoSpec<T: Real> {
+        /// Initial common sector default intensity $\lambda_{c,0} > 0$.
+        pub initial_common_intensity_lambda_c0: T,
+        /// Common intensity mean-reversion speed $\kappa_c > 0$.
+        pub common_reversion_speed_kappa_c: T,
+        /// Common intensity long-run diffusive level $\theta_c > 0$.
+        pub common_long_run_theta_c: T,
+        /// Feller square-root volatility $\sigma_c > 0$ of common intensity.
+        pub common_feller_volatility_sigma_c: T,
+        /// Arrival rate $\mu_J \ge 0$ of sector-wide positive exponential intensity jumps.
+        pub common_jump_arrival_rate_mu_j: T,
+        /// Mean jump size $\eta_J > 0$ of sector-wide intensity jumps.
+        pub common_mean_jump_size_eta_j: T,
+        /// Idiosyncratic baseline hazard rate $\lambda_{\text{id}} > 0$.
+        pub idiosyncratic_intensity_lambda_id: T,
+        /// Loss given default $\text{LGD} \in (0, 1)$.
+        pub loss_given_default_lgd: T,
+        /// Tranche attachment point $K_A \in [0, 1)$.
+        pub attachment_point_ka: T,
+        /// Tranche detachment point $K_D \in (K_A, 1]$.
+        pub detachment_point_kd: T,
+        /// Continuous OIS risk-free discount rate $r$.
+        pub risk_free_rate_r: T,
+        /// Tranche maturity $T > 0$ (years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytical outputs for the Duffie-Garleanu Basic Affine Jump-Diffusion CDO tranche engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct DuffieGarleanuAffineJumpCdoAnalytics<T: Real> {
+        /// Single-name survival probability $Q_1(T) = \mathbb{P}(\tau_i > T)$.
+        pub single_name_survival_probability: T,
+        /// Pairwise joint survival probability $Q_2(T) = \mathbb{P}(\tau_i > T, \tau_j > T)$.
+        pub pairwise_joint_survival_probability: T,
+        /// Implied Lucas (1995) pairwise default event correlation $\rho_{\text{def}}(T)$.
+        pub implied_default_event_correlation: T,
+        /// Discounted expected tranche loss PV per unit tranche notional.
+        pub tranche_expected_loss_pv: T,
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn bajd_laplace_survival<T: Real>(
+        u: T,
+        lambda0: T,
+        kappa: T,
+        theta: T,
+        sigma: T,
+        mu_j: T,
+        eta_j: T,
+        mat_t: T,
+    ) -> T {
+        let sig2 = sigma * sigma;
+        let gamma = (kappa * kappa + T::from_f64(2.0) * u * sig2).sqrt();
+
+        let b_at = |s: T| -> T {
+            let eg = (gamma * s).exp();
+            let num = T::from_f64(2.0) * u * (eg - T::one());
+            let den = (gamma + kappa) * (eg - T::one()) + T::from_f64(2.0) * gamma;
+            num / den
+        };
+
+        let b_t = b_at(mat_t);
+        let eg_t = (gamma * mat_t).exp();
+        let den_t = (gamma + kappa) * (eg_t - T::one()) + T::from_f64(2.0) * gamma;
+        let a_diff = (T::from_f64(2.0) * kappa * theta / sig2)
+            * ((T::from_f64(2.0) * gamma * ((kappa + gamma) * mat_t * T::from_f64(0.5)).exp())
+                / den_t)
+                .ln();
+
+        // 4-point Gauss-Legendre integration of -mu_J * int_0^T (eta_J * B(s)) / (1 + eta_J * B(s)) ds
+        let nodes = [
+            -0.8611363115940526,
+            -0.3399810435848563,
+            0.3399810435848563,
+            0.8611363115940526,
+        ];
+        let weights = [
+            0.3478548451374538,
+            0.6521451548625461,
+            0.6521451548625461,
+            0.3478548451374538,
+        ];
+        let half_t = T::from_f64(0.5) * mat_t;
+        let mut jump_int = T::zero();
+        for idx in 0..4 {
+            let s = half_t * (T::one() + T::from_f64(nodes[idx]));
+            let bs = b_at(s);
+            let integrand = (eta_j * bs) / (T::one() + eta_j * bs);
+            jump_int += T::from_f64(weights[idx]) * integrand;
+        }
+        let a_jump = -mu_j * half_t * jump_int;
+
+        (a_diff + a_jump - b_t * lambda0).exp()
+    }
+
+    /// Evaluates the Duffie & Garleanu (2001) Basic Affine Jump-Diffusion (BAJD) CDO tranche model.
+    pub fn evaluate_duffie_garleanu_affine_jump_intensity_cdo_tranche<T: Real>(
+        spec: &DuffieGarleanuAffineJumpCdoSpec<T>,
+    ) -> DuffieGarleanuAffineJumpCdoAnalytics<T> {
+        let mat_t = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+        let lam0 = spec
+            .initial_common_intensity_lambda_c0
+            .max_val(T::from_f64(1e-5));
+        let kappa = spec
+            .common_reversion_speed_kappa_c
+            .max_val(T::from_f64(1e-4));
+        let theta = spec.common_long_run_theta_c.max_val(T::from_f64(1e-5));
+        let sigma = spec
+            .common_feller_volatility_sigma_c
+            .max_val(T::from_f64(1e-4));
+        let mu_j = spec.common_jump_arrival_rate_mu_j.max_val(T::zero());
+        let eta_j = spec.common_mean_jump_size_eta_j.max_val(T::from_f64(1e-5));
+        let lam_id = spec
+            .idiosyncratic_intensity_lambda_id
+            .max_val(T::from_f64(1e-5));
+
+        let l1 = bajd_laplace_survival(T::one(), lam0, kappa, theta, sigma, mu_j, eta_j, mat_t);
+        let l2 = bajd_laplace_survival(
+            T::from_f64(2.0),
+            lam0,
+            kappa,
+            theta,
+            sigma,
+            mu_j,
+            eta_j,
+            mat_t,
+        );
+
+        let surv_id = (-lam_id * mat_t).exp();
+        let q1 = surv_id * l1;
+        let q2 = surv_id * surv_id * l2;
+
+        let pd1 = (T::one() - q1)
+            .max_val(T::from_f64(1e-6))
+            .min_val(T::from_f64(0.999));
+        let cov_def = (q2 - q1 * q1).max_val(T::from_f64(1e-8));
+        let rho_def = (cov_def / (pd1 * (T::one() - pd1))).min_val(T::from_f64(0.95));
+
+        // Map mean portfolio loss mu_L = LGD * pd1 and variance var_L = LGD^2 * cov_def
+        // to the smooth Vasicek/Gaussian asymptotic portfolio loss distribution on [K_A, K_D]
+        let mu_l = spec.loss_given_default_lgd * pd1;
+        let std_l = (spec.loss_given_default_lgd * spec.loss_given_default_lgd * cov_def
+            + T::from_f64(1e-6))
+        .sqrt();
+
+        let call_loss = |k: T| -> T {
+            let d = (mu_l - k) / std_l;
+            (mu_l - k) * norm_cdf(d) + std_l * norm_pdf(d)
+        };
+        let width =
+            (spec.detachment_point_kd - spec.attachment_point_ka).max_val(T::from_f64(1e-4));
+        let tranche_el =
+            ((call_loss(spec.attachment_point_ka) - call_loss(spec.detachment_point_kd)) / width)
+                .max_val(T::zero())
+                .min_val(T::one());
+        let df = (-spec.risk_free_rate_r * mat_t).exp();
+
+        DuffieGarleanuAffineJumpCdoAnalytics {
+            single_name_survival_probability: q1,
+            pairwise_joint_survival_probability: q2,
+            implied_default_event_correlation: rho_def,
+            tranche_expected_loss_pv: df * tranche_el,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn duffie_garleanu_affine_jump_cdo_invariants_and_ad_parity() {
+            let base = DuffieGarleanuAffineJumpCdoSpec {
+                initial_common_intensity_lambda_c0: 0.015_f64,
+                common_reversion_speed_kappa_c: 0.45,
+                common_long_run_theta_c: 0.018,
+                common_feller_volatility_sigma_c: 0.09,
+                common_jump_arrival_rate_mu_j: 0.25,
+                common_mean_jump_size_eta_j: 0.03,
+                idiosyncratic_intensity_lambda_id: 0.012,
+                loss_given_default_lgd: 0.60,
+                attachment_point_ka: 0.03,
+                detachment_point_kd: 0.07,
+                risk_free_rate_r: 0.035,
+                maturity_years_t: 5.0,
+            };
+            let r0 = evaluate_duffie_garleanu_affine_jump_intensity_cdo_tranche(&base);
+            assert!(
+                r0.single_name_survival_probability > 0.0
+                    && r0.single_name_survival_probability < 1.0
+            );
+            assert!(
+                r0.pairwise_joint_survival_probability
+                    > r0.single_name_survival_probability * r0.single_name_survival_probability
+            );
+            assert!(r0.implied_default_event_correlation > 0.0);
+            assert!(r0.tranche_expected_loss_pv > 0.0);
+
+            let inputs = [
+                base.initial_common_intensity_lambda_c0,
+                base.common_reversion_speed_kappa_c,
+                base.common_long_run_theta_c,
+                base.common_feller_volatility_sigma_c,
+                base.common_jump_arrival_rate_mu_j,
+                base.common_mean_jump_size_eta_j,
+                base.idiosyncratic_intensity_lambda_id,
+                base.loss_given_default_lgd,
+                base.attachment_point_ka,
+                base.detachment_point_kd,
+                base.risk_free_rate_r,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<12>::from_f64(0.0); 12];
+            for i in 0..12 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = DuffieGarleanuAffineJumpCdoSpec {
+                initial_common_intensity_lambda_c0: dual_in[0],
+                common_reversion_speed_kappa_c: dual_in[1],
+                common_long_run_theta_c: dual_in[2],
+                common_feller_volatility_sigma_c: dual_in[3],
+                common_jump_arrival_rate_mu_j: dual_in[4],
+                common_mean_jump_size_eta_j: dual_in[5],
+                idiosyncratic_intensity_lambda_id: dual_in[6],
+                loss_given_default_lgd: dual_in[7],
+                attachment_point_ka: dual_in[8],
+                detachment_point_kd: dual_in[9],
+                risk_free_rate_r: dual_in[10],
+                maturity_years_t: dual_in[11],
+            };
+            let r_ad = evaluate_duffie_garleanu_affine_jump_intensity_cdo_tranche(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..12 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 12]| DuffieGarleanuAffineJumpCdoSpec {
+                    initial_common_intensity_lambda_c0: v[0],
+                    common_reversion_speed_kappa_c: v[1],
+                    common_long_run_theta_c: v[2],
+                    common_feller_volatility_sigma_c: v[3],
+                    common_jump_arrival_rate_mu_j: v[4],
+                    common_mean_jump_size_eta_j: v[5],
+                    idiosyncratic_intensity_lambda_id: v[6],
+                    loss_given_default_lgd: v[7],
+                    attachment_point_ka: v[8],
+                    detachment_point_kd: v[9],
+                    risk_free_rate_r: v[10],
+                    maturity_years_t: v[11],
+                };
+                let rp = evaluate_duffie_garleanu_affine_jump_intensity_cdo_tranche(&mk(p));
+                let rm = evaluate_duffie_garleanu_affine_jump_intensity_cdo_tranche(&mk(m));
+                let fd = (rp.tranche_expected_loss_pv - rm.tranche_expected_loss_pv) / (2.0 * eps);
+                assert!(
+                    r_ad.tranche_expected_loss_pv.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.tranche_expected_loss_pv.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use duffie_garleanu_affine_jump_cdo_mod::*;

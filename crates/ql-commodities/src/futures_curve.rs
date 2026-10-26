@@ -1099,3 +1099,196 @@ mod rss_storage_suite64_tests {
         }
     }
 }
+
+pub mod cortazar_schwartz_three_factor_oil_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Cortazar & Schwartz (2003, Energy Economics) / Geman (2005, Ch. 3)
+    /// three-factor oil futures term structure model.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct CortazarSchwartzThreeFactorSpec<T: Real> {
+        /// Spot oil price $S_0 > 0$.
+        pub spot_price_s0: T,
+        /// Initial instantaneous convenience yield $\delta_0$.
+        pub initial_convenience_yield_delta0: T,
+        /// Initial instantaneous long-term equilibrium growth rate $v_0$.
+        pub initial_long_term_drift_v0: T,
+        /// Risk-neutral long-run convenience yield mean $\alpha_2^*$.
+        pub risk_neutral_convenience_mean_alpha2: T,
+        /// Risk-neutral long-run equilibrium return $\bar{v}^*$.
+        pub risk_neutral_long_run_drift_vbar: T,
+        /// Convenience yield mean-reversion speed $\kappa_2 > 0$.
+        pub convenience_reversion_speed_kappa2: T,
+        /// Long-term drift mean-reversion speed $\kappa_3 > 0$.
+        pub drift_reversion_speed_kappa3: T,
+        /// Spot oil return volatility $\sigma_1 > 0$.
+        pub spot_volatility_sigma1: T,
+        /// Convenience yield volatility $\sigma_2 > 0$.
+        pub convenience_volatility_sigma2: T,
+        /// Long-term equilibrium drift volatility $\sigma_3 > 0$.
+        pub drift_volatility_sigma3: T,
+        /// Correlation $\rho_{12} \in (-1, 1)$ between spot oil and convenience yield.
+        pub spot_convenience_correlation_rho12: T,
+        /// Futures contract maturity $\tau > 0$ (years).
+        pub maturity_years_tau: T,
+    }
+
+    /// Analytical outputs for the Cortazar-Schwartz three-factor commodity futures engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct CortazarSchwartzThreeFactorAnalytics<T: Real> {
+        /// Convenience-yield loading $B_2(\tau) = (1 - e^{-\kappa_2 \tau})/\kappa_2$.
+        pub convenience_yield_loading_b2: T,
+        /// Long-term drift loading $B_3(\tau) = (1 - e^{-\kappa_3 \tau})/\kappa_3$.
+        pub long_term_drift_loading_b3: T,
+        /// Instantaneous futures return volatility $\sigma_F(\tau)$ at maturity $\tau$.
+        pub term_futures_volatility: T,
+        /// Closed-form three-factor futures price $F(0, \tau)$.
+        pub three_factor_futures_price: T,
+    }
+
+    /// Evaluates the Cortazar & Schwartz (2003) three-factor oil futures price and Samuelson
+    /// term-structure volatility curve.
+    pub fn evaluate_cortazar_schwartz_three_factor_oil_futures_curve<T: Real>(
+        spec: &CortazarSchwartzThreeFactorSpec<T>,
+    ) -> CortazarSchwartzThreeFactorAnalytics<T> {
+        let tau = spec.maturity_years_tau.max_val(T::from_f64(1e-4));
+        let k2 = spec
+            .convenience_reversion_speed_kappa2
+            .max_val(T::from_f64(1e-4));
+        let k3 = spec.drift_reversion_speed_kappa3.max_val(T::from_f64(1e-4));
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(1e-4));
+
+        let b2 = (T::one() - (-k2 * tau).exp()) / k2;
+        let b3 = (T::one() - (-k3 * tau).exp()) / k3;
+        let b2_2 = (T::one() - (-T::from_f64(2.0) * k2 * tau).exp()) / (T::from_f64(2.0) * k2);
+        let b3_2 = (T::one() - (-T::from_f64(2.0) * k3 * tau).exp()) / (T::from_f64(2.0) * k3);
+
+        let sig1 = spec.spot_volatility_sigma1.max_val(T::from_f64(1e-5));
+        let sig2 = spec
+            .convenience_volatility_sigma2
+            .max_val(T::from_f64(1e-5));
+        let sig3 = spec.drift_volatility_sigma3.max_val(T::from_f64(1e-5));
+        let rho12 = spec
+            .spot_convenience_correlation_rho12
+            .max_val(T::from_f64(-0.99))
+            .min_val(T::from_f64(0.99));
+
+        // Integrated variance of log spot price under Q
+        let var_log_s = sig1 * sig1 * tau
+            + (sig2 * sig2 / (k2 * k2)) * (tau - T::from_f64(2.0) * b2 + b2_2)
+            + (sig3 * sig3 / (k3 * k3)) * (tau - T::from_f64(2.0) * b3 + b3_2)
+            - (T::from_f64(2.0) * rho12 * sig1 * sig2 / k2) * (tau - b2);
+
+        let log_f = s0.ln() - spec.initial_convenience_yield_delta0 * b2
+            + spec.initial_long_term_drift_v0 * b3
+            + spec.risk_neutral_long_run_drift_vbar * (tau - b3)
+            - spec.risk_neutral_convenience_mean_alpha2 * (tau - b2)
+            - T::from_f64(0.5) * sig1 * sig1 * tau
+            + T::from_f64(0.5) * var_log_s;
+
+        let inst_var_f = (sig1 * sig1 + sig2 * sig2 * b2 * b2 + sig3 * sig3 * b3 * b3
+            - T::from_f64(2.0) * rho12 * sig1 * sig2 * b2)
+            .max_val(T::from_f64(1e-8));
+
+        CortazarSchwartzThreeFactorAnalytics {
+            convenience_yield_loading_b2: b2,
+            long_term_drift_loading_b3: b3,
+            term_futures_volatility: inst_var_f.sqrt(),
+            three_factor_futures_price: log_f.exp(),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn cortazar_schwartz_three_factor_invariants_and_ad_parity() {
+            let base = CortazarSchwartzThreeFactorSpec {
+                spot_price_s0: 78.0_f64,
+                initial_convenience_yield_delta0: 0.08,
+                initial_long_term_drift_v0: 0.035,
+                risk_neutral_convenience_mean_alpha2: 0.05,
+                risk_neutral_long_run_drift_vbar: 0.03,
+                convenience_reversion_speed_kappa2: 1.40,
+                drift_reversion_speed_kappa3: 0.35,
+                spot_volatility_sigma1: 0.32,
+                convenience_volatility_sigma2: 0.24,
+                drift_volatility_sigma3: 0.08,
+                spot_convenience_correlation_rho12: 0.72,
+                maturity_years_tau: 2.5,
+            };
+            let r0 = evaluate_cortazar_schwartz_three_factor_oil_futures_curve(&base);
+            assert!(r0.convenience_yield_loading_b2 > 0.0);
+            assert!(r0.long_term_drift_loading_b3 > r0.convenience_yield_loading_b2);
+            assert!(r0.term_futures_volatility > 0.0);
+            assert!(r0.three_factor_futures_price > 0.0);
+
+            let inputs = [
+                base.spot_price_s0,
+                base.initial_convenience_yield_delta0,
+                base.initial_long_term_drift_v0,
+                base.risk_neutral_convenience_mean_alpha2,
+                base.risk_neutral_long_run_drift_vbar,
+                base.convenience_reversion_speed_kappa2,
+                base.drift_reversion_speed_kappa3,
+                base.spot_volatility_sigma1,
+                base.convenience_volatility_sigma2,
+                base.drift_volatility_sigma3,
+                base.spot_convenience_correlation_rho12,
+                base.maturity_years_tau,
+            ];
+            let mut dual_in = [Dual::<12>::from_f64(0.0); 12];
+            for i in 0..12 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = CortazarSchwartzThreeFactorSpec {
+                spot_price_s0: dual_in[0],
+                initial_convenience_yield_delta0: dual_in[1],
+                initial_long_term_drift_v0: dual_in[2],
+                risk_neutral_convenience_mean_alpha2: dual_in[3],
+                risk_neutral_long_run_drift_vbar: dual_in[4],
+                convenience_reversion_speed_kappa2: dual_in[5],
+                drift_reversion_speed_kappa3: dual_in[6],
+                spot_volatility_sigma1: dual_in[7],
+                convenience_volatility_sigma2: dual_in[8],
+                drift_volatility_sigma3: dual_in[9],
+                spot_convenience_correlation_rho12: dual_in[10],
+                maturity_years_tau: dual_in[11],
+            };
+            let r_ad = evaluate_cortazar_schwartz_three_factor_oil_futures_curve(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..12 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 12]| CortazarSchwartzThreeFactorSpec {
+                    spot_price_s0: v[0],
+                    initial_convenience_yield_delta0: v[1],
+                    initial_long_term_drift_v0: v[2],
+                    risk_neutral_convenience_mean_alpha2: v[3],
+                    risk_neutral_long_run_drift_vbar: v[4],
+                    convenience_reversion_speed_kappa2: v[5],
+                    drift_reversion_speed_kappa3: v[6],
+                    spot_volatility_sigma1: v[7],
+                    convenience_volatility_sigma2: v[8],
+                    drift_volatility_sigma3: v[9],
+                    spot_convenience_correlation_rho12: v[10],
+                    maturity_years_tau: v[11],
+                };
+                let rp = evaluate_cortazar_schwartz_three_factor_oil_futures_curve(&mk(p));
+                let rm = evaluate_cortazar_schwartz_three_factor_oil_futures_curve(&mk(m));
+                let fd =
+                    (rp.three_factor_futures_price - rm.three_factor_futures_price) / (2.0 * eps);
+                assert!(
+                    r_ad.three_factor_futures_price.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.three_factor_futures_price.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use cortazar_schwartz_three_factor_oil_mod::*;

@@ -2395,3 +2395,160 @@ pub mod bansal_yaron_lrr_suite65_mod {
     }
 }
 pub use bansal_yaron_lrr_suite65_mod::*;
+
+pub mod he_krishnamurthy_intermediary_sdf_mod {
+    use ql_ad::Real;
+
+    /// Specification for the He & Krishnamurthy (2013, AER) / Adrian, Etula & Muir (2014, JF)
+    /// intermediary capital constraint Stochastic Discount Factor (SDF) and risk premium model.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct HeKrishnamurthyIntermediarySdfSpec<T: Real> {
+        /// Intermediary specialist wealth share $w_I \in (0, 1)$ of aggregate wealth.
+        pub intermediary_wealth_share_wi: T,
+        /// Capital constraint binding threshold $w^* \in (0, 1)$.
+        pub capital_constraint_threshold_w_star: T,
+        /// Household equity intermediation pledgeability fraction $m_{\text{pledge}} \in (0, 1)$.
+        pub equity_intermediation_pledgeability_m: T,
+        /// Specialist relative risk aversion $\gamma_{\text{spec}} > 0$.
+        pub specialist_risk_aversion_gamma: T,
+        /// Fundamental dividend/output growth rate $g_A$.
+        pub fundamental_growth_rate_ga: T,
+        /// Fundamental risky asset return volatility $\sigma_A > 0$.
+        pub asset_return_volatility_sigma_a: T,
+        /// Subjective time discount rate $\rho_{\text{time}} > 0$.
+        pub subjective_discount_rate_rho: T,
+    }
+
+    /// Analytical outputs for the He-Krishnamurthy intermediary asset pricing engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct HeKrishnamurthyIntermediarySdfAnalytics<T: Real> {
+        /// Effective intermediary risk-bearing leverage multiplier $\beta_{\text{lev}}(w_I) \ge 1$.
+        pub effective_intermediary_leverage_multiplier: T,
+        /// Intermediary SDF market price of risk (Sharpe ratio) $\Lambda_I(w_I) = \gamma_{\text{spec}} \sigma_A \beta_{\text{lev}}$.
+        pub intermediary_sdf_market_price_of_risk: T,
+        /// Equilibrium risk-free interest rate $r_f(w_I)$ including intermediary precautionary savings.
+        pub equilibrium_risk_free_rate: T,
+        /// Conditional intermediary-constrained equity risk premium $\mathbb{E}_t[r_A - r_f]$.
+        pub conditional_intermediary_equity_premium: T,
+    }
+
+    /// Evaluates the He & Krishnamurthy (2013) intermediary capital constraint SDF, crisis
+    /// Sharpe ratio amplification, precautionary risk-free rate, and equity risk premium.
+    pub fn evaluate_he_krishnamurthy_intermediary_capital_constraint_sdf<T: Real>(
+        spec: &HeKrishnamurthyIntermediarySdfSpec<T>,
+    ) -> HeKrishnamurthyIntermediarySdfAnalytics<T> {
+        let wi = spec
+            .intermediary_wealth_share_wi
+            .max_val(T::from_f64(0.02))
+            .min_val(T::from_f64(0.98));
+        let w_star = spec
+            .capital_constraint_threshold_w_star
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.95));
+        let m_pledge = spec
+            .equity_intermediation_pledgeability_m
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.95));
+        let gamma = spec
+            .specialist_risk_aversion_gamma
+            .max_val(T::from_f64(0.2));
+        let sig_a = spec
+            .asset_return_volatility_sigma_a
+            .max_val(T::from_f64(1e-4));
+
+        // Smooth capital shortfall below w*: when wi < w*, intermediary equity constraint binds
+        // and intermediary risk exposure scales as 1 / (wi + m_pledge * (w_star - wi)_+)
+        let eps = T::from_f64(0.01);
+        let diff = w_star - wi;
+        let shortfall = T::from_f64(0.5) * (diff + (diff * diff + eps * eps).sqrt());
+        let effective_cap_share = (wi + m_pledge * shortfall) / w_star;
+        let beta_lev = T::one() / effective_cap_share;
+
+        let lambda_sdf = gamma * sig_a * beta_lev;
+        let eq_prem = lambda_sdf * sig_a;
+        let rf = spec.subjective_discount_rate_rho + gamma * spec.fundamental_growth_rate_ga
+            - T::from_f64(0.5) * gamma * (gamma + T::one()) * sig_a * sig_a * beta_lev * beta_lev;
+
+        HeKrishnamurthyIntermediarySdfAnalytics {
+            effective_intermediary_leverage_multiplier: beta_lev,
+            intermediary_sdf_market_price_of_risk: lambda_sdf,
+            equilibrium_risk_free_rate: rf,
+            conditional_intermediary_equity_premium: eq_prem,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn he_krishnamurthy_intermediary_sdf_invariants_and_ad_parity() {
+            let base = HeKrishnamurthyIntermediarySdfSpec {
+                intermediary_wealth_share_wi: 0.14_f64,
+                capital_constraint_threshold_w_star: 0.28,
+                equity_intermediation_pledgeability_m: 0.35,
+                specialist_risk_aversion_gamma: 2.20,
+                fundamental_growth_rate_ga: 0.020,
+                asset_return_volatility_sigma_a: 0.15,
+                subjective_discount_rate_rho: 0.025,
+            };
+            let r0 = evaluate_he_krishnamurthy_intermediary_capital_constraint_sdf(&base);
+            assert!(r0.effective_intermediary_leverage_multiplier > 1.0);
+            assert!(r0.intermediary_sdf_market_price_of_risk > 0.0);
+            assert!(r0.conditional_intermediary_equity_premium > 0.0);
+
+            let inputs = [
+                base.intermediary_wealth_share_wi,
+                base.capital_constraint_threshold_w_star,
+                base.equity_intermediation_pledgeability_m,
+                base.specialist_risk_aversion_gamma,
+                base.fundamental_growth_rate_ga,
+                base.asset_return_volatility_sigma_a,
+                base.subjective_discount_rate_rho,
+            ];
+            let mut dual_in = [Dual::<7>::from_f64(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = HeKrishnamurthyIntermediarySdfSpec {
+                intermediary_wealth_share_wi: dual_in[0],
+                capital_constraint_threshold_w_star: dual_in[1],
+                equity_intermediation_pledgeability_m: dual_in[2],
+                specialist_risk_aversion_gamma: dual_in[3],
+                fundamental_growth_rate_ga: dual_in[4],
+                asset_return_volatility_sigma_a: dual_in[5],
+                subjective_discount_rate_rho: dual_in[6],
+            };
+            let r_ad = evaluate_he_krishnamurthy_intermediary_capital_constraint_sdf(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| HeKrishnamurthyIntermediarySdfSpec {
+                    intermediary_wealth_share_wi: v[0],
+                    capital_constraint_threshold_w_star: v[1],
+                    equity_intermediation_pledgeability_m: v[2],
+                    specialist_risk_aversion_gamma: v[3],
+                    fundamental_growth_rate_ga: v[4],
+                    asset_return_volatility_sigma_a: v[5],
+                    subjective_discount_rate_rho: v[6],
+                };
+                let rp = evaluate_he_krishnamurthy_intermediary_capital_constraint_sdf(&mk(p));
+                let rm = evaluate_he_krishnamurthy_intermediary_capital_constraint_sdf(&mk(m));
+                // Test sum of equilibrium_risk_free_rate + conditional_intermediary_equity_premium so all 7 parameters (including ga and rho) have non-zero sensitivity
+                let fd = ((rp.equilibrium_risk_free_rate
+                    + rp.conditional_intermediary_equity_premium)
+                    - (rm.equilibrium_risk_free_rate + rm.conditional_intermediary_equity_premium))
+                    / (2.0 * eps);
+                let ad_val =
+                    r_ad.equilibrium_risk_free_rate + r_ad.conditional_intermediary_equity_premium;
+                assert!(ad_val.d[i].abs() > 1e-6, "zero derivative at {i}");
+                assert!((ad_val.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use he_krishnamurthy_intermediary_sdf_mod::*;

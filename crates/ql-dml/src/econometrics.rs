@@ -2337,3 +2337,158 @@ pub mod hamilton_markov_switching_suite65_mod {
     }
 }
 pub use hamilton_markov_switching_suite65_mod::*;
+
+pub mod hasbrouck_gonzalo_granger_info_share_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Hasbrouck (1995, J. Finance) & Gonzalo-Granger (1995, JBES)
+    /// cointegrated bivariate VECM price discovery Information Share and Component Share engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct HasbrouckGonzaloGrangerSpec<T: Real> {
+        /// Error-correction speed $\alpha_1 > 0$ of Market 1 (magnitude of downward adjustment to $P_1 - P_2$).
+        pub venue1_error_correction_speed_alpha1: T,
+        /// Error-correction speed $\alpha_2 > 0$ of Market 2 (magnitude of upward adjustment to $P_1 - P_2$).
+        pub venue2_error_correction_speed_alpha2: T,
+        /// Reduced-form price innovation volatility $\sigma_1 > 0$ of Market 1.
+        pub venue1_innovation_volatility_sigma1: T,
+        /// Reduced-form price innovation volatility $\sigma_2 > 0$ of Market 2.
+        pub venue2_innovation_volatility_sigma2: T,
+        /// Contemporaneous innovation correlation $\rho \in (-1, 1)$ between Markets 1 and 2.
+        pub cross_venue_innovation_correlation_rho: T,
+    }
+
+    /// Analytical outputs for the Hasbrouck & Gonzalo-Granger price discovery engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct HasbrouckGonzaloGrangerAnalytics<T: Real> {
+        /// Gonzalo-Granger (1995) permanent-transitory Component Share $\psi_1 = \alpha_2 / (\alpha_1 + \alpha_2)$.
+        pub gonzalo_granger_component_share_market1: T,
+        /// Long-run efficient random-walk fundamental variance $V_{\text{eff}} = \psi^\top \Omega \psi$.
+        pub long_run_efficient_price_variance: T,
+        /// Hasbrouck (1995) Cholesky upper-bound Information Share $IS_1^{\text{upper}}$ for Market 1.
+        pub hasbrouck_information_share_upper_bound: T,
+        /// Hasbrouck (1995) Cholesky midpoint Information Share $IS_1^{\text{mid}} = \frac{1}{2}(IS_1^{\text{upper}} + IS_1^{\text{lower}})$.
+        pub hasbrouck_midpoint_information_share: T,
+    }
+
+    /// Evaluates the Hasbrouck (1995) Information Shares and Gonzalo-Granger (1995) Component Share
+    /// for two cointegrated trading venues.
+    pub fn evaluate_hasbrouck_gonzalo_granger_price_discovery_information_share<T: Real>(
+        spec: &HasbrouckGonzaloGrangerSpec<T>,
+    ) -> HasbrouckGonzaloGrangerAnalytics<T> {
+        let a1 = spec
+            .venue1_error_correction_speed_alpha1
+            .max_val(T::from_f64(1e-5));
+        let a2 = spec
+            .venue2_error_correction_speed_alpha2
+            .max_val(T::from_f64(1e-5));
+        let sig1 = spec
+            .venue1_innovation_volatility_sigma1
+            .max_val(T::from_f64(1e-5));
+        let sig2 = spec
+            .venue2_innovation_volatility_sigma2
+            .max_val(T::from_f64(1e-5));
+        let rho = spec
+            .cross_venue_innovation_correlation_rho
+            .max_val(T::from_f64(-0.98))
+            .min_val(T::from_f64(0.98));
+
+        let a_sum = a1 + a2;
+        let psi1 = a2 / a_sum;
+        let psi2 = a1 / a_sum;
+
+        let v_eff = (psi1 * psi1 * sig1 * sig1
+            + psi2 * psi2 * sig2 * sig2
+            + T::from_f64(2.0) * rho * psi1 * psi2 * sig1 * sig2)
+            .max_val(T::from_f64(1e-12));
+
+        let num_upper = psi1 * sig1 + psi2 * rho * sig2;
+        let is1_upper = (num_upper * num_upper) / v_eff;
+        let is1_lower = (psi1 * psi1 * sig1 * sig1 * (T::one() - rho * rho)) / v_eff;
+        let is1_mid = T::from_f64(0.5) * (is1_upper + is1_lower);
+
+        HasbrouckGonzaloGrangerAnalytics {
+            gonzalo_granger_component_share_market1: psi1,
+            long_run_efficient_price_variance: v_eff,
+            hasbrouck_information_share_upper_bound: is1_upper,
+            hasbrouck_midpoint_information_share: is1_mid,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn hasbrouck_gonzalo_granger_invariants_and_ad_parity() {
+            let base = HasbrouckGonzaloGrangerSpec {
+                venue1_error_correction_speed_alpha1: 0.08_f64,
+                venue2_error_correction_speed_alpha2: 0.24,
+                venue1_innovation_volatility_sigma1: 0.015,
+                venue2_innovation_volatility_sigma2: 0.018,
+                cross_venue_innovation_correlation_rho: 0.55,
+            };
+            let r0 = evaluate_hasbrouck_gonzalo_granger_price_discovery_information_share(&base);
+            assert!(
+                r0.gonzalo_granger_component_share_market1 > 0.50
+                    && r0.gonzalo_granger_component_share_market1 < 1.0
+            );
+            assert!(
+                r0.hasbrouck_information_share_upper_bound
+                    > r0.hasbrouck_midpoint_information_share
+            );
+            assert!(
+                r0.hasbrouck_midpoint_information_share > 0.0
+                    && r0.hasbrouck_midpoint_information_share < 1.0
+            );
+
+            let inputs = [
+                base.venue1_error_correction_speed_alpha1,
+                base.venue2_error_correction_speed_alpha2,
+                base.venue1_innovation_volatility_sigma1,
+                base.venue2_innovation_volatility_sigma2,
+                base.cross_venue_innovation_correlation_rho,
+            ];
+            let mut dual_in = [Dual::<5>::from_f64(0.0); 5];
+            for i in 0..5 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = HasbrouckGonzaloGrangerSpec {
+                venue1_error_correction_speed_alpha1: dual_in[0],
+                venue2_error_correction_speed_alpha2: dual_in[1],
+                venue1_innovation_volatility_sigma1: dual_in[2],
+                venue2_innovation_volatility_sigma2: dual_in[3],
+                cross_venue_innovation_correlation_rho: dual_in[4],
+            };
+            let r_ad =
+                evaluate_hasbrouck_gonzalo_granger_price_discovery_information_share(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..5 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 5]| HasbrouckGonzaloGrangerSpec {
+                    venue1_error_correction_speed_alpha1: v[0],
+                    venue2_error_correction_speed_alpha2: v[1],
+                    venue1_innovation_volatility_sigma1: v[2],
+                    venue2_innovation_volatility_sigma2: v[3],
+                    cross_venue_innovation_correlation_rho: v[4],
+                };
+                let rp =
+                    evaluate_hasbrouck_gonzalo_granger_price_discovery_information_share(&mk(p));
+                let rm =
+                    evaluate_hasbrouck_gonzalo_granger_price_discovery_information_share(&mk(m));
+                let fd = (rp.hasbrouck_midpoint_information_share
+                    - rm.hasbrouck_midpoint_information_share)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.hasbrouck_midpoint_information_share.d[i].abs() > 1e-5,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.hasbrouck_midpoint_information_share.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use hasbrouck_gonzalo_granger_info_share_mod::*;
