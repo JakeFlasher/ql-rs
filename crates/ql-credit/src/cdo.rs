@@ -1497,3 +1497,174 @@ mod evaluate_okane_cdo_base_correlation_tranche_module {
     }
 }
 pub use evaluate_okane_cdo_base_correlation_tranche_module::*;
+
+mod evaluate_pedersen_okane_index_option_fep_smile_module {
+    // O'Kane (2008, Ch. 11) & Pedersen (2003) CDS Index Option (`CDX / iTraxx Payer & Receiver
+    // Swaption`) Front-End Protection (`FEP`) Adjusted Black-76Valuation Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct PedersenOkaneIndexOptionFepSmileSpec<T: Real = f64> {
+        pub spot_index_spread_s0: T,
+        pub strike_spread_k: T,
+        pub standard_running_coupon_c: T,
+        pub spread_volatility_sigma: T,
+        pub option_expiry_years_te: T,
+        pub index_maturity_years_tm: T,
+        pub recovery_rate_r: T,
+        pub ois_discount_rate_r: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct PedersenOkaneIndexOptionFepSmileReport<T: Real = f64> {
+        pub forward_risky_pv01: T,
+        pub front_end_protection_pv: T,
+        pub fep_adjusted_forward_spread: T,
+        pub exercise_adjusted_strike_spread: T,
+        pub payer_index_swaption_pv_bps: T,
+        pub receiver_index_swaption_pv_bps: T,
+        pub payer_receiver_parity_residual: T,
+    }
+
+    pub fn evaluate_pedersen_okane_index_option_fep_smile<T: Real>(
+        spec: &PedersenOkaneIndexOptionFepSmileSpec<T>,
+    ) -> PedersenOkaneIndexOptionFepSmileReport<T> {
+        let s0 = spec.spot_index_spread_s0.max_val(T::from_f64(1e-4));
+        let k = spec.strike_spread_k.max_val(T::from_f64(1e-4));
+        let c = spec.standard_running_coupon_c.max_val(T::from_f64(1e-4));
+        let sig = spec.spread_volatility_sigma.max_val(T::from_f64(0.05));
+        let te = spec.option_expiry_years_te.max_val(T::from_f64(0.05));
+        let tm = spec.index_maturity_years_tm.max_val(te + T::from_f64(0.5));
+        let lgd = (T::one() - spec.recovery_rate_r).max_val(T::from_f64(0.10));
+        let r = spec.ois_discount_rate_r.max_val(T::from_f64(1e-4));
+
+        let lam0 = s0 / lgd;
+        let lam_k = k / lgd;
+        let rem_tenor = tm - te;
+
+        let surv_te = (-lam0 * te).exp();
+        let df_te = (-r * te).exp();
+
+        // Forward risky PV01 from Te to Tm under spot hazard rate and strike hazard rate:
+        let eff_r0 = r + lam0;
+        let eff_rk = r + lam_k;
+        let rpv01_fwd = df_te * surv_te * (T::one() - (-eff_r0 * rem_tenor).exp()) / eff_r0;
+        let rpv01_k = df_te * surv_te * (T::one() - (-eff_rk * rem_tenor).exp()) / eff_rk;
+
+        // Front-End Protection (FEP) over [0, Te]:
+        let fep_pv = lgd * (lam0 / eff_r0) * (T::one() - (-eff_r0 * te).exp());
+
+        // Pedersen (2003) / O'Kane (2008, Eq. 11.12) FEP-adjusted forward spread & strike:
+        let f_adj = s0 + fep_pv / rpv01_fwd.max_val(T::from_f64(1e-4));
+        let k_adj = c + (k - c) * (rpv01_k / rpv01_fwd.max_val(T::from_f64(1e-4)));
+
+        let std_v = sig * te.sqrt();
+        let d1 = ((f_adj / k_adj).ln() + T::from_f64(0.5) * std_v * std_v) / std_v;
+        let d2 = d1 - std_v;
+
+        let payer_bps =
+            T::from_f64(10_000.0) * rpv01_fwd * (f_adj * norm_cdf(d1) - k_adj * norm_cdf(d2));
+        let receiver_bps =
+            T::from_f64(10_000.0) * rpv01_fwd * (k_adj * norm_cdf(-d2) - f_adj * norm_cdf(-d1));
+        let parity_res =
+            (payer_bps - receiver_bps) - T::from_f64(10_000.0) * rpv01_fwd * (f_adj - k_adj);
+
+        PedersenOkaneIndexOptionFepSmileReport {
+            forward_risky_pv01: rpv01_fwd,
+            front_end_protection_pv: fep_pv,
+            fep_adjusted_forward_spread: f_adj,
+            exercise_adjusted_strike_spread: k_adj,
+            payer_index_swaption_pv_bps: payer_bps,
+            receiver_index_swaption_pv_bps: receiver_bps,
+            payer_receiver_parity_residual: parity_res,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_pedersen_okane_index_option_fep_smile_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn pedersen_okane_index_option_fep_smile_invariants_and_ad_parity() {
+            let spec = PedersenOkaneIndexOptionFepSmileSpec {
+                spot_index_spread_s0: 0.0085,
+                strike_spread_k: 0.0090,
+                standard_running_coupon_c: 0.0100,
+                spread_volatility_sigma: 0.45,
+                option_expiry_years_te: 0.50,
+                index_maturity_years_tm: 5.50,
+                recovery_rate_r: 0.40,
+                ois_discount_rate_r: 0.040,
+            };
+            let rep = evaluate_pedersen_okane_index_option_fep_smile(&spec);
+            assert!(rep.fep_adjusted_forward_spread > spec.spot_index_spread_s0);
+            assert!(rep.payer_index_swaption_pv_bps > 0.0);
+            assert!(rep.payer_receiver_parity_residual.abs() < 1e-10);
+
+            let h = 1e-6;
+            let r_ad = evaluate_pedersen_okane_index_option_fep_smile(
+                &PedersenOkaneIndexOptionFepSmileSpec {
+                    spot_index_spread_s0: Dual::<8>::variable(spec.spot_index_spread_s0, 0),
+                    strike_spread_k: Dual::<8>::variable(spec.strike_spread_k, 1),
+                    standard_running_coupon_c: Dual::<8>::variable(
+                        spec.standard_running_coupon_c,
+                        2,
+                    ),
+                    spread_volatility_sigma: Dual::<8>::variable(spec.spread_volatility_sigma, 3),
+                    option_expiry_years_te: Dual::<8>::variable(spec.option_expiry_years_te, 4),
+                    index_maturity_years_tm: Dual::<8>::variable(spec.index_maturity_years_tm, 5),
+                    recovery_rate_r: Dual::<8>::variable(spec.recovery_rate_r, 6),
+                    ois_discount_rate_r: Dual::<8>::variable(spec.ois_discount_rate_r, 7),
+                },
+            );
+            for (idx, &ad) in r_ad.payer_index_swaption_pv_bps.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.spot_index_spread_s0 += h;
+                        sm.spot_index_spread_s0 -= h;
+                    }
+                    1 => {
+                        sp.strike_spread_k += h;
+                        sm.strike_spread_k -= h;
+                    }
+                    2 => {
+                        sp.standard_running_coupon_c += h;
+                        sm.standard_running_coupon_c -= h;
+                    }
+                    3 => {
+                        sp.spread_volatility_sigma += h;
+                        sm.spread_volatility_sigma -= h;
+                    }
+                    4 => {
+                        sp.option_expiry_years_te += h;
+                        sm.option_expiry_years_te -= h;
+                    }
+                    5 => {
+                        sp.index_maturity_years_tm += h;
+                        sm.index_maturity_years_tm -= h;
+                    }
+                    6 => {
+                        sp.recovery_rate_r += h;
+                        sm.recovery_rate_r -= h;
+                    }
+                    _ => {
+                        sp.ois_discount_rate_r += h;
+                        sm.ois_discount_rate_r -= h;
+                    }
+                }
+                let fd = (evaluate_pedersen_okane_index_option_fep_smile(&sp)
+                    .payer_index_swaption_pv_bps
+                    - evaluate_pedersen_okane_index_option_fep_smile(&sm)
+                        .payer_index_swaption_pv_bps)
+                    / (2.0 * h);
+                assert!((ad - fd).abs() < 1e-2);
+            }
+        }
+    }
+}
+pub use evaluate_pedersen_okane_index_option_fep_smile_module::*;

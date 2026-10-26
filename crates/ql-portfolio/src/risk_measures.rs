@@ -4789,3 +4789,170 @@ mod evaluate_foucault_kyle_lambda_and_ekop_pin_module {
     }
 }
 pub use evaluate_foucault_kyle_lambda_and_ekop_pin_module::*;
+
+mod evaluate_treynor_black_appraisal_portfolio_module {
+    // Treynor & Black (1973, JB) & Grinold–Kahn (2000) Active-Passive Portfolio Separation,
+    // Security Appraisal Ratio (`alpha_i / sigma_eps_i`) & Squared-Sharpe Theorem Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TreynorBlackAppraisalPortfolioSpec<T: Real = f64> {
+        pub security_alphas: [T; 3],
+        pub security_market_betas: [T; 3],
+        pub security_residual_variances: [T; 3],
+        pub market_excess_return_mu_m: T,
+        pub market_return_variance_sigma_m2: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TreynorBlackAppraisalPortfolioReport<T: Real = f64> {
+        pub active_portfolio_relative_weights: [T; 3],
+        pub aggregate_active_alpha: T,
+        pub aggregate_active_residual_variance: T,
+        pub active_portfolio_appraisal_ratio: T,
+        pub beta_adjusted_active_allocation_wa: T,
+        pub combined_tangency_sharpe_ratio: T,
+        pub sharpe_squared_orthogonality_residual: T,
+    }
+
+    pub fn evaluate_treynor_black_appraisal_portfolio<T: Real>(
+        spec: &TreynorBlackAppraisalPortfolioSpec<T>,
+    ) -> TreynorBlackAppraisalPortfolioReport<T> {
+        let a0 = spec.security_alphas[0];
+        let a1 = spec.security_alphas[1];
+        let a2 = spec.security_alphas[2];
+
+        let b0 = spec.security_market_betas[0];
+        let b1 = spec.security_market_betas[1];
+        let b2 = spec.security_market_betas[2];
+
+        let v0 = spec.security_residual_variances[0].max_val(T::from_f64(1e-5));
+        let v1 = spec.security_residual_variances[1].max_val(T::from_f64(1e-5));
+        let v2 = spec.security_residual_variances[2].max_val(T::from_f64(1e-5));
+
+        let mu_m = spec.market_excess_return_mu_m.max_val(T::from_f64(1e-4));
+        let sig_m2 = spec
+            .market_return_variance_sigma_m2
+            .max_val(T::from_f64(1e-4));
+
+        // Treynor-Black relative weights within the active portfolio: z_i = alpha_i / sigma_{eps, i}^2
+        let z0 = a0 / v0;
+        let z1 = a1 / v1;
+        let z2 = a2 / v2;
+        let z_sum = z0 + z1 + z2;
+        let denom_z = (z_sum * z_sum + T::from_f64(1e-12)).sqrt();
+
+        let w0 = z0 / denom_z;
+        let w1 = z1 / denom_z;
+        let w2 = z2 / denom_z;
+
+        let alpha_a = w0 * a0 + w1 * a1 + w2 * a2;
+        let beta_a = w0 * b0 + w1 * b1 + w2 * b2;
+        let var_eps_a = (w0 * w0 * v0 + w1 * w1 * v1 + w2 * w2 * v2).max_val(T::from_f64(1e-6));
+
+        // Aggregate Appraisal Ratio squared AR_A^2 = sum_i (alpha_i^2 / sigma_{eps, i}^2):
+        let ar2_sum = (a0 * a0) / v0 + (a1 * a1) / v1 + (a2 * a2) / v2;
+        let ar_a = ar2_sum.sqrt();
+
+        // Unadjusted active weight w_A^0 and beta-adjusted weight w_A* (Treynor & Black 1973, Eqs. 16-18):
+        let w_a0 = (alpha_a / var_eps_a) / (mu_m / sig_m2);
+        let w_a_star = w_a0 / (T::one() + (T::one() - beta_a) * w_a0);
+
+        let sr_m2 = (mu_m * mu_m) / sig_m2;
+        let sr_p = (sr_m2 + ar2_sum).sqrt();
+        let ar2_from_agg = (alpha_a * alpha_a) / var_eps_a;
+        let ortho_res = (sr_p * sr_p) - (sr_m2 + ar2_from_agg);
+
+        TreynorBlackAppraisalPortfolioReport {
+            active_portfolio_relative_weights: [w0, w1, w2],
+            aggregate_active_alpha: alpha_a,
+            aggregate_active_residual_variance: var_eps_a,
+            active_portfolio_appraisal_ratio: ar_a,
+            beta_adjusted_active_allocation_wa: w_a_star,
+            combined_tangency_sharpe_ratio: sr_p,
+            sharpe_squared_orthogonality_residual: ortho_res,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_treynor_black_appraisal_portfolio_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn treynor_black_appraisal_portfolio_invariants_and_ad_parity() {
+            let spec = TreynorBlackAppraisalPortfolioSpec {
+                security_alphas: [0.024, 0.018, 0.012],
+                security_market_betas: [1.15, 0.92, 1.05],
+                security_residual_variances: [0.035, 0.025, 0.020],
+                market_excess_return_mu_m: 0.065,
+                market_return_variance_sigma_m2: 0.0256,
+            };
+            let rep = evaluate_treynor_black_appraisal_portfolio(&spec);
+            assert!(rep.active_portfolio_appraisal_ratio > 0.0);
+            assert!(rep.sharpe_squared_orthogonality_residual.abs() < 1e-8);
+
+            let h = 1e-6;
+            let r_ad =
+                evaluate_treynor_black_appraisal_portfolio(&TreynorBlackAppraisalPortfolioSpec {
+                    security_alphas: [
+                        Dual::<11>::variable(spec.security_alphas[0], 0),
+                        Dual::<11>::variable(spec.security_alphas[1], 1),
+                        Dual::<11>::variable(spec.security_alphas[2], 2),
+                    ],
+                    security_market_betas: [
+                        Dual::<11>::variable(spec.security_market_betas[0], 3),
+                        Dual::<11>::variable(spec.security_market_betas[1], 4),
+                        Dual::<11>::variable(spec.security_market_betas[2], 5),
+                    ],
+                    security_residual_variances: [
+                        Dual::<11>::variable(spec.security_residual_variances[0], 6),
+                        Dual::<11>::variable(spec.security_residual_variances[1], 7),
+                        Dual::<11>::variable(spec.security_residual_variances[2], 8),
+                    ],
+                    market_excess_return_mu_m: Dual::<11>::variable(
+                        spec.market_excess_return_mu_m,
+                        9,
+                    ),
+                    market_return_variance_sigma_m2: Dual::<11>::variable(
+                        spec.market_return_variance_sigma_m2,
+                        10,
+                    ),
+                });
+            for (idx, &ad) in r_ad.beta_adjusted_active_allocation_wa.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0..=2 => {
+                        sp.security_alphas[idx] += h;
+                        sm.security_alphas[idx] -= h;
+                    }
+                    3..=5 => {
+                        sp.security_market_betas[idx - 3] += h;
+                        sm.security_market_betas[idx - 3] -= h;
+                    }
+                    6..=8 => {
+                        sp.security_residual_variances[idx - 6] += h;
+                        sm.security_residual_variances[idx - 6] -= h;
+                    }
+                    9 => {
+                        sp.market_excess_return_mu_m += h;
+                        sm.market_excess_return_mu_m -= h;
+                    }
+                    _ => {
+                        sp.market_return_variance_sigma_m2 += h;
+                        sm.market_return_variance_sigma_m2 -= h;
+                    }
+                }
+                let fd = (evaluate_treynor_black_appraisal_portfolio(&sp)
+                    .beta_adjusted_active_allocation_wa
+                    - evaluate_treynor_black_appraisal_portfolio(&sm)
+                        .beta_adjusted_active_allocation_wa)
+                    / (2.0 * h);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_treynor_black_appraisal_portfolio_module::*;

@@ -997,3 +997,168 @@ mod evaluate_gregory_break_clause_extinguishable_cva_module {
     }
 }
 pub use evaluate_gregory_break_clause_extinguishable_cva_module::*;
+
+mod evaluate_gregory_kenyon_simm_mva_funding_module {
+    // Gregory (2020, Ch. 16) & Green–Kenyon (2015) Initial-Margin Valuation Adjustment
+    // (`MVA`) under ISDA SIMM vs. CCP Clearing with Joint Survival & Custodian Haircut Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GregoryKenyonSimmMvaFundingSpec<T: Real = f64> {
+        pub initial_simm_margin_im0: T,
+        pub ccp_cleared_margin_ratio: T,
+        pub bank_funding_spread_s_f: T,
+        pub custodian_remuneration_spread_s_c: T,
+        pub bank_hazard_rate_lambda_b: T,
+        pub counterparty_hazard_rate_lambda_c: T,
+        pub ois_discount_rate_r: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GregoryKenyonSimmMvaFundingReport<T: Real = f64> {
+        pub bilateral_simm_expected_im_pv: T,
+        pub bilateral_simm_mva_charge: T,
+        pub ccp_cleared_mva_charge: T,
+        pub mva_savings_from_central_clearing: T,
+        pub static_peak_im_mva_overstatement: T,
+        pub effective_annualized_mva_drag_bps: T,
+    }
+
+    pub fn evaluate_gregory_kenyon_simm_mva_funding<T: Real>(
+        spec: &GregoryKenyonSimmMvaFundingSpec<T>,
+    ) -> GregoryKenyonSimmMvaFundingReport<T> {
+        let im0 = spec.initial_simm_margin_im0.max_val(T::from_f64(1e-4));
+        let ccp_ratio = spec
+            .ccp_cleared_margin_ratio
+            .max_val(T::from_f64(0.20))
+            .min_val(T::from_f64(1.20));
+        let s_f = spec.bank_funding_spread_s_f.max_val(T::from_f64(1e-4));
+        let s_c = spec.custodian_remuneration_spread_s_c;
+        let net_im_spread = (s_f - s_c).max_val(T::from_f64(1e-4));
+        let lb = spec.bank_hazard_rate_lambda_b.max_val(T::from_f64(1e-4));
+        let lc = spec
+            .counterparty_hazard_rate_lambda_c
+            .max_val(T::from_f64(1e-4));
+        let r = spec.ois_discount_rate_r.max_val(T::from_f64(1e-4));
+        let t_mat = spec.maturity_years_t.max_val(T::from_f64(0.5));
+
+        // 4-step Gauss-midpoint integration of decaying SIMM profile EIM(t) = IM0 * sqrt((T - t)/T) * (1 + 0.15 t/T):
+        let dt = t_mat / T::from_f64(4.0);
+        let mut eim_pv = T::zero();
+        let mut static_im_pv = T::zero();
+        let eff_disc = r + lb + lc;
+
+        for k in 0..4 {
+            let tk = dt * (T::from_f64(k as f64) + T::from_f64(0.5));
+            let rem_frac = ((t_mat - tk) / t_mat).max_val(T::from_f64(0.01));
+            let profile_scale = rem_frac.sqrt() * (T::one() + T::from_f64(0.15) * (tk / t_mat));
+            let surv_df = (-eff_disc * tk).exp();
+            eim_pv += dt * surv_df * im0 * profile_scale;
+            static_im_pv += dt * surv_df * im0;
+        }
+
+        let mva_bilat = eim_pv * net_im_spread;
+        let mva_ccp = eim_pv * ccp_ratio * net_im_spread;
+        let mva_saved = mva_bilat - mva_ccp;
+        let static_over = (static_im_pv - eim_pv) * net_im_spread;
+        let drag_bps = (mva_bilat / (im0 * t_mat)) * T::from_f64(10_000.0);
+
+        GregoryKenyonSimmMvaFundingReport {
+            bilateral_simm_expected_im_pv: eim_pv,
+            bilateral_simm_mva_charge: mva_bilat,
+            ccp_cleared_mva_charge: mva_ccp,
+            mva_savings_from_central_clearing: mva_saved,
+            static_peak_im_mva_overstatement: static_over,
+            effective_annualized_mva_drag_bps: drag_bps,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_gregory_kenyon_simm_mva_funding_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn gregory_kenyon_simm_mva_funding_invariants_and_ad_parity() {
+            let spec = GregoryKenyonSimmMvaFundingSpec {
+                initial_simm_margin_im0: 42.0,
+                ccp_cleared_margin_ratio: 0.62,
+                bank_funding_spread_s_f: 0.0095,
+                custodian_remuneration_spread_s_c: 0.0015,
+                bank_hazard_rate_lambda_b: 0.012,
+                counterparty_hazard_rate_lambda_c: 0.018,
+                ois_discount_rate_r: 0.038,
+                maturity_years_t: 5.0,
+            };
+            let rep = evaluate_gregory_kenyon_simm_mva_funding(&spec);
+            assert!(rep.bilateral_simm_mva_charge > rep.ccp_cleared_mva_charge);
+            assert!(rep.mva_savings_from_central_clearing > 0.0);
+            assert!(rep.static_peak_im_mva_overstatement > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_gregory_kenyon_simm_mva_funding(&GregoryKenyonSimmMvaFundingSpec {
+                initial_simm_margin_im0: Dual::<8>::variable(spec.initial_simm_margin_im0, 0),
+                ccp_cleared_margin_ratio: Dual::<8>::variable(spec.ccp_cleared_margin_ratio, 1),
+                bank_funding_spread_s_f: Dual::<8>::variable(spec.bank_funding_spread_s_f, 2),
+                custodian_remuneration_spread_s_c: Dual::<8>::variable(
+                    spec.custodian_remuneration_spread_s_c,
+                    3,
+                ),
+                bank_hazard_rate_lambda_b: Dual::<8>::variable(spec.bank_hazard_rate_lambda_b, 4),
+                counterparty_hazard_rate_lambda_c: Dual::<8>::variable(
+                    spec.counterparty_hazard_rate_lambda_c,
+                    5,
+                ),
+                ois_discount_rate_r: Dual::<8>::variable(spec.ois_discount_rate_r, 6),
+                maturity_years_t: Dual::<8>::variable(spec.maturity_years_t, 7),
+            });
+            for (idx, &ad) in r_ad.mva_savings_from_central_clearing.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.initial_simm_margin_im0 += h;
+                        sm.initial_simm_margin_im0 -= h;
+                    }
+                    1 => {
+                        sp.ccp_cleared_margin_ratio += h;
+                        sm.ccp_cleared_margin_ratio -= h;
+                    }
+                    2 => {
+                        sp.bank_funding_spread_s_f += h;
+                        sm.bank_funding_spread_s_f -= h;
+                    }
+                    3 => {
+                        sp.custodian_remuneration_spread_s_c += h;
+                        sm.custodian_remuneration_spread_s_c -= h;
+                    }
+                    4 => {
+                        sp.bank_hazard_rate_lambda_b += h;
+                        sm.bank_hazard_rate_lambda_b -= h;
+                    }
+                    5 => {
+                        sp.counterparty_hazard_rate_lambda_c += h;
+                        sm.counterparty_hazard_rate_lambda_c -= h;
+                    }
+                    6 => {
+                        sp.ois_discount_rate_r += h;
+                        sm.ois_discount_rate_r -= h;
+                    }
+                    _ => {
+                        sp.maturity_years_t += h;
+                        sm.maturity_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_gregory_kenyon_simm_mva_funding(&sp)
+                    .mva_savings_from_central_clearing
+                    - evaluate_gregory_kenyon_simm_mva_funding(&sm)
+                        .mva_savings_from_central_clearing)
+                    / (2.0 * h);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_gregory_kenyon_simm_mva_funding_module::*;

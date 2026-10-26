@@ -217,3 +217,178 @@ impl CalibratedCommodityCurve {
         (value, deltas)
     }
 }
+
+mod evaluate_routledge_seppi_spatt_stockout_backwardation_module {
+    // Routledge, Seppi & Spatt (2000, JF) & Geman (2005) Competitive Storage Rational
+    // Expectations Equilibrium, Stockout Boundary & Endogenous Backwardation Volatility Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct RoutledgeSeppiSpattStockoutBackwardationSpec<T: Real = f64> {
+        pub spot_commodity_price_s0: T,
+        pub discretionary_inventory_i: T,
+        pub critical_stockout_threshold_i_star: T,
+        pub base_abundant_volatility_sigma0: T,
+        pub stockout_volatility_spike_eta: T,
+        pub interest_plus_storage_cost_rate_c: T,
+        pub convenience_scarcity_slope_alpha: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct RoutledgeSeppiSpattStockoutBackwardationReport<T: Real = f64> {
+        pub inventory_cushion_above_stockout: T,
+        pub endogenous_spot_volatility: T,
+        pub endogenous_convenience_yield: T,
+        pub spot_forward_correlation_rho: T,
+        pub equilibrium_forward_price: T,
+        pub backwardation_basis_pct: T,
+    }
+
+    pub fn evaluate_routledge_seppi_spatt_stockout_backwardation<T: Real>(
+        spec: &RoutledgeSeppiSpattStockoutBackwardationSpec<T>,
+    ) -> RoutledgeSeppiSpattStockoutBackwardationReport<T> {
+        let s0 = spec.spot_commodity_price_s0.max_val(T::from_f64(1.0));
+        let inv = spec.discretionary_inventory_i.max_val(T::from_f64(0.05));
+        let i_star = spec
+            .critical_stockout_threshold_i_star
+            .max_val(T::from_f64(0.01));
+        let sig0 = spec
+            .base_abundant_volatility_sigma0
+            .max_val(T::from_f64(0.02));
+        let eta = spec.stockout_volatility_spike_eta.max_val(T::zero());
+        let cost_c = spec.interest_plus_storage_cost_rate_c;
+        let alpha = spec.convenience_scarcity_slope_alpha.max_val(T::zero());
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+        let raw_gap = inv - i_star;
+        let eps = T::from_f64(0.05);
+        let cushion = T::from_f64(0.5) * (raw_gap + (raw_gap * raw_gap + eps * eps).sqrt());
+
+        // Routledge-Seppi-Spatt (2000): volatility and convenience yield surge as inventory approaches I*:
+        let scarcity_kernel = (-cushion / i_star.max_val(T::from_f64(0.10))).exp();
+        let sig_spot = sig0 * (T::one() + eta * scarcity_kernel);
+
+        // Endogenous spot-forward correlation drops below 1 during stockouts because short-term spikes mean-revert:
+        let rho_sf = T::one() / (T::one() + T::from_f64(0.35) * eta * scarcity_kernel * t).sqrt();
+
+        // Routledge, Seppi & Spatt (2000) endogenous convenience yield includes timing-option variance premium:
+        let conv_y = (alpha
+            + T::from_f64(0.5) * sig_spot * sig_spot * (T::one() - rho_sf * rho_sf))
+            * scarcity_kernel;
+        let fwd = s0 * ((cost_c - conv_y) * t).exp();
+        let back_pct = ((s0 - fwd) / s0) * T::from_f64(100.0);
+
+        RoutledgeSeppiSpattStockoutBackwardationReport {
+            inventory_cushion_above_stockout: cushion,
+            endogenous_spot_volatility: sig_spot,
+            endogenous_convenience_yield: conv_y,
+            spot_forward_correlation_rho: rho_sf,
+            equilibrium_forward_price: fwd,
+            backwardation_basis_pct: back_pct,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_routledge_seppi_spatt_stockout_backwardation_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn routledge_seppi_spatt_stockout_backwardation_invariants_and_ad_parity() {
+            let spec = RoutledgeSeppiSpattStockoutBackwardationSpec {
+                spot_commodity_price_s0: 78.0,
+                discretionary_inventory_i: 0.24,
+                critical_stockout_threshold_i_star: 0.20,
+                base_abundant_volatility_sigma0: 0.22,
+                stockout_volatility_spike_eta: 0.85,
+                interest_plus_storage_cost_rate_c: 0.065,
+                convenience_scarcity_slope_alpha: 0.16,
+                maturity_years_t: 0.50,
+            };
+            let rep = evaluate_routledge_seppi_spatt_stockout_backwardation(&spec);
+            assert!(rep.endogenous_spot_volatility > spec.base_abundant_volatility_sigma0);
+            assert!(rep.backwardation_basis_pct > 0.0);
+            assert!(rep.spot_forward_correlation_rho < 1.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_routledge_seppi_spatt_stockout_backwardation(
+                &RoutledgeSeppiSpattStockoutBackwardationSpec {
+                    spot_commodity_price_s0: Dual::<8>::variable(spec.spot_commodity_price_s0, 0),
+                    discretionary_inventory_i: Dual::<8>::variable(
+                        spec.discretionary_inventory_i,
+                        1,
+                    ),
+                    critical_stockout_threshold_i_star: Dual::<8>::variable(
+                        spec.critical_stockout_threshold_i_star,
+                        2,
+                    ),
+                    base_abundant_volatility_sigma0: Dual::<8>::variable(
+                        spec.base_abundant_volatility_sigma0,
+                        3,
+                    ),
+                    stockout_volatility_spike_eta: Dual::<8>::variable(
+                        spec.stockout_volatility_spike_eta,
+                        4,
+                    ),
+                    interest_plus_storage_cost_rate_c: Dual::<8>::variable(
+                        spec.interest_plus_storage_cost_rate_c,
+                        5,
+                    ),
+                    convenience_scarcity_slope_alpha: Dual::<8>::variable(
+                        spec.convenience_scarcity_slope_alpha,
+                        6,
+                    ),
+                    maturity_years_t: Dual::<8>::variable(spec.maturity_years_t, 7),
+                },
+            );
+            for (idx, &ad) in r_ad.equilibrium_forward_price.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.spot_commodity_price_s0 += h;
+                        sm.spot_commodity_price_s0 -= h;
+                    }
+                    1 => {
+                        sp.discretionary_inventory_i += h;
+                        sm.discretionary_inventory_i -= h;
+                    }
+                    2 => {
+                        sp.critical_stockout_threshold_i_star += h;
+                        sm.critical_stockout_threshold_i_star -= h;
+                    }
+                    3 => {
+                        sp.base_abundant_volatility_sigma0 += h;
+                        sm.base_abundant_volatility_sigma0 -= h;
+                    }
+                    4 => {
+                        sp.stockout_volatility_spike_eta += h;
+                        sm.stockout_volatility_spike_eta -= h;
+                    }
+                    5 => {
+                        sp.interest_plus_storage_cost_rate_c += h;
+                        sm.interest_plus_storage_cost_rate_c -= h;
+                    }
+                    6 => {
+                        sp.convenience_scarcity_slope_alpha += h;
+                        sm.convenience_scarcity_slope_alpha -= h;
+                    }
+                    _ => {
+                        sp.maturity_years_t += h;
+                        sm.maturity_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_routledge_seppi_spatt_stockout_backwardation(&sp)
+                    .equilibrium_forward_price
+                    - evaluate_routledge_seppi_spatt_stockout_backwardation(&sm)
+                        .equilibrium_forward_price)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_routledge_seppi_spatt_stockout_backwardation_module::*;

@@ -1434,3 +1434,153 @@ mod evaluate_bakshi_kapadia_madan_moment_strip_module {
     }
 }
 pub use evaluate_bakshi_kapadia_madan_moment_strip_module::*;
+
+mod evaluate_gatheral_total_variance_dupire_local_vol_module {
+    // Gatheral (2006, Ch. 1 Eq. 1.10) & Dupire (1994) Dimensionless Total-Variance (`w(y, T)`)
+    // Implied-to-Local Volatility Conversion & Durrleman Butterfly Density Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GatheralTotalVarianceDupireLocalVolSpec<T: Real = f64> {
+        pub log_forward_moneyness_y: T,
+        pub atm_implied_vol_sigma0: T,
+        pub log_moneyness_skew_s: T,
+        pub log_moneyness_convexity_c: T,
+        pub term_structure_slope_theta_t: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GatheralTotalVarianceDupireLocalVolReport<T: Real = f64> {
+        pub implied_volatility_at_y: T,
+        pub total_implied_variance_w: T,
+        pub calendar_variance_derivative_dw_dt: T,
+        pub durrleman_butterfly_denominator_g: T,
+        pub dupire_local_variance: T,
+        pub dupire_local_volatility: T,
+        pub local_to_implied_vol_ratio: T,
+    }
+
+    pub fn evaluate_gatheral_total_variance_dupire_local_vol<T: Real>(
+        spec: &GatheralTotalVarianceDupireLocalVolSpec<T>,
+    ) -> GatheralTotalVarianceDupireLocalVolReport<T> {
+        let y = spec.log_forward_moneyness_y;
+        let sig0 = spec.atm_implied_vol_sigma0.max_val(T::from_f64(0.02));
+        let s = spec.log_moneyness_skew_s;
+        let c = spec.log_moneyness_convexity_c.max_val(T::zero());
+        let th_t = spec.term_structure_slope_theta_t;
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+        let sig_imp = (sig0 + s * y + T::from_f64(0.5) * c * y * y).max_val(T::from_f64(0.02));
+        let dsig_dy = s + c * y;
+        let d2sig_dy2 = c;
+
+        let w = sig_imp * sig_imp * t;
+        let dw_dy = T::from_f64(2.0) * t * sig_imp * dsig_dy;
+        let d2w_dy2 = T::from_f64(2.0) * t * (dsig_dy * dsig_dy + sig_imp * d2sig_dy2);
+
+        // Calendar derivative dw/dT = sigma_imp^2 + 2 * T * sigma_imp * theta_T:
+        let dw_dt =
+            (sig_imp * sig_imp + T::from_f64(2.0) * t * sig_imp * th_t).max_val(T::from_f64(1e-4));
+
+        // Gatheral (2006, Eq. 1.10) denominator g(y):
+        let y_over_w = y / w;
+        let term1 = T::one() - y_over_w * dw_dy;
+        let term2 = T::from_f64(0.25)
+            * (-T::from_f64(0.25) - T::one() / w + y_over_w * y_over_w)
+            * (dw_dy * dw_dy);
+        let term3 = T::from_f64(0.5) * d2w_dy2;
+        let denom_g = (term1 + term2 + term3).max_val(T::from_f64(0.05));
+
+        let loc_var = dw_dt / denom_g;
+        let loc_vol = loc_var.sqrt();
+        let ratio = loc_vol / sig_imp;
+
+        GatheralTotalVarianceDupireLocalVolReport {
+            implied_volatility_at_y: sig_imp,
+            total_implied_variance_w: w,
+            calendar_variance_derivative_dw_dt: dw_dt,
+            durrleman_butterfly_denominator_g: denom_g,
+            dupire_local_variance: loc_var,
+            dupire_local_volatility: loc_vol,
+            local_to_implied_vol_ratio: ratio,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_gatheral_total_variance_dupire_local_vol_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn gatheral_total_variance_dupire_local_vol_invariants_and_ad_parity() {
+            let spec = GatheralTotalVarianceDupireLocalVolSpec {
+                log_forward_moneyness_y: -0.08,
+                atm_implied_vol_sigma0: 0.21,
+                log_moneyness_skew_s: -0.24,
+                log_moneyness_convexity_c: 0.35,
+                term_structure_slope_theta_t: 0.015,
+                maturity_years_t: 0.50,
+            };
+            let rep = evaluate_gatheral_total_variance_dupire_local_vol(&spec);
+            assert!(rep.durrleman_butterfly_denominator_g > 0.1);
+            assert!(rep.dupire_local_volatility > 0.05);
+
+            let h = 1e-6;
+            let r_ad = evaluate_gatheral_total_variance_dupire_local_vol(
+                &GatheralTotalVarianceDupireLocalVolSpec {
+                    log_forward_moneyness_y: Dual::<6>::variable(spec.log_forward_moneyness_y, 0),
+                    atm_implied_vol_sigma0: Dual::<6>::variable(spec.atm_implied_vol_sigma0, 1),
+                    log_moneyness_skew_s: Dual::<6>::variable(spec.log_moneyness_skew_s, 2),
+                    log_moneyness_convexity_c: Dual::<6>::variable(
+                        spec.log_moneyness_convexity_c,
+                        3,
+                    ),
+                    term_structure_slope_theta_t: Dual::<6>::variable(
+                        spec.term_structure_slope_theta_t,
+                        4,
+                    ),
+                    maturity_years_t: Dual::<6>::variable(spec.maturity_years_t, 5),
+                },
+            );
+            for (idx, &ad) in r_ad.dupire_local_volatility.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.log_forward_moneyness_y += h;
+                        sm.log_forward_moneyness_y -= h;
+                    }
+                    1 => {
+                        sp.atm_implied_vol_sigma0 += h;
+                        sm.atm_implied_vol_sigma0 -= h;
+                    }
+                    2 => {
+                        sp.log_moneyness_skew_s += h;
+                        sm.log_moneyness_skew_s -= h;
+                    }
+                    3 => {
+                        sp.log_moneyness_convexity_c += h;
+                        sm.log_moneyness_convexity_c -= h;
+                    }
+                    4 => {
+                        sp.term_structure_slope_theta_t += h;
+                        sm.term_structure_slope_theta_t -= h;
+                    }
+                    _ => {
+                        sp.maturity_years_t += h;
+                        sm.maturity_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_gatheral_total_variance_dupire_local_vol(&sp)
+                    .dupire_local_volatility
+                    - evaluate_gatheral_total_variance_dupire_local_vol(&sm)
+                        .dupire_local_volatility)
+                    / (2.0 * h);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_gatheral_total_variance_dupire_local_vol_module::*;

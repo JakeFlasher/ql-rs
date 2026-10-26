@@ -909,3 +909,168 @@ mod evaluate_diebold_mariano_hln_forecast_test_module {
     }
 }
 pub use evaluate_diebold_mariano_hln_forecast_test_module::*;
+
+mod evaluate_engle_granger_cointegration_ecm_half_life_module {
+    // Engle & Granger (1987, Econometrica) & Tsay (2010, Ch. 8) Residual Cointegration
+    // ADF Test, Error-Correction Model (`ECM`) Speed & Ornstein–Uhlenbeck Half-Life Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct EngleGrangerCointegrationEcmHalfLifeSpec<T: Real = f64> {
+        pub variance_asset_x: T,
+        pub covariance_xy: T,
+        pub spread_lag1_autocorrelation_phi: T,
+        pub spread_innovation_sigma_e: T,
+        pub current_disequilibrium_spread_z: T,
+        pub sample_observations_t: T,
+        pub time_step_years_dt: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct EngleGrangerCointegrationEcmHalfLifeReport<T: Real = f64> {
+        pub cointegrating_hedge_ratio_beta: T,
+        pub error_correction_speed_alpha: T,
+        pub engle_granger_adf_t_statistic: T,
+        pub ornstein_uhlenbeck_kappa_annual: T,
+        pub mean_reversion_half_life_periods: T,
+        pub stationary_spread_variance: T,
+        pub expected_next_step_spread_change: T,
+    }
+
+    pub fn evaluate_engle_granger_cointegration_ecm_half_life<T: Real>(
+        spec: &EngleGrangerCointegrationEcmHalfLifeSpec<T>,
+    ) -> EngleGrangerCointegrationEcmHalfLifeReport<T> {
+        let var_x = spec.variance_asset_x.max_val(T::from_f64(1e-6));
+        let cov_xy = spec.covariance_xy;
+        let phi = spec
+            .spread_lag1_autocorrelation_phi
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.995));
+        let sig_e = spec.spread_innovation_sigma_e.max_val(T::from_f64(1e-4));
+        let z_curr = spec.current_disequilibrium_spread_z;
+        let t_obs = spec.sample_observations_t.max_val(T::from_f64(20.0));
+        let dt = spec.time_step_years_dt.max_val(T::from_f64(1e-4));
+
+        let beta_coint = cov_xy / var_x;
+        let alpha_ecm = phi - T::one();
+
+        // Asymptotic SE(phi_hat) = sqrt((1 - phi^2) / T) and Engle-Granger ADF t-stat = (phi - 1) / SE(phi):
+        let se_phi = ((T::one() - phi * phi) / t_obs).sqrt();
+        let adf_t = alpha_ecm / se_phi;
+
+        let ou_kappa = -phi.ln() / dt;
+        let ln2 = T::from_f64(std::f64::consts::LN_2);
+        let half_life_periods = -ln2 / phi.ln();
+        let stat_var = (sig_e * sig_e) / (T::one() - phi * phi);
+        let z_coint = z_curr - (beta_coint - T::one()) * var_x.sqrt();
+        let exp_dz = alpha_ecm * z_coint;
+
+        EngleGrangerCointegrationEcmHalfLifeReport {
+            cointegrating_hedge_ratio_beta: beta_coint,
+            error_correction_speed_alpha: alpha_ecm,
+            engle_granger_adf_t_statistic: adf_t,
+            ornstein_uhlenbeck_kappa_annual: ou_kappa,
+            mean_reversion_half_life_periods: half_life_periods,
+            stationary_spread_variance: stat_var,
+            expected_next_step_spread_change: exp_dz,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_engle_granger_cointegration_ecm_half_life_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn engle_granger_cointegration_ecm_half_life_invariants_and_ad_parity() {
+            let spec = EngleGrangerCointegrationEcmHalfLifeSpec {
+                variance_asset_x: 0.042,
+                covariance_xy: 0.038,
+                spread_lag1_autocorrelation_phi: 0.86,
+                spread_innovation_sigma_e: 0.015,
+                current_disequilibrium_spread_z: 0.025,
+                sample_observations_t: 250.0,
+                time_step_years_dt: 1.0 / 252.0,
+            };
+            let rep = evaluate_engle_granger_cointegration_ecm_half_life(&spec);
+            assert!(rep.engle_granger_adf_t_statistic < -3.0);
+            assert!(rep.mean_reversion_half_life_periods > 1.0);
+            assert!(rep.expected_next_step_spread_change < 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_engle_granger_cointegration_ecm_half_life(
+                &EngleGrangerCointegrationEcmHalfLifeSpec {
+                    variance_asset_x: Dual::<7>::variable(spec.variance_asset_x, 0),
+                    covariance_xy: Dual::<7>::variable(spec.covariance_xy, 1),
+                    spread_lag1_autocorrelation_phi: Dual::<7>::variable(
+                        spec.spread_lag1_autocorrelation_phi,
+                        2,
+                    ),
+                    spread_innovation_sigma_e: Dual::<7>::variable(
+                        spec.spread_innovation_sigma_e,
+                        3,
+                    ),
+                    current_disequilibrium_spread_z: Dual::<7>::variable(
+                        spec.current_disequilibrium_spread_z,
+                        4,
+                    ),
+                    sample_observations_t: Dual::<7>::variable(spec.sample_observations_t, 5),
+                    time_step_years_dt: Dual::<7>::variable(spec.time_step_years_dt, 6),
+                },
+            );
+            let composite_ad = r_ad.engle_granger_adf_t_statistic * Dual::<7>::from_value(0.01)
+                + r_ad.ornstein_uhlenbeck_kappa_annual * Dual::<7>::from_value(1e-3)
+                + r_ad.stationary_spread_variance
+                + r_ad.expected_next_step_spread_change;
+            for (idx, &ad) in composite_ad.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.variance_asset_x += h;
+                        sm.variance_asset_x -= h;
+                    }
+                    1 => {
+                        sp.covariance_xy += h;
+                        sm.covariance_xy -= h;
+                    }
+                    2 => {
+                        sp.spread_lag1_autocorrelation_phi += h;
+                        sm.spread_lag1_autocorrelation_phi -= h;
+                    }
+                    3 => {
+                        sp.spread_innovation_sigma_e += h;
+                        sm.spread_innovation_sigma_e -= h;
+                    }
+                    4 => {
+                        sp.current_disequilibrium_spread_z += h;
+                        sm.current_disequilibrium_spread_z -= h;
+                    }
+                    5 => {
+                        sp.sample_observations_t += h;
+                        sm.sample_observations_t -= h;
+                    }
+                    _ => {
+                        sp.time_step_years_dt += h;
+                        sm.time_step_years_dt -= h;
+                    }
+                }
+                let rp = evaluate_engle_granger_cointegration_ecm_half_life(&sp);
+                let rm = evaluate_engle_granger_cointegration_ecm_half_life(&sm);
+                let fp = rp.engle_granger_adf_t_statistic * 0.01
+                    + rp.ornstein_uhlenbeck_kappa_annual * 1e-3
+                    + rp.stationary_spread_variance
+                    + rp.expected_next_step_spread_change;
+                let fm = rm.engle_granger_adf_t_statistic * 0.01
+                    + rm.ornstein_uhlenbeck_kappa_annual * 1e-3
+                    + rm.stationary_spread_variance
+                    + rm.expected_next_step_spread_change;
+                let fd = (fp - fm) / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_engle_granger_cointegration_ecm_half_life_module::*;

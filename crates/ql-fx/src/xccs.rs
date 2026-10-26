@@ -540,3 +540,157 @@ mod domain_suite_40_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
+
+mod evaluate_baba_packer_cip_cross_currency_basis_wedge_module {
+    // Baba, Packer & Nagano (BIS, 2008) & Du–Tepper–Verdelhan (2018, JF) Covered Interest
+    // Parity (`CIP`) Cross-Currency Basis Wedge, Synthetic USD Rate & G-SIB Balance-Sheet Bound Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BabaPackerCipCrossCurrencyBasisWedgeSpec<T: Real = f64> {
+        pub spot_fx_s0: T,
+        pub market_outright_forward_fx_f: T,
+        pub domestic_usd_ois_rate_rd: T,
+        pub foreign_ois_rate_rf: T,
+        pub gsib_leverage_ratio_capital_charge_bps: T,
+        pub fx_swap_bid_ask_and_funding_haircut_bps: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BabaPackerCipCrossCurrencyBasisWedgeReport<T: Real = f64> {
+        pub theoretical_cip_forward_fx: T,
+        pub fx_swap_implied_synthetic_usd_rate: T,
+        pub covered_interest_parity_basis_bps: T,
+        pub dealer_no_arbitrage_band_width_bps: T,
+        pub net_executable_cip_arbitrage_bps: T,
+        pub forward_points_dislocation_pips: T,
+    }
+
+    pub fn evaluate_baba_packer_cip_cross_currency_basis_wedge<T: Real>(
+        spec: &BabaPackerCipCrossCurrencyBasisWedgeSpec<T>,
+    ) -> BabaPackerCipCrossCurrencyBasisWedgeReport<T> {
+        let s0 = spec.spot_fx_s0.max_val(T::from_f64(0.05));
+        let f_mkt = spec.market_outright_forward_fx_f.max_val(T::from_f64(0.05));
+        let rd = spec.domestic_usd_ois_rate_rd;
+        let rf = spec.foreign_ois_rate_rf;
+        let cap_bps = spec
+            .gsib_leverage_ratio_capital_charge_bps
+            .max_val(T::zero());
+        let hair_bps = spec
+            .fx_swap_bid_ask_and_funding_haircut_bps
+            .max_val(T::zero());
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+        // Theoretical CIP frictionless forward: F_CIP = S0 * exp((rd - rf) * T)
+        let f_cip = s0 * ((rd - rf) * t).exp();
+
+        // Synthetic USD rate implied by FX swap market: r_syn = rf + (1/T) * ln(F_mkt / S0)
+        let r_usd_syn = rf + (f_mkt / s0).ln() / t;
+
+        // Du-Tepper-Verdelhan (2018) cross-currency basis x_{t, T} = r_d - r_d^{syn} (in bps):
+        let cip_basis_bps = (rd - r_usd_syn) * T::from_f64(10_000.0);
+        let band_bps = cap_bps + hair_bps;
+
+        let abs_basis = (cip_basis_bps * cip_basis_bps + T::from_f64(1e-4)).sqrt();
+        let raw_arb = abs_basis - band_bps;
+        let eps = T::from_f64(1e-2);
+        let net_arb_bps = T::from_f64(0.5) * (raw_arb + (raw_arb * raw_arb + eps * eps).sqrt());
+        let pips_disloc = (f_mkt - f_cip) * T::from_f64(10_000.0);
+
+        BabaPackerCipCrossCurrencyBasisWedgeReport {
+            theoretical_cip_forward_fx: f_cip,
+            fx_swap_implied_synthetic_usd_rate: r_usd_syn,
+            covered_interest_parity_basis_bps: cip_basis_bps,
+            dealer_no_arbitrage_band_width_bps: band_bps,
+            net_executable_cip_arbitrage_bps: net_arb_bps,
+            forward_points_dislocation_pips: pips_disloc,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_baba_packer_cip_cross_currency_basis_wedge_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn baba_packer_cip_cross_currency_basis_wedge_invariants_and_ad_parity() {
+            let spec = BabaPackerCipCrossCurrencyBasisWedgeSpec {
+                spot_fx_s0: 1.0800,
+                market_outright_forward_fx_f: 1.1015,
+                domestic_usd_ois_rate_rd: 0.0480,
+                foreign_ois_rate_rf: 0.0310,
+                gsib_leverage_ratio_capital_charge_bps: 14.0,
+                fx_swap_bid_ask_and_funding_haircut_bps: 4.5,
+                maturity_years_t: 1.0,
+            };
+            let rep = evaluate_baba_packer_cip_cross_currency_basis_wedge(&spec);
+            assert!(rep.covered_interest_parity_basis_bps < 0.0);
+            assert!(rep.net_executable_cip_arbitrage_bps > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_baba_packer_cip_cross_currency_basis_wedge(
+                &BabaPackerCipCrossCurrencyBasisWedgeSpec {
+                    spot_fx_s0: Dual::<7>::variable(spec.spot_fx_s0, 0),
+                    market_outright_forward_fx_f: Dual::<7>::variable(
+                        spec.market_outright_forward_fx_f,
+                        1,
+                    ),
+                    domestic_usd_ois_rate_rd: Dual::<7>::variable(spec.domestic_usd_ois_rate_rd, 2),
+                    foreign_ois_rate_rf: Dual::<7>::variable(spec.foreign_ois_rate_rf, 3),
+                    gsib_leverage_ratio_capital_charge_bps: Dual::<7>::variable(
+                        spec.gsib_leverage_ratio_capital_charge_bps,
+                        4,
+                    ),
+                    fx_swap_bid_ask_and_funding_haircut_bps: Dual::<7>::variable(
+                        spec.fx_swap_bid_ask_and_funding_haircut_bps,
+                        5,
+                    ),
+                    maturity_years_t: Dual::<7>::variable(spec.maturity_years_t, 6),
+                },
+            );
+            for (idx, &ad) in r_ad.net_executable_cip_arbitrage_bps.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.spot_fx_s0 += h;
+                        sm.spot_fx_s0 -= h;
+                    }
+                    1 => {
+                        sp.market_outright_forward_fx_f += h;
+                        sm.market_outright_forward_fx_f -= h;
+                    }
+                    2 => {
+                        sp.domestic_usd_ois_rate_rd += h;
+                        sm.domestic_usd_ois_rate_rd -= h;
+                    }
+                    3 => {
+                        sp.foreign_ois_rate_rf += h;
+                        sm.foreign_ois_rate_rf -= h;
+                    }
+                    4 => {
+                        sp.gsib_leverage_ratio_capital_charge_bps += h;
+                        sm.gsib_leverage_ratio_capital_charge_bps -= h;
+                    }
+                    5 => {
+                        sp.fx_swap_bid_ask_and_funding_haircut_bps += h;
+                        sm.fx_swap_bid_ask_and_funding_haircut_bps -= h;
+                    }
+                    _ => {
+                        sp.maturity_years_t += h;
+                        sm.maturity_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_baba_packer_cip_cross_currency_basis_wedge(&sp)
+                    .net_executable_cip_arbitrage_bps
+                    - evaluate_baba_packer_cip_cross_currency_basis_wedge(&sm)
+                        .net_executable_cip_arbitrage_bps)
+                    / (2.0 * h);
+                assert!((ad - fd).abs() < 1e-2);
+            }
+        }
+    }
+}
+pub use evaluate_baba_packer_cip_cross_currency_basis_wedge_module::*;

@@ -1005,3 +1005,159 @@ mod evaluate_brigo_differential_swap_quanto_fra_module {
     }
 }
 pub use evaluate_brigo_differential_swap_quanto_fra_module::*;
+
+mod evaluate_andersen_sofr_futures_fra_convexity_module {
+    // Andersen & Piterbarg (2010, Vol. I Ch. 6) & Brigo–Mercurio (2006) Eurodollar / SOFR
+    // Futures vs. FRA Convexity Bias (`Ho–Lee / Hull–White Daily Margining Adjustment`) Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct AndersenSofrFuturesFraConvexitySpec<T: Real = f64> {
+        pub unadjusted_fra_forward_rate_f0: T,
+        pub short_rate_volatility_sigma_r: T,
+        pub hull_white_mean_reversion_kappa: T,
+        pub accrual_start_years_t1: T,
+        pub accrual_fraction_tau: T,
+        pub contract_notional_mm: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct AndersenSofrFuturesFraConvexityReport<T: Real = f64> {
+        pub unadjusted_fra_rate: T,
+        pub ho_lee_zero_mean_reversion_convexity_bps: T,
+        pub hull_white_convexity_exponent_gamma: T,
+        pub hull_white_futures_fra_convexity_bps: T,
+        pub implied_sofr_futures_rate: T,
+        pub implied_imm_futures_price: T,
+        pub convexity_bias_pv_dollars: T,
+    }
+
+    pub fn evaluate_andersen_sofr_futures_fra_convexity<T: Real>(
+        spec: &AndersenSofrFuturesFraConvexitySpec<T>,
+    ) -> AndersenSofrFuturesFraConvexityReport<T> {
+        let f0 = spec
+            .unadjusted_fra_forward_rate_f0
+            .max_val(T::from_f64(1e-4));
+        let sig = spec
+            .short_rate_volatility_sigma_r
+            .max_val(T::from_f64(1e-4));
+        let kap = spec
+            .hull_white_mean_reversion_kappa
+            .max_val(T::from_f64(1e-3));
+        let t1 = spec.accrual_start_years_t1.max_val(T::from_f64(0.05));
+        let tau = spec.accrual_fraction_tau.max_val(T::from_f64(0.05));
+        let notl = spec.contract_notional_mm.max_val(T::from_f64(0.1));
+        let t2 = t1 + tau;
+
+        // Ho-Lee (kappa -> 0) limit: Delta_HL = 0.5 * sigma_r^2 * T1 * T2
+        let hl_conv_bps = T::from_f64(0.5) * sig * sig * t1 * t2 * T::from_f64(10_000.0);
+
+        // Exact Hull-White 1F futures-forward convexity exponent Gamma(0, T1, T2) (Brigo & Mercurio Eq. 3.41):
+        let b_12 = (T::one() - (-kap * tau).exp()) / kap;
+        let b_01 = (T::one() - (-kap * t1).exp()) / kap;
+        let var_r_t1 = (sig * sig / (T::from_f64(2.0) * kap))
+            * (T::one() - (-T::from_f64(2.0) * kap * t1).exp());
+        let gamma_hw = b_12
+            * (T::from_f64(0.5) * sig * sig * b_01 * b_01 + T::from_f64(0.5) * b_12 * var_r_t1);
+
+        let one_plus_tau_f = T::one() + tau * f0;
+        let fut_rate = (one_plus_tau_f * gamma_hw.exp() - T::one()) / tau;
+        let hw_conv_bps = (fut_rate - f0) * T::from_f64(10_000.0);
+        let imm_price = T::from_f64(100.0) * (T::one() - fut_rate);
+        let pv_bias = notl * T::from_f64(1_000_000.0) * tau * (fut_rate - f0);
+
+        AndersenSofrFuturesFraConvexityReport {
+            unadjusted_fra_rate: f0,
+            ho_lee_zero_mean_reversion_convexity_bps: hl_conv_bps,
+            hull_white_convexity_exponent_gamma: gamma_hw,
+            hull_white_futures_fra_convexity_bps: hw_conv_bps,
+            implied_sofr_futures_rate: fut_rate,
+            implied_imm_futures_price: imm_price,
+            convexity_bias_pv_dollars: pv_bias,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_andersen_sofr_futures_fra_convexity_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn andersen_sofr_futures_fra_convexity_invariants_and_ad_parity() {
+            let spec = AndersenSofrFuturesFraConvexitySpec {
+                unadjusted_fra_forward_rate_f0: 0.0435,
+                short_rate_volatility_sigma_r: 0.0115,
+                hull_white_mean_reversion_kappa: 0.06,
+                accrual_start_years_t1: 3.0,
+                accrual_fraction_tau: 0.25,
+                contract_notional_mm: 10.0,
+            };
+            let rep = evaluate_andersen_sofr_futures_fra_convexity(&spec);
+            assert!(rep.hull_white_futures_fra_convexity_bps > 0.0);
+            assert!(
+                rep.hull_white_futures_fra_convexity_bps
+                    < rep.ho_lee_zero_mean_reversion_convexity_bps
+            );
+            assert!(rep.implied_sofr_futures_rate > rep.unadjusted_fra_rate);
+
+            let h = 1e-5;
+            let r_ad = evaluate_andersen_sofr_futures_fra_convexity(
+                &AndersenSofrFuturesFraConvexitySpec {
+                    unadjusted_fra_forward_rate_f0: Dual::<6>::variable(
+                        spec.unadjusted_fra_forward_rate_f0,
+                        0,
+                    ),
+                    short_rate_volatility_sigma_r: Dual::<6>::variable(
+                        spec.short_rate_volatility_sigma_r,
+                        1,
+                    ),
+                    hull_white_mean_reversion_kappa: Dual::<6>::variable(
+                        spec.hull_white_mean_reversion_kappa,
+                        2,
+                    ),
+                    accrual_start_years_t1: Dual::<6>::variable(spec.accrual_start_years_t1, 3),
+                    accrual_fraction_tau: Dual::<6>::variable(spec.accrual_fraction_tau, 4),
+                    contract_notional_mm: Dual::<6>::variable(spec.contract_notional_mm, 5),
+                },
+            );
+            for (idx, &ad) in r_ad.convexity_bias_pv_dollars.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.unadjusted_fra_forward_rate_f0 += h;
+                        sm.unadjusted_fra_forward_rate_f0 -= h;
+                    }
+                    1 => {
+                        sp.short_rate_volatility_sigma_r += h;
+                        sm.short_rate_volatility_sigma_r -= h;
+                    }
+                    2 => {
+                        sp.hull_white_mean_reversion_kappa += h;
+                        sm.hull_white_mean_reversion_kappa -= h;
+                    }
+                    3 => {
+                        sp.accrual_start_years_t1 += h;
+                        sm.accrual_start_years_t1 -= h;
+                    }
+                    4 => {
+                        sp.accrual_fraction_tau += h;
+                        sm.accrual_fraction_tau -= h;
+                    }
+                    _ => {
+                        sp.contract_notional_mm += h;
+                        sm.contract_notional_mm -= h;
+                    }
+                }
+                let fd = (evaluate_andersen_sofr_futures_fra_convexity(&sp)
+                    .convexity_bias_pv_dollars
+                    - evaluate_andersen_sofr_futures_fra_convexity(&sm).convexity_bias_pv_dollars)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-8);
+                assert!((ad - fd).abs() < 1e-3);
+            }
+        }
+    }
+}
+pub use evaluate_andersen_sofr_futures_fra_convexity_module::*;

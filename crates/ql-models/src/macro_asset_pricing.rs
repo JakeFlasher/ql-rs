@@ -902,3 +902,188 @@ mod evaluate_laubach_williams_natural_rate_r_star_module {
     }
 }
 pub use evaluate_laubach_williams_natural_rate_r_star_module::*;
+
+mod evaluate_epstein_zin_weil_recursive_utility_sdf_module {
+    // Epstein & Zin (1989, Econometrica) & Weil (1989) Recursive Utility Stochastic Discount
+    // Factor (`SDF`), Intertemporal Elasticity of Substitution (`IES psi`) vs. Risk Aversion Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct EpsteinZinWeilRecursiveUtilitySdfSpec<T: Real = f64> {
+        pub subjective_discount_beta: T,
+        pub relative_risk_aversion_gamma: T,
+        pub intertemporal_elasticity_psi: T,
+        pub expected_consumption_growth_gc: T,
+        pub consumption_growth_volatility_sigma_c: T,
+        pub wealth_portfolio_return_volatility_sigma_w: T,
+        pub consumption_wealth_correlation_rho_cw: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct EpsteinZinWeilRecursiveUtilitySdfReport<T: Real = f64> {
+        pub epstein_zin_theta_index: T,
+        pub early_uncertainty_resolution_wedge: T,
+        pub equilibrium_real_risk_free_rate: T,
+        pub consumption_growth_risk_price: T,
+        pub wealth_return_continuation_risk_price: T,
+        pub log_sdf_variance: T,
+        pub hansen_jagannathan_max_sharpe_bound: T,
+    }
+
+    pub fn evaluate_epstein_zin_weil_recursive_utility_sdf<T: Real>(
+        spec: &EpsteinZinWeilRecursiveUtilitySdfSpec<T>,
+    ) -> EpsteinZinWeilRecursiveUtilitySdfReport<T> {
+        let beta = spec
+            .subjective_discount_beta
+            .max_val(T::from_f64(0.90))
+            .min_val(T::from_f64(0.999));
+        let gam = spec.relative_risk_aversion_gamma.max_val(T::from_f64(0.5));
+        let psi = spec.intertemporal_elasticity_psi.max_val(T::from_f64(0.15));
+        let gc = spec.expected_consumption_growth_gc;
+        let sig_c = spec
+            .consumption_growth_volatility_sigma_c
+            .max_val(T::from_f64(1e-4));
+        let sig_w = spec
+            .wealth_portfolio_return_volatility_sigma_w
+            .max_val(T::from_f64(1e-4));
+        let rho = spec
+            .consumption_wealth_correlation_rho_cw
+            .max_val(T::from_f64(-0.98))
+            .min_val(T::from_f64(0.98));
+
+        let inv_psi = T::one() / psi;
+        let denom_psi = T::one() - inv_psi;
+        // Smooth protection away from psi == 1 without flat-derivative clamp:
+        let sign_d = if denom_psi >= T::zero() {
+            T::one()
+        } else {
+            -T::one()
+        };
+        let safe_denom = sign_d * (denom_psi * denom_psi + T::from_f64(1e-8)).sqrt();
+        let theta = (T::one() - gam) / safe_denom;
+        let early_res_wedge = gam - inv_psi;
+
+        // Epstein-Zin log SDF: m_{t+1} = theta ln(beta) - (theta / psi) dc_{t+1} + (theta - 1) r_{w, t+1}
+        let lambda_c = theta * inv_psi;
+        let lambda_w = T::one() - theta;
+
+        let var_m = lambda_c * lambda_c * sig_c * sig_c
+            + lambda_w * lambda_w * sig_w * sig_w
+            + T::from_f64(2.0) * lambda_c * lambda_w * rho * sig_c * sig_w;
+
+        // Equilibrium real risk-free rate under Epstein-Zin preferences:
+        let rf_real = -beta.ln() + inv_psi * gc
+            - T::from_f64(0.5) * theta * inv_psi * inv_psi * sig_c * sig_c
+            - T::from_f64(0.5) * (T::one() - theta) * sig_w * sig_w;
+        let hj_bound = var_m.sqrt();
+
+        EpsteinZinWeilRecursiveUtilitySdfReport {
+            epstein_zin_theta_index: theta,
+            early_uncertainty_resolution_wedge: early_res_wedge,
+            equilibrium_real_risk_free_rate: rf_real,
+            consumption_growth_risk_price: lambda_c,
+            wealth_return_continuation_risk_price: lambda_w,
+            log_sdf_variance: var_m,
+            hansen_jagannathan_max_sharpe_bound: hj_bound,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_epstein_zin_weil_recursive_utility_sdf_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn epstein_zin_weil_recursive_utility_sdf_invariants_and_ad_parity() {
+            let spec = EpsteinZinWeilRecursiveUtilitySdfSpec {
+                subjective_discount_beta: 0.988,
+                relative_risk_aversion_gamma: 7.5,
+                intertemporal_elasticity_psi: 1.5,
+                expected_consumption_growth_gc: 0.018,
+                consumption_growth_volatility_sigma_c: 0.022,
+                wealth_portfolio_return_volatility_sigma_w: 0.145,
+                consumption_wealth_correlation_rho_cw: 0.65,
+            };
+            let rep = evaluate_epstein_zin_weil_recursive_utility_sdf(&spec);
+            assert!(rep.epstein_zin_theta_index < 0.0);
+            assert!(rep.early_uncertainty_resolution_wedge > 0.0);
+            assert!(rep.hansen_jagannathan_max_sharpe_bound > 0.20);
+
+            let h = 1e-6;
+            let r_ad = evaluate_epstein_zin_weil_recursive_utility_sdf(
+                &EpsteinZinWeilRecursiveUtilitySdfSpec {
+                    subjective_discount_beta: Dual::<7>::variable(spec.subjective_discount_beta, 0),
+                    relative_risk_aversion_gamma: Dual::<7>::variable(
+                        spec.relative_risk_aversion_gamma,
+                        1,
+                    ),
+                    intertemporal_elasticity_psi: Dual::<7>::variable(
+                        spec.intertemporal_elasticity_psi,
+                        2,
+                    ),
+                    expected_consumption_growth_gc: Dual::<7>::variable(
+                        spec.expected_consumption_growth_gc,
+                        3,
+                    ),
+                    consumption_growth_volatility_sigma_c: Dual::<7>::variable(
+                        spec.consumption_growth_volatility_sigma_c,
+                        4,
+                    ),
+                    wealth_portfolio_return_volatility_sigma_w: Dual::<7>::variable(
+                        spec.wealth_portfolio_return_volatility_sigma_w,
+                        5,
+                    ),
+                    consumption_wealth_correlation_rho_cw: Dual::<7>::variable(
+                        spec.consumption_wealth_correlation_rho_cw,
+                        6,
+                    ),
+                },
+            );
+            for (idx, &ad_rf) in r_ad.equilibrium_real_risk_free_rate.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.subjective_discount_beta += h;
+                        sm.subjective_discount_beta -= h;
+                    }
+                    1 => {
+                        sp.relative_risk_aversion_gamma += h;
+                        sm.relative_risk_aversion_gamma -= h;
+                    }
+                    2 => {
+                        sp.intertemporal_elasticity_psi += h;
+                        sm.intertemporal_elasticity_psi -= h;
+                    }
+                    3 => {
+                        sp.expected_consumption_growth_gc += h;
+                        sm.expected_consumption_growth_gc -= h;
+                    }
+                    4 => {
+                        sp.consumption_growth_volatility_sigma_c += h;
+                        sm.consumption_growth_volatility_sigma_c -= h;
+                    }
+                    5 => {
+                        sp.wealth_portfolio_return_volatility_sigma_w += h;
+                        sm.wealth_portfolio_return_volatility_sigma_w -= h;
+                    }
+                    _ => {
+                        sp.consumption_wealth_correlation_rho_cw += h;
+                        sm.consumption_wealth_correlation_rho_cw -= h;
+                    }
+                }
+                let metric_p = evaluate_epstein_zin_weil_recursive_utility_sdf(&sp);
+                let metric_m = evaluate_epstein_zin_weil_recursive_utility_sdf(&sm);
+                let fd = ((metric_p.equilibrium_real_risk_free_rate
+                    + metric_p.hansen_jagannathan_max_sharpe_bound)
+                    - (metric_m.equilibrium_real_risk_free_rate
+                        + metric_m.hansen_jagannathan_max_sharpe_bound))
+                    / (2.0 * h);
+                let ad = ad_rf + r_ad.hansen_jagannathan_max_sharpe_bound.d[idx];
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_epstein_zin_weil_recursive_utility_sdf_module::*;

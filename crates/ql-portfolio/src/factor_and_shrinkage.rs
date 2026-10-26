@@ -2062,3 +2062,177 @@ mod evaluate_kan_zhou_and_sharpe_rbsa_module {
     }
 }
 pub use evaluate_kan_zhou_and_sharpe_rbsa_module::*;
+
+mod evaluate_pastor_stambaugh_factor_prior_shrinkage_module {
+    // Pástor & Stambaugh (2000, JFE) & Pástor (2000, JF) Empirical Bayes Asset Pricing
+    // Prior Shrinkage toward CAPM / Factor Model (`Mispricing Uncertainty sigma_alpha`) Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct PastorStambaughFactorPriorShrinkageSpec<T: Real = f64> {
+        pub sample_ols_alpha_hat: T,
+        pub sample_factor_beta_hat: T,
+        pub residual_return_variance_sigma_eps2: T,
+        pub prior_mispricing_std_sigma_alpha: T,
+        pub benchmark_excess_mean_mu_m: T,
+        pub benchmark_return_variance_sigma_m2: T,
+        pub sample_length_periods_t: T,
+        pub risk_aversion_gamma: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct PastorStambaughFactorPriorShrinkageReport<T: Real = f64> {
+        pub data_alpha_precision: T,
+        pub prior_alpha_precision: T,
+        pub pastor_shrinkage_intensity_omega: T,
+        pub posterior_shrunk_alpha: T,
+        pub posterior_predictive_residual_variance: T,
+        pub dogmatic_benchmark_weight: T,
+        pub optimal_active_satellite_weight: T,
+    }
+
+    pub fn evaluate_pastor_stambaugh_factor_prior_shrinkage<T: Real>(
+        spec: &PastorStambaughFactorPriorShrinkageSpec<T>,
+    ) -> PastorStambaughFactorPriorShrinkageReport<T> {
+        let a_hat = spec.sample_ols_alpha_hat;
+        let b_hat = spec.sample_factor_beta_hat;
+        let sig_e2 = spec
+            .residual_return_variance_sigma_eps2
+            .max_val(T::from_f64(1e-5));
+        let sig_a = spec
+            .prior_mispricing_std_sigma_alpha
+            .max_val(T::from_f64(1e-4));
+        let mu_m = spec.benchmark_excess_mean_mu_m;
+        let sig_m2 = spec
+            .benchmark_return_variance_sigma_m2
+            .max_val(T::from_f64(1e-4));
+        let t_obs = spec.sample_length_periods_t.max_val(T::from_f64(12.0));
+        let gam = spec.risk_aversion_gamma.max_val(T::from_f64(0.5));
+
+        // Pástor (2000, JF Eq. 11): OLS alpha variance = (sigma_eps^2 / T) * (1 + SR_m^2)
+        let sr_m2 = (mu_m * mu_m) / sig_m2;
+        let var_a_ols = (sig_e2 / t_obs) * (T::one() + sr_m2);
+        let prec_data = T::one() / var_a_ols;
+        let prec_prior = T::one() / (sig_a * sig_a);
+
+        // Shrinkage weight omega on sample alpha_hat vs (1 - omega) on prior alpha_0 = 0:
+        let omega = prec_data / (prec_data + prec_prior);
+        let post_alpha = omega * a_hat;
+        let post_var_alpha = T::one() / (prec_data + prec_prior);
+        let pred_res_var = sig_e2 * (T::one() + T::one() / t_obs) + post_var_alpha;
+
+        let w_active = post_alpha / (gam * pred_res_var);
+        let w_bench = (mu_m / (gam * sig_m2)) - b_hat * w_active;
+
+        PastorStambaughFactorPriorShrinkageReport {
+            data_alpha_precision: prec_data,
+            prior_alpha_precision: prec_prior,
+            pastor_shrinkage_intensity_omega: omega,
+            posterior_shrunk_alpha: post_alpha,
+            posterior_predictive_residual_variance: pred_res_var,
+            dogmatic_benchmark_weight: w_bench,
+            optimal_active_satellite_weight: w_active,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_pastor_stambaugh_factor_prior_shrinkage_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn pastor_stambaugh_factor_prior_shrinkage_invariants_and_ad_parity() {
+            let spec = PastorStambaughFactorPriorShrinkageSpec {
+                sample_ols_alpha_hat: 0.035,
+                sample_factor_beta_hat: 1.12,
+                residual_return_variance_sigma_eps2: 0.018,
+                prior_mispricing_std_sigma_alpha: 0.020,
+                benchmark_excess_mean_mu_m: 0.065,
+                benchmark_return_variance_sigma_m2: 0.025,
+                sample_length_periods_t: 60.0,
+                risk_aversion_gamma: 3.0,
+            };
+            let rep = evaluate_pastor_stambaugh_factor_prior_shrinkage(&spec);
+            assert!(
+                rep.pastor_shrinkage_intensity_omega > 0.0
+                    && rep.pastor_shrinkage_intensity_omega < 1.0
+            );
+            assert!(
+                rep.posterior_shrunk_alpha > 0.0
+                    && rep.posterior_shrunk_alpha < spec.sample_ols_alpha_hat
+            );
+
+            let h = 1e-6;
+            let r_ad = evaluate_pastor_stambaugh_factor_prior_shrinkage(
+                &PastorStambaughFactorPriorShrinkageSpec {
+                    sample_ols_alpha_hat: Dual::<8>::variable(spec.sample_ols_alpha_hat, 0),
+                    sample_factor_beta_hat: Dual::<8>::variable(spec.sample_factor_beta_hat, 1),
+                    residual_return_variance_sigma_eps2: Dual::<8>::variable(
+                        spec.residual_return_variance_sigma_eps2,
+                        2,
+                    ),
+                    prior_mispricing_std_sigma_alpha: Dual::<8>::variable(
+                        spec.prior_mispricing_std_sigma_alpha,
+                        3,
+                    ),
+                    benchmark_excess_mean_mu_m: Dual::<8>::variable(
+                        spec.benchmark_excess_mean_mu_m,
+                        4,
+                    ),
+                    benchmark_return_variance_sigma_m2: Dual::<8>::variable(
+                        spec.benchmark_return_variance_sigma_m2,
+                        5,
+                    ),
+                    sample_length_periods_t: Dual::<8>::variable(spec.sample_length_periods_t, 6),
+                    risk_aversion_gamma: Dual::<8>::variable(spec.risk_aversion_gamma, 7),
+                },
+            );
+            for (idx, &ad) in r_ad.dogmatic_benchmark_weight.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.sample_ols_alpha_hat += h;
+                        sm.sample_ols_alpha_hat -= h;
+                    }
+                    1 => {
+                        sp.sample_factor_beta_hat += h;
+                        sm.sample_factor_beta_hat -= h;
+                    }
+                    2 => {
+                        sp.residual_return_variance_sigma_eps2 += h;
+                        sm.residual_return_variance_sigma_eps2 -= h;
+                    }
+                    3 => {
+                        sp.prior_mispricing_std_sigma_alpha += h;
+                        sm.prior_mispricing_std_sigma_alpha -= h;
+                    }
+                    4 => {
+                        sp.benchmark_excess_mean_mu_m += h;
+                        sm.benchmark_excess_mean_mu_m -= h;
+                    }
+                    5 => {
+                        sp.benchmark_return_variance_sigma_m2 += h;
+                        sm.benchmark_return_variance_sigma_m2 -= h;
+                    }
+                    6 => {
+                        sp.sample_length_periods_t += h;
+                        sm.sample_length_periods_t -= h;
+                    }
+                    _ => {
+                        sp.risk_aversion_gamma += h;
+                        sm.risk_aversion_gamma -= h;
+                    }
+                }
+                let fd = (evaluate_pastor_stambaugh_factor_prior_shrinkage(&sp)
+                    .dogmatic_benchmark_weight
+                    - evaluate_pastor_stambaugh_factor_prior_shrinkage(&sm)
+                        .dogmatic_benchmark_weight)
+                    / (2.0 * h);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_pastor_stambaugh_factor_prior_shrinkage_module::*;

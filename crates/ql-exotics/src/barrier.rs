@@ -190,3 +190,167 @@ pub fn barrier_option_greeks_dual5(spec: &BarrierOptionSpec<f64>) -> (f64, [f64;
     let p = price_barrier_option(&d);
     (p.val, [p.d[0], p.d[1], p.d[2], p.d[3], -p.d[4]])
 }
+
+mod evaluate_carr_chou_put_call_symmetry_barrier_replication_module {
+    // Carr & Chou (1997, JF) & Haug (2007, Ch. 4.17) Static Options Replication of
+    // Down-and-Out Call via Put-Call Symmetry (`Geometric Reflection Strike H^2 / K`) Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct CarrChouPutCallSymmetryBarrierReplicationSpec<T: Real = f64> {
+        pub spot_price_s0: T,
+        pub strike_price_k: T,
+        pub down_and_out_barrier_h: T,
+        pub risk_free_rate_r: T,
+        pub dividend_yield_q: T,
+        pub volatility_sigma: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct CarrChouPutCallSymmetryBarrierReplicationReport<T: Real = f64> {
+        pub vanilla_call_at_k: T,
+        pub reflected_put_strike_h2_over_k: T,
+        pub symmetry_reflection_ratio_weight: T,
+        pub static_reflected_put_hedge_cost: T,
+        pub static_replicated_down_and_out_call: T,
+        pub boundary_residual_at_barrier: T,
+    }
+
+    fn bs_call<T: Real>(s: T, k: T, r: T, q: T, t: T, sig: T) -> T {
+        let std = sig * t.sqrt();
+        let d1 = ((s / k).ln() + (r - q + T::from_f64(0.5) * sig * sig) * t) / std;
+        let d2 = d1 - std;
+        s * (-q * t).exp() * norm_cdf(d1) - k * (-r * t).exp() * norm_cdf(d2)
+    }
+
+    fn bs_put<T: Real>(s: T, k: T, r: T, q: T, t: T, sig: T) -> T {
+        let std = sig * t.sqrt();
+        let d1 = ((s / k).ln() + (r - q + T::from_f64(0.5) * sig * sig) * t) / std;
+        let d2 = d1 - std;
+        k * (-r * t).exp() * norm_cdf(-d2) - s * (-q * t).exp() * norm_cdf(-d1)
+    }
+
+    pub fn evaluate_carr_chou_put_call_symmetry_barrier_replication<T: Real>(
+        spec: &CarrChouPutCallSymmetryBarrierReplicationSpec<T>,
+    ) -> CarrChouPutCallSymmetryBarrierReplicationReport<T> {
+        let h_bar = spec.down_and_out_barrier_h.max_val(T::from_f64(1.0));
+        let s0 = spec.spot_price_s0.max_val(h_bar + T::from_f64(0.5));
+        let k = spec.strike_price_k.max_val(h_bar + T::from_f64(0.1));
+        let r = spec.risk_free_rate_r;
+        let q = spec.dividend_yield_q;
+        let sig = spec.volatility_sigma.max_val(T::from_f64(0.02));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+        let c_van = bs_call(s0, k, r, q, t, sig);
+
+        // Reiner-Rubinstein (1991) / Carr-Chou (1997) / Haug (2007, Ch. 4.17.1) reflection strike K_ref = H^2 / K
+        // and general reflection weight w_sym(S0) = (K / H) * (H / S0)^{2(r - q) / sigma^2} with swapped carry (q, r):
+        let k_ref = (h_bar * h_bar) / k;
+        let drift_exp = (T::from_f64(2.0) * (r - q)) / (sig * sig);
+        let sym_weight = (k / h_bar) * (drift_exp * (h_bar / s0).ln()).exp();
+
+        let put_ref_s0 = bs_put(s0, k_ref, q, r, t, sig);
+        let hedge_cost = sym_weight * put_ref_s0;
+        let doc_val = (c_van - hedge_cost).max_val(T::zero());
+
+        // Verify exact Put-Call Symmetry / Duality boundary matching at S = H (where (H / S)^{2(r - q)/sigma^2} = 1):
+        let c_at_h = bs_call(h_bar, k, r, q, t, sig);
+        let p_at_h = bs_put(h_bar, k_ref, q, r, t, sig);
+        let bound_res = c_at_h - (k / h_bar) * p_at_h;
+
+        CarrChouPutCallSymmetryBarrierReplicationReport {
+            vanilla_call_at_k: c_van,
+            reflected_put_strike_h2_over_k: k_ref,
+            symmetry_reflection_ratio_weight: sym_weight,
+            static_reflected_put_hedge_cost: hedge_cost,
+            static_replicated_down_and_out_call: doc_val,
+            boundary_residual_at_barrier: bound_res,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_carr_chou_put_call_symmetry_barrier_replication_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn carr_chou_put_call_symmetry_barrier_replication_invariants_and_ad_parity() {
+            let spec = CarrChouPutCallSymmetryBarrierReplicationSpec {
+                spot_price_s0: 100.0,
+                strike_price_k: 102.0,
+                down_and_out_barrier_h: 90.0,
+                risk_free_rate_r: 0.045,
+                dividend_yield_q: 0.020,
+                volatility_sigma: 0.22,
+                maturity_years_t: 0.75,
+            };
+            let rep = evaluate_carr_chou_put_call_symmetry_barrier_replication(&spec);
+            assert!(rep.static_replicated_down_and_out_call > 0.0);
+            assert!(rep.static_replicated_down_and_out_call < rep.vanilla_call_at_k);
+            assert!(rep.boundary_residual_at_barrier.abs() < 1e-12);
+
+            let h = 1e-6;
+            let r_ad = evaluate_carr_chou_put_call_symmetry_barrier_replication(
+                &CarrChouPutCallSymmetryBarrierReplicationSpec {
+                    spot_price_s0: Dual::<7>::variable(spec.spot_price_s0, 0),
+                    strike_price_k: Dual::<7>::variable(spec.strike_price_k, 1),
+                    down_and_out_barrier_h: Dual::<7>::variable(spec.down_and_out_barrier_h, 2),
+                    risk_free_rate_r: Dual::<7>::variable(spec.risk_free_rate_r, 3),
+                    dividend_yield_q: Dual::<7>::variable(spec.dividend_yield_q, 4),
+                    volatility_sigma: Dual::<7>::variable(spec.volatility_sigma, 5),
+                    maturity_years_t: Dual::<7>::variable(spec.maturity_years_t, 6),
+                },
+            );
+            for (idx, &ad) in r_ad
+                .static_replicated_down_and_out_call
+                .d
+                .iter()
+                .enumerate()
+            {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.spot_price_s0 += h;
+                        sm.spot_price_s0 -= h;
+                    }
+                    1 => {
+                        sp.strike_price_k += h;
+                        sm.strike_price_k -= h;
+                    }
+                    2 => {
+                        sp.down_and_out_barrier_h += h;
+                        sm.down_and_out_barrier_h -= h;
+                    }
+                    3 => {
+                        sp.risk_free_rate_r += h;
+                        sm.risk_free_rate_r -= h;
+                    }
+                    4 => {
+                        sp.dividend_yield_q += h;
+                        sm.dividend_yield_q -= h;
+                    }
+                    5 => {
+                        sp.volatility_sigma += h;
+                        sm.volatility_sigma -= h;
+                    }
+                    _ => {
+                        sp.maturity_years_t += h;
+                        sm.maturity_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_carr_chou_put_call_symmetry_barrier_replication(&sp)
+                    .static_replicated_down_and_out_call
+                    - evaluate_carr_chou_put_call_symmetry_barrier_replication(&sm)
+                        .static_replicated_down_and_out_call)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_carr_chou_put_call_symmetry_barrier_replication_module::*;

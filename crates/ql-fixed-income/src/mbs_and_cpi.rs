@@ -3011,3 +3011,171 @@ mod evaluate_fabozzi_agency_msr_valuation_module {
     }
 }
 pub use evaluate_fabozzi_agency_msr_valuation_module::*;
+
+mod evaluate_hayre_richard_roll_mbs_prepayment_module {
+    // Hayre (2001) & Richard–Roll (1989) Agency MBS 4-Factor S-Curve Prepayment (`Refinancing
+    // Incentive, PSA Seasoning, Burnout & Seasonality`) & Weighted Average Life (`WAL`) Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct HayreRichardRollMbsPrepaymentSpec<T: Real = f64> {
+        pub pool_wac_coupon_rate: T,
+        pub prevailing_mortgage_rate_r_mtg: T,
+        pub loan_age_months_wala: T,
+        pub cumulative_burnout_exposure: T,
+        pub burnout_sensitivity_beta: T,
+        pub s_curve_steepness_gamma: T,
+        pub seasonal_turnover_multiplier: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct HayreRichardRollMbsPrepaymentReport<T: Real = f64> {
+        pub refinancing_incentive_spread_bps: T,
+        pub s_curve_refi_multiplier: T,
+        pub psa_seasoning_ramp_factor: T,
+        pub pool_burnout_attenuation_factor: T,
+        pub annualized_cpr: T,
+        pub single_monthly_mortality_smm: T,
+        pub projected_weighted_average_life_years: T,
+    }
+
+    pub fn evaluate_hayre_richard_roll_mbs_prepayment<T: Real>(
+        spec: &HayreRichardRollMbsPrepaymentSpec<T>,
+    ) -> HayreRichardRollMbsPrepaymentReport<T> {
+        let wac = spec.pool_wac_coupon_rate.max_val(T::from_f64(0.01));
+        let r_mtg = spec
+            .prevailing_mortgage_rate_r_mtg
+            .max_val(T::from_f64(0.01));
+        let wala = spec.loan_age_months_wala.max_val(T::one());
+        let burn_exp = spec.cumulative_burnout_exposure.max_val(T::zero());
+        let beta_b = spec.burnout_sensitivity_beta.max_val(T::from_f64(0.01));
+        let gam = spec.s_curve_steepness_gamma.max_val(T::from_f64(5.0));
+        let seas = spec
+            .seasonal_turnover_multiplier
+            .max_val(T::from_f64(0.70))
+            .min_val(T::from_f64(1.30));
+
+        let refi_spread = wac - r_mtg;
+        let refi_bps = refi_spread * T::from_f64(10_000.0);
+
+        // Smooth logistic S-curve refinancing incentive multiplier around 50 bps threshold:
+        let x_s = gam * (refi_spread - T::from_f64(0.005));
+        let logistic = T::one() / (T::one() + (-x_s).exp());
+        let s_curve_mult = T::from_f64(0.06) + T::from_f64(0.44) * logistic;
+
+        // Smooth PSA 30-month seasoning ramp: min(WALA / 30, 1) smoothed via sqrt:
+        let ratio_age = wala / T::from_f64(30.0);
+        let eps = T::from_f64(1e-3);
+        let diff_a = T::one() - ratio_age;
+        let psa_ramp =
+            T::from_f64(0.5) * (T::one() + ratio_age - (diff_a * diff_a + eps * eps).sqrt());
+
+        // Hayre (2001) exponential burnout attenuation:
+        let burnout_mult = (-beta_b * burn_exp).exp();
+
+        let cpr = (s_curve_mult * psa_ramp * burnout_mult * seas)
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.85));
+        let smm = T::one() - ((T::one() / T::from_f64(12.0)) * (T::one() - cpr).ln()).exp();
+
+        // Projected WAL over remaining maturity T_rem = max((360 - WALA) / 12, 1):
+        let rem_years = ((T::from_f64(360.0) - wala) / T::from_f64(12.0)).max_val(T::one());
+        let lam_prep = -(T::one() - cpr).ln();
+        let lam_tot = lam_prep + T::from_f64(0.045);
+        let wal = (T::one() - (-lam_tot * rem_years).exp()) / lam_tot;
+
+        HayreRichardRollMbsPrepaymentReport {
+            refinancing_incentive_spread_bps: refi_bps,
+            s_curve_refi_multiplier: s_curve_mult,
+            psa_seasoning_ramp_factor: psa_ramp,
+            pool_burnout_attenuation_factor: burnout_mult,
+            annualized_cpr: cpr,
+            single_monthly_mortality_smm: smm,
+            projected_weighted_average_life_years: wal,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_hayre_richard_roll_mbs_prepayment_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn hayre_richard_roll_mbs_prepayment_invariants_and_ad_parity() {
+            let spec = HayreRichardRollMbsPrepaymentSpec {
+                pool_wac_coupon_rate: 0.062,
+                prevailing_mortgage_rate_r_mtg: 0.051,
+                loan_age_months_wala: 24.0,
+                cumulative_burnout_exposure: 0.35,
+                burnout_sensitivity_beta: 0.60,
+                s_curve_steepness_gamma: 65.0,
+                seasonal_turnover_multiplier: 1.08,
+            };
+            let rep = evaluate_hayre_richard_roll_mbs_prepayment(&spec);
+            assert!(rep.annualized_cpr > 0.05 && rep.annualized_cpr < 0.80);
+            assert!(rep.single_monthly_mortality_smm > 0.0);
+            assert!(rep.projected_weighted_average_life_years > 1.0);
+
+            let h = 1e-6;
+            let r_ad =
+                evaluate_hayre_richard_roll_mbs_prepayment(&HayreRichardRollMbsPrepaymentSpec {
+                    pool_wac_coupon_rate: Dual::<7>::variable(spec.pool_wac_coupon_rate, 0),
+                    prevailing_mortgage_rate_r_mtg: Dual::<7>::variable(
+                        spec.prevailing_mortgage_rate_r_mtg,
+                        1,
+                    ),
+                    loan_age_months_wala: Dual::<7>::variable(spec.loan_age_months_wala, 2),
+                    cumulative_burnout_exposure: Dual::<7>::variable(
+                        spec.cumulative_burnout_exposure,
+                        3,
+                    ),
+                    burnout_sensitivity_beta: Dual::<7>::variable(spec.burnout_sensitivity_beta, 4),
+                    s_curve_steepness_gamma: Dual::<7>::variable(spec.s_curve_steepness_gamma, 5),
+                    seasonal_turnover_multiplier: Dual::<7>::variable(
+                        spec.seasonal_turnover_multiplier,
+                        6,
+                    ),
+                });
+            for (idx, &ad) in r_ad.annualized_cpr.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.pool_wac_coupon_rate += h;
+                        sm.pool_wac_coupon_rate -= h;
+                    }
+                    1 => {
+                        sp.prevailing_mortgage_rate_r_mtg += h;
+                        sm.prevailing_mortgage_rate_r_mtg -= h;
+                    }
+                    2 => {
+                        sp.loan_age_months_wala += h;
+                        sm.loan_age_months_wala -= h;
+                    }
+                    3 => {
+                        sp.cumulative_burnout_exposure += h;
+                        sm.cumulative_burnout_exposure -= h;
+                    }
+                    4 => {
+                        sp.burnout_sensitivity_beta += h;
+                        sm.burnout_sensitivity_beta -= h;
+                    }
+                    5 => {
+                        sp.s_curve_steepness_gamma += h;
+                        sm.s_curve_steepness_gamma -= h;
+                    }
+                    _ => {
+                        sp.seasonal_turnover_multiplier += h;
+                        sm.seasonal_turnover_multiplier -= h;
+                    }
+                }
+                let fd = (evaluate_hayre_richard_roll_mbs_prepayment(&sp).annualized_cpr
+                    - evaluate_hayre_richard_roll_mbs_prepayment(&sm).annualized_cpr)
+                    / (2.0 * h);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_hayre_richard_roll_mbs_prepayment_module::*;
