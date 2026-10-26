@@ -2259,3 +2259,203 @@ pub mod black_derman_toy_callable_suite65_mod {
     }
 }
 pub use black_derman_toy_callable_suite65_mod::*;
+
+pub mod tuckman_corporate_make_whole_bond_mod {
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    /// Specification for the Tuckman & Serrat (2022, Ch. 19) / Fabozzi (2021, Ch. 16)
+    /// corporate bond with a make-whole call provision and a late-stage par-call window.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct TuckmanMakeWholeCallableBondSpec<T: Real> {
+        /// Bond par face value $F > 0$.
+        pub par_value_f: T,
+        /// Annual contractual coupon rate $c > 0$.
+        pub coupon_rate_c: T,
+        /// Benchmark risk-free Treasury yield $y_{\text{tsy}}$.
+        pub treasury_benchmark_yield_y: T,
+        /// Issuer corporate credit spread $s_{\text{corp}} > 0$ over Treasury.
+        pub issuer_credit_spread_s_corp: T,
+        /// Contractual make-whole discount spread $s_{\text{mw}} > 0$ over Treasury.
+        pub make_whole_treasury_spread_s_mw: T,
+        /// Normal volatility $\sigma_s > 0$ of the issuer's credit spread.
+        pub credit_spread_volatility_sigma_s: T,
+        /// Normal volatility $\sigma_y > 0$ of the benchmark Treasury yield.
+        pub treasury_yield_volatility_sigma_y: T,
+        /// Make-whole evaluation horizon $T_{\text{mw}} > 0$ (years).
+        pub make_whole_horizon_t_mw: T,
+        /// Par-call window start date $T_{\text{par}} > T_{\text{mw}}$ (years).
+        pub par_call_window_start_t_par: T,
+        /// Final stated bond maturity $T_{\text{mat}} > T_{\text{par}}$ (years).
+        pub maturity_years_t_mat: T,
+    }
+
+    /// Analytical outputs for the Tuckman corporate make-whole & par-call bond engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct TuckmanMakeWholeCallableBondAnalytics<T: Real> {
+        /// Straight non-callable corporate bond present value.
+        pub straight_corporate_bond_price: T,
+        /// Contractual make-whole redemption price at current Treasury yield + $s_{\text{mw}}$.
+        pub make_whole_redemption_price: T,
+        /// Combined value of the embedded make-whole spread option and late par-call option.
+        pub embedded_make_whole_and_par_call_value: T,
+        /// Callable corporate bond price (straight bond minus embedded issuer call options).
+        pub callable_corporate_bond_price: T,
+    }
+
+    fn risky_bond_pv<T: Real>(par: T, c: T, yield_rate: T, tau: T) -> T {
+        let y = yield_rate.max_val(T::from_f64(1e-4));
+        let df = (-y * tau).exp();
+        let ann = (T::one() - df) / y;
+        par * c * ann + par * df
+    }
+
+    /// Evaluates a corporate bond with a make-whole call at $T_{\text{mw}}$ (driven by credit-spread
+    /// compression below $s_{\text{mw}}$) and a par-call window at $T_{\text{par}}$.
+    pub fn evaluate_tuckman_corporate_make_whole_and_par_call_bond<T: Real>(
+        spec: &TuckmanMakeWholeCallableBondSpec<T>,
+    ) -> TuckmanMakeWholeCallableBondAnalytics<T> {
+        let par = spec.par_value_f.max_val(T::from_f64(1.0));
+        let t_mat = spec.maturity_years_t_mat.max_val(T::from_f64(0.5));
+        let t_par = spec
+            .par_call_window_start_t_par
+            .max_val(T::from_f64(0.25))
+            .min_val(t_mat - T::from_f64(0.1));
+        let t_mw = spec
+            .make_whole_horizon_t_mw
+            .max_val(T::from_f64(0.1))
+            .min_val(t_par - T::from_f64(0.1));
+
+        let y_corp = spec.treasury_benchmark_yield_y + spec.issuer_credit_spread_s_corp;
+        let y_mw = spec.treasury_benchmark_yield_y + spec.make_whole_treasury_spread_s_mw;
+
+        let straight_pv = risky_bond_pv(par, spec.coupon_rate_c, y_corp, t_mat);
+        let rem_mw = t_mat - t_mw;
+        let mw_redemption = risky_bond_pv(par, spec.coupon_rate_c, y_mw, rem_mw).max_val(par);
+
+        // 1. Make-whole call at T_mw: exercised only if issuer credit spread s_corp(T_mw) compresses below s_mw.
+        // Forward bond value at T_mw is sensitivity-scaled by risky duration D_mw * par.
+        let dur_mw = (T::one() - (-y_corp * rem_mw).exp()) / y_corp.max_val(T::from_f64(1e-4));
+        let sig_s = spec
+            .credit_spread_volatility_sigma_s
+            .max_val(T::from_f64(1e-5));
+        let std_s_mw = sig_s * t_mw.sqrt();
+        let spread_diff_mw =
+            spec.make_whole_treasury_spread_s_mw - spec.issuer_credit_spread_s_corp;
+        let d_mw = spread_diff_mw / std_s_mw;
+        let df_mw = (-y_corp * t_mw).exp();
+        let mw_call_val =
+            df_mw * par * dur_mw * (spread_diff_mw * norm_cdf(d_mw) + std_s_mw * norm_pdf(d_mw));
+
+        // 2. Par-call window at T_par (e.g. 3-6 months prior to maturity): standard call at par F
+        // driven by total corporate yield volatility sqrt(sigma_y^2 + sigma_s^2).
+        let rem_par = t_mat - t_par;
+        let dur_par = (T::one() - (-y_corp * rem_par).exp()) / y_corp.max_val(T::from_f64(1e-4));
+        let sig_y = spec
+            .treasury_yield_volatility_sigma_y
+            .max_val(T::from_f64(1e-5));
+        let sig_tot = (sig_y * sig_y + sig_s * sig_s).sqrt();
+        let std_y_par = sig_tot * t_par.sqrt();
+        let yield_in_the_money = spec.coupon_rate_c - y_corp;
+        let d_par = yield_in_the_money / std_y_par;
+        let df_par = (-y_corp * t_par).exp();
+        let par_call_val = df_par
+            * par
+            * dur_par
+            * (yield_in_the_money * norm_cdf(d_par) + std_y_par * norm_pdf(d_par));
+
+        let total_call = mw_call_val + par_call_val;
+
+        TuckmanMakeWholeCallableBondAnalytics {
+            straight_corporate_bond_price: straight_pv,
+            make_whole_redemption_price: mw_redemption,
+            embedded_make_whole_and_par_call_value: total_call,
+            callable_corporate_bond_price: straight_pv - total_call,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn tuckman_make_whole_callable_bond_invariants_and_ad_parity() {
+            let base = TuckmanMakeWholeCallableBondSpec {
+                par_value_f: 100.0_f64,
+                coupon_rate_c: 0.056,
+                treasury_benchmark_yield_y: 0.038,
+                issuer_credit_spread_s_corp: 0.014,
+                make_whole_treasury_spread_s_mw: 0.0030,
+                credit_spread_volatility_sigma_s: 0.0065,
+                treasury_yield_volatility_sigma_y: 0.0085,
+                make_whole_horizon_t_mw: 2.0,
+                par_call_window_start_t_par: 4.5,
+                maturity_years_t_mat: 5.0,
+            };
+            let r0 = evaluate_tuckman_corporate_make_whole_and_par_call_bond(&base);
+            assert!(r0.make_whole_redemption_price > r0.straight_corporate_bond_price);
+            assert!(r0.embedded_make_whole_and_par_call_value > 0.0);
+            assert!(r0.callable_corporate_bond_price < r0.straight_corporate_bond_price);
+
+            let inputs = [
+                base.par_value_f,
+                base.coupon_rate_c,
+                base.treasury_benchmark_yield_y,
+                base.issuer_credit_spread_s_corp,
+                base.make_whole_treasury_spread_s_mw,
+                base.credit_spread_volatility_sigma_s,
+                base.treasury_yield_volatility_sigma_y,
+                base.make_whole_horizon_t_mw,
+                base.par_call_window_start_t_par,
+                base.maturity_years_t_mat,
+            ];
+            let mut dual_in = [Dual::<10>::from_f64(0.0); 10];
+            for i in 0..10 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = TuckmanMakeWholeCallableBondSpec {
+                par_value_f: dual_in[0],
+                coupon_rate_c: dual_in[1],
+                treasury_benchmark_yield_y: dual_in[2],
+                issuer_credit_spread_s_corp: dual_in[3],
+                make_whole_treasury_spread_s_mw: dual_in[4],
+                credit_spread_volatility_sigma_s: dual_in[5],
+                treasury_yield_volatility_sigma_y: dual_in[6],
+                make_whole_horizon_t_mw: dual_in[7],
+                par_call_window_start_t_par: dual_in[8],
+                maturity_years_t_mat: dual_in[9],
+            };
+            let r_ad = evaluate_tuckman_corporate_make_whole_and_par_call_bond(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..10 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 10]| TuckmanMakeWholeCallableBondSpec {
+                    par_value_f: v[0],
+                    coupon_rate_c: v[1],
+                    treasury_benchmark_yield_y: v[2],
+                    issuer_credit_spread_s_corp: v[3],
+                    make_whole_treasury_spread_s_mw: v[4],
+                    credit_spread_volatility_sigma_s: v[5],
+                    treasury_yield_volatility_sigma_y: v[6],
+                    make_whole_horizon_t_mw: v[7],
+                    par_call_window_start_t_par: v[8],
+                    maturity_years_t_mat: v[9],
+                };
+                let rp = evaluate_tuckman_corporate_make_whole_and_par_call_bond(&mk(p));
+                let rm = evaluate_tuckman_corporate_make_whole_and_par_call_bond(&mk(m));
+                let fd = (rp.callable_corporate_bond_price - rm.callable_corporate_bond_price)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.callable_corporate_bond_price.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.callable_corporate_bond_price.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use tuckman_corporate_make_whole_bond_mod::*;

@@ -2884,3 +2884,192 @@ pub mod green_basel_leverage_ratio_kva_mod {
     }
 }
 pub use green_basel_leverage_ratio_kva_mod::*;
+
+pub mod green_kenyon_tax_valuation_adjustment_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Green (2015, Ch. 16) / Kenyon & Green (2014, Risk)
+    /// Tax Valuation Adjustment (TVA) and corporate interest tax-shield XVA engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct GreenKenyonTvaSpec<T: Real> {
+        /// Initial Expected Positive Exposure $\text{EPE}_0 > 0$.
+        pub initial_epe0: T,
+        /// Initial Expected Negative Exposure $\text{ENE}_0 > 0$.
+        pub initial_ene0: T,
+        /// Counterparty credit hazard rate $\lambda_C > 0$.
+        pub counterparty_hazard_rate_lambda_c: T,
+        /// Bank own credit hazard rate $\lambda_B > 0$.
+        pub bank_hazard_rate_lambda_b: T,
+        /// Loss given default $\text{LGD} \in (0, 1)$.
+        pub loss_given_default_lgd: T,
+        /// Unsecured debt funding spread $s_F > 0$.
+        pub unsecured_funding_spread_sf: T,
+        ///Statutory corporate income tax rate $\tau_{\text{corp}} \in (0, 1)$.
+        pub corporate_tax_rate_tau: T,
+        /// Tax deductibility fraction $\phi_{\text{deduct}} \in (0, 1]$ of debt funding interest.
+        pub funding_interest_deductibility_phi: T,
+        /// Tax realizability fraction $\psi_{\text{dva}} \in [0, 1]$ on bank own-default DVA windfall.
+        pub dva_tax_realizability_psi: T,
+        /// Continuous OIS discount rate $r_{\text{ois}}$.
+        pub ois_discount_rate_r: T,
+        /// Trade maturity $T > 0$ (years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytical outputs for the Green-Kenyon Tax Valuation Adjustment (TVA) engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct GreenKenyonTvaAnalytics<T: Real> {
+        /// Pre-tax bilateral XVA charge ($\text{CVA} - \text{DVA} + \text{FCA} - \text{FBA}$).
+        pub pre_tax_bilateral_xva: T,
+        /// Tax Valuation Adjustment $\text{TVA}$ (positive means net tax shield benefit reducing XVA cost).
+        pub tax_valuation_adjustment_benefit: T,
+        /// Interest tax shield benefit on net funding spread $\tau_{\text{corp}} \phi_{\text{deduct}} (\text{FCA} - \text{FBA})$.
+        pub funding_interest_tax_shield_benefit: T,
+        /// Post-tax net XVA cost ($\text{XVA}_{\text{pre-tax}} - \text{TVA}$).
+        pub post_tax_net_xva_with_tva: T,
+    }
+
+    /// Evaluates the Green (2015, Ch. 16) / Kenyon & Green (2014) Tax Valuation Adjustment (TVA)
+    /// across a 4-period survival-weighted exposure profile.
+    pub fn evaluate_green_kenyon_tax_valuation_adjustment_tva<T: Real>(
+        spec: &GreenKenyonTvaSpec<T>,
+    ) -> GreenKenyonTvaAnalytics<T> {
+        const PERIODS: usize = 4;
+        let t_mat = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+        let dt = t_mat / T::from_f64(PERIODS as f64);
+
+        let r_tot = spec.ois_discount_rate_r
+            + spec.counterparty_hazard_rate_lambda_c
+            + spec.bank_hazard_rate_lambda_b;
+
+        let mut cva = T::zero();
+        let mut dva = T::zero();
+        let mut fca = T::zero();
+        let mut fba = T::zero();
+
+        for m in 1..=PERIODS {
+            let tm = (T::from_f64(m as f64) - T::from_f64(0.5)) * dt;
+            let humped = (T::one() + T::from_f64(0.5) * tm) * (-T::from_f64(0.35) * tm).exp();
+            let epe_m = spec.initial_epe0 * humped;
+            let ene_m = spec.initial_ene0 * humped;
+
+            let df_surv = (-r_tot * tm).exp();
+            cva += dt
+                * df_surv
+                * spec.loss_given_default_lgd
+                * spec.counterparty_hazard_rate_lambda_c
+                * epe_m;
+            dva +=
+                dt * df_surv * spec.loss_given_default_lgd * spec.bank_hazard_rate_lambda_b * ene_m;
+            fca += dt * df_surv * spec.unsecured_funding_spread_sf * epe_m;
+            fba += dt * df_surv * spec.unsecured_funding_spread_sf * ene_m;
+        }
+
+        let pre_tax_xva = cva - dva + fca - fba;
+
+        // Corporate tax shields:
+        // 1. Default losses (CVA) are tax deductible at tau_corp, whereas own-default DVA carries tax liability psi_dva * tau_corp.
+        // 2. Debt funding interest (FCA) enjoys Modigliani-Miller tax deductibility phi_deduct * tau_corp, offset by FBA tax.
+        let credit_tax_shield =
+            spec.corporate_tax_rate_tau * (cva - spec.dva_tax_realizability_psi * dva);
+        let funding_tax_shield =
+            spec.corporate_tax_rate_tau * spec.funding_interest_deductibility_phi * (fca - fba);
+        let tva_benefit = credit_tax_shield + funding_tax_shield;
+
+        GreenKenyonTvaAnalytics {
+            pre_tax_bilateral_xva: pre_tax_xva,
+            tax_valuation_adjustment_benefit: tva_benefit,
+            funding_interest_tax_shield_benefit: funding_tax_shield,
+            post_tax_net_xva_with_tva: pre_tax_xva - tva_benefit,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn green_kenyon_tva_invariants_and_ad_parity() {
+            let base = GreenKenyonTvaSpec {
+                initial_epe0: 25.0_f64,
+                initial_ene0: 14.0,
+                counterparty_hazard_rate_lambda_c: 0.022,
+                bank_hazard_rate_lambda_b: 0.012,
+                loss_given_default_lgd: 0.60,
+                unsecured_funding_spread_sf: 0.0095,
+                corporate_tax_rate_tau: 0.25,
+                funding_interest_deductibility_phi: 0.85,
+                dva_tax_realizability_psi: 0.40,
+                ois_discount_rate_r: 0.035,
+                maturity_years_t: 5.0,
+            };
+            let r0 = evaluate_green_kenyon_tax_valuation_adjustment_tva(&base);
+            assert!(r0.pre_tax_bilateral_xva > 0.0);
+            assert!(r0.tax_valuation_adjustment_benefit > 0.0);
+            assert!(r0.post_tax_net_xva_with_tva < r0.pre_tax_bilateral_xva);
+
+            let inputs = [
+                base.initial_epe0,
+                base.initial_ene0,
+                base.counterparty_hazard_rate_lambda_c,
+                base.bank_hazard_rate_lambda_b,
+                base.loss_given_default_lgd,
+                base.unsecured_funding_spread_sf,
+                base.corporate_tax_rate_tau,
+                base.funding_interest_deductibility_phi,
+                base.dva_tax_realizability_psi,
+                base.ois_discount_rate_r,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<11>::from_f64(0.0); 11];
+            for i in 0..11 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = GreenKenyonTvaSpec {
+                initial_epe0: dual_in[0],
+                initial_ene0: dual_in[1],
+                counterparty_hazard_rate_lambda_c: dual_in[2],
+                bank_hazard_rate_lambda_b: dual_in[3],
+                loss_given_default_lgd: dual_in[4],
+                unsecured_funding_spread_sf: dual_in[5],
+                corporate_tax_rate_tau: dual_in[6],
+                funding_interest_deductibility_phi: dual_in[7],
+                dva_tax_realizability_psi: dual_in[8],
+                ois_discount_rate_r: dual_in[9],
+                maturity_years_t: dual_in[10],
+            };
+            let r_ad = evaluate_green_kenyon_tax_valuation_adjustment_tva(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..11 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 11]| GreenKenyonTvaSpec {
+                    initial_epe0: v[0],
+                    initial_ene0: v[1],
+                    counterparty_hazard_rate_lambda_c: v[2],
+                    bank_hazard_rate_lambda_b: v[3],
+                    loss_given_default_lgd: v[4],
+                    unsecured_funding_spread_sf: v[5],
+                    corporate_tax_rate_tau: v[6],
+                    funding_interest_deductibility_phi: v[7],
+                    dva_tax_realizability_psi: v[8],
+                    ois_discount_rate_r: v[9],
+                    maturity_years_t: v[10],
+                };
+                let rp = evaluate_green_kenyon_tax_valuation_adjustment_tva(&mk(p));
+                let rm = evaluate_green_kenyon_tax_valuation_adjustment_tva(&mk(m));
+                let fd =
+                    (rp.post_tax_net_xva_with_tva - rm.post_tax_net_xva_with_tva) / (2.0 * eps);
+                assert!(
+                    r_ad.post_tax_net_xva_with_tva.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.post_tax_net_xva_with_tva.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use green_kenyon_tax_valuation_adjustment_mod::*;

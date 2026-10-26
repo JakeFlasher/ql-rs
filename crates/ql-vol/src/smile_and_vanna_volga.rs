@@ -975,3 +975,226 @@ pub mod bates_svj_smile_suite65_mod {
     }
 }
 pub use bates_svj_smile_suite65_mod::*;
+
+pub mod hagan_shifted_sabr_negative_rate_mod {
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    /// Specification for the Hagan, Kumar, Lesniewski & Woodward (2002; 2014) / Antonov et al. (2015)
+    /// Shifted-SABR negative-rate lognormal and equivalent Bachelier normal implied volatility smile.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct HaganShiftedSabrSpec<T: Real> {
+        /// Forward swap/caplet rate $F$ (may be low or negative as long as $F + s > 0$).
+        pub forward_rate_f: T,
+        /// Option strike rate $K$ (may be low or negative as long as $K + s > 0$).
+        pub strike_rate_k: T,
+        /// Positive rate displacement shift $s > 0$ (e.g. $0.03 = 300\text{ bps}$).
+        pub displacement_shift_s: T,
+        /// Shifted-SABR initial volatility parameter $\alpha > 0$.
+        pub sabr_alpha: T,
+        /// Shifted-SABR CEV backbone exponent $\beta \in (0, 1)$.
+        pub sabr_beta: T,
+        /// Shifted-SABR vol-of-vol $\nu > 0$.
+        pub sabr_vol_of_vol_nu: T,
+        /// Shifted-SABR rate-volatility correlation $\rho \in (-1, 1)$.
+        pub sabr_correlation_rho: T,
+        /// Continuous OIS discount rate $r$ for option present value.
+        pub discount_rate_r: T,
+        /// Option expiry $T > 0$ (years).
+        pub expiry_years_t: T,
+    }
+
+    /// Analytical outputs for the Hagan Shifted-SABR negative-rate smile engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct HaganShiftedSabrAnalytics<T: Real> {
+        /// Shifted Black lognormal implied volatility $\sigma_B^{\text{shifted}}(K, F; s)$.
+        pub shifted_sabr_lognormal_vol: T,
+        /// Equivalent Bachelier normal implied volatility $\sigma_N(K, F)$.
+        pub equivalent_bachelier_normal_vol: T,
+        /// ATM shifted-SABR lognormal volatility $\sigma_B^{\text{shifted}}(F, F; s)$.
+        pub atm_shifted_lognormal_vol: T,
+        /// Discounted Bachelier call option price under $\sigma_N(K, F)$.
+        pub shifted_bachelier_call_price: T,
+    }
+
+    /// Evaluates the Hagan et al. (2002, 2014) Shifted-SABR implied volatility and equivalent
+    /// Bachelier normal volatility for low/negative interest rate options.
+    pub fn evaluate_hagan_shifted_sabr_negative_rate_implied_volatility<T: Real>(
+        spec: &HaganShiftedSabrSpec<T>,
+    ) -> HaganShiftedSabrAnalytics<T> {
+        let t = spec.expiry_years_t.max_val(T::from_f64(1e-4));
+        let fs = (spec.forward_rate_f + spec.displacement_shift_s).max_val(T::from_f64(1e-4));
+        let ks = (spec.strike_rate_k + spec.displacement_shift_s).max_val(T::from_f64(1e-4));
+        let alpha = spec.sabr_alpha.max_val(T::from_f64(1e-5));
+        let beta = spec
+            .sabr_beta
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.99));
+        let nu = spec.sabr_vol_of_vol_nu.max_val(T::from_f64(1e-5));
+        let rho = spec
+            .sabr_correlation_rho
+            .max_val(T::from_f64(-0.99))
+            .min_val(T::from_f64(0.99));
+
+        let one_m_b = T::one() - beta;
+        let fk = fs * ks;
+        let fk_pow = fk.pow(T::from_f64(0.5) * one_m_b);
+        let log_fk = (fs / ks).ln();
+        let log_fk2 = log_fk * log_fk;
+
+        let z = (nu / alpha) * fk_pow * log_fk;
+        let gl_nodes = [
+            0.069_431_844_202_973_71,
+            0.330_009_478_207_571_87,
+            0.669_990_521_792_428_1,
+            0.930_568_155_797_026_2,
+        ];
+        let gl_weights = [
+            0.173_927_422_568_726_92,
+            0.326_072_577_431_273_1,
+            0.326_072_577_431_273_1,
+            0.173_927_422_568_726_92,
+        ];
+        let mut xz_over_z = T::zero();
+        for (&s_f64, &w_f64) in gl_nodes.iter().zip(gl_weights.iter()) {
+            let s = T::from_f64(s_f64);
+            let w = T::from_f64(w_f64);
+            let sz = s * z;
+            let quad =
+                (T::one() - T::from_f64(2.0) * rho * sz + sz * sz).max_val(T::from_f64(1e-8));
+            xz_over_z += w / quad.sqrt();
+        }
+        let z_over_xz = T::one() / xz_over_z;
+
+        let denom = fk_pow
+            * (T::one()
+                + (one_m_b * one_m_b / T::from_f64(24.0)) * log_fk2
+                + (one_m_b * one_m_b * one_m_b * one_m_b / T::from_f64(1920.0))
+                    * log_fk2
+                    * log_fk2);
+
+        let term1 = (one_m_b * one_m_b / T::from_f64(24.0)) * (alpha * alpha) / (fk_pow * fk_pow);
+        let term2 = T::from_f64(0.25) * (rho * beta * nu * alpha) / fk_pow;
+        let term3 =
+            ((T::from_f64(2.0) - T::from_f64(3.0) * rho * rho) / T::from_f64(24.0)) * nu * nu;
+        let time_corr = T::one() + (term1 + term2 + term3) * t;
+
+        let sig_shifted_ln = (alpha / denom) * z_over_xz * time_corr;
+
+        let fs_pow = fs.pow(one_m_b);
+        let atm_term1 =
+            (one_m_b * one_m_b / T::from_f64(24.0)) * (alpha * alpha) / (fs_pow * fs_pow);
+        let atm_term2 = T::from_f64(0.25) * (rho * beta * nu * alpha) / fs_pow;
+        let sig_atm_ln = (alpha / fs_pow) * (T::one() + (atm_term1 + atm_term2 + term3) * t);
+
+        // Hagan et al. (2002) lognormal-to-normal equivalence on shifted rates:
+        // sigma_N = sigma_B * (F_s - K_s) / ln(F_s / K_s) * (1 - sigma_B^2 * T / 24),
+        // where ln(F_s / K_s) / (F_s - K_s) = int_0^1 ds / ((1 - s) K_s + s F_s).
+        let mut inv_fk_mean = T::zero();
+        for (&s_f64, &w_f64) in gl_nodes.iter().zip(gl_weights.iter()) {
+            let s = T::from_f64(s_f64);
+            let w = T::from_f64(w_f64);
+            let interp = (T::one() - s) * ks + s * fs;
+            inv_fk_mean += w / interp;
+        }
+        let fk_mean = T::one() / inv_fk_mean;
+        let sig_normal = sig_shifted_ln
+            * fk_mean
+            * (T::one() - (sig_shifted_ln * sig_shifted_ln * t) / T::from_f64(24.0));
+
+        let v_n = (sig_normal * t.sqrt()).max_val(T::from_f64(1e-6));
+        let d = (spec.forward_rate_f - spec.strike_rate_k) / v_n;
+        let df = (-spec.discount_rate_r * t).exp();
+        let call_price =
+            df * ((spec.forward_rate_f - spec.strike_rate_k) * norm_cdf(d) + v_n * norm_pdf(d));
+
+        HaganShiftedSabrAnalytics {
+            shifted_sabr_lognormal_vol: sig_shifted_ln,
+            equivalent_bachelier_normal_vol: sig_normal,
+            atm_shifted_lognormal_vol: sig_atm_ln,
+            shifted_bachelier_call_price: call_price,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn hagan_shifted_sabr_invariants_and_ad_parity() {
+            let base = HaganShiftedSabrSpec {
+                forward_rate_f: -0.004_f64,
+                strike_rate_k: -0.008,
+                displacement_shift_s: 0.030,
+                sabr_alpha: 0.045,
+                sabr_beta: 0.50,
+                sabr_vol_of_vol_nu: 0.40,
+                sabr_correlation_rho: -0.35,
+                discount_rate_r: 0.015,
+                expiry_years_t: 2.0,
+            };
+            let r0 = evaluate_hagan_shifted_sabr_negative_rate_implied_volatility(&base);
+            assert!(r0.shifted_sabr_lognormal_vol > 0.0);
+            assert!(r0.equivalent_bachelier_normal_vol > 0.0);
+            assert!(r0.shifted_sabr_lognormal_vol > r0.atm_shifted_lognormal_vol);
+            assert!(r0.shifted_bachelier_call_price > 0.0);
+
+            let inputs = [
+                base.forward_rate_f,
+                base.strike_rate_k,
+                base.displacement_shift_s,
+                base.sabr_alpha,
+                base.sabr_beta,
+                base.sabr_vol_of_vol_nu,
+                base.sabr_correlation_rho,
+                base.discount_rate_r,
+                base.expiry_years_t,
+            ];
+            let mut dual_in = [Dual::<9>::from_f64(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = HaganShiftedSabrSpec {
+                forward_rate_f: dual_in[0],
+                strike_rate_k: dual_in[1],
+                displacement_shift_s: dual_in[2],
+                sabr_alpha: dual_in[3],
+                sabr_beta: dual_in[4],
+                sabr_vol_of_vol_nu: dual_in[5],
+                sabr_correlation_rho: dual_in[6],
+                discount_rate_r: dual_in[7],
+                expiry_years_t: dual_in[8],
+            };
+            let r_ad = evaluate_hagan_shifted_sabr_negative_rate_implied_volatility(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 9]| HaganShiftedSabrSpec {
+                    forward_rate_f: v[0],
+                    strike_rate_k: v[1],
+                    displacement_shift_s: v[2],
+                    sabr_alpha: v[3],
+                    sabr_beta: v[4],
+                    sabr_vol_of_vol_nu: v[5],
+                    sabr_correlation_rho: v[6],
+                    discount_rate_r: v[7],
+                    expiry_years_t: v[8],
+                };
+                let rp = evaluate_hagan_shifted_sabr_negative_rate_implied_volatility(&mk(p));
+                let rm = evaluate_hagan_shifted_sabr_negative_rate_implied_volatility(&mk(m));
+                let fd = (rp.shifted_bachelier_call_price - rm.shifted_bachelier_call_price)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.shifted_bachelier_call_price.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.shifted_bachelier_call_price.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use hagan_shifted_sabr_negative_rate_mod::*;

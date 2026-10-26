@@ -2552,3 +2552,180 @@ pub mod he_krishnamurthy_intermediary_sdf_mod {
     }
 }
 pub use he_krishnamurthy_intermediary_sdf_mod::*;
+
+pub mod diamond_dybvig_goldstein_pauzner_bank_run_mod {
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    /// Specification for the Diamond & Dybvig (1983, JPE) & Goldstein & Pauzner (2005, JF)
+    /// global-games bank-run threshold, liquidity fire-sale, and deposit fragility engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct DiamondDybvigGoldsteinPauznerBankRunSpec<T: Real> {
+        /// Promised short-term demand deposit gross payout $r_1 > 1$ at $t=1$.
+        pub short_term_deposit_payout_r1: T,
+        /// Long-term asset productivity scale $R_{\text{bar}} > r_1$ at $t=2$.
+        pub long_term_asset_return_r_bar: T,
+        /// Liquid cash reserve share $\ell \in (0, 1)$ held by the bank.
+        pub liquid_reserve_ratio_l: T,
+        /// Early fire-sale recovery fraction $\psi_{\text{fire}} \in (0, 1)$ on illiquid assets.
+        pub fire_sale_recovery_fraction_psi: T,
+        /// Fraction $\lambda_{\text{imp}} \in (0, 1)$ of structurally impatient depositors.
+        pub impatient_depositor_fraction_lambda: T,
+        /// Prior mean $\mu_\theta$ of macroeconomic asset fundamental $\theta$.
+        pub fundamental_prior_mean_mu_theta: T,
+        /// Prior volatility $\sigma_\theta > 0$ of macroeconomic asset fundamental $\theta$.
+        pub fundamental_volatility_sigma_theta: T,
+    }
+
+    /// Analytical outputs for the Diamond-Dybvig & Goldstein-Pauzner bank-run global game engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct DiamondDybvigGoldsteinPauznerBankRunAnalytics<T: Real> {
+        /// Total early liquidation capacity $L_{\text{fire}} = \ell + (1 - \ell)\psi_{\text{fire}}$.
+        pub early_liquidation_capacity_l_fire: T,
+        /// Unique global-games equilibrium run threshold $\theta^*$ below which patient depositors run.
+        pub critical_fundamental_run_threshold_theta_star: T,
+        /// Ex-ante probability of a systemic bank run $P_{\text{run}} = \Phi((\theta^* - \mu_\theta)/\sigma_\theta)$.
+        pub ex_ante_bank_run_probability: T,
+        /// Expected depositor payout welfare across survival and run states.
+        pub expected_depositor_welfare_value: T,
+    }
+
+    /// Evaluates the Diamond & Dybvig (1983) / Goldstein & Pauzner (2005) unique global-games
+    /// bank-run threshold $\theta^*$, run probability, and expected depositor welfare.
+    pub fn evaluate_diamond_dybvig_goldstein_pauzner_bank_run_global_game<T: Real>(
+        spec: &DiamondDybvigGoldsteinPauznerBankRunSpec<T>,
+    ) -> DiamondDybvigGoldsteinPauznerBankRunAnalytics<T> {
+        let r1 = spec
+            .short_term_deposit_payout_r1
+            .max_val(T::from_f64(1.001));
+        let r_bar = spec
+            .long_term_asset_return_r_bar
+            .max_val(r1 * T::from_f64(1.05));
+        let l_res = spec
+            .liquid_reserve_ratio_l
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.95));
+        let psi = spec
+            .fire_sale_recovery_fraction_psi
+            .max_val(T::from_f64(0.10))
+            .min_val(T::from_f64(0.98));
+        let lam = spec
+            .impatient_depositor_fraction_lambda
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.85));
+        let sig_theta = spec
+            .fundamental_volatility_sigma_theta
+            .max_val(T::from_f64(1e-4));
+
+        // Total early liquidation proceeds at t = 1 per unit asset
+        let l_fire = l_res + (T::one() - l_res) * psi;
+
+        // Goldstein & Pauzner (2005) Laplacian indifference threshold theta*:
+        // A patient depositor integrates payoff difference over uniform withdrawal fraction n in [lam, 1].
+        let illiquidity_gap = (r1 - l_fire).max_val(T::from_f64(0.01));
+        let strategic_amp = (T::one() + (r1 / l_fire) * (T::one() - lam))
+            / (T::one() - (lam * r1 / r_bar)).max_val(T::from_f64(0.10));
+        let theta_star = (illiquidity_gap / r_bar) * strategic_amp;
+
+        let z_run = (theta_star - spec.fundamental_prior_mean_mu_theta) / sig_theta;
+        let p_run = norm_cdf(z_run);
+
+        // Expected welfare: in a run, depositors share early liquidation value l_fire;
+        // in survival, impatient withdraw lam * r1 and remaining illiquid assets are
+        // (1 - l_res) - (lam * r1 - l_res) / psi = (l_fire - lam * r1) / psi.
+        let net_fire_surplus = l_fire - lam * r1;
+        let smooth_surplus = T::from_f64(0.5)
+            * (net_fire_surplus + (net_fire_surplus * net_fire_surplus + T::from_f64(1e-4)).sqrt());
+        let survival_payout = lam * r1
+            + (T::one() - lam)
+                * spec.fundamental_prior_mean_mu_theta
+                * r_bar
+                * (smooth_surplus / psi);
+        let expected_welfare = p_run * l_fire + (T::one() - p_run) * survival_payout;
+
+        DiamondDybvigGoldsteinPauznerBankRunAnalytics {
+            early_liquidation_capacity_l_fire: l_fire,
+            critical_fundamental_run_threshold_theta_star: theta_star,
+            ex_ante_bank_run_probability: p_run,
+            expected_depositor_welfare_value: expected_welfare,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn diamond_dybvig_goldstein_pauzner_invariants_and_ad_parity() {
+            let base = DiamondDybvigGoldsteinPauznerBankRunSpec {
+                short_term_deposit_payout_r1: 1.06_f64,
+                long_term_asset_return_r_bar: 1.55,
+                liquid_reserve_ratio_l: 0.22,
+                fire_sale_recovery_fraction_psi: 0.65,
+                impatient_depositor_fraction_lambda: 0.30,
+                fundamental_prior_mean_mu_theta: 0.85,
+                fundamental_volatility_sigma_theta: 0.18,
+            };
+            let r0 = evaluate_diamond_dybvig_goldstein_pauzner_bank_run_global_game(&base);
+            assert!(
+                r0.early_liquidation_capacity_l_fire > base.fire_sale_recovery_fraction_psi
+                    && r0.early_liquidation_capacity_l_fire < 1.0
+            );
+            assert!(r0.critical_fundamental_run_threshold_theta_star > 0.0);
+            assert!(r0.ex_ante_bank_run_probability > 0.0 && r0.ex_ante_bank_run_probability < 1.0);
+            assert!(r0.expected_depositor_welfare_value > r0.early_liquidation_capacity_l_fire);
+
+            let inputs = [
+                base.short_term_deposit_payout_r1,
+                base.long_term_asset_return_r_bar,
+                base.liquid_reserve_ratio_l,
+                base.fire_sale_recovery_fraction_psi,
+                base.impatient_depositor_fraction_lambda,
+                base.fundamental_prior_mean_mu_theta,
+                base.fundamental_volatility_sigma_theta,
+            ];
+            let mut dual_in = [Dual::<7>::from_f64(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = DiamondDybvigGoldsteinPauznerBankRunSpec {
+                short_term_deposit_payout_r1: dual_in[0],
+                long_term_asset_return_r_bar: dual_in[1],
+                liquid_reserve_ratio_l: dual_in[2],
+                fire_sale_recovery_fraction_psi: dual_in[3],
+                impatient_depositor_fraction_lambda: dual_in[4],
+                fundamental_prior_mean_mu_theta: dual_in[5],
+                fundamental_volatility_sigma_theta: dual_in[6],
+            };
+            let r_ad = evaluate_diamond_dybvig_goldstein_pauzner_bank_run_global_game(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| DiamondDybvigGoldsteinPauznerBankRunSpec {
+                    short_term_deposit_payout_r1: v[0],
+                    long_term_asset_return_r_bar: v[1],
+                    liquid_reserve_ratio_l: v[2],
+                    fire_sale_recovery_fraction_psi: v[3],
+                    impatient_depositor_fraction_lambda: v[4],
+                    fundamental_prior_mean_mu_theta: v[5],
+                    fundamental_volatility_sigma_theta: v[6],
+                };
+                let rp = evaluate_diamond_dybvig_goldstein_pauzner_bank_run_global_game(&mk(p));
+                let rm = evaluate_diamond_dybvig_goldstein_pauzner_bank_run_global_game(&mk(m));
+                let fd = (rp.expected_depositor_welfare_value
+                    - rm.expected_depositor_welfare_value)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.expected_depositor_welfare_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.expected_depositor_welfare_value.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use diamond_dybvig_goldstein_pauzner_bank_run_mod::*;

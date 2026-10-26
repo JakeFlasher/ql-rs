@@ -1030,3 +1030,170 @@ pub mod broadie_glasserman_kou_barrier_suite65_mod {
     }
 }
 pub use broadie_glasserman_kou_barrier_suite65_mod::*;
+
+pub mod kunitomo_ikeda_curved_barrier_mod {
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    /// Specification for the Kunitomo & Ikeda (1992, Math. Finance 2(4)) / Haug (2007, Ch. 4.17.4)
+    /// down-and-out call option with an exponentially curved barrier $H(t) = H_0 e^{\delta_H t}$.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct KunitomoIkedaCurvedBarrierSpec<T: Real> {
+        /// Spot price $S_0 > H_0$.
+        pub spot_price_s0: T,
+        /// Option strike price $K > H_0 e^{\delta_H T}$.
+        pub strike_price_k: T,
+        /// Initial down barrier level $H_0 < S_0$ at $t=0$.
+        pub initial_down_barrier_h0: T,
+        /// Exponential barrier curvature growth rate $\delta_H$ ($H(t) = H_0 e^{\delta_H t}$).
+        pub barrier_curvature_rate_delta_h: T,
+        /// Continuous risk-free rate $r$.
+        pub risk_free_rate_r: T,
+        /// Continuous dividend yield $q$.
+        pub dividend_yield_q: T,
+        /// Black-Scholes volatility $\sigma > 0$.
+        pub volatility_sigma: T,
+        /// Option maturity $T > 0$ (years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytical outputs for the Kunitomo-Ikeda curved exponential barrier option engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct KunitomoIkedaCurvedBarrierAnalytics<T: Real> {
+        /// Terminal curved barrier level $H(T) = H_0 e^{\delta_H T}$.
+        pub terminal_curved_barrier_level: T,
+        /// Curvature-adjusted reflection exponent $\lambda_H = (r - q - \delta_H)/\sigma^2 - 1/2$.
+        pub barrier_curvature_reflection_exponent: T,
+        /// Knock-out reflection discount wedge relative to vanilla Black-Scholes call.
+        pub curved_barrier_knockout_discount: T,
+        /// Kunitomo-Ikeda down-and-out call option price.
+        pub kunitomo_ikeda_down_and_out_call_price: T,
+    }
+
+    /// Evaluates the Kunitomo & Ikeda (1992) closed-form price of a down-and-out call option
+    /// with an exponentially curved boundary $H(t) = H_0 e^{\delta_H t}$.
+    pub fn evaluate_kunitomo_ikeda_curved_exponential_barrier_option<T: Real>(
+        spec: &KunitomoIkedaCurvedBarrierSpec<T>,
+    ) -> KunitomoIkedaCurvedBarrierAnalytics<T> {
+        let t = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(1e-4));
+        let k = spec.strike_price_k.max_val(T::from_f64(1e-4));
+        let h0 = spec
+            .initial_down_barrier_h0
+            .max_val(T::from_f64(1e-4))
+            .min_val(s0 * T::from_f64(0.99));
+        let sig = spec.volatility_sigma.max_val(T::from_f64(1e-4));
+        let sig2 = sig * sig;
+        let v_sqrt = sig * t.sqrt();
+
+        let ht = h0 * (spec.barrier_curvature_rate_delta_h * t).exp();
+        let b = spec.risk_free_rate_r - spec.dividend_yield_q;
+        let lam_h = (b - spec.barrier_curvature_rate_delta_h) / sig2 - T::from_f64(0.5);
+
+        let d1 = ((s0 / k).ln() + (b + T::from_f64(0.5) * sig2) * t) / v_sqrt;
+        let d2 = d1 - v_sqrt;
+        let df_r = (-spec.risk_free_rate_r * t).exp();
+        let df_q = (-spec.dividend_yield_q * t).exp();
+        let vanilla = s0 * df_q * norm_cdf(d1) - k * df_r * norm_cdf(d2);
+
+        // Reflection image arguments under curved barrier X_t = ln(S_t / H(t)):
+        // In ln S_T = X_T + ln H_0 + delta_H * T, the +delta_H * T boundary shift cancels
+        // the -delta_H * T drift shift in mu_X * T, ensuring y1 = d1 and V(H_0, 0) = 0 at S_0 = H_0.
+        let y1 = ((h0 * h0 / (s0 * k)).ln() + (b + T::from_f64(0.5) * sig2) * t) / v_sqrt;
+        let y2 = y1 - v_sqrt;
+
+        let ratio = h0 / s0;
+        let pow_s = ratio.pow(T::from_f64(2.0) * (lam_h + T::one()));
+        let pow_k = ratio.pow(T::from_f64(2.0) * lam_h);
+
+        let knock_out_reflection =
+            s0 * df_q * pow_s * norm_cdf(y1) - k * df_r * pow_k * norm_cdf(y2);
+        let raw_do = vanilla - knock_out_reflection;
+        let do_call = T::from_f64(0.5) * (raw_do + (raw_do * raw_do + T::from_f64(1e-12)).sqrt());
+
+        KunitomoIkedaCurvedBarrierAnalytics {
+            terminal_curved_barrier_level: ht,
+            barrier_curvature_reflection_exponent: lam_h,
+            curved_barrier_knockout_discount: knock_out_reflection,
+            kunitomo_ikeda_down_and_out_call_price: do_call,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn kunitomo_ikeda_curved_barrier_invariants_and_ad_parity() {
+            let base = KunitomoIkedaCurvedBarrierSpec {
+                spot_price_s0: 100.0_f64,
+                strike_price_k: 100.0,
+                initial_down_barrier_h0: 88.0,
+                barrier_curvature_rate_delta_h: 0.02,
+                risk_free_rate_r: 0.05,
+                dividend_yield_q: 0.015,
+                volatility_sigma: 0.25,
+                maturity_years_t: 1.0,
+            };
+            let r0 = evaluate_kunitomo_ikeda_curved_exponential_barrier_option(&base);
+            assert!(r0.terminal_curved_barrier_level > base.initial_down_barrier_h0);
+            assert!(r0.curved_barrier_knockout_discount > 0.0);
+            assert!(r0.kunitomo_ikeda_down_and_out_call_price > 0.0);
+
+            let inputs = [
+                base.spot_price_s0,
+                base.strike_price_k,
+                base.initial_down_barrier_h0,
+                base.barrier_curvature_rate_delta_h,
+                base.risk_free_rate_r,
+                base.dividend_yield_q,
+                base.volatility_sigma,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = KunitomoIkedaCurvedBarrierSpec {
+                spot_price_s0: dual_in[0],
+                strike_price_k: dual_in[1],
+                initial_down_barrier_h0: dual_in[2],
+                barrier_curvature_rate_delta_h: dual_in[3],
+                risk_free_rate_r: dual_in[4],
+                dividend_yield_q: dual_in[5],
+                volatility_sigma: dual_in[6],
+                maturity_years_t: dual_in[7],
+            };
+            let r_ad = evaluate_kunitomo_ikeda_curved_exponential_barrier_option(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| KunitomoIkedaCurvedBarrierSpec {
+                    spot_price_s0: v[0],
+                    strike_price_k: v[1],
+                    initial_down_barrier_h0: v[2],
+                    barrier_curvature_rate_delta_h: v[3],
+                    risk_free_rate_r: v[4],
+                    dividend_yield_q: v[5],
+                    volatility_sigma: v[6],
+                    maturity_years_t: v[7],
+                };
+                let rp = evaluate_kunitomo_ikeda_curved_exponential_barrier_option(&mk(p));
+                let rm = evaluate_kunitomo_ikeda_curved_exponential_barrier_option(&mk(m));
+                let fd = (rp.kunitomo_ikeda_down_and_out_call_price
+                    - rm.kunitomo_ikeda_down_and_out_call_price)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.kunitomo_ikeda_down_and_out_call_price.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.kunitomo_ikeda_down_and_out_call_price.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use kunitomo_ikeda_curved_barrier_mod::*;

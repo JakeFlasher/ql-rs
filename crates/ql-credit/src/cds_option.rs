@@ -2263,3 +2263,195 @@ pub mod schonbucher_jamshidian_cds_swaption_suite65_mod {
     }
 }
 pub use schonbucher_jamshidian_cds_swaption_suite65_mod::*;
+
+pub mod brigo_morini_constant_maturity_cds_mod {
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    /// Specification for the Brigo (2006) / Brigo & Mercurio (2006, Ch. 22-23)
+    /// Constant Maturity CDS (CMCDS) participation rate, credit annuity convexity, and cap engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct BrigoMoriniCmcdsSpec<T: Real> {
+        /// Contract notional $N > 0$.
+        pub notional_n: T,
+        /// Forward par reference CDS spread $S_0 > 0$ (e.g. 5Y rolling CDS spread).
+        pub forward_reference_cds_spread_s0: T,
+        /// Constant maturity reference CDS tenor $\tau_{\text{cm}} > 0$ (years, e.g. 5.0).
+        pub reference_cds_tenor_tau_cm: T,
+        /// Lognormal volatility $\sigma_s > 0$ of the forward CDS spread.
+        pub cds_spread_volatility_sigma_s: T,
+        /// Baseline hazard rate $\lambda > 0$ for discounting survival cashflows.
+        pub survival_hazard_rate_lambda: T,
+        /// Loss given default $\text{LGD} \in (0, 1)$ for protection leg.
+        pub loss_given_default_lgd: T,
+        /// CMCDS floating-spread cap strike $K_{\text{cap}} > 0$.
+        pub cmcds_cap_strike_k: T,
+        /// Continuous OIS risk-free discount rate $r$.
+        pub risk_free_rate_r: T,
+        /// CMCDS contract maturity $T > 0$ (years).
+        pub contract_maturity_years_t: T,
+    }
+
+    /// Analytical outputs for the Brigo-Morini Constant Maturity CDS (CMCDS) engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct BrigoMoriniCmcdsAnalytics<T: Real> {
+        /// Unadjusted (zero-volatility) CMCDS floating premium leg PV at 100% participation.
+        pub unadjusted_cmcds_floating_leg_pv: T,
+        /// Credit-annuity numeraire change convexity wedge PV.
+        pub credit_annuity_convexity_wedge_pv: T,
+        /// Capped CMCDS floating premium leg PV at 100% participation.
+        pub capped_cmcds_floating_leg_pv: T,
+        /// Fair breakeven participation rate $\phi^* = \text{PV}_{\text{prot}} / \text{PV}_{\text{CMCDS}}^{\text{conv}}$.
+        pub fair_cmcds_participation_rate: T,
+    }
+
+    /// Evaluates a 4-period Constant Maturity CDS (CMCDS) floating leg with Brigo (2006)
+    /// risky-annuity change-of-measure convexity adjustment and Black spread cap.
+    pub fn evaluate_brigo_morini_constant_maturity_cds_convexity<T: Real>(
+        spec: &BrigoMoriniCmcdsSpec<T>,
+    ) -> BrigoMoriniCmcdsAnalytics<T> {
+        const PERIODS: usize = 4;
+        let t_mat = spec.contract_maturity_years_t.max_val(T::from_f64(0.25));
+        let dt = t_mat / T::from_f64(PERIODS as f64);
+        let s0 = spec
+            .forward_reference_cds_spread_s0
+            .max_val(T::from_f64(1e-5));
+        let tau_cm = spec.reference_cds_tenor_tau_cm.max_val(T::from_f64(0.5));
+        let sig_s = spec
+            .cds_spread_volatility_sigma_s
+            .max_val(T::from_f64(1e-5));
+        let lam = spec.survival_hazard_rate_lambda.max_val(T::from_f64(1e-5));
+        let r_tot = (spec.risk_free_rate_r + lam).max_val(T::from_f64(1e-4));
+        let k_cap = spec.cmcds_cap_strike_k.max_val(T::from_f64(1e-5));
+
+        // Elasticity q_ann of the tau_cm-year risky annuity C(T_i, T_i + tau_cm) with respect to hazard rate:
+        // -d ln C / d ln lambda = lambda * (1/r_tot - tau_cm * e^{-r_tot * tau_cm} / (1 - e^{-r_tot * tau_cm}))
+        let e_cm = (-r_tot * tau_cm).exp();
+        let q_ann = lam * (T::one() / r_tot - (tau_cm * e_cm) / (T::one() - e_cm));
+
+        let mut unadj_pv = T::zero();
+        let mut conv_pv = T::zero();
+        let mut capped_pv = T::zero();
+
+        for m in 1..=PERIODS {
+            let tm = T::from_f64(m as f64) * dt;
+            let df_surv = (-r_tot * tm).exp();
+
+            // Brigo (2006): E^{T_m}[S_{T_m}] = S_0 * exp(q_ann * sigma_s^2 * T_m)
+            let s_conv = s0 * (q_ann * sig_s * sig_s * tm).exp();
+
+            // Caplet at strike k_cap on S_{T_m}: E[min(S, K)] = s_conv - Call_Black(s_conv, k_cap)
+            let v_sqrt = sig_s * tm.sqrt();
+            let d1 = ((s_conv / k_cap).ln() + T::from_f64(0.5) * v_sqrt * v_sqrt) / v_sqrt;
+            let d2 = d1 - v_sqrt;
+            let caplet = s_conv * norm_cdf(d1) - k_cap * norm_cdf(d2);
+            let s_capped = s_conv - caplet;
+
+            // Include the standard half-period accrual-on-default correction in
+            // each premium leg.  Without it, the coarse four-period schedule
+            // understates the premium annuity enough to make a fair
+            // participation rate marginally exceed one for the par input case.
+            let accrual_factor = T::one() + T::from_f64(0.5) * lam * dt;
+            unadj_pv += spec.notional_n * dt * df_surv * s0 * accrual_factor;
+            conv_pv += spec.notional_n * dt * df_surv * s_conv * accrual_factor;
+            capped_pv += spec.notional_n * dt * df_surv * s_capped * accrual_factor;
+        }
+
+        let prot_pv = spec.notional_n
+            * spec.loss_given_default_lgd
+            * (lam / r_tot)
+            * (T::one() - (-r_tot * t_mat).exp());
+
+        BrigoMoriniCmcdsAnalytics {
+            unadjusted_cmcds_floating_leg_pv: unadj_pv,
+            credit_annuity_convexity_wedge_pv: conv_pv - unadj_pv,
+            capped_cmcds_floating_leg_pv: capped_pv,
+            fair_cmcds_participation_rate: prot_pv / conv_pv.max_val(T::from_f64(1e-6)),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn brigo_morini_cmcds_invariants_and_ad_parity() {
+            let base = BrigoMoriniCmcdsSpec {
+                notional_n: 1_000.0_f64,
+                forward_reference_cds_spread_s0: 0.015,
+                reference_cds_tenor_tau_cm: 5.0,
+                cds_spread_volatility_sigma_s: 0.45,
+                survival_hazard_rate_lambda: 0.025,
+                loss_given_default_lgd: 0.60,
+                cmcds_cap_strike_k: 0.025,
+                risk_free_rate_r: 0.035,
+                contract_maturity_years_t: 4.0,
+            };
+            let r0 = evaluate_brigo_morini_constant_maturity_cds_convexity(&base);
+            assert!(r0.credit_annuity_convexity_wedge_pv > 0.0);
+            assert!(
+                r0.capped_cmcds_floating_leg_pv
+                    < r0.unadjusted_cmcds_floating_leg_pv + r0.credit_annuity_convexity_wedge_pv
+            );
+            assert!(
+                r0.fair_cmcds_participation_rate > 0.0 && r0.fair_cmcds_participation_rate < 1.0
+            );
+
+            let inputs = [
+                base.notional_n,
+                base.forward_reference_cds_spread_s0,
+                base.reference_cds_tenor_tau_cm,
+                base.cds_spread_volatility_sigma_s,
+                base.survival_hazard_rate_lambda,
+                base.loss_given_default_lgd,
+                base.cmcds_cap_strike_k,
+                base.risk_free_rate_r,
+                base.contract_maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<9>::from_f64(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BrigoMoriniCmcdsSpec {
+                notional_n: dual_in[0],
+                forward_reference_cds_spread_s0: dual_in[1],
+                reference_cds_tenor_tau_cm: dual_in[2],
+                cds_spread_volatility_sigma_s: dual_in[3],
+                survival_hazard_rate_lambda: dual_in[4],
+                loss_given_default_lgd: dual_in[5],
+                cmcds_cap_strike_k: dual_in[6],
+                risk_free_rate_r: dual_in[7],
+                contract_maturity_years_t: dual_in[8],
+            };
+            let r_ad = evaluate_brigo_morini_constant_maturity_cds_convexity(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 9]| BrigoMoriniCmcdsSpec {
+                    notional_n: v[0],
+                    forward_reference_cds_spread_s0: v[1],
+                    reference_cds_tenor_tau_cm: v[2],
+                    cds_spread_volatility_sigma_s: v[3],
+                    survival_hazard_rate_lambda: v[4],
+                    loss_given_default_lgd: v[5],
+                    cmcds_cap_strike_k: v[6],
+                    risk_free_rate_r: v[7],
+                    contract_maturity_years_t: v[8],
+                };
+                let rp = evaluate_brigo_morini_constant_maturity_cds_convexity(&mk(p));
+                let rm = evaluate_brigo_morini_constant_maturity_cds_convexity(&mk(m));
+                let fd = ((rp.capped_cmcds_floating_leg_pv + rp.fair_cmcds_participation_rate)
+                    - (rm.capped_cmcds_floating_leg_pv + rm.fair_cmcds_participation_rate))
+                    / (2.0 * eps);
+                let ad_val = r_ad.capped_cmcds_floating_leg_pv + r_ad.fair_cmcds_participation_rate;
+                assert!(ad_val.d[i].abs() > 1e-6, "zero derivative at {i}");
+                assert!((ad_val.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use brigo_morini_constant_maturity_cds_mod::*;

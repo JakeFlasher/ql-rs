@@ -1504,3 +1504,177 @@ pub mod piterbarg_prdc_bermudan_suite65_mod {
     }
 }
 pub use piterbarg_prdc_bermudan_suite65_mod::*;
+
+pub mod wystup_clark_fx_smile_strangle_mod {
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    /// Specification for the Wystup (2017, Ch. 2) / Clark (2011, Ch. 3) FX 25-delta
+    /// smile strangle vs. broker market-strangle convention engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct WystupClarkFxSmileStrangleSpec<T: Real> {
+        /// Spot FX rate $S_0 > 0$ (domestic per unit foreign).
+        pub spot_fx_s0: T,
+        /// Domestic continuous interest rate $r_d$.
+        pub domestic_rate_rd: T,
+        /// Foreign continuous interest rate $r_f$.
+        pub foreign_rate_rf: T,
+        /// Delta-neutral ATM implied volatility $\sigma_{\text{ATM}} > 0$.
+        pub atm_volatility_sigma_atm: T,
+        /// 25-delta Risk Reversal quote $\text{RR}_{25} = \sigma_{25C} - \sigma_{25P}$.
+        pub risk_reversal_25d_rr: T,
+        /// 25-delta Smile Butterfly quote $\text{BF}_{25} = \frac{1}{2}(\sigma_{25C} + \sigma_{25P}) - \sigma_{\text{ATM}}$.
+        pub butterfly_25d_bf: T,
+        /// Option expiry $T > 0$ (years).
+        pub expiry_years_t: T,
+    }
+
+    /// Analytical outputs for the Wystup-Clark FX smile strangle convention engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct WystupClarkFxSmileStrangleAnalytics<T: Real> {
+        /// Market-strangle 25-delta call strike $K_{25C}^{\text{MS}}$.
+        pub call_25d_strike_kc: T,
+        /// Market-strangle 25-delta put strike $K_{25P}^{\text{MS}}$.
+        pub put_25d_strike_kp: T,
+        /// Smile-vs-market strangle premium wedge (in domestic currency per unit foreign notional).
+        pub smile_vs_market_strangle_premium_wedge: T,
+        /// Smile-consistent 25-delta strangle present value (in domestic currency).
+        pub smile_adjusted_strangle_present_value: T,
+    }
+
+    fn garman_kohlhagen_call<T: Real>(f: T, k: T, df_d: T, sig: T, sqrt_t: T) -> T {
+        let v = (sig * sqrt_t).max_val(T::from_f64(1e-6));
+        let d1 = ((f / k).ln() + T::from_f64(0.5) * v * v) / v;
+        let d2 = d1 - v;
+        df_d * (f * norm_cdf(d1) - k * norm_cdf(d2))
+    }
+
+    fn garman_kohlhagen_put<T: Real>(f: T, k: T, df_d: T, sig: T, sqrt_t: T) -> T {
+        let v = (sig * sqrt_t).max_val(T::from_f64(1e-6));
+        let d1 = ((f / k).ln() + T::from_f64(0.5) * v * v) / v;
+        let d2 = d1 - v;
+        df_d * (k * norm_cdf(-d2) - f * norm_cdf(-d1))
+    }
+
+    /// Evaluates the Wystup (2017) / Clark (2011) 25-delta FX market strangle strikes and
+    /// computes the smile-consistent strangle valuation and butterfly convexity wedge.
+    pub fn evaluate_wystup_clark_fx_smile_strangle_market_convention<T: Real>(
+        spec: &WystupClarkFxSmileStrangleSpec<T>,
+    ) -> WystupClarkFxSmileStrangleAnalytics<T> {
+        let t = spec.expiry_years_t.max_val(T::from_f64(1e-4));
+        let sqrt_t = t.sqrt();
+        let s0 = spec.spot_fx_s0.max_val(T::from_f64(1e-4));
+        let df_d = (-spec.domestic_rate_rd * t).exp();
+        let df_f = (-spec.foreign_rate_rf * t).exp();
+        let fwd = s0 * df_f / df_d;
+
+        let sig_atm = spec.atm_volatility_sigma_atm.max_val(T::from_f64(1e-4));
+        let sig_ms = (sig_atm + spec.butterfly_25d_bf).max_val(T::from_f64(1e-4));
+
+        // 25-delta forward delta convention: Phi(d1) = 0.25 => d1 = +/- 0.67448975
+        let z25 = T::from_f64(0.6744897501960817);
+        let kc = fwd * (z25 * sig_ms * sqrt_t + T::from_f64(0.5) * sig_ms * sig_ms * t).exp();
+        let kp = fwd * (-z25 * sig_ms * sqrt_t + T::from_f64(0.5) * sig_ms * sig_ms * t).exp();
+
+        // Sticky-strike Malz (1997) / Clark (2011) parabolic smile evaluated at normalized
+        // spot log-moneyness xi = (ln(K / S_0) - 0.5 * sig_ms^2 * T) / (z25 * sig_ms * sqrt(T))
+        // of the 25-delta market-strangle strikes:
+        let carry_shift = (spec.domestic_rate_rd - spec.foreign_rate_rf) * sqrt_t / (z25 * sig_ms);
+        let xi_c = T::one() + carry_shift;
+        let xi_p = -T::one() + carry_shift;
+        let sig_c = (sig_atm
+            + T::from_f64(0.5) * spec.risk_reversal_25d_rr * xi_c
+            + spec.butterfly_25d_bf * xi_c * xi_c)
+            .max_val(T::from_f64(1e-4));
+        let sig_p = (sig_atm
+            + T::from_f64(0.5) * spec.risk_reversal_25d_rr * xi_p
+            + spec.butterfly_25d_bf * xi_p * xi_p)
+            .max_val(T::from_f64(1e-4));
+
+        let mkt_strangle_pv = garman_kohlhagen_call(fwd, kc, df_d, sig_ms, sqrt_t)
+            + garman_kohlhagen_put(fwd, kp, df_d, sig_ms, sqrt_t);
+        let smile_strangle_pv = garman_kohlhagen_call(fwd, kc, df_d, sig_c, sqrt_t)
+            + garman_kohlhagen_put(fwd, kp, df_d, sig_p, sqrt_t);
+
+        WystupClarkFxSmileStrangleAnalytics {
+            call_25d_strike_kc: kc,
+            put_25d_strike_kp: kp,
+            smile_vs_market_strangle_premium_wedge: smile_strangle_pv - mkt_strangle_pv,
+            smile_adjusted_strangle_present_value: smile_strangle_pv,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn wystup_clark_fx_smile_strangle_invariants_and_ad_parity() {
+            let base = WystupClarkFxSmileStrangleSpec {
+                spot_fx_s0: 1.10_f64,
+                domestic_rate_rd: 0.045,
+                foreign_rate_rf: 0.030,
+                atm_volatility_sigma_atm: 0.095,
+                risk_reversal_25d_rr: -0.015,
+                butterfly_25d_bf: 0.0035,
+                expiry_years_t: 1.0,
+            };
+            let r0 = evaluate_wystup_clark_fx_smile_strangle_market_convention(&base);
+            assert!(r0.call_25d_strike_kc > base.spot_fx_s0);
+            assert!(r0.put_25d_strike_kp < base.spot_fx_s0);
+            assert!(r0.smile_adjusted_strangle_present_value > 0.0);
+
+            let inputs = [
+                base.spot_fx_s0,
+                base.domestic_rate_rd,
+                base.foreign_rate_rf,
+                base.atm_volatility_sigma_atm,
+                base.risk_reversal_25d_rr,
+                base.butterfly_25d_bf,
+                base.expiry_years_t,
+            ];
+            let mut dual_in = [Dual::<7>::from_f64(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = WystupClarkFxSmileStrangleSpec {
+                spot_fx_s0: dual_in[0],
+                domestic_rate_rd: dual_in[1],
+                foreign_rate_rf: dual_in[2],
+                atm_volatility_sigma_atm: dual_in[3],
+                risk_reversal_25d_rr: dual_in[4],
+                butterfly_25d_bf: dual_in[5],
+                expiry_years_t: dual_in[6],
+            };
+            let r_ad = evaluate_wystup_clark_fx_smile_strangle_market_convention(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| WystupClarkFxSmileStrangleSpec {
+                    spot_fx_s0: v[0],
+                    domestic_rate_rd: v[1],
+                    foreign_rate_rf: v[2],
+                    atm_volatility_sigma_atm: v[3],
+                    risk_reversal_25d_rr: v[4],
+                    butterfly_25d_bf: v[5],
+                    expiry_years_t: v[6],
+                };
+                let rp = evaluate_wystup_clark_fx_smile_strangle_market_convention(&mk(p));
+                let rm = evaluate_wystup_clark_fx_smile_strangle_market_convention(&mk(m));
+                let fd = (rp.smile_adjusted_strangle_present_value
+                    - rm.smile_adjusted_strangle_present_value)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.smile_adjusted_strangle_present_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.smile_adjusted_strangle_present_value.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use wystup_clark_fx_smile_strangle_mod::*;

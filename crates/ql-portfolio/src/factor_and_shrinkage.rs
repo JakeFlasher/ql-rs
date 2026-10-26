@@ -3353,3 +3353,149 @@ pub mod connor_korajczyk_apt_suite65_mod {
     }
 }
 pub use connor_korajczyk_apt_suite65_mod::*;
+
+pub mod campbell_lettau_malkiel_xu_variance_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Campbell, Lettau, Malkiel & Xu (2001, J. Finance 56(1))
+    /// beta-free hierarchical market-industry-firm variance decomposition and diversification engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct CampbellLettauMalkielXuSpec<T: Real> {
+        /// Aggregate market return volatility $\sigma_{\text{mkt}} > 0$.
+        pub market_volatility_sigma_m: T,
+        /// Cross-industry residual volatility $\sigma_{\text{ind}} > 0$.
+        pub industry_residual_volatility_sigma_ind: T,
+        /// Firm-specific idiosyncratic residual volatility $\sigma_{\text{firm}} > 0$.
+        pub firm_idiosyncratic_volatility_sigma_firm: T,
+        /// Industry Herfindahl concentration index $h_{\text{ind}} = \sum_i w_i^2 \in (0, 1)$.
+        pub industry_herfindahl_index_h_ind: T,
+        /// Number of equally weighted stocks $N_{\text{stocks}} > 1$ in the portfolio.
+        pub portfolio_stock_count_n: T,
+    }
+
+    /// Analytical outputs for the Campbell-Lettau-Malkiel-Xu variance decomposition engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct CampbellLettauMalkielXuAnalytics<T: Real> {
+        /// Total average single-stock return variance $\sigma_{\text{total}}^2 = \sigma_{\text{mkt}}^2 + \sigma_{\text{ind}}^2 + \sigma_{\text{firm}}^2$.
+        pub total_single_stock_variance: T,
+        /// Firm-specific idiosyncratic variance share $\sigma_{\text{firm}}^2 / \sigma_{\text{total}}^2 \in (0, 1)$.
+        pub idiosyncratic_firm_variance_share: T,
+        /// Implied average pairwise stock return correlation $\bar{\rho}_{\text{pair}}$.
+        pub implied_average_pairwise_correlation: T,
+        /// Volatility $\sigma_p(N)$ of an $N$-stock portfolio sampled across industries.
+        pub finite_n_portfolio_volatility: T,
+    }
+
+    /// Evaluates the Campbell, Lettau, Malkiel & Xu (2001) market-industry-firm variance
+    /// decomposition, average pairwise stock correlation, and $N$-stock diversification curve.
+    pub fn evaluate_campbell_lettau_malkiel_xu_hierarchical_variance_decomposition<T: Real>(
+        spec: &CampbellLettauMalkielXuSpec<T>,
+    ) -> CampbellLettauMalkielXuAnalytics<T> {
+        let sig_m = spec.market_volatility_sigma_m.max_val(T::from_f64(1e-5));
+        let sig_i = spec
+            .industry_residual_volatility_sigma_ind
+            .max_val(T::from_f64(1e-5));
+        let sig_f = spec
+            .firm_idiosyncratic_volatility_sigma_firm
+            .max_val(T::from_f64(1e-5));
+        let h_ind = spec
+            .industry_herfindahl_index_h_ind
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.99));
+        let n_stocks = spec.portfolio_stock_count_n.max_val(T::from_f64(1.5));
+
+        let var_m = sig_m * sig_m;
+        let var_i = sig_i * sig_i;
+        let var_f = sig_f * sig_f;
+        let var_tot = var_m + var_i + var_f;
+
+        let firm_share = var_f / var_tot;
+        let sys_cov = var_m + h_ind * var_i;
+        let avg_corr = sys_cov / var_tot;
+
+        // Variance of an N-stock portfolio: (1/N) * var_tot + (1 - 1/N) * sys_cov
+        let inv_n = T::one() / n_stocks;
+        let var_port = inv_n * var_tot + (T::one() - inv_n) * sys_cov;
+
+        CampbellLettauMalkielXuAnalytics {
+            total_single_stock_variance: var_tot,
+            idiosyncratic_firm_variance_share: firm_share,
+            implied_average_pairwise_correlation: avg_corr,
+            finite_n_portfolio_volatility: var_port.sqrt(),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn campbell_lettau_malkiel_xu_invariants_and_ad_parity() {
+            let base = CampbellLettauMalkielXuSpec {
+                market_volatility_sigma_m: 0.16_f64,
+                industry_residual_volatility_sigma_ind: 0.12,
+                firm_idiosyncratic_volatility_sigma_firm: 0.32,
+                industry_herfindahl_index_h_ind: 0.08,
+                portfolio_stock_count_n: 30.0,
+            };
+            let r0 = evaluate_campbell_lettau_malkiel_xu_hierarchical_variance_decomposition(&base);
+            assert!(
+                r0.idiosyncratic_firm_variance_share > 0.50
+                    && r0.idiosyncratic_firm_variance_share < 1.0
+            );
+            assert!(
+                r0.implied_average_pairwise_correlation > 0.0
+                    && r0.implied_average_pairwise_correlation < 1.0
+            );
+            assert!(r0.finite_n_portfolio_volatility > base.market_volatility_sigma_m);
+
+            let inputs = [
+                base.market_volatility_sigma_m,
+                base.industry_residual_volatility_sigma_ind,
+                base.firm_idiosyncratic_volatility_sigma_firm,
+                base.industry_herfindahl_index_h_ind,
+                base.portfolio_stock_count_n,
+            ];
+            let mut dual_in = [Dual::<5>::from_f64(0.0); 5];
+            for i in 0..5 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = CampbellLettauMalkielXuSpec {
+                market_volatility_sigma_m: dual_in[0],
+                industry_residual_volatility_sigma_ind: dual_in[1],
+                firm_idiosyncratic_volatility_sigma_firm: dual_in[2],
+                industry_herfindahl_index_h_ind: dual_in[3],
+                portfolio_stock_count_n: dual_in[4],
+            };
+            let r_ad =
+                evaluate_campbell_lettau_malkiel_xu_hierarchical_variance_decomposition(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..5 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 5]| CampbellLettauMalkielXuSpec {
+                    market_volatility_sigma_m: v[0],
+                    industry_residual_volatility_sigma_ind: v[1],
+                    firm_idiosyncratic_volatility_sigma_firm: v[2],
+                    industry_herfindahl_index_h_ind: v[3],
+                    portfolio_stock_count_n: v[4],
+                };
+                let rp =
+                    evaluate_campbell_lettau_malkiel_xu_hierarchical_variance_decomposition(&mk(p));
+                let rm =
+                    evaluate_campbell_lettau_malkiel_xu_hierarchical_variance_decomposition(&mk(m));
+                let fd = (rp.finite_n_portfolio_volatility - rm.finite_n_portfolio_volatility)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.finite_n_portfolio_volatility.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.finite_n_portfolio_volatility.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use campbell_lettau_malkiel_xu_variance_mod::*;

@@ -2492,3 +2492,183 @@ pub mod hasbrouck_gonzalo_granger_info_share_mod {
     }
 }
 pub use hasbrouck_gonzalo_granger_info_share_mod::*;
+
+pub mod hansen_lunde_overnight_realized_variance_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Hansen & Lunde (2005, JBES 23(4)) / Andersen, Bollerslev, Diebold & Labys (2003)
+    /// optimal minimum-MSE combination of overnight squared return and intraday realized variance.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct HansenLundeOvernightRvSpec<T: Real> {
+        /// Realized squared overnight close-to-open return $r_{\text{on}}^2 > 0$.
+        pub realized_overnight_sq_return_rv1: T,
+        /// Realized intraday open-to-close high-frequency variance $RV_{\text{intra}} > 0$.
+        pub realized_intraday_variance_rv2: T,
+        /// Unconditional mean $\mu_1 = \mathbb{E}[r_{\text{on}}^2] > 0$.
+        pub unconditional_overnight_mean_mu1: T,
+        /// Unconditional mean $\mu_2 = \mathbb{E}[RV_{\text{intra}}] > 0$ (including microstructure bias).
+        pub unconditional_intraday_mean_mu2: T,
+        /// Unconditional target full-day integrated variance $\mu_0 = \mathbb{E}[IV] > 0$.
+        pub unconditional_full_day_iv_mu0: T,
+        /// Variance $\eta_1^2 = \text{Var}(r_{\text{on}}^2) > 0$ of overnight squared return.
+        pub overnight_estimator_variance_eta1_sq: T,
+        /// Variance $\eta_2^2 = \text{Var}(RV_{\text{intra}}) > 0$ of intraday realized variance.
+        pub intraday_estimator_variance_eta2_sq: T,
+        /// Covariance $\eta_{12} = \text{Cov}(r_{\text{on}}^2, RV_{\text{intra}})$.
+        pub estimator_covariance_eta12: T,
+    }
+
+    /// Analytical outputs for the Hansen-Lunde overnight + intraday realized variance engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct HansenLundeOvernightRvAnalytics<T: Real> {
+        /// Optimal Hansen-Lunde (2005, Theorem 1) weight $\omega_1^*$ on overnight squared return.
+        pub optimal_overnight_weight_w1: T,
+        /// Optimal Hansen-Lunde (2005, Theorem 1) weight $\omega_2^*$ on intraday realized variance.
+        pub optimal_intraday_weight_w2: T,
+        /// Relative importance factor $\phi^*$ minimizing conditional MSE.
+        pub optimal_relative_importance_phi: T,
+        /// Combined minimum-MSE full-day realized volatility $\sqrt{\omega_1^* r_{\text{on}}^2 + \omega_2^* RV_{\text{intra}}}$.
+        pub hansen_lunde_combined_realized_volatility: T,
+    }
+
+    /// Evaluates the Hansen & Lunde (2005, Theorem 1) minimum-MSE linear combination of
+    /// overnight squared return and noisy intraday realized variance.
+    pub fn evaluate_hansen_lunde_overnight_intraday_realized_variance_combination<T: Real>(
+        spec: &HansenLundeOvernightRvSpec<T>,
+    ) -> HansenLundeOvernightRvAnalytics<T> {
+        let mu1 = spec
+            .unconditional_overnight_mean_mu1
+            .max_val(T::from_f64(1e-8));
+        let mu2 = spec
+            .unconditional_intraday_mean_mu2
+            .max_val(T::from_f64(1e-8));
+        let mu0 = spec
+            .unconditional_full_day_iv_mu0
+            .max_val(T::from_f64(1e-8));
+        let v1 = spec
+            .overnight_estimator_variance_eta1_sq
+            .max_val(T::from_f64(1e-12));
+        let v2 = spec
+            .intraday_estimator_variance_eta2_sq
+            .max_val(T::from_f64(1e-12));
+        let c12 = spec.estimator_covariance_eta12;
+
+        // Hansen & Lunde (2005, Eq. 6): relative importance parameter phi*
+        // phi* = (mu2^2 * v1 - mu1 * mu2 * c12) / (mu2^2 * v1 + mu1^2 * v2 - 2 * mu1 * mu2 * c12)
+        let num_phi = mu2 * mu2 * v1 - mu1 * mu2 * c12;
+        let den_phi = (mu2 * mu2 * v1 + mu1 * mu1 * v2 - T::from_f64(2.0) * mu1 * mu2 * c12)
+            // The variance inputs are naturally on the 1e-8 scale, so the
+            // quadratic denominator is around 1e-15 for realistic quotes.
+            // Keep the numerical guard below that scale to preserve the
+            // estimator-variance sensitivities in the AD domain.
+            .max_val(T::from_f64(1e-18));
+        let phi_star = (num_phi / den_phi)
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.99));
+
+        // Optimal weights w1* = (1 - phi*) * (mu0 / mu1), w2* = phi* * (mu0 / mu2)
+        // satisfying the unbiasedness constraint w1* * mu1 + w2* * mu2 = mu0
+        let w1 = (T::one() - phi_star) * (mu0 / mu1);
+        let w2 = phi_star * (mu0 / mu2);
+
+        let rv_comb = (w1 * spec.realized_overnight_sq_return_rv1
+            + w2 * spec.realized_intraday_variance_rv2)
+            .max_val(T::from_f64(1e-10));
+
+        HansenLundeOvernightRvAnalytics {
+            optimal_overnight_weight_w1: w1,
+            optimal_intraday_weight_w2: w2,
+            optimal_relative_importance_phi: phi_star,
+            hansen_lunde_combined_realized_volatility: rv_comb.sqrt(),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn hansen_lunde_overnight_rv_invariants_and_ad_parity() {
+            let base = HansenLundeOvernightRvSpec {
+                realized_overnight_sq_return_rv1: 0.00012_f64,
+                realized_intraday_variance_rv2: 0.00038,
+                unconditional_overnight_mean_mu1: 0.00010,
+                unconditional_intraday_mean_mu2: 0.00035,
+                unconditional_full_day_iv_mu0: 0.00042,
+                overnight_estimator_variance_eta1_sq: 2.5e-8,
+                intraday_estimator_variance_eta2_sq: 1.8e-8,
+                estimator_covariance_eta12: 0.4e-8,
+            };
+            let r0 = evaluate_hansen_lunde_overnight_intraday_realized_variance_combination(&base);
+            let unbiased_sum = r0.optimal_overnight_weight_w1
+                * base.unconditional_overnight_mean_mu1
+                + r0.optimal_intraday_weight_w2 * base.unconditional_intraday_mean_mu2;
+            assert!((unbiased_sum - base.unconditional_full_day_iv_mu0).abs() < 1e-12);
+            assert!(
+                r0.optimal_relative_importance_phi > 0.0
+                    && r0.optimal_relative_importance_phi < 1.0
+            );
+            assert!(r0.hansen_lunde_combined_realized_volatility > 0.0);
+
+            let inputs = [
+                base.realized_overnight_sq_return_rv1,
+                base.realized_intraday_variance_rv2,
+                base.unconditional_overnight_mean_mu1,
+                base.unconditional_intraday_mean_mu2,
+                base.unconditional_full_day_iv_mu0,
+                base.overnight_estimator_variance_eta1_sq,
+                base.intraday_estimator_variance_eta2_sq,
+                base.estimator_covariance_eta12,
+            ];
+            let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = HansenLundeOvernightRvSpec {
+                realized_overnight_sq_return_rv1: dual_in[0],
+                realized_intraday_variance_rv2: dual_in[1],
+                unconditional_overnight_mean_mu1: dual_in[2],
+                unconditional_intraday_mean_mu2: dual_in[3],
+                unconditional_full_day_iv_mu0: dual_in[4],
+                overnight_estimator_variance_eta1_sq: dual_in[5],
+                intraday_estimator_variance_eta2_sq: dual_in[6],
+                estimator_covariance_eta12: dual_in[7],
+            };
+            let r_ad =
+                evaluate_hansen_lunde_overnight_intraday_realized_variance_combination(&spec_ad);
+            let eps = 1e-10;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| HansenLundeOvernightRvSpec {
+                    realized_overnight_sq_return_rv1: v[0],
+                    realized_intraday_variance_rv2: v[1],
+                    unconditional_overnight_mean_mu1: v[2],
+                    unconditional_intraday_mean_mu2: v[3],
+                    unconditional_full_day_iv_mu0: v[4],
+                    overnight_estimator_variance_eta1_sq: v[5],
+                    intraday_estimator_variance_eta2_sq: v[6],
+                    estimator_covariance_eta12: v[7],
+                };
+                let rp =
+                    evaluate_hansen_lunde_overnight_intraday_realized_variance_combination(&mk(p));
+                let rm =
+                    evaluate_hansen_lunde_overnight_intraday_realized_variance_combination(&mk(m));
+                let fd = (rp.hansen_lunde_combined_realized_volatility
+                    - rm.hansen_lunde_combined_realized_volatility)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.hansen_lunde_combined_realized_volatility.d[i].abs() > 1e-4,
+                    "zero derivative at {i}"
+                );
+                let rel_err = (r_ad.hansen_lunde_combined_realized_volatility.d[i] - fd).abs()
+                    / fd.abs().max(1.0);
+                assert!(rel_err < 1e-4);
+            }
+        }
+    }
+}
+pub use hansen_lunde_overnight_realized_variance_mod::*;

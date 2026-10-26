@@ -4090,3 +4090,144 @@ pub mod alfonsi_fruth_schied_execution_suite65_mod {
     }
 }
 pub use alfonsi_fruth_schied_execution_suite65_mod::*;
+
+pub mod kyle_multi_period_insider_equilibrium_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Kyle (1985, Econometrica 53(6), Theorem 2) / Back & Baruch (2004)
+    /// two-period strategic insider trading and market depth equilibrium engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct KyleMultiPeriodEquilibriumSpec<T: Real> {
+        /// Prior fundamental liquidation value variance $\Sigma_0 > 0$.
+        pub prior_fundamental_variance_sigma0: T,
+        /// Noise trader order-flow volatility $\sigma_u > 0$ per unit root-time.
+        pub noise_trader_volatility_sigma_u: T,
+        /// Realized insider private valuation signal wedge $v - p_0$.
+        pub insider_valuation_wedge_v_minus_p0: T,
+        /// Auction sub-period step $\Delta t > 0$ (years).
+        pub auction_step_dt: T,
+    }
+
+    /// Analytical outputs for the Kyle two-period insider trading equilibrium engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct KyleMultiPeriodEquilibriumAnalytics<T: Real> {
+        /// Period-1 Kyle price impact coefficient $\lambda_1$.
+        pub period1_kyle_lambda_impact: T,
+        /// Period-2 Kyle price impact coefficient $\lambda_2$.
+        pub period2_kyle_lambda_impact: T,
+        /// Post-period-1 residual fundamental variance $\Sigma_1 = \text{Var}(v \mid y_1)$.
+        pub post_period1_residual_variance_sigma1: T,
+        /// Total expected two-period insider profit $\mathbb{E}[\pi_1 + \pi_2 \mid v]$.
+        pub expected_insider_information_profit: T,
+    }
+
+    /// Evaluates the exact closed-form two-period Kyle (1985, Theorem 2) sequential auction
+    /// equilibrium via the cubic/quadratic Riccati ratio $k = \lambda_1 / \lambda_2$.
+    pub fn evaluate_kyle_multi_period_insider_market_depth_equilibrium<T: Real>(
+        spec: &KyleMultiPeriodEquilibriumSpec<T>,
+    ) -> KyleMultiPeriodEquilibriumAnalytics<T> {
+        let sig0 = spec
+            .prior_fundamental_variance_sigma0
+            .max_val(T::from_f64(1e-6));
+        let sig_u = spec
+            .noise_trader_volatility_sigma_u
+            .max_val(T::from_f64(1e-5));
+        let dt = spec.auction_step_dt.max_val(T::from_f64(1e-4));
+
+        // In the 2-period Kyle (1985, Theorem 2) sequential auction equilibrium, let k = lambda_1 / lambda_2.
+        // Period 2 (final auction): lambda_2 = sqrt(Sigma_1) / (2 * sigma_u * sqrt(dt)),
+        // continuation parameters entering period 2 are alpha_1 = 1 / (4 * lambda_2), delta_1 = 0.
+        // Period 1 insider intensity: B_1 = beta_1 * dt = (1 - 2 * alpha_1 * lambda_1) / (2 * lambda_1 * (1 - alpha_1 * lambda_1))
+        //                           = (2 - k) / (lambda_2 * k * (4 - k)).
+        // Combining lambda_1 / Sigma_1 = B_1 / (sigma_u^2 * dt) with Sigma_1 = 4 * lambda_2^2 * sigma_u^2 * dt
+        // gives lambda_1 = 4 * lambda_2^2 * B_1 => k^2 * (4 - k) = 4 * (2 - k) <=> k^3 - 4*k^2 - 4*k + 8 = 0,
+        // whose unique root in (0, 2) is k* = 1.1099162641747423, with Sigma_1 / Sigma_0 = 1 - B_1 * lambda_1 = 2 / (4 - k*).
+        let k_star = T::from_f64(1.109_916_264_174_742_3);
+        let sigma1_ratio = T::from_f64(2.0) / (T::from_f64(4.0) - k_star);
+        let sig1 = sig0 * sigma1_ratio;
+
+        let denom_u = T::from_f64(2.0) * sig_u * dt.sqrt();
+        let lam2 = sig1.sqrt() / denom_u;
+        let lam1 = k_star * lam2;
+
+        // Value function parameters entering period 1: E[Profit | v] = alpha_0 * (v - p_0)^2 + delta_0,
+        // where terminal continuation after period 2 is zero (delta_1 = 0), so delta_0 = alpha_1 * lambda_1^2 * sigma_u^2 * dt.
+        let alpha1 = T::one() / (T::from_f64(4.0) * lam2);
+        let alpha0 = T::one() / (T::from_f64(4.0) * lam1 * (T::one() - alpha1 * lam1));
+        let delta0 = alpha1 * lam1 * lam1 * sig_u * sig_u * dt;
+
+        let wedge = spec.insider_valuation_wedge_v_minus_p0;
+        let expected_profit = alpha0 * wedge * wedge + delta0;
+
+        KyleMultiPeriodEquilibriumAnalytics {
+            period1_kyle_lambda_impact: lam1,
+            period2_kyle_lambda_impact: lam2,
+            post_period1_residual_variance_sigma1: sig1,
+            expected_insider_information_profit: expected_profit,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn kyle_multi_period_equilibrium_invariants_and_ad_parity() {
+            let base = KyleMultiPeriodEquilibriumSpec {
+                prior_fundamental_variance_sigma0: 4.0_f64,
+                noise_trader_volatility_sigma_u: 12.0,
+                insider_valuation_wedge_v_minus_p0: 2.5,
+                auction_step_dt: 0.5,
+            };
+            let r0 = evaluate_kyle_multi_period_insider_market_depth_equilibrium(&base);
+            assert!(r0.period1_kyle_lambda_impact > r0.period2_kyle_lambda_impact);
+            assert!(
+                r0.post_period1_residual_variance_sigma1 < base.prior_fundamental_variance_sigma0
+            );
+            assert!(r0.expected_insider_information_profit > 0.0);
+
+            let inputs = [
+                base.prior_fundamental_variance_sigma0,
+                base.noise_trader_volatility_sigma_u,
+                base.insider_valuation_wedge_v_minus_p0,
+                base.auction_step_dt,
+            ];
+            let mut dual_in = [Dual::<4>::from_f64(0.0); 4];
+            for i in 0..4 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = KyleMultiPeriodEquilibriumSpec {
+                prior_fundamental_variance_sigma0: dual_in[0],
+                noise_trader_volatility_sigma_u: dual_in[1],
+                insider_valuation_wedge_v_minus_p0: dual_in[2],
+                auction_step_dt: dual_in[3],
+            };
+            let r_ad = evaluate_kyle_multi_period_insider_market_depth_equilibrium(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..4 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 4]| KyleMultiPeriodEquilibriumSpec {
+                    prior_fundamental_variance_sigma0: v[0],
+                    noise_trader_volatility_sigma_u: v[1],
+                    insider_valuation_wedge_v_minus_p0: v[2],
+                    auction_step_dt: v[3],
+                };
+                let rp = evaluate_kyle_multi_period_insider_market_depth_equilibrium(&mk(p));
+                let rm = evaluate_kyle_multi_period_insider_market_depth_equilibrium(&mk(m));
+                let fd = (rp.expected_insider_information_profit
+                    - rm.expected_insider_information_profit)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.expected_insider_information_profit.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.expected_insider_information_profit.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use kyle_multi_period_insider_equilibrium_mod::*;

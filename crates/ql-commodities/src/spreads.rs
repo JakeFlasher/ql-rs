@@ -2570,3 +2570,199 @@ pub mod dempster_medova_tang_crack_suite65_mod {
     }
 }
 pub use dempster_medova_tang_crack_suite65_mod::*;
+
+pub mod eydeland_wolyniec_interconnector_spread_mod {
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    /// Specification for the Eydeland & Wolyniec (2003, Ch. 7) / Carmona & Durrleman (2003)
+    /// cross-border power transmission interconnector spread option with forced-outage derating.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct EydelandWolyniecInterconnectorSpec<T: Real> {
+        /// Importing sink pool forward power price $F_{\text{sink}} > 0$ ($/MWh).
+        pub sink_pool_forward_f_sink: T,
+        /// Exporting source pool forward power price $F_{\text{source}} > 0$ ($/MWh).
+        pub source_pool_forward_f_source: T,
+        /// Proportional ohmic transmission line loss fraction $\ell_{\text{loss}} \in (0, 1)$.
+        pub transmission_line_loss_fraction: T,
+        /// Border wheeling / congestion tariff strike $K_{\text{wheel}} > 0$ ($/MWh).
+        pub wheeling_tariff_strike_k: T,
+        /// Sink pool forward volatility $\sigma_{\text{sink}} > 0$.
+        pub sink_volatility_sigma1: T,
+        /// Source pool forward volatility $\sigma_{\text{source}} > 0$.
+        pub source_volatility_sigma2: T,
+        /// Cross-pool correlation $\rho \in (-1, 1)$.
+        pub cross_pool_correlation_rho: T,
+        /// Forced-outage hazard rate $\lambda_{\text{out}} > 0$ (outages per year).
+        pub forced_outage_hazard_lambda: T,
+        /// Repair completion rate $\mu_{\text{rep}} > 0$ (repairs per year).
+        pub repair_rate_mu: T,
+        /// Continuous risk-free discount rate $r$.
+        pub risk_free_rate_r: T,
+        /// Contract horizon $T > 0$ (years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytical outputs for the Eydeland-Wolyniec interconnector transmission spread engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct EydelandWolyniecInterconnectorAnalytics<T: Real> {
+        /// Two-state Markov availability probability $p_{\text{avail}}(T)$ at horizon $T$.
+        pub interconnector_availability_probability: T,
+        /// Loss-adjusted exporting forward cost $F_{\text{source}} / (1 - \ell_{\text{loss}})$.
+        pub loss_adjusted_source_forward: T,
+        /// Forced-outage valuation derating haircut relative to 100% firm transmission.
+        pub forced_outage_valuation_haircut: T,
+        /// Expected availability-adjusted interconnector congestion rent PV ($/MWh).
+        pub expected_interconnector_congestion_rent_pv: T,
+    }
+
+    /// Evaluates the Eydeland & Wolyniec (2003, Ch. 7) cross-border power transmission spread
+    /// option with ohmic line losses and two-state Markov forced-outage capacity derating.
+    pub fn evaluate_eydeland_wolyniec_interconnector_transmission_spread_option<T: Real>(
+        spec: &EydelandWolyniecInterconnectorSpec<T>,
+    ) -> EydelandWolyniecInterconnectorAnalytics<T> {
+        let t = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+        let f1 = spec.sink_pool_forward_f_sink.max_val(T::from_f64(1e-4));
+        let loss = spec
+            .transmission_line_loss_fraction
+            .max_val(T::from_f64(0.001))
+            .min_val(T::from_f64(0.50));
+        // Delivering 1 MWh to sink requires purchasing 1 / (1 - loss) MWh at source
+        let f2_adj =
+            spec.source_pool_forward_f_source.max_val(T::from_f64(1e-4)) / (T::one() - loss);
+        let k = spec.wheeling_tariff_strike_k.max_val(T::from_f64(1e-4));
+
+        let sig1 = spec.sink_volatility_sigma1.max_val(T::from_f64(1e-5));
+        let sig2 = spec.source_volatility_sigma2.max_val(T::from_f64(1e-5));
+        let rho = spec
+            .cross_pool_correlation_rho
+            .max_val(T::from_f64(-0.99))
+            .min_val(T::from_f64(0.99));
+
+        // Kirk (1995) / Carmona-Durrleman composite volatility on F1 / (F2_adj + K)
+        let denom = f2_adj + k;
+        let w = f2_adj / denom;
+        let var_kirk = (sig1 * sig1 + w * w * sig2 * sig2
+            - T::from_f64(2.0) * rho * w * sig1 * sig2)
+            .max_val(T::from_f64(1e-8));
+        let v_sqrt = var_kirk.sqrt() * t.sqrt();
+
+        let d1 = ((f1 / denom).ln() + T::from_f64(0.5) * v_sqrt * v_sqrt) / v_sqrt;
+        let d2 = d1 - v_sqrt;
+        let df = (-spec.risk_free_rate_r * t).exp();
+        let firm_spread_pv = df * (f1 * norm_cdf(d1) - denom * norm_cdf(d2));
+
+        // Two-state continuous-time Markov chain availability starting in operational state 1:
+        // p_11(T) = mu / (lambda + mu) + (lambda / (lambda + mu)) * exp(-(lambda + mu) * T)
+        let lam_out = spec.forced_outage_hazard_lambda.max_val(T::from_f64(1e-5));
+        let mu_rep = spec.repair_rate_mu.max_val(T::from_f64(1e-5));
+        let rate_sum = lam_out + mu_rep;
+        let p_avail = (mu_rep / rate_sum) + (lam_out / rate_sum) * (-rate_sum * t).exp();
+
+        let derated_pv = p_avail * firm_spread_pv;
+
+        EydelandWolyniecInterconnectorAnalytics {
+            interconnector_availability_probability: p_avail,
+            loss_adjusted_source_forward: f2_adj,
+            forced_outage_valuation_haircut: firm_spread_pv - derated_pv,
+            expected_interconnector_congestion_rent_pv: derated_pv,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn eydeland_wolyniec_interconnector_invariants_and_ad_parity() {
+            let base = EydelandWolyniecInterconnectorSpec {
+                sink_pool_forward_f_sink: 88.0_f64,
+                source_pool_forward_f_source: 68.0,
+                transmission_line_loss_fraction: 0.045,
+                wheeling_tariff_strike_k: 6.0,
+                sink_volatility_sigma1: 0.42,
+                source_volatility_sigma2: 0.36,
+                cross_pool_correlation_rho: 0.74,
+                forced_outage_hazard_lambda: 0.80,
+                repair_rate_mu: 8.50,
+                risk_free_rate_r: 0.04,
+                maturity_years_t: 1.0,
+            };
+            let r0 = evaluate_eydeland_wolyniec_interconnector_transmission_spread_option(&base);
+            assert!(
+                r0.interconnector_availability_probability > 0.80
+                    && r0.interconnector_availability_probability < 1.0
+            );
+            assert!(r0.loss_adjusted_source_forward > base.source_pool_forward_f_source);
+            assert!(r0.forced_outage_valuation_haircut > 0.0);
+            assert!(r0.expected_interconnector_congestion_rent_pv > 0.0);
+
+            let inputs = [
+                base.sink_pool_forward_f_sink,
+                base.source_pool_forward_f_source,
+                base.transmission_line_loss_fraction,
+                base.wheeling_tariff_strike_k,
+                base.sink_volatility_sigma1,
+                base.source_volatility_sigma2,
+                base.cross_pool_correlation_rho,
+                base.forced_outage_hazard_lambda,
+                base.repair_rate_mu,
+                base.risk_free_rate_r,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<11>::from_f64(0.0); 11];
+            for i in 0..11 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = EydelandWolyniecInterconnectorSpec {
+                sink_pool_forward_f_sink: dual_in[0],
+                source_pool_forward_f_source: dual_in[1],
+                transmission_line_loss_fraction: dual_in[2],
+                wheeling_tariff_strike_k: dual_in[3],
+                sink_volatility_sigma1: dual_in[4],
+                source_volatility_sigma2: dual_in[5],
+                cross_pool_correlation_rho: dual_in[6],
+                forced_outage_hazard_lambda: dual_in[7],
+                repair_rate_mu: dual_in[8],
+                risk_free_rate_r: dual_in[9],
+                maturity_years_t: dual_in[10],
+            };
+            let r_ad =
+                evaluate_eydeland_wolyniec_interconnector_transmission_spread_option(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..11 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 11]| EydelandWolyniecInterconnectorSpec {
+                    sink_pool_forward_f_sink: v[0],
+                    source_pool_forward_f_source: v[1],
+                    transmission_line_loss_fraction: v[2],
+                    wheeling_tariff_strike_k: v[3],
+                    sink_volatility_sigma1: v[4],
+                    source_volatility_sigma2: v[5],
+                    cross_pool_correlation_rho: v[6],
+                    forced_outage_hazard_lambda: v[7],
+                    repair_rate_mu: v[8],
+                    risk_free_rate_r: v[9],
+                    maturity_years_t: v[10],
+                };
+                let rp =
+                    evaluate_eydeland_wolyniec_interconnector_transmission_spread_option(&mk(p));
+                let rm =
+                    evaluate_eydeland_wolyniec_interconnector_transmission_spread_option(&mk(m));
+                let fd = (rp.expected_interconnector_congestion_rent_pv
+                    - rm.expected_interconnector_congestion_rent_pv)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.expected_interconnector_congestion_rent_pv.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.expected_interconnector_congestion_rent_pv.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use eydeland_wolyniec_interconnector_spread_mod::*;

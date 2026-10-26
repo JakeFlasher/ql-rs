@@ -1891,3 +1891,158 @@ pub mod bianchetti_two_curve_quanto_suite65_mod {
     }
 }
 pub use bianchetti_two_curve_quanto_suite65_mod::*;
+
+pub mod piterbarg_multi_currency_ctd_collateral_mod {
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    /// Specification for the Piterbarg (2010, Risk; 2012, Risk) & Henrard (2014, Ch. 3)
+    /// multi-currency Cheapest-to-Deliver (CTD) collateral choice discounting engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct PiterbargMultiCurrencyCtdCollateralSpec<T: Real> {
+        /// Domestic OIS rate $r_{d,\text{ois}}$.
+        pub domestic_ois_rate_rd: T,
+        /// Domestic CSA collateral spread $s_1$ over domestic OIS ($r_{c,1} = r_{d,\text{ois}} - s_1$).
+        pub domestic_collateral_spread_s1: T,
+        /// Foreign-currency synthetic CSA spread $s_2$ over domestic OIS after FX swap basis ($r_{c,2} = r_{d,\text{ois}} - s_2$).
+        pub foreign_synthetic_collateral_spread_s2: T,
+        /// Normal volatility $\sigma_X > 0$ of the collateral spread differential $X_t = s_1(t) - s_2(t)$.
+        pub collateral_spread_diff_volatility_sigma_x: T,
+        /// Mean-reversion speed $\kappa_X > 0$ of the collateral spread differential.
+        pub spread_reversion_speed_kappa_x: T,
+        /// Horizon maturity $T > 0$ (years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytical outputs for the Piterbarg multi-currency CTD collateral choice discounting engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct PiterbargMultiCurrencyCtdCollateralAnalytics<T: Real> {
+        /// Stand-alone domestic-collateral discount factor $P_1(0, T) = \exp(-(r_{d,\text{ois}} - s_1)T)$.
+        pub domestic_collateral_discount_factor: T,
+        /// Stand-alone foreign-collateral discount factor $P_2(0, T) = \exp(-(r_{d,\text{ois}} - s_2)T)$.
+        pub foreign_collateral_discount_factor: T,
+        /// Annualized CTD collateral switch option yield pickup (in rate units).
+        pub ctd_collateral_switch_yield_pickup: T,
+        /// Cheapest-to-Deliver (CTD) collateral-adjusted discount factor $P_{\text{CTD}}(0, T)$.
+        pub ctd_collateral_discount_factor: T,
+    }
+
+    /// Evaluates the Piterbarg (2010, 2012) multi-currency CTD collateral discount factor over a
+    /// 4-period Ornstein-Uhlenbeck Bachelier collateral choice strip.
+    pub fn evaluate_piterbarg_multi_currency_ctd_collateral_choice_discount<T: Real>(
+        spec: &PiterbargMultiCurrencyCtdCollateralSpec<T>,
+    ) -> PiterbargMultiCurrencyCtdCollateralAnalytics<T> {
+        const PERIODS: usize = 4;
+        let t_mat = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+        let dt = t_mat / T::from_f64(PERIODS as f64);
+        let kx = spec
+            .spread_reversion_speed_kappa_x
+            .max_val(T::from_f64(1e-4));
+        let sig_x = spec
+            .collateral_spread_diff_volatility_sigma_x
+            .max_val(T::from_f64(1e-6));
+
+        let p1 = (-(spec.domestic_ois_rate_rd - spec.domestic_collateral_spread_s1) * t_mat).exp();
+        let p2 = (-(spec.domestic_ois_rate_rd - spec.foreign_synthetic_collateral_spread_s2)
+            * t_mat)
+            .exp();
+
+        // Collateral poster chooses currency i maximizing r_{c,i}(t) = r_d - s_i(t),
+        // which minimizes the effective spread min(s_1(t), s_2(t)) = s_1(t) - max(s_1(t) - s_2(t), 0).
+        let diff_s =
+            spec.domestic_collateral_spread_s1 - spec.foreign_synthetic_collateral_spread_s2;
+        let mut int_min_spread = T::zero();
+        let mut int_switch_pickup = T::zero();
+
+        for m in 1..=PERIODS {
+            let tm = (T::from_f64(m as f64) - T::from_f64(0.5)) * dt;
+            let ou_var = sig_x * sig_x * (T::one() - (-T::from_f64(2.0) * kx * tm).exp())
+                / (T::from_f64(2.0) * kx);
+            let std_x = ou_var.max_val(T::from_f64(1e-12)).sqrt();
+            let d = diff_s / std_x;
+            let expected_max_diff = diff_s * norm_cdf(d) + std_x * norm_pdf(d);
+            let expected_min_s = spec.domestic_collateral_spread_s1 - expected_max_diff;
+
+            int_min_spread += dt * expected_min_s;
+            int_switch_pickup += dt * expected_max_diff;
+        }
+
+        let p_ctd = (-(spec.domestic_ois_rate_rd * t_mat - int_min_spread)).exp();
+
+        PiterbargMultiCurrencyCtdCollateralAnalytics {
+            domestic_collateral_discount_factor: p1,
+            foreign_collateral_discount_factor: p2,
+            ctd_collateral_switch_yield_pickup: int_switch_pickup / t_mat,
+            ctd_collateral_discount_factor: p_ctd,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn piterbarg_multi_currency_ctd_collateral_invariants_and_ad_parity() {
+            let base = PiterbargMultiCurrencyCtdCollateralSpec {
+                domestic_ois_rate_rd: 0.042_f64,
+                domestic_collateral_spread_s1: 0.0010,
+                foreign_synthetic_collateral_spread_s2: 0.0025,
+                collateral_spread_diff_volatility_sigma_x: 0.0035,
+                spread_reversion_speed_kappa_x: 0.45,
+                maturity_years_t: 5.0,
+            };
+            let r0 = evaluate_piterbarg_multi_currency_ctd_collateral_choice_discount(&base);
+            assert!(r0.ctd_collateral_switch_yield_pickup > 0.0);
+            assert!(r0.ctd_collateral_discount_factor < r0.domestic_collateral_discount_factor);
+            assert!(r0.ctd_collateral_discount_factor < r0.foreign_collateral_discount_factor);
+
+            let inputs = [
+                base.domestic_ois_rate_rd,
+                base.domestic_collateral_spread_s1,
+                base.foreign_synthetic_collateral_spread_s2,
+                base.collateral_spread_diff_volatility_sigma_x,
+                base.spread_reversion_speed_kappa_x,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<6>::from_f64(0.0); 6];
+            for i in 0..6 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = PiterbargMultiCurrencyCtdCollateralSpec {
+                domestic_ois_rate_rd: dual_in[0],
+                domestic_collateral_spread_s1: dual_in[1],
+                foreign_synthetic_collateral_spread_s2: dual_in[2],
+                collateral_spread_diff_volatility_sigma_x: dual_in[3],
+                spread_reversion_speed_kappa_x: dual_in[4],
+                maturity_years_t: dual_in[5],
+            };
+            let r_ad = evaluate_piterbarg_multi_currency_ctd_collateral_choice_discount(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..6 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 6]| PiterbargMultiCurrencyCtdCollateralSpec {
+                    domestic_ois_rate_rd: v[0],
+                    domestic_collateral_spread_s1: v[1],
+                    foreign_synthetic_collateral_spread_s2: v[2],
+                    collateral_spread_diff_volatility_sigma_x: v[3],
+                    spread_reversion_speed_kappa_x: v[4],
+                    maturity_years_t: v[5],
+                };
+                let rp = evaluate_piterbarg_multi_currency_ctd_collateral_choice_discount(&mk(p));
+                let rm = evaluate_piterbarg_multi_currency_ctd_collateral_choice_discount(&mk(m));
+                let fd = (rp.ctd_collateral_discount_factor - rm.ctd_collateral_discount_factor)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.ctd_collateral_discount_factor.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.ctd_collateral_discount_factor.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use piterbarg_multi_currency_ctd_collateral_mod::*;
