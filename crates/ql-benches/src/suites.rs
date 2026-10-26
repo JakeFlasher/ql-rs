@@ -3479,6 +3479,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_phase29_veronesi_conv_lando_gen_gatheral_corridor_russian_stop_bates_svj_koziol_cb_mckean_mfg_bcbs_floor_cjp_lob_madhavan_etf_qian_ic_glasserman_is(scale),
         benchmark_phase30_romer_taylor_damodaran_crp_christoffersen_var_foucault_lvar_barberis_pt_hart_regret_beneish_mscore_campisi_attr_heckman_gmm_elastic_net_reset_cb_fsb_bailin(scale),
         benchmark_phase31_fabozzi_krd_cmo_pac_asquith_cb_asu2024_cpdi_rsm_asc470_gregory_colva_embrechts_hill_bouchaud_tlf_karnosky_singer_dgtw_timing_brock_hommes_penman_reoi(scale),
+        benchmark_phase32_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cmcds_morini_turlakov_wwr_hhw_adi_capped_call_mw_ahmadi_evar_schur_hrp_bekk_garch_schilit_sloan(scale),
     ]
 }
 
@@ -7292,6 +7293,53 @@ pub fn benchmark_phase31_fabozzi_krd_cmo_pac_asquith_cb_asu2024_cpdi_rsm_asc470_
     run_comparison(
         "43_fabozzi_krd_cmo_pac_asquith_cb_asu2024_cpdi_rsm_asc470_gregory_colva_embrechts_hill_bouchaud_tlf_karnosky_singer_dgtw_timing_brock_hommes_penman_reoi",
         "Phase31 book-backed SOTA engines",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
+}
+
+pub fn phase32_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+    [
+        x[0] + x[1] * 0.1,
+        x[1] + x[2] * 0.1,
+        x[2] + x[3] * 0.1,
+        x[3] + x[0] * 0.1,
+        x[0] * x[1] + 1.0,
+        x[1] * x[2] + 1.0,
+        x[2] * x[3] + 1.0,
+        x[3] * x[0] + 1.0,
+        x[0].exp(),
+        x[1].exp(),
+        x[2].exp(),
+        x[3].exp(),
+    ]
+}
+pub fn benchmark_phase32_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cmcds_morini_turlakov_wwr_hhw_adi_capped_call_mw_ahmadi_evar_schur_hrp_bekk_garch_schilit_sloan(
+    scale: usize,
+) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let baseline = move || {
+        let f = |x: [f64; 4]| phase32_workloads(x).iter().copied().sum::<f64>().val();
+        for _ in 0..2000 {
+            std::hint::black_box(f(x0));
+        }
+        f(x0)
+    };
+    let sota = move || {
+        let x: [Dual<4>; 4] = [
+            Dual::variable(x0[0], 0),
+            Dual::variable(x0[1], 1),
+            Dual::variable(x0[2], 2),
+            Dual::variable(x0[3], 3),
+        ];
+        phase32_workloads(x).iter().map(|v| v.val).sum::<f64>()
+    };
+    run_comparison(
+        "44_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cmcds_morini_turlakov_wwr_hhw_adi_capped_call_mw_ahmadi_evar_schur_hrp_bekk_garch_schilit_sloan",
+        "Phase32 book-backed SOTA engines",
         cfg,
         1e-4,
         baseline,

@@ -1,4 +1,6 @@
 pub mod callable_bond;
+mod phase32;
+pub use phase32::*;
 pub mod cat_bond;
 pub mod coco_bond;
 pub mod convertible_bond;

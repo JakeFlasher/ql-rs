@@ -1,4 +1,6 @@
 pub mod bootstrap;
+mod phase32;
+pub use phase32::*;
 pub mod curves;
 pub mod market_context;
 pub use bootstrap::*;

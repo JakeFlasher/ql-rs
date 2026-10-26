@@ -14,6 +14,10 @@ pub mod prelude {
     };
     pub use ql_credit::*;
     pub use ql_credit::{
+        BrigoMoriniCmcdsCreditOptionReport, BrigoMoriniCmcdsCreditOptionSpec,
+        evaluate_brigo_morini_cmcds_and_credit_index_option,
+    };
+    pub use ql_credit::{
         DamodaranRsmCountryRiskAndDebtModReport, DamodaranRsmCountryRiskAndDebtModSpec,
         FsbFinmaGsibResolutionBailInWaterfallReport, FsbFinmaGsibResolutionBailInWaterfallSpec,
         evaluate_damodaran_rsm_country_risk_and_debt_modification,
@@ -32,6 +36,10 @@ pub mod prelude {
         evaluate_rsm_asc470_debt_modification_and_restructuring,
     };
     pub use ql_curves::*;
+    pub use ql_curves::{
+        AdbRbiNdirsAssetSwapReport, AdbRbiNdirsAssetSwapSpec,
+        evaluate_adb_rbi_ndirs_and_asset_swap_basis,
+    };
     pub use ql_curves::{
         BcbsD368SixScenarioIrrbbReport, BcbsD368SixScenarioIrrbbSpec,
         evaluate_bcbs_d368_six_scenario_irrbb,
@@ -99,6 +107,10 @@ pub mod prelude {
         evaluate_koziol_asquith_fasb_strategic_convertible,
         evaluate_veronesi_fabozzi_futures_convexity_and_prepayment,
     };
+    pub use ql_fixed_income::{
+        MayerBrownSsgaCappedCallMakeWholeReport, MayerBrownSsgaCappedCallMakeWholeSpec,
+        evaluate_mayer_brown_ssga_capped_call_overlay_and_make_whole,
+    };
     pub use ql_fx::*;
     pub use ql_fx::{
         BaranBianchettiMtmXccyBasisReport, BaranBianchettiMtmXccyBasisSpec,
@@ -152,6 +164,14 @@ pub mod prelude {
         evaluate_double_heston_cumulants_and_kernel_slv,
     };
     pub use ql_models::{
+        GairatPolalaCheyetteCapletReport, GairatPolalaCheyetteCapletSpec,
+        GatheralJusselinQuadraticRoughHestonReport, GatheralJusselinQuadraticRoughHestonSpec,
+        SchilitSloanDechowDichevQualityReport, SchilitSloanDechowDichevQualitySpec,
+        evaluate_gairat_polala_cheyette_local_vol_caplet,
+        evaluate_gatheral_jusselin_quadratic_rough_heston,
+        evaluate_schilit_sloan_dechow_dichev_earnings_quality,
+    };
+    pub use ql_models::{
         JacquierDeepRoughVolSurrogateReport, JacquierDeepRoughVolSurrogateSpec,
         evaluate_jacquier_chebyshev_rough_vol_surrogate,
     };
@@ -161,7 +181,17 @@ pub mod prelude {
     };
     pub use ql_models::{rough::*, slv::*};
     pub use ql_pde::*;
+    pub use ql_pde::{
+        HaentjensInthoutHhwAdiReport, HaentjensInthoutHhwAdiSpec,
+        evaluate_haentjens_inthout_heston_hull_white_adi,
+    };
     pub use ql_portfolio::*;
+    pub use ql_portfolio::{
+        AhmadiJavidEntropicVarPortfolioReport, AhmadiJavidEntropicVarPortfolioSpec,
+        CottonSchurHrpRmtNcoReport, CottonSchurHrpRmtNcoSpec, TsayBekkGarchSpilloverReport,
+        TsayBekkGarchSpilloverSpec, evaluate_ahmadi_javid_entropic_var_portfolio,
+        evaluate_cotton_schur_hrp_and_rmt_nco, evaluate_tsay_bekk_garch_volatility_spillover,
+    };
     pub use ql_portfolio::{
         BarberisJinWangProspectAnomalyReport, BarberisJinWangProspectAnomalySpec,
         ChristoffersenBouchaudVarBacktestAndCumulantReport,
@@ -220,6 +250,10 @@ pub mod prelude {
     pub use ql_time::*;
     pub use ql_vol::*;
     pub use ql_vol::{
+        AndreasenHugeOneStepZabrReport, AndreasenHugeOneStepZabrSpec,
+        evaluate_andreasen_huge_one_step_zabr_calibration,
+    };
+    pub use ql_vol::{
         BourgeyGatheralBergomiGuyonSmileReport, BourgeyGatheralBergomiGuyonSmileSpec,
         evaluate_bourgey_gatheral_bergomi_guyon_expansion,
     };
@@ -247,6 +281,10 @@ pub mod prelude {
     pub use ql_xva::{
         GregoryCsaThresholdMtaCtdColvaReport, GregoryCsaThresholdMtaCtdColvaSpec,
         evaluate_gregory_csa_threshold_mta_and_ctd_colva,
+    };
+    pub use ql_xva::{
+        TurlakovGreenKenyonWwrKvaReport, TurlakovGreenKenyonWwrKvaSpec,
+        evaluate_turlakov_green_kenyon_wwr_and_kva,
     };
 }
 
@@ -594,14 +632,17 @@ pub enum TabId {
     Phase29Sota,
     Phase30BookSota,
     Phase31BookSota,
+    Phase32BookSota,
 }
 impl TabId {
     #[allow(non_upper_case_globals)]
     pub const Phase30Sota: Self = Self::Phase30BookSota;
     #[allow(non_upper_case_globals)]
     pub const Phase31Sota: Self = Self::Phase31BookSota;
-    pub const TAB_COUNT: usize = 41;
-    pub const ALL: [Self; 41] = [
+    #[allow(non_upper_case_globals)]
+    pub const Phase32Sota: Self = Self::Phase32BookSota;
+    pub const TAB_COUNT: usize = 42;
+    pub const ALL: [Self; 42] = [
         Self::Market,
         Self::Rates,
         Self::Credit,
@@ -643,6 +684,7 @@ impl TabId {
         Self::Phase29Sota,
         Self::Phase30BookSota,
         Self::Phase31BookSota,
+        Self::Phase32BookSota,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -708,6 +750,9 @@ impl TabId {
             }
             Self::Phase31BookSota => {
                 "41 Phase 31 SOTA / KRD-LSC / CMO-PAC / Asquith-CB / ASU2024-CPDI / ASC470-Mod / ColVA-CTD / Hill-EVT / Bouchaud-TLF / Karnosky-FX / DGTW-Timing / Brock-Hommes / Penman-ReOI"
+            }
+            Self::Phase32BookSota => {
+                "42 Phase 32 SOTA / Cheyette-LV / ADB-NDIRS / Andreasen-ZABR / QRH-Zumbach / CMCDS-Morini / Turlakov-WWR / HHW-ADI / CappedCall-MW / Ahmadi-EVaR / Schur-HRP / BEKK-GARCH / Schilit-Sloan"
             }
         }
     }
@@ -1047,6 +1092,7 @@ pub struct WorkstationFrameData {
     pub phase29_sota_metric: f64,
     pub phase30_sota_metric: f64,
     pub phase31_sota_metric: f64,
+    pub phase32_sota_metric: f64,
     pub blotter_rows: Vec<(String, f64, String)>,
 }
 
@@ -2867,6 +2913,163 @@ impl DeskWorkstation {
             0.0
         };
         Self::phase30_live_metric_from_market(&self.scenario_market(), bump)
+    }
+
+    pub fn phase32_live_metric_from_market(m: &MarketSnapshot, credit_bump: f64) -> f64 {
+        let r = m.ois_quotes.first().copied().unwrap_or(0.03);
+        let f = m.eq_spot.max(1.0);
+        let vol = m.eq_vol.max(0.1);
+        let c = ql_models::evaluate_gairat_polala_cheyette_local_vol_caplet(
+            &ql_models::GairatPolalaCheyetteCapletSpec {
+                forward_rate: r,
+                strike_rate: r + credit_bump,
+                fixing_time_t1: 1.0,
+                payment_time_t2: 1.5,
+                mean_reversion_kappa: 0.1,
+                initial_sigma0: vol * 0.1,
+                initial_skew_b: -0.2,
+                target_atm_normal_vol: vol * 0.01,
+                target_otm_normal_vol: vol * 0.011,
+                discount_factor_t2: (-r * 1.5).exp(),
+            },
+        );
+        let q = ql_models::evaluate_gatheral_jusselin_quadratic_rough_heston(
+            &ql_models::GatheralJusselinQuadraticRoughHestonSpec {
+                forward: f,
+                strike: f * 1.01,
+                expiry: 1.0,
+                hurst_h: 0.1,
+                weight_a: 0.2,
+                asymmetry_center_b: 0.3,
+                floor_variance_c: 0.02,
+                initial_state_z0: 0.1,
+                kernel_eta: 0.5,
+                mean_reversion_lambda: 1.0,
+            },
+        );
+        let z = ql_vol::evaluate_andreasen_huge_one_step_zabr_calibration(
+            &ql_vol::AndreasenHugeOneStepZabrSpec {
+                forward: f,
+                strike: f * 1.01,
+                expiry: 1.0,
+                alpha: vol * 0.2,
+                beta: 0.5,
+                rho: -0.3,
+                nu: 0.4,
+                discount_factor: 1.0,
+            },
+        );
+        let n = ql_curves::evaluate_adb_rbi_ndirs_and_asset_swap_basis(
+            &ql_curves::AdbRbiNdirsAssetSwapSpec {
+                payment_tenors: vec![1.0, 2.0],
+                onshore_forward_rates: vec![r, r + 0.002],
+                usd_ois_discount_factors: vec![1.0, 0.95],
+                local_rate_vol: 0.1,
+                ndf_fx_vol: vol * 0.1,
+                rate_fx_corr: 0.2,
+                sovereign_bond_yield: r + 0.02,
+                usd_sofr_yield: r,
+                ndf_ccs_basis_spread: 0.005,
+                withholding_tax_rate: 0.1,
+            },
+        );
+        let x = ql_xva::evaluate_turlakov_green_kenyon_wwr_and_kva(
+            &ql_xva::TurlakovGreenKenyonWwrKvaSpec {
+                time_grid: vec![1.0, 2.0],
+                independent_epe_profile: vec![f * 0.01, f * 0.012],
+                pfe_addon_profile: vec![f * 0.005, f * 0.006],
+                base_cpty_hazard: 0.02 + credit_bump,
+                hazard_log_vol: 0.3,
+                exposure_vol: 0.2,
+                wwr_correlation_rho: 0.5,
+                lgd: 0.6,
+                risk_free_rate: r,
+                bank_hazard_rate: 0.01,
+                ccr_risk_weight: 0.08,
+                shareholder_cost_of_capital: 0.1,
+                capital_return_offset_beta: 0.5,
+            },
+        );
+        let e = ql_portfolio::evaluate_ahmadi_javid_entropic_var_portfolio(
+            &ql_portfolio::AhmadiJavidEntropicVarPortfolioSpec {
+                scenario_returns: vec![vec![0.01, -0.02], vec![-0.03, 0.01]],
+                scenario_probabilities: vec![0.5, 0.5],
+                initial_weights: vec![0.6, 0.4],
+                tail_alpha: 0.05,
+                risk_aversion_lambda: 1.0,
+            },
+        );
+        let h = ql_portfolio::evaluate_cotton_schur_hrp_and_rmt_nco(
+            &ql_portfolio::CottonSchurHrpRmtNcoSpec {
+                covariance_4x4: [
+                    [0.04, 0.01, 0.0, 0.0],
+                    [0.01, 0.05, 0.0, 0.0],
+                    [0.0, 0.0, 0.03, 0.01],
+                    [0.0, 0.0, 0.01, 0.06],
+                ],
+                schur_gamma: 0.5,
+                sample_aspect_ratio_q: 0.5,
+            },
+        );
+        let b = ql_portfolio::evaluate_tsay_bekk_garch_volatility_spillover(
+            &ql_portfolio::TsayBekkGarchSpilloverSpec {
+                chol_c: [[0.1, 0.0], [0.02, 0.1]],
+                arch_a: [[0.1, 0.02], [0.01, 0.1]],
+                garch_b: [[0.8, 0.0], [0.0, 0.7]],
+                initial_cov: [[0.04, 0.0], [0.0, 0.04]],
+                return_innovations: vec![[0.01, -0.02], [0.02, 0.01]],
+            },
+        );
+        let ql = ql_fixed_income::evaluate_mayer_brown_ssga_capped_call_overlay_and_make_whole(
+            &ql_fixed_income::MayerBrownSsgaCappedCallMakeWholeSpec {
+                bond_par: 100.0,
+                spot_price: f,
+                base_conversion_price: f * 0.9,
+                cap_strike_price: f * 1.2,
+                volatility: vol,
+                risk_free_rate: r,
+                maturity_years: 5.0,
+                acquisition_offer_price: f * 1.1,
+                remaining_years_at_acquisition: 2.0,
+                tax_rate_section_163j: 0.21,
+            },
+        );
+        let cr = ql_credit::evaluate_brigo_morini_cmcds_and_credit_index_option(
+            &ql_credit::BrigoMoriniCmcdsCreditOptionSpec {
+                reset_times: vec![1.0, 2.0],
+                forward_cds_spreads: vec![0.01, 0.012],
+                spread_volatility: 0.3,
+                annuity_convexity_gamma: 0.5,
+                flat_par_cds_spread: 0.011,
+                option_expiry: 1.0,
+                option_strike_spread: 0.01,
+                risky_pv01_annuity: 4.0,
+                hazard_rate: 0.02,
+                recovery_rate: 0.4,
+                risk_free_rate: r,
+            },
+        );
+        c.deterministic_auxiliary_y_bar.val()
+            + q.qrh_call_price.val()
+            + z.one_step_fd_call_price.val()
+            + n.usd_asset_swap_pickup_bps.val() * 1e-4
+            + x.total_wwr_cva_plus_kva.val()
+            + e.exact_chernoff_evar.val()
+            + h.schur_hrp_portfolio_variance.val()
+            + b.terminal_var_asset1.val()
+            + ql.capped_call_overlay_gross_cost.val() * 1e-2
+            + cr.morini_brigo_payer_swaption_pv.val()
+    }
+    pub fn phase32_live_metric(&self) -> f64 {
+        let bump = if matches!(
+            self.scenario,
+            ScenarioKind::CreditWideningPlus100Bp | ScenarioKind::StagflationPlus150Bp
+        ) {
+            0.01
+        } else {
+            0.0
+        };
+        Self::phase32_live_metric_from_market(&self.scenario_market(), bump)
     }
 
     pub fn phase31_live_metric_from_market(m: &MarketSnapshot, credit_bump: f64) -> f64 {
@@ -5639,6 +5842,7 @@ impl DeskWorkstation {
                 credit_bump,
             ),
             phase31_sota_metric: Self::phase31_live_metric_from_market(&market, credit_bump),
+            phase32_sota_metric: Self::phase32_live_metric_from_market(&market, credit_bump),
             phase28_sota_metric: Self::phase28_live_metric_from_market_with_bump(
                 &market,
                 if self.scenario == ScenarioKind::CreditWideningPlus100Bp {
@@ -5917,6 +6121,7 @@ impl DeskWorkstation {
             format!("39 Phase29 SOTA live: {:.2}", frame.phase29_sota_metric),
             format!("40 Phase30 SOTA live: {:.2}", frame.phase30_sota_metric),
             format!("41 Phase31 SOTA live: {:.2}", frame.phase31_sota_metric),
+            format!("42 Phase32 SOTA live: {:.2}", frame.phase32_sota_metric),
             format!(
                 "DAG recomputed: {}/{}",
                 frame.dag_recomputed_trades, frame.dag_total_trades
@@ -5928,7 +6133,7 @@ impl DeskWorkstation {
         // There are six IR buckets, five credit buckets and ten telemetry
         // lines (including Tab 23).  Render all 21 rows instead of silently
         // dropping the final BL/Risk-Parity line.
-        const BOTTOM_ROWS: usize = 38;
+        const BOTTOM_ROWS: usize = 39;
         while left_bottom.len() < BOTTOM_ROWS {
             left_bottom.push(String::new());
         }
@@ -5949,6 +6154,7 @@ impl DeskWorkstation {
         right_bottom.push(format!("39 Phase29 SOTA Veronesi/Lando/Corridor/Russian/Bates/Koziol/MFG/BCBS/CJP/ETF/IC/IS: {:.4}", self.phase29_live_metric()));
         right_bottom.push(format!("40 Phase30 SOTA Taylor/Damodaran/VaR/LVaR/CGO/Regret/Beneish/Campisi/Heckman/Elastic/ResetCB/FSB: {:.4}", self.phase30_live_metric()));
         right_bottom.push(format!("41 Phase31 SOTA KRD-LSC/CMO-PAC/Asquith-CB/ASU2024/ASC470/ColVA/Hill/Bouchaud/Karnosky/DGTW/Brock/Penman: {:.4}", self.phase31_live_metric()));
+        right_bottom.push(format!("42 Phase32 SOTA Cheyette/NDIRS/ZABR/QRH/CMCDS/WWR/HHW/CB/EVaR/Schur/BEKK/Quality: {:.4}", self.phase32_live_metric()));
         while right_bottom.len() < BOTTOM_ROWS {
             right_bottom.push(String::new());
         }
@@ -5997,7 +6203,7 @@ mod phase14_tests {
     use super::*;
     #[test]
     fn phase14_tab_is_registered() {
-        assert_eq!(TabId::ALL.len(), 41);
+        assert_eq!(TabId::ALL.len(), 42);
         assert!(TabId::ALL.contains(&TabId::Phase14Sota));
         assert!(TabId::ALL.contains(&TabId::Phase15Sota));
         let mut ws = DeskWorkstation::new();
@@ -6038,7 +6244,7 @@ mod phase16_tests {
 
     #[test]
     fn phase16_tab_and_metric_are_live() {
-        assert_eq!(TabId::ALL.len(), 41);
+        assert_eq!(TabId::ALL.len(), 42);
         assert!(TabId::ALL.contains(&TabId::Phase16Sota));
         let mut ws = DeskWorkstation::new();
         let frame = ws.step_tick();
@@ -6062,7 +6268,7 @@ mod phase17_tests {
 
     #[test]
     fn phase17_tab_metric_dashboard_and_rates_reactivity() {
-        assert_eq!(TabId::ALL.len(), 41);
+        assert_eq!(TabId::ALL.len(), 42);
         assert!(TabId::ALL.contains(&TabId::Phase17Sota));
         assert_eq!(
             TabId::Phase17Sota.label(),
@@ -6101,7 +6307,7 @@ mod phase18_tests {
     use super::*;
     #[test]
     fn phase18_tab_metric_dashboard_and_stress_reactivity() {
-        assert_eq!(TabId::ALL.len(), 41);
+        assert_eq!(TabId::ALL.len(), 42);
         assert_eq!(
             TabId::Phase18Sota.label(),
             "28 MtM-XCCS / CTD-COLVA / ZABR-PDV / Weather / ENB"
@@ -6144,7 +6350,7 @@ mod phase19_tests {
 
     #[test]
     fn phase19_tab29_terminal_renders_and_ticks_cleanly() {
-        assert_eq!(TabId::ALL.len(), 41);
+        assert_eq!(TabId::ALL.len(), 42);
         assert_eq!(
             TabId::Phase19Sota.label(),
             "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP"
@@ -6182,7 +6388,7 @@ mod phase20_tests {
 
     #[test]
     fn phase20_tab_metric_dashboard_and_stress_reactivity() {
-        assert_eq!(TabId::ALL.len(), 41);
+        assert_eq!(TabId::ALL.len(), 42);
         assert!(TabId::ALL.contains(&TabId::Phase20Sota));
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
@@ -6222,7 +6428,7 @@ mod phase21_tests {
 
     #[test]
     fn phase21_terminal_reactivity() {
-        assert_eq!(TabId::ALL.len(), 41);
+        assert_eq!(TabId::ALL.len(), 42);
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
         let next = ws.step_tick();
@@ -6329,7 +6535,7 @@ mod phase24_tests {
     use super::*;
     #[test]
     fn phase24_tab_metric_tick_and_rate_reactivity() {
-        assert_eq!(TabId::ALL.len(), 41);
+        assert_eq!(TabId::ALL.len(), 42);
         assert!(TabId::Phase24Sota.label().starts_with("34 Phase 24 SOTA"));
         let mut ws = DeskWorkstation::new();
         let a = ws.step_tick();
@@ -6452,8 +6658,8 @@ mod phase26_tests {
             ws.render_dashboard(&stressed, false)
                 .contains("36 Phase26 SOTA")
         );
-        assert_eq!(TabId::TAB_COUNT, 41);
-        assert_eq!(TabId::ALL.len(), 41);
+        assert_eq!(TabId::TAB_COUNT, 42);
+        assert_eq!(TabId::ALL.len(), 42);
         assert!(TabId::ALL.contains(&TabId::Phase26Sota));
     }
 }
@@ -6474,8 +6680,8 @@ mod phase27_tests {
             ws.render_dashboard(&stressed, false)
                 .contains("37 Phase 27 SOTA")
         );
-        assert_eq!(TabId::TAB_COUNT, 41);
-        assert_eq!(TabId::ALL.len(), 41);
+        assert_eq!(TabId::TAB_COUNT, 42);
+        assert_eq!(TabId::ALL.len(), 42);
         assert!(TabId::ALL.contains(&TabId::Phase27Sota));
     }
 
@@ -6518,7 +6724,7 @@ mod phase28_tests {
         ws.scenario = ScenarioKind::CreditWideningPlus100Bp;
         let stressed_frame = ws.step_tick();
         let stressed = ws.render_dashboard(&stressed_frame, false);
-        assert_eq!(TabId::ALL.len(), 41);
+        assert_eq!(TabId::ALL.len(), 42);
         assert!(TabId::ALL.contains(&TabId::Phase28Sota));
         assert!(normal.contains("38:P28-SOTA"));
         assert!(stressed.contains("38:P28-SOTA"));
@@ -6542,7 +6748,7 @@ mod phase29_tests {
     use super::*;
     #[test]
     fn phase29_tab39_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 41);
+        assert_eq!(TabId::TAB_COUNT, 42);
         assert!(TabId::Phase29Sota.label().starts_with("39 Phase 29 SOTA"));
         let mut ws = DeskWorkstation::default();
         let a = ws.step_tick();
@@ -6559,8 +6765,8 @@ mod phase30_tests {
 
     #[test]
     fn phase30_tab40_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 41);
-        assert_eq!(TabId::ALL.len(), 41);
+        assert_eq!(TabId::TAB_COUNT, 42);
+        assert_eq!(TabId::ALL.len(), 42);
         assert!(
             TabId::Phase30BookSota
                 .label()
@@ -6587,8 +6793,8 @@ mod phase31_tests {
 
     #[test]
     fn phase31_tab41_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 41);
-        assert_eq!(TabId::ALL.len(), 41);
+        assert_eq!(TabId::TAB_COUNT, 42);
+        assert_eq!(TabId::ALL.len(), 42);
         assert!(
             TabId::Phase31BookSota
                 .label()
@@ -6608,5 +6814,20 @@ mod phase31_tests {
             ws.render_dashboard(&stag, false)
                 .contains("41 Phase31 SOTA")
         );
+    }
+}
+
+#[cfg(test)]
+mod phase32_tests {
+    use super::*;
+    #[test]
+    fn phase32_tab42_terminal_renders_and_reacts() {
+        assert_eq!(TabId::TAB_COUNT, 42);
+        assert!(TabId::Phase32BookSota.label().starts_with("42 Phase 32"));
+        let mut d = DeskWorkstation::default();
+        let a = d.phase32_live_metric();
+        d.scenario = ScenarioKind::CreditWideningPlus100Bp;
+        let b = d.phase32_live_metric();
+        assert_ne!(a, b);
     }
 }

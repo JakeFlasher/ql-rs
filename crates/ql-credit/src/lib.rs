@@ -1,5 +1,7 @@
 #![allow(clippy::needless_range_loop)]
+pub mod phase32;
 use nalgebra::{DMatrix, DVector};
+pub use phase32::*;
 use ql_ad::{Real, TapeScope, TapeVar};
 use ql_curves::YieldTermStructure;
 use ql_math::brent_solve;

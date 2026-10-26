@@ -1,4 +1,6 @@
 pub mod bachelier;
+mod phase32;
+pub use phase32::*;
 pub mod black;
 pub mod sabr;
 pub mod surface;
