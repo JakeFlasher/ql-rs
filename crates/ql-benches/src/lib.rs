@@ -1,7 +1,7 @@
 pub mod harness;
 pub mod suites;
 /// Number of registered benchmark suites in the current release.
-pub const SUITE_COUNT: usize = 53;
+pub const SUITE_COUNT: usize = 54;
 pub const SUITE_NAMES: [&str; SUITE_COUNT] = [
     "01_calendar_popcnt",
     "02_leg_simd_soa",
@@ -56,6 +56,7 @@ pub const SUITE_NAMES: [&str; SUITE_COUNT] = [
     "51_brigo_xccy_mtm_fabozzi_spec_pool_io_po_lando_marshall_olkin_gatheral_vix_vvix_gregory_wwr_cva_geman_gibson_schwartz_clark_fx_fva_rubinstein_chooser_grinold_flam_tc_meucci_es_euler_james_stein_sure_campbell_cochrane_habit",
     "52_brigo_ois_fallback_fabozzi_collared_frn_schonbucher_cds_swaption_fep_bergomi_2f_skew_gregory_sa_ccr_ead_eydeland_spark_spread_wystup_prdc_geske_compound_qian_alpha_decay_roncalli_enb_johansen_vecm_bansal_yaron_lrr",
     "53_andersen_cms_replication_tuckman_special_repo_okane_cds_upfront_gatheral_ssr_tanaka_gregory_saccr_kva_eydeland_crack_spread_wystup_prdc_cap_haug_eso_dilution_qian_spinu_erc_rockafellar_cvar_htf_pls_krylov_piazzesi_fomc",
+    "54_darbyshire_step_ois_turn_despiegeleer_cb_soft_call_okane_cds_index_skew_gatheral_varswap_truncation_gregory_fva_overlap_geman_working_storage_wystup_malz_fx_fly_goldman_sosin_lookback_ledoit_wolf_shrinkage_almgren_chriss_cara_tsay_estar_acm_cp",
 ];
 /// Stable alias used by benchmark orchestration and documentation.
 pub const ALL_SUITES: [&str; SUITE_COUNT] = SUITE_NAMES;
@@ -80,10 +81,11 @@ pub use suites::{
     benchmark_phase39_brigo_xccy_mtm_fabozzi_spec_pool_io_po_lando_marshall_olkin_gatheral_vix_vvix_gregory_wwr_cva_geman_gibson_schwartz_clark_fx_fva_rubinstein_chooser_grinold_flam_tc_meucci_es_euler_james_stein_sure_campbell_cochrane_habit,
     benchmark_phase40_brigo_ois_fallback_fabozzi_collared_frn_schonbucher_cds_swaption_fep_bergomi_2f_skew_gregory_sa_ccr_ead_eydeland_spark_spread_wystup_prdc_geske_compound_qian_alpha_decay_roncalli_enb_johansen_vecm_bansal_yaron_lrr,
     benchmark_phase41_andersen_cms_replication_tuckman_special_repo_okane_cds_upfront_gatheral_ssr_tanaka_gregory_saccr_kva_eydeland_crack_spread_wystup_prdc_cap_haug_eso_dilution_qian_spinu_erc_rockafellar_cvar_htf_pls_krylov_piazzesi_fomc,
+    benchmark_phase42_darbyshire_step_ois_turn_despiegeleer_cb_soft_call_okane_cds_index_skew_gatheral_varswap_truncation_gregory_fva_overlap_geman_working_storage_wystup_malz_fx_fly_goldman_sosin_lookback_ledoit_wolf_shrinkage_almgren_chriss_cara_tsay_estar_acm_cp,
     benchmark_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml, phase24_workloads,
     phase25_workloads, phase26_workloads, phase27_workloads, phase28_workloads, phase29_workloads,
     phase30_workloads, phase31_workloads, phase32_workloads, phase33_workloads, phase34_workloads,
     phase35_workloads, phase36_workloads, phase37_workloads, phase38_workloads, phase39_workloads,
-    phase40_workloads, phase41_workloads, run_all_benchmark_suites_with_Config,
+    phase40_workloads, phase41_workloads, phase42_workloads, run_all_benchmark_suites_with_Config,
     run_all_benchmark_suites_with_config, run_all_benchmarks, run_all_suites,
 };
