@@ -1,43 +1,10 @@
 #![allow(clippy::needless_range_loop)]
-mod phase42;
-#[allow(unused_imports)]
-pub use phase42::*;
-mod phase41;
-#[allow(unused_imports)]
-pub use phase41::*;
-mod phase40;
-#[allow(unused_imports)]
-pub use phase40::*;
-mod phase39;
-#[allow(unused_imports)]
-pub use phase39::*;
-mod phase38;
-#[allow(unused_imports)]
-pub use phase38::*;
-mod phase37;
-pub use phase37::*;
-mod phase36;
-pub use phase36::*;
-mod phase35;
-pub use phase35::*;
-mod phase34;
-pub use phase34::*;
-mod phase33;
-pub use phase33::*;
-mod phase32;
 use nalgebra::{DMatrix, DVector};
-pub use phase32::*;
 use ql_ad::{Real, TapeScope, TapeVar};
 use ql_curves::YieldTermStructure;
 use ql_math::brent_solve;
 use ql_time::Date;
 use thiserror::Error;
-
-mod phase30;
-#[allow(unused_imports)]
-pub use phase30::*;
-mod phase31;
-pub use phase31::*;
 
 pub mod cdo;
 pub mod cds_option;
@@ -1675,8 +1642,10 @@ pub fn compute_lando_israel_generator_logarithm_and_migration<T: Real>(
     }
 }
 
+pub mod structural_and_migration;
+pub use structural_and_migration::*;
 #[cfg(test)]
-mod phase23_tests {
+mod domain_suite_35_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -1772,7 +1741,7 @@ mod phase23_tests {
 }
 
 #[cfg(test)]
-mod phase17_tests {
+mod domain_suite_29_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -1819,7 +1788,7 @@ mod phase17_tests {
 }
 
 #[cfg(test)]
-mod phase19_tests {
+mod domain_suite_31_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -1889,7 +1858,7 @@ mod phase19_tests {
 }
 
 #[cfg(test)]
-mod phase24_tests {
+mod domain_suite_36_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(h: T, c: T, r: T) -> DuffieSingletonRecoveryAndCdsBasisSpec<T> {
@@ -1906,7 +1875,7 @@ mod phase24_tests {
         }
     }
     #[test]
-    fn phase24() {
+    fn domain_suite_36() {
         let s = mk(0.02, 0.1, 0.02);
         let r = analyze_duffie_singleton_rmv_rfv_and_cds_basis(&s);
         assert!(r.rmv_bond_price > r.rfv_bond_price);
@@ -1947,7 +1916,7 @@ mod phase24_tests {
 }
 
 #[cfg(test)]
-mod phase25_tests {
+mod domain_suite_37_tests {
     use super::*;
     use ql_ad::Dual;
     fn ecl<T: Real>(x: T) -> Ifrs9CeclMultiStageEclSpec<T> {
@@ -2032,7 +2001,7 @@ mod phase25_tests {
 }
 
 #[cfg(test)]
-mod phase28_tests {
+mod domain_suite_40_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(x: T) -> FedsDeSpiegeleerAt1CocoDualTriggerSpec<T> {
@@ -2072,7 +2041,7 @@ mod phase28_tests {
 }
 
 #[cfg(test)]
-mod phase29_tests {
+mod domain_suite_41_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]

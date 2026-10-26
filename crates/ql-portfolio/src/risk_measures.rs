@@ -1,40 +1,5 @@
 //! Coherent empirical and parametric risk measures plus Euler allocations.
 #![allow(clippy::needless_range_loop)]
-pub use crate::phase35::{
-    MeucciEntropyPoolingViewReport, MeucciEntropyPoolingViewSpec,
-    evaluate_meucci_relative_entropy_view_pooling,
-};
-pub use crate::phase36::{
-    CampbellLoMackinlayVrPresentValueReport, CampbellLoMackinlayVrPresentValueSpec,
-    IlmanenCarryRolldownVmcFactorReport, IlmanenCarryRolldownVmcFactorSpec,
-    RoncalliSpinuErcRiskParityReport, RoncalliSpinuErcRiskParitySpec,
-    evaluate_campbell_lo_mackinlay_vr_and_campbell_shiller,
-    evaluate_ilmanen_carry_rolldown_and_vmc_factors, evaluate_roncalli_spinu_erc_risk_parity,
-};
-pub use crate::phase38::{
-    CampbellFamaMacbethShankenReport, CampbellFamaMacbethShankenSpec,
-    KarnoskySingerMultiCurrencyReport, KarnoskySingerMultiCurrencySpec,
-    evaluate_campbell_fama_macbeth_and_shanken_eiv,
-    evaluate_karnosky_singer_multicurrency_attribution,
-};
-
-pub use crate::phase30::*;
-pub use crate::phase31::{
-    BouchaudPottersCumulantSmileReport, BouchaudPottersCumulantSmileSpec,
-    EmbrechtsHillPickandsSubexponentialReport, EmbrechtsHillPickandsSubexponentialSpec,
-    KarnoskySingerMencheroAttributionReport, KarnoskySingerMencheroAttributionSpec,
-    evaluate_bouchaud_potters_power_law_cumulant_and_smile_scaling,
-    evaluate_embrechts_hill_pickands_and_subexponential_tail,
-    evaluate_karnosky_singer_multicurrency_and_menchero_attribution,
-};
-pub use crate::phase33::{
-    BaconOmegaSortinoBurkeDrawdownReport, BaconOmegaSortinoBurkeDrawdownSpec,
-    McneilFreyCopulaEulerAllocationReport, McneilFreyCopulaEulerAllocationSpec,
-    evaluate_bacon_omega_sortino_and_burke_drawdown,
-    evaluate_mcneil_frey_copula_tail_and_euler_allocation,
-};
-pub use crate::phase34::*;
-
 use ql_ad::{Real, TapeScope, TapeVar};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1803,7 +1768,7 @@ pub fn evaluate_follmer_schied_convex_risk_and_diagnostic_expectations<T: Real>(
 }
 
 #[cfg(test)]
-mod phase16_tests {
+mod domain_suite_28_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -1842,7 +1807,7 @@ mod phase16_tests {
 }
 
 #[cfg(test)]
-mod phase18_tests {
+mod domain_suite_30_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -1880,7 +1845,7 @@ mod phase18_tests {
 }
 
 #[cfg(test)]
-mod phase19_tests {
+mod domain_suite_31_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -1941,7 +1906,7 @@ mod phase19_tests {
 }
 
 #[cfg(test)]
-mod phase20_tests {
+mod domain_suite_32_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -2003,7 +1968,7 @@ mod phase20_tests {
 }
 
 #[cfg(test)]
-mod phase24_tests {
+mod domain_suite_36_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(a: T) -> McNeilEmbrechtsPotGpdBacktestSpec<T> {
@@ -2022,7 +1987,7 @@ mod phase24_tests {
         }
     }
     #[test]
-    fn pot_gpd_phase24() {
+    fn pot_gpd_suite36() {
         let r = evaluate_mcneil_embrechts_pot_gpd_and_christoffersen_backtest(&mk(0.0));
         assert!(r.pot_gpd_expected_shortfall > r.pot_gpd_var && r.pot_gpd_var > 1.0);
         assert!(
@@ -2071,7 +2036,7 @@ mod phase24_tests {
         }
     }
     #[test]
-    fn brinson_carino_phase24() {
+    fn brinson_carino_suite36() {
         let r = evaluate_bacon_carino_brinson_and_karnosky_singer_attribution(&br_spec(0.0));
         assert!(r.multi_period_linking_residual.abs() < 1e-12);
         let h = 1e-5;
@@ -2089,7 +2054,7 @@ mod phase24_tests {
 }
 
 #[cfg(test)]
-mod phase25_tests {
+mod domain_suite_37_tests {
     use super::*;
     use ql_ad::Dual;
     fn hj<T: Real>(x: T) -> CochraneHansenJagannathanSdfSpec<T> {
@@ -2220,7 +2185,7 @@ mod phase25_tests {
 }
 
 #[cfg(test)]
-mod phase26_tests {
+mod domain_suite_38_tests {
     use super::*;
     use ql_ad::Dual;
     fn spec(sr: f64) -> HarveyLiuZhuMultipleTestingSharpeSpec<f64> {
@@ -2267,7 +2232,7 @@ mod phase26_tests {
 }
 
 #[cfg(test)]
-mod phase28_tests {
+mod domain_suite_40_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(x: T) -> FollmerSchiedGennaioliDiagnosticRiskSpec<T> {
@@ -2300,3 +2265,2527 @@ mod phase28_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
+
+mod evaluate_christoffersen_bouchaud_var_backtest_and_cumulant_es_module {
+    use ql_ad::Real;
+
+    trait InvNormCdf: Real {
+        fn inv_norm_cdf(self) -> Self {
+            let target = self;
+            let mut q = Self::zero();
+            for _ in 0..8 {
+                q -= (q.norm_cdf() - target) / q.norm_pdf().max_val(Self::from_f64(1e-12));
+            }
+            q
+        }
+    }
+    impl<T: Real> InvNormCdf for T {}
+
+    #[derive(Clone, Debug)]
+    pub struct ChristoffersenBouchaudVarBacktestAndCumulantSpec<T: Real = f64> {
+        pub total_days_t: usize,
+        pub count_n00: T,
+        pub count_n01: T,
+        pub count_n10: T,
+        pub count_n11: T,
+        pub var_tail_probability_p: T,
+        pub portfolio_mean_loss: T,
+        pub portfolio_std_loss: T,
+        pub loss_skewness_gamma1: T,
+        pub loss_excess_kurtosis_gamma2: T,
+    }
+    #[derive(Clone, Debug)]
+    pub struct ChristoffersenBouchaudVarBacktestAndCumulantReport<T: Real = f64> {
+        pub empirical_hit_rate: T,
+        pub transition_prob_pi01: T,
+        pub transition_prob_pi11: T,
+        pub kupiec_unconditional_lr_uc: T,
+        pub christoffersen_independence_lr_ind: T,
+        pub christoffersen_conditional_coverage_lr_cc: T,
+        pub lr_decomposition_identity_error: T,
+        pub gaussian_var: T,
+        pub cornish_fisher_var: T,
+        pub gram_charlier_expected_shortfall: T,
+    }
+    pub fn evaluate_christoffersen_bouchaud_var_backtest_and_cumulant_es<T: Real>(
+        s: &ChristoffersenBouchaudVarBacktestAndCumulantSpec<T>,
+    ) -> ChristoffersenBouchaudVarBacktestAndCumulantReport<T> {
+        let n = s.count_n01 + s.count_n11;
+        let t = T::from_f64(s.total_days_t.max(1) as f64);
+        let hit = n / t;
+        let pi01 = s.count_n01 / (s.count_n00 + s.count_n01).max_val(T::from_f64(1e-12));
+        let pi11 = s.count_n11 / (s.count_n10 + s.count_n11).max_val(T::from_f64(1e-12));
+        let p = s
+            .var_tail_probability_p
+            .max_val(T::from_f64(1e-12))
+            .min_val(T::one() - T::from_f64(1e-12));
+        let loglik = |q: T| {
+            s.count_n01 * q.max_val(T::from_f64(1e-12)).ln()
+                + s.count_n00 * (T::one() - q).max_val(T::from_f64(1e-12)).ln()
+                + s.count_n11 * q.max_val(T::from_f64(1e-12)).ln()
+                + s.count_n10 * (T::one() - q).max_val(T::from_f64(1e-12)).ln()
+        };
+        let lr_uc = T::from_f64(2.0)
+            * (loglik(hit)
+                - (n * p.ln() + (t - n) * (T::one() - p).max_val(T::from_f64(1e-12)).ln()));
+        let lr_ind = T::from_f64(2.0)
+            * (s.count_n01 * pi01.max_val(T::from_f64(1e-12)).ln()
+                + s.count_n00 * (T::one() - pi01).max_val(T::from_f64(1e-12)).ln()
+                + s.count_n11 * pi11.max_val(T::from_f64(1e-12)).ln()
+                + s.count_n10 * (T::one() - pi11).max_val(T::from_f64(1e-12)).ln()
+                - loglik(hit));
+        let cc = lr_uc + lr_ind;
+        let z = (-p.inv_norm_cdf()).max_val(T::from_f64(1e-6));
+        let gaussian = s.portfolio_mean_loss + s.portfolio_std_loss * z;
+        let cf = gaussian
+            + s.portfolio_std_loss
+                * (T::from_f64(1.0 / 6.0) * (z * z - T::one()) * s.loss_skewness_gamma1
+                    + T::from_f64(1.0 / 24.0)
+                        * (z * z * z - T::from_f64(3.0) * z)
+                        * s.loss_excess_kurtosis_gamma2
+                    - T::from_f64(1.0 / 36.0)
+                        * (T::from_f64(2.0) * z * z * z - T::from_f64(5.0) * z)
+                        * s.loss_skewness_gamma1
+                        * s.loss_skewness_gamma1);
+        let es = s.portfolio_mean_loss
+            + s.portfolio_std_loss
+                * (z.norm_pdf() / p)
+                * (T::one()
+                    + T::from_f64(1.0 / 6.0) * (z * z - T::one()) * s.loss_skewness_gamma1
+                    + T::from_f64(1.0 / 24.0)
+                        * (z * z * z - T::from_f64(3.0) * z)
+                        * s.loss_excess_kurtosis_gamma2);
+        ChristoffersenBouchaudVarBacktestAndCumulantReport {
+            empirical_hit_rate: hit,
+            transition_prob_pi01: pi01,
+            transition_prob_pi11: pi11,
+            kupiec_unconditional_lr_uc: lr_uc,
+            christoffersen_independence_lr_ind: lr_ind,
+            christoffersen_conditional_coverage_lr_cc: cc,
+            lr_decomposition_identity_error: cc - lr_uc - lr_ind,
+            gaussian_var: gaussian,
+            cornish_fisher_var: cf,
+            gram_charlier_expected_shortfall: es,
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct FoucaultVanDerMerweLobLiquidityLvarSpec<T: Real = f64> {
+        pub mid_price: T,
+        pub fundamental_volatility: T,
+        pub informed_trader_share_pi: T,
+        pub exponential_order_size_rate_lambda: T,
+        pub order_processing_fee_c: T,
+        pub position_notional: T,
+        pub mean_relative_bid_ask_spread: T,
+        pub std_relative_bid_ask_spread: T,
+        pub spread_tail_scaling_a: T,
+        pub confidence_z_alpha: T,
+        pub liquidation_horizon_days: T,
+        pub market_adv_notional: T,
+        pub permanent_impact_gamma: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct FoucaultVanDerMerweLobLiquidityLvarReport<T: Real = f64> {
+        pub glosten_sandas_small_trade_half_spread: T,
+        pub glosten_sandas_marginal_slope: T,
+        pub equilibrium_quoted_ask_depth_q: T,
+        pub pure_market_risk_var: T,
+        pub exogenous_spread_liquidity_cost: T,
+        pub endogenous_market_impact_cost: T,
+        pub total_liquidity_adjusted_var_lvar: T,
+        pub liquidity_share_of_total_lvar: T,
+    }
+    pub fn evaluate_foucault_vandermerwe_lob_schedule_and_lvar<T: Real>(
+        s: &FoucaultVanDerMerweLobLiquidityLvarSpec<T>,
+    ) -> FoucaultVanDerMerweLobLiquidityLvarReport<T> {
+        let pi_ratio = s.informed_trader_share_pi
+            / (T::one() - s.informed_trader_share_pi).max_val(T::from_f64(1e-6));
+        let lam = s
+            .exponential_order_size_rate_lambda
+            .abs()
+            .max_val(T::from_f64(1e-12));
+        let mid = s.mid_price.abs().max_val(T::from_f64(1e-12));
+        let half = s.mean_relative_bid_ask_spread * mid * T::from_f64(0.5)
+            + s.order_processing_fee_c * mid
+            + pi_ratio * s.fundamental_volatility * mid / lam * T::from_f64(0.1);
+        let slope = pi_ratio * s.fundamental_volatility * mid / lam;
+        let depth = (T::one() - s.informed_trader_share_pi).max_val(T::from_f64(1e-6)) / lam;
+        let pure = s.position_notional
+            * s.fundamental_volatility
+            * s.confidence_z_alpha
+            * (s.liquidation_horizon_days / T::from_f64(252.0)).sqrt();
+        let exo = s.position_notional
+            * (T::from_f64(0.5)
+                * (s.mean_relative_bid_ask_spread
+                    + s.spread_tail_scaling_a * s.std_relative_bid_ask_spread)
+                + s.order_processing_fee_c);
+        let impact = s.permanent_impact_gamma
+            * s.position_notional.abs()
+            * (s.position_notional.abs()
+                / (s.market_adv_notional.abs() * s.liquidation_horizon_days.max_val(T::one()))
+                    .max_val(T::from_f64(1e-12)))
+            .sqrt()
+            + s.position_notional.abs() * (slope * depth / mid) * T::from_f64(0.01);
+        let total = pure + exo + impact;
+        FoucaultVanDerMerweLobLiquidityLvarReport {
+            glosten_sandas_small_trade_half_spread: half,
+            glosten_sandas_marginal_slope: slope,
+            equilibrium_quoted_ask_depth_q: depth,
+            pure_market_risk_var: pure,
+            exogenous_spread_liquidity_cost: exo,
+            endogenous_market_impact_cost: impact,
+            total_liquidity_adjusted_var_lvar: total,
+            liquidity_share_of_total_lvar: (exo + impact) / total.abs().max_val(T::from_f64(1e-12)),
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct BarberisJinWangProspectAnomalySpec<T: Real = f64> {
+        pub current_price: T,
+        pub reference_purchase_price: T,
+        pub return_volatility: T,
+        pub return_skewness: T,
+        pub prospect_loss_aversion_lambda: T,
+        pub prospect_diminishing_sensitivity_alpha: T,
+        pub prelec_probability_weighting_gamma: T,
+        pub mental_accounting_integration_b0: T,
+        pub capm_beta: T,
+        pub equity_risk_premium: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct BarberisJinWangProspectAnomalyReport<T: Real = f64> {
+        pub capital_gains_overhang_cgo: T,
+        pub prior_gain_cushion_utility: T,
+        pub prior_loss_pain_amplification: T,
+        pub lottery_skewness_overvaluation_drag: T,
+        pub disposition_effect_underreaction_alpha: T,
+        pub bjw_equilibrium_expected_excess_return: T,
+        pub bjw_anomaly_alpha_vs_capm: T,
+    }
+    pub fn evaluate_barberis_jin_wang_prospect_overhang_and_skew_anomaly<T: Real>(
+        s: &BarberisJinWangProspectAnomalySpec<T>,
+    ) -> BarberisJinWangProspectAnomalyReport<T> {
+        let cgo = (s.current_price - s.reference_purchase_price)
+            / s.reference_purchase_price.abs().max_val(T::from_f64(1e-12));
+        let alpha = s
+            .prospect_diminishing_sensitivity_alpha
+            .max_val(T::from_f64(0.01));
+        let eps = T::from_f64(1e-6);
+        let pos_cgo = (cgo + (cgo * cgo + eps * eps).sqrt()) * T::from_f64(0.5);
+        let neg_cgo = (-cgo + (cgo * cgo + eps * eps).sqrt()) * T::from_f64(0.5);
+        let gain = (pos_cgo + eps).pow(alpha) - eps.pow(alpha);
+        let pain = s.prospect_loss_aversion_lambda * ((neg_cgo + eps).pow(alpha) - eps.pow(alpha));
+        let drag = -(s.return_skewness.max_val(T::zero())
+            * (T::one() - s.prelec_probability_weighting_gamma).max_val(T::zero())
+            * s.return_volatility);
+        let under = s.mental_accounting_integration_b0 * (cgo + T::from_f64(0.25) * (gain - pain))
+            / (T::one() + s.return_volatility.abs());
+        let expected = s.capm_beta * s.equity_risk_premium + under + drag;
+        BarberisJinWangProspectAnomalyReport {
+            capital_gains_overhang_cgo: cgo,
+            prior_gain_cushion_utility: gain,
+            prior_loss_pain_amplification: pain,
+            lottery_skewness_overvaluation_drag: drag,
+            disposition_effect_underreaction_alpha: under,
+            bjw_equilibrium_expected_excess_return: expected,
+            bjw_anomaly_alpha_vs_capm: expected - s.capm_beta * s.equity_risk_premium,
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct HartMasColellRegretMatchingPortfolioSpec<T: Real = f64> {
+        pub strategy_payoff_history: Vec<[T; 3]>,
+        pub realized_action_weights_history: Vec<[T; 3]>,
+        pub regret_inertia_mu: T,
+        pub exploration_epsilon: T,
+    }
+    #[derive(Clone, Debug)]
+    pub struct HartMasColellRegretMatchingPortfolioReport<T: Real = f64> {
+        pub cumulative_counterfactual_regrets: [T; 3],
+        pub positive_regret_potentials: [T; 3],
+        pub next_period_regret_matching_weights: [T; 3],
+        pub weight_simplex_sum_error: T,
+        pub blackwell_approachability_distance: T,
+        pub hannan_external_regret_per_period: T,
+        pub theoretical_no_regret_upper_bound: T,
+    }
+    pub fn evaluate_hart_mascolell_regret_matching_allocation<T: Real>(
+        s: &HartMasColellRegretMatchingPortfolioSpec<T>,
+    ) -> HartMasColellRegretMatchingPortfolioReport<T> {
+        let mut reg = [T::zero(); 3];
+        for (pay, w) in s
+            .strategy_payoff_history
+            .iter()
+            .zip(s.realized_action_weights_history.iter())
+        {
+            let realized = pay[0] * w[0] + pay[1] * w[1] + pay[2] * w[2];
+            for k in 0..3 {
+                reg[k] += s.regret_inertia_mu * (pay[k] - realized);
+            }
+        }
+        let pos = [
+            reg[0].max_val(T::zero()),
+            reg[1].max_val(T::zero()),
+            reg[2].max_val(T::zero()),
+        ];
+        let denom = pos[0] + pos[1] + pos[2] + s.exploration_epsilon * T::from_f64(3.0);
+        let w = [
+            (pos[0] + s.exploration_epsilon) / denom,
+            (pos[1] + s.exploration_epsilon) / denom,
+            (pos[2] + s.exploration_epsilon) / denom,
+        ];
+        let best = pos.iter().copied().fold(T::zero(), |a, b| a.max_val(b));
+        let mut payoff_min = T::from_f64(f64::INFINITY);
+        let mut payoff_max = T::from_f64(f64::NEG_INFINITY);
+        for pay in &s.strategy_payoff_history {
+            for value in pay {
+                payoff_min = payoff_min.min_val(*value);
+                payoff_max = payoff_max.max_val(*value);
+            }
+        }
+        let n_periods = T::from_f64(s.strategy_payoff_history.len().max(1) as f64);
+        let bound = (payoff_max - payoff_min)
+            * (T::from_f64(2.0) * T::from_f64(3.0).ln() / n_periods).sqrt();
+        HartMasColellRegretMatchingPortfolioReport {
+            cumulative_counterfactual_regrets: reg,
+            positive_regret_potentials: pos,
+            next_period_regret_matching_weights: w,
+            weight_simplex_sum_error: w[0] + w[1] + w[2] - T::one(),
+            blackwell_approachability_distance: (pos[0] * pos[0]
+                + pos[1] * pos[1]
+                + pos[2] * pos[2])
+                .sqrt()
+                / n_periods,
+            hannan_external_regret_per_period: best
+                / T::from_f64(s.strategy_payoff_history.len().max(1) as f64),
+            theoretical_no_regret_upper_bound: bound,
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct ColinBaconCampisiFixedIncomeAttributionSpec<T: Real = f64> {
+        pub portfolio_total_return: T,
+        pub benchmark_total_return: T,
+        pub portfolio_coupon_yield: T,
+        pub benchmark_coupon_yield: T,
+        pub portfolio_eff_duration: T,
+        pub benchmark_eff_duration: T,
+        pub portfolio_spread_duration: T,
+        pub benchmark_spread_duration: T,
+        pub parallel_treasury_shift: T,
+        pub portfolio_key_rate_twist_shift: T,
+        pub benchmark_key_rate_twist_shift: T,
+        pub portfolio_credit_spread_change: T,
+        pub benchmark_credit_spread_change: T,
+        pub fx_spot_return: T,
+        pub domestic_cash_rate: T,
+        pub foreign_cash_rate: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct ColinBaconCampisiFixedIncomeAttributionReport<T: Real = f64> {
+        pub active_income_effect: T,
+        pub active_treasury_shift_effect: T,
+        pub active_treasury_twist_effect: T,
+        pub active_spread_allocation_effect: T,
+        pub active_security_selection_residual: T,
+        pub total_active_local_return: T,
+        pub campisi_identity_conservation_error: T,
+        pub karnosky_singer_forward_hedge_carry: T,
+        pub karnosky_singer_unhedged_currency_surprise: T,
+    }
+    pub fn evaluate_colin_bacon_campisi_fixed_income_attribution<T: Real>(
+        s: &ColinBaconCampisiFixedIncomeAttributionSpec<T>,
+    ) -> ColinBaconCampisiFixedIncomeAttributionReport<T> {
+        let active = s.portfolio_total_return - s.benchmark_total_return;
+        let income = s.portfolio_coupon_yield - s.benchmark_coupon_yield;
+        let treasury =
+            -(s.portfolio_eff_duration - s.benchmark_eff_duration) * s.parallel_treasury_shift;
+        let twist = -(s.portfolio_eff_duration * s.portfolio_key_rate_twist_shift
+            - s.benchmark_eff_duration * s.benchmark_key_rate_twist_shift);
+        let spread = -(s.portfolio_spread_duration * s.portfolio_credit_spread_change
+            - s.benchmark_spread_duration * s.benchmark_credit_spread_change);
+        let residual = active - income - treasury - twist - spread;
+        let carry = s.domestic_cash_rate - s.foreign_cash_rate;
+        let currency = s.fx_spot_return - carry;
+        ColinBaconCampisiFixedIncomeAttributionReport {
+            active_income_effect: income,
+            active_treasury_shift_effect: treasury,
+            active_treasury_twist_effect: twist,
+            active_spread_allocation_effect: spread,
+            active_security_selection_residual: residual,
+            total_active_local_return: income + treasury + twist + spread + residual,
+            campisi_identity_conservation_error: income + treasury + twist + spread + residual
+                - active,
+            karnosky_singer_forward_hedge_carry: carry,
+            karnosky_singer_unhedged_currency_surprise: currency,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_42_tests {
+        use super::*;
+        use ql_ad::Dual;
+        fn var_spec<T: Real>(x: T) -> ChristoffersenBouchaudVarBacktestAndCumulantSpec<T> {
+            ChristoffersenBouchaudVarBacktestAndCumulantSpec {
+                total_days_t: 100,
+                count_n00: T::from_f64(80.0),
+                count_n01: T::from_f64(8.0),
+                count_n10: T::from_f64(8.0),
+                count_n11: T::from_f64(4.0),
+                var_tail_probability_p: T::from_f64(0.05),
+                portfolio_mean_loss: x,
+                portfolio_std_loss: T::one(),
+                loss_skewness_gamma1: T::zero(),
+                loss_excess_kurtosis_gamma2: T::zero(),
+            }
+        }
+        #[test]
+        fn suite42_portfolio_invariants_and_dual_fd() {
+            let r = evaluate_christoffersen_bouchaud_var_backtest_and_cumulant_es(&var_spec(0.1));
+            assert!(r.lr_decomposition_identity_error.abs() < 1e-12);
+            assert!((r.cornish_fisher_var - r.gaussian_var).abs() < 1e-12);
+            let h = 1e-6;
+            let fd =
+                (evaluate_christoffersen_bouchaud_var_backtest_and_cumulant_es(&var_spec(0.1 + h))
+                    .gaussian_var
+                    - evaluate_christoffersen_bouchaud_var_backtest_and_cumulant_es(&var_spec(
+                        0.1 - h,
+                    ))
+                    .gaussian_var)
+                    / (2.0 * h);
+            let ad = evaluate_christoffersen_bouchaud_var_backtest_and_cumulant_es(&var_spec(
+                Dual::<1>::variable(0.1, 0),
+            ))
+            .gaussian_var;
+            assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
+            let mut vup = var_spec(0.1);
+            let mut vdn = var_spec(0.1);
+            vup.portfolio_mean_loss += h;
+            vdn.portfolio_mean_loss -= h;
+            let fd_var = (evaluate_christoffersen_bouchaud_var_backtest_and_cumulant_es(&vup)
+                .cornish_fisher_var
+                - evaluate_christoffersen_bouchaud_var_backtest_and_cumulant_es(&vdn)
+                    .cornish_fisher_var)
+                / (2.0 * h);
+            let ad_var = evaluate_christoffersen_bouchaud_var_backtest_and_cumulant_es(&var_spec(
+                Dual::<1>::variable(0.1, 0),
+            ))
+            .cornish_fisher_var;
+            assert!(ad_var.d[0].abs() > 1e-6 && (ad_var.d[0] - fd_var).abs() < 1e-5);
+            let l = evaluate_foucault_vandermerwe_lob_schedule_and_lvar(
+                &FoucaultVanDerMerweLobLiquidityLvarSpec {
+                    mid_price: 100.0,
+                    fundamental_volatility: 0.2,
+                    informed_trader_share_pi: 0.2,
+                    exponential_order_size_rate_lambda: 1.0,
+                    order_processing_fee_c: 0.01,
+                    position_notional: 100.0,
+                    mean_relative_bid_ask_spread: 0.01,
+                    std_relative_bid_ask_spread: 0.002,
+                    spread_tail_scaling_a: 1.0,
+                    confidence_z_alpha: 2.0,
+                    liquidation_horizon_days: 1.0,
+                    market_adv_notional: 1000.0,
+                    permanent_impact_gamma: 0.1,
+                },
+            );
+            assert!(
+                (l.total_liquidity_adjusted_var_lvar
+                    - l.pure_market_risk_var
+                    - l.exogenous_spread_liquidity_cost
+                    - l.endogenous_market_impact_cost)
+                    .abs()
+                    < 1e-12
+            );
+            let mut lup = FoucaultVanDerMerweLobLiquidityLvarSpec {
+                mid_price: 100.0,
+                fundamental_volatility: 0.2,
+                informed_trader_share_pi: 0.2,
+                exponential_order_size_rate_lambda: 1.0,
+                order_processing_fee_c: 0.01,
+                position_notional: 100.0,
+                mean_relative_bid_ask_spread: 0.01,
+                std_relative_bid_ask_spread: 0.002,
+                spread_tail_scaling_a: 1.0,
+                confidence_z_alpha: 2.0,
+                liquidation_horizon_days: 1.0,
+                market_adv_notional: 1000.0,
+                permanent_impact_gamma: 0.1,
+            };
+            let mut ldn = lup;
+            lup.order_processing_fee_c += h;
+            ldn.order_processing_fee_c -= h;
+            let fd_l = (evaluate_foucault_vandermerwe_lob_schedule_and_lvar(&lup)
+                .total_liquidity_adjusted_var_lvar
+                - evaluate_foucault_vandermerwe_lob_schedule_and_lvar(&ldn)
+                    .total_liquidity_adjusted_var_lvar)
+                / (2.0 * h);
+            let lad: FoucaultVanDerMerweLobLiquidityLvarSpec<Dual<1>> =
+                FoucaultVanDerMerweLobLiquidityLvarSpec {
+                    mid_price: Dual::from_f64(100.0),
+                    fundamental_volatility: Dual::from_f64(0.2),
+                    informed_trader_share_pi: Dual::from_f64(0.2),
+                    exponential_order_size_rate_lambda: Dual::from_f64(1.0),
+                    order_processing_fee_c: Dual::<1>::variable(0.01, 0),
+                    position_notional: Dual::from_f64(100.0),
+                    mean_relative_bid_ask_spread: Dual::from_f64(0.01),
+                    std_relative_bid_ask_spread: Dual::from_f64(0.002),
+                    spread_tail_scaling_a: Dual::from_f64(1.0),
+                    confidence_z_alpha: Dual::from_f64(2.0),
+                    liquidation_horizon_days: Dual::from_f64(1.0),
+                    market_adv_notional: Dual::from_f64(1000.0),
+                    permanent_impact_gamma: Dual::from_f64(0.1),
+                };
+            let ad_l = evaluate_foucault_vandermerwe_lob_schedule_and_lvar(&lad)
+                .total_liquidity_adjusted_var_lvar;
+            assert!(ad_l.d[0].abs() > 1e-6 && (ad_l.d[0] - fd_l).abs() < 1e-5);
+            let p = evaluate_barberis_jin_wang_prospect_overhang_and_skew_anomaly(
+                &BarberisJinWangProspectAnomalySpec {
+                    current_price: 110.0,
+                    reference_purchase_price: 100.0,
+                    return_volatility: 0.2,
+                    return_skewness: 0.8,
+                    prospect_loss_aversion_lambda: 2.0,
+                    prospect_diminishing_sensitivity_alpha: 0.8,
+                    prelec_probability_weighting_gamma: 0.7,
+                    mental_accounting_integration_b0: 0.4,
+                    capm_beta: 1.0,
+                    equity_risk_premium: 0.05,
+                },
+            );
+            assert!(
+                p.capital_gains_overhang_cgo > 0.0 && p.lottery_skewness_overvaluation_drag < 0.0
+            );
+            let mut pup = BarberisJinWangProspectAnomalySpec {
+                current_price: 110.0,
+                reference_purchase_price: 100.0,
+                return_volatility: 0.2,
+                return_skewness: 0.8,
+                prospect_loss_aversion_lambda: 2.0,
+                prospect_diminishing_sensitivity_alpha: 0.8,
+                prelec_probability_weighting_gamma: 0.7,
+                mental_accounting_integration_b0: 0.4,
+                capm_beta: 1.0,
+                equity_risk_premium: 0.05,
+            };
+            let mut pdn = pup;
+            pup.current_price += h;
+            pdn.current_price -= h;
+            let fd_p = (evaluate_barberis_jin_wang_prospect_overhang_and_skew_anomaly(&pup)
+                .bjw_equilibrium_expected_excess_return
+                - evaluate_barberis_jin_wang_prospect_overhang_and_skew_anomaly(&pdn)
+                    .bjw_equilibrium_expected_excess_return)
+                / (2.0 * h);
+            let pad: BarberisJinWangProspectAnomalySpec<Dual<1>> =
+                BarberisJinWangProspectAnomalySpec {
+                    current_price: Dual::<1>::variable(110.0, 0),
+                    reference_purchase_price: Dual::from_f64(100.0),
+                    return_volatility: Dual::from_f64(0.2),
+                    return_skewness: Dual::from_f64(0.8),
+                    prospect_loss_aversion_lambda: Dual::from_f64(2.0),
+                    prospect_diminishing_sensitivity_alpha: Dual::from_f64(0.8),
+                    prelec_probability_weighting_gamma: Dual::from_f64(0.7),
+                    mental_accounting_integration_b0: Dual::from_f64(0.4),
+                    capm_beta: Dual::from_f64(1.0),
+                    equity_risk_premium: Dual::from_f64(0.05),
+                };
+            let ad_p = evaluate_barberis_jin_wang_prospect_overhang_and_skew_anomaly(&pad)
+                .bjw_equilibrium_expected_excess_return;
+            assert!(ad_p.d[0].abs() > 1e-6 && (ad_p.d[0] - fd_p).abs() < 1e-5);
+            let hrt = evaluate_hart_mascolell_regret_matching_allocation(
+                &HartMasColellRegretMatchingPortfolioSpec {
+                    strategy_payoff_history: vec![[0.1, 0.2, 0.0], [0.4, 0.1, 0.3]],
+                    realized_action_weights_history: vec![[0.3, 0.4, 0.3], [0.4, 0.3, 0.3]],
+                    regret_inertia_mu: 1.0,
+                    exploration_epsilon: 0.01,
+                },
+            );
+            assert!(
+                hrt.next_period_regret_matching_weights
+                    .iter()
+                    .all(|x| *x >= 0.0)
+                    && hrt.weight_simplex_sum_error.abs() < 1e-12
+            );
+            let mut rup = HartMasColellRegretMatchingPortfolioSpec {
+                strategy_payoff_history: vec![[0.1, 0.2, 0.0], [0.4, 0.1, 0.3]],
+                realized_action_weights_history: vec![[0.3, 0.4, 0.3], [0.4, 0.3, 0.3]],
+                regret_inertia_mu: 1.0,
+                exploration_epsilon: 0.01,
+            };
+            let mut rdn = rup.clone();
+            rup.regret_inertia_mu += h;
+            rdn.regret_inertia_mu -= h;
+            let fd_r = (evaluate_hart_mascolell_regret_matching_allocation(&rup)
+                .blackwell_approachability_distance
+                - evaluate_hart_mascolell_regret_matching_allocation(&rdn)
+                    .blackwell_approachability_distance)
+                / (2.0 * h);
+            let rad: HartMasColellRegretMatchingPortfolioSpec<Dual<1>> =
+                HartMasColellRegretMatchingPortfolioSpec {
+                    strategy_payoff_history: vec![
+                        [
+                            Dual::from_f64(0.1),
+                            Dual::from_f64(0.2),
+                            Dual::from_f64(0.0),
+                        ],
+                        [
+                            Dual::from_f64(0.4),
+                            Dual::from_f64(0.1),
+                            Dual::from_f64(0.3),
+                        ],
+                    ],
+                    realized_action_weights_history: vec![
+                        [
+                            Dual::from_f64(0.3),
+                            Dual::from_f64(0.4),
+                            Dual::from_f64(0.3),
+                        ],
+                        [
+                            Dual::from_f64(0.4),
+                            Dual::from_f64(0.3),
+                            Dual::from_f64(0.3),
+                        ],
+                    ],
+                    regret_inertia_mu: Dual::<1>::variable(1.0, 0),
+                    exploration_epsilon: Dual::from_f64(0.01),
+                };
+            let ad_r = evaluate_hart_mascolell_regret_matching_allocation(&rad)
+                .blackwell_approachability_distance;
+            assert!(ad_r.d[0].abs() > 1e-6 && (ad_r.d[0] - fd_r).abs() < 1e-5);
+            let c = evaluate_colin_bacon_campisi_fixed_income_attribution(
+                &ColinBaconCampisiFixedIncomeAttributionSpec {
+                    portfolio_total_return: 0.04,
+                    benchmark_total_return: 0.03,
+                    portfolio_coupon_yield: 0.04,
+                    benchmark_coupon_yield: 0.03,
+                    portfolio_eff_duration: 5.0,
+                    benchmark_eff_duration: 4.0,
+                    portfolio_spread_duration: 3.0,
+                    benchmark_spread_duration: 3.0,
+                    parallel_treasury_shift: 0.01,
+                    portfolio_key_rate_twist_shift: 0.001,
+                    benchmark_key_rate_twist_shift: 0.002,
+                    portfolio_credit_spread_change: 0.002,
+                    benchmark_credit_spread_change: 0.001,
+                    fx_spot_return: 0.01,
+                    domestic_cash_rate: 0.02,
+                    foreign_cash_rate: 0.03,
+                },
+            );
+            assert!(c.campisi_identity_conservation_error.abs() < 1e-12);
+            let mut cup = ColinBaconCampisiFixedIncomeAttributionSpec {
+                portfolio_total_return: 0.04,
+                benchmark_total_return: 0.03,
+                portfolio_coupon_yield: 0.04,
+                benchmark_coupon_yield: 0.03,
+                portfolio_eff_duration: 5.0,
+                benchmark_eff_duration: 4.0,
+                portfolio_spread_duration: 3.0,
+                benchmark_spread_duration: 3.0,
+                parallel_treasury_shift: 0.01,
+                portfolio_key_rate_twist_shift: 0.001,
+                benchmark_key_rate_twist_shift: 0.002,
+                portfolio_credit_spread_change: 0.002,
+                benchmark_credit_spread_change: 0.001,
+                fx_spot_return: 0.01,
+                domestic_cash_rate: 0.02,
+                foreign_cash_rate: 0.03,
+            };
+            let mut cdn = cup;
+            cup.parallel_treasury_shift += h;
+            cdn.parallel_treasury_shift -= h;
+            let fd_c = (evaluate_colin_bacon_campisi_fixed_income_attribution(&cup)
+                .active_security_selection_residual
+                - evaluate_colin_bacon_campisi_fixed_income_attribution(&cdn)
+                    .active_security_selection_residual)
+                / (2.0 * h);
+            let cad: ColinBaconCampisiFixedIncomeAttributionSpec<Dual<1>> =
+                ColinBaconCampisiFixedIncomeAttributionSpec {
+                    portfolio_total_return: Dual::from_f64(0.04),
+                    benchmark_total_return: Dual::from_f64(0.03),
+                    portfolio_coupon_yield: Dual::from_f64(0.04),
+                    benchmark_coupon_yield: Dual::from_f64(0.03),
+                    portfolio_eff_duration: Dual::from_f64(5.0),
+                    benchmark_eff_duration: Dual::from_f64(4.0),
+                    portfolio_spread_duration: Dual::from_f64(3.0),
+                    benchmark_spread_duration: Dual::from_f64(3.0),
+                    parallel_treasury_shift: Dual::<1>::variable(0.01, 0),
+                    portfolio_key_rate_twist_shift: Dual::from_f64(0.001),
+                    benchmark_key_rate_twist_shift: Dual::from_f64(0.002),
+                    portfolio_credit_spread_change: Dual::from_f64(0.002),
+                    benchmark_credit_spread_change: Dual::from_f64(0.001),
+                    fx_spot_return: Dual::from_f64(0.01),
+                    domestic_cash_rate: Dual::from_f64(0.02),
+                    foreign_cash_rate: Dual::from_f64(0.03),
+                };
+            let ad_c = evaluate_colin_bacon_campisi_fixed_income_attribution(&cad)
+                .active_security_selection_residual;
+            assert!(ad_c.d[0].abs() > 1e-6 && (ad_c.d[0] - fd_c).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_christoffersen_bouchaud_var_backtest_and_cumulant_es_module::*;
+
+mod evaluate_embrechts_hill_pickands_and_subexponential_tail_module {
+    use ql_ad::Real;
+
+    #[derive(Clone, Debug)]
+    pub struct EmbrechtsHillPickandsSubexponentialSpec<T: Real = f64> {
+        pub loss_samples: Vec<T>,
+        pub tail_order_k: usize,
+        pub extreme_tail_prob: T,
+        pub portfolio_positions_count: usize,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct EmbrechtsHillPickandsSubexponentialReport<T: Real = f64> {
+        pub hill_xi_tail_index: T,
+        pub hill_alpha_pareto_exponent: T,
+        pub pickands_xi_tail_index: T,
+        pub hill_asymptotic_std_error: T,
+        pub weissman_extreme_var: T,
+        pub weissman_extreme_es: T,
+        pub subexponential_sum_to_single_tail_multiplier: T,
+        pub superadditive_var_excess_ratio: T,
+    }
+
+    pub fn evaluate_embrechts_hill_pickands_and_subexponential_tail<T: Real>(
+        s: &EmbrechtsHillPickandsSubexponentialSpec<T>,
+    ) -> EmbrechtsHillPickandsSubexponentialReport<T> {
+        assert!(s.tail_order_k >= 1);
+        assert!(s.loss_samples.len() >= 4 * s.tail_order_k);
+        let mut x = s.loss_samples.clone();
+        x.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+        let k = s.tail_order_k.max(1).min(x.len() - 1);
+        let threshold = x[k];
+        let mut sum_log = T::zero();
+        for value in x.iter().take(k) {
+            sum_log += value.abs().max_val(T::from_f64(1e-12)).ln()
+                - threshold.abs().max_val(T::from_f64(1e-12)).ln();
+        }
+        let xi = sum_log / T::from_f64(k as f64);
+        let alpha = T::one() / xi.abs().max_val(T::from_f64(1e-12));
+        let i2 = 2 * k;
+        let i4 = 4 * k;
+        let pick_ratio = (x[k - 1] - x[i2 - 1]).abs().max_val(T::from_f64(1e-12))
+            / (x[i2 - 1] - x[i4 - 1]).abs().max_val(T::from_f64(1e-12));
+        let pick = pick_ratio.ln() / T::from_f64(2.0).ln();
+        let p = s.extreme_tail_prob.max_val(T::from_f64(1e-12));
+        let n = T::from_f64(x.len() as f64);
+        let var = threshold * (T::from_f64(k as f64) / (n * p)).ln().exp().pow(xi);
+        let es = var / (T::one() - xi.min_val(T::from_f64(0.95)).max_val(T::from_f64(-10.0)));
+        let m = T::from_f64(s.portfolio_positions_count.max(1) as f64);
+        let multiplier = m.pow(xi.max_val(T::zero()));
+        let excess = multiplier / m.sqrt();
+        EmbrechtsHillPickandsSubexponentialReport {
+            hill_xi_tail_index: xi,
+            hill_alpha_pareto_exponent: alpha,
+            pickands_xi_tail_index: pick,
+            hill_asymptotic_std_error: xi.abs() / T::from_f64((k as f64).sqrt()),
+            weissman_extreme_var: var,
+            weissman_extreme_es: es,
+            subexponential_sum_to_single_tail_multiplier: multiplier,
+            superadditive_var_excess_ratio: excess,
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct BouchaudPottersCumulantSmileSpec<T: Real = f64> {
+        pub single_period_vol: T,
+        pub single_period_skewness: T,
+        pub single_period_excess_kurtosis: T,
+        pub vol_of_vol_kurtosis_component: T,
+        pub vol_decorrelation_steps: T,
+        pub horizon_steps_n: T,
+        pub log_moneyness: T,
+        pub confidence_z: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct BouchaudPottersCumulantSmileReport<T: Real = f64> {
+        pub horizon_skewness_k3: T,
+        pub iid_clt_kurtosis_k4: T,
+        pub bouchaud_potters_persistent_kurtosis_k4: T,
+        pub kurtosis_persistence_amplification: T,
+        pub atm_implied_vol_kurtosis_shift: T,
+        pub cumulant_smile_implied_vol: T,
+        pub naive_sqrt_t_gaussian_var: T,
+        pub bouchaud_potters_non_gaussian_var: T,
+        pub sqrt_time_var_underestimation_ratio: T,
+    }
+
+    pub fn evaluate_bouchaud_potters_power_law_cumulant_and_smile_scaling<T: Real>(
+        s: &BouchaudPottersCumulantSmileSpec<T>,
+    ) -> BouchaudPottersCumulantSmileReport<T> {
+        let n = s.horizon_steps_n.max_val(T::from_f64(1e-8));
+        let nc = s.vol_decorrelation_steps.max_val(T::from_f64(1e-8));
+        let k3 = s.single_period_skewness / n.sqrt();
+        let iid = s.single_period_excess_kurtosis / n;
+        let persistent = iid
+            + T::from_f64(6.0) * s.vol_of_vol_kurtosis_component / (n * n)
+                * (n * nc - nc * nc * (T::one() - (-n / nc).exp()));
+        let amp = persistent / iid.abs().max_val(T::from_f64(1e-12));
+        let v = n * s.single_period_vol * s.single_period_vol;
+        let smile = s.single_period_vol
+            * (T::one()
+                + k3 / T::from_f64(6.0) * s.log_moneyness / v.sqrt()
+                + persistent / T::from_f64(24.0)
+                    * (s.log_moneyness * s.log_moneyness / v - T::one()));
+        let naive = s.confidence_z * v.sqrt();
+        let z = s.confidence_z;
+        let loss_k3 = -k3;
+        let cf = z
+            + loss_k3 / T::from_f64(6.0) * (z * z - T::one())
+            + persistent / T::from_f64(24.0) * (z * z * z - T::from_f64(3.0) * z)
+            - loss_k3 * loss_k3 / T::from_f64(36.0)
+                * (T::from_f64(2.0) * z * z * z - T::from_f64(5.0) * z);
+        let non_gaussian = v.sqrt() * cf;
+        BouchaudPottersCumulantSmileReport {
+            horizon_skewness_k3: k3,
+            iid_clt_kurtosis_k4: iid,
+            bouchaud_potters_persistent_kurtosis_k4: persistent,
+            kurtosis_persistence_amplification: amp,
+            atm_implied_vol_kurtosis_shift: s.single_period_vol * persistent / T::from_f64(24.0),
+            cumulant_smile_implied_vol: smile,
+            naive_sqrt_t_gaussian_var: naive,
+            bouchaud_potters_non_gaussian_var: non_gaussian,
+            sqrt_time_var_underestimation_ratio: non_gaussian
+                / naive.abs().max_val(T::from_f64(1e-12)),
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct KarnoskySingerMencheroAttributionSpec<T: Real = f64> {
+        pub portfolio_asset_weights: Vec<T>,
+        pub benchmark_asset_weights: Vec<T>,
+        pub portfolio_currency_weights: Vec<T>,
+        pub benchmark_currency_weights: Vec<T>,
+        pub local_portfolio_returns: Vec<T>,
+        pub local_benchmark_returns: Vec<T>,
+        pub local_eurodollar_rates: Vec<T>,
+        pub base_eurodollar_rate: T,
+        pub spot_fx_returns: Vec<T>,
+        pub multi_period_port_returns: Vec<T>,
+        pub multi_period_bench_returns: Vec<T>,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct KarnoskySingerMencheroAttributionReport<T: Real = f64> {
+        pub karnosky_singer_market_allocation: T,
+        pub karnosky_singer_security_selection: T,
+        pub karnosky_singer_currency_management: T,
+        pub karnosky_singer_active_return_error: T,
+        pub menchero_natural_scaling_multiplier: T,
+        pub cumulative_active_return: T,
+        pub menchero_multi_period_linking_error: T,
+    }
+
+    pub fn evaluate_karnosky_singer_multicurrency_and_menchero_attribution<T: Real>(
+        s: &KarnoskySingerMencheroAttributionSpec<T>,
+    ) -> KarnoskySingerMencheroAttributionReport<T> {
+        let n = s.portfolio_asset_weights.len();
+        let mut rb_ex = T::zero();
+        let mut ccy_b = T::zero();
+        for i in 0..n {
+            let ex = s.local_benchmark_returns[i] - s.local_eurodollar_rates[i];
+            rb_ex += s.benchmark_asset_weights[i] * ex;
+            ccy_b += s.benchmark_currency_weights[i]
+                * (s.spot_fx_returns[i] + s.local_eurodollar_rates[i] - s.base_eurodollar_rate);
+        }
+        let mut mkt = T::zero();
+        let mut sec = T::zero();
+        let mut ccy = T::zero();
+        for i in 0..n {
+            let rp = s.local_portfolio_returns[i] - s.local_eurodollar_rates[i];
+            let rb = s.local_benchmark_returns[i] - s.local_eurodollar_rates[i];
+            let ci = s.spot_fx_returns[i] + s.local_eurodollar_rates[i] - s.base_eurodollar_rate;
+            mkt += (s.portfolio_asset_weights[i] - s.benchmark_asset_weights[i]) * (rb - rb_ex);
+            sec += s.portfolio_asset_weights[i] * (rp - rb);
+            ccy +=
+                (s.portfolio_currency_weights[i] - s.benchmark_currency_weights[i]) * (ci - ccy_b);
+        }
+        let mut portfolio_total = T::zero();
+        let mut benchmark_total = T::zero();
+        for i in 0..n {
+            let rp = s.local_portfolio_returns[i] - s.local_eurodollar_rates[i];
+            let rb = s.local_benchmark_returns[i] - s.local_eurodollar_rates[i];
+            let ci = s.spot_fx_returns[i] + s.local_eurodollar_rates[i] - s.base_eurodollar_rate;
+            portfolio_total +=
+                s.portfolio_asset_weights[i] * rp + s.portfolio_currency_weights[i] * ci;
+            benchmark_total +=
+                s.benchmark_asset_weights[i] * rb + s.benchmark_currency_weights[i] * ci;
+        }
+        let active = portfolio_total - benchmark_total;
+        let mut rp_cum = T::one();
+        let mut rb_cum = T::one();
+        for i in 0..s
+            .multi_period_port_returns
+            .len()
+            .min(s.multi_period_bench_returns.len())
+        {
+            rp_cum *= T::one() + s.multi_period_port_returns[i];
+            rb_cum *= T::one() + s.multi_period_bench_returns[i];
+        }
+        let rp = rp_cum - T::one();
+        let rb = rb_cum - T::one();
+        let cumulative = rp - rb;
+        let n_mp = s
+            .multi_period_port_returns
+            .len()
+            .min(s.multi_period_bench_returns.len());
+        let periods = T::from_f64(n_mp.max(1) as f64);
+        let diff_root = rp_cum.pow(T::one() / periods) - rb_cum.pow(T::one() / periods);
+        let diff_root_safe = if diff_root >= T::zero() {
+            diff_root.max_val(T::from_f64(1e-12))
+        } else {
+            diff_root.min_val(T::from_f64(-1e-12))
+        };
+        let multiplier = (cumulative / periods) / diff_root_safe;
+        let mut sum_a = T::zero();
+        let mut sum_a2 = T::zero();
+        for i in 0..n_mp {
+            let a_t = s.multi_period_port_returns[i] - s.multi_period_bench_returns[i];
+            sum_a += a_t;
+            sum_a2 += a_t * a_t;
+        }
+        let c_scale = (cumulative - multiplier * sum_a) / sum_a2.max_val(T::from_f64(1e-12));
+        let mut linked = T::zero();
+        for i in 0..n_mp {
+            let a_t = s.multi_period_port_returns[i] - s.multi_period_bench_returns[i];
+            let alpha_t = c_scale * a_t;
+            linked += (multiplier + alpha_t) * a_t;
+        }
+        KarnoskySingerMencheroAttributionReport {
+            karnosky_singer_market_allocation: mkt,
+            karnosky_singer_security_selection: sec,
+            karnosky_singer_currency_management: ccy,
+            karnosky_singer_active_return_error: (active - (mkt + sec + ccy)).abs(),
+            menchero_natural_scaling_multiplier: multiplier,
+            cumulative_active_return: cumulative,
+            menchero_multi_period_linking_error: (linked - cumulative).abs(),
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct DgtwTreynorMazuyTimingSpec<T: Real = f64> {
+        pub current_weights: Vec<T>,
+        pub lagged_weights: Vec<T>,
+        pub stock_returns: Vec<T>,
+        pub current_char_bench_returns: Vec<T>,
+        pub lagged_char_bench_returns: Vec<T>,
+        pub portfolio_excess_series: Vec<T>,
+        pub market_excess_series: Vec<T>,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct DgtwTreynorMazuyTimingReport<T: Real = f64> {
+        pub dgtw_characteristic_selectivity_cs: T,
+        pub dgtw_characteristic_timing_ct: T,
+        pub dgtw_average_style_as: T,
+        pub dgtw_decomposition_identity_error: T,
+        pub treynor_mazuy_selectivity_alpha: T,
+        pub treynor_mazuy_market_beta: T,
+        pub treynor_mazuy_timing_gamma: T,
+        pub treynor_mazuy_r_squared: T,
+    }
+
+    fn solve_3x3<T: Real>(mut a: [[T; 4]; 3]) -> [T; 3] {
+        for i in 0..3 {
+            let mut pivot = i;
+            for r in i + 1..3 {
+                if a[r][i].abs() > a[pivot][i].abs() {
+                    pivot = r;
+                }
+            }
+            a.swap(i, pivot);
+            let d = if a[i][i].abs() < T::from_f64(1e-12) {
+                T::from_f64(1e-12)
+            } else {
+                a[i][i]
+            };
+            for value in a[i].iter_mut().skip(i) {
+                *value /= d;
+            }
+            for r in 0..3 {
+                if r != i {
+                    let f = a[r][i];
+                    for j in i..4 {
+                        a[r][j] -= f * a[i][j];
+                    }
+                }
+            }
+        }
+        [a[0][3], a[1][3], a[2][3]]
+    }
+
+    pub fn evaluate_dgtw_characteristic_and_treynor_mazuy_timing<T: Real>(
+        s: &DgtwTreynorMazuyTimingSpec<T>,
+    ) -> DgtwTreynorMazuyTimingReport<T> {
+        let n = s
+            .current_weights
+            .len()
+            .min(s.lagged_weights.len())
+            .min(s.stock_returns.len());
+        let mut cs = T::zero();
+        let mut ct = T::zero();
+        let mut as_ = T::zero();
+        let mut rp = T::zero();
+        for i in 0..n {
+            cs += s.current_weights[i] * (s.stock_returns[i] - s.current_char_bench_returns[i]);
+            ct += s.current_weights[i] * s.current_char_bench_returns[i]
+                - s.lagged_weights[i] * s.lagged_char_bench_returns[i];
+            as_ += s.lagged_weights[i] * s.lagged_char_bench_returns[i];
+            rp += s.current_weights[i] * s.stock_returns[i];
+        }
+        let m = s
+            .portfolio_excess_series
+            .len()
+            .min(s.market_excess_series.len());
+        let mut normal = [[T::zero(); 4]; 3];
+        let mut sum_y = T::zero();
+        for i in 0..m {
+            let x = s.market_excess_series[i];
+            let y = s.portfolio_excess_series[i];
+            let row = [T::one(), x, x * x];
+            for a in 0..3 {
+                for b in 0..3 {
+                    normal[a][b] += row[a] * row[b];
+                }
+                normal[a][3] += row[a] * y;
+            }
+            sum_y += y;
+        }
+        let coef = solve_3x3(normal);
+        let mean = sum_y / T::from_f64(m.max(1) as f64);
+        let mut sse = T::zero();
+        let mut sst = T::zero();
+        for i in 0..m {
+            let x = s.market_excess_series[i];
+            let y = s.portfolio_excess_series[i];
+            let fit = coef[0] + coef[1] * x + coef[2] * x * x;
+            sse += (y - fit) * (y - fit);
+            sst += (y - mean) * (y - mean);
+        }
+        DgtwTreynorMazuyTimingReport {
+            dgtw_characteristic_selectivity_cs: cs,
+            dgtw_characteristic_timing_ct: ct,
+            dgtw_average_style_as: as_,
+            dgtw_decomposition_identity_error: (rp - (cs + ct + as_)).abs(),
+            treynor_mazuy_selectivity_alpha: coef[0],
+            treynor_mazuy_market_beta: coef[1],
+            treynor_mazuy_timing_gamma: coef[2],
+            treynor_mazuy_r_squared: T::one() - sse / sst.max_val(T::from_f64(1e-12)),
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct BrockHommesAdaptiveBeliefSpec<T: Real = f64> {
+        pub initial_price_deviation: T,
+        pub risk_free_rate: T,
+        pub fundamentalist_damping_v1: T,
+        pub chartist_trend_extrapolation_g: T,
+        pub fundamentalist_info_cost_c1: T,
+        pub intensity_of_choice_beta: T,
+        pub fitness_memory_eta: T,
+        pub risk_aversion_sigma2: T,
+        pub shock_innovations: Vec<T>,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct BrockHommesAdaptiveBeliefReport<T: Real = f64> {
+        pub terminal_fundamentalist_fraction: T,
+        pub terminal_chartist_fraction: T,
+        pub steady_state_jacobian_eigenvalue: T,
+        pub critical_bifurcation_beta: T,
+        pub terminal_price_deviation: T,
+        pub price_deviation_trajectory: Vec<T>,
+        pub chartist_fraction_trajectory: Vec<T>,
+        pub endogenous_excess_volatility_ratio: T,
+    }
+
+    pub fn evaluate_brock_hommes_adaptive_belief_switching<T: Real>(
+        s: &BrockHommesAdaptiveBeliefSpec<T>,
+    ) -> BrockHommesAdaptiveBeliefReport<T> {
+        let r = T::one() + s.risk_free_rate;
+        let mut x = s.initial_price_deviation;
+        let mut prev = x;
+        let mut u1 = -s.fundamentalist_info_cost_c1;
+        let mut u2 = T::zero();
+        let mut path = Vec::with_capacity(s.shock_innovations.len() + 1);
+        let mut frac = Vec::with_capacity(s.shock_innovations.len());
+        path.push(x);
+        for shock in &s.shock_innovations {
+            let pi = x - r * prev;
+            u1 = s.fitness_memory_eta * u1
+                + (s.fundamentalist_damping_v1 * prev * pi)
+                    / s.risk_aversion_sigma2.max_val(T::from_f64(1e-12))
+                - s.fundamentalist_info_cost_c1;
+            u2 = s.fitness_memory_eta * u2
+                + (s.chartist_trend_extrapolation_g * prev * pi)
+                    / s.risk_aversion_sigma2.max_val(T::from_f64(1e-12));
+            let n1 = T::one() / (T::one() + (s.intensity_of_choice_beta * (u2 - u1)).exp());
+            let n2 = T::one() - n1;
+            prev = x;
+            x = (n1 * s.fundamentalist_damping_v1 + n2 * s.chartist_trend_extrapolation_g) * x / r
+                + *shock / r;
+            path.push(x);
+            frac.push(n2);
+        }
+        let n1_star = T::one()
+            / (T::one() + (s.intensity_of_choice_beta * s.fundamentalist_info_cost_c1).exp());
+        let eig = ((T::one() - n1_star) * s.chartist_trend_extrapolation_g
+            + n1_star * s.fundamentalist_damping_v1)
+            / r;
+        let ratio = ((r - s.fundamentalist_damping_v1)
+            / (s.chartist_trend_extrapolation_g - r)
+                .abs()
+                .max_val(T::from_f64(1e-12)))
+        .abs()
+        .max_val(T::from_f64(1e-12));
+        let critical = ratio.ln().abs()
+            / s.fundamentalist_info_cost_c1
+                .abs()
+                .max_val(T::from_f64(1e-12));
+        let n_shocks = T::from_f64(s.shock_innovations.len().max(1) as f64);
+        let traj_rms = (path.iter().skip(1).fold(T::zero(), |acc, &v| acc + v * v) / n_shocks)
+            .max_val(T::from_f64(1e-24))
+            .sqrt();
+        let shock_rms = (s
+            .shock_innovations
+            .iter()
+            .fold(T::zero(), |acc, &v| acc + v * v)
+            / n_shocks)
+            .max_val(T::from_f64(1e-24))
+            .sqrt();
+        BrockHommesAdaptiveBeliefReport {
+            terminal_fundamentalist_fraction: T::one() - frac.last().copied().unwrap_or(T::zero()),
+            terminal_chartist_fraction: frac.last().copied().unwrap_or(T::zero()),
+            steady_state_jacobian_eigenvalue: eig,
+            critical_bifurcation_beta: critical,
+            terminal_price_deviation: x,
+            price_deviation_trajectory: path,
+            chartist_fraction_trajectory: frac,
+            endogenous_excess_volatility_ratio: traj_rms / shock_rms.max_val(T::from_f64(1e-12)),
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_43_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        fn hill<T: Real>(x: T) -> EmbrechtsHillPickandsSubexponentialSpec<T> {
+            EmbrechtsHillPickandsSubexponentialSpec {
+                loss_samples: vec![
+                    T::from_f64(160.0) + x,
+                    T::from_f64(110.0),
+                    T::from_f64(82.0),
+                    T::from_f64(66.0),
+                    T::from_f64(56.0),
+                    T::from_f64(50.0),
+                    T::from_f64(46.0),
+                    T::from_f64(43.0),
+                    T::from_f64(40.0),
+                    T::from_f64(38.0),
+                    T::from_f64(36.0),
+                    T::from_f64(35.0),
+                ],
+                tail_order_k: 2,
+                extreme_tail_prob: T::from_f64(0.01),
+                portfolio_positions_count: 8,
+            }
+        }
+
+        #[test]
+        fn suite43_invariants_and_dual_fd() {
+            let hrep = evaluate_embrechts_hill_pickands_and_subexponential_tail(&hill(0.0));
+            assert!(hrep.hill_xi_tail_index > 0.0 && hrep.pickands_xi_tail_index > 0.0);
+            assert!(hrep.weissman_extreme_es > hrep.weissman_extreme_var);
+            let h = 1e-6;
+            let fd = (evaluate_embrechts_hill_pickands_and_subexponential_tail(&hill(h))
+                .weissman_extreme_var
+                - evaluate_embrechts_hill_pickands_and_subexponential_tail(&hill(-h))
+                    .weissman_extreme_var)
+                / (2.0 * h);
+            let ad = evaluate_embrechts_hill_pickands_and_subexponential_tail(&hill(
+                Dual::<1>::variable(0.0, 0),
+            ))
+            .weissman_extreme_var;
+            assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
+            let bp = evaluate_bouchaud_potters_power_law_cumulant_and_smile_scaling(
+                &BouchaudPottersCumulantSmileSpec {
+                    single_period_vol: 0.2,
+                    single_period_skewness: -0.2,
+                    single_period_excess_kurtosis: 3.0,
+                    vol_of_vol_kurtosis_component: 2.0,
+                    vol_decorrelation_steps: 10.0,
+                    horizon_steps_n: 20.0,
+                    log_moneyness: 0.1,
+                    confidence_z: 2.33,
+                },
+            );
+            assert!(bp.bouchaud_potters_persistent_kurtosis_k4 > bp.iid_clt_kurtosis_k4);
+            assert!(bp.sqrt_time_var_underestimation_ratio > 1.0);
+            let ks = evaluate_karnosky_singer_multicurrency_and_menchero_attribution(
+                &KarnoskySingerMencheroAttributionSpec {
+                    portfolio_asset_weights: vec![0.6, 0.4],
+                    benchmark_asset_weights: vec![0.5, 0.5],
+                    portfolio_currency_weights: vec![0.6, 0.4],
+                    benchmark_currency_weights: vec![0.5, 0.5],
+                    local_portfolio_returns: vec![0.08, 0.03],
+                    local_benchmark_returns: vec![0.06, 0.04],
+                    local_eurodollar_rates: vec![0.02, 0.025],
+                    base_eurodollar_rate: 0.03,
+                    spot_fx_returns: vec![0.01, -0.005],
+                    multi_period_port_returns: vec![0.02, 0.03],
+                    multi_period_bench_returns: vec![0.018, 0.025],
+                },
+            );
+            assert!(
+                ks.karnosky_singer_active_return_error < 1e-12
+                    && ks.menchero_multi_period_linking_error < 1e-12
+            );
+            fn bp_spec<T: Real>(x: T) -> BouchaudPottersCumulantSmileSpec<T> {
+                BouchaudPottersCumulantSmileSpec {
+                    single_period_vol: T::from_f64(0.2) + x,
+                    single_period_skewness: T::from_f64(-0.2),
+                    single_period_excess_kurtosis: T::from_f64(3.0),
+                    vol_of_vol_kurtosis_component: T::from_f64(2.0),
+                    vol_decorrelation_steps: T::from_f64(10.0),
+                    horizon_steps_n: T::from_f64(20.0),
+                    log_moneyness: T::from_f64(0.1),
+                    confidence_z: T::from_f64(2.33),
+                }
+            }
+            let fd_bp =
+                (evaluate_bouchaud_potters_power_law_cumulant_and_smile_scaling(&bp_spec(h))
+                    .bouchaud_potters_non_gaussian_var
+                    - evaluate_bouchaud_potters_power_law_cumulant_and_smile_scaling(&bp_spec(-h))
+                        .bouchaud_potters_non_gaussian_var)
+                    / (2.0 * h);
+            let ad_bp = evaluate_bouchaud_potters_power_law_cumulant_and_smile_scaling(&bp_spec(
+                Dual::<1>::variable(0.0, 0),
+            ))
+            .bouchaud_potters_non_gaussian_var;
+            assert!(ad_bp.d[0].abs() > 1e-6 && (ad_bp.d[0] - fd_bp).abs() < 1e-5);
+            fn ks_spec<T: Real>(x: T) -> KarnoskySingerMencheroAttributionSpec<T> {
+                KarnoskySingerMencheroAttributionSpec {
+                    portfolio_asset_weights: vec![T::from_f64(0.6), T::from_f64(0.4)],
+                    benchmark_asset_weights: vec![T::from_f64(0.5), T::from_f64(0.5)],
+                    portfolio_currency_weights: vec![T::from_f64(0.6), T::from_f64(0.4)],
+                    benchmark_currency_weights: vec![T::from_f64(0.5), T::from_f64(0.5)],
+                    local_portfolio_returns: vec![T::from_f64(0.08) + x, T::from_f64(0.03)],
+                    local_benchmark_returns: vec![T::from_f64(0.06), T::from_f64(0.04)],
+                    local_eurodollar_rates: vec![T::from_f64(0.02), T::from_f64(0.025)],
+                    base_eurodollar_rate: T::from_f64(0.03),
+                    spot_fx_returns: vec![T::from_f64(0.01), T::from_f64(-0.005)],
+                    multi_period_port_returns: vec![T::from_f64(0.02), T::from_f64(0.03)],
+                    multi_period_bench_returns: vec![T::from_f64(0.018), T::from_f64(0.025)],
+                }
+            }
+            let fd_ks =
+                (evaluate_karnosky_singer_multicurrency_and_menchero_attribution(&ks_spec(h))
+                    .karnosky_singer_security_selection
+                    - evaluate_karnosky_singer_multicurrency_and_menchero_attribution(&ks_spec(
+                        -h,
+                    ))
+                    .karnosky_singer_security_selection)
+                    / (2.0 * h);
+            let ad_ks = evaluate_karnosky_singer_multicurrency_and_menchero_attribution(&ks_spec(
+                Dual::<1>::variable(0.0, 0),
+            ))
+            .karnosky_singer_security_selection;
+            assert!(ad_ks.d[0].abs() > 1e-6 && (ad_ks.d[0] - fd_ks).abs() < 1e-5);
+            let d = evaluate_dgtw_characteristic_and_treynor_mazuy_timing(
+                &DgtwTreynorMazuyTimingSpec {
+                    current_weights: vec![0.6, 0.4],
+                    lagged_weights: vec![0.5, 0.5],
+                    stock_returns: vec![0.08, 0.03],
+                    current_char_bench_returns: vec![0.06, 0.04],
+                    lagged_char_bench_returns: vec![0.05, 0.04],
+                    portfolio_excess_series: vec![0.01, 0.02, 0.04, 0.08],
+                    market_excess_series: vec![0.0, 0.02, 0.04, 0.08],
+                },
+            );
+            assert!(
+                d.dgtw_decomposition_identity_error < 1e-12 && d.treynor_mazuy_timing_gamma > 0.0
+            );
+            fn tm_spec<T: Real>(x: T) -> DgtwTreynorMazuyTimingSpec<T> {
+                DgtwTreynorMazuyTimingSpec {
+                    current_weights: vec![T::from_f64(0.6), T::from_f64(0.4)],
+                    lagged_weights: vec![T::from_f64(0.5), T::from_f64(0.5)],
+                    stock_returns: vec![T::from_f64(0.08), T::from_f64(0.03)],
+                    current_char_bench_returns: vec![T::from_f64(0.06), T::from_f64(0.04)],
+                    lagged_char_bench_returns: vec![T::from_f64(0.05), T::from_f64(0.04)],
+                    portfolio_excess_series: vec![
+                        T::from_f64(0.01),
+                        T::from_f64(0.02),
+                        T::from_f64(0.04),
+                        T::from_f64(0.08) + x,
+                    ],
+                    market_excess_series: vec![
+                        T::zero(),
+                        T::from_f64(0.02),
+                        T::from_f64(0.04),
+                        T::from_f64(0.08),
+                    ],
+                }
+            }
+            let fd_tm = (evaluate_dgtw_characteristic_and_treynor_mazuy_timing(&tm_spec(h))
+                .treynor_mazuy_timing_gamma
+                - evaluate_dgtw_characteristic_and_treynor_mazuy_timing(&tm_spec(-h))
+                    .treynor_mazuy_timing_gamma)
+                / (2.0 * h);
+            let ad_tm = evaluate_dgtw_characteristic_and_treynor_mazuy_timing(&tm_spec(
+                Dual::<1>::variable(0.0, 0),
+            ))
+            .treynor_mazuy_timing_gamma;
+            assert!(ad_tm.d[0].abs() > 1e-6 && (ad_tm.d[0] - fd_tm).abs() < 1e-5);
+            let bh =
+                evaluate_brock_hommes_adaptive_belief_switching(&BrockHommesAdaptiveBeliefSpec {
+                    initial_price_deviation: 0.1,
+                    risk_free_rate: 0.03,
+                    fundamentalist_damping_v1: 0.8,
+                    chartist_trend_extrapolation_g: 1.2,
+                    fundamentalist_info_cost_c1: 0.1,
+                    intensity_of_choice_beta: 8.0,
+                    fitness_memory_eta: 0.8,
+                    risk_aversion_sigma2: 1.0,
+                    shock_innovations: vec![0.01, -0.005, 0.003],
+                });
+            assert!(
+                (bh.terminal_fundamentalist_fraction + bh.terminal_chartist_fraction - 1.0).abs()
+                    < 1e-12
+            );
+            assert!(bh.steady_state_jacobian_eigenvalue > 1.0);
+            fn bh_spec<T: Real>(x: T) -> BrockHommesAdaptiveBeliefSpec<T> {
+                BrockHommesAdaptiveBeliefSpec {
+                    initial_price_deviation: T::from_f64(0.1) + x,
+                    risk_free_rate: T::from_f64(0.03),
+                    fundamentalist_damping_v1: T::from_f64(0.8),
+                    chartist_trend_extrapolation_g: T::from_f64(1.2),
+                    fundamentalist_info_cost_c1: T::from_f64(0.1),
+                    intensity_of_choice_beta: T::from_f64(8.0),
+                    fitness_memory_eta: T::from_f64(0.8),
+                    risk_aversion_sigma2: T::one(),
+                    shock_innovations: vec![
+                        T::from_f64(0.01),
+                        T::from_f64(-0.005),
+                        T::from_f64(0.003),
+                    ],
+                }
+            }
+            let fd_bh = (evaluate_brock_hommes_adaptive_belief_switching(&bh_spec(h))
+                .terminal_price_deviation
+                - evaluate_brock_hommes_adaptive_belief_switching(&bh_spec(-h))
+                    .terminal_price_deviation)
+                / (2.0 * h);
+            let ad_bh = evaluate_brock_hommes_adaptive_belief_switching(&bh_spec(
+                Dual::<1>::variable(0.0, 0),
+            ))
+            .terminal_price_deviation;
+            assert!(ad_bh.d[0].abs() > 1e-6 && (ad_bh.d[0] - fd_bh).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_embrechts_hill_pickands_and_subexponential_tail_module::*;
+
+mod evaluate_ohara_glosten_milgrom_sequential_spread_module {
+    use ql_ad::Real;
+    #[derive(Clone, Debug)]
+    pub struct OharaGlostenMilgromSequentialSpec<T: Real = f64> {
+        pub low_value_vl: T,
+        pub high_value_vh: T,
+        pub initial_prior_p0: T,
+        pub informed_trader_fraction_mu: T,
+        pub informed_signal_accuracy_theta: T,
+        pub dealer_inventory_gamma: T,
+        pub signed_order_flow: Vec<T>,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct OharaGlostenMilgromSequentialReport<T: Real = f64> {
+        pub initial_glosten_milgrom_ask: T,
+        pub initial_glosten_milgrom_bid: T,
+        pub initial_adverse_selection_spread: T,
+        pub terminal_posterior_belief_p: T,
+        pub terminal_adverse_selection_spread: T,
+        pub terminal_dealer_inventory: T,
+        pub inventory_skewed_reservation_mid: T,
+        pub information_learning_entropy_reduction: T,
+    }
+    pub fn evaluate_ohara_glosten_milgrom_sequential_spread<T: Real>(
+        s: &OharaGlostenMilgromSequentialSpec<T>,
+    ) -> OharaGlostenMilgromSequentialReport<T> {
+        let d = s.high_value_vh - s.low_value_vl;
+        let b = s.informed_trader_fraction_mu;
+        let th = s.informed_signal_accuracy_theta;
+        let mut p = s.initial_prior_p0;
+        let mut q = T::zero();
+        let buy_h = b * th + T::from_f64(0.5) * (T::one() - b);
+        let buy_l = b * (T::one() - th) + T::from_f64(0.5) * (T::one() - b);
+        let pb0 = (p * buy_h + (T::one() - p) * buy_l).max_val(T::from_f64(1e-12));
+        let ps0 = (T::one() - pb0).max_val(T::from_f64(1e-12));
+        let ask0 = s.low_value_vl + (p * buy_h / pb0) * d;
+        let bid0 = s.low_value_vl + (p * buy_l / ps0) * d;
+        let h0 = -(p * p.ln() + (T::one() - p) * (T::one() - p).ln());
+        for &flow in &s.signed_order_flow {
+            let pb = (p * buy_h + (T::one() - p) * buy_l).max_val(T::from_f64(1e-12));
+            let ps = (T::one() - pb).max_val(T::from_f64(1e-12));
+            let pp = p * buy_h / pb;
+            let pm = p * buy_l / ps;
+            p = (T::one() + flow) / T::from_f64(2.0) * pp
+                + (T::one() - flow) / T::from_f64(2.0) * pm;
+            q -= flow;
+        }
+        let pb_t = (p * buy_h + (T::one() - p) * buy_l).max_val(T::from_f64(1e-12));
+        let ps_t = (T::one() - pb_t).max_val(T::from_f64(1e-12));
+        let ask = s.low_value_vl + (p * buy_h / pb_t) * d;
+        let bid = s.low_value_vl + (p * buy_l / ps_t) * d;
+        let mid =
+            s.low_value_vl + p * d - s.dealer_inventory_gamma * d * d * p * (T::one() - p) * q;
+        let h = -(p * p.ln() + (T::one() - p) * (T::one() - p).ln());
+        OharaGlostenMilgromSequentialReport {
+            initial_glosten_milgrom_ask: ask0,
+            initial_glosten_milgrom_bid: bid0,
+            initial_adverse_selection_spread: ask0 - bid0,
+            terminal_posterior_belief_p: p,
+            terminal_adverse_selection_spread: ask - bid,
+            terminal_dealer_inventory: q,
+            inventory_skewed_reservation_mid: mid,
+            information_learning_entropy_reduction: h0 - h,
+        }
+    }
+    #[derive(Clone, Debug)]
+    pub struct PottersBouchaudStieltjesRieSpec<T: Real = f64> {
+        pub sample_eigenvalues: Vec<T>,
+        pub aspect_ratio_q: T,
+        pub stieltjes_bandwidth_eta: T,
+    }
+    #[derive(Clone, Debug)]
+    pub struct PottersBouchaudStieltjesRieReport<T: Real = f64> {
+        pub rie_shrunk_eigenvalues: Vec<T>,
+        pub sample_min_eigenvalue: T,
+        pub rie_min_eigenvalue: T,
+        pub sample_condition_number: T,
+        pub rie_condition_number: T,
+        pub trace_conservation_error: T,
+        pub markowitz_oos_variance_inflation_factor: T,
+        pub inverse_variance_portfolio_risk_reduction: T,
+    }
+    pub fn evaluate_potters_bouchaud_stieltjes_rie_shrinkage<T: Real>(
+        s: &PottersBouchaudStieltjesRieSpec<T>,
+    ) -> PottersBouchaudStieltjesRieReport<T> {
+        let n = s.sample_eigenvalues.len();
+        let mut shr = Vec::with_capacity(n);
+        for i in 0..n {
+            let l = s.sample_eigenvalues[i];
+            let eta = s.stieltjes_bandwidth_eta * l / (n as f64).sqrt();
+            let mut re = T::zero();
+            let mut im = T::zero();
+            for &lj in &s.sample_eigenvalues {
+                let d = lj - l;
+                let den = d * d + eta * eta;
+                re += d / den;
+                im += eta / den;
+            }
+            re /= T::from_f64(n as f64);
+            im /= T::from_f64(n as f64);
+            let a = T::one() - s.aspect_ratio_q + s.aspect_ratio_q * (l * re + eta * im);
+            let b = s.aspect_ratio_q * (l * im - eta * re);
+            shr.push(l / (a * a + b * b));
+        }
+        let suml = s
+            .sample_eigenvalues
+            .iter()
+            .copied()
+            .fold(T::zero(), |a, x| a + x);
+        let sums = shr.iter().copied().fold(T::zero(), |a, x| a + x);
+        for x in &mut shr {
+            *x *= suml / sums;
+            *x = (*x + suml / T::from_f64(n as f64)) * T::from_f64(0.5);
+        }
+        let min_s = s
+            .sample_eigenvalues
+            .iter()
+            .copied()
+            .reduce(|a, b| a.min_val(b))
+            .unwrap();
+        let max_s = s
+            .sample_eigenvalues
+            .iter()
+            .copied()
+            .reduce(|a, b| a.max_val(b))
+            .unwrap();
+        let min_r = shr.iter().copied().reduce(|a, b| a.min_val(b)).unwrap();
+        let max_r = shr.iter().copied().reduce(|a, b| a.max_val(b)).unwrap();
+        PottersBouchaudStieltjesRieReport {
+            rie_shrunk_eigenvalues: shr.clone(),
+            sample_min_eigenvalue: min_s,
+            rie_min_eigenvalue: min_r,
+            sample_condition_number: max_s / min_s,
+            rie_condition_number: max_r / min_r,
+            trace_conservation_error: {
+                let t_err = shr.iter().copied().fold(T::zero(), |a, x| a + x) - suml;
+                (t_err * t_err + T::from_f64(1e-30)).sqrt()
+            },
+            markowitz_oos_variance_inflation_factor: T::one() / (T::one() - s.aspect_ratio_q),
+            inverse_variance_portfolio_risk_reduction: T::one()
+                - min_s / min_r.max_val(T::from_f64(1e-12)),
+        }
+    }
+    #[derive(Clone, Debug)]
+    pub struct TsayEgarchHamiltonRegimeSpec<T: Real = f64> {
+        pub returns: Vec<T>,
+        pub initial_variance: T,
+        pub egarch_omega: T,
+        pub egarch_alpha: T,
+        pub egarch_leverage_gamma: T,
+        pub egarch_beta: T,
+        pub calm_mean: T,
+        pub calm_vol: T,
+        pub crisis_mean: T,
+        pub crisis_vol: T,
+        pub stay_calm_p00: T,
+        pub stay_crisis_p11: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct TsayEgarchHamiltonRegimeReport<T: Real = f64> {
+        pub terminal_egarch_log_variance: T,
+        pub terminal_egarch_volatility: T,
+        pub egarch_negative_shock_asymmetry_ratio: T,
+        pub ergodic_crisis_probability: T,
+        pub terminal_filtered_crisis_probability: T,
+        pub regime_blended_conditional_vol: T,
+        pub hamilton_filter_log_likelihood: T,
+    }
+    pub fn evaluate_tsay_egarch_and_hamilton_markov_switching<T: Real>(
+        s: &TsayEgarchHamiltonRegimeSpec<T>,
+    ) -> TsayEgarchHamiltonRegimeReport<T> {
+        let mut lh = s.initial_variance.ln();
+        let mut ll = T::zero();
+        let mut pc =
+            (T::one() - s.stay_calm_p00) / (T::from_f64(2.0) - s.stay_calm_p00 - s.stay_crisis_p11);
+        for &r in &s.returns {
+            let h = lh.exp();
+            let z = r / h.sqrt();
+            lh = s.egarch_omega
+                + s.egarch_beta * lh
+                + s.egarch_alpha
+                    * ((z * z + T::from_f64(1e-12)).sqrt()
+                        - T::from_f64((2.0 / std::f64::consts::PI).sqrt()))
+                + s.egarch_leverage_gamma * z;
+            let p0 = s.stay_calm_p00 * (T::one() - pc) + (T::one() - s.stay_crisis_p11) * pc;
+            let p1 = T::one() - p0;
+            let f0 = ((-T::from_f64(0.5) * (r - s.calm_mean) * (r - s.calm_mean)
+                / (s.calm_vol * s.calm_vol))
+                .exp())
+                / (T::from_f64(2.0 * std::f64::consts::PI).sqrt() * s.calm_vol);
+            let f1 = ((-T::from_f64(0.5) * (r - s.crisis_mean) * (r - s.crisis_mean)
+                / (s.crisis_vol * s.crisis_vol))
+                .exp())
+                / (T::from_f64(2.0 * std::f64::consts::PI).sqrt() * s.crisis_vol);
+            let f = p0 * f0 + p1 * f1;
+            pc = p1 * f1 / f;
+            ll += f.ln();
+        }
+        TsayEgarchHamiltonRegimeReport {
+            terminal_egarch_log_variance: lh,
+            terminal_egarch_volatility: (lh.exp()).sqrt(),
+            egarch_negative_shock_asymmetry_ratio: (s.egarch_alpha - s.egarch_leverage_gamma)
+                / (s.egarch_alpha + s.egarch_leverage_gamma).max_val(T::from_f64(1e-6)),
+            ergodic_crisis_probability: (T::one() - s.stay_calm_p00)
+                / (T::from_f64(2.0) - s.stay_calm_p00 - s.stay_crisis_p11),
+            terminal_filtered_crisis_probability: pc,
+            regime_blended_conditional_vol: ((T::one() - pc) * s.calm_vol * s.calm_vol
+                + pc * s.crisis_vol * s.crisis_vol)
+                .sqrt(),
+            hamilton_filter_log_likelihood: ll,
+        }
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct McneilFreyCopulaEulerAllocationSpec<T: Real = f64> {
+        pub clayton_theta: T,
+        pub gumbel_theta: T,
+        pub student_t_df_nu: T,
+        pub student_t_corr_rho: T,
+        pub desk_weights: [T; 4],
+        pub desk_expected_losses: [T; 4],
+        pub loss_covariance_4x4: [[T; 4]; 4],
+        pub es_tail_multiplier: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct McneilFreyCopulaEulerAllocationReport<T: Real = f64> {
+        pub clayton_lower_tail_lambda: T,
+        pub gumbel_upper_tail_lambda: T,
+        pub student_t_tail_lambda: T,
+        pub total_portfolio_es: T,
+        pub standalone_es_sum: T,
+        pub euler_desk_allocations: [T; 4],
+        pub portfolio_diversification_benefit: T,
+        pub euler_additivity_error: T,
+    }
+    pub fn evaluate_mcneil_frey_copula_tail_and_euler_allocation<T: Real>(
+        s: &McneilFreyCopulaEulerAllocationSpec<T>,
+    ) -> McneilFreyCopulaEulerAllocationReport<T> {
+        let cl = T::from_f64(2.0).pow(-T::one() / s.clayton_theta);
+        let gu = T::from_f64(2.0) - T::from_f64(2.0).pow(T::one() / s.gumbel_theta);
+        let arg = ((s.student_t_df_nu + T::one()) * (T::one() - s.student_t_corr_rho)
+            / (T::one() + s.student_t_corr_rho))
+            .sqrt();
+        let st = T::from_f64(2.0) * (-arg).norm_cdf();
+        let mut sw = [T::zero(); 4];
+        for i in 0..4 {
+            for j in 0..4 {
+                sw[i] += s.loss_covariance_4x4[i][j] * s.desk_weights[j];
+            }
+        }
+        let var = s
+            .desk_weights
+            .iter()
+            .enumerate()
+            .map(|(i, w)| *w * sw[i])
+            .fold(T::zero(), |a, x| a + x);
+        let vol = var.sqrt();
+        let mean = s
+            .desk_weights
+            .iter()
+            .zip(s.desk_expected_losses.iter())
+            .map(|(w, m)| *w * *m)
+            .fold(T::zero(), |a, x| a + x);
+        let es = mean + s.es_tail_multiplier * vol;
+        let mut rc = [T::zero(); 4];
+        for i in 0..4 {
+            rc[i] = s.desk_weights[i] * s.desk_expected_losses[i]
+                + s.es_tail_multiplier * s.desk_weights[i] * sw[i] / vol;
+        }
+        let stand = s
+            .desk_weights
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                *w * s.desk_expected_losses[i]
+                    + s.es_tail_multiplier * w.abs() * s.loss_covariance_4x4[i][i].sqrt()
+            })
+            .fold(T::zero(), |a, x| a + x);
+        let sum_rc = rc.iter().copied().fold(T::zero(), |a, x| a + x);
+        McneilFreyCopulaEulerAllocationReport {
+            clayton_lower_tail_lambda: cl,
+            gumbel_upper_tail_lambda: gu,
+            student_t_tail_lambda: st,
+            total_portfolio_es: es,
+            standalone_es_sum: stand,
+            euler_desk_allocations: rc,
+            portfolio_diversification_benefit: stand - es,
+            euler_additivity_error: {
+                let e_err = es - sum_rc;
+                (e_err * e_err + T::from_f64(1e-30)).sqrt()
+            },
+        }
+    }
+    #[derive(Clone, Debug)]
+    pub struct BaconOmegaSortinoBurkeDrawdownSpec<T: Real = f64> {
+        pub period_returns: Vec<T>,
+        pub mar_threshold: T,
+        pub risk_free_rate: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct BaconOmegaSortinoBurkeDrawdownReport<T: Real = f64> {
+        pub mean_return: T,
+        pub upside_potential_lpm1: T,
+        pub downside_shortfall_lpm1: T,
+        pub keating_shadwick_omega_ratio: T,
+        pub omega_put_call_parity_error: T,
+        pub downside_deviation: T,
+        pub sortino_ratio: T,
+        pub kappa_three_ratio: T,
+        pub ulcer_drawdown_index: T,
+        pub martin_ulcer_ratio: T,
+        pub burke_drawdown_ratio: T,
+    }
+    pub fn evaluate_bacon_omega_sortino_and_burke_drawdown<T: Real>(
+        s: &BaconOmegaSortinoBurkeDrawdownSpec<T>,
+    ) -> BaconOmegaSortinoBurkeDrawdownReport<T> {
+        let n = s.period_returns.len();
+        let mut mean = T::zero();
+        let mut up = T::zero();
+        let mut dn = T::zero();
+        let mut l2 = T::zero();
+        let mut l3 = T::zero();
+        let mut w = T::one();
+        let mut peak = w;
+        let mut dds = T::zero();
+        for &r in &s.period_returns {
+            mean += r;
+            let x = r - s.mar_threshold;
+            let g = (x + (x * x + T::from_f64(1e-16)).sqrt()) / T::from_f64(2.0);
+            let d = (-x + (x * x + T::from_f64(1e-16)).sqrt()) / T::from_f64(2.0);
+            up += g;
+            dn += d;
+            l2 += d * d;
+            l3 += d * d * d;
+            w *= T::one() + r;
+            peak = peak.max_val(w);
+            let dd = (peak - w) / peak;
+            dds += dd * dd;
+        }
+        let nf = T::from_f64(n as f64);
+        mean /= nf;
+        up /= nf;
+        dn /= nf;
+        let ui = (dds / nf).sqrt();
+        let ex = mean - s.risk_free_rate;
+        BaconOmegaSortinoBurkeDrawdownReport {
+            mean_return: mean,
+            upside_potential_lpm1: up,
+            downside_shortfall_lpm1: dn,
+            keating_shadwick_omega_ratio: up / dn,
+            omega_put_call_parity_error: {
+                let o_err = up - dn - (mean - s.mar_threshold);
+                (o_err * o_err + T::from_f64(1e-30)).sqrt()
+            },
+            downside_deviation: (l2 / nf).sqrt(),
+            sortino_ratio: (mean - s.mar_threshold) / (l2 / nf).sqrt(),
+            kappa_three_ratio: (mean - s.mar_threshold)
+                / (l3 / nf).max_val(T::from_f64(1e-18)).powf(1.0 / 3.0),
+            ulcer_drawdown_index: ui,
+            martin_ulcer_ratio: ex / ui,
+            burke_drawdown_ratio: ex / dds.sqrt(),
+        }
+    }
+    #[cfg(test)]
+    mod domain_suite_45_tests {
+        use super::*;
+        use ql_ad::Dual;
+        fn gm_spec<T: Real>(x: T) -> OharaGlostenMilgromSequentialSpec<T> {
+            OharaGlostenMilgromSequentialSpec {
+                low_value_vl: T::from_f64(90.),
+                high_value_vh: T::from_f64(110.),
+                initial_prior_p0: T::from_f64(0.5) + x,
+                informed_trader_fraction_mu: T::from_f64(0.3),
+                informed_signal_accuracy_theta: T::from_f64(0.8),
+                dealer_inventory_gamma: T::from_f64(0.01),
+                signed_order_flow: vec![T::from_f64(0.4), T::from_f64(0.3)],
+            }
+        }
+        fn rie_spec<T: Real>(x: T) -> PottersBouchaudStieltjesRieSpec<T> {
+            PottersBouchaudStieltjesRieSpec {
+                sample_eigenvalues: vec![
+                    T::from_f64(0.4) + x,
+                    T::from_f64(0.9),
+                    T::from_f64(1.5),
+                    T::from_f64(2.4),
+                ],
+                aspect_ratio_q: T::from_f64(0.5),
+                stieltjes_bandwidth_eta: T::from_f64(0.25),
+            }
+        }
+        fn egarch_spec<T: Real>(x: T) -> TsayEgarchHamiltonRegimeSpec<T> {
+            TsayEgarchHamiltonRegimeSpec {
+                returns: vec![
+                    T::from_f64(0.01) + x,
+                    T::from_f64(-0.025),
+                    T::from_f64(0.015),
+                ],
+                initial_variance: T::from_f64(0.04),
+                egarch_omega: T::from_f64(-0.1),
+                egarch_alpha: T::from_f64(0.15),
+                egarch_leverage_gamma: T::from_f64(-0.08),
+                egarch_beta: T::from_f64(0.92),
+                calm_mean: T::zero(),
+                calm_vol: T::from_f64(0.12),
+                crisis_mean: T::from_f64(-0.01),
+                crisis_vol: T::from_f64(0.30),
+                stay_calm_p00: T::from_f64(0.95),
+                stay_crisis_p11: T::from_f64(0.90),
+            }
+        }
+        fn copula_spec<T: Real>(x: T) -> McneilFreyCopulaEulerAllocationSpec<T> {
+            McneilFreyCopulaEulerAllocationSpec {
+                clayton_theta: T::from_f64(2.0) + x,
+                gumbel_theta: T::from_f64(1.5),
+                student_t_df_nu: T::from_f64(5.0),
+                student_t_corr_rho: T::from_f64(0.3),
+                desk_weights: [
+                    T::from_f64(0.25) + x,
+                    T::from_f64(0.25),
+                    T::from_f64(0.25),
+                    T::from_f64(0.25),
+                ],
+                desk_expected_losses: [T::from_f64(0.01); 4],
+                loss_covariance_4x4: [
+                    [T::from_f64(0.04), T::from_f64(0.01), T::zero(), T::zero()],
+                    [
+                        T::from_f64(0.01),
+                        T::from_f64(0.05),
+                        T::from_f64(0.01),
+                        T::zero(),
+                    ],
+                    [
+                        T::zero(),
+                        T::from_f64(0.01),
+                        T::from_f64(0.06),
+                        T::from_f64(0.01),
+                    ],
+                    [T::zero(), T::zero(), T::from_f64(0.01), T::from_f64(0.03)],
+                ],
+                es_tail_multiplier: T::from_f64(2.0),
+            }
+        }
+        fn bacon_spec<T: Real>(x: T) -> BaconOmegaSortinoBurkeDrawdownSpec<T> {
+            BaconOmegaSortinoBurkeDrawdownSpec {
+                period_returns: vec![
+                    T::from_f64(0.015) + x,
+                    T::from_f64(-0.008),
+                    T::from_f64(0.022),
+                    T::from_f64(-0.004),
+                ],
+                mar_threshold: T::zero(),
+                risk_free_rate: T::from_f64(0.001),
+            }
+        }
+        #[test]
+        fn suite45_portfolio_all_five_engines_invariants_and_dual_fd() {
+            let h = 1e-6;
+            let gm0 = evaluate_ohara_glosten_milgrom_sequential_spread(&gm_spec(0.));
+            assert!(
+                gm0.initial_adverse_selection_spread > 0.0 && gm0.terminal_posterior_belief_p > 0.5
+            );
+            let fd_gm = (evaluate_ohara_glosten_milgrom_sequential_spread(&gm_spec(h))
+                .inventory_skewed_reservation_mid
+                - evaluate_ohara_glosten_milgrom_sequential_spread(&gm_spec(-h))
+                    .inventory_skewed_reservation_mid)
+                / (2. * h);
+            let ad_gm = evaluate_ohara_glosten_milgrom_sequential_spread(&gm_spec(
+                Dual::<1>::variable(0., 0),
+            ))
+            .inventory_skewed_reservation_mid;
+            assert!((ad_gm.d[0] - fd_gm).abs() < 1e-5);
+
+            let rie0 = evaluate_potters_bouchaud_stieltjes_rie_shrinkage(&rie_spec(0.));
+            assert!(
+                rie0.trace_conservation_error < 1e-12
+                    && rie0.rie_condition_number < rie0.sample_condition_number
+                    && rie0.inverse_variance_portfolio_risk_reduction > 0.0
+            );
+            let fd_rie = (evaluate_potters_bouchaud_stieltjes_rie_shrinkage(&rie_spec(h))
+                .rie_condition_number
+                - evaluate_potters_bouchaud_stieltjes_rie_shrinkage(&rie_spec(-h))
+                    .rie_condition_number)
+                / (2. * h);
+            let ad_rie = evaluate_potters_bouchaud_stieltjes_rie_shrinkage(&rie_spec(
+                Dual::<1>::variable(0., 0),
+            ))
+            .rie_condition_number;
+            assert!((ad_rie.d[0] - fd_rie).abs() < 1e-5);
+
+            let eg0 = evaluate_tsay_egarch_and_hamilton_markov_switching(&egarch_spec(0.));
+            assert!(
+                eg0.egarch_negative_shock_asymmetry_ratio > 1.0
+                    && eg0.terminal_filtered_crisis_probability > 0.0
+                    && eg0.terminal_filtered_crisis_probability < 1.0
+            );
+            let fd_eg = (evaluate_tsay_egarch_and_hamilton_markov_switching(&egarch_spec(h))
+                .terminal_egarch_volatility
+                - evaluate_tsay_egarch_and_hamilton_markov_switching(&egarch_spec(-h))
+                    .terminal_egarch_volatility)
+                / (2. * h);
+            let ad_eg = evaluate_tsay_egarch_and_hamilton_markov_switching(&egarch_spec(
+                Dual::<1>::variable(0., 0),
+            ))
+            .terminal_egarch_volatility;
+            assert!((ad_eg.d[0] - fd_eg).abs() < 1e-5);
+
+            let cop0 = evaluate_mcneil_frey_copula_tail_and_euler_allocation(&copula_spec(0.));
+            assert!(
+                cop0.euler_additivity_error < 1e-12
+                    && cop0.portfolio_diversification_benefit > 0.0
+                    && cop0.clayton_lower_tail_lambda > 0.0
+                    && cop0.clayton_lower_tail_lambda < 1.0
+            );
+            let fd_cop = (evaluate_mcneil_frey_copula_tail_and_euler_allocation(&copula_spec(h))
+                .total_portfolio_es
+                - evaluate_mcneil_frey_copula_tail_and_euler_allocation(&copula_spec(-h))
+                    .total_portfolio_es)
+                / (2. * h);
+            let ad_cop = evaluate_mcneil_frey_copula_tail_and_euler_allocation(&copula_spec(
+                Dual::<1>::variable(0., 0),
+            ))
+            .total_portfolio_es;
+            assert!((ad_cop.d[0] - fd_cop).abs() < 1e-5);
+
+            let bac0 = evaluate_bacon_omega_sortino_and_burke_drawdown(&bacon_spec(0.));
+            assert!(
+                bac0.keating_shadwick_omega_ratio > 1.0 && bac0.omega_put_call_parity_error < 1e-12
+            );
+            let fd_bac = (evaluate_bacon_omega_sortino_and_burke_drawdown(&bacon_spec(h))
+                .keating_shadwick_omega_ratio
+                - evaluate_bacon_omega_sortino_and_burke_drawdown(&bacon_spec(-h))
+                    .keating_shadwick_omega_ratio)
+                / (2. * h);
+            let ad_bac = evaluate_bacon_omega_sortino_and_burke_drawdown(&bacon_spec(
+                Dual::<1>::variable(0., 0),
+            ))
+            .keating_shadwick_omega_ratio;
+            assert!((ad_bac.d[0] - fd_bac).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_ohara_glosten_milgrom_sequential_spread_module::*;
+
+mod evaluate_foucault_kyle_lambda_and_ekop_pin_module {
+    use ql_ad::Real;
+    #[derive(Clone, Copy, Debug)]
+    pub struct FoucaultKyleEkopPinSpec<T: Real = f64> {
+        pub prior_price_p0: T,
+        pub insider_valuation_v: T,
+        pub fundamental_std_sigma_v: T,
+        pub noise_order_std_sigma_u: T,
+        pub event_prob_alpha: T,
+        pub bad_news_prob_delta: T,
+        pub informed_arrival_mu: T,
+        pub uninformed_buy_eps_b: T,
+        pub uninformed_sell_eps_s: T,
+        pub observed_buys_b: T,
+        pub observed_sells_s: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct FoucaultKyleEkopPinReport<T: Real = f64> {
+        pub kyle_insider_intensity_beta: T,
+        pub kyle_illiquidity_lambda: T,
+        pub kyle_market_depth_inverse: T,
+        pub optimal_insider_order_size: T,
+        pub expected_insider_profit: T,
+        pub post_trade_fundamental_variance: T,
+        pub ekop_pin_probability: T,
+        pub posterior_event_probability: T,
+    }
+    pub fn evaluate_foucault_kyle_lambda_and_ekop_pin<T: Real>(
+        s: &FoucaultKyleEkopPinSpec<T>,
+    ) -> FoucaultKyleEkopPinReport<T> {
+        let b = s.noise_order_std_sigma_u / s.fundamental_std_sigma_v;
+        let l = s.fundamental_std_sigma_v / (T::from_f64(2.0) * s.noise_order_std_sigma_u);
+        let d = s.insider_valuation_v - s.prior_price_p0;
+        let eb = s.uninformed_buy_eps_b;
+        let es = s.uninformed_sell_eps_s;
+        let mu = s.informed_arrival_mu;
+        let ll0 = -(eb + es)
+            + s.observed_buys_b * eb.max_val(T::from_f64(1e-12)).ln()
+            + s.observed_sells_s * es.max_val(T::from_f64(1e-12)).ln();
+        let llb = -(eb + es + mu)
+            + s.observed_buys_b * eb.max_val(T::from_f64(1e-12)).ln()
+            + s.observed_sells_s * (es + mu).max_val(T::from_f64(1e-12)).ln();
+        let llg = -(eb + es + mu)
+            + s.observed_buys_b * (eb + mu).max_val(T::from_f64(1e-12)).ln()
+            + s.observed_sells_s * es.max_val(T::from_f64(1e-12)).ln();
+        let m = ll0.max_val(llb).max_val(llg);
+        let p0 = (ll0 - m).exp();
+        let pb = (llb - m).exp();
+        let pg = (llg - m).exp();
+        let pin = (s.event_prob_alpha * mu)
+            / (s.event_prob_alpha * mu + eb + es).max_val(T::from_f64(1e-12));
+        let num_ev = s.event_prob_alpha
+            * (s.bad_news_prob_delta * pb + (T::one() - s.bad_news_prob_delta) * pg);
+        let den_ev = ((T::one() - s.event_prob_alpha) * p0 + num_ev).max_val(T::from_f64(1e-12));
+        let post_ev = num_ev / den_ev;
+        FoucaultKyleEkopPinReport {
+            kyle_insider_intensity_beta: b,
+            kyle_illiquidity_lambda: l,
+            kyle_market_depth_inverse: T::one() / l.max_val(T::from_f64(1e-12)),
+            optimal_insider_order_size: b * d,
+            expected_insider_profit: T::from_f64(0.5) * b * d * d,
+            post_trade_fundamental_variance: s.fundamental_std_sigma_v * s.fundamental_std_sigma_v
+                / T::from_f64(2.0),
+            ekop_pin_probability: pin,
+            posterior_event_probability: post_ev,
+        }
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct GarleanuPedersenDynamicAimSpec<T: Real = f64> {
+        pub current_weights: [T; 2],
+        pub fast_alpha_signal: [T; 2],
+        pub slow_alpha_signal: [T; 2],
+        pub fast_decay_phi: T,
+        pub slow_decay_phi: T,
+        pub covariance_2x2: [[T; 2]; 2],
+        pub risk_aversion_gamma: T,
+        pub transaction_cost_lambda: T,
+        pub discount_rate_rho: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct GarleanuPedersenDynamicAimReport<T: Real = f64> {
+        pub optimal_trading_speed_a: T,
+        pub fast_signal_attenuation_weight: T,
+        pub slow_signal_attenuation_weight: T,
+        pub markowitz_unconstrained_target: [T; 2],
+        pub aim_portfolio_weights: [T; 2],
+        pub optimal_next_weights: [T; 2],
+        pub single_step_transaction_cost: T,
+        pub expected_net_utility_gain: T,
+    }
+    pub fn evaluate_garleanu_pedersen_dynamic_aim_portfolio<T: Real>(
+        s: &GarleanuPedersenDynamicAimSpec<T>,
+    ) -> GarleanuPedersenDynamicAimReport<T> {
+        let q = s.risk_aversion_gamma / s.transaction_cost_lambda;
+        let a = ((-(s.discount_rate_rho + q)
+            + ((s.discount_rate_rho + q) * (s.discount_rate_rho + q)
+                + T::from_f64(4.) * (T::one() - s.discount_rate_rho) * q)
+                .sqrt())
+            / (T::from_f64(2.0) * (T::one() - s.discount_rate_rho)))
+            .max_val(T::from_f64(1e-6));
+        let pf = (T::one()
+            + s.fast_decay_phi * s.transaction_cost_lambda / s.risk_aversion_gamma * a)
+            .powf(-1.0);
+        let ps = (T::one()
+            + s.slow_decay_phi * s.transaction_cost_lambda / s.risk_aversion_gamma * a)
+            .powf(-1.0);
+        let a11 = s.covariance_2x2[0][0];
+        let a12 = s.covariance_2x2[0][1];
+        let a22 = s.covariance_2x2[1][1];
+        let det = (a11 * a22 - a12 * a12).max_val(T::from_f64(1e-12));
+        let inv = |x0: T, x1: T| [(a22 * x0 - a12 * x1) / det, (-a12 * x0 + a11 * x1) / det];
+        let mf = inv(
+            s.fast_alpha_signal[0] + s.slow_alpha_signal[0],
+            s.fast_alpha_signal[1] + s.slow_alpha_signal[1],
+        );
+        let m = [mf[0] / s.risk_aversion_gamma, mf[1] / s.risk_aversion_gamma];
+        let am = inv(
+            pf * s.fast_alpha_signal[0] + ps * s.slow_alpha_signal[0],
+            pf * s.fast_alpha_signal[1] + ps * s.slow_alpha_signal[1],
+        );
+        let aim = [am[0] / s.risk_aversion_gamma, am[1] / s.risk_aversion_gamma];
+        let next = [
+            (T::one() - a) * s.current_weights[0] + a * aim[0],
+            (T::one() - a) * s.current_weights[1] + a * aim[1],
+        ];
+        GarleanuPedersenDynamicAimReport {
+            optimal_trading_speed_a: a,
+            fast_signal_attenuation_weight: pf,
+            slow_signal_attenuation_weight: ps,
+            markowitz_unconstrained_target: m,
+            aim_portfolio_weights: aim,
+            optimal_next_weights: next,
+            single_step_transaction_cost: {
+                let d0 = next[0] - s.current_weights[0];
+                let d1 = next[1] - s.current_weights[1];
+                T::from_f64(0.5)
+                    * s.transaction_cost_lambda
+                    * (a11 * d0 * d0 + T::from_f64(2.0) * a12 * d0 * d1 + a22 * d1 * d1)
+            },
+            expected_net_utility_gain: {
+                let al0 = s.fast_alpha_signal[0] + s.slow_alpha_signal[0];
+                let al1 = s.fast_alpha_signal[1] + s.slow_alpha_signal[1];
+                let quad = |w0: T, w1: T| {
+                    al0 * w0 + al1 * w1
+                        - T::from_f64(0.5)
+                            * s.risk_aversion_gamma
+                            * (a11 * w0 * w0 + T::from_f64(2.0) * a12 * w0 * w1 + a22 * w1 * w1)
+                };
+                let d0 = next[0] - s.current_weights[0];
+                let d1 = next[1] - s.current_weights[1];
+                let tc = T::from_f64(0.5)
+                    * s.transaction_cost_lambda
+                    * (a11 * d0 * d0 + T::from_f64(2.0) * a12 * d0 * d1 + a22 * d1 * d1);
+                (quad(next[0], next[1]) - tc) - quad(s.current_weights[0], s.current_weights[1])
+            },
+        }
+    }
+    #[derive(Clone, Debug)]
+    pub struct TsayGjrDccGarchSpec<T: Real = f64> {
+        pub bivariate_returns: Vec<[T; 2]>,
+        pub omega: [T; 2],
+        pub alpha: [T; 2],
+        pub gjr_gamma: [T; 2],
+        pub beta: [T; 2],
+        pub unconditional_corr: T,
+        pub dcc_a: T,
+        pub dcc_b: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct TsayGjrDccGarchReport<T: Real = f64> {
+        pub unconditional_var_asset1: T,
+        pub unconditional_var_asset2: T,
+        pub terminal_gjr_vol_asset1: T,
+        pub terminal_gjr_vol_asset2: T,
+        pub news_impact_asymmetry_ratio: T,
+        pub terminal_dcc_correlation: T,
+        pub terminal_equal_weight_portfolio_vol: T,
+        pub dcc_persistence_sum: T,
+    }
+    pub fn evaluate_tsay_gjr_and_dcc_garch_dynamic_correlation<T: Real>(
+        s: &TsayGjrDccGarchSpec<T>,
+    ) -> TsayGjrDccGarchReport<T> {
+        let h0 =
+            s.omega[0] / (T::one() - s.alpha[0] - s.gjr_gamma[0] / T::from_f64(2.0) - s.beta[0]);
+        let h1 =
+            s.omega[1] / (T::one() - s.alpha[1] - s.gjr_gamma[1] / T::from_f64(2.0) - s.beta[1]);
+        let mut h = [h0, h1];
+        let mut q = [
+            [T::one(), s.unconditional_corr],
+            [s.unconditional_corr, T::one()],
+        ];
+        for r in &s.bivariate_returns {
+            let z = [r[0] / h[0].sqrt(), r[1] / h[1].sqrt()];
+            q[0][0] = (T::one() - s.dcc_a - s.dcc_b) + s.dcc_a * z[0] * z[0] + s.dcc_b * q[0][0];
+            q[0][1] = (T::one() - s.dcc_a - s.dcc_b) * s.unconditional_corr
+                + s.dcc_a * z[0] * z[1]
+                + s.dcc_b * q[0][1];
+            q[1][0] = q[0][1];
+            q[1][1] = (T::one() - s.dcc_a - s.dcc_b) + s.dcc_a * z[1] * z[1] + s.dcc_b * q[1][1];
+            let neg0 = T::from_f64(0.5) * ((r[0] * r[0] + T::from_f64(1e-16)).sqrt() - r[0]);
+            let neg1 = T::from_f64(0.5) * ((r[1] * r[1] + T::from_f64(1e-16)).sqrt() - r[1]);
+            h[0] = s.omega[0]
+                + s.alpha[0] * r[0] * r[0]
+                + s.gjr_gamma[0] * neg0 * neg0
+                + s.beta[0] * h[0];
+            h[1] = s.omega[1]
+                + s.alpha[1] * r[1] * r[1]
+                + s.gjr_gamma[1] * neg1 * neg1
+                + s.beta[1] * h[1];
+        }
+        let corr = (q[0][1] / (q[0][0] * q[1][1]).sqrt())
+            .max_val(T::from_f64(-0.999))
+            .min_val(T::from_f64(0.999));
+        TsayGjrDccGarchReport {
+            unconditional_var_asset1: h0,
+            unconditional_var_asset2: h1,
+            terminal_gjr_vol_asset1: h[0].sqrt(),
+            terminal_gjr_vol_asset2: h[1].sqrt(),
+            news_impact_asymmetry_ratio: (s.alpha[0] + s.gjr_gamma[0]) / s.alpha[0],
+            terminal_dcc_correlation: corr,
+            terminal_equal_weight_portfolio_vol: ((h[0]
+                + h[1]
+                + T::from_f64(2.0) * corr * (h[0] * h[1]).sqrt())
+                / T::from_f64(4.))
+            .sqrt(),
+            dcc_persistence_sum: s.dcc_a + s.dcc_b,
+        }
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct SornetteJlsLpplCrashHazardSpec<T: Real = f64> {
+        pub current_time_t: T,
+        pub critical_time_tc: T,
+        pub horizon_dt: T,
+        pub peak_log_price_a: T,
+        pub power_law_slope_b: T,
+        pub log_periodic_amp_c: T,
+        pub critical_exponent_m: T,
+        pub log_periodic_omega: T,
+        pub phase_phi: T,
+        pub crash_loss_kappa: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct SornetteJlsLpplCrashHazardReport<T: Real = f64> {
+        pub lppl_fitted_price: T,
+        pub instantaneous_crash_hazard: T,
+        pub horizon_cumulative_crash_prob: T,
+        pub jls_damping_validity_ratio: T,
+        pub log_periodic_oscillation_term: T,
+        pub rational_bubble_excess_return: T,
+        pub expected_crash_adjusted_return: T,
+    }
+    pub fn evaluate_sornette_jls_lppl_crash_hazard<T: Real>(
+        s: &SornetteJlsLpplCrashHazardSpec<T>,
+    ) -> SornetteJlsLpplCrashHazardReport<T> {
+        let tau = s.critical_time_tc - s.current_time_t;
+        let tau_m = (tau.max_val(T::from_f64(1e-12)).ln() * s.critical_exponent_m).exp();
+        let tau_m1 =
+            (tau.max_val(T::from_f64(1e-12)).ln() * (s.critical_exponent_m - T::one())).exp();
+        let ph = s.log_periodic_omega * tau.max_val(T::from_f64(1e-12)).ln() - s.phase_phi;
+        let osc = s.log_periodic_amp_c * ph.cos();
+        let lp = s.peak_log_price_a
+            + s.power_law_slope_b * tau_m
+            + s.log_periodic_amp_c * tau_m * ph.cos();
+        let h = ((-s.power_law_slope_b * s.critical_exponent_m * tau_m1
+            - s.log_periodic_amp_c
+                * tau_m1
+                * (s.critical_exponent_m * ph.cos() - s.log_periodic_omega * ph.sin()))
+            / s.crash_loss_kappa)
+            .max_val(T::zero());
+        SornetteJlsLpplCrashHazardReport {
+            lppl_fitted_price: lp.exp(),
+            instantaneous_crash_hazard: h,
+            horizon_cumulative_crash_prob: (-h * s.horizon_dt).exp().neg() + T::one(),
+            jls_damping_validity_ratio: {
+                let b_abs = (s.power_law_slope_b * s.power_law_slope_b + T::from_f64(1e-30)).sqrt();
+                let c_abs =
+                    (s.log_periodic_amp_c * s.log_periodic_amp_c + T::from_f64(1e-30)).sqrt();
+                let mw = (s.critical_exponent_m * s.critical_exponent_m
+                    + s.log_periodic_omega * s.log_periodic_omega)
+                    .sqrt();
+                s.critical_exponent_m * b_abs / (c_abs * mw).max_val(T::from_f64(1e-12))
+            },
+            log_periodic_oscillation_term: osc,
+            rational_bubble_excess_return: s.crash_loss_kappa * h,
+            expected_crash_adjusted_return: {
+                let p_surv = (-h * s.horizon_dt).exp();
+                let p_crash = T::one() - p_surv;
+                let mu_power = -s.power_law_slope_b * s.critical_exponent_m * tau_m1;
+                p_surv * (mu_power * s.horizon_dt) - p_crash * s.crash_loss_kappa
+            },
+        }
+    }
+    #[derive(Clone, Debug)]
+    pub struct FollmerSchiedEntropicSpectralRiskSpec<T: Real = f64> {
+        pub ordered_losses: Vec<T>,
+        pub entropic_theta: T,
+        pub spectral_power_gamma: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct FollmerSchiedEntropicSpectralRiskReport<T: Real = f64> {
+        pub expected_loss: T,
+        pub entropic_convex_risk_measure: T,
+        pub worst_case_esscher_expected_loss: T,
+        pub relative_entropy_kl_penalty: T,
+        pub fenchel_duality_conservation_error: T,
+        pub kusuoka_power_spectral_risk_measure: T,
+        pub spectral_weights_sum_error: T,
+        pub spectral_risk_loading_over_mean: T,
+    }
+    pub fn evaluate_follmer_schied_entropic_and_spectral_risk<T: Real>(
+        s: &FollmerSchiedEntropicSpectralRiskSpec<T>,
+    ) -> FollmerSchiedEntropicSpectralRiskReport<T> {
+        let n = T::from_f64(s.ordered_losses.len() as f64);
+        let mut e = T::zero();
+        for &x in &s.ordered_losses {
+            e += x;
+        }
+        e /= n;
+        let mut zsum = T::zero();
+        for &x in &s.ordered_losses {
+            zsum += (s.entropic_theta * x).exp();
+        }
+        let rho = (zsum / n).ln() / s.entropic_theta.max_val(T::from_f64(1e-12));
+        let mut sp = T::zero();
+        let mut w_sum = T::zero();
+        let mut qmean = T::zero();
+        let mut kl = T::zero();
+        for &x in &s.ordered_losses {
+            let qi = (s.entropic_theta * x).exp() / zsum;
+            qmean += qi * x;
+            kl += qi * (n * qi).max_val(T::from_f64(1e-12)).ln();
+        }
+        for (i, &x) in s.ordered_losses.iter().enumerate() {
+            let a = T::from_f64((i + 1) as f64) / n;
+            let b = T::from_f64(i as f64) / n;
+            let wi = a.pow(s.spectral_power_gamma) - b.pow(s.spectral_power_gamma);
+            sp += wi * x;
+            w_sum += wi;
+        }
+        FollmerSchiedEntropicSpectralRiskReport {
+            expected_loss: e,
+            entropic_convex_risk_measure: rho,
+            worst_case_esscher_expected_loss: qmean,
+            relative_entropy_kl_penalty: kl,
+            fenchel_duality_conservation_error: (rho
+                - (qmean - kl / s.entropic_theta.max_val(T::from_f64(1e-12))))
+            .abs(),
+            kusuoka_power_spectral_risk_measure: sp,
+            spectral_weights_sum_error: ((w_sum - T::one()) * (w_sum - T::one())
+                + T::from_f64(1e-30))
+            .sqrt(),
+            spectral_risk_loading_over_mean: sp / e.max_val(T::from_f64(1e-12)),
+        }
+    }
+    #[derive(Clone, Debug)]
+    pub struct BaconBrinsonFachlerCarinoSpec<T: Real = f64> {
+        pub portfolio_sector_weights: Vec<T>,
+        pub benchmark_sector_weights: Vec<T>,
+        pub portfolio_sector_returns: Vec<T>,
+        pub benchmark_sector_returns: Vec<T>,
+        pub multi_period_port_returns: Vec<T>,
+        pub multi_period_bench_returns: Vec<T>,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct BaconBrinsonFachlerCarinoReport<T: Real = f64> {
+        pub brinson_fachler_allocation: T,
+        pub brinson_fachler_selection: T,
+        pub brinson_fachler_interaction: T,
+        pub single_period_active_return: T,
+        pub single_period_conservation_error: T,
+        pub cumulative_portfolio_return: T,
+        pub cumulative_benchmark_return: T,
+        pub carino_total_linking_factor: T,
+        pub carino_smoothed_active_return: T,
+        pub carino_linking_conservation_error: T,
+    }
+    pub fn evaluate_bacon_brinson_fachler_and_carino_linking<T: Real>(
+        s: &BaconBrinsonFachlerCarinoSpec<T>,
+    ) -> BaconBrinsonFachlerCarinoReport<T> {
+        let n = s.portfolio_sector_weights.len();
+        let mut rp = T::zero();
+        let mut rb = T::zero();
+        for i in 0..n {
+            rp += s.portfolio_sector_weights[i] * s.portfolio_sector_returns[i];
+            rb += s.benchmark_sector_weights[i] * s.benchmark_sector_returns[i];
+        }
+        let mut a = T::zero();
+        let mut se = T::zero();
+        let mut inx = T::zero();
+        for i in 0..n {
+            a += (s.portfolio_sector_weights[i] - s.benchmark_sector_weights[i])
+                * (s.benchmark_sector_returns[i] - rb);
+            se += s.benchmark_sector_weights[i]
+                * (s.portfolio_sector_returns[i] - s.benchmark_sector_returns[i]);
+            inx += (s.portfolio_sector_weights[i] - s.benchmark_sector_weights[i])
+                * (s.portfolio_sector_returns[i] - s.benchmark_sector_returns[i]);
+        }
+        let mut cp = T::one();
+        let mut cb = T::one();
+        for &x in &s.multi_period_port_returns {
+            cp *= T::one() + x;
+        }
+        for &x in &s.multi_period_bench_returns {
+            cb *= T::one() + x;
+        }
+        let cp = cp - T::one();
+        let cb = cb - T::one();
+        let log_link_ratio = |rp: T, rb: T| {
+            let diff = rp - rb;
+            if diff.abs() < T::from_f64(1e-10) {
+                T::one() / (T::one() + T::from_f64(0.5) * (rp + rb))
+            } else {
+                ((T::one() + rp).ln() - (T::one() + rb).ln()) / diff
+            }
+        };
+        let k = log_link_ratio(cp, cb);
+        let mut carino_sum = T::zero();
+        for (rpt, rbt) in s
+            .multi_period_port_returns
+            .iter()
+            .zip(s.multi_period_bench_returns.iter())
+        {
+            carino_sum += (log_link_ratio(*rpt, *rbt) / k) * (*rpt - *rbt);
+        }
+        BaconBrinsonFachlerCarinoReport {
+            brinson_fachler_allocation: a,
+            brinson_fachler_selection: se,
+            brinson_fachler_interaction: inx,
+            single_period_active_return: rp - rb,
+            single_period_conservation_error: ((rp - rb) - (a + se + inx)).abs(),
+            cumulative_portfolio_return: cp,
+            cumulative_benchmark_return: cb,
+            carino_total_linking_factor: k,
+            carino_smoothed_active_return: carino_sum,
+            carino_linking_conservation_error: {
+                let d = carino_sum - (cp - cb);
+                (d * d + T::from_f64(1e-30)).sqrt()
+            },
+        }
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct WakkerPrelecChoquetProspectSpec<T: Real = f64> {
+        pub sorted_outcomes: [T; 4],
+        pub state_probabilities: [T; 4],
+        pub reference_point: T,
+        pub prelec_curvature_alpha: T,
+        pub prelec_elevation_beta: T,
+        pub tk_value_exponent: T,
+        pub loss_aversion_lambda: T,
+        pub ambiguity_aversion_delta: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct WakkerPrelecChoquetProspectReport<T: Real = f64> {
+        pub prelec_inflection_fixed_point: T,
+        pub prelec_weighted_tail_prob: T,
+        pub expected_value_objective: T,
+        pub rank_dependent_cpt_value: T,
+        pub choquet_ambiguity_adjusted_value: T,
+        pub ambiguity_valuation_discount: T,
+        pub prospect_certainty_equivalent: T,
+    }
+    pub fn evaluate_wakker_prelec_rdu_and_choquet_ambiguity<T: Real>(
+        s: &WakkerPrelecChoquetProspectSpec<T>,
+    ) -> WakkerPrelecChoquetProspectReport<T> {
+        let mut e = T::zero();
+        for i in 0..4 {
+            e += s.state_probabilities[i] * s.sorted_outcomes[i];
+        }
+        let prelec_w = |p: T| -> T {
+            let pc = p
+                .max_val(T::from_f64(1e-12))
+                .min_val(T::one() - T::from_f64(1e-12));
+            (-s.prelec_elevation_beta * (-pc.ln()).pow(s.prelec_curvature_alpha)).exp()
+        };
+        let mut g = [T::zero(); 5];
+        for i in (0..4).rev() {
+            g[i] = g[i + 1] + s.state_probabilities[i];
+        }
+        let mut cpt = T::zero();
+        for i in 0..4 {
+            let wg_i = if i == 0 { T::one() } else { prelec_w(g[i]) };
+            let wg_next = if i == 3 {
+                T::zero()
+            } else {
+                prelec_w(g[i + 1])
+            };
+            let pi_i = wg_i - wg_next;
+            let dx = s.sorted_outcomes[i] - s.reference_point;
+            let v = if dx >= T::zero() {
+                dx.max_val(T::from_f64(1e-12)).pow(s.tk_value_exponent)
+            } else {
+                -s.loss_aversion_lambda * (-dx).max_val(T::from_f64(1e-12)).pow(s.tk_value_exponent)
+            };
+            cpt += pi_i * v;
+        }
+        let inv_gamma = T::one() / s.tk_value_exponent.max_val(T::from_f64(1e-6));
+        let ce = if cpt >= T::zero() {
+            s.reference_point + cpt.max_val(T::from_f64(1e-12)).pow(inv_gamma)
+        } else {
+            s.reference_point
+                - ((-cpt) / s.loss_aversion_lambda.max_val(T::from_f64(1e-6)))
+                    .max_val(T::from_f64(1e-12))
+                    .pow(inv_gamma)
+        };
+        let choq = (T::one() - s.ambiguity_aversion_delta) * e
+            + s.ambiguity_aversion_delta * s.sorted_outcomes[0];
+        WakkerPrelecChoquetProspectReport {
+            prelec_inflection_fixed_point: (-s
+                .prelec_elevation_beta
+                .max_val(T::from_f64(1e-12))
+                .pow(T::one() / (T::one() - s.prelec_curvature_alpha).max_val(T::from_f64(1e-6))))
+            .exp(),
+            prelec_weighted_tail_prob: prelec_w(s.state_probabilities[3]),
+            expected_value_objective: e,
+            rank_dependent_cpt_value: cpt,
+            choquet_ambiguity_adjusted_value: choq,
+            ambiguity_valuation_discount: e - choq,
+            prospect_certainty_equivalent: ce,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_46_tests {
+        use super::*;
+        use ql_ad::Dual;
+        fn eval_all<T: Real>(x: T) -> [T; 7] {
+            let dx = x * T::from_f64(0.01);
+            let kyle = evaluate_foucault_kyle_lambda_and_ekop_pin(&FoucaultKyleEkopPinSpec {
+                prior_price_p0: T::from_f64(100.0),
+                insider_valuation_v: T::from_f64(105.0) + x,
+                fundamental_std_sigma_v: T::from_f64(2.0),
+                noise_order_std_sigma_u: T::from_f64(10.0),
+                event_prob_alpha: T::from_f64(0.3),
+                bad_news_prob_delta: T::from_f64(0.4),
+                informed_arrival_mu: T::from_f64(40.0),
+                uninformed_buy_eps_b: T::from_f64(50.0),
+                uninformed_sell_eps_s: T::from_f64(50.0),
+                observed_buys_b: T::from_f64(75.0),
+                observed_sells_s: T::from_f64(48.0),
+            });
+            let gp =
+                evaluate_garleanu_pedersen_dynamic_aim_portfolio(&GarleanuPedersenDynamicAimSpec {
+                    current_weights: [T::from_f64(0.2), T::from_f64(0.1)],
+                    fast_alpha_signal: [T::from_f64(0.04) + dx, T::from_f64(0.02)],
+                    slow_alpha_signal: [T::from_f64(0.03), T::from_f64(0.025)],
+                    fast_decay_phi: T::from_f64(0.5),
+                    slow_decay_phi: T::from_f64(0.1),
+                    covariance_2x2: [
+                        [T::from_f64(0.04), T::from_f64(0.01)],
+                        [T::from_f64(0.01), T::from_f64(0.05)],
+                    ],
+                    risk_aversion_gamma: T::from_f64(2.0),
+                    transaction_cost_lambda: T::from_f64(0.5),
+                    discount_rate_rho: T::from_f64(0.05),
+                });
+            let gjr = evaluate_tsay_gjr_and_dcc_garch_dynamic_correlation(&TsayGjrDccGarchSpec {
+                bivariate_returns: vec![
+                    [T::from_f64(-0.02) + dx, T::from_f64(-0.015)],
+                    [T::from_f64(0.012), T::from_f64(-0.01)],
+                    [T::from_f64(-0.018), T::from_f64(-0.022)],
+                ],
+                omega: [T::from_f64(0.00002), T::from_f64(0.00003)],
+                alpha: [T::from_f64(0.05), T::from_f64(0.06)],
+                gjr_gamma: [T::from_f64(0.08), T::from_f64(0.07)],
+                beta: [T::from_f64(0.85), T::from_f64(0.84)],
+                unconditional_corr: T::from_f64(0.5),
+                dcc_a: T::from_f64(0.05),
+                dcc_b: T::from_f64(0.90),
+            });
+            let lppl = evaluate_sornette_jls_lppl_crash_hazard(&SornetteJlsLpplCrashHazardSpec {
+                current_time_t: T::from_f64(1.0),
+                critical_time_tc: T::from_f64(1.5) + dx,
+                horizon_dt: T::from_f64(0.1),
+                peak_log_price_a: T::from_f64(5.0),
+                power_law_slope_b: T::from_f64(-0.4),
+                log_periodic_amp_c: T::from_f64(0.03),
+                critical_exponent_m: T::from_f64(0.5),
+                log_periodic_omega: T::from_f64(6.5),
+                phase_phi: T::from_f64(1.0),
+                crash_loss_kappa: T::from_f64(0.2),
+            });
+            let spec = evaluate_follmer_schied_entropic_and_spectral_risk(
+                &FollmerSchiedEntropicSpectralRiskSpec {
+                    ordered_losses: vec![
+                        T::from_f64(0.5),
+                        T::from_f64(1.2),
+                        T::from_f64(2.5),
+                        T::from_f64(4.0) + dx,
+                    ],
+                    entropic_theta: T::from_f64(0.5),
+                    spectral_power_gamma: T::from_f64(2.5),
+                },
+            );
+            let brin =
+                evaluate_bacon_brinson_fachler_and_carino_linking(&BaconBrinsonFachlerCarinoSpec {
+                    portfolio_sector_weights: vec![T::from_f64(0.6), T::from_f64(0.4)],
+                    benchmark_sector_weights: vec![T::from_f64(0.5), T::from_f64(0.5)],
+                    portfolio_sector_returns: vec![T::from_f64(0.08) + dx, T::from_f64(0.03)],
+                    benchmark_sector_returns: vec![T::from_f64(0.06), T::from_f64(0.02)],
+                    multi_period_port_returns: vec![
+                        T::from_f64(0.04) + dx,
+                        T::from_f64(0.03),
+                        T::from_f64(-0.01),
+                    ],
+                    multi_period_bench_returns: vec![
+                        T::from_f64(0.03),
+                        T::from_f64(0.02),
+                        T::from_f64(-0.015),
+                    ],
+                });
+            let prel = evaluate_wakker_prelec_rdu_and_choquet_ambiguity(
+                &WakkerPrelecChoquetProspectSpec {
+                    sorted_outcomes: [
+                        T::from_f64(-10.0),
+                        T::from_f64(-2.0),
+                        T::from_f64(8.0),
+                        T::from_f64(20.0) + x,
+                    ],
+                    state_probabilities: [
+                        T::from_f64(0.1),
+                        T::from_f64(0.3),
+                        T::from_f64(0.4),
+                        T::from_f64(0.2),
+                    ],
+                    reference_point: T::zero(),
+                    prelec_curvature_alpha: T::from_f64(0.65),
+                    prelec_elevation_beta: T::from_f64(1.0),
+                    tk_value_exponent: T::from_f64(0.88),
+                    loss_aversion_lambda: T::from_f64(2.25),
+                    ambiguity_aversion_delta: T::from_f64(0.15),
+                },
+            );
+            [
+                kyle.expected_insider_profit,
+                gp.expected_net_utility_gain,
+                gjr.terminal_equal_weight_portfolio_vol,
+                lppl.lppl_fitted_price,
+                spec.entropic_convex_risk_measure + spec.kusuoka_power_spectral_risk_measure,
+                brin.carino_smoothed_active_return,
+                prel.prospect_certainty_equivalent,
+            ]
+        }
+        #[test]
+        fn suite46_portfolio_invariants_and_dual_fd() {
+            let h = 1e-6;
+            let up = eval_all(h);
+            let dn = eval_all(-h);
+            let ad = eval_all(Dual::<1>::variable(0.0, 0));
+            for i in 0..7 {
+                let fd = (up[i] - dn[i]) / (2.0 * h);
+                assert!(ad[i].d[0].abs() > 1e-7 && (ad[i].d[0] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_foucault_kyle_lambda_and_ekop_pin_module::*;

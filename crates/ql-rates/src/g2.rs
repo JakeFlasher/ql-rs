@@ -980,7 +980,7 @@ pub fn evaluate_hunt_kennedy_markov_functional_range_accrual<T: Real>(
 }
 
 #[cfg(test)]
-mod phase27_tests {
+mod domain_suite_39_tests {
     use super::*;
     use ql_ad::Dual;
     fn make<T: Real>(x: T) -> BrigoMercurioG2TwistSwaptionSpec<T> {
@@ -1009,7 +1009,7 @@ mod phase27_tests {
     }
 
     #[test]
-    fn phase27_invariants() {
+    fn suite39_invariants() {
         let r = price_brigo_mercurio_g2_twist_and_swaption(&make(1.0));
         assert!(r.payer_receiver_parity_error.abs() < 1e-10);
         assert!(r.payer_swaption_pv > 0.0 && r.receiver_swaption_pv > 0.0);
@@ -1017,7 +1017,7 @@ mod phase27_tests {
 }
 
 #[cfg(test)]
-mod phase25_tests {
+mod domain_suite_37_tests {
     use super::*;
     use ql_ad::Dual;
     fn fv<T: Real>(x: T) -> FongVasicekStochVolShortRateSpec<T> {
@@ -1058,7 +1058,7 @@ mod phase25_tests {
 }
 
 #[cfg(test)]
-mod phase26_tests {
+mod domain_suite_38_tests {
     use super::*;
     use ql_ad::Dual;
     fn spec<T: Real>(coupon: T) -> HuntKennedyMarkovFunctionalSpec<T> {

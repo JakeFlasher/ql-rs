@@ -480,7 +480,7 @@ pub fn price_callable_range_accrual_hw1f<
 }
 
 #[cfg(test)]
-mod phase13_tests {
+mod domain_suite_25_tests {
     use super::*;
     use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;
@@ -632,7 +632,7 @@ pub fn price_cheyette_swaption_markov_projection<T: Real, C: YieldTermStructure<
 }
 
 #[cfg(test)]
-mod phase16_tests {
+mod domain_suite_28_tests {
     use super::*;
     use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;
@@ -682,7 +682,7 @@ mod phase16_tests {
 }
 
 #[cfg(test)]
-mod phase21_tests {
+mod domain_suite_33_tests {
     use super::*;
     use ql_curves::FlatForwardCurve;
     use ql_time::Date;

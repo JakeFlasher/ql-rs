@@ -1,14 +1,4 @@
 use crate::CommodityFuturesCurve;
-pub use crate::phase35::*;
-pub use crate::phase37::*;
-#[allow(unused_imports)]
-pub use crate::phase39::*;
-#[allow(unused_imports)]
-pub use crate::phase40::*;
-#[allow(unused_imports)]
-pub use crate::phase41::*;
-#[allow(unused_imports)]
-pub use crate::phase42::*;
 use ql_ad::Real;
 
 #[derive(Clone, Debug)]
@@ -924,7 +914,7 @@ pub fn evaluate_bess_analytical_sdp_degradation_storage<T: Real>(
 }
 
 #[cfg(test)]
-mod phase17_tests {
+mod domain_suite_29_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -1019,7 +1009,7 @@ mod phase17_tests {
 }
 
 #[cfg(test)]
-mod phase27_tests {
+mod domain_suite_39_tests {
     use super::*;
     use ql_ad::Dual;
     fn make<T: Real>(x: T) -> WarinBaeuerleStorageRollingHedgeSpec<T> {
@@ -1050,7 +1040,7 @@ mod phase27_tests {
     }
 
     #[test]
-    fn phase27_invariants() {
+    fn suite39_invariants() {
         let r = evaluate_warin_baeuerle_storage_rolling_hedge(&make(3.0));
         assert!(r.stochastic_total_storage_value >= r.static_intrinsic_value);
         assert!(r.extrinsic_optionality_value > 0.0);
@@ -1059,7 +1049,7 @@ mod phase27_tests {
 }
 
 #[cfg(test)]
-mod phase28_tests {
+mod domain_suite_40_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(x: T) -> BessAnalyticalSdpDegradationStorageSpec<T> {
@@ -1095,3 +1085,298 @@ mod phase28_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
+
+mod evaluate_geman_working_curve_inventory_convenience_yield_module {
+    // Geman (2005) & Working (1949) / Brennan (1958) Theory of Storage
+    // Inventory-Scarcity Convenience Yield Curve & Stock-Out Volatility Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GemanWorkingInventoryConvenienceSpec<T: Real = f64> {
+        pub spot_commodity_price_s0: T,
+        pub normalized_inventory_i_over_icrit: T,
+        pub stockout_convenience_yield_y0: T,
+        pub abundance_convenience_floor_yinf: T,
+        pub working_curve_steepness_kappa: T,
+        pub physical_storage_cost_rate_c: T,
+        pub risk_free_rate_r: T,
+        pub baseline_spot_vol_sigma0: T,
+        pub scarcity_vol_amplification_eta: T,
+        pub futures_maturity_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GemanWorkingInventoryConvenienceReport<T: Real = f64> {
+        pub marginal_convenience_yield_y: T,
+        pub net_cost_of_carry_rate: T,
+        pub storage_equilibrium_futures_price: T,
+        pub backwardation_yield_spread: T,
+        pub critical_switch_inventory_ratio: T,
+        pub inventory_conditioned_spot_volatility: T,
+    }
+
+    pub fn evaluate_geman_working_curve_inventory_convenience_yield<T: Real>(
+        spec: &GemanWorkingInventoryConvenienceSpec<T>,
+    ) -> GemanWorkingInventoryConvenienceReport<T> {
+        let s0 = spec.spot_commodity_price_s0.max_val(T::from_f64(1e-4));
+        let inv = spec
+            .normalized_inventory_i_over_icrit
+            .max_val(T::from_f64(0.05));
+        let kap = spec.working_curve_steepness_kappa.max_val(T::from_f64(0.1));
+        let t = spec.futures_maturity_t.max_val(T::from_f64(0.05));
+
+        // Working (1949) / Geman (2005, Ch. 3) convex convenience yield curve:
+        // y(I) = y_inf + (y_0 - y_inf) * exp(-kappa * (I / I_crit))
+        let scarcity_factor = (-kap * inv).exp();
+        let y_conv = spec.abundance_convenience_floor_yinf
+            + (spec.stockout_convenience_yield_y0 - spec.abundance_convenience_floor_yinf)
+                * scarcity_factor;
+
+        let gross_carry = spec.risk_free_rate_r + spec.physical_storage_cost_rate_c;
+        let net_carry = gross_carry - y_conv;
+        let fut_price = s0 * (net_carry * t).exp();
+        let back_spread = y_conv - gross_carry;
+
+        // Critical inventory ratio I^* / I_crit where y(I^*) = r + c (contango/backwardation boundary):
+        let num = (gross_carry - spec.abundance_convenience_floor_yinf).max_val(T::from_f64(1e-4));
+        let den = (spec.stockout_convenience_yield_y0 - spec.abundance_convenience_floor_yinf)
+            .max_val(num + T::from_f64(1e-4));
+        let i_star = -(num / den).ln() / kap;
+
+        // Samuelson / Geman inventory-dependent spot volatility amplification under low stocks:
+        let spot_vol = spec.baseline_spot_vol_sigma0
+            * (T::one() + spec.scarcity_vol_amplification_eta * scarcity_factor);
+
+        GemanWorkingInventoryConvenienceReport {
+            marginal_convenience_yield_y: y_conv,
+            net_cost_of_carry_rate: net_carry,
+            storage_equilibrium_futures_price: fut_price,
+            backwardation_yield_spread: back_spread,
+            critical_switch_inventory_ratio: i_star,
+            inventory_conditioned_spot_volatility: spot_vol,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_54_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn geman_working_curve_inventory_convenience_yield_invariants_and_ad_parity() {
+            let spec = GemanWorkingInventoryConvenienceSpec {
+                spot_commodity_price_s0: 82.0,
+                normalized_inventory_i_over_icrit: 0.55,
+                stockout_convenience_yield_y0: 0.32,
+                abundance_convenience_floor_yinf: 0.01,
+                working_curve_steepness_kappa: 1.8,
+                physical_storage_cost_rate_c: 0.04,
+                risk_free_rate_r: 0.04,
+                baseline_spot_vol_sigma0: 0.28,
+                scarcity_vol_amplification_eta: 0.65,
+                futures_maturity_t: 1.0,
+            };
+            let rep = evaluate_geman_working_curve_inventory_convenience_yield(&spec);
+            // Tight inventory (0.55 < I^*) produces positive backwardation (F < S_0):
+            assert!(rep.backwardation_yield_spread > 0.0);
+            assert!(rep.storage_equilibrium_futures_price < spec.spot_commodity_price_s0);
+            assert!(rep.inventory_conditioned_spot_volatility > spec.baseline_spot_vol_sigma0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_geman_working_curve_inventory_convenience_yield(
+                &GemanWorkingInventoryConvenienceSpec {
+                    spot_commodity_price_s0: Dual::<1>::from_value(spec.spot_commodity_price_s0),
+                    normalized_inventory_i_over_icrit: Dual::<1>::variable(
+                        spec.normalized_inventory_i_over_icrit,
+                        0,
+                    ),
+                    stockout_convenience_yield_y0: Dual::<1>::from_value(
+                        spec.stockout_convenience_yield_y0,
+                    ),
+                    abundance_convenience_floor_yinf: Dual::<1>::from_value(
+                        spec.abundance_convenience_floor_yinf,
+                    ),
+                    working_curve_steepness_kappa: Dual::<1>::from_value(
+                        spec.working_curve_steepness_kappa,
+                    ),
+                    physical_storage_cost_rate_c: Dual::<1>::from_value(
+                        spec.physical_storage_cost_rate_c,
+                    ),
+                    risk_free_rate_r: Dual::<1>::from_value(spec.risk_free_rate_r),
+                    baseline_spot_vol_sigma0: Dual::<1>::from_value(spec.baseline_spot_vol_sigma0),
+                    scarcity_vol_amplification_eta: Dual::<1>::from_value(
+                        spec.scarcity_vol_amplification_eta,
+                    ),
+                    futures_maturity_t: Dual::<1>::from_value(spec.futures_maturity_t),
+                },
+            );
+            let mut sp = spec;
+            sp.normalized_inventory_i_over_icrit += h;
+            let mut sm = spec;
+            sm.normalized_inventory_i_over_icrit -= h;
+            let fd = (evaluate_geman_working_curve_inventory_convenience_yield(&sp)
+                .storage_equilibrium_futures_price
+                - evaluate_geman_working_curve_inventory_convenience_yield(&sm)
+                    .storage_equilibrium_futures_price)
+                / (2.0 * h);
+            assert!((r_ad.storage_equilibrium_futures_price.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_geman_working_curve_inventory_convenience_yield_module::*;
+
+mod evaluate_eydeland_gas_swing_take_or_pay_module {
+    // Eydeland & Wolyniec (2003) & Keppo (2004) Multi-Period Natural Gas Swing / Take-or-Pay
+    // Volume Flexibility & Make-Up Bank Bellman Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct EydelandGasSwingTakeOrPaySpec<T: Real = f64> {
+        pub forward_gas_prices_f: [T; 3],
+        pub contract_strike_price_k: T,
+        pub min_period_volume_qmin: T,
+        pub max_period_volume_qmax: T,
+        pub min_cumulative_acq_qmin_tot: T,
+        pub max_cumulative_acq_qmax_tot: T,
+        pub shortfall_makeup_penalty_per_unit: T,
+        pub spot_gas_volatility_sigma: T,
+        pub risk_free_rate_r: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct EydelandGasSwingTakeOrPayReport<T: Real = f64> {
+        pub flat_baseload_intrinsic_value: T,
+        pub unconstrained_bang_bang_value: T,
+        pub total_swing_contract_value: T,
+        pub extrinsic_swing_flexibility_value: T,
+        pub expected_optimal_cumulative_volume: T,
+        pub acq_constraint_shadow_cost: T,
+    }
+
+    fn smooth_pos<T: Real>(x: T) -> T {
+        let eps = T::from_f64(0.02);
+        T::from_f64(0.5) * (x + (x * x + eps * eps).sqrt())
+    }
+
+    fn soft_max2<T: Real>(a: T, b: T) -> T {
+        let eps = T::from_f64(0.02);
+        let d = a - b;
+        T::from_f64(0.5) * (a + b + (d * d + eps * eps).sqrt())
+    }
+
+    pub fn evaluate_eydeland_gas_swing_take_or_pay<T: Real>(
+        spec: &EydelandGasSwingTakeOrPaySpec<T>,
+    ) -> EydelandGasSwingTakeOrPayReport<T> {
+        let k = spec.contract_strike_price_k;
+        let qmin = spec.min_period_volume_qmin.max_val(T::zero());
+        let qmax = spec.max_period_volume_qmax.max_val(qmin + T::from_f64(0.1));
+        let qmid = T::from_f64(0.5) * (qmin + qmax);
+        let sig = spec.spot_gas_volatility_sigma.max_val(T::from_f64(0.05));
+        let r = spec.risk_free_rate_r;
+        let pen = spec.shortfall_makeup_penalty_per_unit.max_val(T::zero());
+
+        let dt = T::from_f64(0.25);
+        let mut flat_val = T::zero();
+        let mut bang_val = T::zero();
+        let mut opt_vol_acc = T::zero();
+
+        for (i, &f_raw) in spec.forward_gas_prices_f.iter().enumerate() {
+            let tk = dt * T::from_f64((i + 1) as f64);
+            let df = (-r * tk).exp();
+            let fi = f_raw.max_val(T::from_f64(0.1));
+            let u_mult = (sig * tk.sqrt() - T::from_f64(0.5) * sig * sig * tk).exp();
+            let d_mult = (-sig * tk.sqrt() - T::from_f64(0.5) * sig * sig * tk).exp();
+            let s_up = fi * u_mult;
+            let s_dn = fi * d_mult;
+
+            flat_val += df * qmid * (fi - k);
+
+            // Bang-bang payoff in Up and Down states:
+            let pay_up = soft_max2(qmax * (s_up - k), qmin * (s_up - k));
+            let pay_dn = soft_max2(qmax * (s_dn - k), qmin * (s_dn - k));
+            bang_val += df * T::from_f64(0.5) * (pay_up + pay_dn);
+
+            // Smooth probability of taking qmax vs qmin:
+            let w_up = T::one() / (T::one() + (-(s_up - k) * T::from_f64(5.0)).exp());
+            let w_dn = T::one() / (T::one() + (-(s_dn - k) * T::from_f64(5.0)).exp());
+            let eq_i = T::from_f64(0.5) * (w_up + w_dn) * qmax
+                + (T::one() - T::from_f64(0.5) * (w_up + w_dn)) * qmin;
+            opt_vol_acc += eq_i;
+        }
+
+        let df_term = (-r * T::from_f64(0.75)).exp();
+        let shortfall = smooth_pos(spec.min_cumulative_acq_qmin_tot - opt_vol_acc);
+        let overrun = smooth_pos(opt_vol_acc - spec.max_cumulative_acq_qmax_tot);
+        let shadow_cost = df_term * pen * (shortfall + overrun);
+
+        let swing_val = bang_val - shadow_cost;
+        let extr_val = swing_val - flat_val;
+
+        EydelandGasSwingTakeOrPayReport {
+            flat_baseload_intrinsic_value: flat_val,
+            unconstrained_bang_bang_value: bang_val,
+            total_swing_contract_value: swing_val,
+            extrinsic_swing_flexibility_value: extr_val,
+            expected_optimal_cumulative_volume: opt_vol_acc,
+            acq_constraint_shadow_cost: shadow_cost,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_55_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn eydeland_gas_swing_take_or_pay_invariants_and_ad_parity() {
+            let spec = EydelandGasSwingTakeOrPaySpec {
+                forward_gas_prices_f: [3.20, 3.85, 3.45],
+                contract_strike_price_k: 3.30,
+                min_period_volume_qmin: 0.50,
+                max_period_volume_qmax: 1.50,
+                min_cumulative_acq_qmin_tot: 2.20,
+                max_cumulative_acq_qmax_tot: 3.80,
+                shortfall_makeup_penalty_per_unit: 0.85,
+                spot_gas_volatility_sigma: 0.45,
+                risk_free_rate_r: 0.04,
+            };
+            let rep = evaluate_eydeland_gas_swing_take_or_pay(&spec);
+            assert!(rep.total_swing_contract_value > rep.flat_baseload_intrinsic_value);
+            assert!(rep.extrinsic_swing_flexibility_value > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_eydeland_gas_swing_take_or_pay(&EydelandGasSwingTakeOrPaySpec {
+                forward_gas_prices_f: [
+                    Dual::<1>::variable(spec.forward_gas_prices_f[0], 0),
+                    Dual::<1>::from_value(spec.forward_gas_prices_f[1]),
+                    Dual::<1>::from_value(spec.forward_gas_prices_f[2]),
+                ],
+                contract_strike_price_k: Dual::<1>::from_value(spec.contract_strike_price_k),
+                min_period_volume_qmin: Dual::<1>::from_value(spec.min_period_volume_qmin),
+                max_period_volume_qmax: Dual::<1>::from_value(spec.max_period_volume_qmax),
+                min_cumulative_acq_qmin_tot: Dual::<1>::from_value(
+                    spec.min_cumulative_acq_qmin_tot,
+                ),
+                max_cumulative_acq_qmax_tot: Dual::<1>::from_value(
+                    spec.max_cumulative_acq_qmax_tot,
+                ),
+                shortfall_makeup_penalty_per_unit: Dual::<1>::from_value(
+                    spec.shortfall_makeup_penalty_per_unit,
+                ),
+                spot_gas_volatility_sigma: Dual::<1>::from_value(spec.spot_gas_volatility_sigma),
+                risk_free_rate_r: Dual::<1>::from_value(spec.risk_free_rate_r),
+            });
+            let mut sp = spec;
+            sp.forward_gas_prices_f[0] += h;
+            let mut sm = spec;
+            sm.forward_gas_prices_f[0] -= h;
+            let fd = (evaluate_eydeland_gas_swing_take_or_pay(&sp).total_swing_contract_value
+                - evaluate_eydeland_gas_swing_take_or_pay(&sm).total_swing_contract_value)
+                / (2.0 * h);
+            assert!((r_ad.total_swing_contract_value.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_eydeland_gas_swing_take_or_pay_module::*;

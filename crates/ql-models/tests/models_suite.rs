@@ -283,7 +283,7 @@ fn rough_heston_dual5_sensitivities_match_fd_and_short_dated_skew() {
 }
 
 #[test]
-fn phase12_rbergomi_and_slv_particle_invariants() {
+fn suite24_rbergomi_and_slv_particle_invariants() {
     let p = ql_models::RoughBergomiParams {
         xi0: 0.04,
         eta: 1.2,

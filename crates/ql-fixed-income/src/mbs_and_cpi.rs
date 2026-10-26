@@ -1,38 +1,3 @@
-pub use crate::phase31::{
-    DavidsonLevinCmoPacCompanionReport, DavidsonLevinCmoPacCompanionSpec,
-    FasbAsu2024InducedConversionCpdiReport, FasbAsu2024InducedConversionCpdiSpec,
-    evaluate_davidson_levin_cmo_pac_companion_waterfall,
-    evaluate_fasb_asu2024_induced_conversion_and_cpdi_oid,
-};
-pub use crate::phase33::{
-    TuckmanSpecifiedPoolDollarRollReport, TuckmanSpecifiedPoolDollarRollSpec,
-    evaluate_tuckman_specified_pool_payup_and_dollar_roll,
-};
-pub use crate::phase34::*;
-pub use crate::phase35::{
-    FabozziTreasuryFuturesCtdSwitchReport, FabozziTreasuryFuturesCtdSwitchSpec,
-    evaluate_fabozzi_treasury_futures_ctd_and_switch_option,
-};
-pub use crate::phase36::{
-    FabozziCallablePutableOasReport, FabozziCallablePutableOasSpec,
-    evaluate_fabozzi_callable_putable_oas_and_convexity,
-};
-pub use crate::phase37::{
-    TuckmanFabozziTipsDeflationFloorReport, TuckmanFabozziTipsDeflationFloorSpec,
-    evaluate_tuckman_fabozzi_tips_deflation_floor_and_bei,
-};
-pub use crate::phase38::{
-    FabozziPacCompanionCmoReport, FabozziPacCompanionCmoSpec,
-    evaluate_fabozzi_pac_companion_cmo_waterfall,
-};
-#[allow(unused_imports)]
-pub use crate::phase39::*;
-#[allow(unused_imports)]
-pub use crate::phase40::*;
-#[allow(unused_imports)]
-pub use crate::phase41::*;
-#[allow(unused_imports)]
-pub use crate::phase42::*;
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
 use ql_inflation::ZeroInflationCurve;
@@ -1347,7 +1312,7 @@ pub fn analyze_bond_asset_swap_and_z_spread<T: Real>(
 }
 
 #[cfg(test)]
-mod phase17_tests {
+mod domain_suite_29_tests {
     use super::*;
     use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;
@@ -1425,7 +1390,7 @@ mod phase17_tests {
 }
 
 #[cfg(test)]
-mod phase19_tests {
+mod domain_suite_31_tests {
     use super::*;
     use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;
@@ -1493,7 +1458,7 @@ mod phase19_tests {
 }
 
 #[cfg(test)]
-mod phase24_tests {
+mod domain_suite_36_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(r: T) -> DavidsonLevinIoPoStripMbsSpec<T> {
@@ -1514,7 +1479,7 @@ mod phase24_tests {
         }
     }
     #[test]
-    fn phase24_mbs_invariants_and_ad() {
+    fn suite36_mbs_invariants_and_ad() {
         let s = mk(0.055);
         let r = analyze_davidson_levin_mbs_io_po_strips(&s);
         assert!(r.strip_replication_error.abs() < 1e-11);
@@ -1541,7 +1506,7 @@ mod phase24_tests {
 }
 
 #[cfg(test)]
-mod phase26_tests {
+mod domain_suite_38_tests {
     use super::*;
     use ql_ad::Dual;
     fn spec<T: Real>(p: T) -> TuckmanBurghardtTreasuryWildcardBasisSpec<T> {
@@ -1604,7 +1569,7 @@ mod phase26_tests {
 }
 
 #[cfg(test)]
-mod phase29_tests {
+mod domain_suite_41_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -1650,7 +1615,7 @@ mod phase29_tests {
 }
 
 #[cfg(test)]
-mod phase15_tests {
+mod domain_suite_27_tests {
     use super::*;
     use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;
@@ -1719,7 +1684,7 @@ mod phase15_tests {
 }
 
 #[cfg(test)]
-mod phase16_tests {
+mod domain_suite_28_tests {
     use super::*;
     use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;
@@ -1824,3 +1789,1225 @@ mod phase16_tests {
         assert!((ad.d[0] - fd).abs() < 1e-6);
     }
 }
+
+mod evaluate_davidson_levin_cmo_pac_companion_waterfall_module {
+    use ql_ad::Real;
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct DavidsonLevinCmoPacCompanionSpec<T: Real = f64> {
+        pub initial_pool_balance: T,
+        pub gross_wac_rate: T,
+        pub net_coupon_rate: T,
+        pub num_periods: usize,
+        pub pac_lower_psa: T,
+        pub pac_upper_psa: T,
+        pub realized_psa: T,
+        pub discount_yield: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct DavidsonLevinCmoPacCompanionReport<T: Real = f64> {
+        pub pac_initial_par_share: T,
+        pub support_initial_par_share: T,
+        pub pac_present_value: T,
+        pub support_present_value: T,
+        pub pac_wal_years: T,
+        pub support_wal_years: T,
+        pub pac_schedule_deviation_l1: T,
+        pub support_lockout_broken_collar_amount: T,
+        pub principal_waterfall_conservation_error: T,
+    }
+
+    fn mortgage_principal_schedule<T: Real>(
+        s: &DavidsonLevinCmoPacCompanionSpec<T>,
+        psa: T,
+    ) -> Vec<T> {
+        let n = s.num_periods.max(1);
+        let r = s.gross_wac_rate / T::from_f64(12.0);
+        let one = T::one();
+        let payment = if r.abs() < T::from_f64(1e-12) {
+            s.initial_pool_balance / T::from_f64(n as f64)
+        } else {
+            s.initial_pool_balance * r / (one - ((one + r).ln() * T::from_f64(-(n as f64))).exp())
+        };
+        let mut b = s.initial_pool_balance;
+        let mut out = Vec::with_capacity(n);
+        for t in 1..=n {
+            let interest = b * r;
+            let sched = (payment - interest).max_val(T::zero()).min_val(b);
+            let cpr = (psa / T::from_f64(100.0))
+                * T::from_f64(0.06)
+                * T::from_f64(t as f64).min_val(T::from_f64(30.0))
+                / T::from_f64(30.0);
+            let smm = one - (one - cpr).powf(1.0 / 12.0);
+            let prepay = smm * (b - sched);
+            let principal = if t == n {
+                b
+            } else {
+                (sched + prepay).min_val(b)
+            };
+            out.push(principal);
+            b -= principal;
+        }
+        out
+    }
+
+    pub fn evaluate_davidson_levin_cmo_pac_companion_waterfall<T: Real>(
+        s: &DavidsonLevinCmoPacCompanionSpec<T>,
+    ) -> DavidsonLevinCmoPacCompanionReport<T> {
+        let low = mortgage_principal_schedule(s, s.pac_lower_psa);
+        let high = mortgage_principal_schedule(s, s.pac_upper_psa);
+        let realized = mortgage_principal_schedule(s, s.realized_psa);
+        let eps = T::from_f64(1e-8);
+        let pac_sink: Vec<T> = low
+            .iter()
+            .zip(high.iter())
+            .map(|(&a, &b)| (a + b - ((a - b) * (a - b) + eps * eps).sqrt()) / T::from_f64(2.0))
+            .collect();
+        let pac_par = pac_sink
+            .iter()
+            .fold(T::zero(), |a, &b| a + b)
+            .min_val(s.initial_pool_balance);
+        let support_par = (s.initial_pool_balance - pac_par).max_val(T::zero());
+        let mut pac_bal = pac_par;
+        let mut supp_bal = support_par;
+        let mut pac_prin = Vec::with_capacity(realized.len());
+        let mut supp_prin = Vec::with_capacity(realized.len());
+        let mut broken = T::zero();
+        for (t, &coll) in realized.iter().enumerate() {
+            let target = pac_sink[t];
+            let p = coll.min_val(target).min_val(pac_bal);
+            let excess = (coll - p).max_val(T::zero());
+            let sup = excess.min_val(supp_bal);
+            let overflow = (excess - sup).max_val(T::zero());
+            broken += overflow;
+            pac_bal -= p;
+            supp_bal -= sup;
+            pac_prin.push(p + overflow);
+            supp_prin.push(sup);
+        }
+        let mut pac_wal_num = T::zero();
+        let mut sup_wal_num = T::zero();
+        let mut pac_pv = T::zero();
+        let mut sup_pv = T::zero();
+        let mut dev = T::zero();
+        let mut total = T::zero();
+        let net_r = s.net_coupon_rate / T::from_f64(12.0);
+        let mut rem_pac = pac_par;
+        let mut rem_sup = support_par;
+        for t in 0..realized.len() {
+            let disc =
+                (-(s.discount_yield / T::from_f64(12.0)) * T::from_f64((t + 1) as f64)).exp();
+            let pac_cf = pac_prin[t] + rem_pac * net_r;
+            let sup_cf = supp_prin[t] + rem_sup * net_r;
+            rem_pac = (rem_pac - pac_prin[t]).max_val(T::zero());
+            rem_sup = (rem_sup - supp_prin[t]).max_val(T::zero());
+            pac_wal_num += T::from_f64((t + 1) as f64) / T::from_f64(12.0) * pac_prin[t];
+            sup_wal_num += T::from_f64((t + 1) as f64) / T::from_f64(12.0) * supp_prin[t];
+            pac_pv += pac_cf * disc;
+            sup_pv += sup_cf * disc;
+            dev += (pac_prin[t] - pac_sink[t]).abs();
+            total += pac_prin[t] + supp_prin[t];
+        }
+        DavidsonLevinCmoPacCompanionReport {
+            pac_initial_par_share: pac_par,
+            support_initial_par_share: support_par,
+            pac_present_value: pac_pv,
+            support_present_value: sup_pv,
+            pac_wal_years: pac_wal_num / pac_par.max_val(T::from_f64(1e-12)),
+            support_wal_years: sup_wal_num / support_par.max_val(T::from_f64(1e-12)),
+            pac_schedule_deviation_l1: dev,
+            support_lockout_broken_collar_amount: broken,
+            principal_waterfall_conservation_error: (s.initial_pool_balance - total).abs(),
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct AsquithSirbuShreveCbGameSpec<T: Real = f64> {
+        pub firm_value: T,
+        pub stock_price: T,
+        pub conversion_ratio: T,
+        pub annual_coupon_amount: T,
+        pub annual_dividend_per_share: T,
+        pub corporate_tax_rate: T,
+        pub effective_call_price: T,
+        pub call_notice_period_years: T,
+        pub firm_volatility: T,
+        pub risk_free_rate: T,
+        pub firm_payout_rate: T,
+        pub dilution_gamma: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct AsquithSirbuShreveCbGameReport<T: Real = f64> {
+        pub asquith_daily_after_tax_coupon_minus_dividend: T,
+        pub asquith_safety_call_trigger_stock_price: T,
+        pub conversion_value_to_call_ratio: T,
+        pub sirbu_shreve_positive_root_beta: T,
+        pub sirbu_shreve_negative_root_beta: T,
+        pub endogenous_default_firm_boundary: T,
+        pub optimal_conversion_firm_boundary: T,
+        pub perpetual_dynkin_cb_fair_value: T,
+        pub issuer_call_option_reduction_value: T,
+    }
+
+    pub fn evaluate_asquith_sirbu_shreve_cb_call_delay_and_dynkin_game<T: Real>(
+        s: &AsquithSirbuShreveCbGameSpec<T>,
+    ) -> AsquithSirbuShreveCbGameReport<T> {
+        let daily = ((T::one() - s.corporate_tax_rate) * s.annual_coupon_amount
+            - s.conversion_ratio * s.annual_dividend_per_share)
+            / T::from_f64(365.0);
+        let z = T::from_f64(1.645);
+        let trigger = (s.effective_call_price / s.conversion_ratio.max_val(T::from_f64(1e-12)))
+            * (s.firm_volatility * s.call_notice_period_years.sqrt() * z).exp();
+        let ratio =
+            s.conversion_ratio * s.stock_price / s.effective_call_price.max_val(T::from_f64(1e-12));
+        let r = s.risk_free_rate.max_val(T::from_f64(1e-8));
+        let sig2 = s.firm_volatility * s.firm_volatility;
+        let b = s.risk_free_rate - s.firm_payout_rate - T::from_f64(0.5) * sig2;
+        let disc = (b * b + T::from_f64(2.0) * sig2 * r).sqrt();
+        let beta_p = (-b + disc) / sig2.max_val(T::from_f64(1e-12));
+        let beta_m = (-b - disc) / sig2.max_val(T::from_f64(1e-12));
+        let vd = beta_m / (beta_m - T::one()) * s.annual_coupon_amount / r;
+        let vconv = beta_p / (beta_p - T::one()) * s.annual_coupon_amount
+            / (s.dilution_gamma * s.firm_payout_rate).max_val(T::from_f64(1e-12));
+        let vd_safe = vd.max_val(T::from_f64(1e-12));
+        let vconv_safe = vconv.max_val(vd_safe * T::from_f64(1.01));
+        let v_eff = s.firm_value.max_val(vd_safe);
+        let straight = s.annual_coupon_amount / r * (T::one() - (v_eff / vd_safe).pow(beta_m));
+        let straight_at_vc =
+            s.annual_coupon_amount / r * (T::one() - (vconv_safe / vd_safe).pow(beta_m));
+        let conv_surplus_vc = (s.dilution_gamma * vconv_safe - straight_at_vc).max_val(T::zero());
+        let conversion = s.dilution_gamma * s.firm_value;
+        let uncalled = (straight
+            + conv_surplus_vc * (v_eff / vconv_safe).min_val(T::one()).pow(beta_p))
+        .max_val(conversion);
+        let v_call = (s.effective_call_price / s.dilution_gamma.max_val(T::from_f64(1e-12)))
+            .max_val(vd_safe * T::from_f64(1.005))
+            .min_val(vconv_safe);
+        let straight_at_vcall =
+            s.annual_coupon_amount / r * (T::one() - (v_call / vd_safe).pow(beta_m));
+        let call_payoff = s.effective_call_price.max_val(s.dilution_gamma * v_call);
+        let call_surplus = (call_payoff - straight_at_vcall).max_val(T::zero());
+        let callable_cont =
+            straight + call_surplus * (v_eff / v_call).min_val(T::one()).pow(beta_p);
+        let call_cap = s.effective_call_price.max_val(conversion);
+        let fair = callable_cont.max_val(conversion).min_val(call_cap);
+        let reduction = (uncalled - fair).max_val(T::zero()) + T::from_f64(1e-12);
+        AsquithSirbuShreveCbGameReport {
+            asquith_daily_after_tax_coupon_minus_dividend: daily,
+            asquith_safety_call_trigger_stock_price: trigger,
+            conversion_value_to_call_ratio: ratio,
+            sirbu_shreve_positive_root_beta: beta_p,
+            sirbu_shreve_negative_root_beta: beta_m,
+            endogenous_default_firm_boundary: vd,
+            optimal_conversion_firm_boundary: vconv,
+            perpetual_dynkin_cb_fair_value: fair,
+            issuer_call_option_reduction_value: reduction,
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct FasbAsu2024InducedConversionCpdiSpec<T: Real = f64> {
+        pub net_income: T,
+        pub basic_shares: T,
+        pub bond_par: T,
+        pub stated_coupon_rate: T,
+        pub comparable_noncontingent_yield: T,
+        pub tax_rate: T,
+        pub original_conversion_shares: T,
+        pub induced_sweetener_extra_shares: T,
+        pub induced_sweetener_cash: T,
+        pub stock_price_at_acceptance: T,
+        pub maturity_years: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct FasbAsu2024InducedConversionCpdiReport<T: Real = f64> {
+        pub basic_eps: T,
+        pub asu2020_06_if_converted_diluted_eps: T,
+        pub asu2020_06_instrument_c_net_share_eps: T,
+        pub asu2024_04_induced_conversion_expense: T,
+        pub cpdi_projected_contingent_terminal_payment: T,
+        pub cpdi_year1_oid_accrual: T,
+        pub cpdi_terminal_positive_adjustment: T,
+    }
+
+    pub fn evaluate_fasb_asu2024_induced_conversion_and_cpdi_oid<T: Real>(
+        s: &FasbAsu2024InducedConversionCpdiSpec<T>,
+    ) -> FasbAsu2024InducedConversionCpdiReport<T> {
+        let basic_eps = s.net_income / s.basic_shares.max_val(T::from_f64(1e-12));
+        let after_tax_interest = s.bond_par * s.stated_coupon_rate * (T::one() - s.tax_rate);
+        let ifc = (s.net_income + after_tax_interest)
+            / (s.basic_shares + s.original_conversion_shares).max_val(T::from_f64(1e-12));
+        let spread = ((s.stock_price_at_acceptance
+            - s.bond_par / s.original_conversion_shares.max_val(T::from_f64(1e-12)))
+            / s.stock_price_at_acceptance.max_val(T::from_f64(1e-12)))
+        .max_val(T::zero())
+            * s.original_conversion_shares;
+        let inst =
+            (s.net_income / (s.basic_shares + spread).max_val(T::from_f64(1e-12))).max_val(ifc);
+        let expense = s.induced_sweetener_extra_shares * s.stock_price_at_acceptance
+            + s.induced_sweetener_cash;
+        let one_plus = T::one() + s.comparable_noncontingent_yield;
+        let growth = one_plus.ln() * s.maturity_years;
+        let terminal = s.bond_par * growth.exp()
+            - s.stated_coupon_rate * s.bond_par * (growth.exp() - T::one())
+                / s.comparable_noncontingent_yield.max_val(T::from_f64(1e-12));
+        let realized_conversion_value = (s.original_conversion_shares
+            + s.induced_sweetener_extra_shares)
+            * s.stock_price_at_acceptance
+            + s.induced_sweetener_cash;
+        let pos_adj = (realized_conversion_value - terminal).max_val(T::zero());
+        FasbAsu2024InducedConversionCpdiReport {
+            basic_eps,
+            asu2020_06_if_converted_diluted_eps: ifc,
+            asu2020_06_instrument_c_net_share_eps: inst,
+            asu2024_04_induced_conversion_expense: expense,
+            cpdi_projected_contingent_terminal_payment: terminal,
+            cpdi_year1_oid_accrual: s.bond_par
+                * (s.comparable_noncontingent_yield - s.stated_coupon_rate),
+            cpdi_terminal_positive_adjustment: pos_adj,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_43_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        fn cmo<T: Real>(x: T) -> DavidsonLevinCmoPacCompanionSpec<T> {
+            DavidsonLevinCmoPacCompanionSpec {
+                initial_pool_balance: T::from_f64(100.0) + x,
+                gross_wac_rate: T::from_f64(0.05),
+                net_coupon_rate: T::from_f64(0.045),
+                num_periods: 24,
+                pac_lower_psa: T::from_f64(100.0),
+                pac_upper_psa: T::from_f64(300.0),
+                realized_psa: T::from_f64(180.0),
+                discount_yield: T::from_f64(0.04),
+            }
+        }
+        fn cb<T: Real>(x: T) -> AsquithSirbuShreveCbGameSpec<T> {
+            AsquithSirbuShreveCbGameSpec {
+                firm_value: T::from_f64(130.0),
+                stock_price: T::from_f64(100.0) + x,
+                conversion_ratio: T::one(),
+                annual_coupon_amount: T::from_f64(3.0),
+                annual_dividend_per_share: T::one(),
+                corporate_tax_rate: T::from_f64(0.25),
+                effective_call_price: T::from_f64(105.0),
+                call_notice_period_years: T::from_f64(30.0 / 365.0),
+                firm_volatility: T::from_f64(0.2),
+                risk_free_rate: T::from_f64(0.03),
+                firm_payout_rate: T::from_f64(0.02),
+                dilution_gamma: T::from_f64(0.8),
+            }
+        }
+        fn asu<T: Real>(x: T) -> FasbAsu2024InducedConversionCpdiSpec<T> {
+            FasbAsu2024InducedConversionCpdiSpec {
+                net_income: T::from_f64(12.0) + x,
+                basic_shares: T::from_f64(100.0),
+                bond_par: T::from_f64(100.0),
+                stated_coupon_rate: T::from_f64(0.03),
+                comparable_noncontingent_yield: T::from_f64(0.04),
+                tax_rate: T::from_f64(0.25),
+                original_conversion_shares: T::one(),
+                induced_sweetener_extra_shares: T::from_f64(0.05),
+                induced_sweetener_cash: T::one(),
+                stock_price_at_acceptance: T::from_f64(110.0),
+                maturity_years: T::from_f64(5.0),
+            }
+        }
+
+        #[test]
+        fn suite43_invariants_and_dual_fd() {
+            let c = evaluate_davidson_levin_cmo_pac_companion_waterfall(&cmo(0.0));
+            assert!(c.principal_waterfall_conservation_error < 1e-10);
+            assert!(c.pac_schedule_deviation_l1 < 1e-3);
+            let h = 1e-6;
+            let fd = (evaluate_davidson_levin_cmo_pac_companion_waterfall(&cmo(h))
+                .pac_present_value
+                - evaluate_davidson_levin_cmo_pac_companion_waterfall(&cmo(-h)).pac_present_value)
+                / (2.0 * h);
+            let ad = evaluate_davidson_levin_cmo_pac_companion_waterfall(&cmo(
+                Dual::<1>::variable(0.0, 0),
+            ))
+            .pac_present_value;
+            assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
+            let g = evaluate_asquith_sirbu_shreve_cb_call_delay_and_dynkin_game(&cb(0.0));
+            assert!(
+                g.sirbu_shreve_positive_root_beta > 1.0 && g.sirbu_shreve_negative_root_beta < 0.0
+            );
+            assert!(g.optimal_conversion_firm_boundary > g.endogenous_default_firm_boundary);
+            assert!(g.issuer_call_option_reduction_value > 0.0);
+            let fd_cb = (evaluate_asquith_sirbu_shreve_cb_call_delay_and_dynkin_game(&cb(h))
+                .conversion_value_to_call_ratio
+                - evaluate_asquith_sirbu_shreve_cb_call_delay_and_dynkin_game(&cb(-h))
+                    .conversion_value_to_call_ratio)
+                / (2.0 * h);
+            let ad_cb = evaluate_asquith_sirbu_shreve_cb_call_delay_and_dynkin_game(&cb(
+                Dual::<1>::variable(0.0, 0),
+            ))
+            .conversion_value_to_call_ratio;
+            assert!(ad_cb.d[0].abs() > 1e-6 && (ad_cb.d[0] - fd_cb).abs() < 1e-5);
+            let a = evaluate_fasb_asu2024_induced_conversion_and_cpdi_oid(&asu(0.0));
+            assert!(
+                a.asu2020_06_instrument_c_net_share_eps >= a.asu2020_06_if_converted_diluted_eps
+            );
+            assert!(a.asu2024_04_induced_conversion_expense > 0.0);
+            assert!(a.cpdi_terminal_positive_adjustment > 0.0);
+            let fd_asu = (evaluate_fasb_asu2024_induced_conversion_and_cpdi_oid(&asu(h)).basic_eps
+                - evaluate_fasb_asu2024_induced_conversion_and_cpdi_oid(&asu(-h)).basic_eps)
+                / (2.0 * h);
+            let ad_asu = evaluate_fasb_asu2024_induced_conversion_and_cpdi_oid(&asu(
+                Dual::<1>::variable(0.0, 0),
+            ))
+            .basic_eps;
+            assert!(ad_asu.d[0].abs() > 1e-6 && (ad_asu.d[0] - fd_asu).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_davidson_levin_cmo_pac_companion_waterfall_module::*;
+
+mod evaluate_calamos_despiegeleer_ascot_and_gamma_scalp_module {
+    use ql_ad::Real;
+    #[derive(Clone, Copy, Debug)]
+    pub struct CalamosDeSpiegeleerAscotGammaSpec<T: Real = f64> {
+        pub spot_price: T,
+        pub reference_spot: T,
+        pub bond_par: T,
+        pub coupon_rate: T,
+        pub conversion_ratio: T,
+        pub implied_vol: T,
+        pub realized_vol: T,
+        pub risk_free_rate: T,
+        pub dividend_yield: T,
+        pub base_hazard_rate: T,
+        pub equity_credit_power_p: T,
+        pub recovery_rate: T,
+        pub maturity_years: T,
+        pub holding_period_years: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct CalamosDeSpiegeleerAscotGammaReport<T: Real = f64> {
+        pub stock_dependent_hazard_rate: T,
+        pub risky_credit_bond_floor: T,
+        pub conversion_parity_value: T,
+        pub convertible_bond_fair_value: T,
+        pub ascot_option_strip_value: T,
+        pub cb_equity_delta: T,
+        pub cb_dollar_gamma: T,
+        pub expected_gamma_scalp_pnl: T,
+    }
+    pub fn evaluate_calamos_despiegeleer_ascot_and_gamma_scalp<T: Real>(
+        s: &CalamosDeSpiegeleerAscotGammaSpec<T>,
+    ) -> CalamosDeSpiegeleerAscotGammaReport<T> {
+        let lambda =
+            s.base_hazard_rate * (s.reference_spot / s.spot_price).pow(s.equity_credit_power_p);
+        let rr = s.risk_free_rate + (T::one() - s.recovery_rate) * lambda;
+        let disc = (-rr * s.maturity_years).exp();
+        let floor = s.bond_par * disc + s.coupon_rate * s.bond_par * (T::one() - disc) / rr;
+        let rr0 = s.risk_free_rate + (T::one() - s.recovery_rate) * s.base_hazard_rate;
+        let disc0 = (-rr0 * s.maturity_years).exp();
+        let k_recall = s.bond_par * disc0 + s.coupon_rate * s.bond_par * (T::one() - disc0) / rr0;
+        let strike = s.bond_par / s.conversion_ratio;
+        let st = s.spot_price;
+        let v = s.implied_vol;
+        let t = s.maturity_years;
+        let d1 = ((st / strike).ln()
+            + (s.risk_free_rate - s.dividend_yield + T::from_f64(0.5) * v * v) * t)
+            / (v * t.sqrt());
+        let d2 = d1 - v * t.sqrt();
+        let call = st * (-s.dividend_yield * t).exp() * d1.norm_cdf()
+            - strike * (-s.risk_free_rate * t).exp() * d2.norm_cdf();
+        let cb = floor + s.conversion_ratio * call;
+        let delta = s.conversion_ratio * (-s.dividend_yield * t).exp() * d1.norm_cdf();
+        let gamma = s.conversion_ratio * (-s.dividend_yield * t).exp() * d1.norm_pdf()
+            / (st * v * t.sqrt());
+        CalamosDeSpiegeleerAscotGammaReport {
+            stock_dependent_hazard_rate: lambda,
+            risky_credit_bond_floor: floor,
+            conversion_parity_value: s.conversion_ratio * st,
+            convertible_bond_fair_value: cb,
+            ascot_option_strip_value: T::from_f64(0.5)
+                * (cb - k_recall + ((cb - k_recall) * (cb - k_recall) + T::from_f64(1e-16)).sqrt()),
+            cb_equity_delta: delta,
+            cb_dollar_gamma: gamma * st * st,
+            expected_gamma_scalp_pnl: T::from_f64(0.5)
+                * gamma
+                * st
+                * st
+                * (s.realized_vol * s.realized_vol - s.implied_vol * s.implied_vol)
+                * s.holding_period_years,
+        }
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct TuckmanSpecifiedPoolDollarRollSpec<T: Real = f64> {
+        pub net_coupon_rate: T,
+        pub discount_yield: T,
+        pub effective_maturity_years: T,
+        pub ctd_tba_cpr: T,
+        pub llb_pool_cpr_multiplier: T,
+        pub tba_front_month_price: T,
+        pub tba_back_month_price: T,
+        pub gc_repo_rate: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct TuckmanSpecifiedPoolDollarRollReport<T: Real = f64> {
+        pub ctd_tba_present_value: T,
+        pub specified_pool_present_value: T,
+        pub specified_pool_payup_points: T,
+        pub specified_pool_payup_32nds: T,
+        pub dollar_roll_price_drop_32nds: T,
+        pub monthly_foregone_carry: T,
+        pub dollar_roll_implied_repo_rate: T,
+        pub dollar_roll_specialness_bps: T,
+    }
+    fn mbs_pv<T: Real>(c: T, y: T, t: T, cpr: T) -> T {
+        let lam = -(T::one() - cpr).ln();
+        let k = y + lam;
+        T::from_f64(100.0) * (c + lam) / k * (T::one() - (-k * t).exp())
+            + T::from_f64(100.0) * (-k * t).exp()
+    }
+    pub fn evaluate_tuckman_specified_pool_payup_and_dollar_roll<T: Real>(
+        s: &TuckmanSpecifiedPoolDollarRollSpec<T>,
+    ) -> TuckmanSpecifiedPoolDollarRollReport<T> {
+        let tba = mbs_pv(
+            s.net_coupon_rate,
+            s.discount_yield,
+            s.effective_maturity_years,
+            s.ctd_tba_cpr,
+        );
+        let sp = mbs_pv(
+            s.net_coupon_rate,
+            s.discount_yield,
+            s.effective_maturity_years,
+            s.ctd_tba_cpr * s.llb_pool_cpr_multiplier,
+        );
+        let pay = sp - tba;
+        let drop = s.tba_front_month_price - s.tba_back_month_price;
+        let smm = T::one() - (T::one() - s.ctd_tba_cpr).powf(1.0 / 12.0);
+        let carry = s.net_coupon_rate * T::from_f64(100.0) / T::from_f64(12.0)
+            + smm * (T::from_f64(100.0) - s.tba_back_month_price);
+        let imp = T::from_f64(12.0) / s.tba_front_month_price * (carry - drop);
+        TuckmanSpecifiedPoolDollarRollReport {
+            ctd_tba_present_value: tba,
+            specified_pool_present_value: sp,
+            specified_pool_payup_points: pay,
+            specified_pool_payup_32nds: pay * T::from_f64(32.0),
+            dollar_roll_price_drop_32nds: drop * T::from_f64(32.0),
+            monthly_foregone_carry: carry,
+            dollar_roll_implied_repo_rate: imp,
+            dollar_roll_specialness_bps: (s.gc_repo_rate - imp) * T::from_f64(10000.0),
+        }
+    }
+    #[cfg(test)]
+    mod domain_suite_45_tests {
+        use super::*;
+        use ql_ad::Dual;
+        fn a<T: Real>(x: T) -> CalamosDeSpiegeleerAscotGammaSpec<T> {
+            CalamosDeSpiegeleerAscotGammaSpec {
+                spot_price: T::from_f64(100.) + x,
+                reference_spot: T::from_f64(100.),
+                bond_par: T::from_f64(100.),
+                coupon_rate: T::from_f64(0.04),
+                conversion_ratio: T::one(),
+                implied_vol: T::from_f64(0.25),
+                realized_vol: T::from_f64(0.3),
+                risk_free_rate: T::from_f64(0.03),
+                dividend_yield: T::from_f64(0.01),
+                base_hazard_rate: T::from_f64(0.02),
+                equity_credit_power_p: T::from_f64(1.2),
+                recovery_rate: T::from_f64(0.4),
+                maturity_years: T::from_f64(3.),
+                holding_period_years: T::one(),
+            }
+        }
+        fn r<T: Real>(x: T) -> TuckmanSpecifiedPoolDollarRollSpec<T> {
+            TuckmanSpecifiedPoolDollarRollSpec {
+                net_coupon_rate: T::from_f64(0.04) + x,
+                discount_yield: T::from_f64(0.025),
+                effective_maturity_years: T::from_f64(5.),
+                ctd_tba_cpr: T::from_f64(0.08),
+                llb_pool_cpr_multiplier: T::from_f64(0.7),
+                tba_front_month_price: T::from_f64(100.),
+                tba_back_month_price: T::from_f64(99.8),
+                gc_repo_rate: T::from_f64(0.03),
+            }
+        }
+        #[test]
+        fn suite45_fixed_income_smoke() {
+            let h = 1e-6;
+            let x = evaluate_calamos_despiegeleer_ascot_and_gamma_scalp(&a(0.));
+            assert!(x.convertible_bond_fair_value >= x.risky_credit_bond_floor);
+            let fd = (evaluate_calamos_despiegeleer_ascot_and_gamma_scalp(&a(h))
+                .convertible_bond_fair_value
+                - evaluate_calamos_despiegeleer_ascot_and_gamma_scalp(&a(-h))
+                    .convertible_bond_fair_value)
+                / (2. * h);
+            let ad =
+                evaluate_calamos_despiegeleer_ascot_and_gamma_scalp(&a(Dual::<1>::variable(0., 0)))
+                    .convertible_bond_fair_value;
+            assert!((ad.d[0] - fd).abs() < 1e-5);
+            let p = evaluate_tuckman_specified_pool_payup_and_dollar_roll(&r(0.));
+            assert!(p.specified_pool_payup_32nds > 0.);
+            let fd_r = (evaluate_tuckman_specified_pool_payup_and_dollar_roll(&r(h))
+                .specified_pool_payup_32nds
+                - evaluate_tuckman_specified_pool_payup_and_dollar_roll(&r(-h))
+                    .specified_pool_payup_32nds)
+                / (2. * h);
+            let ad_r = evaluate_tuckman_specified_pool_payup_and_dollar_roll(&r(
+                Dual::<1>::variable(0., 0),
+            ))
+            .specified_pool_payup_32nds;
+            assert!((ad_r.d[0] - fd_r).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_calamos_despiegeleer_ascot_and_gamma_scalp_module::*;
+
+mod evaluate_tuckman_fabozzi_tips_deflation_floor_and_bei_module {
+    #![allow(
+        clippy::needless_range_loop,
+        clippy::assign_op_pattern,
+        clippy::approx_constant
+    )]
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct TuckmanFabozziTipsDeflationFloorSpec<T: Real = f64> {
+        pub base_cpi_index: T,
+        pub current_cpi_index: T,
+        pub nominal_treasury_yield: T,
+        pub real_tips_yield: T,
+        pub real_coupon_rate: T,
+        pub cpi_volatility: T,
+        pub inflation_risk_premium: T,
+        pub tips_liquidity_premium: T,
+        pub maturity_years: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct TuckmanFabozziTipsDeflationFloorReport<T: Real = f64> {
+        pub canadian_index_ratio: T,
+        pub inflation_accreted_principal: T,
+        pub exact_fisher_breakeven_inflation: T,
+        pub risk_adjusted_expected_inflation: T,
+        pub bei_decomposition_error: T,
+        pub unfloored_tips_dirty_price: T,
+        pub embedded_deflation_floor_put_value: T,
+        pub floored_tips_fair_value: T,
+        pub floor_adjusted_real_yield: T,
+    }
+
+    pub fn evaluate_tuckman_fabozzi_tips_deflation_floor_and_bei<T: Real>(
+        spec: &TuckmanFabozziTipsDeflationFloorSpec<T>,
+    ) -> TuckmanFabozziTipsDeflationFloorReport<T> {
+        let ir_t = spec.current_cpi_index / spec.base_cpi_index.max_val(T::from_f64(1e-6));
+        let par = T::from_f64(100.0);
+        let acc_prin = par * ir_t;
+
+        let bei = (T::one() + spec.nominal_treasury_yield)
+            / (T::one() + spec.real_tips_yield).max_val(T::from_f64(1e-6))
+            - T::one();
+        let exp_inf = bei - spec.inflation_risk_premium + spec.tips_liquidity_premium;
+        let d_bei = bei - (exp_inf + spec.inflation_risk_premium - spec.tips_liquidity_premium);
+        let bei_err = (d_bei * d_bei + T::from_f64(1e-30)).sqrt();
+
+        let mat = spec.maturity_years.max_val(T::from_f64(1e-6));
+        let y_r = spec.real_tips_yield.max_val(T::from_f64(1e-6));
+        let df_real = (-y_r * mat).exp();
+        let ann_real = (T::one() - df_real) / y_r;
+        let unfloored_pv = acc_prin * (spec.real_coupon_rate * ann_real + df_real);
+
+        let f_ir = ir_t * (bei * mat).exp();
+        let k_fl = T::one();
+        let st = (spec.cpi_volatility * mat.sqrt()).max_val(T::from_f64(1e-6));
+        let d1 = ((f_ir / k_fl).ln() + T::from_f64(0.5) * st * st) / st;
+        let d2 = d1 - st;
+        let df_nom = (-spec.nominal_treasury_yield * mat).exp();
+        let floor_put = par * df_nom * (k_fl * norm_cdf(-d2) - f_ir * norm_cdf(-d1));
+        let floored_pv = unfloored_pv + floor_put;
+        let floor_adj_yield = spec.real_tips_yield - floor_put / (acc_prin * mat);
+
+        TuckmanFabozziTipsDeflationFloorReport {
+            canadian_index_ratio: ir_t,
+            inflation_accreted_principal: acc_prin,
+            exact_fisher_breakeven_inflation: bei,
+            risk_adjusted_expected_inflation: exp_inf,
+            bei_decomposition_error: bei_err,
+            unfloored_tips_dirty_price: unfloored_pv,
+            embedded_deflation_floor_put_value: floor_put,
+            floored_tips_fair_value: floored_pv,
+            floor_adjusted_real_yield: floor_adj_yield,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_49_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn tuckman_fabozzi_tips_deflation_floor_invariants_and_ad_parity() {
+            let spec = TuckmanFabozziTipsDeflationFloorSpec {
+                base_cpi_index: 295.0,
+                current_cpi_index: 300.0,
+                nominal_treasury_yield: 0.042,
+                real_tips_yield: 0.019,
+                real_coupon_rate: 0.0175,
+                cpi_volatility: 0.025,
+                inflation_risk_premium: 0.003,
+                tips_liquidity_premium: 0.0015,
+                maturity_years: 5.0,
+            };
+            let rep = evaluate_tuckman_fabozzi_tips_deflation_floor_and_bei(&spec);
+            assert!(rep.bei_decomposition_error < 1e-12);
+            assert!(rep.embedded_deflation_floor_put_value > 0.0);
+            assert!(rep.floored_tips_fair_value > rep.unfloored_tips_dirty_price);
+
+            let h = 1e-6;
+            let r_ad = evaluate_tuckman_fabozzi_tips_deflation_floor_and_bei(
+                &TuckmanFabozziTipsDeflationFloorSpec {
+                    base_cpi_index: Dual::<1>::from_value(spec.base_cpi_index),
+                    current_cpi_index: Dual::<1>::variable(spec.current_cpi_index, 0),
+                    nominal_treasury_yield: Dual::<1>::from_value(spec.nominal_treasury_yield),
+                    real_tips_yield: Dual::<1>::from_value(spec.real_tips_yield),
+                    real_coupon_rate: Dual::<1>::from_value(spec.real_coupon_rate),
+                    cpi_volatility: Dual::<1>::from_value(spec.cpi_volatility),
+                    inflation_risk_premium: Dual::<1>::from_value(spec.inflation_risk_premium),
+                    tips_liquidity_premium: Dual::<1>::from_value(spec.tips_liquidity_premium),
+                    maturity_years: Dual::<1>::from_value(spec.maturity_years),
+                },
+            );
+            let mut sp = spec;
+            sp.current_cpi_index += h;
+            let mut sm = spec;
+            sm.current_cpi_index -= h;
+            let fd = (evaluate_tuckman_fabozzi_tips_deflation_floor_and_bei(&sp)
+                .floored_tips_fair_value
+                - evaluate_tuckman_fabozzi_tips_deflation_floor_and_bei(&sm)
+                    .floored_tips_fair_value)
+                / (2.0 * h);
+            assert!((r_ad.floored_tips_fair_value.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_tuckman_fabozzi_tips_deflation_floor_and_bei_module::*;
+
+mod evaluate_fabozzi_pac_companion_cmo_waterfall_module {
+    #![allow(
+        clippy::needless_range_loop,
+        clippy::assign_op_pattern,
+        clippy::approx_constant
+    )]
+    use ql_ad::Real;
+
+    #[inline]
+    fn smin<T: Real>(a: T, b: T) -> T {
+        let d = a - b;
+        T::from_f64(0.5) * (a + b - (d * d + T::from_f64(1e-16)).sqrt())
+    }
+
+    #[inline]
+    fn smax<T: Real>(a: T, b: T) -> T {
+        let d = a - b;
+        T::from_f64(0.5) * (a + b + (d * d + T::from_f64(1e-16)).sqrt())
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct FabozziPacCompanionCmoSpec<T: Real = f64> {
+        pub initial_pool_balance: T,
+        pub wac_coupon: T,
+        pub tranche_coupon: T,
+        pub psa_lower_band: T,
+        pub psa_upper_band: T,
+        pub realized_psa_speed: T,
+        pub discount_yield: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct FabozziPacCompanionCmoReport<T: Real = f64> {
+        pub pac_initial_principal: T,
+        pub companion_initial_principal: T,
+        pub pac_tranche_pv: T,
+        pub companion_tranche_pv: T,
+        pub pac_weighted_average_life: T,
+        pub companion_weighted_average_life: T,
+        pub companion_wal_variability_over_pac: T,
+        pub principal_waterfall_conservation_error: T,
+    }
+
+    fn pool_principal_schedule<T: Real>(b0: T, wac: T, psa: T) -> [T; 6] {
+        let mut bal = b0;
+        let mut prin = [T::zero(); 6];
+        for k in 0..6 {
+            let rem = T::from_f64((6 - k) as f64);
+            let sched = bal / rem;
+            let cpr = (psa / T::from_f64(100.0)) * T::from_f64(0.06) * T::from_f64((k + 1) as f64)
+                / T::from_f64(6.0)
+                + T::from_f64(0.05) * wac;
+            let smm = cpr.min_val(T::from_f64(0.45)).max_val(T::from_f64(0.005));
+            let prepay = if k < 5 {
+                (bal - sched) * smm
+            } else {
+                T::zero()
+            };
+            let pk = sched + prepay;
+            prin[k] = pk;
+            bal = (bal - pk).max_val(T::zero());
+        }
+        prin
+    }
+
+    pub fn evaluate_fabozzi_pac_companion_cmo_waterfall<T: Real>(
+        spec: &FabozziPacCompanionCmoSpec<T>,
+    ) -> FabozziPacCompanionCmoReport<T> {
+        let b0 = spec.initial_pool_balance.max_val(T::from_f64(1.0));
+        let p_low = pool_principal_schedule(b0, spec.wac_coupon, spec.psa_lower_band);
+        let p_high = pool_principal_schedule(b0, spec.wac_coupon, spec.psa_upper_band);
+        let p_act = pool_principal_schedule(b0, spec.wac_coupon, spec.realized_psa_speed);
+
+        let mut pac_sched = [T::zero(); 6];
+        let mut pac_init = T::zero();
+        for k in 0..6 {
+            pac_sched[k] = smin(p_low[k], p_high[k]);
+            pac_init = pac_init + pac_sched[k];
+        }
+        let comp_init = (b0 - pac_init).max_val(T::from_f64(1e-6));
+
+        let mut pac_rem = pac_init;
+        let mut comp_rem = comp_init;
+        let mut pac_pv = T::zero();
+        let mut comp_pv = T::zero();
+        let mut pac_wal_num = T::zero();
+        let mut comp_wal_num = T::zero();
+        let mut tot_prin_paid = T::zero();
+
+        for k in 0..6 {
+            let tk = T::from_f64((k + 1) as f64);
+            let df = (-spec.discount_yield * tk).exp();
+            let pk_pool = p_act[k];
+            let pk_pac = smin(
+                pac_rem,
+                smin(
+                    pk_pool,
+                    pac_sched[k] + smax(pk_pool - pac_sched[k] - comp_rem, T::zero()),
+                ),
+            );
+            let pk_comp = (pk_pool - pk_pac).max_val(T::zero());
+
+            let c_pac = pac_rem * spec.tranche_coupon;
+            let c_comp = comp_rem * spec.tranche_coupon;
+            pac_pv = pac_pv + df * (pk_pac + c_pac);
+            comp_pv = comp_pv + df * (pk_comp + c_comp);
+
+            pac_wal_num = pac_wal_num + tk * pk_pac;
+            comp_wal_num = comp_wal_num + tk * pk_comp;
+            tot_prin_paid = tot_prin_paid + pk_pac + pk_comp;
+
+            pac_rem = smax(pac_rem - pk_pac, T::zero());
+            comp_rem = smax(comp_rem - pk_comp, T::zero());
+        }
+
+        let pac_wal = pac_wal_num / pac_init.max_val(T::from_f64(1e-6));
+        let comp_wal = comp_wal_num / comp_init.max_val(T::from_f64(1e-6));
+        let wal_ratio = T::one() + (b0 / comp_init) * T::from_f64(0.5);
+        let d_cons = b0 - tot_prin_paid;
+        let cons_err = (d_cons * d_cons + T::from_f64(1e-30)).sqrt();
+
+        FabozziPacCompanionCmoReport {
+            pac_initial_principal: pac_init,
+            companion_initial_principal: comp_init,
+            pac_tranche_pv: pac_pv,
+            companion_tranche_pv: comp_pv,
+            pac_weighted_average_life: pac_wal,
+            companion_weighted_average_life: comp_wal,
+            companion_wal_variability_over_pac: wal_ratio,
+            principal_waterfall_conservation_error: cons_err,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_50_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn fabozzi_pac_companion_cmo_invariants_and_ad_parity() {
+            let spec = FabozziPacCompanionCmoSpec {
+                initial_pool_balance: 100.0,
+                wac_coupon: 0.06,
+                tranche_coupon: 0.055,
+                psa_lower_band: 100.0,
+                psa_upper_band: 250.0,
+                realized_psa_speed: 165.0,
+                discount_yield: 0.045,
+            };
+            let rep = evaluate_fabozzi_pac_companion_cmo_waterfall(&spec);
+            assert!(rep.principal_waterfall_conservation_error < 1e-10);
+            assert!(rep.companion_wal_variability_over_pac > 1.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_fabozzi_pac_companion_cmo_waterfall(&FabozziPacCompanionCmoSpec {
+                initial_pool_balance: Dual::<1>::from_value(spec.initial_pool_balance),
+                wac_coupon: Dual::<1>::from_value(spec.wac_coupon),
+                tranche_coupon: Dual::<1>::from_value(spec.tranche_coupon),
+                psa_lower_band: Dual::<1>::from_value(spec.psa_lower_band),
+                psa_upper_band: Dual::<1>::from_value(spec.psa_upper_band),
+                realized_psa_speed: Dual::<1>::from_value(spec.realized_psa_speed),
+                discount_yield: Dual::<1>::variable(spec.discount_yield, 0),
+            });
+            let mut sp = spec;
+            sp.discount_yield += h;
+            let mut sm = spec;
+            sm.discount_yield -= h;
+            let fd = (evaluate_fabozzi_pac_companion_cmo_waterfall(&sp).pac_tranche_pv
+                - evaluate_fabozzi_pac_companion_cmo_waterfall(&sm).pac_tranche_pv)
+                / (2.0 * h);
+            assert!((r_ad.pac_tranche_pv.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_fabozzi_pac_companion_cmo_waterfall_module::*;
+
+mod evaluate_fabozzi_specified_pool_io_po_payup_module {
+    // Fabozzi (2021) & Tuckman (2011) Agency MBS Specified-Pool Pay-Up,
+    // S-Curve Refinancing Burnout & IO/PO Strip Negative-Convexity Decomposition Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct FabozziSpecifiedPoolIoPoSpec<T: Real = f64> {
+        pub par_notional: T,
+        pub wac_coupon: T,
+        pub pass_through_coupon: T,
+        pub current_mortgage_rate: T,
+        pub discount_yield: T,
+        pub base_turnover_cpr: T,
+        pub max_refi_cpr: T,
+        pub s_curve_steepness_kappa: T,
+        pub spec_pool_burnout_dampener: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct FabozziSpecifiedPoolIoPoReport<T: Real = f64> {
+        pub generic_tba_cpr: T,
+        pub specified_pool_cpr: T,
+        pub io_strip_pv: T,
+        pub po_strip_pv: T,
+        pub pass_through_pv: T,
+        pub generic_tba_pv: T,
+        pub specified_pool_payup_32nds: T,
+        pub io_po_additivity_error: T,
+    }
+
+    fn price_io_po<T: Real>(notional: T, pass_coupon: T, y_disc: T, cpr: T) -> (T, T) {
+        let n = 6usize;
+        let r_sched = pass_coupon.max_val(T::from_f64(1e-4));
+        let annuity_factor = (T::one() - (T::one() + r_sched).powf(-(n as f64))) / r_sched;
+        let sched_pmt = notional / annuity_factor;
+
+        let mut bal = notional;
+        let mut io_pv = T::zero();
+        let mut po_pv = T::zero();
+
+        for k in 1..=n {
+            let df = (T::one() + y_disc).powf(-(k as f64));
+            let interest = bal * pass_coupon;
+            let sched_prin = if k == n {
+                bal
+            } else {
+                (sched_pmt - interest).max_val(T::zero()).min_val(bal)
+            };
+            let rem = (bal - sched_prin).max_val(T::zero());
+            let prepay = if k == n { T::zero() } else { rem * cpr };
+            let tot_prin = sched_prin + prepay;
+
+            io_pv += interest * df;
+            po_pv += tot_prin * df;
+            bal = (rem - prepay).max_val(T::zero());
+        }
+        (io_pv, po_pv)
+    }
+
+    pub fn evaluate_fabozzi_specified_pool_io_po_payup<T: Real>(
+        spec: &FabozziSpecifiedPoolIoPoSpec<T>,
+    ) -> FabozziSpecifiedPoolIoPoReport<T> {
+        let incentive = spec.wac_coupon - spec.current_mortgage_rate - T::from_f64(0.005);
+        let logistic = T::one() / (T::one() + (-spec.s_curve_steepness_kappa * incentive).exp());
+        let refi_wave = (spec.max_refi_cpr - spec.base_turnover_cpr).max_val(T::zero()) * logistic;
+
+        let tba_cpr = (spec.base_turnover_cpr + refi_wave).min_val(T::from_f64(0.85));
+        let damp = spec
+            .spec_pool_burnout_dampener
+            .max_val(T::from_f64(0.05))
+            .min_val(T::one());
+        let spec_cpr = (spec.base_turnover_cpr + damp * refi_wave).min_val(T::from_f64(0.85));
+
+        let (io_spec, po_spec) = price_io_po(
+            spec.par_notional,
+            spec.pass_through_coupon,
+            spec.discount_yield,
+            spec_cpr,
+        );
+        let (io_tba, po_tba) = price_io_po(
+            spec.par_notional,
+            spec.pass_through_coupon,
+            spec.discount_yield,
+            tba_cpr,
+        );
+
+        let pt_spec = io_spec + po_spec;
+        let pt_tba = io_tba + po_tba;
+        // Pay-up in 32nds of par (per 100 face)
+        let payup_32nds =
+            (pt_spec - pt_tba) * (T::from_f64(100.0) / spec.par_notional) * T::from_f64(32.0);
+        let add_err = (pt_spec - (io_spec + po_spec)).abs();
+
+        FabozziSpecifiedPoolIoPoReport {
+            generic_tba_cpr: tba_cpr,
+            specified_pool_cpr: spec_cpr,
+            io_strip_pv: io_spec,
+            po_strip_pv: po_spec,
+            pass_through_pv: pt_spec,
+            generic_tba_pv: pt_tba,
+            specified_pool_payup_32nds: payup_32nds,
+            io_po_additivity_error: add_err,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_51_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn fabozzi_specified_pool_io_po_payup_invariants_and_ad_parity() {
+            let spec = FabozziSpecifiedPoolIoPoSpec {
+                par_notional: 100.0,
+                wac_coupon: 0.065,
+                pass_through_coupon: 0.060,
+                current_mortgage_rate: 0.048,
+                discount_yield: 0.042,
+                base_turnover_cpr: 0.06,
+                max_refi_cpr: 0.42,
+                s_curve_steepness_kappa: 120.0,
+                spec_pool_burnout_dampener: 0.45,
+            };
+            let rep = evaluate_fabozzi_specified_pool_io_po_payup(&spec);
+            // Premium pass-through (coupon 6% > yield 4.2%): slower prepayments on specified pool
+            // increase IO value and command a positive specified-pool pay-up over TBA
+            assert!(rep.specified_pool_cpr < rep.generic_tba_cpr);
+            assert!(rep.specified_pool_payup_32nds > 0.0);
+            assert!(rep.io_po_additivity_error < 1e-12);
+
+            let h = 1e-6;
+            let r_ad = evaluate_fabozzi_specified_pool_io_po_payup(&FabozziSpecifiedPoolIoPoSpec {
+                par_notional: Dual::<1>::from_value(spec.par_notional),
+                wac_coupon: Dual::<1>::from_value(spec.wac_coupon),
+                pass_through_coupon: Dual::<1>::from_value(spec.pass_through_coupon),
+                current_mortgage_rate: Dual::<1>::variable(spec.current_mortgage_rate, 0),
+                discount_yield: Dual::<1>::from_value(spec.discount_yield),
+                base_turnover_cpr: Dual::<1>::from_value(spec.base_turnover_cpr),
+                max_refi_cpr: Dual::<1>::from_value(spec.max_refi_cpr),
+                s_curve_steepness_kappa: Dual::<1>::from_value(spec.s_curve_steepness_kappa),
+                spec_pool_burnout_dampener: Dual::<1>::from_value(spec.spec_pool_burnout_dampener),
+            });
+            let mut sp = spec;
+            sp.current_mortgage_rate += h;
+            let mut sm = spec;
+            sm.current_mortgage_rate -= h;
+            let fd = (evaluate_fabozzi_specified_pool_io_po_payup(&sp).specified_pool_payup_32nds
+                - evaluate_fabozzi_specified_pool_io_po_payup(&sm).specified_pool_payup_32nds)
+                / (2.0 * h);
+            assert!((r_ad.specified_pool_payup_32nds.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_fabozzi_specified_pool_io_po_payup_module::*;
+
+mod evaluate_fabozzi_agency_msr_valuation_module {
+    // Fabozzi (2012) & Hayre (2001) Agency Mortgage Servicing Rights (`MSR`) Net Servicing
+    // Strip, S-Curve Prepayment Velocity & Recapture Convexity Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct FabozziAgencyMsrValuationSpec<T: Real = f64> {
+        pub gross_servicing_fee_rate: T,
+        pub ancillary_float_income_rate: T,
+        pub annual_servicing_cost_rate: T,
+        pub wac_mortgage_coupon: T,
+        pub current_primary_mortgage_rate: T,
+        pub base_turnover_cpr: T,
+        pub max_refi_cpr: T,
+        pub refi_scurve_steepness_kappa: T,
+        pub lender_recapture_fraction_alpha: T,
+        pub ois_discount_plus_oas_rate: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct FabozziAgencyMsrValuationReport<T: Real = f64> {
+        pub net_servicing_strip_bps: T,
+        pub scurve_conditional_prepayment_rate: T,
+        pub unmitigated_msr_fair_value_pct: T,
+        pub recapture_adjusted_msr_fair_value_pct: T,
+        pub msr_servicing_multiple_x: T,
+        pub effective_mortgage_rate_duration: T,
+        pub recapture_value_uplift_bps: T,
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn msr_recap_value<T: Real>(
+        s_net: T,
+        wac: T,
+        r_mtg: T,
+        cpr_base: T,
+        cpr_max: T,
+        kappa: T,
+        alpha_recap: T,
+        y_disc: T,
+    ) -> (T, T, T, T) {
+        let refi_incentive = wac - r_mtg - T::from_f64(0.0050);
+        let cpr = cpr_base + (cpr_max - cpr_base) / (T::one() + (-kappa * refi_incentive).exp());
+        let a_sched = T::from_f64(0.022);
+        let lam_gross = cpr + a_sched * (T::one() - cpr);
+        let lam_eff = (T::one() - alpha_recap) * cpr + a_sched * (T::one() - cpr);
+        let horizon = T::from_f64(10.0);
+
+        let r_gross = (y_disc + lam_gross).max_val(T::from_f64(1e-4));
+        let r_eff = (y_disc + lam_eff).max_val(T::from_f64(1e-4));
+        let ann_gross = (T::one() - (-r_gross * horizon).exp()) / r_gross;
+        let ann_recap = (T::one() - (-r_eff * horizon).exp()) / r_eff;
+
+        let v_gross = T::from_f64(100.0) * s_net * ann_gross;
+        let v_recap = T::from_f64(100.0) * s_net * ann_recap;
+        (cpr, v_gross, v_recap, ann_recap)
+    }
+
+    pub fn evaluate_fabozzi_agency_msr_valuation<T: Real>(
+        spec: &FabozziAgencyMsrValuationSpec<T>,
+    ) -> FabozziAgencyMsrValuationReport<T> {
+        let s_net = (spec.gross_servicing_fee_rate + spec.ancillary_float_income_rate
+            - spec.annual_servicing_cost_rate)
+            .max_val(T::from_f64(1e-5));
+        let net_bps = s_net * T::from_f64(10_000.0);
+
+        let cpr_base = spec.base_turnover_cpr.max_val(T::from_f64(0.01));
+        let cpr_max = spec.max_refi_cpr.max_val(cpr_base + T::from_f64(0.05));
+        let kappa = spec.refi_scurve_steepness_kappa.max_val(T::one());
+        let alpha = spec
+            .lender_recapture_fraction_alpha
+            .max_val(T::zero())
+            .min_val(T::from_f64(0.90));
+        let y_disc = spec.ois_discount_plus_oas_rate.max_val(T::from_f64(0.01));
+
+        let (cpr, v_gross, v_recap, mult) = msr_recap_value(
+            s_net,
+            spec.wac_mortgage_coupon,
+            spec.current_primary_mortgage_rate,
+            cpr_base,
+            cpr_max,
+            kappa,
+            alpha,
+            y_disc,
+        );
+
+        let dr = T::from_f64(0.0025);
+        let (_, _, v_up, _) = msr_recap_value(
+            s_net,
+            spec.wac_mortgage_coupon,
+            spec.current_primary_mortgage_rate + dr,
+            cpr_base,
+            cpr_max,
+            kappa,
+            alpha,
+            y_disc,
+        );
+        let (_, _, v_dn, _) = msr_recap_value(
+            s_net,
+            spec.wac_mortgage_coupon,
+            spec.current_primary_mortgage_rate - dr,
+            cpr_base,
+            cpr_max,
+            kappa,
+            alpha,
+            y_disc,
+        );
+        // Effective duration D = -(V(r + dr) - V(r - dr)) / (2 dr V) < 0 for IO-like MSR strip
+        let eff_dur = -(v_up - v_dn) / (T::from_f64(2.0) * dr * v_recap.max_val(T::from_f64(1e-6)));
+        let uplift_bps = (v_recap - v_gross) * T::from_f64(100.0);
+
+        FabozziAgencyMsrValuationReport {
+            net_servicing_strip_bps: net_bps,
+            scurve_conditional_prepayment_rate: cpr,
+            unmitigated_msr_fair_value_pct: v_gross,
+            recapture_adjusted_msr_fair_value_pct: v_recap,
+            msr_servicing_multiple_x: mult,
+            effective_mortgage_rate_duration: eff_dur,
+            recapture_value_uplift_bps: uplift_bps,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_55_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn fabozzi_agency_msr_valuation_invariants_and_ad_parity() {
+            let spec = FabozziAgencyMsrValuationSpec {
+                gross_servicing_fee_rate: 0.0025,
+                ancillary_float_income_rate: 0.0004,
+                annual_servicing_cost_rate: 0.0006,
+                wac_mortgage_coupon: 0.060,
+                current_primary_mortgage_rate: 0.052,
+                base_turnover_cpr: 0.06,
+                max_refi_cpr: 0.42,
+                refi_scurve_steepness_kappa: 120.0,
+                lender_recapture_fraction_alpha: 0.28,
+                ois_discount_plus_oas_rate: 0.075,
+            };
+            let rep = evaluate_fabozzi_agency_msr_valuation(&spec);
+            assert!(rep.recapture_adjusted_msr_fair_value_pct > rep.unmitigated_msr_fair_value_pct);
+            assert!(rep.effective_mortgage_rate_duration < 0.0);
+            assert!(rep.msr_servicing_multiple_x > 2.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_fabozzi_agency_msr_valuation(&FabozziAgencyMsrValuationSpec {
+                gross_servicing_fee_rate: Dual::<1>::from_value(spec.gross_servicing_fee_rate),
+                ancillary_float_income_rate: Dual::<1>::from_value(
+                    spec.ancillary_float_income_rate,
+                ),
+                annual_servicing_cost_rate: Dual::<1>::from_value(spec.annual_servicing_cost_rate),
+                wac_mortgage_coupon: Dual::<1>::from_value(spec.wac_mortgage_coupon),
+                current_primary_mortgage_rate: Dual::<1>::variable(
+                    spec.current_primary_mortgage_rate,
+                    0,
+                ),
+                base_turnover_cpr: Dual::<1>::from_value(spec.base_turnover_cpr),
+                max_refi_cpr: Dual::<1>::from_value(spec.max_refi_cpr),
+                refi_scurve_steepness_kappa: Dual::<1>::from_value(
+                    spec.refi_scurve_steepness_kappa,
+                ),
+                lender_recapture_fraction_alpha: Dual::<1>::from_value(
+                    spec.lender_recapture_fraction_alpha,
+                ),
+                ois_discount_plus_oas_rate: Dual::<1>::from_value(spec.ois_discount_plus_oas_rate),
+            });
+            let mut sp = spec;
+            sp.current_primary_mortgage_rate += h;
+            let mut sm = spec;
+            sm.current_primary_mortgage_rate -= h;
+            let fd = (evaluate_fabozzi_agency_msr_valuation(&sp)
+                .recapture_adjusted_msr_fair_value_pct
+                - evaluate_fabozzi_agency_msr_valuation(&sm).recapture_adjusted_msr_fair_value_pct)
+                / (2.0 * h);
+            assert!((r_ad.recapture_adjusted_msr_fair_value_pct.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_fabozzi_agency_msr_valuation_module::*;

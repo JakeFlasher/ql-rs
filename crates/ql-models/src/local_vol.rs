@@ -317,7 +317,7 @@ pub fn feldman_analytic_sabr_calibration<T: Real>(
 }
 
 #[cfg(test)]
-mod phase17_tests {
+mod domain_suite_29_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -367,7 +367,7 @@ mod phase17_tests {
 }
 
 #[cfg(test)]
-mod phase18_tests {
+mod domain_suite_30_tests {
     use super::*;
     use ql_ad::Dual;
 

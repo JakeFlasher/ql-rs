@@ -7,7 +7,7 @@ fn benchmarks_verify_parity_and_optional_sota_speedups() {
     // parity paths during normal `cargo test`; timing gates are inherently
     // host-dependent and opt in through QL_RUN_TIMING_GATES=1.
     let rows = run_all_benchmark_suites_with_config(1, 3);
-    assert_eq!(rows.len(), 54);
+    assert_eq!(rows.len(), 55);
     for row in &rows {
         assert!(!row.id.is_empty());
         assert!(!row.description.is_empty());
@@ -40,7 +40,7 @@ fn benchmarks_verify_parity_and_optional_sota_speedups() {
 }
 
 #[test]
-fn phase22_suite34_workload_is_registered() {
+fn suite34_suite34_workload_is_registered() {
     let rows = run_all_benchmark_suites_with_config(1, 3);
     let row = rows
         .iter()
@@ -49,7 +49,7 @@ fn phase22_suite34_workload_is_registered() {
     assert!(row.parity_ok);
 }
 #[test]
-fn phase23_suite35_workload_is_registered() {
+fn suite35_suite35_workload_is_registered() {
     let rows = run_all_benchmark_suites_with_config(1, 3);
     let row = rows
         .iter()
@@ -59,7 +59,7 @@ fn phase23_suite35_workload_is_registered() {
 }
 
 #[test]
-fn phase24_suite36_workload_is_registered() {
+fn suite36_suite36_workload_is_registered() {
     let rows = run_all_benchmark_suites_with_config(1, 3);
     let row = rows
         .iter()
@@ -70,15 +70,15 @@ fn phase24_suite36_workload_is_registered() {
 }
 
 #[test]
-fn phase25_suite37_workload_is_registered() {
+fn suite37_suite37_workload_is_registered() {
     let row = with_config_override(1, 3, || {
-        ql_benches::benchmark_phase25_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin(1)
+        ql_benches::benchmark_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin(1)
     });
     assert!(row.parity_ok && row.max_abs_diff < 1e-4);
 }
 
 #[test]
-fn phase26_suite38_workload_is_registered() {
+fn suite38_suite38_workload_is_registered() {
     let rows = run_all_benchmark_suites_with_config(1, 3);
     let row = rows
         .iter()
@@ -88,7 +88,7 @@ fn phase26_suite38_workload_is_registered() {
 }
 
 #[test]
-fn phase27_suite39_workload_is_registered() {
+fn suite39_suite39_workload_is_registered() {
     let rows = run_all_benchmark_suites_with_config(1, 3);
     let row = rows
         .iter()
@@ -98,7 +98,7 @@ fn phase27_suite39_workload_is_registered() {
 }
 
 #[test]
-fn phase28_suite40_workload_is_registered() {
+fn suite40_suite40_workload_is_registered() {
     let rows = run_all_benchmark_suites_with_config(1, 3);
     let row = rows
         .iter()
@@ -108,7 +108,7 @@ fn phase28_suite40_workload_is_registered() {
 }
 
 #[test]
-fn phase29_suite41_workload_is_registered() {
+fn suite41_suite41_workload_is_registered() {
     let rows = ql_benches::run_all_benchmarks(1);
     let row = rows
         .iter()
@@ -118,7 +118,7 @@ fn phase29_suite41_workload_is_registered() {
 }
 
 #[test]
-fn phase30_suite42_workload_is_registered() {
+fn suite42_suite42_workload_is_registered() {
     let rows = ql_benches::run_all_benchmarks(1);
     let row = rows
         .iter()
@@ -129,7 +129,7 @@ fn phase30_suite42_workload_is_registered() {
 }
 
 #[test]
-fn phase31_suite43_workload_is_registered() {
+fn suite43_suite43_workload_is_registered() {
     let rows = ql_benches::run_all_benchmarks(1);
     let row = rows
         .iter()
@@ -140,79 +140,89 @@ fn phase31_suite43_workload_is_registered() {
 }
 
 #[test]
-fn phase32_suite44_workload_is_registered() {
+fn suite44_suite44_workload_is_registered() {
     let rows = ql_benches::run_all_benchmarks(1);
     assert!(rows.iter().any(|r| r.id.starts_with("44_")));
-    let row = ql_benches::benchmark_phase32_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cmcds_morini_turlakov_wwr_hhw_adi_capped_call_mw_ahmadi_evar_schur_hrp_bekk_garch_schilit_sloan(1);
+    let row = ql_benches::benchmark_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cmcds_morini_turlakov_wwr_hhw_adi_capped_call_mw_ahmadi_evar_schur_hrp_bekk_garch_schilit_sloan(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-4);
 }
 
 #[test]
-fn phase33_suite45_workload_is_registered() {
+fn suite45_suite45_workload_is_registered() {
     assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("45_")));
-    let row = ql_benches::benchmark_phase33_rebonato_cms_lm_all_engines(1);
+    let row = ql_benches::benchmark_rebonato_cms_lm_all_engines(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-4);
 }
 
 #[test]
-fn phase34_suite46_workload_is_registered() {
+fn suite46_suite46_workload_is_registered() {
     assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("46_")));
-    let row = ql_benches::benchmark_phase34_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig(1);
+    let row = ql_benches::benchmark_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-4);
 }
 
 #[test]
-fn phase35_suite47_workload_is_registered() {
+fn suite47_suite47_workload_is_registered() {
     assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("47_")));
-    let row = ql_benches::benchmark_phase35_hagan_west_ctd_afv_kth_sacva_gs_kirk_fx_vv_napoleon_tc_meucci_krr_eva(1);
+    let row =
+        ql_benches::benchmark_hagan_west_ctd_afv_kth_sacva_gs_kirk_fx_vv_napoleon_tc_meucci_krr_eva(
+            1,
+        );
     assert!(row.parity_ok && row.max_abs_diff < 1e-4);
 }
 
 #[test]
-fn phase36_suite48_workload_is_registered() {
+fn suite48_suite48_workload_is_registered() {
     assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("48_")));
-    let row = ql_benches::benchmark_phase36_brigo_csa_ctd_fabozzi_callable_oas_lando_jlt_migration_gatheral_corridor_varswap_glasserman_lsm_rogers_dual_cartea_lob_mm_lo_mackinlay_vr_lopez_dsr_purged_cv_roncalli_spinu_erc_ilmanen_vmc_penman_reoi_mccall_bellman(1);
+    let row = ql_benches::benchmark_brigo_csa_ctd_fabozzi_callable_oas_lando_jlt_migration_gatheral_corridor_varswap_glasserman_lsm_rogers_dual_cartea_lob_mm_lo_mackinlay_vr_lopez_dsr_purged_cv_roncalli_spinu_erc_ilmanen_vmc_penman_reoi_mccall_bellman(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-4);
 }
 
 #[test]
-fn phase37_suite49_workload_is_registered() {
+fn suite49_suite49_workload_is_registered() {
     assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("49_")));
-    let row = ql_benches::benchmark_phase37_brigo_nss_krd_tuckman_tips_floor_schonbucher_rmv_rt_rfv_gatheral_sticky_lv_gregory_simm_ccp_mva_schwartz_smith_kalman_wystup_fx_dnt_bouzoubaa_timer_meucci_bl_woodbury_gueant_ac_sinh_zou_elastic_net_nk_ree(1);
+    let row = ql_benches::benchmark_brigo_nss_krd_tuckman_tips_floor_schonbucher_rmv_rt_rfv_gatheral_sticky_lv_gregory_simm_ccp_mva_schwartz_smith_kalman_wystup_fx_dnt_bouzoubaa_timer_meucci_bl_woodbury_gueant_ac_sinh_zou_elastic_net_nk_ree(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-4);
 }
 
 #[test]
-fn phase38_suite50_workload_is_registered() {
+fn suite50_suite50_workload_is_registered() {
     assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("50_")));
-    let row = ql_benches::benchmark_phase38_hagan_west_tension_duffie_lando_pac_cmo_fama_macbeth_shanken_gatheral_asvi_bgk_discrete_barrier_bouchaud_cross_impact_karnosky_singer_merton_jump_campbell_viceira_ohlson_lid_griewank_revolve(1);
+    let row = ql_benches::benchmark_hagan_west_tension_duffie_lando_pac_cmo_fama_macbeth_shanken_gatheral_asvi_bgk_discrete_barrier_bouchaud_cross_impact_karnosky_singer_merton_jump_campbell_viceira_ohlson_lid_griewank_revolve(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-4);
 }
 
 #[test]
-fn phase39_suite51_workload_is_registered() {
+fn suite51_suite51_workload_is_registered() {
     assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("51_")));
-    let row = ql_benches::benchmark_phase39_brigo_xccy_mtm_fabozzi_spec_pool_io_po_lando_marshall_olkin_gatheral_vix_vvix_gregory_wwr_cva_geman_gibson_schwartz_clark_fx_fva_rubinstein_chooser_grinold_flam_tc_meucci_es_euler_james_stein_sure_campbell_cochrane_habit(1);
+    let row = ql_benches::benchmark_brigo_xccy_mtm_fabozzi_spec_pool_io_po_lando_marshall_olkin_gatheral_vix_vvix_gregory_wwr_cva_geman_gibson_schwartz_clark_fx_fva_rubinstein_chooser_grinold_flam_tc_meucci_es_euler_james_stein_sure_campbell_cochrane_habit(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-4);
 }
 
 #[test]
-fn phase40_suite52_workload_is_registered() {
+fn suite52_suite52_workload_is_registered() {
     assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("52_")));
-    let row = ql_benches::benchmark_phase40_brigo_ois_fallback_fabozzi_collared_frn_schonbucher_cds_swaption_fep_bergomi_2f_skew_gregory_sa_ccr_ead_eydeland_spark_spread_wystup_prdc_geske_compound_qian_alpha_decay_roncalli_enb_johansen_vecm_bansal_yaron_lrr(1);
+    let row = ql_benches::benchmark_brigo_ois_fallback_fabozzi_collared_frn_schonbucher_cds_swaption_fep_bergomi_2f_skew_gregory_sa_ccr_ead_eydeland_spark_spread_wystup_prdc_geske_compound_qian_alpha_decay_roncalli_enb_johansen_vecm_bansal_yaron_lrr(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-4);
 }
 
 #[test]
-fn phase41_suite53_workload_is_registered() {
+fn suite53_suite53_workload_is_registered() {
     assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("53_")));
-    let row = ql_benches::benchmark_phase41_andersen_cms_replication_tuckman_special_repo_okane_cds_upfront_gatheral_ssr_tanaka_gregory_saccr_kva_eydeland_crack_spread_wystup_prdc_cap_haug_eso_dilution_qian_spinu_erc_rockafellar_cvar_htf_pls_krylov_piazzesi_fomc(1);
+    let row = ql_benches::benchmark_andersen_cms_replication_tuckman_special_repo_okane_cds_upfront_gatheral_ssr_tanaka_gregory_saccr_kva_eydeland_crack_spread_wystup_prdc_cap_haug_eso_dilution_qian_spinu_erc_rockafellar_cvar_htf_pls_krylov_piazzesi_fomc(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-4);
 }
 
 #[test]
-fn phase42_suite54_workload_is_registered() {
+fn suite54_suite54_workload_is_registered() {
     assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("54_")));
-    let row = ql_benches::benchmark_phase42_darbyshire_step_ois_turn_despiegeleer_cb_soft_call_okane_cds_index_skew_gatheral_varswap_truncation_gregory_fva_overlap_geman_working_storage_wystup_malz_fx_fly_goldman_sosin_lookback_ledoit_wolf_shrinkage_almgren_chriss_cara_tsay_estar_acm_cp(1);
+    let row = ql_benches::benchmark_darbyshire_step_ois_turn_despiegeleer_cb_soft_call_okane_cds_index_skew_gatheral_varswap_truncation_gregory_fva_overlap_geman_working_storage_wystup_malz_fx_fly_goldman_sosin_lookback_ledoit_wolf_shrinkage_almgren_chriss_cara_tsay_estar_acm_cp(1);
+    assert!(row.parity_ok && row.max_abs_diff < 1e-4);
+}
+
+#[test]
+fn suite55_suite55_workload_is_registered() {
+    assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("55_")));
+    let row = ql_benches::benchmark_henrard_tenor_basis_fabozzi_msr_recapture_okane_cdo_base_corr_gatheral_fwd_start_smile_gregory_pykhtin_csa_mta_eydeland_gas_swing_wystup_fx_kiko_stulz_rainbow_jagannathan_ma_obizhaeva_wang_newey_west_hac_gabaix_disaster(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-4);
 }

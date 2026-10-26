@@ -1065,7 +1065,7 @@ pub fn price_cirpp_sofr_futures<T: Real>(
 }
 
 #[cfg(test)]
-mod phase23_tests {
+mod domain_suite_35_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -1126,7 +1126,7 @@ mod phase23_tests {
 }
 
 #[cfg(test)]
-mod phase18_tests {
+mod domain_suite_30_tests {
     use super::*;
     use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;
@@ -1174,7 +1174,7 @@ mod phase18_tests {
 }
 
 #[cfg(test)]
-mod phase20_tests {
+mod domain_suite_32_tests {
     use super::*;
     use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;
@@ -1272,7 +1272,7 @@ mod phase20_tests {
 }
 
 #[cfg(test)]
-mod phase28_tests {
+mod domain_suite_40_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(x: T) -> TurfusWillemsRfrInArrearsSmileSpec<T> {

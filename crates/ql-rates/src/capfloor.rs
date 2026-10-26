@@ -407,7 +407,7 @@ pub fn price_sticky_ratchet_capfloor_hw1f<
 }
 
 #[cfg(test)]
-mod phase15_tests {
+mod domain_suite_27_tests {
     use super::*;
     use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;

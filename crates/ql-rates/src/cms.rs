@@ -320,7 +320,7 @@ pub fn price_markov_functional_1f<T: Real>(
 }
 
 #[cfg(test)]
-mod phase17_tests {
+mod domain_suite_29_tests {
     use super::*;
     use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;

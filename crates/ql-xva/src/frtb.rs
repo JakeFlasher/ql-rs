@@ -444,7 +444,7 @@ pub fn evaluate_bcbs_d424_output_floor_and_sma_op_risk<T: Real>(
 }
 
 #[cfg(test)]
-mod phase29_tests {
+mod domain_suite_41_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]

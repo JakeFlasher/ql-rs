@@ -326,7 +326,7 @@ pub fn price_turnbull_wakeman_arithmetic_asian<T: Real>(
 }
 
 #[cfg(test)]
-mod phase27_tests {
+mod domain_suite_39_tests {
     use super::*;
     use ql_ad::Dual;
     fn make<T: Real>(x: T) -> CurranRogersShiArithmeticAsianSpec<T> {
@@ -353,7 +353,7 @@ mod phase27_tests {
     }
 
     #[test]
-    fn phase27_invariants() {
+    fn suite39_invariants() {
         let r = price_curran_rogers_shi_arithmetic_asian(&make(100.0));
         assert!(r.geometric_asian_call_price <= r.curran_jensen_lower_bound_i1);
         assert!(r.curran_jensen_lower_bound_i1 <= r.curran_full_conditioned_price);

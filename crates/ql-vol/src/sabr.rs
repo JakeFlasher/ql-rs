@@ -1,5 +1,4 @@
 #![allow(clippy::excessive_precision)]
-pub use crate::phase32::*;
 use ql_ad::Real;
 
 /// Hagan's normal SABR approximation, generic over the AD scalar.
@@ -293,7 +292,7 @@ pub fn evaluate_third_order_speed_vol_expansion<T: Real>(
 }
 
 #[cfg(test)]
-mod phase20_tests {
+mod domain_suite_32_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -341,7 +340,7 @@ mod phase20_tests {
 }
 
 #[cfg(test)]
-mod phase19_tests {
+mod domain_suite_31_tests {
     use super::*;
     use ql_ad::Dual;
 

@@ -1102,7 +1102,7 @@ pub fn price_zciis_capfloor_jarrow_yildirim<T: Real>(
 }
 
 #[cfg(test)]
-mod phase27_tests {
+mod domain_suite_39_tests {
     use super::*;
     use ql_ad::Dual;
     fn make<T: Real>(x: T) -> CochraneFiscalTheoryPriceLevelSpec<T> {
@@ -1136,7 +1136,7 @@ mod phase27_tests {
     }
 
     #[test]
-    fn phase27_invariants() {
+    fn suite39_invariants() {
         let r = evaluate_cochrane_ftpl_and_maturity_inflation_smoothing(&make(100.0));
         assert!(r.fiscal_valuation_identity_error.abs() < 1e-12);
         assert!(r.long_debt_smoothed_inflation_jump < r.short_debt_immediate_inflation_jump);
@@ -1144,12 +1144,12 @@ mod phase27_tests {
 }
 
 #[cfg(test)]
-mod phase14_tests {
+mod domain_suite_26_tests {
     use super::*;
     use ql_curves::FlatForwardCurve;
     use ql_time::Date;
     #[test]
-    fn phase14_inflation_swaption_and_seasonality() {
+    fn suite26_inflation_swaption_and_seasonality() {
         let d = Date::from_ymd(2024, 1, 1).unwrap();
         let disc = FlatForwardCurve::new(d, 0.02);
         let inf = ZeroInflationCurve::new(
@@ -1178,7 +1178,7 @@ mod phase14_tests {
 }
 
 #[cfg(test)]
-mod phase15_tests {
+mod domain_suite_27_tests {
     use super::*;
     use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;
@@ -1265,7 +1265,7 @@ mod phase15_tests {
 }
 
 #[cfg(test)]
-mod phase19_tests {
+mod domain_suite_31_tests {
     use super::*;
     use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;
@@ -1355,7 +1355,7 @@ mod phase19_tests {
 }
 
 #[cfg(test)]
-mod phase22_tests {
+mod domain_suite_34_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]

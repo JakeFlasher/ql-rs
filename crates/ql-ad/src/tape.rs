@@ -822,7 +822,7 @@ pub fn execute_savine_revolve_checkpointed_adjoint<T: Real>(
 }
 
 #[cfg(test)]
-mod phase22_tests {
+mod domain_suite_34_tests {
     use super::*;
     #[test]
     fn revolve_binomial_schedule_and_compression() {

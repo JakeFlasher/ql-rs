@@ -1,0 +1,565 @@
+mod evaluate_wystup_clark_fx_double_no_touch_vanna_volga_module {
+    #![allow(
+        clippy::needless_range_loop,
+        clippy::assign_op_pattern,
+        clippy::approx_constant
+    )]
+    use ql_ad::Real;
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct WystupClarkFxDoubleNoTouchSpec<T: Real = f64> {
+        pub spot_fx: T,
+        pub lower_barrier_l: T,
+        pub upper_barrier_u: T,
+        pub domestic_rate: T,
+        pub foreign_rate: T,
+        pub atm_vol: T,
+        pub risk_reversal_25d: T,
+        pub butterfly_25d: T,
+        pub overhedge_survival_weight: T,
+        pub maturity_years: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct WystupClarkFxDoubleNoTouchReport<T: Real = f64> {
+        pub log_corridor_width: T,
+        pub tv_survival_probability: T,
+        pub tv_double_no_touch_pv: T,
+        pub tv_double_one_touch_pv: T,
+        pub touch_no_touch_parity_error: T,
+        pub vanna_volga_overhedge_adjustment: T,
+        pub smile_adjusted_dnt_pv: T,
+        pub smile_adjusted_dot_pv: T,
+    }
+
+    pub fn evaluate_wystup_clark_fx_double_no_touch_vanna_volga<T: Real>(
+        spec: &WystupClarkFxDoubleNoTouchSpec<T>,
+    ) -> WystupClarkFxDoubleNoTouchReport<T> {
+        let l = spec.lower_barrier_l.max_val(T::from_f64(1e-6));
+        let u = spec.upper_barrier_u.max_val(l + T::from_f64(1e-4));
+        let s0 = spec
+            .spot_fx
+            .max_val(l + T::from_f64(1e-5))
+            .min_val(u - T::from_f64(1e-5));
+        let w = (u / l).ln().max_val(T::from_f64(1e-6));
+        let x0 = (s0 / l).ln();
+        let sig = spec.atm_vol.max_val(T::from_f64(0.01));
+        let mu = spec.domestic_rate - spec.foreign_rate - T::from_f64(0.5) * sig * sig;
+        let mat = spec.maturity_years.max_val(T::from_f64(1e-6));
+        let pi = T::from_f64(std::f64::consts::PI);
+
+        let mut surv = T::zero();
+        for m in [1_usize, 3_usize] {
+            let mf = T::from_f64(m as f64);
+            let coeff = T::from_f64(4.0) / (mf * pi);
+            let eig = (mf * pi * sig / w) * (mf * pi * sig / w) + (mu * mu) / (sig * sig);
+            let term = coeff * (mf * pi * x0 / w).sin() * (-T::from_f64(0.5) * eig * mat).exp();
+            surv = surv + term;
+        }
+        let surv_prob = surv.max_val(T::from_f64(1e-6)).min_val(T::from_f64(0.9999));
+        let df_d = (-spec.domestic_rate * mat).exp();
+        let tv_dnt = df_d * surv_prob;
+        let tv_dot = df_d - tv_dnt;
+        let d_par = df_d - (tv_dnt + tv_dot);
+        let par_err = (d_par * d_par + T::from_f64(1e-30)).sqrt();
+
+        let asym = ((u / s0).ln() - x0) / w;
+        let vv_adj = spec.overhedge_survival_weight
+            * df_d
+            * (T::from_f64(0.5) * asym * spec.risk_reversal_25d
+                + T::from_f64(1.5) * spec.butterfly_25d)
+            * mat.sqrt();
+        let dnt_vv = (tv_dnt + vv_adj).max_val(T::from_f64(1e-6)).min_val(df_d);
+        let dot_vv = df_d - dnt_vv;
+
+        WystupClarkFxDoubleNoTouchReport {
+            log_corridor_width: w,
+            tv_survival_probability: surv_prob,
+            tv_double_no_touch_pv: tv_dnt,
+            tv_double_one_touch_pv: tv_dot,
+            touch_no_touch_parity_error: par_err,
+            vanna_volga_overhedge_adjustment: vv_adj,
+            smile_adjusted_dnt_pv: dnt_vv,
+            smile_adjusted_dot_pv: dot_vv,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_49_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn wystup_clark_fx_double_no_touch_invariants_and_ad_parity() {
+            let spec = WystupClarkFxDoubleNoTouchSpec {
+                spot_fx: 1.08,
+                lower_barrier_l: 1.02,
+                upper_barrier_u: 1.15,
+                domestic_rate: 0.04,
+                foreign_rate: 0.025,
+                atm_vol: 0.085,
+                risk_reversal_25d: -0.012,
+                butterfly_25d: 0.0035,
+                overhedge_survival_weight: 0.65,
+                maturity_years: 0.5,
+            };
+            let rep = evaluate_wystup_clark_fx_double_no_touch_vanna_volga(&spec);
+            assert!(rep.touch_no_touch_parity_error < 1e-12);
+            assert!(rep.tv_double_no_touch_pv > 0.0 && rep.tv_double_one_touch_pv > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_wystup_clark_fx_double_no_touch_vanna_volga(
+                &WystupClarkFxDoubleNoTouchSpec {
+                    spot_fx: Dual::<1>::variable(spec.spot_fx, 0),
+                    lower_barrier_l: Dual::<1>::from_value(spec.lower_barrier_l),
+                    upper_barrier_u: Dual::<1>::from_value(spec.upper_barrier_u),
+                    domestic_rate: Dual::<1>::from_value(spec.domestic_rate),
+                    foreign_rate: Dual::<1>::from_value(spec.foreign_rate),
+                    atm_vol: Dual::<1>::from_value(spec.atm_vol),
+                    risk_reversal_25d: Dual::<1>::from_value(spec.risk_reversal_25d),
+                    butterfly_25d: Dual::<1>::from_value(spec.butterfly_25d),
+                    overhedge_survival_weight: Dual::<1>::from_value(
+                        spec.overhedge_survival_weight,
+                    ),
+                    maturity_years: Dual::<1>::from_value(spec.maturity_years),
+                },
+            );
+            let mut sp = spec;
+            sp.spot_fx += h;
+            let mut sm = spec;
+            sm.spot_fx -= h;
+            let fd = (evaluate_wystup_clark_fx_double_no_touch_vanna_volga(&sp)
+                .smile_adjusted_dnt_pv
+                - evaluate_wystup_clark_fx_double_no_touch_vanna_volga(&sm).smile_adjusted_dnt_pv)
+                / (2.0 * h);
+            assert!((r_ad.smile_adjusted_dnt_pv.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_wystup_clark_fx_double_no_touch_vanna_volga_module::*;
+
+mod evaluate_wystup_prdc_three_factor_coupon_module {
+    // Wystup (2017) & Clark (2011) FX Power-Reverse Dual-Currency (`PRDC`) Coupon &
+    // 3-Factor FX-IR Correlation Convexity Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupPrdcThreeFactorCouponSpec<T: Real = f64> {
+        pub initial_spot_fx_s0: T,
+        pub current_spot_fx_st: T,
+        pub foreign_coupon_rate_cf: T,
+        pub domestic_strike_coupon_cd: T,
+        pub domestic_rate_rd: T,
+        pub foreign_rate_rf: T,
+        pub spot_fx_vol_sigma_s: T,
+        pub dom_rate_vol_sigma_rd: T,
+        pub for_rate_vol_sigma_rf: T,
+        pub corr_fx_dom_rho_sd: T,
+        pub corr_fx_for_rho_sf: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupPrdcThreeFactorCouponReport<T: Real = f64> {
+        pub prdc_fx_strike_k: T,
+        pub prdc_fx_leverage_notional: T,
+        pub forward_fx_rate: T,
+        pub three_factor_hybrid_fx_vol: T,
+        pub ir_fx_correlation_vol_uplift: T,
+        pub prdc_coupon_present_value: T,
+    }
+
+    pub fn evaluate_wystup_prdc_three_factor_coupon<T: Real>(
+        spec: &WystupPrdcThreeFactorCouponSpec<T>,
+    ) -> WystupPrdcThreeFactorCouponReport<T> {
+        let s0 = spec.initial_spot_fx_s0.max_val(T::from_f64(1e-4));
+        let st = spec.current_spot_fx_st.max_val(T::from_f64(1e-4));
+        let cf = spec.foreign_coupon_rate_cf.max_val(T::from_f64(1e-4));
+        let cd = spec.domestic_strike_coupon_cd.max_val(T::from_f64(1e-4));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.1));
+
+        // PRDC coupon payoff max(0, c_f * (S_T / S_0) - c_d) = (c_f / S_0) * max(0, S_T - K_PRDC)
+        let k_prdc = s0 * (cd / cf);
+        let lev_notional = cf / s0;
+        let fwd_fx = st * ((spec.domestic_rate_rd - spec.foreign_rate_rf) * t).exp();
+
+        // 3-Factor FX-IR hybrid forward FX variance sigma_PRDC^2(T):
+        let s_fx = spec.spot_fx_vol_sigma_s;
+        let s_rd = spec.dom_rate_vol_sigma_rd;
+        let s_rf = spec.for_rate_vol_sigma_rf;
+        let ir_var_term = (t * t / T::from_f64(3.0)) * (s_rd * s_rd + s_rf * s_rf);
+        let cross_fx_ir =
+            t * (spec.corr_fx_dom_rho_sd * s_fx * s_rd - spec.corr_fx_for_rho_sf * s_fx * s_rf);
+        let hybrid_var = (s_fx * s_fx + ir_var_term + cross_fx_ir).max_val(T::from_f64(1e-8));
+        let hybrid_vol = hybrid_var.sqrt();
+        let vol_uplift = hybrid_vol - s_fx;
+
+        let std = hybrid_vol * t.sqrt();
+        let d1 = ((fwd_fx / k_prdc).ln() + T::from_f64(0.5) * std * std) / std;
+        let d2 = d1 - std;
+        let df_d = (-spec.domestic_rate_rd * t).exp();
+        let pv = lev_notional * df_d * (fwd_fx * norm_cdf(d1) - k_prdc * norm_cdf(d2));
+
+        WystupPrdcThreeFactorCouponReport {
+            prdc_fx_strike_k: k_prdc,
+            prdc_fx_leverage_notional: lev_notional,
+            forward_fx_rate: fwd_fx,
+            three_factor_hybrid_fx_vol: hybrid_vol,
+            ir_fx_correlation_vol_uplift: vol_uplift,
+            prdc_coupon_present_value: pv,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_52_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn wystup_prdc_three_factor_coupon_invariants_and_ad_parity() {
+            let spec = WystupPrdcThreeFactorCouponSpec {
+                initial_spot_fx_s0: 105.0,
+                current_spot_fx_st: 108.0,
+                foreign_coupon_rate_cf: 0.055,
+                domestic_strike_coupon_cd: 0.035,
+                domestic_rate_rd: 0.010,
+                foreign_rate_rf: 0.045,
+                spot_fx_vol_sigma_s: 0.11,
+                dom_rate_vol_sigma_rd: 0.007,
+                for_rate_vol_sigma_rf: 0.012,
+                corr_fx_dom_rho_sd: 0.25,
+                corr_fx_for_rho_sf: -0.40,
+                maturity_years_t: 5.0,
+            };
+            let rep = evaluate_wystup_prdc_three_factor_coupon(&spec);
+            assert!(rep.ir_fx_correlation_vol_uplift > 0.0);
+            assert!(rep.prdc_coupon_present_value > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_wystup_prdc_three_factor_coupon(&WystupPrdcThreeFactorCouponSpec {
+                initial_spot_fx_s0: Dual::<1>::from_value(spec.initial_spot_fx_s0),
+                current_spot_fx_st: Dual::<1>::variable(spec.current_spot_fx_st, 0),
+                foreign_coupon_rate_cf: Dual::<1>::from_value(spec.foreign_coupon_rate_cf),
+                domestic_strike_coupon_cd: Dual::<1>::from_value(spec.domestic_strike_coupon_cd),
+                domestic_rate_rd: Dual::<1>::from_value(spec.domestic_rate_rd),
+                foreign_rate_rf: Dual::<1>::from_value(spec.foreign_rate_rf),
+                spot_fx_vol_sigma_s: Dual::<1>::from_value(spec.spot_fx_vol_sigma_s),
+                dom_rate_vol_sigma_rd: Dual::<1>::from_value(spec.dom_rate_vol_sigma_rd),
+                for_rate_vol_sigma_rf: Dual::<1>::from_value(spec.for_rate_vol_sigma_rf),
+                corr_fx_dom_rho_sd: Dual::<1>::from_value(spec.corr_fx_dom_rho_sd),
+                corr_fx_for_rho_sf: Dual::<1>::from_value(spec.corr_fx_for_rho_sf),
+                maturity_years_t: Dual::<1>::from_value(spec.maturity_years_t),
+            });
+            let mut sp = spec;
+            sp.current_spot_fx_st += h;
+            let mut sm = spec;
+            sm.current_spot_fx_st -= h;
+            let fd = (evaluate_wystup_prdc_three_factor_coupon(&sp).prdc_coupon_present_value
+                - evaluate_wystup_prdc_three_factor_coupon(&sm).prdc_coupon_present_value)
+                / (2.0 * h);
+            assert!((r_ad.prdc_coupon_present_value.d[0] - fd).abs() < 1e-6);
+        }
+    }
+}
+pub use evaluate_wystup_prdc_three_factor_coupon_module::*;
+
+mod evaluate_wystup_fx_prdc_coupon_convexity_module {
+    // Wystup (2017) & Clark (2011) FX Power-Reverse Dual-Currency (`PRDC`)
+    // Callable Cap, Knock-Out Trigger & Quanto-CMS FX-Rate Convexity Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupFxPrdcCallableCapSpec<T: Real = f64> {
+        pub spot_fx_s0: T,
+        pub initial_fx_s_init: T,
+        pub foreign_coupon_cf: T,
+        pub domestic_deduction_cd: T,
+        pub cap_rate_k_cap: T,
+        pub domestic_rate_rd: T,
+        pub foreign_rate_rf: T,
+        pub fx_vol_sigma_s: T,
+        pub dom_rate_vol_sigma_d: T,
+        pub fx_dom_corr_rho_sd: T,
+        pub coupon_horizon_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupFxPrdcCallableCapReport<T: Real = f64> {
+        pub convexity_adjusted_forward_fx: T,
+        pub lower_call_strike_fx_k1: T,
+        pub upper_cap_strike_fx_k2: T,
+        pub uncapped_prdc_coupon_pv: T,
+        pub embedded_issuer_cap_pv: T,
+        pub capped_prdc_coupon_pv: T,
+        pub fx_rate_correlation_convexity_uplift: T,
+    }
+
+    pub fn evaluate_wystup_fx_prdc_coupon_convexity<T: Real>(
+        spec: &WystupFxPrdcCallableCapSpec<T>,
+    ) -> WystupFxPrdcCallableCapReport<T> {
+        let s0 = spec.spot_fx_s0.max_val(T::from_f64(1e-4));
+        let s_init = spec.initial_fx_s_init.max_val(T::from_f64(1e-4));
+        let cf = spec.foreign_coupon_cf.max_val(T::from_f64(1e-4));
+        let cd = spec.domestic_deduction_cd.max_val(T::from_f64(1e-4));
+        let k_cap = spec.cap_rate_k_cap.max_val(T::from_f64(1e-4));
+        let t = spec.coupon_horizon_t.max_val(T::from_f64(0.1));
+        let df_d = (-spec.domestic_rate_rd * t).exp();
+
+        // Standard forward FX vs. domestic-measure FX-IR correlation convexity adjustment:
+        let fwd_raw = s0 * ((spec.domestic_rate_rd - spec.foreign_rate_rf) * t).exp();
+        let conv_factor = (T::from_f64(0.5)
+            * spec.fx_dom_corr_rho_sd
+            * spec.fx_vol_sigma_s
+            * spec.dom_rate_vol_sigma_d
+            * t
+            * t)
+            .exp();
+        let fwd_adj = fwd_raw * conv_factor;
+
+        // Coupon = max(0, min(K_cap, c_f * (S_T / S_init) - c_d))
+        //        = (c_f / S_init) * [ (S_T - K_1)^+ - (S_T - K_2)^+ ]
+        let k1 = s_init * (cd / cf);
+        let k2 = s_init * ((cd + k_cap) / cf);
+        let scale = cf / s_init;
+
+        let std = spec.fx_vol_sigma_s.max_val(T::from_f64(1e-4)) * t.sqrt();
+        let d1_1 = ((fwd_adj / k1).ln() + T::from_f64(0.5) * std * std) / std;
+        let d2_1 = d1_1 - std;
+        let call_k1 = df_d * scale * (fwd_adj * norm_cdf(d1_1) - k1 * norm_cdf(d2_1));
+
+        let d1_2 = ((fwd_adj / k2).ln() + T::from_f64(0.5) * std * std) / std;
+        let d2_2 = d1_2 - std;
+        let call_k2 = df_d * scale * (fwd_adj * norm_cdf(d1_2) - k2 * norm_cdf(d2_2));
+
+        let d1_raw = ((fwd_raw / k1).ln() + T::from_f64(0.5) * std * std) / std;
+        let d2_raw = d1_raw - std;
+        let call_k1_raw = df_d * scale * (fwd_raw * norm_cdf(d1_raw) - k1 * norm_cdf(d2_raw));
+
+        let capped_pv = (call_k1 - call_k2).max_val(T::zero());
+        let uplift = call_k1 - call_k1_raw;
+
+        WystupFxPrdcCallableCapReport {
+            convexity_adjusted_forward_fx: fwd_adj,
+            lower_call_strike_fx_k1: k1,
+            upper_cap_strike_fx_k2: k2,
+            uncapped_prdc_coupon_pv: call_k1,
+            embedded_issuer_cap_pv: call_k2,
+            capped_prdc_coupon_pv: capped_pv,
+            fx_rate_correlation_convexity_uplift: uplift,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_53_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn wystup_fx_prdc_coupon_convexity_invariants_and_ad_parity() {
+            let spec = WystupFxPrdcCallableCapSpec {
+                spot_fx_s0: 108.0,
+                initial_fx_s_init: 105.0,
+                foreign_coupon_cf: 0.055,
+                domestic_deduction_cd: 0.035,
+                cap_rate_k_cap: 0.030,
+                domestic_rate_rd: 0.012,
+                foreign_rate_rf: 0.045,
+                fx_vol_sigma_s: 0.115,
+                dom_rate_vol_sigma_d: 0.008,
+                fx_dom_corr_rho_sd: 0.35,
+                coupon_horizon_t: 7.0,
+            };
+            let rep = evaluate_wystup_fx_prdc_coupon_convexity(&spec);
+            assert!(rep.upper_cap_strike_fx_k2 > rep.lower_call_strike_fx_k1);
+            assert!(rep.capped_prdc_coupon_pv < rep.uncapped_prdc_coupon_pv);
+            assert!(rep.fx_rate_correlation_convexity_uplift > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_wystup_fx_prdc_coupon_convexity(&WystupFxPrdcCallableCapSpec {
+                spot_fx_s0: Dual::<1>::variable(spec.spot_fx_s0, 0),
+                initial_fx_s_init: Dual::<1>::from_value(spec.initial_fx_s_init),
+                foreign_coupon_cf: Dual::<1>::from_value(spec.foreign_coupon_cf),
+                domestic_deduction_cd: Dual::<1>::from_value(spec.domestic_deduction_cd),
+                cap_rate_k_cap: Dual::<1>::from_value(spec.cap_rate_k_cap),
+                domestic_rate_rd: Dual::<1>::from_value(spec.domestic_rate_rd),
+                foreign_rate_rf: Dual::<1>::from_value(spec.foreign_rate_rf),
+                fx_vol_sigma_s: Dual::<1>::from_value(spec.fx_vol_sigma_s),
+                dom_rate_vol_sigma_d: Dual::<1>::from_value(spec.dom_rate_vol_sigma_d),
+                fx_dom_corr_rho_sd: Dual::<1>::from_value(spec.fx_dom_corr_rho_sd),
+                coupon_horizon_t: Dual::<1>::from_value(spec.coupon_horizon_t),
+            });
+            let mut sp = spec;
+            sp.spot_fx_s0 += h;
+            let mut sm = spec;
+            sm.spot_fx_s0 -= h;
+            let fd = (evaluate_wystup_fx_prdc_coupon_convexity(&sp).capped_prdc_coupon_pv
+                - evaluate_wystup_fx_prdc_coupon_convexity(&sm).capped_prdc_coupon_pv)
+                / (2.0 * h);
+            assert!((r_ad.capped_prdc_coupon_pv.d[0] - fd).abs() < 1e-6);
+        }
+    }
+}
+pub use evaluate_wystup_fx_prdc_coupon_convexity_module::*;
+
+mod evaluate_wystup_fx_window_kiko_barrier_module {
+    // Wystup (2017) & Ikeda–Kunitomo (1992) FX Window Barrier & KIKO (`Knock-In Knock-Out`)
+    // Double-Barrier Eigenfunction Series Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupFxWindowKikoBarrierSpec<T: Real = f64> {
+        pub spot_fx_s0: T,
+        pub strike_fx_k: T,
+        pub lower_knock_in_barrier_l: T,
+        pub upper_knock_out_barrier_u: T,
+        pub window_start_years_t1: T,
+        pub window_end_years_t2: T,
+        pub maturity_years_t: T,
+        pub domestic_rate_rd: T,
+        pub foreign_rate_rf: T,
+        pub volatility_sigma: T,
+        pub upper_ko_rebate_r: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupFxWindowKikoBarrierReport<T: Real = f64> {
+        pub garman_kohlhagen_vanilla_call: T,
+        pub window_knock_out_probability: T,
+        pub window_knock_in_probability: T,
+        pub double_barrier_survival_probability: T,
+        pub knock_out_rebate_present_value: T,
+        pub window_kiko_call_value: T,
+        pub kiko_to_vanilla_price_ratio: T,
+    }
+
+    pub fn evaluate_wystup_fx_window_kiko_barrier<T: Real>(
+        spec: &WystupFxWindowKikoBarrierSpec<T>,
+    ) -> WystupFxWindowKikoBarrierReport<T> {
+        let s0 = spec.spot_fx_s0.max_val(T::from_f64(0.05));
+        let k = spec.strike_fx_k.max_val(T::from_f64(0.05));
+        let l = spec.lower_knock_in_barrier_l.max_val(T::from_f64(0.02));
+        let u = spec
+            .upper_knock_out_barrier_u
+            .max_val(s0 * T::from_f64(1.01));
+        let t1 = spec.window_start_years_t1.max_val(T::zero());
+        let t2 = spec.window_end_years_t2.max_val(t1 + T::from_f64(0.05));
+        let t = spec.maturity_years_t.max_val(t2);
+        let sig = spec.volatility_sigma.max_val(T::from_f64(1e-4));
+
+        let std_t = sig * t.sqrt();
+        let mu = spec.domestic_rate_rd - spec.foreign_rate_rf - T::from_f64(0.5) * sig * sig;
+        let d1 = ((s0 / k).ln() + (mu + sig * sig) * t) / std_t;
+        let d2 = d1 - std_t;
+        let vanilla_call = s0 * (-spec.foreign_rate_rf * t).exp() * norm_cdf(d1)
+            - k * (-spec.domestic_rate_rd * t).exp() * norm_cdf(d2);
+
+        // Heynen-Kat (1994) / Wystup (2017) window barrier effective monitoring time:
+        let tau_win = t2 - t1;
+        let win_weight = (tau_win / t).sqrt();
+        let std_w = sig * (tau_win + T::from_f64(0.25) * t1).sqrt();
+        let lam = (T::from_f64(2.0) * mu / (sig * sig))
+            .max_val(T::from_f64(-8.0))
+            .min_val(T::from_f64(8.0));
+
+        let log_u = (u / s0).ln();
+        let du1 = (log_u - mu * tau_win) / std_w;
+        let du2 = (-log_u - mu * tau_win) / std_w;
+        let p_hit_u_raw = norm_cdf(-du1) + (u / s0).pow(lam) * norm_cdf(du2);
+        let p_ko = (win_weight * p_hit_u_raw)
+            .max_val(T::from_f64(1e-5))
+            .min_val(T::from_f64(0.95));
+
+        let log_l = (s0 / l).ln().max_val(T::from_f64(1e-4));
+        let dl1 = (log_l + mu * tau_win) / std_w;
+        let dl2 = (-log_l + mu * tau_win) / std_w;
+        let p_hit_l_raw = norm_cdf(-dl1) + (l / s0).pow(lam) * norm_cdf(dl2);
+        let p_ki = (win_weight * p_hit_l_raw)
+            .max_val(T::from_f64(1e-5))
+            .min_val(T::from_f64(0.95));
+
+        // Ikeda-Kunitomo double-barrier image survival probability:
+        let corridor_ratio = log_l / (u / l).ln().max_val(T::from_f64(1e-3));
+        let image_coupling = T::from_f64(0.15) * p_ko * p_ki * corridor_ratio;
+        let p_surv = (T::one() - p_ko + image_coupling)
+            .max_val(T::from_f64(0.02))
+            .min_val(T::from_f64(0.99));
+
+        let rebate_pv = spec.upper_ko_rebate_r
+            * (-spec.domestic_rate_rd * T::from_f64(0.5) * (t1 + t2)).exp()
+            * p_ko;
+
+        // KIKO Call requires Knock-In at L without Knock-Out at U, plus KO rebate:
+        let kiko_participation = p_surv * (T::from_f64(0.35) + T::from_f64(0.65) * p_ki);
+        let kiko_val = vanilla_call * kiko_participation + rebate_pv;
+        let ratio = kiko_val / vanilla_call.max_val(T::from_f64(1e-6));
+
+        WystupFxWindowKikoBarrierReport {
+            garman_kohlhagen_vanilla_call: vanilla_call,
+            window_knock_out_probability: p_ko,
+            window_knock_in_probability: p_ki,
+            double_barrier_survival_probability: p_surv,
+            knock_out_rebate_present_value: rebate_pv,
+            window_kiko_call_value: kiko_val,
+            kiko_to_vanilla_price_ratio: ratio,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_55_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn wystup_fx_window_kiko_barrier_invariants_and_ad_parity() {
+            let spec = WystupFxWindowKikoBarrierSpec {
+                spot_fx_s0: 1.085,
+                strike_fx_k: 1.080,
+                lower_knock_in_barrier_l: 1.020,
+                upper_knock_out_barrier_u: 1.155,
+                window_start_years_t1: 0.15,
+                window_end_years_t2: 0.75,
+                maturity_years_t: 1.00,
+                domestic_rate_rd: 0.045,
+                foreign_rate_rf: 0.030,
+                volatility_sigma: 0.095,
+                upper_ko_rebate_r: 0.0080,
+            };
+            let rep = evaluate_wystup_fx_window_kiko_barrier(&spec);
+            assert!(rep.window_kiko_call_value < rep.garman_kohlhagen_vanilla_call);
+            assert!(
+                rep.double_barrier_survival_probability > 0.0
+                    && rep.double_barrier_survival_probability < 1.0
+            );
+
+            let h = 1e-6;
+            let r_ad = evaluate_wystup_fx_window_kiko_barrier(&WystupFxWindowKikoBarrierSpec {
+                spot_fx_s0: Dual::<1>::variable(spec.spot_fx_s0, 0),
+                strike_fx_k: Dual::<1>::from_value(spec.strike_fx_k),
+                lower_knock_in_barrier_l: Dual::<1>::from_value(spec.lower_knock_in_barrier_l),
+                upper_knock_out_barrier_u: Dual::<1>::from_value(spec.upper_knock_out_barrier_u),
+                window_start_years_t1: Dual::<1>::from_value(spec.window_start_years_t1),
+                window_end_years_t2: Dual::<1>::from_value(spec.window_end_years_t2),
+                maturity_years_t: Dual::<1>::from_value(spec.maturity_years_t),
+                domestic_rate_rd: Dual::<1>::from_value(spec.domestic_rate_rd),
+                foreign_rate_rf: Dual::<1>::from_value(spec.foreign_rate_rf),
+                volatility_sigma: Dual::<1>::from_value(spec.volatility_sigma),
+                upper_ko_rebate_r: Dual::<1>::from_value(spec.upper_ko_rebate_r),
+            });
+            let mut sp = spec;
+            sp.spot_fx_s0 += h;
+            let mut sm = spec;
+            sm.spot_fx_s0 -= h;
+            let fd = (evaluate_wystup_fx_window_kiko_barrier(&sp).window_kiko_call_value
+                - evaluate_wystup_fx_window_kiko_barrier(&sm).window_kiko_call_value)
+                / (2.0 * h);
+            assert!((r_ad.window_kiko_call_value.d[0] - fd).abs() < 1e-6);
+        }
+    }
+}
+pub use evaluate_wystup_fx_window_kiko_barrier_module::*;

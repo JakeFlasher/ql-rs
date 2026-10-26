@@ -1,11 +1,3 @@
-#[allow(unused_imports)]
-pub use crate::phase39::*;
-#[allow(unused_imports)]
-pub use crate::phase40::*;
-#[allow(unused_imports)]
-pub use crate::phase41::*;
-#[allow(unused_imports)]
-pub use crate::phase42::*;
 use ql_ad::Real;
 use ql_ad::ift_lift_1d;
 use ql_mc::PhiloxRng;
@@ -408,11 +400,11 @@ pub struct WystupPivotTarfCorridorReport<T: Real = f64> {
 }
 
 #[cfg(test)]
-mod phase14_tests {
+mod domain_suite_26_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
-    fn phase14_tarf_cap_and_delta_match_fd() {
+    fn suite26_tarf_cap_and_delta_match_fd() {
         let eval = |spot: f64, target: f64| {
             let s = FxTarfSpec {
                 notional: 1.0,
@@ -584,7 +576,7 @@ pub fn price_fx_accumulator_mc_ad<T: Real>(
 }
 
 #[cfg(test)]
-mod phase17_tests {
+mod domain_suite_29_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -644,7 +636,7 @@ mod phase17_tests {
 }
 
 #[cfg(test)]
-mod phase22_tests {
+mod domain_suite_34_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -698,7 +690,7 @@ mod phase22_tests {
 }
 
 #[cfg(test)]
-mod phase26_tests {
+mod domain_suite_38_tests {
     use super::*;
     use ql_ad::Dual;
     fn spec<T: Real>(spot: T) -> WystupPivotTarfCorridorSpec<T> {

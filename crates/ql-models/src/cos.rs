@@ -366,11 +366,11 @@ pub fn double_heston_cos_strip_prices<T: Real>(
 }
 
 #[cfg(test)]
-mod phase14_tests {
+mod domain_suite_26_tests {
     use super::*;
     use crate::HestonParams;
     #[test]
-    fn phase14_double_heston_degenerate_and_parity() {
+    fn suite26_double_heston_degenerate_and_parity() {
         let p = DoubleHestonParams {
             factor1: HestonParams {
                 v0: 0.04,

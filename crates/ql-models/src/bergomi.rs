@@ -368,7 +368,7 @@ fn wgt2<T: Real>(theta: T, rho: T) -> T {
 }
 
 #[cfg(test)]
-mod phase15_tests {
+mod domain_suite_27_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -417,7 +417,7 @@ mod phase15_tests {
 }
 
 #[cfg(test)]
-mod phase22_tests {
+mod domain_suite_34_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]

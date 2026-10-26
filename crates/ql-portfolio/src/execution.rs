@@ -1,24 +1,5 @@
 #![allow(clippy::needless_range_loop)]
-pub use crate::phase36::{
-    CarteaJaimungalLobMarketMakingReport, CarteaJaimungalLobMarketMakingSpec,
-    evaluate_cartea_jaimungal_lob_market_making,
-};
-pub use crate::phase37::{
-    GueantAlmgrenChrissHyperbolicReport, GueantAlmgrenChrissHyperbolicSpec,
-    evaluate_gueant_almgren_chriss_hyperbolic_liquidation,
-};
-pub use crate::phase38::{
-    BouchaudCrossImpactEigenmodeReport, BouchaudCrossImpactEigenmodeSpec,
-    evaluate_bouchaud_cross_impact_eigenmode_execution,
-};
-
 use super::allocation::AllocationError;
-pub use crate::phase30::*;
-pub use crate::phase33::{
-    OharaGlostenMilgromSequentialReport, OharaGlostenMilgromSequentialSpec,
-    evaluate_ohara_glosten_milgrom_sequential_spread,
-};
-pub use crate::phase34::*;
 use ql_ad::Real;
 
 #[derive(Clone, Debug)]
@@ -1528,7 +1509,7 @@ pub fn solve_cartea_jaimungal_penalva_lob_fill_hjb<T: Real>(
 }
 
 #[cfg(test)]
-mod phase23_tests {
+mod domain_suite_35_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -1585,10 +1566,10 @@ mod phase23_tests {
 }
 
 #[cfg(test)]
-mod phase14_tests {
+mod domain_suite_26_tests {
     use super::*;
     #[test]
-    fn phase14_multi_asset_matches_1d_and_twap() {
+    fn suite26_multi_asset_matches_1d_and_twap() {
         let one_d = almgren_chriss_execution(&AlmgrenChrissSpec {
             initial_inventory: 1000.0,
             horizon: 1.0,
@@ -1616,7 +1597,7 @@ mod phase14_tests {
 }
 
 #[cfg(test)]
-mod phase17_tests {
+mod domain_suite_29_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -1670,7 +1651,7 @@ mod phase17_tests {
 }
 
 #[cfg(test)]
-mod phase19_tests {
+mod domain_suite_31_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -1732,7 +1713,7 @@ mod phase19_tests {
 }
 
 #[cfg(test)]
-mod phase20_tests {
+mod domain_suite_32_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -1794,7 +1775,7 @@ mod phase20_tests {
 }
 
 #[cfg(test)]
-mod phase21_tests {
+mod domain_suite_33_tests {
     use super::*;
 
     #[test]
@@ -1821,7 +1802,7 @@ mod phase21_tests {
 }
 
 #[cfg(test)]
-mod phase22_tests {
+mod domain_suite_34_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -1869,7 +1850,7 @@ mod phase22_tests {
 }
 
 #[cfg(test)]
-mod phase24_tests {
+mod domain_suite_36_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(x: T) -> OharaEkopKyleMicrostructureSpec<T> {
@@ -1896,7 +1877,7 @@ mod phase24_tests {
         }
     }
     #[test]
-    fn micro_phase24() {
+    fn micro_suite36() {
         let r = evaluate_ohara_ekop_kyle_microstructure_and_etf_band(&mk(0.2));
         assert!((r.kyle_lambda * r.kyle_insider_intensity_beta - 0.5).abs() < 1e-12);
         assert!(
@@ -1924,7 +1905,7 @@ mod phase24_tests {
 }
 
 #[cfg(test)]
-mod phase25_tests {
+mod domain_suite_37_tests {
     use super::*;
     use ql_ad::Dual;
     fn hs<T: Real>(x: T) -> HasbrouckDsswPriceDiscoverySpec<T> {
@@ -1970,7 +1951,7 @@ mod phase25_tests {
 }
 
 #[cfg(test)]
-mod phase26_tests {
+mod domain_suite_38_tests {
     use super::*;
     use ql_ad::Dual;
     fn spec<T: Real>(omega: T) -> EngleRussellAcdTradeDurationSpec<T> {
@@ -2009,7 +1990,7 @@ mod phase26_tests {
 }
 
 #[cfg(test)]
-mod phase27_tests {
+mod domain_suite_39_tests {
     use super::*;
     use ql_ad::Dual;
     fn make<T: Real>(x: T) -> HarrisRollCorwinSchultzMicrostructureSpec<T> {
@@ -2042,7 +2023,7 @@ mod phase27_tests {
     }
 
     #[test]
-    fn phase27_invariants() {
+    fn suite39_invariants() {
         let r = analyze_harris_roll_corwin_schultz_microstructure(&make(100.0));
         assert!(r.perold_identity_conservation_error < 1e-12);
         assert!(r.corwin_schultz_high_low_spread >= 0.0);
@@ -2051,7 +2032,7 @@ mod phase27_tests {
 }
 
 #[cfg(test)]
-mod phase28_tests {
+mod domain_suite_40_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(x: T) -> MitchellPedersenKratzDarkPoolSpiralSpec<T> {
@@ -2093,7 +2074,7 @@ mod phase28_tests {
 }
 
 #[cfg(test)]
-mod phase29_tests {
+mod domain_suite_41_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -2123,3 +2104,1343 @@ mod phase29_tests {
         assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
     }
 }
+
+mod evaluate_cartea_jaimungal_lob_market_making_module {
+    #![allow(clippy::needless_range_loop, clippy::assign_op_pattern)]
+    use ql_ad::Real;
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct CarteaJaimungalLobMarketMakingSpec<T: Real = f64> {
+        pub mid_price: T,
+        pub current_inventory_q: T,
+        pub running_inventory_penalty_phi: T,
+        pub terminal_inventory_penalty_alpha: T,
+        pub risk_aversion_gamma: T,
+        pub asset_volatility: T,
+        pub order_arrival_baseline_a: T,
+        pub lob_depth_decay_kappa: T,
+        pub remaining_horizon_tau: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct CarteaJaimungalLobMarketMakingReport<T: Real = f64> {
+        pub riccati_inventory_coeff_theta: T,
+        pub optimal_bid_depth_delta_minus: T,
+        pub optimal_ask_depth_delta_plus: T,
+        pub optimal_bid_quote: T,
+        pub optimal_ask_quote: T,
+        pub reservation_mid_price: T,
+        pub inventory_quote_skew: T,
+        pub total_quoted_spread: T,
+        pub expected_instantaneous_spread_capture: T,
+    }
+
+    pub fn evaluate_cartea_jaimungal_lob_market_making<T: Real>(
+        spec: &CarteaJaimungalLobMarketMakingSpec<T>,
+    ) -> CarteaJaimungalLobMarketMakingReport<T> {
+        let kappa = spec.lob_depth_decay_kappa.max_val(T::from_f64(1e-6));
+        let tau = spec.remaining_horizon_tau.max_val(T::from_f64(1e-6));
+        let inv_e = (-T::one()).exp();
+        let theta = T::from_f64(0.5)
+            * (spec.running_inventory_penalty_phi
+                + spec.risk_aversion_gamma * spec.asset_volatility * spec.asset_volatility)
+            * tau
+            + spec.terminal_inventory_penalty_alpha
+                / (T::one()
+                    + kappa
+                        * spec.terminal_inventory_penalty_alpha
+                        * spec.order_arrival_baseline_a
+                        * inv_e
+                        * tau);
+        let two = T::from_f64(2.0);
+        let q = spec.current_inventory_q;
+        let delta_plus = T::one() / kappa + (two * q - T::one()) * theta;
+        let delta_minus = T::one() / kappa - (two * q + T::one()) * theta;
+        let ask_quote = spec.mid_price + delta_plus;
+        let bid_quote = spec.mid_price - delta_minus;
+        let res_mid = T::from_f64(0.5) * (ask_quote + bid_quote);
+        let skew = -two * q * theta;
+        let spread = ask_quote - bid_quote;
+        let lam_plus = spec.order_arrival_baseline_a * (-kappa * delta_plus).exp();
+        let lam_minus = spec.order_arrival_baseline_a * (-kappa * delta_minus).exp();
+        let edge = lam_plus * delta_plus + lam_minus * delta_minus;
+
+        CarteaJaimungalLobMarketMakingReport {
+            riccati_inventory_coeff_theta: theta,
+            optimal_bid_depth_delta_minus: delta_minus,
+            optimal_ask_depth_delta_plus: delta_plus,
+            optimal_bid_quote: bid_quote,
+            optimal_ask_quote: ask_quote,
+            reservation_mid_price: res_mid,
+            inventory_quote_skew: skew,
+            total_quoted_spread: spread,
+            expected_instantaneous_spread_capture: edge,
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct CampbellLoMackinlayVrPresentValueSpec<T: Real = f64> {
+        pub returns: Vec<T>,
+        pub steady_state_dividend_yield: T,
+        pub expected_dividend_growth: T,
+        pub expected_discount_rate: T,
+        pub dividend_growth_ar1_phi: T,
+        pub discount_rate_ar1_phi: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct CampbellLoMackinlayVrPresentValueReport<T: Real = f64> {
+        pub one_period_variance: T,
+        pub overlapping_two_period_variance: T,
+        pub lo_mackinlay_variance_ratio_vr2: T,
+        pub homoskedastic_z_statistic: T,
+        pub heteroskedastic_theta_variance: T,
+        pub heteroskedastic_z_star_statistic: T,
+        pub campbell_shiller_rho: T,
+        pub equilibrium_log_dividend_price_ratio: T,
+        pub discount_rate_news_multiplier: T,
+        pub cashflow_news_multiplier: T,
+    }
+
+    pub fn evaluate_campbell_lo_mackinlay_vr_and_campbell_shiller<T: Real>(
+        spec: &CampbellLoMackinlayVrPresentValueSpec<T>,
+    ) -> CampbellLoMackinlayVrPresentValueReport<T> {
+        let n = spec.returns.len().max(3);
+        let n_t = T::from_f64(n as f64);
+        let mut sum_r = T::zero();
+        for &r in &spec.returns {
+            sum_r = sum_r + r;
+        }
+        let mu = sum_r / n_t;
+        let mut sum_sq1 = T::zero();
+        for &r in &spec.returns {
+            let d = r - mu;
+            sum_sq1 = sum_sq1 + d * d;
+        }
+        let var1 = (sum_sq1 / T::from_f64((n - 1) as f64)).max_val(T::from_f64(1e-12));
+
+        let mut sum_sq2 = T::zero();
+        let mut sum_theta = T::zero();
+        let two = T::from_f64(2.0);
+        for t in 1..spec.returns.len() {
+            let d2 = spec.returns[t] + spec.returns[t - 1] - two * mu;
+            sum_sq2 = sum_sq2 + d2 * d2;
+            let u_t = (spec.returns[t] - mu) * (spec.returns[t] - mu) / var1;
+            let u_tm1 = (spec.returns[t - 1] - mu) * (spec.returns[t - 1] - mu) / var1;
+            sum_theta = sum_theta + u_t * u_tm1;
+        }
+        let var2 = sum_sq2 / T::from_f64((2 * (n - 2)) as f64);
+        let vr2 = var2 / var1;
+        let z_homo = n_t.sqrt() * (vr2 - T::one());
+        let theta_var = (T::from_f64(4.0) / n_t * sum_theta).max_val(T::from_f64(1e-12));
+        let z_star = z_homo / theta_var.sqrt();
+
+        let dy = spec.steady_state_dividend_yield.max_val(T::from_f64(1e-6));
+        let rho = T::one() / (T::one() + dy);
+        let k_cs = -rho.ln() - (T::one() - rho) * (T::one() / rho - T::one()).ln();
+        let cf_mult =
+            T::one() / (T::one() - rho * spec.dividend_growth_ar1_phi).max_val(T::from_f64(1e-6));
+        let dr_mult =
+            T::one() / (T::one() - rho * spec.discount_rate_ar1_phi).max_val(T::from_f64(1e-6));
+        let eq_dp = -k_cs / (T::one() - rho) - spec.expected_dividend_growth * cf_mult
+            + spec.expected_discount_rate * dr_mult;
+
+        CampbellLoMackinlayVrPresentValueReport {
+            one_period_variance: var1,
+            overlapping_two_period_variance: var2,
+            lo_mackinlay_variance_ratio_vr2: vr2,
+            homoskedastic_z_statistic: z_homo,
+            heteroskedastic_theta_variance: theta_var,
+            heteroskedastic_z_star_statistic: z_star,
+            campbell_shiller_rho: rho,
+            equilibrium_log_dividend_price_ratio: eq_dp,
+            discount_rate_news_multiplier: dr_mult,
+            cashflow_news_multiplier: cf_mult,
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct RoncalliSpinuErcRiskParitySpec<T: Real = f64> {
+        pub covariance_3x3: [[T; 3]; 3],
+        pub target_risk_budgets: [T; 3],
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct RoncalliSpinuErcRiskParityReport<T: Real = f64> {
+        pub erc_weights: [T; 3],
+        pub inverse_vol_naive_weights: [T; 3],
+        pub relative_risk_contributions: [T; 3],
+        pub erc_portfolio_volatility: T,
+        pub risk_budget_parity_l1_error: T,
+        pub weights_sum_conservation_error: T,
+        pub choueifaty_diversification_ratio: T,
+        pub spinu_convex_objective_val: T,
+    }
+
+    pub fn evaluate_roncalli_spinu_erc_risk_parity<T: Real>(
+        spec: &RoncalliSpinuErcRiskParitySpec<T>,
+    ) -> RoncalliSpinuErcRiskParityReport<T> {
+        let cov = &spec.covariance_3x3;
+        let b_sum = (spec.target_risk_budgets[0]
+            + spec.target_risk_budgets[1]
+            + spec.target_risk_budgets[2])
+            .max_val(T::from_f64(1e-8));
+        let b = [
+            spec.target_risk_budgets[0] / b_sum,
+            spec.target_risk_budgets[1] / b_sum,
+            spec.target_risk_budgets[2] / b_sum,
+        ];
+        let vols = [
+            cov[0][0].max_val(T::from_f64(1e-10)).sqrt(),
+            cov[1][1].max_val(T::from_f64(1e-10)).sqrt(),
+            cov[2][2].max_val(T::from_f64(1e-10)).sqrt(),
+        ];
+        let mut x = [b[0] / vols[0], b[1] / vols[1], b[2] / vols[2]];
+        let inv_sum = x[0] + x[1] + x[2];
+        let inv_vol_w = [x[0] / inv_sum, x[1] / inv_sum, x[2] / inv_sum];
+
+        let two = T::from_f64(2.0);
+        let four = T::from_f64(4.0);
+        for _ in 0..16 {
+            for i in 0..3 {
+                let mut c_i = T::zero();
+                for j in 0..3 {
+                    if j != i {
+                        c_i = c_i + cov[i][j] * x[j];
+                    }
+                }
+                let sig_ii = cov[i][i].max_val(T::from_f64(1e-10));
+                x[i] = (-c_i + (c_i * c_i + four * sig_ii * b[i]).sqrt()) / (two * sig_ii);
+            }
+        }
+
+        let mut x_sig_x = T::zero();
+        for i in 0..3 {
+            for j in 0..3 {
+                x_sig_x = x_sig_x + x[i] * cov[i][j] * x[j];
+            }
+        }
+        let spinu_obj =
+            T::from_f64(0.5) * x_sig_x - (b[0] * x[0].ln() + b[1] * x[1].ln() + b[2] * x[2].ln());
+
+        let x_tot = x[0] + x[1] + x[2];
+        let w = [x[0] / x_tot, x[1] / x_tot, x[2] / x_tot];
+        let mut sig_w = [T::zero(); 3];
+        for i in 0..3 {
+            sig_w[i] = cov[i][0] * w[0] + cov[i][1] * w[1] + cov[i][2] * w[2];
+        }
+        let port_var =
+            (w[0] * sig_w[0] + w[1] * sig_w[1] + w[2] * sig_w[2]).max_val(T::from_f64(1e-12));
+        let port_vol = port_var.sqrt();
+        let rrc = [
+            w[0] * sig_w[0] / port_var,
+            w[1] * sig_w[1] / port_var,
+            w[2] * sig_w[2] / port_var,
+        ];
+        let mut l1_err = T::zero();
+        for i in 0..3 {
+            let d = rrc[i] - b[i];
+            l1_err = l1_err + (d * d + T::from_f64(1e-30)).sqrt();
+        }
+        let w_diff = (w[0] + w[1] + w[2]) - T::one();
+        let w_err = (w_diff * w_diff + T::from_f64(1e-30)).sqrt();
+        let dr = (w[0] * vols[0] + w[1] * vols[1] + w[2] * vols[2]) / port_vol;
+
+        RoncalliSpinuErcRiskParityReport {
+            erc_weights: w,
+            inverse_vol_naive_weights: inv_vol_w,
+            relative_risk_contributions: rrc,
+            erc_portfolio_volatility: port_vol,
+            risk_budget_parity_l1_error: l1_err,
+            weights_sum_conservation_error: w_err,
+            choueifaty_diversification_ratio: dr,
+            spinu_convex_objective_val: spinu_obj,
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct IlmanenCarryRolldownVmcFactorSpec<T: Real = f64> {
+        pub current_yield_yt: T,
+        pub rolled_horizon_yield: T,
+        pub repo_financing_rate: T,
+        pub modified_duration: T,
+        pub bond_convexity: T,
+        pub expected_yield_change: T,
+        pub yield_volatility: T,
+        pub value_style_sharpe: T,
+        pub momentum_style_sharpe: T,
+        pub carry_style_sharpe: T,
+        pub value_momentum_corr_rho: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct IlmanenCarryRolldownVmcFactorReport<T: Real = f64> {
+        pub pure_carry_return: T,
+        pub rolldown_return: T,
+        pub expected_valuation_return: T,
+        pub convexity_bias_return: T,
+        pub total_expected_excess_return: T,
+        pub carry_plus_rolldown_breakeven_bps: T,
+        pub standalone_average_style_sharpe: T,
+        pub composite_vmc_sharpe_ratio: T,
+        pub style_diversification_sharpe_gain: T,
+    }
+
+    pub fn evaluate_ilmanen_carry_rolldown_and_vmc_factors<T: Real>(
+        spec: &IlmanenCarryRolldownVmcFactorSpec<T>,
+    ) -> IlmanenCarryRolldownVmcFactorReport<T> {
+        let carry = spec.current_yield_yt - spec.repo_financing_rate;
+        let rolldown =
+            -spec.modified_duration * (spec.rolled_horizon_yield - spec.current_yield_yt);
+        let val_ret = -spec.modified_duration * spec.expected_yield_change;
+        let conv_bias = T::from_f64(0.5)
+            * spec.bond_convexity
+            * (spec.expected_yield_change * spec.expected_yield_change
+                + spec.yield_volatility * spec.yield_volatility);
+        let total_ret = carry + rolldown + val_ret + conv_bias;
+        let breakeven_bps = (carry + rolldown) / spec.modified_duration.max_val(T::from_f64(1e-6))
+            * T::from_f64(1e4);
+
+        let sum_sr = spec.value_style_sharpe + spec.momentum_style_sharpe + spec.carry_style_sharpe;
+        let avg_sr = sum_sr / T::from_f64(3.0);
+        let denom = (T::from_f64(3.0) + T::from_f64(2.0) * spec.value_momentum_corr_rho)
+            .max_val(T::from_f64(0.2))
+            .sqrt();
+        let vmc_sr = sum_sr / denom;
+        let sr_gain = vmc_sr - avg_sr;
+
+        IlmanenCarryRolldownVmcFactorReport {
+            pure_carry_return: carry,
+            rolldown_return: rolldown,
+            expected_valuation_return: val_ret,
+            convexity_bias_return: conv_bias,
+            total_expected_excess_return: total_ret,
+            carry_plus_rolldown_breakeven_bps: breakeven_bps,
+            standalone_average_style_sharpe: avg_sr,
+            composite_vmc_sharpe_ratio: vmc_sr,
+            style_diversification_sharpe_gain: sr_gain,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_48_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn suite48_portfolio_all_four_engines_invariants_and_ad_parity() {
+            let h = 1e-6;
+
+            // 1. Cartea-Jaimungal LOB Market Making
+            let lob_spec = CarteaJaimungalLobMarketMakingSpec {
+                mid_price: 100.0,
+                current_inventory_q: 3.0,
+                running_inventory_penalty_phi: 0.02,
+                terminal_inventory_penalty_alpha: 0.05,
+                risk_aversion_gamma: 0.10,
+                asset_volatility: 0.20,
+                order_arrival_baseline_a: 12.0,
+                lob_depth_decay_kappa: 1.5,
+                remaining_horizon_tau: 0.5,
+            };
+            let lob_rep = evaluate_cartea_jaimungal_lob_market_making(&lob_spec);
+            assert!(lob_rep.inventory_quote_skew < 0.0);
+            assert!(
+                (lob_rep.optimal_ask_quote
+                    - lob_rep.optimal_bid_quote
+                    - lob_rep.total_quoted_spread)
+                    .abs()
+                    < 1e-12
+            );
+            let lob_ad =
+                evaluate_cartea_jaimungal_lob_market_making(&CarteaJaimungalLobMarketMakingSpec {
+                    mid_price: Dual::<1>::from_value(lob_spec.mid_price),
+                    current_inventory_q: Dual::<1>::variable(lob_spec.current_inventory_q, 0),
+                    running_inventory_penalty_phi: Dual::<1>::from_value(
+                        lob_spec.running_inventory_penalty_phi,
+                    ),
+                    terminal_inventory_penalty_alpha: Dual::<1>::from_value(
+                        lob_spec.terminal_inventory_penalty_alpha,
+                    ),
+                    risk_aversion_gamma: Dual::<1>::from_value(lob_spec.risk_aversion_gamma),
+                    asset_volatility: Dual::<1>::from_value(lob_spec.asset_volatility),
+                    order_arrival_baseline_a: Dual::<1>::from_value(
+                        lob_spec.order_arrival_baseline_a,
+                    ),
+                    lob_depth_decay_kappa: Dual::<1>::from_value(lob_spec.lob_depth_decay_kappa),
+                    remaining_horizon_tau: Dual::<1>::from_value(lob_spec.remaining_horizon_tau),
+                });
+            let mut lp = lob_spec;
+            lp.current_inventory_q += h;
+            let mut lm = lob_spec;
+            lm.current_inventory_q -= h;
+            let _fd_lob = (evaluate_cartea_jaimungal_lob_market_making(&lp).reservation_mid_price
+                - evaluate_cartea_jaimungal_lob_market_making(&lm).reservation_mid_price)
+                / (2.0 * h);
+            assert!((lob_ad.reservation_mid_price.d[0] - _fd_lob).abs() < 1e-5);
+
+            // 2. Campbell-Lo-MacKinlay VR & Campbell-Shiller
+            let clm_spec = CampbellLoMackinlayVrPresentValueSpec {
+                returns: vec![0.012, 0.015, -0.004, 0.009, 0.014, -0.003, 0.011, 0.013],
+                steady_state_dividend_yield: 0.032,
+                expected_dividend_growth: 0.045,
+                expected_discount_rate: 0.078,
+                dividend_growth_ar1_phi: 0.35,
+                discount_rate_ar1_phi: 0.85,
+            };
+            let clm_rep = evaluate_campbell_lo_mackinlay_vr_and_campbell_shiller(&clm_spec);
+            assert!(clm_rep.campbell_shiller_rho > 0.9 && clm_rep.campbell_shiller_rho < 1.0);
+            assert!(clm_rep.lo_mackinlay_variance_ratio_vr2 > 0.0);
+            assert!(clm_rep.discount_rate_news_multiplier > 1.0);
+            let clm_ad = evaluate_campbell_lo_mackinlay_vr_and_campbell_shiller(
+                &CampbellLoMackinlayVrPresentValueSpec {
+                    returns: clm_spec
+                        .returns
+                        .iter()
+                        .copied()
+                        .map(Dual::<1>::from_value)
+                        .collect(),
+                    steady_state_dividend_yield: Dual::<1>::variable(
+                        clm_spec.steady_state_dividend_yield,
+                        0,
+                    ),
+                    expected_dividend_growth: Dual::<1>::from_value(
+                        clm_spec.expected_dividend_growth,
+                    ),
+                    expected_discount_rate: Dual::<1>::from_value(clm_spec.expected_discount_rate),
+                    dividend_growth_ar1_phi: Dual::<1>::from_value(
+                        clm_spec.dividend_growth_ar1_phi,
+                    ),
+                    discount_rate_ar1_phi: Dual::<1>::from_value(clm_spec.discount_rate_ar1_phi),
+                },
+            );
+            let mut cp = clm_spec.clone();
+            cp.steady_state_dividend_yield += h;
+            let mut cm = clm_spec;
+            cm.steady_state_dividend_yield -= h;
+            let _fd_clm = (evaluate_campbell_lo_mackinlay_vr_and_campbell_shiller(&cp)
+                .equilibrium_log_dividend_price_ratio
+                - evaluate_campbell_lo_mackinlay_vr_and_campbell_shiller(&cm)
+                    .equilibrium_log_dividend_price_ratio)
+                / (2.0 * h);
+            assert!((clm_ad.equilibrium_log_dividend_price_ratio.d[0] - _fd_clm).abs() < 1e-5);
+
+            // 3. Roncalli Spinu ERC Risk Parity
+            let erc_spec = RoncalliSpinuErcRiskParitySpec {
+                covariance_3x3: [
+                    [0.040, 0.008, 0.002],
+                    [0.008, 0.0225, 0.003],
+                    [0.002, 0.003, 0.0064],
+                ],
+                target_risk_budgets: [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0],
+            };
+            let erc_rep = evaluate_roncalli_spinu_erc_risk_parity(&erc_spec);
+            assert!(erc_rep.risk_budget_parity_l1_error < 1e-8);
+            assert!(erc_rep.weights_sum_conservation_error < 1e-12);
+            assert!(erc_rep.choueifaty_diversification_ratio > 1.0);
+            let mut cov_ad = erc_spec
+                .covariance_3x3
+                .map(|r| r.map(Dual::<1>::from_value));
+            cov_ad[0][0] = Dual::<1>::variable(erc_spec.covariance_3x3[0][0], 0);
+            let erc_ad = evaluate_roncalli_spinu_erc_risk_parity(&RoncalliSpinuErcRiskParitySpec {
+                covariance_3x3: cov_ad,
+                target_risk_budgets: erc_spec.target_risk_budgets.map(Dual::<1>::from_value),
+            });
+            let mut ep = erc_spec;
+            ep.covariance_3x3[0][0] += h;
+            let mut em = erc_spec;
+            em.covariance_3x3[0][0] -= h;
+            let _fd_erc = (evaluate_roncalli_spinu_erc_risk_parity(&ep).erc_portfolio_volatility
+                - evaluate_roncalli_spinu_erc_risk_parity(&em).erc_portfolio_volatility)
+                / (2.0 * h);
+            assert!((erc_ad.erc_portfolio_volatility.d[0] - _fd_erc).abs() < 1e-5);
+
+            // 4. Ilmanen Carry, Roll-Down & VMC Factors
+            let ilm_spec = IlmanenCarryRolldownVmcFactorSpec {
+                current_yield_yt: 0.045,
+                rolled_horizon_yield: 0.041,
+                repo_financing_rate: 0.032,
+                modified_duration: 7.5,
+                bond_convexity: 68.0,
+                expected_yield_change: 0.001,
+                yield_volatility: 0.0085,
+                value_style_sharpe: 0.45,
+                momentum_style_sharpe: 0.50,
+                carry_style_sharpe: 0.48,
+                value_momentum_corr_rho: -0.45,
+            };
+            let ilm_rep = evaluate_ilmanen_carry_rolldown_and_vmc_factors(&ilm_spec);
+            assert!(ilm_rep.rolldown_return > 0.0);
+            assert!(ilm_rep.composite_vmc_sharpe_ratio > ilm_rep.standalone_average_style_sharpe);
+            let ilm_ad = evaluate_ilmanen_carry_rolldown_and_vmc_factors(
+                &IlmanenCarryRolldownVmcFactorSpec {
+                    current_yield_yt: Dual::<1>::variable(ilm_spec.current_yield_yt, 0),
+                    rolled_horizon_yield: Dual::<1>::from_value(ilm_spec.rolled_horizon_yield),
+                    repo_financing_rate: Dual::<1>::from_value(ilm_spec.repo_financing_rate),
+                    modified_duration: Dual::<1>::from_value(ilm_spec.modified_duration),
+                    bond_convexity: Dual::<1>::from_value(ilm_spec.bond_convexity),
+                    expected_yield_change: Dual::<1>::from_value(ilm_spec.expected_yield_change),
+                    yield_volatility: Dual::<1>::from_value(ilm_spec.yield_volatility),
+                    value_style_sharpe: Dual::<1>::from_value(ilm_spec.value_style_sharpe),
+                    momentum_style_sharpe: Dual::<1>::from_value(ilm_spec.momentum_style_sharpe),
+                    carry_style_sharpe: Dual::<1>::from_value(ilm_spec.carry_style_sharpe),
+                    value_momentum_corr_rho: Dual::<1>::from_value(
+                        ilm_spec.value_momentum_corr_rho,
+                    ),
+                },
+            );
+            let mut ip = ilm_spec;
+            ip.current_yield_yt += h;
+            let mut im = ilm_spec;
+            im.current_yield_yt -= h;
+            let _fd_ilm = (evaluate_ilmanen_carry_rolldown_and_vmc_factors(&ip)
+                .total_expected_excess_return
+                - evaluate_ilmanen_carry_rolldown_and_vmc_factors(&im)
+                    .total_expected_excess_return)
+                / (2.0 * h);
+            assert!((ilm_ad.total_expected_excess_return.d[0] - _fd_ilm).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_cartea_jaimungal_lob_market_making_module::*;
+
+mod evaluate_meucci_black_litterman_woodbury_equivalence_module {
+    #![allow(
+        clippy::needless_range_loop,
+        clippy::assign_op_pattern,
+        clippy::approx_constant
+    )]
+    use ql_ad::Real;
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct MeucciBlackLittermanWoodburySpec<T: Real = f64> {
+        pub covariance_3x3: [[T; 3]; 3],
+        pub market_cap_weights: [T; 3],
+        pub risk_aversion_delta: T,
+        pub tau_scalar: T,
+        pub view_pick_vector: [T; 3],
+        pub view_target_q: T,
+        pub view_uncertainty_omega: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct MeucciBlackLittermanWoodburyReport<T: Real = f64> {
+        pub equilibrium_prior_returns_pi: [T; 3],
+        pub posterior_returns_woodbury: [T; 3],
+        pub posterior_returns_precision: [T; 3],
+        pub woodbury_precision_equivalence_error: T,
+        pub posterior_optimal_weights: [T; 3],
+        pub active_view_weight_tilt_l1: T,
+        pub posterior_view_expected_return: T,
+    }
+
+    fn inv3<T: Real>(a: [[T; 3]; 3]) -> [[T; 3]; 3] {
+        let mut aug = [[T::zero(); 6]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                aug[i][j] = a[i][j];
+            }
+            aug[i][i + 3] = T::one();
+        }
+        for i in 0..3 {
+            let piv = aug[i][i];
+            for j in 0..6 {
+                aug[i][j] = aug[i][j] / piv;
+            }
+            for r in 0..3 {
+                if r != i {
+                    let f = aug[r][i];
+                    for j in 0..6 {
+                        aug[r][j] = aug[r][j] - f * aug[i][j];
+                    }
+                }
+            }
+        }
+        let mut inv = [[T::zero(); 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                inv[i][j] = aug[i][j + 3];
+            }
+        }
+        inv
+    }
+
+    pub fn evaluate_meucci_black_litterman_woodbury_equivalence<T: Real>(
+        spec: &MeucciBlackLittermanWoodburySpec<T>,
+    ) -> MeucciBlackLittermanWoodburyReport<T> {
+        let cov = &spec.covariance_3x3;
+        let p = &spec.view_pick_vector;
+        let tau = spec.tau_scalar.max_val(T::from_f64(1e-6));
+        let omega = spec.view_uncertainty_omega.max_val(T::from_f64(1e-8));
+        let delta = spec.risk_aversion_delta.max_val(T::from_f64(1e-6));
+
+        let mut pi = [T::zero(); 3];
+        let mut sig_p = [T::zero(); 3];
+        for i in 0..3 {
+            pi[i] = delta
+                * (cov[i][0] * spec.market_cap_weights[0]
+                    + cov[i][1] * spec.market_cap_weights[1]
+                    + cov[i][2] * spec.market_cap_weights[2]);
+            sig_p[i] = cov[i][0] * p[0] + cov[i][1] * p[1] + cov[i][2] * p[2];
+        }
+        let p_sig_p = p[0] * sig_p[0] + p[1] * sig_p[1] + p[2] * sig_p[2];
+        let s_p = tau * p_sig_p + omega;
+        let p_pi = p[0] * pi[0] + p[1] * pi[1] + p[2] * pi[2];
+        let view_inn = spec.view_target_q - p_pi;
+
+        let mut mu_wood = [T::zero(); 3];
+        let mut m_wood = [[T::zero(); 3]; 3];
+        for i in 0..3 {
+            let k_i = tau * sig_p[i] / s_p;
+            mu_wood[i] = pi[i] + k_i * view_inn;
+            for j in 0..3 {
+                m_wood[i][j] = tau * cov[i][j] - (tau * tau / s_p) * sig_p[i] * sig_p[j];
+            }
+        }
+
+        let mut tau_cov = [[T::zero(); 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                tau_cov[i][j] = tau * cov[i][j];
+            }
+        }
+        let inv_tau_cov = inv3(tau_cov);
+        let mut a_prec = [[T::zero(); 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                a_prec[i][j] = inv_tau_cov[i][j] + (p[i] * p[j]) / omega;
+            }
+        }
+        let m_prec = inv3(a_prec);
+        let mut rhs = [T::zero(); 3];
+        for i in 0..3 {
+            let prior_prec_pi =
+                inv_tau_cov[i][0] * pi[0] + inv_tau_cov[i][1] * pi[1] + inv_tau_cov[i][2] * pi[2];
+            rhs[i] = prior_prec_pi + (spec.view_target_q / omega) * p[i];
+        }
+        let mut mu_prec = [T::zero(); 3];
+        for i in 0..3 {
+            mu_prec[i] = m_prec[i][0] * rhs[0] + m_prec[i][1] * rhs[1] + m_prec[i][2] * rhs[2];
+        }
+
+        let mut eq_err = T::zero();
+        for i in 0..3 {
+            let dm = mu_wood[i] - mu_prec[i];
+            eq_err = eq_err + (dm * dm + T::from_f64(1e-30)).sqrt();
+            for j in 0..3 {
+                let dc = m_wood[i][j] - m_prec[i][j];
+                eq_err = eq_err + (dc * dc + T::from_f64(1e-30)).sqrt();
+            }
+        }
+
+        let inv_cov = inv3(*cov);
+        let mut w_opt = [T::zero(); 3];
+        let mut tilt_l1 = T::zero();
+        for i in 0..3 {
+            w_opt[i] = (inv_cov[i][0] * mu_wood[0]
+                + inv_cov[i][1] * mu_wood[1]
+                + inv_cov[i][2] * mu_wood[2])
+                / delta;
+            let dw = w_opt[i] - spec.market_cap_weights[i];
+            tilt_l1 = tilt_l1 + (dw * dw + T::from_f64(1e-30)).sqrt();
+        }
+        let post_view_ret = p[0] * mu_wood[0] + p[1] * mu_wood[1] + p[2] * mu_wood[2];
+
+        MeucciBlackLittermanWoodburyReport {
+            equilibrium_prior_returns_pi: pi,
+            posterior_returns_woodbury: mu_wood,
+            posterior_returns_precision: mu_prec,
+            woodbury_precision_equivalence_error: eq_err,
+            posterior_optimal_weights: w_opt,
+            active_view_weight_tilt_l1: tilt_l1,
+            posterior_view_expected_return: post_view_ret,
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct GueantAlmgrenChrissHyperbolicSpec<T: Real = f64> {
+        pub initial_inventory_x0: T,
+        pub horizon_years_t: T,
+        pub temporary_impact_eta: T,
+        pub permanent_impact_gamma: T,
+        pub asset_volatility_sigma: T,
+        pub risk_aversion_lambda: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct GueantAlmgrenChrissHyperbolicReport<T: Real = f64> {
+        pub urgency_parameter_kappa: T,
+        pub inventory_quartiles_q1_q2_q3: [T; 3],
+        pub midpoint_frontloading_vs_twap: T,
+        pub optimal_expected_shortfall: T,
+        pub optimal_shortfall_variance: T,
+        pub optimal_mean_variance_objective: T,
+        pub twap_mean_variance_objective: T,
+        pub ac_utility_gain_over_twap: T,
+    }
+
+    #[inline]
+    fn sinh_r<T: Real>(z: T) -> T {
+        T::from_f64(0.5) * (z.exp() - (-z).exp())
+    }
+
+    pub fn evaluate_gueant_almgren_chriss_hyperbolic_liquidation<T: Real>(
+        spec: &GueantAlmgrenChrissHyperbolicSpec<T>,
+    ) -> GueantAlmgrenChrissHyperbolicReport<T> {
+        let x0 = spec.initial_inventory_x0;
+        let mat = spec.horizon_years_t.max_val(T::from_f64(1e-6));
+        let eta = spec.temporary_impact_eta.max_val(T::from_f64(1e-8));
+        let sig2 = spec.asset_volatility_sigma * spec.asset_volatility_sigma;
+        let lam = spec.risk_aversion_lambda.max_val(T::from_f64(1e-8));
+        let kappa = (lam * sig2 / eta).sqrt();
+        let kt = (kappa * mat).max_val(T::from_f64(1e-5));
+        let sh_kt = sinh_r(kt);
+
+        let q1 = x0 * sinh_r(kt * T::from_f64(0.75)) / sh_kt;
+        let q2 = x0 * sinh_r(kt * T::from_f64(0.50)) / sh_kt;
+        let q3 = x0 * sinh_r(kt * T::from_f64(0.25)) / sh_kt;
+        let frontload = T::from_f64(0.5) * x0 - q2;
+
+        let two_kt = T::from_f64(2.0) * kt;
+        let sh_2kt = sinh_r(two_kt);
+        let four_sh2 = T::from_f64(4.0) * sh_kt * sh_kt;
+        let x0_2 = x0 * x0;
+        let perm_cost = T::from_f64(0.5) * spec.permanent_impact_gamma * x0_2;
+
+        let e_is = perm_cost + eta * x0_2 * kappa * (sh_2kt + two_kt) / four_sh2;
+        let var_is = sig2 * x0_2 * (sh_2kt - two_kt) / (kappa * four_sh2);
+        let j_ac = e_is + T::from_f64(0.5) * lam * var_is;
+
+        let e_twap = perm_cost + eta * x0_2 / mat;
+        let var_twap = sig2 * x0_2 * mat / T::from_f64(3.0);
+        let j_twap = e_twap + T::from_f64(0.5) * lam * var_twap;
+
+        GueantAlmgrenChrissHyperbolicReport {
+            urgency_parameter_kappa: kappa,
+            inventory_quartiles_q1_q2_q3: [q1, q2, q3],
+            midpoint_frontloading_vs_twap: frontload,
+            optimal_expected_shortfall: e_is,
+            optimal_shortfall_variance: var_is,
+            optimal_mean_variance_objective: j_ac,
+            twap_mean_variance_objective: j_twap,
+            ac_utility_gain_over_twap: j_twap - j_ac,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_49_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn suite49_portfolio_bl_woodbury_and_ac_hyperbolic_invariants_and_ad_parity() {
+            let h = 1e-6;
+
+            let bl_spec = MeucciBlackLittermanWoodburySpec {
+                covariance_3x3: [
+                    [0.040, 0.010, 0.004],
+                    [0.010, 0.025, 0.005],
+                    [0.004, 0.005, 0.010],
+                ],
+                market_cap_weights: [0.50, 0.30, 0.20],
+                risk_aversion_delta: 2.5,
+                tau_scalar: 0.05,
+                view_pick_vector: [1.0, -1.0, 0.0],
+                view_target_q: 0.045,
+                view_uncertainty_omega: 0.0015,
+            };
+            let bl_rep = evaluate_meucci_black_litterman_woodbury_equivalence(&bl_spec);
+            assert!(bl_rep.woodbury_precision_equivalence_error < 1e-10);
+            assert!(bl_rep.active_view_weight_tilt_l1 > 0.0);
+
+            let bl_ad = evaluate_meucci_black_litterman_woodbury_equivalence(
+                &MeucciBlackLittermanWoodburySpec {
+                    covariance_3x3: bl_spec.covariance_3x3.map(|r| r.map(Dual::<1>::from_value)),
+                    market_cap_weights: bl_spec.market_cap_weights.map(Dual::<1>::from_value),
+                    risk_aversion_delta: Dual::<1>::from_value(bl_spec.risk_aversion_delta),
+                    tau_scalar: Dual::<1>::from_value(bl_spec.tau_scalar),
+                    view_pick_vector: bl_spec.view_pick_vector.map(Dual::<1>::from_value),
+                    view_target_q: Dual::<1>::variable(bl_spec.view_target_q, 0),
+                    view_uncertainty_omega: Dual::<1>::from_value(bl_spec.view_uncertainty_omega),
+                },
+            );
+            let mut bp = bl_spec;
+            bp.view_target_q += h;
+            let mut bm = bl_spec;
+            bm.view_target_q -= h;
+            let fd_bl = (evaluate_meucci_black_litterman_woodbury_equivalence(&bp)
+                .posterior_view_expected_return
+                - evaluate_meucci_black_litterman_woodbury_equivalence(&bm)
+                    .posterior_view_expected_return)
+                / (2.0 * h);
+            assert!((bl_ad.posterior_view_expected_return.d[0] - fd_bl).abs() < 1e-5);
+
+            let ac_spec = GueantAlmgrenChrissHyperbolicSpec {
+                initial_inventory_x0: 100.0,
+                horizon_years_t: 0.25,
+                temporary_impact_eta: 0.002,
+                permanent_impact_gamma: 0.0005,
+                asset_volatility_sigma: 0.30,
+                risk_aversion_lambda: 0.15,
+            };
+            let ac_rep = evaluate_gueant_almgren_chriss_hyperbolic_liquidation(&ac_spec);
+            assert!(ac_rep.midpoint_frontloading_vs_twap > 0.0);
+            assert!(ac_rep.ac_utility_gain_over_twap > 0.0);
+
+            let ac_ad = evaluate_gueant_almgren_chriss_hyperbolic_liquidation(
+                &GueantAlmgrenChrissHyperbolicSpec {
+                    initial_inventory_x0: Dual::<1>::variable(ac_spec.initial_inventory_x0, 0),
+                    horizon_years_t: Dual::<1>::from_value(ac_spec.horizon_years_t),
+                    temporary_impact_eta: Dual::<1>::from_value(ac_spec.temporary_impact_eta),
+                    permanent_impact_gamma: Dual::<1>::from_value(ac_spec.permanent_impact_gamma),
+                    asset_volatility_sigma: Dual::<1>::from_value(ac_spec.asset_volatility_sigma),
+                    risk_aversion_lambda: Dual::<1>::from_value(ac_spec.risk_aversion_lambda),
+                },
+            );
+            let mut ap = ac_spec;
+            ap.initial_inventory_x0 += h;
+            let mut am = ac_spec;
+            am.initial_inventory_x0 -= h;
+            let fd_ac = (evaluate_gueant_almgren_chriss_hyperbolic_liquidation(&ap)
+                .optimal_mean_variance_objective
+                - evaluate_gueant_almgren_chriss_hyperbolic_liquidation(&am)
+                    .optimal_mean_variance_objective)
+                / (2.0 * h);
+            assert!((ac_ad.optimal_mean_variance_objective.d[0] - fd_ac).abs() < 1e-4);
+        }
+    }
+}
+pub use evaluate_meucci_black_litterman_woodbury_equivalence_module::*;
+
+mod evaluate_ledoit_wolf_constant_correlation_shrinkage_module {
+    // Engine 5A: Ledoit & Wolf (2004) & Meucci (2005) Constant-Correlation Analytical
+    // Oracle Covariance Shrinkage Intensity Engine.
+    // Engine 5B: Almgren & Chriss (2000) & Gatheral–Schied (2011) Hyperbolic Optimal
+    // Execution Trajectory, Urgency kappa & Implementation Shortfall VaR Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LedoitWolfConstantCorrelationSpec<T: Real = f64> {
+        pub sample_volatilities: [T; 3],
+        pub sample_correlations: [T; 3],
+        pub asymptotic_pi_hat: T,
+        pub asymptotic_rho_hat: T,
+        pub sample_observations_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LedoitWolfConstantCorrelationReport<T: Real = f64> {
+        pub average_sample_correlation_rbar: T,
+        pub misspecification_distance_gamma_hat: T,
+        pub optimal_shrinkage_intensity_delta: T,
+        pub shrunk_off_diagonal_covariances: [T; 3],
+        pub equal_weight_shrunk_variance: T,
+    }
+
+    pub fn evaluate_ledoit_wolf_constant_correlation_shrinkage<T: Real>(
+        spec: &LedoitWolfConstantCorrelationSpec<T>,
+    ) -> LedoitWolfConstantCorrelationReport<T> {
+        let v0 = spec.sample_volatilities[0].max_val(T::from_f64(1e-4));
+        let v1 = spec.sample_volatilities[1].max_val(T::from_f64(1e-4));
+        let v2 = spec.sample_volatilities[2].max_val(T::from_f64(1e-4));
+
+        let r01 = spec.sample_correlations[0];
+        let r02 = spec.sample_correlations[1];
+        let r12 = spec.sample_correlations[2];
+        let r_bar = (r01 + r02 + r12) / T::from_f64(3.0);
+
+        // Sample vs. Constant-Correlation target off-diagonal entries:
+        let s01 = r01 * v0 * v1;
+        let s02 = r02 * v0 * v2;
+        let s12 = r12 * v1 * v2;
+        let f01 = r_bar * v0 * v1;
+        let f02 = r_bar * v0 * v2;
+        let f12 = r_bar * v1 * v2;
+
+        // Frobenius squared distance gamma_hat = ||F - S||_F^2:
+        let d01 = f01 - s01;
+        let d02 = f02 - s02;
+        let d12 = f12 - s12;
+        let gamma_hat =
+            (T::from_f64(2.0) * (d01 * d01 + d02 * d02 + d12 * d12)).max_val(T::from_f64(1e-8));
+
+        // Ledoit-Wolf (2004, Eq. 5) optimal shrinkage intensity:
+        // kappa_hat = (pi_hat - rho_hat) / gamma_hat, delta^* = clamp(kappa_hat / T, 0, 1)
+        let t_obs = spec.sample_observations_t.max_val(T::one());
+        let raw_delta = (spec.asymptotic_pi_hat - spec.asymptotic_rho_hat)
+            .max_val(T::from_f64(1e-8))
+            / (t_obs * gamma_hat);
+        let delta = raw_delta / (T::one() + raw_delta);
+
+        let c01 = delta * f01 + (T::one() - delta) * s01;
+        let c02 = delta * f02 + (T::one() - delta) * s02;
+        let c12 = delta * f12 + (T::one() - delta) * s12;
+
+        let eq_var =
+            (v0 * v0 + v1 * v1 + v2 * v2 + T::from_f64(2.0) * (c01 + c02 + c12)) / T::from_f64(9.0);
+
+        LedoitWolfConstantCorrelationReport {
+            average_sample_correlation_rbar: r_bar,
+            misspecification_distance_gamma_hat: gamma_hat,
+            optimal_shrinkage_intensity_delta: delta,
+            shrunk_off_diagonal_covariances: [c01, c02, c12],
+            equal_weight_shrunk_variance: eq_var,
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct AlmgrenChrissCaraExecutionSpec<T: Real = f64> {
+        pub initial_shares_x0: T,
+        pub liquidation_horizon_t: T,
+        pub asset_price_volatility_sigma: T,
+        pub temporary_impact_eta: T,
+        pub permanent_impact_gamma: T,
+        pub cara_risk_aversion_lambda: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct AlmgrenChrissCaraExecutionReport<T: Real = f64> {
+        pub urgency_parameter_kappa: T,
+        pub characteristic_half_life_tau: T,
+        pub mid_horizon_remaining_inventory_ratio: T,
+        pub permanent_impact_expected_cost: T,
+        pub temporary_impact_expected_cost: T,
+        pub total_expected_implementation_shortfall: T,
+        pub implementation_shortfall_variance: T,
+        pub cara_certainty_equivalent_cost: T,
+    }
+
+    pub fn evaluate_almgren_chriss_cara_optimal_execution<T: Real>(
+        spec: &AlmgrenChrissCaraExecutionSpec<T>,
+    ) -> AlmgrenChrissCaraExecutionReport<T> {
+        let x0 = spec.initial_shares_x0.max_val(T::from_f64(1e-4));
+        let t = spec.liquidation_horizon_t.max_val(T::from_f64(0.05));
+        let sig = spec.asset_price_volatility_sigma.max_val(T::from_f64(1e-4));
+        let eta = spec.temporary_impact_eta.max_val(T::from_f64(1e-6));
+        let gam = spec.permanent_impact_gamma.max_val(T::zero());
+        let lam = spec.cara_risk_aversion_lambda.max_val(T::from_f64(1e-8));
+
+        // Almgren-Chriss (2000) urgency parameter kappa = sqrt(lambda * sigma^2 / eta):
+        let kappa = (lam * sig * sig / eta).sqrt();
+        let half_life = T::from_f64(std::f64::consts::LN_2) / kappa;
+
+        let kt = kappa * t;
+        let sinh_kt = T::from_f64(0.5) * (kt.exp() - (-kt).exp());
+        let cosh_kt = T::from_f64(0.5) * (kt.exp() + (-kt).exp());
+        let sinh_half =
+            T::from_f64(0.5) * ((T::from_f64(0.5) * kt).exp() - (-T::from_f64(0.5) * kt).exp());
+        let mid_ratio = sinh_half / sinh_kt.max_val(T::from_f64(1e-8));
+
+        // Continuous-time exact integrals of x(t) = X_0 sinh(kappa (T-t)) / sinh(kappa T):
+        // int_0^T x'(t)^2 dt = X_0^2 * kappa * (sinh(2 k T) + 2 k T) / (4 sinh^2(k T))
+        // int_0^T x(t)^2 dt  = X_0^2 / kappa * (sinh(2 k T) - 2 k T) / (4 sinh^2(k T))
+        let sinh_2kt = T::from_f64(2.0) * sinh_kt * cosh_kt;
+        let denom = T::from_f64(4.0) * sinh_kt * sinh_kt;
+
+        let perm_cost = T::from_f64(0.5) * gam * x0 * x0;
+        let temp_cost = eta * x0 * x0 * kappa * (sinh_2kt + T::from_f64(2.0) * kt) / denom;
+        let exp_shortfall = perm_cost + temp_cost;
+        let var_shortfall =
+            sig * sig * x0 * x0 * (sinh_2kt - T::from_f64(2.0) * kt) / (kappa * denom);
+        let ce_cost = exp_shortfall + T::from_f64(0.5) * lam * var_shortfall;
+
+        AlmgrenChrissCaraExecutionReport {
+            urgency_parameter_kappa: kappa,
+            characteristic_half_life_tau: half_life,
+            mid_horizon_remaining_inventory_ratio: mid_ratio,
+            permanent_impact_expected_cost: perm_cost,
+            temporary_impact_expected_cost: temp_cost,
+            total_expected_implementation_shortfall: exp_shortfall,
+            implementation_shortfall_variance: var_shortfall,
+            cara_certainty_equivalent_cost: ce_cost,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_54_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn ledoit_wolf_and_almgren_chriss_invariants_and_ad_parity() {
+            let s1 = LedoitWolfConstantCorrelationSpec {
+                sample_volatilities: [0.22, 0.18, 0.14],
+                sample_correlations: [0.65, 0.15, 0.40],
+                asymptotic_pi_hat: 0.045,
+                asymptotic_rho_hat: 0.012,
+                sample_observations_t: 60.0,
+            };
+            let r1 = evaluate_ledoit_wolf_constant_correlation_shrinkage(&s1);
+            assert!(
+                r1.optimal_shrinkage_intensity_delta > 0.0
+                    && r1.optimal_shrinkage_intensity_delta < 1.0
+            );
+            assert!(r1.equal_weight_shrunk_variance > 0.0);
+
+            let h = 1e-6;
+            let r1_ad = evaluate_ledoit_wolf_constant_correlation_shrinkage(
+                &LedoitWolfConstantCorrelationSpec {
+                    sample_volatilities: [
+                        Dual::<1>::variable(s1.sample_volatilities[0], 0),
+                        Dual::<1>::from_value(s1.sample_volatilities[1]),
+                        Dual::<1>::from_value(s1.sample_volatilities[2]),
+                    ],
+                    sample_correlations: s1.sample_correlations.map(Dual::<1>::from_value),
+                    asymptotic_pi_hat: Dual::<1>::from_value(s1.asymptotic_pi_hat),
+                    asymptotic_rho_hat: Dual::<1>::from_value(s1.asymptotic_rho_hat),
+                    sample_observations_t: Dual::<1>::from_value(s1.sample_observations_t),
+                },
+            );
+            let mut s1p = s1;
+            s1p.sample_volatilities[0] += h;
+            let mut s1m = s1;
+            s1m.sample_volatilities[0] -= h;
+            let fd1 = (evaluate_ledoit_wolf_constant_correlation_shrinkage(&s1p)
+                .equal_weight_shrunk_variance
+                - evaluate_ledoit_wolf_constant_correlation_shrinkage(&s1m)
+                    .equal_weight_shrunk_variance)
+                / (2.0 * h);
+            assert!((r1_ad.equal_weight_shrunk_variance.d[0] - fd1).abs() < 1e-6);
+
+            let s2 = AlmgrenChrissCaraExecutionSpec {
+                initial_shares_x0: 100.0,
+                liquidation_horizon_t: 1.0,
+                asset_price_volatility_sigma: 0.30,
+                temporary_impact_eta: 0.02,
+                permanent_impact_gamma: 0.005,
+                cara_risk_aversion_lambda: 0.5,
+            };
+            let r2 = evaluate_almgren_chriss_cara_optimal_execution(&s2);
+            assert!(r2.mid_horizon_remaining_inventory_ratio < 0.5);
+            assert!(r2.cara_certainty_equivalent_cost > r2.total_expected_implementation_shortfall);
+
+            let r2_ad =
+                evaluate_almgren_chriss_cara_optimal_execution(&AlmgrenChrissCaraExecutionSpec {
+                    initial_shares_x0: Dual::<1>::variable(s2.initial_shares_x0, 0),
+                    liquidation_horizon_t: Dual::<1>::from_value(s2.liquidation_horizon_t),
+                    asset_price_volatility_sigma: Dual::<1>::from_value(
+                        s2.asset_price_volatility_sigma,
+                    ),
+                    temporary_impact_eta: Dual::<1>::from_value(s2.temporary_impact_eta),
+                    permanent_impact_gamma: Dual::<1>::from_value(s2.permanent_impact_gamma),
+                    cara_risk_aversion_lambda: Dual::<1>::from_value(s2.cara_risk_aversion_lambda),
+                });
+            let mut s2p = s2;
+            s2p.initial_shares_x0 += h;
+            let mut s2m = s2;
+            s2m.initial_shares_x0 -= h;
+            let fd2 = (evaluate_almgren_chriss_cara_optimal_execution(&s2p)
+                .cara_certainty_equivalent_cost
+                - evaluate_almgren_chriss_cara_optimal_execution(&s2m)
+                    .cara_certainty_equivalent_cost)
+                / (2.0 * h);
+            assert!((r2_ad.cara_certainty_equivalent_cost.d[0] - fd2).abs() < 1e-4);
+        }
+    }
+}
+pub use evaluate_ledoit_wolf_constant_correlation_shrinkage_module::*;
+
+mod evaluate_jagannathan_ma_no_short_sale_shrinkage_module {
+    // Engine 5A: Jagannathan & Ma (2003) & Roncalli (2013) No-Short-Sale KKT Dual-Multiplier
+    // Covariance Shrinkage Matrix `Sigma_tilde` & Constrained Minimum-Variance Engine.
+    // Engine 5B: Obizhaeva & Wang (2013) & Cartea–Jaimungal–Penalva (2015) Transient
+    // Limit-Order-Book Resilience (`rho_res`), Block-Plus-Continuous Trajectory & Propagator Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct JagannathanMaCovarianceShrinkageSpec<T: Real = f64> {
+        pub asset_volatilities: [T; 3],
+        pub correlation_12: T,
+        pub correlation_13: T,
+        pub correlation_23: T,
+        pub weight_upper_cap_u: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct JagannathanMaCovarianceShrinkageReport<T: Real = f64> {
+        pub unconstrained_gmv_weights: [T; 3],
+        pub constrained_long_only_weights: [T; 3],
+        pub kkt_lower_bound_multipliers_lambda: [T; 3],
+        pub shrunk_covariance_12_tilde: T,
+        pub raw_covariance_12: T,
+        pub constrained_gmv_portfolio_volatility: T,
+        pub jagannathan_ma_equivalence_residual: T,
+    }
+
+    fn solve_gmv_3x3<T: Real>(c00: T, c01: T, c02: T, c11: T, c12: T, c22: T) -> [T; 3] {
+        let a00 = c11 * c22 - c12 * c12;
+        let a01 = -(c01 * c22 - c12 * c02);
+        let a02 = c01 * c12 - c11 * c02;
+        let a11 = c00 * c22 - c02 * c02;
+        let a12 = -(c00 * c12 - c01 * c02);
+        let a22 = c00 * c11 - c01 * c01;
+
+        let z0 = a00 + a01 + a02;
+        let z1 = a01 + a11 + a12;
+        let z2 = a02 + a12 + a22;
+        let denom = z0 + z1 + z2;
+        [z0 / denom, z1 / denom, z2 / denom]
+    }
+
+    pub fn evaluate_jagannathan_ma_no_short_sale_shrinkage<T: Real>(
+        spec: &JagannathanMaCovarianceShrinkageSpec<T>,
+    ) -> JagannathanMaCovarianceShrinkageReport<T> {
+        let v0 = spec.asset_volatilities[0].max_val(T::from_f64(1e-4));
+        let v1 = spec.asset_volatilities[1].max_val(T::from_f64(1e-4));
+        let v2 = spec.asset_volatilities[2].max_val(T::from_f64(1e-4));
+
+        let c00 = v0 * v0;
+        let c11 = v1 * v1;
+        let c22 = v2 * v2;
+        let c01 = spec.correlation_12 * v0 * v1;
+        let c02 = spec.correlation_13 * v0 * v2;
+        let c12 = spec.correlation_23 * v1 * v2;
+
+        let w_unc = solve_gmv_3x3(c00, c01, c02, c11, c12, c22);
+
+        // Smooth projected-gradient / KKT fixed-point under 0 <= w_i <= u_cap:
+        let u_cap = spec
+            .weight_upper_cap_u
+            .max_val(T::from_f64(0.40))
+            .min_val(T::from_f64(0.95));
+        let eps = T::from_f64(1e-5);
+        let smooth_pos = |x: T| T::from_f64(0.5) * (x + (x * x + eps * eps).sqrt());
+        let smooth_cap = |x: T| {
+            let p = smooth_pos(x);
+            u_cap - smooth_pos(u_cap - p)
+        };
+
+        let mut w0 = smooth_cap(w_unc[0]);
+        let mut w1 = smooth_cap(w_unc[1]);
+        let mut w2 = smooth_cap(w_unc[2]);
+        let s_init = (w0 + w1 + w2).max_val(T::from_f64(1e-6));
+        w0 /= s_init;
+        w1 /= s_init;
+        w2 /= s_init;
+
+        let step = T::from_f64(8.0);
+        for _ in 0..20 {
+            let g0 = c00 * w0 + c01 * w1 + c02 * w2;
+            let g1 = c01 * w0 + c11 * w1 + c12 * w2;
+            let g2 = c02 * w0 + c12 * w1 + c22 * w2;
+            let mut mu = (g0 + g1 + g2) / T::from_f64(3.0);
+            for _ in 0..5 {
+                let nw0 = smooth_cap(w0 - step * (g0 - mu));
+                let nw1 = smooth_cap(w1 - step * (g1 - mu));
+                let nw2 = smooth_cap(w2 - step * (g2 - mu));
+                mu -= ((nw0 + nw1 + nw2) - T::one()) / step;
+            }
+            w0 = smooth_cap(w0 - step * (g0 - mu));
+            w1 = smooth_cap(w1 - step * (g1 - mu));
+            w2 = smooth_cap(w2 - step * (g2 - mu));
+            let sw = (w0 + w1 + w2).max_val(T::from_f64(1e-6));
+            w0 /= sw;
+            w1 /= sw;
+            w2 /= sw;
+        }
+
+        let cw0 = c00 * w0 + c01 * w1 + c02 * w2;
+        let cw1 = c01 * w0 + c11 * w1 + c12 * w2;
+        let cw2 = c02 * w0 + c12 * w1 + c22 * w2;
+        let port_var = w0 * cw0 + w1 * cw1 + w2 * cw2;
+
+        // Jagannathan-Ma (2003, Prop. 1, Eq. 10) KKT dual multipliers: Sigma w - lambda + nu = mu_kkt 1
+        let iw0 = smooth_pos(w0 * (u_cap - w0));
+        let iw1 = smooth_pos(w1 * (u_cap - w1));
+        let iw2 = smooth_pos(w2 * (u_cap - w2));
+        let mu_kkt =
+            (iw0 * cw0 + iw1 * cw1 + iw2 * cw2) / (iw0 + iw1 + iw2).max_val(T::from_f64(1e-8));
+        let lam0 = smooth_pos(cw0 - mu_kkt);
+        let lam1 = smooth_pos(cw1 - mu_kkt);
+        let lam2 = smooth_pos(cw2 - mu_kkt);
+        let nu0 = smooth_pos(mu_kkt - cw0);
+        let nu1 = smooth_pos(mu_kkt - cw1);
+        let nu2 = smooth_pos(mu_kkt - cw2);
+
+        // Jagannathan-Ma shrunk covariance Sigma_tilde_ij = Sigma_ij - (lambda_i + lambda_j) + (nu_i + nu_j):
+        let t00 = c00 - T::from_f64(2.0) * lam0 + T::from_f64(2.0) * nu0;
+        let t11 = c11 - T::from_f64(2.0) * lam1 + T::from_f64(2.0) * nu1;
+        let t22 = c22 - T::from_f64(2.0) * lam2 + T::from_f64(2.0) * nu2;
+        let t01 = c01 - (lam0 + lam1) + (nu0 + nu1);
+        let t02 = c02 - (lam0 + lam2) + (nu0 + nu2);
+        let t12 = c12 - (lam1 + lam2) + (nu1 + nu2);
+
+        let w_tilde = solve_gmv_3x3(t00, t01, t02, t11, t12, t22);
+        let eq_res = (w_tilde[0] - w0) * (w_tilde[0] - w0)
+            + (w_tilde[1] - w1) * (w_tilde[1] - w1)
+            + (w_tilde[2] - w2) * (w_tilde[2] - w2);
+
+        JagannathanMaCovarianceShrinkageReport {
+            unconstrained_gmv_weights: w_unc,
+            constrained_long_only_weights: [w0, w1, w2],
+            kkt_lower_bound_multipliers_lambda: [lam0, lam1, lam2],
+            shrunk_covariance_12_tilde: t01,
+            raw_covariance_12: c01,
+            constrained_gmv_portfolio_volatility: port_var.max_val(T::from_f64(1e-8)).sqrt(),
+            jagannathan_ma_equivalence_residual: (eq_res + T::from_f64(1e-12)).sqrt(),
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct ObizhaevaWangTransientLobExecutionSpec<T: Real = f64> {
+        pub total_order_size_x0: T,
+        pub execution_horizon_t: T,
+        pub lob_depth_density_q0: T,
+        pub permanent_impact_gamma: T,
+        pub lob_resilience_speed_rho: T,
+        pub asset_volatility_sigma: T,
+        pub risk_aversion_lambda: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct ObizhaevaWangTransientLobExecutionReport<T: Real = f64> {
+        pub risk_neutral_initial_block_trade: T,
+        pub risk_neutral_continuous_trading_rate: T,
+        pub risk_averse_initial_block_trade: T,
+        pub risk_averse_terminal_block_trade: T,
+        pub transient_resilience_expected_cost: T,
+        pub single_block_immediate_cost_benchmark: T,
+        pub resilience_cost_savings: T,
+        pub risk_adjusted_total_cost: T,
+    }
+
+    pub fn evaluate_obizhaeva_wang_transient_lob_execution<T: Real>(
+        spec: &ObizhaevaWangTransientLobExecutionSpec<T>,
+    ) -> ObizhaevaWangTransientLobExecutionReport<T> {
+        let x0 = spec.total_order_size_x0.max_val(T::from_f64(1e-4));
+        let t = spec.execution_horizon_t.max_val(T::from_f64(0.05));
+        let q0 = spec.lob_depth_density_q0.max_val(T::from_f64(0.1));
+        let gam = spec.permanent_impact_gamma.max_val(T::zero());
+        let rho = spec.lob_resilience_speed_rho.max_val(T::from_f64(0.05));
+        let sig = spec.asset_volatility_sigma.max_val(T::from_f64(1e-4));
+        let lam = spec.risk_aversion_lambda.max_val(T::zero());
+
+        let inv_q0 = T::one() / q0;
+        let kappa_tr = (inv_q0 - gam).max_val(T::from_f64(1e-4));
+        let denom = rho * t + T::from_f64(2.0);
+
+        // Obizhaeva & Wang (2013, Prop. 3) exact block-plus-continuous optimal schedule:
+        let delta_rn = x0 / denom;
+        let u_cont_rn = (rho * x0) / denom;
+
+        // Risk-averse front-loading tilt:
+        let theta_risk = (lam * sig * sig * q0 / rho)
+            .max_val(T::from_f64(1e-8))
+            .sqrt();
+        let tilt = T::from_f64(0.35) * theta_risk / (T::one() + theta_risk);
+        let delta_0_ra = delta_rn * (T::one() + tilt);
+        let delta_t_ra = delta_rn * (T::one() - tilt);
+
+        let cost_ow_rn =
+            T::from_f64(0.5) * gam * x0 * x0 + (kappa_tr * x0 * x0) / (T::from_f64(2.0) * denom);
+        let cost_single_block = T::from_f64(0.5) * (gam + kappa_tr) * x0 * x0;
+        let savings = cost_single_block - cost_ow_rn;
+
+        // Variance of remaining inventory under block-plus-continuous schedule:
+        let rem_after_jump = x0 - delta_0_ra;
+        let inv_integral_var = sig * sig * rem_after_jump * rem_after_jump * t / T::from_f64(3.0);
+        let total_ra_cost = cost_ow_rn + T::from_f64(0.5) * lam * inv_integral_var;
+
+        ObizhaevaWangTransientLobExecutionReport {
+            risk_neutral_initial_block_trade: delta_rn,
+            risk_neutral_continuous_trading_rate: u_cont_rn,
+            risk_averse_initial_block_trade: delta_0_ra,
+            risk_averse_terminal_block_trade: delta_t_ra,
+            transient_resilience_expected_cost: cost_ow_rn,
+            single_block_immediate_cost_benchmark: cost_single_block,
+            resilience_cost_savings: savings,
+            risk_adjusted_total_cost: total_ra_cost,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_55_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn jagannathan_ma_and_obizhaeva_wang_invariants_and_ad_parity() {
+            let s1 = JagannathanMaCovarianceShrinkageSpec {
+                asset_volatilities: [0.26, 0.18, 0.14],
+                correlation_12: 0.85,
+                correlation_13: 0.25,
+                correlation_23: 0.30,
+                weight_upper_cap_u: 0.65,
+            };
+            let r1 = evaluate_jagannathan_ma_no_short_sale_shrinkage(&s1);
+            assert!(r1.unconstrained_gmv_weights[0] < 0.0);
+            assert!(r1.shrunk_covariance_12_tilde < r1.raw_covariance_12);
+            assert!(r1.constrained_gmv_portfolio_volatility > 0.0);
+            assert!(r1.jagannathan_ma_equivalence_residual < 1e-4);
+
+            let h = 1e-6;
+            let r1_ad = evaluate_jagannathan_ma_no_short_sale_shrinkage(
+                &JagannathanMaCovarianceShrinkageSpec {
+                    asset_volatilities: [
+                        Dual::<1>::variable(s1.asset_volatilities[0], 0),
+                        Dual::<1>::from_value(s1.asset_volatilities[1]),
+                        Dual::<1>::from_value(s1.asset_volatilities[2]),
+                    ],
+                    correlation_12: Dual::<1>::from_value(s1.correlation_12),
+                    correlation_13: Dual::<1>::from_value(s1.correlation_13),
+                    correlation_23: Dual::<1>::from_value(s1.correlation_23),
+                    weight_upper_cap_u: Dual::<1>::from_value(s1.weight_upper_cap_u),
+                },
+            );
+            let mut s1p = s1;
+            s1p.asset_volatilities[0] += h;
+            let mut s1m = s1;
+            s1m.asset_volatilities[0] -= h;
+            let fd1 = (evaluate_jagannathan_ma_no_short_sale_shrinkage(&s1p)
+                .constrained_gmv_portfolio_volatility
+                - evaluate_jagannathan_ma_no_short_sale_shrinkage(&s1m)
+                    .constrained_gmv_portfolio_volatility)
+                / (2.0 * h);
+            assert!((r1_ad.constrained_gmv_portfolio_volatility.d[0] - fd1).abs() < 1e-5);
+
+            let s2 = ObizhaevaWangTransientLobExecutionSpec {
+                total_order_size_x0: 100.0,
+                execution_horizon_t: 1.0,
+                lob_depth_density_q0: 25.0,
+                permanent_impact_gamma: 0.008,
+                lob_resilience_speed_rho: 3.2,
+                asset_volatility_sigma: 0.25,
+                risk_aversion_lambda: 0.15,
+            };
+            let r2 = evaluate_obizhaeva_wang_transient_lob_execution(&s2);
+            assert!(
+                (2.0 * r2.risk_neutral_initial_block_trade
+                    + r2.risk_neutral_continuous_trading_rate * s2.execution_horizon_t
+                    - s2.total_order_size_x0)
+                    .abs()
+                    < 1e-10
+            );
+            assert!(r2.resilience_cost_savings > 0.0);
+            assert!(r2.risk_averse_initial_block_trade > r2.risk_neutral_initial_block_trade);
+
+            let r2_ad = evaluate_obizhaeva_wang_transient_lob_execution(
+                &ObizhaevaWangTransientLobExecutionSpec {
+                    total_order_size_x0: Dual::<1>::variable(s2.total_order_size_x0, 0),
+                    execution_horizon_t: Dual::<1>::from_value(s2.execution_horizon_t),
+                    lob_depth_density_q0: Dual::<1>::from_value(s2.lob_depth_density_q0),
+                    permanent_impact_gamma: Dual::<1>::from_value(s2.permanent_impact_gamma),
+                    lob_resilience_speed_rho: Dual::<1>::from_value(s2.lob_resilience_speed_rho),
+                    asset_volatility_sigma: Dual::<1>::from_value(s2.asset_volatility_sigma),
+                    risk_aversion_lambda: Dual::<1>::from_value(s2.risk_aversion_lambda),
+                },
+            );
+            let mut s2p = s2;
+            s2p.total_order_size_x0 += h;
+            let mut s2m = s2;
+            s2m.total_order_size_x0 -= h;
+            let fd2 = (evaluate_obizhaeva_wang_transient_lob_execution(&s2p)
+                .risk_adjusted_total_cost
+                - evaluate_obizhaeva_wang_transient_lob_execution(&s2m).risk_adjusted_total_cost)
+                / (2.0 * h);
+            assert!((r2_ad.risk_adjusted_total_cost.d[0] - fd2).abs() < 1e-4);
+        }
+    }
+}
+pub use evaluate_jagannathan_ma_no_short_sale_shrinkage_module::*;

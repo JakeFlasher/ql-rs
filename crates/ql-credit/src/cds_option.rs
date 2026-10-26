@@ -1,21 +1,6 @@
 #![allow(clippy::excessive_precision)]
 //! Black's option on a forward CDS spread, including front-end protection.
-pub use crate::phase35::*;
-pub use crate::phase36::*;
-pub use crate::phase37::*;
-pub use crate::phase38::*;
-#[allow(unused_imports)]
-pub use crate::phase39::*;
-#[allow(unused_imports)]
-pub use crate::phase40::*;
-#[allow(unused_imports)]
-pub use crate::phase41::*;
-#[allow(unused_imports)]
-pub use crate::phase42::*;
-
 use crate::SurvivalProbabilityCurve;
-pub use crate::phase33::*;
-pub use crate::phase34::*;
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
 
@@ -610,14 +595,14 @@ pub fn price_morini_brigo_credit_index_option<T: Real>(
 }
 
 #[cfg(test)]
-mod phase14_tests {
+mod domain_suite_26_tests {
     use super::*;
     use crate::SurvivalProbabilityCurve;
     use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;
     use ql_time::Date;
     #[test]
-    fn phase14_cds_swaption_curve_backed() {
+    fn suite26_cds_swaption_curve_backed() {
         let d = Date::from_ymd(2024, 1, 1).unwrap();
         let disc = FlatForwardCurve::new(d, 0.02);
         let credit = SurvivalProbabilityCurve::new(d, vec![1.0, 2.0, 5.0], vec![0.02, 0.02, 0.02]);
@@ -677,7 +662,7 @@ mod phase14_tests {
 }
 
 #[cfg(test)]
-mod phase15_tests {
+mod domain_suite_27_tests {
     use super::*;
     use crate::SurvivalProbabilityCurve;
     use ql_ad::Dual;
@@ -761,7 +746,7 @@ mod phase15_tests {
 }
 
 #[cfg(test)]
-mod phase19_tests {
+mod domain_suite_31_tests {
     use super::*;
     use crate::SurvivalProbabilityCurve;
     use ql_ad::Dual;
@@ -834,7 +819,7 @@ mod phase19_tests {
 }
 
 #[cfg(test)]
-mod phase20_tests {
+mod domain_suite_32_tests {
     use super::*;
     use crate::SurvivalProbabilityCurve;
     use ql_ad::Dual;
@@ -903,7 +888,7 @@ mod phase20_tests {
 }
 
 #[cfg(test)]
-mod phase26_tests {
+mod domain_suite_38_tests {
     use super::*;
     use ql_ad::Dual;
     fn spec<T: Real>(notional: T) -> SchonbucherDefaultableRangeAccrualCapSpec<T> {
@@ -943,3 +928,604 @@ mod phase26_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
+
+mod evaluate_brigo_morini_cmcds_and_credit_index_option_module {
+    use ql_ad::Real;
+    #[derive(Clone, Debug)]
+    pub struct BrigoMoriniCmcdsCreditOptionSpec<T: Real = f64> {
+        pub reset_times: Vec<T>,
+        pub forward_cds_spreads: Vec<T>,
+        pub spread_volatility: T,
+        pub annuity_convexity_gamma: T,
+        pub flat_par_cds_spread: T,
+        pub option_expiry: T,
+        pub option_strike_spread: T,
+        pub risky_pv01_annuity: T,
+        pub hazard_rate: T,
+        pub recovery_rate: T,
+        pub risk_free_rate: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct BrigoMoriniCmcdsCreditOptionReport<T: Real = f64> {
+        pub cmcds_convexity_uplift_bps: T,
+        pub cmcds_equilibrium_participation_rate: T,
+        pub front_end_protection_pv: T,
+        pub fep_adjusted_forward_spread: T,
+        pub fep_adjusted_strike_spread: T,
+        pub morini_brigo_payer_swaption_pv: T,
+        pub naive_unadjusted_swaption_pv: T,
+    }
+    pub fn evaluate_brigo_morini_cmcds_and_credit_index_option<T: Real>(
+        s: &BrigoMoriniCmcdsCreditOptionSpec<T>,
+    ) -> BrigoMoriniCmcdsCreditOptionReport<T> {
+        let mut den = T::zero();
+        let mut num = T::zero();
+        let mut up = T::zero();
+        for i in 0..s.reset_times.len().min(s.forward_cds_spreads.len()) {
+            let t = s.reset_times[i];
+            let dt = if i == 0 { t } else { t - s.reset_times[i - 1] };
+            let w = dt * (-s.risk_free_rate * t).exp() * (-s.hazard_rate * t).exp();
+            let u =
+                (s.annuity_convexity_gamma * s.spread_volatility * s.spread_volatility * t).exp();
+            den += w * s.forward_cds_spreads[i] * u;
+            num += w * s.flat_par_cds_spread;
+            up += w * s.forward_cds_spreads[i] * (u - T::one());
+        }
+        let part = (num / den.max_val(T::from_f64(1e-8))).min_val(T::one());
+        let df = (-s.risk_free_rate * s.option_expiry).exp();
+        let surv = (-s.hazard_rate * s.option_expiry).exp();
+        let fep = (T::one() - s.recovery_rate) * (T::one() - surv) * df;
+        let adjf = s.flat_par_cds_spread + fep / s.risky_pv01_annuity.max_val(T::from_f64(1e-8));
+        let adjk = s.option_strike_spread + fep / s.risky_pv01_annuity.max_val(T::from_f64(1e-8));
+        let vol = s.spread_volatility * s.option_expiry.sqrt();
+        let d1 = ((adjf / adjk.max_val(T::from_f64(1e-8))).ln() + T::from_f64(0.5) * vol * vol)
+            / vol.max_val(T::from_f64(1e-8));
+        let d2 = d1 - vol;
+        let pv = s.risky_pv01_annuity * (adjf * d1.norm_cdf() - adjk * d2.norm_cdf()) * df;
+        let d1_naive =
+            ((s.flat_par_cds_spread / s.option_strike_spread.max_val(T::from_f64(1e-8))).ln()
+                + T::from_f64(0.5) * vol * vol)
+                / vol.max_val(T::from_f64(1e-8));
+        let d2_naive = d1_naive - vol;
+        let naive = s.risky_pv01_annuity
+            * (s.flat_par_cds_spread * d1_naive.norm_cdf()
+                - s.option_strike_spread * d2_naive.norm_cdf())
+            * df;
+        BrigoMoriniCmcdsCreditOptionReport {
+            cmcds_convexity_uplift_bps: up / den.max_val(T::from_f64(1e-8)) * T::from_f64(1e4),
+            cmcds_equilibrium_participation_rate: part,
+            front_end_protection_pv: fep,
+            fep_adjusted_forward_spread: adjf,
+            fep_adjusted_strike_spread: adjk,
+            morini_brigo_payer_swaption_pv: pv,
+            naive_unadjusted_swaption_pv: naive,
+        }
+    }
+    #[cfg(test)]
+    mod domain_suite_44_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        fn spec<T: Real>(x: T) -> BrigoMoriniCmcdsCreditOptionSpec<T> {
+            BrigoMoriniCmcdsCreditOptionSpec {
+                reset_times: vec![T::one(), T::from_f64(2.0)],
+                forward_cds_spreads: vec![T::from_f64(0.01), T::from_f64(0.01)],
+                spread_volatility: T::from_f64(0.2),
+                annuity_convexity_gamma: T::from_f64(0.5),
+                flat_par_cds_spread: T::from_f64(0.01) + x,
+                option_expiry: T::one(),
+                option_strike_spread: T::from_f64(0.01),
+                risky_pv01_annuity: T::from_f64(4.0),
+                hazard_rate: T::from_f64(0.02),
+                recovery_rate: T::from_f64(0.4),
+                risk_free_rate: T::from_f64(0.02),
+            }
+        }
+
+        #[test]
+        fn fep_positive() {
+            let r = evaluate_brigo_morini_cmcds_and_credit_index_option(&spec(0.0));
+            assert!(r.cmcds_equilibrium_participation_rate < 1.0);
+            assert!(r.fep_adjusted_forward_spread > 0.01);
+            let h = 1e-6;
+            let fd = (evaluate_brigo_morini_cmcds_and_credit_index_option(&spec(h))
+                .morini_brigo_payer_swaption_pv
+                - evaluate_brigo_morini_cmcds_and_credit_index_option(&spec(-h))
+                    .morini_brigo_payer_swaption_pv)
+                / (2.0 * h);
+            let ad = evaluate_brigo_morini_cmcds_and_credit_index_option(&spec(
+                Dual::<1>::variable(0.0, 0),
+            ))
+            .morini_brigo_payer_swaption_pv;
+            assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_brigo_morini_cmcds_and_credit_index_option_module::*;
+
+mod evaluate_crepey_burgard_kjaer_bilateral_xva_and_fva_module {
+    use ql_ad::Real;
+    #[derive(Clone, Debug)]
+    pub struct CrepeyBurgardKjaerBilateralFvaSpec<T: Real = f64> {
+        pub time_grid: Vec<T>,
+        pub epe_profile: Vec<T>,
+        pub ene_profile: Vec<T>,
+        pub cpty_hazard_rate: T,
+        pub bank_hazard_rate: T,
+        pub cpty_recovery_rate: T,
+        pub bank_recovery_rate: T,
+        pub risk_free_rate: T,
+        pub liquidity_funding_spread: T,
+        pub burgard_kjaer_alpha: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct CrepeyBurgardKjaerBilateralFvaReport<T: Real = f64> {
+        pub bilateral_cva: T,
+        pub bilateral_dva: T,
+        pub burgard_kjaer_effective_funding_spread: T,
+        pub funding_cost_adjustment_fca: T,
+        pub funding_benefit_adjustment_fba: T,
+        pub dva_fca_double_counting_overlap: T,
+        pub total_burgard_kjaer_xva_charge: T,
+    }
+    pub fn evaluate_crepey_burgard_kjaer_bilateral_xva_and_fva<T: Real>(
+        s: &CrepeyBurgardKjaerBilateralFvaSpec<T>,
+    ) -> CrepeyBurgardKjaerBilateralFvaReport<T> {
+        let mut c = T::zero();
+        let mut d = T::zero();
+        let mut f = T::zero();
+        let mut b = T::zero();
+        for i in 0..s
+            .time_grid
+            .len()
+            .min(s.epe_profile.len())
+            .min(s.ene_profile.len())
+        {
+            let t = s.time_grid[i];
+            let dt = if i == 0 { t } else { t - s.time_grid[i - 1] };
+            let w = dt * (-(s.risk_free_rate + s.bank_hazard_rate + s.cpty_hazard_rate) * t).exp();
+            c += w * (T::one() - s.cpty_recovery_rate) * s.cpty_hazard_rate * s.epe_profile[i];
+            d += w * (T::one() - s.bank_recovery_rate) * s.bank_hazard_rate * s.ene_profile[i];
+            f += w
+                * (s.liquidity_funding_spread
+                    + s.burgard_kjaer_alpha
+                        * (T::one() - s.bank_recovery_rate)
+                        * s.bank_hazard_rate)
+                * s.epe_profile[i];
+            b += w * s.liquidity_funding_spread * s.ene_profile[i];
+        }
+        let eff = s.liquidity_funding_spread
+            + s.burgard_kjaer_alpha * (T::one() - s.bank_recovery_rate) * s.bank_hazard_rate;
+        CrepeyBurgardKjaerBilateralFvaReport {
+            bilateral_cva: c,
+            bilateral_dva: d,
+            burgard_kjaer_effective_funding_spread: eff,
+            funding_cost_adjustment_fca: f,
+            funding_benefit_adjustment_fba: b,
+            dva_fca_double_counting_overlap: s.burgard_kjaer_alpha * d,
+            total_burgard_kjaer_xva_charge: c - d + f - b,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_46_tests {
+        use super::*;
+        use ql_ad::Dual;
+        fn spec<T: Real>(x: T) -> CrepeyBurgardKjaerBilateralFvaSpec<T> {
+            CrepeyBurgardKjaerBilateralFvaSpec {
+                time_grid: vec![T::from_f64(0.5), T::one(), T::from_f64(2.0)],
+                epe_profile: vec![T::from_f64(10.0) + x, T::from_f64(12.0), T::from_f64(8.0)],
+                ene_profile: vec![T::from_f64(6.0), T::from_f64(7.0), T::from_f64(5.0)],
+                cpty_hazard_rate: T::from_f64(0.02),
+                bank_hazard_rate: T::from_f64(0.015),
+                cpty_recovery_rate: T::from_f64(0.4),
+                bank_recovery_rate: T::from_f64(0.4),
+                risk_free_rate: T::from_f64(0.03),
+                liquidity_funding_spread: T::from_f64(0.008),
+                burgard_kjaer_alpha: T::from_f64(0.5),
+            }
+        }
+        #[test]
+        fn suite46_credit_invariants_and_dual_fd() {
+            let r = evaluate_crepey_burgard_kjaer_bilateral_xva_and_fva(&spec(0.0));
+            assert!(r.bilateral_cva > 0.0 && r.bilateral_dva > 0.0);
+            let h = 1e-6;
+            let fd = (evaluate_crepey_burgard_kjaer_bilateral_xva_and_fva(&spec(h))
+                .total_burgard_kjaer_xva_charge
+                - evaluate_crepey_burgard_kjaer_bilateral_xva_and_fva(&spec(-h))
+                    .total_burgard_kjaer_xva_charge)
+                / (2.0 * h);
+            let ad = evaluate_crepey_burgard_kjaer_bilateral_xva_and_fva(&spec(
+                Dual::<1>::variable(0.0, 0),
+            ))
+            .total_burgard_kjaer_xva_charge;
+            assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_crepey_burgard_kjaer_bilateral_xva_and_fva_module::*;
+
+mod evaluate_schonbucher_cds_swaption_and_fep_module {
+    // Schönbucher (2003) & Lando (2004) Credit-Default Swaption (`Payer`/`Receiver`)
+    // Risky-Annuity Numéraire & Front-End Protection (`FEP`) Black-76 Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct SchonbucherCdsSwaptionFepSpec<T: Real = f64> {
+        pub hazard_rate_lambda: T,
+        pub recovery_rate: T,
+        pub risk_free_rate: T,
+        pub option_expiry_te: T,
+        pub swap_tenor_tm: T,
+        pub strike_spread_k: T,
+        pub spread_lognormal_vol_sigma: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct SchonbucherCdsSwaptionFepReport<T: Real = f64> {
+        pub forward_risky_annuity_rpv01: T,
+        pub knockout_forward_cds_spread: T,
+        pub front_end_protection_pv: T,
+        pub fep_adjusted_forward_spread: T,
+        pub knockout_payer_swaption_bps: T,
+        pub non_knockout_payer_swaption_bps: T,
+        pub receiver_swaption_bps: T,
+        pub risky_put_call_parity_error: T,
+    }
+
+    pub fn evaluate_schonbucher_cds_swaption_and_fep<T: Real>(
+        spec: &SchonbucherCdsSwaptionFepSpec<T>,
+    ) -> SchonbucherCdsSwaptionFepReport<T> {
+        let lam = spec.hazard_rate_lambda.max_val(T::from_f64(1e-5));
+        let r = spec.risk_free_rate.max_val(T::from_f64(1e-4));
+        let lgd = T::one() - spec.recovery_rate;
+        let te = spec.option_expiry_te.max_val(T::from_f64(0.05));
+        let tm = spec.swap_tenor_tm.max_val(T::from_f64(0.5));
+        let k = spec.strike_spread_k.max_val(T::from_f64(1e-5));
+        let sig = spec.spread_lognormal_vol_sigma.max_val(T::from_f64(1e-4));
+
+        // Forward survival-contingent risky annuity A(0; T_e, T_e + T_M):
+        let u = r + lam;
+        let df_surv_te = (-u * te).exp();
+        let fwd_rpv01 = df_surv_te * (T::one() - (-u * tm).exp()) / u;
+
+        // Knockout forward CDS par spread S_fwd = (1 - R) * lambda:
+        let s_fwd = lgd * lam;
+
+        // Front-End Protection (FEP) PV for default prior to option expiry T_e:
+        let fep_pv = lgd * lam * (T::one() - df_surv_te) / u;
+        let s_fep = s_fwd + fep_pv / fwd_rpv01.max_val(T::from_f64(1e-8));
+
+        // Black-76 under risky annuity numéraire for knockout payer/receiver swaption:
+        let std = sig * te.sqrt();
+        let d1_ko = ((s_fwd / k).ln() + T::from_f64(0.5) * std * std) / std;
+        let d2_ko = d1_ko - std;
+        let payer_ko = fwd_rpv01 * (s_fwd * norm_cdf(d1_ko) - k * norm_cdf(d2_ko));
+        let receiver_ko = fwd_rpv01 * (k * norm_cdf(-d2_ko) - s_fwd * norm_cdf(-d1_ko));
+
+        // Non-knockout payer swaption using FEP-adjusted forward spread S_FEP:
+        let d1_fep = ((s_fep / k).ln() + T::from_f64(0.5) * std * std) / std;
+        let d2_fep = d1_fep - std;
+        let payer_fep = fwd_rpv01 * (s_fep * norm_cdf(d1_fep) - k * norm_cdf(d2_fep));
+
+        // Risky-annuity Put-Call Parity: Payer_KO - Receiver_KO == A(0; T_e, T_M) * (S_fwd - K)
+        let pcp_err = ((payer_ko - receiver_ko) - fwd_rpv01 * (s_fwd - k)).abs();
+
+        SchonbucherCdsSwaptionFepReport {
+            forward_risky_annuity_rpv01: fwd_rpv01,
+            knockout_forward_cds_spread: s_fwd,
+            front_end_protection_pv: fep_pv,
+            fep_adjusted_forward_spread: s_fep,
+            knockout_payer_swaption_bps: payer_ko * T::from_f64(1e4),
+            non_knockout_payer_swaption_bps: payer_fep * T::from_f64(1e4),
+            receiver_swaption_bps: receiver_ko * T::from_f64(1e4),
+            risky_put_call_parity_error: pcp_err,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_52_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn schonbucher_cds_swaption_fep_invariants_and_ad_parity() {
+            let spec = SchonbucherCdsSwaptionFepSpec {
+                hazard_rate_lambda: 0.022,
+                recovery_rate: 0.40,
+                risk_free_rate: 0.035,
+                option_expiry_te: 1.0,
+                swap_tenor_tm: 5.0,
+                strike_spread_k: 0.013,
+                spread_lognormal_vol_sigma: 0.45,
+            };
+            let rep = evaluate_schonbucher_cds_swaption_and_fep(&spec);
+            assert!(rep.risky_put_call_parity_error < 1e-12);
+            assert!(rep.non_knockout_payer_swaption_bps > rep.knockout_payer_swaption_bps);
+
+            let h = 1e-7;
+            let r_ad = evaluate_schonbucher_cds_swaption_and_fep(&SchonbucherCdsSwaptionFepSpec {
+                hazard_rate_lambda: Dual::<1>::variable(spec.hazard_rate_lambda, 0),
+                recovery_rate: Dual::<1>::from_value(spec.recovery_rate),
+                risk_free_rate: Dual::<1>::from_value(spec.risk_free_rate),
+                option_expiry_te: Dual::<1>::from_value(spec.option_expiry_te),
+                swap_tenor_tm: Dual::<1>::from_value(spec.swap_tenor_tm),
+                strike_spread_k: Dual::<1>::from_value(spec.strike_spread_k),
+                spread_lognormal_vol_sigma: Dual::<1>::from_value(spec.spread_lognormal_vol_sigma),
+            });
+            let mut sp = spec;
+            sp.hazard_rate_lambda += h;
+            let mut sm = spec;
+            sm.hazard_rate_lambda -= h;
+            let fd = (evaluate_schonbucher_cds_swaption_and_fep(&sp)
+                .non_knockout_payer_swaption_bps
+                - evaluate_schonbucher_cds_swaption_and_fep(&sm).non_knockout_payer_swaption_bps)
+                / (2.0 * h);
+            assert!((r_ad.non_knockout_payer_swaption_bps.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_schonbucher_cds_swaption_and_fep_module::*;
+
+mod evaluate_okane_isda_standard_cds_upfront_triangle_module {
+    // O'Kane (2008) & Brigo–Mercurio (2006) ISDA Standard CDS Upfront,
+    // Dirty RPV01 & CS01/IR01/JTD Triangle Hedge Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct OKaneIsdaStandardCdsUpfrontSpec<T: Real = f64> {
+        pub notional_amount: T,
+        pub market_par_spread_s: T,
+        pub standard_running_coupon_c: T,
+        pub recovery_rate_r: T,
+        pub ois_zero_rate_r: T,
+        pub maturity_years_t: T,
+        pub accrued_fraction_alpha: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct OKaneIsdaStandardCdsUpfrontReport<T: Real = f64> {
+        pub credit_triangle_hazard_lambda: T,
+        pub clean_risky_pv01: T,
+        pub dirty_risky_pv01: T,
+        pub clean_upfront_fraction: T,
+        pub cash_settlement_upfront_amount: T,
+        pub credit_cs01_per_bp: T,
+        pub interest_rate_ir01_per_bp: T,
+        pub jump_to_default_jtd_exposure: T,
+    }
+
+    fn clean_rpv01<T: Real>(r: T, lam: T, t: T) -> T {
+        let denom = (r + lam).max_val(T::from_f64(1e-6));
+        (T::one() - (-(r + lam) * t).exp()) / denom
+    }
+
+    pub fn evaluate_okane_isda_standard_cds_upfront_triangle<T: Real>(
+        spec: &OKaneIsdaStandardCdsUpfrontSpec<T>,
+    ) -> OKaneIsdaStandardCdsUpfrontReport<T> {
+        let lgd = (T::one() - spec.recovery_rate_r).max_val(T::from_f64(0.05));
+        let s = spec.market_par_spread_s.max_val(T::from_f64(1e-5));
+        let c = spec.standard_running_coupon_c;
+        let r = spec.ois_zero_rate_r;
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.25));
+        let alpha = spec
+            .accrued_fraction_alpha
+            .max_val(T::zero())
+            .min_val(T::one());
+
+        // Credit triangle hazard rate lambda = S / (1 - R):
+        let lam = s / lgd;
+        let rpv01_clean = clean_rpv01(r, lam, t);
+        let accrual_on_default = T::from_f64(0.5) * T::from_f64(0.25) * lam * rpv01_clean;
+        let rpv01_dirty = rpv01_clean + accrual_on_default;
+
+        let clean_upfront_frac = (s - c) * rpv01_clean;
+        let accrued_coupon = c * T::from_f64(0.25) * alpha;
+        let cash_upfront = spec.notional_amount * (clean_upfront_frac - accrued_coupon);
+
+        // Analytic finite-step CS01 and IR01 sensitivities per 1bp (1e-4):
+        let bp = T::from_f64(1e-4);
+        let s_up = s + bp;
+        let lam_up = s_up / lgd;
+        let uf_s_up = (s_up - c) * clean_rpv01(r, lam_up, t);
+        let cs01 = spec.notional_amount * (uf_s_up - clean_upfront_frac);
+
+        let uf_r_up = (s - c) * clean_rpv01(r + bp, lam, t);
+        let ir01 = spec.notional_amount * (uf_r_up - clean_upfront_frac);
+
+        // Jump-to-default (JTD) net protection-buyer exposure = N * (LGD - CleanUpfrontFrac):
+        let jtd = spec.notional_amount * (lgd - clean_upfront_frac);
+
+        OKaneIsdaStandardCdsUpfrontReport {
+            credit_triangle_hazard_lambda: lam,
+            clean_risky_pv01: rpv01_clean,
+            dirty_risky_pv01: rpv01_dirty,
+            clean_upfront_fraction: clean_upfront_frac,
+            cash_settlement_upfront_amount: cash_upfront,
+            credit_cs01_per_bp: cs01,
+            interest_rate_ir01_per_bp: ir01,
+            jump_to_default_jtd_exposure: jtd,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_53_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn okane_isda_standard_cds_upfront_invariants_and_ad_parity() {
+            let spec = OKaneIsdaStandardCdsUpfrontSpec {
+                notional_amount: 10_000_000.0,
+                market_par_spread_s: 0.0185,
+                standard_running_coupon_c: 0.0100,
+                recovery_rate_r: 0.40,
+                ois_zero_rate_r: 0.038,
+                maturity_years_t: 5.0,
+                accrued_fraction_alpha: 0.35,
+            };
+            let rep = evaluate_okane_isda_standard_cds_upfront_triangle(&spec);
+            assert!(rep.clean_upfront_fraction > 0.0);
+            assert!(rep.credit_cs01_per_bp > 0.0);
+            assert!(rep.jump_to_default_jtd_exposure > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_okane_isda_standard_cds_upfront_triangle(
+                &OKaneIsdaStandardCdsUpfrontSpec {
+                    notional_amount: Dual::<1>::from_value(spec.notional_amount),
+                    market_par_spread_s: Dual::<1>::variable(spec.market_par_spread_s, 0),
+                    standard_running_coupon_c: Dual::<1>::from_value(
+                        spec.standard_running_coupon_c,
+                    ),
+                    recovery_rate_r: Dual::<1>::from_value(spec.recovery_rate_r),
+                    ois_zero_rate_r: Dual::<1>::from_value(spec.ois_zero_rate_r),
+                    maturity_years_t: Dual::<1>::from_value(spec.maturity_years_t),
+                    accrued_fraction_alpha: Dual::<1>::from_value(spec.accrued_fraction_alpha),
+                },
+            );
+            let mut sp = spec;
+            sp.market_par_spread_s += h;
+            let mut sm = spec;
+            sm.market_par_spread_s -= h;
+            let fd = (evaluate_okane_isda_standard_cds_upfront_triangle(&sp)
+                .cash_settlement_upfront_amount
+                - evaluate_okane_isda_standard_cds_upfront_triangle(&sm)
+                    .cash_settlement_upfront_amount)
+                / (2.0 * h);
+            assert!((r_ad.cash_settlement_upfront_amount.d[0] - fd).abs() < 1e-3);
+        }
+    }
+}
+pub use evaluate_okane_isda_standard_cds_upfront_triangle_module::*;
+
+mod evaluate_okane_cds_index_intrinsic_skew_basis_module {
+    // O'Kane (2008) & Brigo–Morini (2008) Credit Index Intrinsic vs. Market Skew (`CDX`/`iTraxx`),
+    // Constituent Dispersion Convexity & Index Arbitrage Basis Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct OKaneCdsIndexIntrinsicSkewSpec<T: Real = f64> {
+        pub constituent_spreads_s: [T; 3],
+        pub market_quoted_index_spread: T,
+        pub standard_index_coupon_c: T,
+        pub recovery_rate_r: T,
+        pub ois_discount_rate_r: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct OKaneCdsIndexIntrinsicSkewReport<T: Real = f64> {
+        pub equal_weight_average_spread: T,
+        pub rpv01_weighted_intrinsic_spread: T,
+        pub constituent_dispersion_wedge_bps: T,
+        pub market_minus_intrinsic_skew_bps: T,
+        pub intrinsic_portfolio_upfront_pct: T,
+        pub flat_curve_index_upfront_pct: T,
+        pub index_vs_constituents_basis_pv_bps: T,
+    }
+
+    fn rpv01_flat<T: Real>(r: T, lam: T, t: T) -> T {
+        let denom = (r + lam).max_val(T::from_f64(1e-6));
+        (T::one() - (-(r + lam) * t).exp()) / denom
+    }
+
+    pub fn evaluate_okane_cds_index_intrinsic_skew_basis<T: Real>(
+        spec: &OKaneCdsIndexIntrinsicSkewSpec<T>,
+    ) -> OKaneCdsIndexIntrinsicSkewReport<T> {
+        let lgd = (T::one() - spec.recovery_rate_r).max_val(T::from_f64(0.05));
+        let r = spec.ois_discount_rate_r;
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.25));
+        let c = spec.standard_index_coupon_c;
+        let third = T::from_f64(1.0 / 3.0);
+
+        let mut avg_s = T::zero();
+        let mut num_s = T::zero();
+        let mut den_rpv = T::zero();
+        let mut intr_upfront = T::zero();
+
+        for i in 0..3 {
+            let si = spec.constituent_spreads_s[i].max_val(T::from_f64(1e-5));
+            let lami = si / lgd;
+            let rpvi = rpv01_flat(r, lami, t);
+            avg_s += third * si;
+            num_s += third * si * rpvi;
+            den_rpv += third * rpvi;
+            intr_upfront += third * (si - c) * rpvi;
+        }
+
+        // Because RPV01(S_i) is decreasing and convex in S_i, RPV01-weighted intrinsic spread
+        // is strictly below the simple average spread when constituents have dispersion:
+        let s_intr = num_s / den_rpv.max_val(T::from_f64(1e-8));
+        let disp_wedge_bps = (avg_s - s_intr) * T::from_f64(1e4);
+        let mkt_skew_bps = (spec.market_quoted_index_spread - s_intr) * T::from_f64(1e4);
+
+        let lam_mkt = spec.market_quoted_index_spread.max_val(T::from_f64(1e-5)) / lgd;
+        let rpv_mkt = rpv01_flat(r, lam_mkt, t);
+        let mkt_upfront = (spec.market_quoted_index_spread - c) * rpv_mkt;
+        let basis_pv_bps = (mkt_upfront - intr_upfront) * T::from_f64(1e4);
+
+        OKaneCdsIndexIntrinsicSkewReport {
+            equal_weight_average_spread: avg_s,
+            rpv01_weighted_intrinsic_spread: s_intr,
+            constituent_dispersion_wedge_bps: disp_wedge_bps,
+            market_minus_intrinsic_skew_bps: mkt_skew_bps,
+            intrinsic_portfolio_upfront_pct: intr_upfront * T::from_f64(100.0),
+            flat_curve_index_upfront_pct: mkt_upfront * T::from_f64(100.0),
+            index_vs_constituents_basis_pv_bps: basis_pv_bps,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_54_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn okane_cds_index_intrinsic_skew_basis_invariants_and_ad_parity() {
+            let spec = OKaneCdsIndexIntrinsicSkewSpec {
+                constituent_spreads_s: [0.0060, 0.0120, 0.0300],
+                market_quoted_index_spread: 0.0155,
+                standard_index_coupon_c: 0.0100,
+                recovery_rate_r: 0.40,
+                ois_discount_rate_r: 0.038,
+                maturity_years_t: 5.0,
+            };
+            let rep = evaluate_okane_cds_index_intrinsic_skew_basis(&spec);
+            // Dispersion convexity theorem: S_intrinsic < S_average for heterogeneous spreads:
+            assert!(rep.rpv01_weighted_intrinsic_spread < rep.equal_weight_average_spread);
+            assert!(rep.constituent_dispersion_wedge_bps > 0.0);
+
+            let h = 1e-6;
+            let r_ad =
+                evaluate_okane_cds_index_intrinsic_skew_basis(&OKaneCdsIndexIntrinsicSkewSpec {
+                    constituent_spreads_s: [
+                        Dual::<1>::variable(spec.constituent_spreads_s[0], 0),
+                        Dual::<1>::from_value(spec.constituent_spreads_s[1]),
+                        Dual::<1>::from_value(spec.constituent_spreads_s[2]),
+                    ],
+                    market_quoted_index_spread: Dual::<1>::from_value(
+                        spec.market_quoted_index_spread,
+                    ),
+                    standard_index_coupon_c: Dual::<1>::from_value(spec.standard_index_coupon_c),
+                    recovery_rate_r: Dual::<1>::from_value(spec.recovery_rate_r),
+                    ois_discount_rate_r: Dual::<1>::from_value(spec.ois_discount_rate_r),
+                    maturity_years_t: Dual::<1>::from_value(spec.maturity_years_t),
+                });
+            let mut sp = spec;
+            sp.constituent_spreads_s[0] += h;
+            let mut sm = spec;
+            sm.constituent_spreads_s[0] -= h;
+            let fd = (evaluate_okane_cds_index_intrinsic_skew_basis(&sp)
+                .rpv01_weighted_intrinsic_spread
+                - evaluate_okane_cds_index_intrinsic_skew_basis(&sm)
+                    .rpv01_weighted_intrinsic_spread)
+                / (2.0 * h);
+            assert!((r_ad.rpv01_weighted_intrinsic_spread.d[0] - fd).abs() < 1e-7);
+        }
+    }
+}
+pub use evaluate_okane_cds_index_intrinsic_skew_basis_module::*;

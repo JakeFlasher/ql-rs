@@ -1,14 +1,4 @@
 use crate::barrier::{BarrierOptionSpec, MonitoringFrequency, price_barrier_option};
-pub use crate::phase35::*;
-pub use crate::phase37::*;
-#[allow(unused_imports)]
-pub use crate::phase39::*;
-#[allow(unused_imports)]
-pub use crate::phase40::*;
-#[allow(unused_imports)]
-pub use crate::phase41::*;
-#[allow(unused_imports)]
-pub use crate::phase42::*;
 use ql_ad::Real;
 use ql_math::bivariate_normal_cdf;
 use ql_vol::black_scholes_price;
@@ -543,7 +533,7 @@ pub fn price_everest_option_mc_ad<T: Real>(s: &EverestOptionSpec<T>, paths: usiz
 }
 
 #[cfg(test)]
-mod phase16_tests {
+mod domain_suite_28_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -753,7 +743,7 @@ pub fn price_altiplano_option_mc_ad<T: Real>(
 }
 
 #[cfg(test)]
-mod phase17_tests {
+mod domain_suite_29_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -949,7 +939,7 @@ pub fn price_bouzoubaa_reverse_and_global_cliquet<T: Real>(
 }
 
 #[cfg(test)]
-mod phase18_tests {
+mod domain_suite_30_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -998,7 +988,7 @@ mod phase18_tests {
 }
 
 #[cfg(test)]
-mod phase21_tests {
+mod domain_suite_33_tests {
     use super::*;
 
     #[test]
@@ -1024,7 +1014,7 @@ mod phase21_tests {
 }
 
 #[cfg(test)]
-mod phase23_tests {
+mod domain_suite_35_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -1083,3 +1073,258 @@ mod phase23_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
+
+mod evaluate_bouzoubaa_napoleon_and_reverse_cliquet_module {
+    use ql_ad::Real;
+
+    #[inline]
+    fn smin<T: Real>(a: T, b: T) -> T {
+        let d = a - b;
+        T::from_f64(0.5) * (a + b - (d * d + T::from_f64(1e-16)).sqrt())
+    }
+
+    #[inline]
+    fn smax<T: Real>(a: T, b: T) -> T {
+        let d = a - b;
+        T::from_f64(0.5) * (a + b + (d * d + T::from_f64(1e-16)).sqrt())
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct BouzoubaaNapoleonReverseCliquetSpec<T: Real = f64> {
+        pub period_returns: Vec<T>,
+        pub napoleon_fixed_coupon: T,
+        pub global_floor: T,
+        pub local_cap: T,
+        pub local_floor: T,
+        pub forward_volatility: T,
+        pub forward_skew: T,
+        pub risk_free_rate: T,
+        pub maturity_years: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct BouzoubaaNapoleonReverseCliquetReport<T: Real = f64> {
+        pub worst_negative_period_return: T,
+        pub cumulative_negative_return_sum: T,
+        pub napoleon_coupon_payoff: T,
+        pub reverse_cliquet_coupon_payoff: T,
+        pub standard_capped_cliquet_payoff: T,
+        pub forward_vol_cliquet_convexity_cost: T,
+        pub napoleon_capital_protected_note_pv: T,
+    }
+
+    pub fn evaluate_bouzoubaa_napoleon_and_reverse_cliquet<T: Real>(
+        s: &BouzoubaaNapoleonReverseCliquetSpec<T>,
+    ) -> BouzoubaaNapoleonReverseCliquetReport<T> {
+        let mut w_min = T::zero();
+        let mut neg_sum = T::zero();
+        let mut std_sum = T::zero();
+        for &rm in &s.period_returns {
+            let neg_m = smin(rm, T::zero());
+            w_min = smin(w_min, neg_m);
+            neg_sum += neg_m;
+            std_sum += smax(s.local_floor, smin(s.local_cap, rm));
+        }
+        let c_nap = smax(s.global_floor, s.napoleon_fixed_coupon + w_min);
+        let c_rev = smax(s.global_floor, s.napoleon_fixed_coupon + neg_sum);
+        let c_std = smax(s.global_floor, std_sum);
+        let m = (s.period_returns.len().max(1)) as f64;
+        let cost = T::from_f64(0.5)
+            * s.forward_volatility
+            * (s.maturity_years / T::from_f64(m)).sqrt()
+            * T::from_f64((m + 1.0).ln())
+            * (T::one() - s.forward_skew);
+        let pv = (-s.risk_free_rate * s.maturity_years).exp() * (T::one() + c_nap - cost);
+        BouzoubaaNapoleonReverseCliquetReport {
+            worst_negative_period_return: w_min,
+            cumulative_negative_return_sum: neg_sum,
+            napoleon_coupon_payoff: c_nap,
+            reverse_cliquet_coupon_payoff: c_rev,
+            standard_capped_cliquet_payoff: c_std,
+            forward_vol_cliquet_convexity_cost: cost,
+            napoleon_capital_protected_note_pv: pv,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_47_tests {
+        use super::*;
+        use ql_ad::Dual;
+        fn spec<T: Real>(x: T) -> BouzoubaaNapoleonReverseCliquetSpec<T> {
+            BouzoubaaNapoleonReverseCliquetSpec {
+                period_returns: vec![
+                    T::from_f64(0.03),
+                    T::from_f64(-0.04) + x,
+                    T::from_f64(0.02),
+                    T::from_f64(-0.025),
+                ],
+                napoleon_fixed_coupon: T::from_f64(0.08),
+                global_floor: T::zero(),
+                local_cap: T::from_f64(0.04),
+                local_floor: T::from_f64(-0.04),
+                forward_volatility: T::from_f64(0.20),
+                forward_skew: T::from_f64(-0.15),
+                risk_free_rate: T::from_f64(0.03),
+                maturity_years: T::from_f64(2.0),
+            }
+        }
+        #[test]
+        fn suite47_exotics_invariants_and_dual_fd() {
+            let r = evaluate_bouzoubaa_napoleon_and_reverse_cliquet(&spec(0.0));
+            assert!(r.napoleon_coupon_payoff >= 0.0);
+            assert!(r.napoleon_coupon_payoff >= r.reverse_cliquet_coupon_payoff - 1e-8);
+            let h = 1e-6;
+            let fd = (evaluate_bouzoubaa_napoleon_and_reverse_cliquet(&spec(h))
+                .napoleon_capital_protected_note_pv
+                - evaluate_bouzoubaa_napoleon_and_reverse_cliquet(&spec(-h))
+                    .napoleon_capital_protected_note_pv)
+                / (2.0 * h);
+            let ad =
+                evaluate_bouzoubaa_napoleon_and_reverse_cliquet(&spec(Dual::<1>::variable(0.0, 0)))
+                    .napoleon_capital_protected_note_pv;
+            assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_bouzoubaa_napoleon_and_reverse_cliquet_module::*;
+
+mod evaluate_haug_eso_vesting_barrier_dilution_module {
+    // Haug (2007) & Hull–White (2004) Executive Stock Option (`ESO`) Vesting-Forfeiture,
+    // Suboptimal Exercise Multiple ($M$-Barrier) & Warrant Dilution Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct HaugEsoVestingBarrierDilutionSpec<T: Real = f64> {
+        pub spot_price_s0: T,
+        pub strike_price_k: T,
+        pub risk_free_rate_r: T,
+        pub dividend_yield_q: T,
+        pub volatility_sigma: T,
+        pub contractual_maturity_t: T,
+        pub vesting_period_tv: T,
+        pub forfeiture_hazard_lambda_f: T,
+        pub suboptimal_exercise_multiple_m: T,
+        pub grant_to_shares_ratio_gamma: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct HaugEsoVestingBarrierDilutionReport<T: Real = f64> {
+        pub vesting_survival_probability: T,
+        pub effective_expected_life_teff: T,
+        pub plain_black_scholes_call: T,
+        pub forfeiture_adjusted_eso_value: T,
+        pub diluted_per_option_grant_cost: T,
+        pub shareholder_dilution_discount_factor: T,
+    }
+
+    pub fn evaluate_haug_eso_vesting_barrier_dilution<T: Real>(
+        spec: &HaugEsoVestingBarrierDilutionSpec<T>,
+    ) -> HaugEsoVestingBarrierDilutionReport<T> {
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(1e-4));
+        let k = spec.strike_price_k.max_val(T::from_f64(1e-4));
+        let r = spec.risk_free_rate_r;
+        let q = spec.dividend_yield_q;
+        let v = spec.volatility_sigma.max_val(T::from_f64(1e-4));
+        let t = spec.contractual_maturity_t.max_val(T::from_f64(0.5));
+        let tv = spec.vesting_period_tv.max_val(T::from_f64(0.1)).min_val(t);
+        let lam_f = spec.forfeiture_hazard_lambda_f.max_val(T::zero());
+        let m_mult = spec
+            .suboptimal_exercise_multiple_m
+            .max_val(T::from_f64(1.05));
+
+        // Pre-vesting survival probability exp(-lambda_f * T_v):
+        let surv_prob = (-lam_f * tv).exp();
+
+        // Hull-White (2004) / FAS 123R effective life reduction from voluntary exercise barrier S^* = M * K:
+        let log_m = m_mult.ln();
+        let barrier_speed = (v * v
+            + T::from_f64(2.0) * log_m / (t - tv).max_val(T::from_f64(0.25)))
+        .max_val(T::from_f64(0.05));
+        let t_eff = tv + (t - tv) / (T::one() + T::from_f64(0.5) * log_m * barrier_speed);
+
+        // Plain Black-Scholes at contractual maturity T vs. ESO at effective life T_eff:
+        let std_t = v * t.sqrt();
+        let d1_t = ((s0 / k).ln() + (r - q + T::from_f64(0.5) * v * v) * t) / std_t;
+        let d2_t = d1_t - std_t;
+        let bs_full = s0 * (-q * t).exp() * norm_cdf(d1_t) - k * (-r * t).exp() * norm_cdf(d2_t);
+
+        let std_e = v * t_eff.sqrt();
+        let d1_e = ((s0 / k).ln() + (r - q + T::from_f64(0.5) * v * v) * t_eff) / std_e;
+        let d2_e = d1_e - std_e;
+        let bs_eff =
+            s0 * (-q * t_eff).exp() * norm_cdf(d1_e) - k * (-r * t_eff).exp() * norm_cdf(d2_e);
+
+        let eso_undiluted = surv_prob * bs_eff;
+        let dil_factor =
+            T::one() / (T::one() + spec.grant_to_shares_ratio_gamma.max_val(T::zero()));
+        let eso_diluted = eso_undiluted * dil_factor;
+
+        HaugEsoVestingBarrierDilutionReport {
+            vesting_survival_probability: surv_prob,
+            effective_expected_life_teff: t_eff,
+            plain_black_scholes_call: bs_full,
+            forfeiture_adjusted_eso_value: eso_undiluted,
+            diluted_per_option_grant_cost: eso_diluted,
+            shareholder_dilution_discount_factor: dil_factor,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_53_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn haug_eso_vesting_barrier_dilution_invariants_and_ad_parity() {
+            let spec = HaugEsoVestingBarrierDilutionSpec {
+                spot_price_s0: 100.0,
+                strike_price_k: 100.0,
+                risk_free_rate_r: 0.04,
+                dividend_yield_q: 0.015,
+                volatility_sigma: 0.30,
+                contractual_maturity_t: 10.0,
+                vesting_period_tv: 3.0,
+                forfeiture_hazard_lambda_f: 0.06,
+                suboptimal_exercise_multiple_m: 1.8,
+                grant_to_shares_ratio_gamma: 0.05,
+            };
+            let rep = evaluate_haug_eso_vesting_barrier_dilution(&spec);
+            assert!(rep.effective_expected_life_teff < spec.contractual_maturity_t);
+            assert!(rep.forfeiture_adjusted_eso_value < rep.plain_black_scholes_call);
+            assert!(rep.diluted_per_option_grant_cost < rep.forfeiture_adjusted_eso_value);
+
+            let h = 1e-6;
+            let r_ad =
+                evaluate_haug_eso_vesting_barrier_dilution(&HaugEsoVestingBarrierDilutionSpec {
+                    spot_price_s0: Dual::<1>::variable(spec.spot_price_s0, 0),
+                    strike_price_k: Dual::<1>::from_value(spec.strike_price_k),
+                    risk_free_rate_r: Dual::<1>::from_value(spec.risk_free_rate_r),
+                    dividend_yield_q: Dual::<1>::from_value(spec.dividend_yield_q),
+                    volatility_sigma: Dual::<1>::from_value(spec.volatility_sigma),
+                    contractual_maturity_t: Dual::<1>::from_value(spec.contractual_maturity_t),
+                    vesting_period_tv: Dual::<1>::from_value(spec.vesting_period_tv),
+                    forfeiture_hazard_lambda_f: Dual::<1>::from_value(
+                        spec.forfeiture_hazard_lambda_f,
+                    ),
+                    suboptimal_exercise_multiple_m: Dual::<1>::from_value(
+                        spec.suboptimal_exercise_multiple_m,
+                    ),
+                    grant_to_shares_ratio_gamma: Dual::<1>::from_value(
+                        spec.grant_to_shares_ratio_gamma,
+                    ),
+                });
+            let mut sp = spec;
+            sp.spot_price_s0 += h;
+            let mut sm = spec;
+            sm.spot_price_s0 -= h;
+            let fd = (evaluate_haug_eso_vesting_barrier_dilution(&sp)
+                .diluted_per_option_grant_cost
+                - evaluate_haug_eso_vesting_barrier_dilution(&sm).diluted_per_option_grant_cost)
+                / (2.0 * h);
+            assert!((r_ad.diluted_per_option_grant_cost.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_haug_eso_vesting_barrier_dilution_module::*;

@@ -1,0 +1,778 @@
+mod evaluate_wooldridge_greene_2sls_iv_and_did_module {
+    use ql_ad::Real;
+    #[derive(Clone, Debug)]
+    pub struct WooldridgeGreene2slsDidSpec<T: Real = f64> {
+        pub endogenous_x: Vec<T>,
+        pub instrument_z: Vec<T>,
+        pub outcome_y: Vec<T>,
+        pub treated_pre_mean: T,
+        pub treated_post_mean: T,
+        pub control_pre_mean: T,
+        pub control_post_mean: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct WooldridgeGreene2slsDidReport<T: Real = f64> {
+        pub ols_slope_beta: T,
+        pub first_stage_instrument_pi1: T,
+        pub first_stage_f_statistic: T,
+        pub two_stage_ls_iv_beta: T,
+        pub hausman_endogeneity_wedge: T,
+        pub control_function_residual_coef: T,
+        pub did_parallel_trend_counterfactual: T,
+        pub did_treatment_effect_att: T,
+    }
+    pub fn evaluate_wooldridge_greene_2sls_iv_and_did<T: Real>(
+        s: &WooldridgeGreene2slsDidSpec<T>,
+    ) -> WooldridgeGreene2slsDidReport<T> {
+        let n = s.endogenous_x.len();
+        let mx = s.endogenous_x.iter().copied().fold(T::zero(), |a, x| a + x) / (n as f64);
+        let mz = s.instrument_z.iter().copied().fold(T::zero(), |a, x| a + x) / (n as f64);
+        let my = s.outcome_y.iter().copied().fold(T::zero(), |a, x| a + x) / (n as f64);
+        let mut xx = T::zero();
+        let mut zz = T::zero();
+        let mut xz = T::zero();
+        let mut xy = T::zero();
+        let mut zy = T::zero();
+        for i in 0..n {
+            let x = s.endogenous_x[i] - mx;
+            let z = s.instrument_z[i] - mz;
+            let y = s.outcome_y[i] - my;
+            xx += x * x;
+            zz += z * z;
+            xz += x * z;
+            xy += x * y;
+            zy += z * y;
+        }
+        let ols = xy / xx;
+        let pi = xz / zz;
+        let mut rss = T::zero();
+        let mut vu = T::zero();
+        let iv = zy / xz;
+        for i in 0..n {
+            let fit = mx + pi * (s.instrument_z[i] - mz);
+            let vhat = s.endogenous_x[i] - fit;
+            let uhat = (s.outcome_y[i] - my) - iv * (s.endogenous_x[i] - mx);
+            rss += vhat * vhat;
+            vu += vhat * uhat;
+        }
+        let rss_safe = rss.max_val(T::from_f64(1e-12));
+        let f = T::from_f64((n.saturating_sub(2).max(1)) as f64) * pi * pi * zz / rss_safe;
+        let cf = vu / rss_safe;
+        let counter = s.treated_pre_mean + s.control_post_mean - s.control_pre_mean;
+        let att = s.treated_post_mean - counter;
+        WooldridgeGreene2slsDidReport {
+            ols_slope_beta: ols,
+            first_stage_instrument_pi1: pi,
+            first_stage_f_statistic: f,
+            two_stage_ls_iv_beta: iv,
+            hausman_endogeneity_wedge: ols - iv,
+            control_function_residual_coef: cf,
+            did_parallel_trend_counterfactual: counter,
+            did_treatment_effect_att: att,
+        }
+    }
+    #[cfg(test)]
+    mod domain_suite_45_tests {
+        use super::*;
+        #[test]
+        fn suite45_dml_smoke() {
+            let s = WooldridgeGreene2slsDidSpec {
+                endogenous_x: vec![1.0, 2.0, 3.0, 4.0],
+                instrument_z: vec![1.0, 2.1, 2.9, 4.1],
+                outcome_y: vec![1.2, 2.1, 3.2, 4.2],
+                treated_pre_mean: 1.0,
+                treated_post_mean: 1.2,
+                control_pre_mean: 1.0,
+                control_post_mean: 1.1,
+            };
+            let r = evaluate_wooldridge_greene_2sls_iv_and_did(&s);
+            assert!(r.first_stage_f_statistic > 10.0);
+            assert!(
+                (r.did_treatment_effect_att
+                    - (s.treated_post_mean - r.did_parallel_trend_counterfactual))
+                    .abs()
+                    < 1e-12
+            );
+        }
+    }
+    #[cfg(test)]
+    mod domain_suite_45_tests_ad {
+        use super::*;
+        use ql_ad::Dual;
+        fn s<T: Real>(x: T) -> WooldridgeGreene2slsDidSpec<T> {
+            WooldridgeGreene2slsDidSpec {
+                endogenous_x: vec![
+                    T::one() + x,
+                    T::from_f64(2.),
+                    T::from_f64(3.),
+                    T::from_f64(4.),
+                ],
+                instrument_z: vec![
+                    T::one(),
+                    T::from_f64(2.1),
+                    T::from_f64(2.9),
+                    T::from_f64(4.1),
+                ],
+                outcome_y: vec![
+                    T::from_f64(1.2),
+                    T::from_f64(2.1),
+                    T::from_f64(3.2),
+                    T::from_f64(4.2),
+                ],
+                treated_pre_mean: T::one(),
+                treated_post_mean: T::from_f64(1.2),
+                control_pre_mean: T::one(),
+                control_post_mean: T::from_f64(1.1),
+            }
+        }
+        #[test]
+        fn dual_fd() {
+            let h = 1e-6;
+            let fd = (evaluate_wooldridge_greene_2sls_iv_and_did(&s(h)).two_stage_ls_iv_beta
+                - evaluate_wooldridge_greene_2sls_iv_and_did(&s(-h)).two_stage_ls_iv_beta)
+                / (2. * h);
+            let ad = evaluate_wooldridge_greene_2sls_iv_and_did(&s(Dual::<1>::variable(0., 0)))
+                .two_stage_ls_iv_beta;
+            assert!((ad.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_wooldridge_greene_2sls_iv_and_did_module::*;
+
+mod evaluate_bayer_path_signature_chen_and_levy_area_module {
+    use ql_ad::Real;
+    #[derive(Clone, Debug)]
+    pub struct BayerPathSignatureChenLevyAreaSpec<T: Real = f64> {
+        pub time_grid: Vec<T>,
+        pub spot_path: Vec<T>,
+        pub linear_functional_weights: [T; 6],
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct BayerPathSignatureChenLevyAreaReport<T: Real = f64> {
+        pub sig1_time_increment: T,
+        pub sig1_spot_increment: T,
+        pub sig2_time_spot_12: T,
+        pub sig2_spot_time_21: T,
+        pub sig2_spot_spot_22: T,
+        pub signed_levy_area: T,
+        pub chen_identity_l1_error: T,
+        pub shuffle_product_identity_error: T,
+        pub signature_linear_payoff: T,
+    }
+    fn sig_segment_range<T: Real>(
+        t: &[T],
+        x: &[T],
+        start: usize,
+        end: usize,
+    ) -> (T, T, T, T, T, T) {
+        let mut s1 = T::zero();
+        let mut s2 = T::zero();
+        let mut s11 = T::zero();
+        let mut s12 = T::zero();
+        let mut s21 = T::zero();
+        let mut s22 = T::zero();
+        let half = T::from_f64(0.5);
+        for k in start..end {
+            let dt = t[k + 1] - t[k];
+            let dx = x[k + 1] - x[k];
+            s11 += s1 * dt + half * dt * dt;
+            s12 += s1 * dx + half * dt * dx;
+            s21 += s2 * dt + half * dx * dt;
+            s22 += s2 * dx + half * dx * dx;
+            s1 += dt;
+            s2 += dx;
+        }
+        (s1, s2, s11, s12, s21, s22)
+    }
+    pub fn evaluate_bayer_path_signature_chen_and_levy_area<T: Real>(
+        s: &BayerPathSignatureChenLevyAreaSpec<T>,
+    ) -> BayerPathSignatureChenLevyAreaReport<T> {
+        let m = s.time_grid.len().min(s.spot_path.len()).saturating_sub(1);
+        let (s1, s2, s11, s12, s21, s22) = sig_segment_range(&s.time_grid, &s.spot_path, 0, m);
+        let mid = m / 2;
+        let (a1, a2, a11, a12, a21, a22) = sig_segment_range(&s.time_grid, &s.spot_path, 0, mid);
+        let (b1, b2, b11, b12, b21, b22) = sig_segment_range(&s.time_grid, &s.spot_path, mid, m);
+        let c11 = s11 - (a11 + b11 + a1 * b1);
+        let c12 = s12 - (a12 + b12 + a1 * b2);
+        let c21 = s21 - (a21 + b21 + a2 * b1);
+        let c22 = s22 - (a22 + b22 + a2 * b2);
+        let chen_err = (c11 * c11 + c12 * c12 + c21 * c21 + c22 * c22 + T::from_f64(1e-30)).sqrt();
+        let shuf = (s12 + s21) - s1 * s2;
+        let shuf_err = (shuf * shuf + T::from_f64(1e-30)).sqrt();
+        let levy = T::from_f64(0.5) * (s12 - s21);
+        let w = &s.linear_functional_weights;
+        let payoff = w[0] * s1 + w[1] * s2 + w[2] * s11 + w[3] * s12 + w[4] * s21 + w[5] * s22;
+        BayerPathSignatureChenLevyAreaReport {
+            sig1_time_increment: s1,
+            sig1_spot_increment: s2,
+            sig2_time_spot_12: s12,
+            sig2_spot_time_21: s21,
+            sig2_spot_spot_22: s22,
+            signed_levy_area: levy,
+            chen_identity_l1_error: chen_err,
+            shuffle_product_identity_error: shuf_err,
+            signature_linear_payoff: payoff,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_46_tests {
+        use super::*;
+        use ql_ad::Dual;
+        fn spec<T: Real>(x: T) -> BayerPathSignatureChenLevyAreaSpec<T> {
+            BayerPathSignatureChenLevyAreaSpec {
+                time_grid: vec![T::zero(), T::from_f64(0.5), T::one()],
+                spot_path: vec![
+                    T::from_f64(100.0) + x,
+                    T::from_f64(104.0),
+                    T::from_f64(102.0),
+                ],
+                linear_functional_weights: [
+                    T::from_f64(0.1),
+                    T::from_f64(0.2),
+                    T::from_f64(0.3),
+                    T::from_f64(0.4),
+                    T::from_f64(-0.2),
+                    T::from_f64(0.1),
+                ],
+            }
+        }
+        #[test]
+        fn suite46_dml_invariants_and_dual_fd() {
+            let r = evaluate_bayer_path_signature_chen_and_levy_area(&spec(0.0));
+            assert!(
+                r.signed_levy_area.abs() > 1e-6
+                    && r.chen_identity_l1_error < 1e-12
+                    && r.shuffle_product_identity_error < 1e-12
+            );
+            let h = 1e-6;
+            let fd = (evaluate_bayer_path_signature_chen_and_levy_area(&spec(h))
+                .signature_linear_payoff
+                - evaluate_bayer_path_signature_chen_and_levy_area(&spec(-h))
+                    .signature_linear_payoff)
+                / (2.0 * h);
+            let ad = evaluate_bayer_path_signature_chen_and_levy_area(&spec(Dual::<1>::variable(
+                0.0, 0,
+            )))
+            .signature_linear_payoff;
+            assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_bayer_path_signature_chen_and_levy_area_module::*;
+
+mod evaluate_lopez_de_prado_deflated_sharpe_and_purged_cv_module {
+    #![allow(
+        clippy::needless_range_loop,
+        clippy::assign_op_pattern,
+        clippy::approx_constant
+    )]
+    use ql_ad::Real;
+    use ql_math::{inv_norm_cdf, norm_cdf};
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct LopezDePradoDsrPurgedCvSpec<T: Real = f64> {
+        pub observed_sharpe_ratio: T,
+        pub sample_length_t: T,
+        pub return_skewness: T,
+        pub return_kurtosis: T,
+        pub num_independent_trials_k: T,
+        pub trials_sharpe_std: T,
+        pub total_cv_samples_n: T,
+        pub cv_folds_k: T,
+        pub label_overlap_horizon_h: T,
+        pub embargo_fraction_pct: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct LopezDePradoDsrPurgedCvReport<T: Real = f64> {
+        pub expected_max_sharpe_hurdle_sr0: T,
+        pub non_gaussian_sharpe_std_error: T,
+        pub probabilistic_sharpe_ratio_zero: T,
+        pub deflated_sharpe_ratio_dsr: T,
+        pub non_gaussian_variance_inflation: T,
+        pub unpurged_train_sample_fraction: T,
+        pub purged_embargoed_train_fraction: T,
+        pub purged_leakage_reduction_ratio: T,
+    }
+
+    pub fn evaluate_lopez_de_prado_deflated_sharpe_and_purged_cv<T: Real>(
+        spec: &LopezDePradoDsrPurgedCvSpec<T>,
+    ) -> LopezDePradoDsrPurgedCvReport<T> {
+        let gamma_em = T::from_f64(0.577_215_664_901_532_9);
+        let e_val = T::one().exp();
+        let k_tr = spec.num_independent_trials_k.max_val(T::from_f64(2.0));
+        let p1 = (T::one() - T::one() / k_tr).min_val(T::from_f64(0.9999));
+        let p2 = (T::one() - T::one() / (k_tr * e_val)).min_val(T::from_f64(0.9999));
+        let sr0 = spec.trials_sharpe_std
+            * ((T::one() - gamma_em) * inv_norm_cdf(p1) + gamma_em * inv_norm_cdf(p2));
+
+        let sr = spec.observed_sharpe_ratio;
+        let var_infl = (T::one() - spec.return_skewness * sr
+            + T::from_f64(0.25) * (spec.return_kurtosis - T::one()) * sr * sr)
+            .max_val(T::from_f64(1e-6));
+        let t_m1 = (spec.sample_length_t - T::one()).max_val(T::from_f64(1.0));
+        let se_sr = (var_infl / t_m1).sqrt();
+
+        let psr0 = norm_cdf(sr / se_sr);
+        let dsr = norm_cdf((sr - sr0) / se_sr);
+
+        let k_folds = spec.cv_folds_k.max_val(T::from_f64(2.0));
+        let n_obs = spec.total_cv_samples_n.max_val(T::from_f64(10.0));
+        let unpurged_frac = (k_folds - T::one()) / k_folds;
+        let purge_drop = T::from_f64(2.0) * k_folds * spec.label_overlap_horizon_h / n_obs;
+        let purged_frac =
+            (unpurged_frac - purge_drop - spec.embargo_fraction_pct).max_val(T::from_f64(0.05));
+        let leak_red = (unpurged_frac - purged_frac) / unpurged_frac;
+
+        LopezDePradoDsrPurgedCvReport {
+            expected_max_sharpe_hurdle_sr0: sr0,
+            non_gaussian_sharpe_std_error: se_sr,
+            probabilistic_sharpe_ratio_zero: psr0,
+            deflated_sharpe_ratio_dsr: dsr,
+            non_gaussian_variance_inflation: var_infl,
+            unpurged_train_sample_fraction: unpurged_frac,
+            purged_embargoed_train_fraction: purged_frac,
+            purged_leakage_reduction_ratio: leak_red,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_48_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn lopez_de_prado_dsr_purged_cv_invariants_and_ad_parity() {
+            let spec = LopezDePradoDsrPurgedCvSpec {
+                observed_sharpe_ratio: 1.45,
+                sample_length_t: 60.0,
+                return_skewness: -0.65,
+                return_kurtosis: 4.5,
+                num_independent_trials_k: 25.0,
+                trials_sharpe_std: 0.45,
+                total_cv_samples_n: 1000.0,
+                cv_folds_k: 5.0,
+                label_overlap_horizon_h: 5.0,
+                embargo_fraction_pct: 0.01,
+            };
+            let rep = evaluate_lopez_de_prado_deflated_sharpe_and_purged_cv(&spec);
+            assert!(rep.expected_max_sharpe_hurdle_sr0 > 0.0);
+            assert!(rep.deflated_sharpe_ratio_dsr < rep.probabilistic_sharpe_ratio_zero);
+            assert!(rep.purged_embargoed_train_fraction < rep.unpurged_train_sample_fraction);
+
+            let h = 1e-6;
+            let r_ad = evaluate_lopez_de_prado_deflated_sharpe_and_purged_cv(
+                &LopezDePradoDsrPurgedCvSpec {
+                    observed_sharpe_ratio: Dual::<1>::variable(spec.observed_sharpe_ratio, 0),
+                    sample_length_t: Dual::<1>::from_value(spec.sample_length_t),
+                    return_skewness: Dual::<1>::from_value(spec.return_skewness),
+                    return_kurtosis: Dual::<1>::from_value(spec.return_kurtosis),
+                    num_independent_trials_k: Dual::<1>::from_value(spec.num_independent_trials_k),
+                    trials_sharpe_std: Dual::<1>::from_value(spec.trials_sharpe_std),
+                    total_cv_samples_n: Dual::<1>::from_value(spec.total_cv_samples_n),
+                    cv_folds_k: Dual::<1>::from_value(spec.cv_folds_k),
+                    label_overlap_horizon_h: Dual::<1>::from_value(spec.label_overlap_horizon_h),
+                    embargo_fraction_pct: Dual::<1>::from_value(spec.embargo_fraction_pct),
+                },
+            );
+            let mut sp = spec;
+            sp.observed_sharpe_ratio += h;
+            let mut sm = spec;
+            sm.observed_sharpe_ratio -= h;
+            let _fd = (evaluate_lopez_de_prado_deflated_sharpe_and_purged_cv(&sp)
+                .deflated_sharpe_ratio_dsr
+                - evaluate_lopez_de_prado_deflated_sharpe_and_purged_cv(&sm)
+                    .deflated_sharpe_ratio_dsr)
+                / (2.0 * h);
+            assert!((r_ad.deflated_sharpe_ratio_dsr.d[0] - _fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_lopez_de_prado_deflated_sharpe_and_purged_cv_module::*;
+
+mod evaluate_tsay_johansen_vecm_cointegration_module {
+    // Tsay (2010) & Hamilton (1994) Johansen Cointegration Vector Error-Correction (`VECM`),
+    // Ornstein–Uhlenbeck Half-Life & Trace Statistic Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TsayJohansenVecmCointegrationSpec<T: Real = f64> {
+        pub cointegrating_hedge_ratio_beta: T,
+        pub error_correction_speed_alpha1: T,
+        pub error_correction_speed_alpha2: T,
+        pub current_spread_deviation_zt: T,
+        pub spread_innovation_vol_sigma_eps: T,
+        pub canonical_eigenvalues_lambda: [T; 2],
+        pub sample_size_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TsayJohansenVecmCointegrationReport<T: Real = f64> {
+        pub spread_ar1_persistence_phi: T,
+        pub ou_mean_reversion_speed_kappa: T,
+        pub mean_reversion_half_life_periods: T,
+        pub stationary_spread_volatility: T,
+        pub expected_next_period_spread: T,
+        pub johansen_trace_statistic: T,
+        pub johansen_max_eigen_statistic: T,
+    }
+
+    pub fn evaluate_tsay_johansen_vecm_cointegration<T: Real>(
+        spec: &TsayJohansenVecmCointegrationSpec<T>,
+    ) -> TsayJohansenVecmCointegrationReport<T> {
+        // Under VECM: dy_{1,t} = alpha_1 z_{t-1} + e_{1,t}, dy_{2,t} = alpha_2 z_{t-1} + e_{2,t}
+        // Therefore dz_t = dy_{1,t} - beta * dy_{2,t} = (alpha_1 - beta * alpha_2) z_{t-1} + e_{z,t}
+        // => z_t = phi_z * z_{t-1} + e_{z,t} with phi_z = 1 + alpha_1 - beta * alpha_2:
+        let phi = (T::one() + spec.error_correction_speed_alpha1
+            - spec.cointegrating_hedge_ratio_beta * spec.error_correction_speed_alpha2)
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.995));
+        let kappa = -phi.ln();
+        let half_life = T::from_f64(std::f64::consts::LN_2) / kappa;
+
+        let stat_vol = spec.spread_innovation_vol_sigma_eps
+            / (T::one() - phi * phi).max_val(T::from_f64(1e-6)).sqrt();
+        let next_z = phi * spec.current_spread_deviation_zt;
+
+        // Johansen (1988/1991) likelihood-ratio statistics:
+        let n_obs = spec.sample_size_t.max_val(T::from_f64(10.0));
+        let l1 = spec.canonical_eigenvalues_lambda[0]
+            .max_val(T::from_f64(1e-6))
+            .min_val(T::from_f64(0.99));
+        let l2 = spec.canonical_eigenvalues_lambda[1]
+            .max_val(T::from_f64(1e-6))
+            .min_val(T::from_f64(0.99));
+        let max_eig = -n_obs * (T::one() - l1).ln();
+        let trace_stat = -n_obs * ((T::one() - l1).ln() + (T::one() - l2).ln());
+
+        TsayJohansenVecmCointegrationReport {
+            spread_ar1_persistence_phi: phi,
+            ou_mean_reversion_speed_kappa: kappa,
+            mean_reversion_half_life_periods: half_life,
+            stationary_spread_volatility: stat_vol,
+            expected_next_period_spread: next_z,
+            johansen_trace_statistic: trace_stat,
+            johansen_max_eigen_statistic: max_eig,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_52_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn tsay_johansen_vecm_cointegration_invariants_and_ad_parity() {
+            let spec = TsayJohansenVecmCointegrationSpec {
+                cointegrating_hedge_ratio_beta: 1.15,
+                error_correction_speed_alpha1: -0.18,
+                error_correction_speed_alpha2: 0.08,
+                current_spread_deviation_zt: 1.4,
+                spread_innovation_vol_sigma_eps: 0.25,
+                canonical_eigenvalues_lambda: [0.16, 0.03],
+                sample_size_t: 250.0,
+            };
+            let rep = evaluate_tsay_johansen_vecm_cointegration(&spec);
+            assert!(rep.spread_ar1_persistence_phi > 0.0 && rep.spread_ar1_persistence_phi < 1.0);
+            assert!(rep.johansen_trace_statistic > rep.johansen_max_eigen_statistic);
+            assert!(rep.stationary_spread_volatility > spec.spread_innovation_vol_sigma_eps);
+
+            let h = 1e-6;
+            let r_ad =
+                evaluate_tsay_johansen_vecm_cointegration(&TsayJohansenVecmCointegrationSpec {
+                    cointegrating_hedge_ratio_beta: Dual::<1>::variable(
+                        spec.cointegrating_hedge_ratio_beta,
+                        0,
+                    ),
+                    error_correction_speed_alpha1: Dual::<1>::from_value(
+                        spec.error_correction_speed_alpha1,
+                    ),
+                    error_correction_speed_alpha2: Dual::<1>::from_value(
+                        spec.error_correction_speed_alpha2,
+                    ),
+                    current_spread_deviation_zt: Dual::<1>::from_value(
+                        spec.current_spread_deviation_zt,
+                    ),
+                    spread_innovation_vol_sigma_eps: Dual::<1>::from_value(
+                        spec.spread_innovation_vol_sigma_eps,
+                    ),
+                    canonical_eigenvalues_lambda: spec
+                        .canonical_eigenvalues_lambda
+                        .map(Dual::<1>::from_value),
+                    sample_size_t: Dual::<1>::from_value(spec.sample_size_t),
+                });
+            let mut sp = spec;
+            sp.cointegrating_hedge_ratio_beta += h;
+            let mut sm = spec;
+            sm.cointegrating_hedge_ratio_beta -= h;
+            let fd = (evaluate_tsay_johansen_vecm_cointegration(&sp)
+                .mean_reversion_half_life_periods
+                - evaluate_tsay_johansen_vecm_cointegration(&sm).mean_reversion_half_life_periods)
+                / (2.0 * h);
+            assert!((r_ad.mean_reversion_half_life_periods.d[0] - fd).abs() < 1e-6);
+        }
+    }
+}
+pub use evaluate_tsay_johansen_vecm_cointegration_module::*;
+
+mod evaluate_tsay_star_threshold_autoregression_band_module {
+    // Tsay (2010) & Teräsvirta (1994) Exponential Smooth-Transition Threshold
+    // Autoregression (`ESTAR`) No-Trade Band & Regime Half-Life Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TsayEstarThresholdAutoregressionSpec<T: Real = f64> {
+        pub current_mispricing_z: T,
+        pub transaction_cost_threshold_c: T,
+        pub transition_smoothness_gamma: T,
+        pub inner_band_reversion_speed_kappa_in: T,
+        pub outer_arbitrage_reversion_speed_kappa_out: T,
+        pub innovation_volatility_sigma_eps: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TsayEstarThresholdAutoregressionReport<T: Real = f64> {
+        pub transition_activation_weight_g: T,
+        pub effective_local_reversion_speed_kappa: T,
+        pub expected_one_step_spread_change: T,
+        pub expected_next_period_mispricing: T,
+        pub local_regime_half_life_periods: T,
+        pub inner_vs_outer_half_life_ratio: T,
+        pub local_stationary_variance_proxy: T,
+    }
+
+    pub fn evaluate_tsay_star_threshold_autoregression_band<T: Real>(
+        spec: &TsayEstarThresholdAutoregressionSpec<T>,
+    ) -> TsayEstarThresholdAutoregressionReport<T> {
+        let z = spec.current_mispricing_z;
+        let c = spec.transaction_cost_threshold_c.max_val(T::from_f64(1e-4));
+        let gam = spec.transition_smoothness_gamma.max_val(T::from_f64(0.05));
+        let k_in = spec
+            .inner_band_reversion_speed_kappa_in
+            .max_val(T::from_f64(0.01));
+        let k_out = spec.outer_arbitrage_reversion_speed_kappa_out.max_val(k_in);
+
+        // Smooth excess squared deviation above transaction-cost band c^2:
+        let d_sq = z * z - c * c;
+        let excess_sq = T::from_f64(0.5) * (d_sq + (d_sq * d_sq + T::from_f64(0.01)).sqrt());
+
+        // ESTAR transition function G(z; gamma, c) = 1 - exp(-gamma * excess_sq) in (0, 1):
+        let g = T::one() - (-gam * excess_sq).exp();
+        let k_eff = k_in * (T::one() - g) + k_out * g;
+
+        let dz = -k_eff * z;
+        let z_next = z + dz;
+        let phi_eff = (T::one() - k_eff)
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.995));
+        let half_life = -T::from_f64(std::f64::consts::LN_2) / phi_eff.ln();
+
+        let phi_in = (T::one() - k_in)
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.995));
+        let phi_out = (T::one() - k_out)
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.995));
+        let hl_ratio = phi_out.ln() / phi_in.ln();
+
+        let stat_var = spec.innovation_volatility_sigma_eps * spec.innovation_volatility_sigma_eps
+            / (T::one() - phi_eff * phi_eff).max_val(T::from_f64(1e-4));
+
+        TsayEstarThresholdAutoregressionReport {
+            transition_activation_weight_g: g,
+            effective_local_reversion_speed_kappa: k_eff,
+            expected_one_step_spread_change: dz,
+            expected_next_period_mispricing: z_next,
+            local_regime_half_life_periods: half_life,
+            inner_vs_outer_half_life_ratio: hl_ratio,
+            local_stationary_variance_proxy: stat_var,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_54_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn tsay_star_threshold_autoregression_invariants_and_ad_parity() {
+            let spec = TsayEstarThresholdAutoregressionSpec {
+                current_mispricing_z: 1.85,
+                transaction_cost_threshold_c: 0.90,
+                transition_smoothness_gamma: 0.85,
+                inner_band_reversion_speed_kappa_in: 0.04,
+                outer_arbitrage_reversion_speed_kappa_out: 0.38,
+                innovation_volatility_sigma_eps: 0.22,
+            };
+            let rep = evaluate_tsay_star_threshold_autoregression_band(&spec);
+            assert!(rep.transition_activation_weight_g > 0.5);
+            assert!(
+                rep.effective_local_reversion_speed_kappa
+                    > spec.inner_band_reversion_speed_kappa_in
+            );
+            assert!(rep.inner_vs_outer_half_life_ratio > 2.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_tsay_star_threshold_autoregression_band(
+                &TsayEstarThresholdAutoregressionSpec {
+                    current_mispricing_z: Dual::<1>::variable(spec.current_mispricing_z, 0),
+                    transaction_cost_threshold_c: Dual::<1>::from_value(
+                        spec.transaction_cost_threshold_c,
+                    ),
+                    transition_smoothness_gamma: Dual::<1>::from_value(
+                        spec.transition_smoothness_gamma,
+                    ),
+                    inner_band_reversion_speed_kappa_in: Dual::<1>::from_value(
+                        spec.inner_band_reversion_speed_kappa_in,
+                    ),
+                    outer_arbitrage_reversion_speed_kappa_out: Dual::<1>::from_value(
+                        spec.outer_arbitrage_reversion_speed_kappa_out,
+                    ),
+                    innovation_volatility_sigma_eps: Dual::<1>::from_value(
+                        spec.innovation_volatility_sigma_eps,
+                    ),
+                },
+            );
+            let mut sp = spec;
+            sp.current_mispricing_z += h;
+            let mut sm = spec;
+            sm.current_mispricing_z -= h;
+            let fd = (evaluate_tsay_star_threshold_autoregression_band(&sp)
+                .local_regime_half_life_periods
+                - evaluate_tsay_star_threshold_autoregression_band(&sm)
+                    .local_regime_half_life_periods)
+                / (2.0 * h);
+            assert!((r_ad.local_regime_half_life_periods.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_tsay_star_threshold_autoregression_band_module::*;
+
+mod evaluate_newey_west_andrews_hac_variance_module {
+    // Newey & West (1987) & Andrews (1991) Automatic-Bandwidth (`ARMA(1,1)` Plug-In) `HAC`
+    // Long-Run Variance, Bartlett & Quadratic-Spectral (`QS`) Kernel Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct NeweyWestAndrewsHacVarianceSpec<T: Real = f64> {
+        pub sample_variance_gamma0: T,
+        pub autocovariance_lag1_gamma1: T,
+        pub autocovariance_lag2_gamma2: T,
+        pub autocovariance_lag3_gamma3: T,
+        pub sample_size_n: T,
+        pub ols_point_estimate_beta: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct NeweyWestAndrewsHacVarianceReport<T: Real = f64> {
+        pub newey_west_optimal_bandwidth: T,
+        pub andrews_qs_optimal_bandwidth: T,
+        pub bartlett_long_run_variance: T,
+        pub quadratic_spectral_long_run_variance: T,
+        pub hac_variance_inflation_factor: T,
+        pub hac_robust_standard_error: T,
+        pub hac_robust_t_statistic: T,
+    }
+
+    fn qs_kernel<T: Real>(x: T) -> T {
+        let x_pos = x.max_val(T::from_f64(1e-4));
+        let x2 = x_pos * x_pos;
+        (T::from_f64(3.0) / x2) * (x_pos.sin() / x_pos - x_pos.cos())
+    }
+
+    pub fn evaluate_newey_west_andrews_hac_variance<T: Real>(
+        spec: &NeweyWestAndrewsHacVarianceSpec<T>,
+    ) -> NeweyWestAndrewsHacVarianceReport<T> {
+        let g0 = spec.sample_variance_gamma0.max_val(T::from_f64(1e-6));
+        let g1 = spec.autocovariance_lag1_gamma1;
+        let g2 = spec.autocovariance_lag2_gamma2;
+        let g3 = spec.autocovariance_lag3_gamma3;
+        let n = spec.sample_size_n.max_val(T::from_f64(20.0));
+
+        let rho1 = (g1 / g0)
+            .max_val(T::from_f64(-0.92))
+            .min_val(T::from_f64(0.92));
+        let om_r2 = (T::one() - rho1 * rho1).max_val(T::from_f64(1e-4));
+        let om_r = (T::one() - rho1).max_val(T::from_f64(1e-4));
+
+        // Andrews (1991, Econometrica Eq. 6.2 & 6.4) AR(1) plug-in smoothness parameters:
+        let alpha1 = (T::from_f64(4.0) * rho1 * rho1) / (om_r2 * om_r2);
+        let alpha2 = (T::from_f64(4.0) * rho1 * rho1) / (om_r * om_r * om_r * om_r);
+
+        let s_nw = T::from_f64(1.1447) * (alpha1 * n).pow(T::from_f64(1.0 / 3.0));
+        let s_qs = T::from_f64(1.3221) * (alpha2 * n).pow(T::from_f64(0.20));
+
+        let eps = T::from_f64(0.02);
+        let smooth_pos = |u: T| T::from_f64(0.5) * (u + (u * u + eps * eps).sqrt());
+        let w1_nw = smooth_pos(T::one() - T::one() / s_nw);
+        let w2_nw = smooth_pos(T::one() - T::from_f64(2.0) / s_nw);
+        let w3_nw = smooth_pos(T::one() - T::from_f64(3.0) / s_nw);
+        let omega_nw = g0 + T::from_f64(2.0) * (w1_nw * g1 + w2_nw * g2 + w3_nw * g3);
+
+        let scale_qs = T::from_f64(6.0 * std::f64::consts::PI / 5.0) / s_qs;
+        let w1_qs = qs_kernel(scale_qs);
+        let w2_qs = qs_kernel(T::from_f64(2.0) * scale_qs);
+        let w3_qs = qs_kernel(T::from_f64(3.0) * scale_qs);
+        let omega_qs = (g0 + T::from_f64(2.0) * (w1_qs * g1 + w2_qs * g2 + w3_qs * g3))
+            .max_val(T::from_f64(1e-6));
+
+        let vif = omega_qs / g0;
+        let se_hac = (omega_qs / n).sqrt();
+        let t_hac = spec.ols_point_estimate_beta / se_hac;
+
+        NeweyWestAndrewsHacVarianceReport {
+            newey_west_optimal_bandwidth: s_nw,
+            andrews_qs_optimal_bandwidth: s_qs,
+            bartlett_long_run_variance: omega_nw,
+            quadratic_spectral_long_run_variance: omega_qs,
+            hac_variance_inflation_factor: vif,
+            hac_robust_standard_error: se_hac,
+            hac_robust_t_statistic: t_hac,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_55_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn newey_west_andrews_hac_variance_invariants_and_ad_parity() {
+            let spec = NeweyWestAndrewsHacVarianceSpec {
+                sample_variance_gamma0: 0.040,
+                autocovariance_lag1_gamma1: 0.022,
+                autocovariance_lag2_gamma2: 0.012,
+                autocovariance_lag3_gamma3: 0.006,
+                sample_size_n: 250.0,
+                ols_point_estimate_beta: 0.035,
+            };
+            let rep = evaluate_newey_west_andrews_hac_variance(&spec);
+            assert!(rep.quadratic_spectral_long_run_variance > spec.sample_variance_gamma0);
+            assert!(rep.hac_variance_inflation_factor > 1.5);
+            assert!(rep.andrews_qs_optimal_bandwidth > 1.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_newey_west_andrews_hac_variance(&NeweyWestAndrewsHacVarianceSpec {
+                sample_variance_gamma0: Dual::<1>::variable(spec.sample_variance_gamma0, 0),
+                autocovariance_lag1_gamma1: Dual::<1>::from_value(spec.autocovariance_lag1_gamma1),
+                autocovariance_lag2_gamma2: Dual::<1>::from_value(spec.autocovariance_lag2_gamma2),
+                autocovariance_lag3_gamma3: Dual::<1>::from_value(spec.autocovariance_lag3_gamma3),
+                sample_size_n: Dual::<1>::from_value(spec.sample_size_n),
+                ols_point_estimate_beta: Dual::<1>::from_value(spec.ols_point_estimate_beta),
+            });
+            let mut sp = spec;
+            sp.sample_variance_gamma0 += h;
+            let mut sm = spec;
+            sm.sample_variance_gamma0 -= h;
+            let fd = (evaluate_newey_west_andrews_hac_variance(&sp).hac_robust_t_statistic
+                - evaluate_newey_west_andrews_hac_variance(&sm).hac_robust_t_statistic)
+                / (2.0 * h);
+            assert!((r_ad.hac_robust_t_statistic.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_newey_west_andrews_hac_variance_module::*;

@@ -1,3 +1,3 @@
 # Benchmark scorecard
 
-The `ql-rs` release tracks **54 benchmark suites** and **52 workstation tabs**, validating forward-mode `Dual<N>`, second-order `Dual2`, implicit-function-theorem (`IFT`) sensitivity lifting, and reverse-mode `Tape` automatic differentiation against finite-difference baselines across all quantitative domains.
+The `ql-rs` release tracks **55 benchmark suites** and **53 workstation tabs**, validating forward-mode `Dual<N>`, second-order `Dual2`, implicit-function-theorem (`IFT`) sensitivity lifting, and reverse-mode `Tape` automatic differentiation against finite-difference baselines across all quantitative domains.

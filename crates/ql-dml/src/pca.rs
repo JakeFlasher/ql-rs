@@ -299,7 +299,7 @@ pub fn evaluate_huge_savine_differential_pca_and_twin_dml<T: ql_ad::Real>(
 }
 
 #[cfg(test)]
-mod phase28_tests {
+mod domain_suite_40_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: ql_ad::Real>(x: T) -> HugeSavineDifferentialPcaSpec<T> {

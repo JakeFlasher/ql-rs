@@ -1,21 +1,4 @@
 #![allow(clippy::needless_range_loop)]
-mod phase42;
-#[allow(unused_imports)]
-pub use phase42::*;
-mod phase41;
-#[allow(unused_imports)]
-pub use phase41::*;
-mod phase40;
-#[allow(unused_imports)]
-pub use phase40::*;
-mod phase39;
-#[allow(unused_imports)]
-pub use phase39::*;
-mod phase37;
-#[allow(unused_imports)]
-pub use phase37::*;
-mod phase35;
-pub use phase35::*;
 use ql_ad::Real;
 
 #[derive(Clone, Debug)]
@@ -1175,8 +1158,12 @@ pub fn price_prdc_note_hybrid<T: Real>(s: &PrdcNoteSpec<T>) -> PrdcValuation<T> 
     }
 }
 
+pub mod smile_and_vanna_volga;
+pub use smile_and_vanna_volga::*;
+pub mod barriers_and_prdc;
+pub use barriers_and_prdc::*;
 #[cfg(test)]
-mod phase27_tests {
+mod domain_suite_39_tests {
     use super::*;
     use ql_ad::Dual;
     fn make<T: Real>(x: T) -> CrossCurrencyConvertibleWarrantSpec<T> {
@@ -1212,7 +1199,7 @@ mod phase27_tests {
     }
 
     #[test]
-    fn phase27_invariants() {
+    fn suite39_invariants() {
         let r = price_cross_currency_convertible_and_warrant_bond(&make(100.0));
         assert!(r.straight_bond_floor_foreign <= r.embedded_cross_currency_cb_price);
         assert!(r.embedded_cross_currency_cb_price <= r.composite_detachable_warrant_bond_price);
@@ -1220,7 +1207,7 @@ mod phase27_tests {
 }
 
 #[cfg(test)]
-mod phase23_tests {
+mod domain_suite_35_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -1289,7 +1276,7 @@ mod phase23_tests {
 }
 
 #[cfg(test)]
-mod phase15_tests {
+mod domain_suite_27_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -1331,7 +1318,7 @@ mod phase15_tests {
 }
 
 #[cfg(test)]
-mod phase16_tests {
+mod domain_suite_28_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -1392,7 +1379,7 @@ mod phase16_tests {
 }
 
 #[cfg(test)]
-mod phase18_tests {
+mod domain_suite_30_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -1460,7 +1447,7 @@ mod phase18_tests {
 }
 
 #[cfg(test)]
-mod phase21_tests {
+mod domain_suite_33_tests {
     use super::*;
     use ql_ad::Dual;
 

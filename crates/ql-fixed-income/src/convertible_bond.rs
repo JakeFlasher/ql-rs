@@ -1,20 +1,4 @@
 #![allow(clippy::needless_range_loop)]
-pub use crate::phase35::{
-    AyacheForsythVetzalConvertibleReport, AyacheForsythVetzalConvertibleSpec,
-    evaluate_ayache_forsyth_vetzal_default_coupled_cb,
-};
-
-pub use crate::phase30::*;
-pub use crate::phase31::{
-    AsquithSirbuShreveCbGameReport, AsquithSirbuShreveCbGameSpec,
-    evaluate_asquith_sirbu_shreve_cb_call_delay_and_dynkin_game,
-};
-pub use crate::phase32::*;
-pub use crate::phase33::{
-    CalamosDeSpiegeleerAscotGammaReport, CalamosDeSpiegeleerAscotGammaSpec,
-    evaluate_calamos_despiegeleer_ascot_and_gamma_scalp,
-};
-pub use crate::phase34::*;
 use ql_ad::{Dual, Real};
 use ql_vol::black_scholes_price;
 #[derive(Clone, Debug)]
@@ -592,7 +576,7 @@ pub fn analyze_thorp_kassouf_calamos_convertible_arbitrage<T: Real>(
 }
 
 #[cfg(test)]
-mod phase24_tests {
+mod domain_suite_36_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(x: T) -> SirbuShreveDilutionMakeWholeConvertibleSpec<T> {
@@ -618,7 +602,7 @@ mod phase24_tests {
         }
     }
     #[test]
-    fn phase24() {
+    fn domain_suite_36() {
         let r = price_sirbu_shreve_dilution_and_makewhole_convertible(&mk(100.));
         assert!(r.undiluted_convertible_price > r.diluted_convertible_price);
         assert!(r.make_whole_enhanced_price >= r.diluted_convertible_price);
@@ -637,7 +621,7 @@ mod phase24_tests {
 }
 
 #[cfg(test)]
-mod phase25_tests {
+mod domain_suite_37_tests {
     use super::*;
     use ql_ad::Dual;
     fn cb<T: Real>(x: T) -> ThorpKassoufCalamosConvertibleArbSpec<T> {
@@ -681,7 +665,7 @@ mod phase25_tests {
 }
 
 #[cfg(test)]
-mod phase29_tests {
+mod domain_suite_41_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -727,7 +711,7 @@ mod phase29_tests {
 }
 
 #[cfg(test)]
-mod phase19_tests {
+mod domain_suite_31_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -790,3 +774,661 @@ mod phase19_tests {
         assert!((ad.d[0] - fd).abs() < 1e-4);
     }
 }
+
+mod evaluate_an_daoquan_clifford_chance_resettable_convertible_module {
+    use ql_ad::Real;
+    #[derive(Clone, Copy, Debug)]
+    pub struct AnDaoquanCliffordChanceResettableCbSpec<T: Real = f64> {
+        pub spot_price: T,
+        pub initial_conversion_price: T,
+        pub book_value_per_share_bps: T,
+        pub avg_20day_price: T,
+        pub face_value: T,
+        pub coupon_rate: T,
+        pub redemption_maturity_price: T,
+        pub put_back_trigger_ratio: T,
+        pub put_back_price: T,
+        pub soft_call_trigger_ratio: T,
+        pub soft_call_price: T,
+        pub stock_volatility: T,
+        pub risk_free_rate: T,
+        pub credit_spread: T,
+        pub maturity: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct AnDaoquanCliffordChanceResettableCbReport<T: Real = f64> {
+        pub straight_bond_floor: T,
+        pub initial_conversion_parity: T,
+        pub legally_floored_reset_conversion_price: T,
+        pub post_reset_conversion_parity: T,
+        pub downward_reset_option_uplift: T,
+        pub conditional_put_back_protection_value: T,
+        pub issuer_soft_call_cap_giveup: T,
+        pub three_line_duplex_fair_value: T,
+    }
+    pub fn evaluate_an_daoquan_clifford_chance_resettable_convertible<T: Real>(
+        s: &AnDaoquanCliffordChanceResettableCbSpec<T>,
+    ) -> AnDaoquanCliffordChanceResettableCbReport<T> {
+        let floor = (s.redemption_maturity_price
+            + s.face_value * s.coupon_rate * s.maturity * T::from_f64(0.5))
+            * (-(s.risk_free_rate + s.credit_spread) * s.maturity).exp();
+        let init_price = s.initial_conversion_price.max_val(T::from_f64(1e-6));
+        let initial = s.face_value / init_price * s.spot_price;
+        let candidate = s.avg_20day_price.max_val(s.book_value_per_share_bps);
+        let post_price = init_price.min_val(candidate).max_val(T::from_f64(1e-6));
+        let post = s.face_value / post_price * s.spot_price;
+        let trigger_gap = s.initial_conversion_price * s.put_back_trigger_ratio - s.avg_20day_price;
+        let reset_weight = T::one() / (T::one() + (-trigger_gap * T::from_f64(0.2)).exp());
+        let uplift = (post - initial).max_val(T::zero())
+            * (T::from_f64(0.5) + T::from_f64(0.5) * reset_weight)
+            + s.stock_volatility * s.maturity.sqrt() * T::from_f64(4.0);
+        let put = (s.put_back_price - initial.min_val(floor)).max_val(T::zero())
+            * (-s.risk_free_rate * s.maturity).exp()
+            * (T::from_f64(0.25) + T::from_f64(0.5) * reset_weight);
+        let soft_call_threshold = s
+            .soft_call_price
+            .max_val(s.initial_conversion_price * s.soft_call_trigger_ratio);
+        let cap = (post - soft_call_threshold).max_val(T::zero()) * T::from_f64(0.2);
+        let fair = floor.max_val(initial) + uplift + put - cap;
+        AnDaoquanCliffordChanceResettableCbReport {
+            straight_bond_floor: floor,
+            initial_conversion_parity: initial,
+            legally_floored_reset_conversion_price: post_price,
+            post_reset_conversion_parity: post,
+            downward_reset_option_uplift: uplift,
+            conditional_put_back_protection_value: put,
+            issuer_soft_call_cap_giveup: cap,
+            three_line_duplex_fair_value: fair,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_42_tests {
+        use super::*;
+        use ql_ad::Dual;
+        fn make<T: Real>(x: T) -> AnDaoquanCliffordChanceResettableCbSpec<T> {
+            AnDaoquanCliffordChanceResettableCbSpec {
+                spot_price: T::from_f64(90.0) + x,
+                initial_conversion_price: T::from_f64(100.0),
+                book_value_per_share_bps: T::from_f64(80.0),
+                avg_20day_price: T::from_f64(85.0),
+                face_value: T::from_f64(100.0),
+                coupon_rate: T::from_f64(0.02),
+                redemption_maturity_price: T::from_f64(105.0),
+                put_back_trigger_ratio: T::from_f64(0.7),
+                put_back_price: T::from_f64(103.0),
+                soft_call_trigger_ratio: T::from_f64(1.3),
+                soft_call_price: T::from_f64(105.0),
+                stock_volatility: T::from_f64(0.2),
+                risk_free_rate: T::from_f64(0.03),
+                credit_spread: T::from_f64(0.01),
+                maturity: T::from_f64(3.0),
+            }
+        }
+        #[test]
+        fn suite42_reset_cb_dual_fd() {
+            let r = evaluate_an_daoquan_clifford_chance_resettable_convertible(&make(0.0));
+            assert!(r.legally_floored_reset_conversion_price >= 80.0);
+            assert!(r.post_reset_conversion_parity > r.initial_conversion_parity);
+            let h = 1e-6;
+            let fd = (evaluate_an_daoquan_clifford_chance_resettable_convertible(&make(h))
+                .post_reset_conversion_parity
+                - evaluate_an_daoquan_clifford_chance_resettable_convertible(&make(-h))
+                    .post_reset_conversion_parity)
+                / (2.0 * h);
+            let ad = evaluate_an_daoquan_clifford_chance_resettable_convertible(&make(
+                Dual::<1>::variable(0.0, 0),
+            ))
+            .post_reset_conversion_parity;
+            assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_an_daoquan_clifford_chance_resettable_convertible_module::*;
+
+mod evaluate_mayer_brown_ssga_capped_call_overlay_and_make_whole_module {
+    use ql_ad::Real;
+    #[derive(Clone, Copy, Debug)]
+    pub struct MayerBrownSsgaCappedCallMakeWholeSpec<T: Real = f64> {
+        pub bond_par: T,
+        pub spot_price: T,
+        pub base_conversion_price: T,
+        pub cap_strike_price: T,
+        pub volatility: T,
+        pub risk_free_rate: T,
+        pub maturity_years: T,
+        pub acquisition_offer_price: T,
+        pub remaining_years_at_acquisition: T,
+        pub tax_rate_section_163j: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct MayerBrownSsgaCappedCallMakeWholeReport<T: Real = f64> {
+        pub base_conversion_ratio: T,
+        pub lower_call_option_value: T,
+        pub upper_cap_call_option_value: T,
+        pub capped_call_overlay_gross_cost: T,
+        pub after_tax_integrated_capped_call_cost: T,
+        pub unhedged_net_dilution_shares_at_offer: T,
+        pub capped_call_hedged_dilution_shares_at_offer: T,
+        pub make_whole_additional_shares: T,
+        pub total_fundamental_change_conversion_value: T,
+    }
+    fn call<T: Real>(s: T, k: T, v: T, r: T, t: T) -> T {
+        let vol = (v * t.sqrt()).max_val(T::from_f64(1e-8));
+        let d1 = ((s / k).ln() + (r + T::from_f64(0.5) * v * v) * t) / vol;
+        let d2 = d1 - vol;
+        s * d1.norm_cdf() - k * (-r * t).exp() * d2.norm_cdf()
+    }
+    pub fn evaluate_mayer_brown_ssga_capped_call_overlay_and_make_whole<T: Real>(
+        s: &MayerBrownSsgaCappedCallMakeWholeSpec<T>,
+    ) -> MayerBrownSsgaCappedCallMakeWholeReport<T> {
+        let ratio = s.bond_par / s.base_conversion_price.max_val(T::from_f64(1e-8));
+        let lower = ratio
+            * call(
+                s.spot_price,
+                s.base_conversion_price,
+                s.volatility,
+                s.risk_free_rate,
+                s.maturity_years,
+            );
+        let upper = ratio
+            * call(
+                s.spot_price,
+                s.cap_strike_price,
+                s.volatility,
+                s.risk_free_rate,
+                s.maturity_years,
+            );
+        let gross = (lower - upper).max_val(T::zero());
+        let after = gross * (T::one() - s.tax_rate_section_163j);
+        let s_offer_safe = s.acquisition_offer_price.max_val(T::from_f64(1e-8));
+        let unhedged = ratio
+            * ((s.acquisition_offer_price - s.base_conversion_price).max_val(T::zero())
+                / s_offer_safe);
+        let hedged = ratio
+            * ((s.acquisition_offer_price - s.cap_strike_price).max_val(T::zero()) / s_offer_safe);
+        let intrinsic =
+            (s.acquisition_offer_price - s.base_conversion_price).max_val(T::zero()) * ratio;
+        let call_at_offer = ratio
+            * call(
+                s.acquisition_offer_price,
+                s.base_conversion_price,
+                s.volatility,
+                s.risk_free_rate,
+                s.remaining_years_at_acquisition,
+            );
+        let mw = (call_at_offer - intrinsic).max_val(T::zero()) / s_offer_safe;
+        MayerBrownSsgaCappedCallMakeWholeReport {
+            base_conversion_ratio: ratio,
+            lower_call_option_value: lower,
+            upper_cap_call_option_value: upper,
+            capped_call_overlay_gross_cost: gross,
+            after_tax_integrated_capped_call_cost: after,
+            unhedged_net_dilution_shares_at_offer: unhedged,
+            capped_call_hedged_dilution_shares_at_offer: hedged,
+            make_whole_additional_shares: mw,
+            total_fundamental_change_conversion_value: (ratio + mw) * s.acquisition_offer_price,
+        }
+    }
+    #[cfg(test)]
+    mod domain_suite_44_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        fn spec<T: Real>(x: T) -> MayerBrownSsgaCappedCallMakeWholeSpec<T> {
+            MayerBrownSsgaCappedCallMakeWholeSpec {
+                bond_par: T::from_f64(100.0),
+                spot_price: T::from_f64(100.0) + x,
+                base_conversion_price: T::from_f64(90.0),
+                cap_strike_price: T::from_f64(120.0),
+                volatility: T::from_f64(0.2),
+                risk_free_rate: T::from_f64(0.03),
+                maturity_years: T::from_f64(5.0),
+                acquisition_offer_price: T::from_f64(110.0),
+                remaining_years_at_acquisition: T::from_f64(2.0),
+                tax_rate_section_163j: T::from_f64(0.2),
+            }
+        }
+
+        #[test]
+        fn overlay_positive() {
+            let r = evaluate_mayer_brown_ssga_capped_call_overlay_and_make_whole(&spec(0.0));
+            assert!(r.capped_call_overlay_gross_cost > 0.0);
+            assert!(
+                r.capped_call_hedged_dilution_shares_at_offer
+                    <= r.unhedged_net_dilution_shares_at_offer
+            );
+            assert!(r.make_whole_additional_shares > 0.0);
+            let h = 1e-6;
+            let fd = (evaluate_mayer_brown_ssga_capped_call_overlay_and_make_whole(&spec(h))
+                .capped_call_overlay_gross_cost
+                - evaluate_mayer_brown_ssga_capped_call_overlay_and_make_whole(&spec(-h))
+                    .capped_call_overlay_gross_cost)
+                / (2.0 * h);
+            let ad = evaluate_mayer_brown_ssga_capped_call_overlay_and_make_whole(&spec(
+                Dual::<1>::variable(0.0, 0),
+            ))
+            .capped_call_overlay_gross_cost;
+            assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_mayer_brown_ssga_capped_call_overlay_and_make_whole_module::*;
+
+mod evaluate_despiegeleer_mandatory_convertible_decs_and_percs_module {
+    use ql_ad::Real;
+    #[derive(Clone, Copy, Debug)]
+    pub struct DeSpiegeleerMandatoryConvertibleDecsSpec<T: Real = f64> {
+        pub spot_price: T,
+        pub par_amount: T,
+        pub lower_strike_kl: T,
+        pub upper_strike_ku: T,
+        pub decs_coupon_rate: T,
+        pub risk_free_rate: T,
+        pub dividend_yield: T,
+        pub credit_spread: T,
+        pub lower_strike_vol: T,
+        pub upper_strike_vol: T,
+        pub maturity_years: T,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct DeSpiegeleerMandatoryConvertibleDecsReport<T: Real = f64> {
+        pub max_conversion_ratio_lower: T,
+        pub min_conversion_ratio_upper: T,
+        pub fixed_coupon_strip_pv: T,
+        pub prepaid_forward_equity_pv: T,
+        pub short_lower_call_leg_pv: T,
+        pub long_upper_call_leg_pv: T,
+        pub percs_capped_fair_value: T,
+        pub decs_mandatory_fair_value: T,
+        pub decs_over_percs_upside_participation: T,
+        pub decomposition_conservation_error: T,
+    }
+    fn call<T: Real>(s: T, k: T, v: T, r: T, q: T, t: T) -> T {
+        let st = t.sqrt();
+        let d1 = ((s / k).ln() + (r - q + v * v / T::from_f64(2.0)) * t) / (v * st);
+        let d2 = d1 - v * st;
+        s * (-q * t).exp() * d1.norm_cdf() - k * (-r * t).exp() * d2.norm_cdf()
+    }
+    pub fn evaluate_despiegeleer_mandatory_convertible_decs_and_percs<T: Real>(
+        s: &DeSpiegeleerMandatoryConvertibleDecsSpec<T>,
+    ) -> DeSpiegeleerMandatoryConvertibleDecsReport<T> {
+        let nmax = s.par_amount / s.lower_strike_kl;
+        let nmin = s.par_amount / s.upper_strike_ku;
+        let z = s.risk_free_rate + s.credit_spread;
+        let coup = s.decs_coupon_rate * s.par_amount * (T::one() - (-z * s.maturity_years).exp())
+            / z.max_val(T::from_f64(1e-12));
+        let fwd = nmax * s.spot_price * (-s.dividend_yield * s.maturity_years).exp();
+        let lo = nmax
+            * call(
+                s.spot_price,
+                s.lower_strike_kl,
+                s.lower_strike_vol,
+                s.risk_free_rate,
+                s.dividend_yield,
+                s.maturity_years,
+            );
+        let hi = nmin
+            * call(
+                s.spot_price,
+                s.upper_strike_ku,
+                s.upper_strike_vol,
+                s.risk_free_rate,
+                s.dividend_yield,
+                s.maturity_years,
+            );
+        let p = coup + fwd - lo;
+        let d = p + hi;
+        DeSpiegeleerMandatoryConvertibleDecsReport {
+            max_conversion_ratio_lower: nmax,
+            min_conversion_ratio_upper: nmin,
+            fixed_coupon_strip_pv: coup,
+            prepaid_forward_equity_pv: fwd,
+            short_lower_call_leg_pv: -lo,
+            long_upper_call_leg_pv: hi,
+            percs_capped_fair_value: p,
+            decs_mandatory_fair_value: d,
+            decs_over_percs_upside_participation: hi,
+            decomposition_conservation_error: (d - (coup + fwd - lo + hi)).abs(),
+        }
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct DavidsonLevinFourFactorIoPoSpec<T: Real = f64> {
+        pub initial_balance: T,
+        pub gross_wac_rate: T,
+        pub net_passthrough_coupon: T,
+        pub current_mortgage_rate: T,
+        pub base_turnover_cpr: T,
+        pub max_refi_cpr: T,
+        pub burnout_sensitivity_beta: T,
+        pub seasonality_amplitude: T,
+        pub oas_discount_rate: T,
+        pub num_periods: usize,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct DavidsonLevinFourFactorIoPoReport<T: Real = f64> {
+        pub terminal_pool_factor: T,
+        pub average_realized_cpr: T,
+        pub passthrough_present_value: T,
+        pub io_strip_present_value: T,
+        pub po_strip_present_value: T,
+        pub io_po_strip_conservation_error: T,
+        pub io_effective_rate_sensitivity: T,
+        pub po_effective_rate_sensitivity: T,
+    }
+    pub fn evaluate_davidson_levin_four_factor_prepayment_io_po<T: Real>(
+        s: &DavidsonLevinFourFactorIoPoSpec<T>,
+    ) -> DavidsonLevinFourFactorIoPoReport<T> {
+        let mut bal = T::one();
+        let mut dbal_dr = T::zero();
+        let mut io = T::zero();
+        let mut po = T::zero();
+        let mut dio_dr = T::zero();
+        let mut dpo_dr = T::zero();
+        let n_per = s.num_periods.max(1);
+        for i in 1..=n_per {
+            let t_yr = T::from_f64(i as f64 / 12.0);
+            let age = T::from_f64((i as f64 / 30.0).min(1.0));
+            let bal_safe = bal.max_val(T::from_f64(1e-12));
+            let burnout = (bal_safe.ln() * s.burnout_sensitivity_beta).exp();
+            let dburn_dbal = s.burnout_sensitivity_beta * burnout / bal_safe;
+            let exp_arg = (T::from_f64(-40.0)
+                * (s.gross_wac_rate - s.current_mortgage_rate - T::from_f64(0.005)))
+            .exp();
+            let sig = T::one() / (T::one() + exp_arg);
+            let dsig_drmtg = -T::from_f64(40.0) * exp_arg * sig * sig;
+            let refi = s.max_refi_cpr * burnout * sig;
+            let drefi_dr = s.max_refi_cpr * (dburn_dbal * dbal_dr * sig + burnout * dsig_drmtg);
+            let seas = T::one()
+                + s.seasonality_amplitude
+                    * T::from_f64((i as f64 * std::f64::consts::PI / 6.0).sin());
+            let cpr_annual = ((s.base_turnover_cpr * age + refi) * seas)
+                .min_val(T::from_f64(0.95))
+                .max_val(T::from_f64(1e-6));
+            let dcpr_dr = drefi_dr * seas;
+            let one_minus_cpr = (T::one() - cpr_annual).max_val(T::from_f64(1e-6));
+            let smm = T::one() - one_minus_cpr.powf(1.0 / 12.0);
+            let dsmm_dr = (T::one() - smm) / (T::from_f64(12.0) * one_minus_cpr) * dcpr_dr;
+            let disc = (-s.oas_discount_rate * t_yr).exp();
+            let c_m = s.net_passthrough_coupon / T::from_f64(12.0);
+            io += bal * c_m * disc;
+            dio_dr += dbal_dr * c_m * disc;
+            let pre = if i == n_per { bal } else { bal * smm };
+            let dpre_dr = if i == n_per {
+                dbal_dr
+            } else {
+                dbal_dr * smm + bal * dsmm_dr
+            };
+            po += pre * disc;
+            dpo_dr += dpre_dr * disc;
+            let next_bal = bal * (T::one() - smm);
+            dbal_dr = dbal_dr * (T::one() - smm) - bal * dsmm_dr;
+            bal = next_bal;
+        }
+        let pv = io + po;
+        let avg = T::one()
+            - (bal.max_val(T::from_f64(1e-12)).ln() * T::from_f64(12.0 / (n_per as f64))).exp();
+        let err = (pv - io - po) * s.initial_balance;
+        DavidsonLevinFourFactorIoPoReport {
+            terminal_pool_factor: bal,
+            average_realized_cpr: avg,
+            passthrough_present_value: pv * s.initial_balance,
+            io_strip_present_value: io * s.initial_balance,
+            po_strip_present_value: po * s.initial_balance,
+            io_po_strip_conservation_error: (err * err + T::from_f64(1e-30)).sqrt(),
+            io_effective_rate_sensitivity: dio_dr * s.initial_balance,
+            po_effective_rate_sensitivity: dpo_dr * s.initial_balance,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_46_tests {
+        use super::*;
+        use ql_ad::Dual;
+        fn decs_spec<T: Real>(x: T) -> DeSpiegeleerMandatoryConvertibleDecsSpec<T> {
+            DeSpiegeleerMandatoryConvertibleDecsSpec {
+                spot_price: T::from_f64(100.0) + x,
+                par_amount: T::from_f64(100.0),
+                lower_strike_kl: T::from_f64(90.0),
+                upper_strike_ku: T::from_f64(120.0),
+                decs_coupon_rate: T::from_f64(0.06),
+                risk_free_rate: T::from_f64(0.03),
+                dividend_yield: T::from_f64(0.02),
+                credit_spread: T::from_f64(0.015),
+                lower_strike_vol: T::from_f64(0.25),
+                upper_strike_vol: T::from_f64(0.22),
+                maturity_years: T::from_f64(3.0),
+            }
+        }
+        fn mbs_spec<T: Real>(x: T) -> DavidsonLevinFourFactorIoPoSpec<T> {
+            DavidsonLevinFourFactorIoPoSpec {
+                initial_balance: T::from_f64(100.0),
+                gross_wac_rate: T::from_f64(0.06),
+                net_passthrough_coupon: T::from_f64(0.055),
+                current_mortgage_rate: T::from_f64(0.05) + x,
+                base_turnover_cpr: T::from_f64(0.06),
+                max_refi_cpr: T::from_f64(0.35),
+                burnout_sensitivity_beta: T::from_f64(0.5),
+                seasonality_amplitude: T::from_f64(0.1),
+                oas_discount_rate: T::from_f64(0.045),
+                num_periods: 12,
+            }
+        }
+        #[test]
+        fn suite46_fixed_income_invariants_and_dual_fd() {
+            let h = 1e-6;
+            let d0 = evaluate_despiegeleer_mandatory_convertible_decs_and_percs(&decs_spec(0.0));
+            assert!(
+                d0.decomposition_conservation_error < 1e-12
+                    && d0.decs_mandatory_fair_value > d0.percs_capped_fair_value
+            );
+            let fd_d = (evaluate_despiegeleer_mandatory_convertible_decs_and_percs(&decs_spec(h))
+                .decs_mandatory_fair_value
+                - evaluate_despiegeleer_mandatory_convertible_decs_and_percs(&decs_spec(-h))
+                    .decs_mandatory_fair_value)
+                / (2.0 * h);
+            let ad_d = evaluate_despiegeleer_mandatory_convertible_decs_and_percs(&decs_spec(
+                Dual::<1>::variable(0.0, 0),
+            ))
+            .decs_mandatory_fair_value;
+            assert!(ad_d.d[0].abs() > 1e-6 && (ad_d.d[0] - fd_d).abs() < 1e-5);
+
+            let m0 = evaluate_davidson_levin_four_factor_prepayment_io_po(&mbs_spec(0.0));
+            assert!(
+                m0.io_po_strip_conservation_error < 1e-12
+                    && m0.io_effective_rate_sensitivity > 0.0
+                    && m0.po_effective_rate_sensitivity < 0.0
+            );
+            let fd_m = (evaluate_davidson_levin_four_factor_prepayment_io_po(&mbs_spec(h))
+                .passthrough_present_value
+                - evaluate_davidson_levin_four_factor_prepayment_io_po(&mbs_spec(-h))
+                    .passthrough_present_value)
+                / (2.0 * h);
+            let ad_m = evaluate_davidson_levin_four_factor_prepayment_io_po(&mbs_spec(
+                Dual::<1>::variable(0.0, 0),
+            ))
+            .passthrough_present_value;
+            assert!(ad_m.d[0].abs() > 1e-6 && (ad_m.d[0] - fd_m).abs() < 1e-4);
+        }
+    }
+}
+pub use evaluate_despiegeleer_mandatory_convertible_decs_and_percs_module::*;
+
+mod evaluate_despiegeleer_cb_soft_call_make_whole_module {
+    // De Spiegeleer, Schoutens & Van Hulle (2014) Convertible Bond Soft-Call Parity Trigger,
+    // Make-Whole Additional Shares Table & Stock-Borrow Fee Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct DeSpiegeleerCbSoftCallMakeWholeSpec<T: Real = f64> {
+        pub spot_price_s0: T,
+        pub par_value: T,
+        pub conversion_ratio_cr: T,
+        pub soft_call_trigger_multiple: T,
+        pub make_whole_max_bonus_shares: T,
+        pub coupon_rate_c: T,
+        pub risky_bond_yield_y: T,
+        pub risk_free_rate_r: T,
+        pub dividend_and_borrow_cost_q: T,
+        pub equity_volatility_sigma: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct DeSpiegeleerCbSoftCallMakeWholeReport<T: Real = f64> {
+        pub conversion_price_k_conv: T,
+        pub soft_call_barrier_price_b: T,
+        pub conversion_parity_value: T,
+        pub straight_bond_floor: T,
+        pub embedded_conversion_call_value: T,
+        pub soft_call_issuer_cap_reduction: T,
+        pub make_whole_table_protection_pv: T,
+        pub convertible_bond_fair_value: T,
+    }
+
+    fn bs_call<T: Real>(s: T, k: T, r: T, q: T, sig: T, t: T) -> T {
+        let std = sig * t.sqrt();
+        let d1 = ((s / k).ln() + (r - q + T::from_f64(0.5) * sig * sig) * t) / std;
+        let d2 = d1 - std;
+        s * (-q * t).exp() * norm_cdf(d1) - k * (-r * t).exp() * norm_cdf(d2)
+    }
+
+    pub fn evaluate_despiegeleer_cb_soft_call_make_whole<T: Real>(
+        spec: &DeSpiegeleerCbSoftCallMakeWholeSpec<T>,
+    ) -> DeSpiegeleerCbSoftCallMakeWholeReport<T> {
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(1e-4));
+        let par = spec.par_value.max_val(T::one());
+        let cr = spec.conversion_ratio_cr.max_val(T::from_f64(1e-4));
+        let trig_mult = spec.soft_call_trigger_multiple.max_val(T::from_f64(1.05));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.25));
+        let sig = spec.equity_volatility_sigma.max_val(T::from_f64(1e-4));
+        let y = spec.risky_bond_yield_y.max_val(T::from_f64(1e-4));
+
+        let k_conv = par / cr;
+        let b_soft = k_conv * trig_mult;
+        let parity = cr * s0;
+
+        // Straight risky bond floor:
+        let annuity = (T::one() - (-y * t).exp()) / y;
+        let bond_floor = par * spec.coupon_rate_c * annuity + par * (-y * t).exp();
+
+        // Embedded conversion call struck at effective floor strike K_eff = BondFloor / CR:
+        let k_eff = (bond_floor / cr).max_val(T::from_f64(1e-4));
+        let conv_call = cr
+            * bs_call(
+                s0,
+                k_eff,
+                spec.risk_free_rate_r,
+                spec.dividend_and_borrow_cost_q,
+                sig,
+                t,
+            );
+
+        // Provisional soft-call cap above B_soft (weighted by M-of-N excursion damping):
+        let soft_cap_raw = cr
+            * bs_call(
+                s0,
+                b_soft,
+                spec.risk_free_rate_r,
+                spec.dividend_and_borrow_cost_q,
+                sig,
+                t,
+            );
+        let excursion_prob = (-T::from_f64(0.35) * sig * t.sqrt()).exp();
+        let soft_call_reduction = T::from_f64(0.5) * excursion_prob * soft_cap_raw;
+
+        // Make-whole bonus shares protection PV when called or acquired above K_conv:
+        let mw_pv = spec.make_whole_max_bonus_shares
+            * (bs_call(
+                s0,
+                k_conv,
+                spec.risk_free_rate_r,
+                spec.dividend_and_borrow_cost_q,
+                sig,
+                t,
+            ) - bs_call(
+                s0,
+                b_soft,
+                spec.risk_free_rate_r,
+                spec.dividend_and_borrow_cost_q,
+                sig,
+                t,
+            ))
+            .max_val(T::zero());
+
+        let cb_val = bond_floor + conv_call - soft_call_reduction + mw_pv;
+
+        DeSpiegeleerCbSoftCallMakeWholeReport {
+            conversion_price_k_conv: k_conv,
+            soft_call_barrier_price_b: b_soft,
+            conversion_parity_value: parity,
+            straight_bond_floor: bond_floor,
+            embedded_conversion_call_value: conv_call,
+            soft_call_issuer_cap_reduction: soft_call_reduction,
+            make_whole_table_protection_pv: mw_pv,
+            convertible_bond_fair_value: cb_val,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_54_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn despiegeleer_cb_soft_call_make_whole_invariants_and_ad_parity() {
+            let spec = DeSpiegeleerCbSoftCallMakeWholeSpec {
+                spot_price_s0: 105.0,
+                par_value: 100.0,
+                conversion_ratio_cr: 1.0,
+                soft_call_trigger_multiple: 1.30,
+                make_whole_max_bonus_shares: 0.18,
+                coupon_rate_c: 0.025,
+                risky_bond_yield_y: 0.055,
+                risk_free_rate_r: 0.040,
+                dividend_and_borrow_cost_q: 0.018,
+                equity_volatility_sigma: 0.28,
+                maturity_years_t: 4.0,
+            };
+            let rep = evaluate_despiegeleer_cb_soft_call_make_whole(&spec);
+            assert!(rep.convertible_bond_fair_value > rep.straight_bond_floor);
+            assert!(rep.soft_call_barrier_price_b > rep.conversion_price_k_conv);
+            assert!(rep.make_whole_table_protection_pv > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_despiegeleer_cb_soft_call_make_whole(
+                &DeSpiegeleerCbSoftCallMakeWholeSpec {
+                    spot_price_s0: Dual::<1>::variable(spec.spot_price_s0, 0),
+                    par_value: Dual::<1>::from_value(spec.par_value),
+                    conversion_ratio_cr: Dual::<1>::from_value(spec.conversion_ratio_cr),
+                    soft_call_trigger_multiple: Dual::<1>::from_value(
+                        spec.soft_call_trigger_multiple,
+                    ),
+                    make_whole_max_bonus_shares: Dual::<1>::from_value(
+                        spec.make_whole_max_bonus_shares,
+                    ),
+                    coupon_rate_c: Dual::<1>::from_value(spec.coupon_rate_c),
+                    risky_bond_yield_y: Dual::<1>::from_value(spec.risky_bond_yield_y),
+                    risk_free_rate_r: Dual::<1>::from_value(spec.risk_free_rate_r),
+                    dividend_and_borrow_cost_q: Dual::<1>::from_value(
+                        spec.dividend_and_borrow_cost_q,
+                    ),
+                    equity_volatility_sigma: Dual::<1>::from_value(spec.equity_volatility_sigma),
+                    maturity_years_t: Dual::<1>::from_value(spec.maturity_years_t),
+                },
+            );
+            let mut sp = spec;
+            sp.spot_price_s0 += h;
+            let mut sm = spec;
+            sm.spot_price_s0 -= h;
+            let fd = (evaluate_despiegeleer_cb_soft_call_make_whole(&sp)
+                .convertible_bond_fair_value
+                - evaluate_despiegeleer_cb_soft_call_make_whole(&sm).convertible_bond_fair_value)
+                / (2.0 * h);
+            assert!((r_ad.convertible_bond_fair_value.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_despiegeleer_cb_soft_call_make_whole_module::*;

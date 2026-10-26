@@ -105,7 +105,7 @@ pub fn evaluate_eydeland_wolyniec_ramp_outage_virtual_tolling<T: Real>(
 }
 
 #[cfg(test)]
-mod phase23_tests {
+mod domain_suite_35_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -799,12 +799,12 @@ pub fn price_clean_spark_dark_spread<T: Real>(s: &CleanSparkDarkSpreadSpec<T>) -
 }
 
 #[cfg(test)]
-mod phase14_tests {
+mod domain_suite_26_tests {
     use super::*;
     use ql_ad::Dual;
     type D = Dual<1>;
     #[test]
-    fn phase14_three_leg_weight3_ad() {
+    fn suite26_three_leg_weight3_ad() {
         let kirk = kirk_spread_option(100.0, 95.0, 2.0, 0.2, 0.2, 0.2, 0.02, 1.0, OptionType::Call);
         let eval = |w3: f64| {
             price_three_leg_spread_option(&ThreeLegSpreadOptionSpec {
@@ -930,7 +930,7 @@ pub fn price_commodity_apo_moment_matching<T: Real>(
 }
 
 #[cfg(test)]
-mod phase16_tests {
+mod domain_suite_28_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -996,7 +996,7 @@ mod phase16_tests {
 }
 
 #[cfg(test)]
-mod phase18_tests {
+mod domain_suite_30_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -1087,7 +1087,7 @@ mod phase18_tests {
 }
 
 #[cfg(test)]
-mod phase21_tests {
+mod domain_suite_33_tests {
     use super::*;
 
     fn spec(rho: f64) -> BurgerMultiFuelTollingPlantSpec<f64> {
@@ -1131,7 +1131,7 @@ mod phase21_tests {
 }
 
 #[cfg(test)]
-mod phase26_tests {
+mod domain_suite_38_tests {
     use super::*;
     use ql_ad::Dual;
     fn spec<T: Real>(capacity: T) -> EydelandWolyniecRampOutageVtaSpec<T> {
@@ -1175,3 +1175,452 @@ mod phase26_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
+
+mod evaluate_eydeland_gibson_schwartz_and_kirk_spread_module {
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct EydelandGibsonSchwartzKirkSpreadSpec<T: Real = f64> {
+        pub spot_price: T,
+        pub initial_convenience_yield: T,
+        pub mean_reversion_kappa: T,
+        pub long_run_convenience_yield: T,
+        pub spot_volatility: T,
+        pub convenience_yield_vol: T,
+        pub spot_cy_correlation: T,
+        pub risk_free_rate: T,
+        pub maturity_years: T,
+        pub fuel_futures_price: T,
+        pub heat_rate_multiplier: T,
+        pub fixed_strike_cost: T,
+        pub fuel_volatility: T,
+        pub power_fuel_correlation: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct EydelandGibsonSchwartzKirkSpreadReport<T: Real = f64> {
+        pub convenience_yield_loading_b: T,
+        pub gibson_schwartz_futures_price: T,
+        pub integrated_futures_variance: T,
+        pub terminal_samuelson_futures_vol: T,
+        pub kirk_composite_spread_vol: T,
+        pub kirk_spark_spread_call_pv: T,
+        pub intrinsic_spark_spread_pv: T,
+    }
+
+    pub fn evaluate_eydeland_gibson_schwartz_and_kirk_spread<T: Real>(
+        s: &EydelandGibsonSchwartzKirkSpreadSpec<T>,
+    ) -> EydelandGibsonSchwartzKirkSpreadReport<T> {
+        let t = s.maturity_years.max_val(T::from_f64(1e-6));
+        let kappa = s.mean_reversion_kappa.max_val(T::from_f64(1e-6));
+        let e_kt = (-kappa * t).exp();
+        let b = (T::one() - e_kt) / kappa;
+        let ss2 = s.spot_volatility * s.spot_volatility;
+        let sd2 = s.convenience_yield_vol * s.convenience_yield_vol;
+        let v_gs = ss2 * t
+            - (T::from_f64(2.0)
+                * s.spot_cy_correlation
+                * s.spot_volatility
+                * s.convenience_yield_vol
+                / kappa)
+                * (t - b)
+            + (sd2 / (T::from_f64(2.0) * kappa * kappa * kappa))
+                * (T::from_f64(2.0) * kappa * t - T::from_f64(3.0) + T::from_f64(4.0) * e_kt
+                    - e_kt * e_kt);
+        let f_gs = s.spot_price
+            * (-s.initial_convenience_yield * b
+                + (s.risk_free_rate - s.long_run_convenience_yield) * t
+                + s.long_run_convenience_yield * b
+                + T::from_f64(0.5) * (v_gs - ss2 * t))
+                .exp();
+        let sigma_f = (ss2
+            - T::from_f64(2.0)
+                * s.spot_cy_correlation
+                * s.spot_volatility
+                * s.convenience_yield_vol
+                * b
+            + sd2 * b * b)
+            .max_val(T::from_f64(1e-8))
+            .sqrt();
+        let f_leg2 = s.heat_rate_multiplier * s.fuel_futures_price + s.fixed_strike_cost;
+        let w_fuel =
+            (s.heat_rate_multiplier * s.fuel_futures_price) / f_leg2.max_val(T::from_f64(1e-8));
+        let sigma_leg2 = w_fuel * s.fuel_volatility;
+        let sigma_kirk = (sigma_f * sigma_f
+            - T::from_f64(2.0) * s.power_fuel_correlation * sigma_f * sigma_leg2
+            + sigma_leg2 * sigma_leg2)
+            .max_val(T::from_f64(1e-8))
+            .sqrt();
+        let st = sigma_kirk * t.sqrt();
+        let d1 = ((f_gs / f_leg2).ln() + T::from_f64(0.5) * sigma_kirk * sigma_kirk * t) / st;
+        let d2 = d1 - st;
+        let df = (-s.risk_free_rate * t).exp();
+        let kirk_call = df * (f_gs * norm_cdf(d1) - f_leg2 * norm_cdf(d2));
+        let diff = f_gs - f_leg2;
+        let intr = df * T::from_f64(0.5) * (diff + (diff * diff + T::from_f64(1e-16)).sqrt());
+        EydelandGibsonSchwartzKirkSpreadReport {
+            convenience_yield_loading_b: b,
+            gibson_schwartz_futures_price: f_gs,
+            integrated_futures_variance: v_gs,
+            terminal_samuelson_futures_vol: sigma_f,
+            kirk_composite_spread_vol: sigma_kirk,
+            kirk_spark_spread_call_pv: kirk_call,
+            intrinsic_spark_spread_pv: intr,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_47_tests {
+        use super::*;
+        use ql_ad::Dual;
+        fn spec<T: Real>(x: T) -> EydelandGibsonSchwartzKirkSpreadSpec<T> {
+            EydelandGibsonSchwartzKirkSpreadSpec {
+                spot_price: T::from_f64(55.0) + x,
+                initial_convenience_yield: T::from_f64(0.06),
+                mean_reversion_kappa: T::from_f64(1.2),
+                long_run_convenience_yield: T::from_f64(0.05),
+                spot_volatility: T::from_f64(0.32),
+                convenience_yield_vol: T::from_f64(0.20),
+                spot_cy_correlation: T::from_f64(0.4),
+                risk_free_rate: T::from_f64(0.03),
+                maturity_years: T::from_f64(1.0),
+                fuel_futures_price: T::from_f64(6.0),
+                heat_rate_multiplier: T::from_f64(7.5),
+                fixed_strike_cost: T::from_f64(5.0),
+                fuel_volatility: T::from_f64(0.28),
+                power_fuel_correlation: T::from_f64(0.6),
+            }
+        }
+        #[test]
+        fn suite47_commodities_invariants_and_dual_fd() {
+            let r = evaluate_eydeland_gibson_schwartz_and_kirk_spread(&spec(0.0));
+            assert!(r.kirk_spark_spread_call_pv >= r.intrinsic_spark_spread_pv - 1e-6);
+            assert!(r.integrated_futures_variance > 0.0);
+            let h = 1e-6;
+            let fd = (evaluate_eydeland_gibson_schwartz_and_kirk_spread(&spec(h))
+                .kirk_spark_spread_call_pv
+                - evaluate_eydeland_gibson_schwartz_and_kirk_spread(&spec(-h))
+                    .kirk_spark_spread_call_pv)
+                / (2.0 * h);
+            let ad = evaluate_eydeland_gibson_schwartz_and_kirk_spread(&spec(Dual::<1>::variable(
+                0.0, 0,
+            )))
+            .kirk_spark_spread_call_pv;
+            assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_eydeland_gibson_schwartz_and_kirk_spread_module::*;
+
+mod evaluate_eydeland_clean_spark_spread_option_module {
+    // Eydeland & Wolyniec (2003) & Geman (2005) Power/Gas Clean Spark & Tolling Spread Option
+    // via Bjerksund–Stensland (2014) / Margrabe Three-Leg Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct EydelandCleanSparkSpreadOptionSpec<T: Real = f64> {
+        pub forward_power_price_fp: T,
+        pub forward_gas_price_fg: T,
+        pub plant_heat_rate_h: T,
+        pub fixed_vom_and_carbon_k: T,
+        pub power_volatility_sigma_p: T,
+        pub gas_volatility_sigma_g: T,
+        pub power_gas_corr_rho: T,
+        pub risk_free_rate: T,
+        pub expiry_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct EydelandCleanSparkSpreadOptionReport<T: Real = f64> {
+        pub intrinsic_clean_spark_spread: T,
+        pub composite_fuel_and_vom_strike_a: T,
+        pub composite_spread_volatility: T,
+        pub margrabe_zero_strike_exchange_call: T,
+        pub bjerksund_stensland_spark_call: T,
+        pub margrabe_limit_consistency_error: T,
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn price_spark<T: Real>(
+        fp: T,
+        fuel_leg: T,
+        k_vom: T,
+        sp: T,
+        sg: T,
+        rho: T,
+        df: T,
+        t: T,
+    ) -> (T, T) {
+        let a = (fuel_leg + k_vom).max_val(T::from_f64(1e-6));
+        let w = fuel_leg / a;
+        let var_c = (sp * sp - T::from_f64(2.0) * rho * sp * sg * w + sg * sg * w * w)
+            .max_val(T::from_f64(1e-8));
+        let sig_c = var_c.sqrt();
+        let std = sig_c * t.sqrt();
+        let d1 = ((fp / a).ln() + T::from_f64(0.5) * std * std) / std;
+        let d2 = d1 - std;
+        let call = df * (fp * norm_cdf(d1) - a * norm_cdf(d2));
+        (call, sig_c)
+    }
+
+    pub fn evaluate_eydeland_clean_spark_spread_option<T: Real>(
+        spec: &EydelandCleanSparkSpreadOptionSpec<T>,
+    ) -> EydelandCleanSparkSpreadOptionReport<T> {
+        let fp = spec.forward_power_price_fp.max_val(T::from_f64(1e-4));
+        let fuel = (spec.plant_heat_rate_h * spec.forward_gas_price_fg).max_val(T::from_f64(1e-4));
+        let t = spec.expiry_years_t.max_val(T::from_f64(0.02));
+        let df = (-spec.risk_free_rate * t).exp();
+
+        let intrinsic = fp - fuel - spec.fixed_vom_and_carbon_k;
+        let a = fuel + spec.fixed_vom_and_carbon_k;
+
+        let (bs_call, sig_comp) = price_spark(
+            fp,
+            fuel,
+            spec.fixed_vom_and_carbon_k,
+            spec.power_volatility_sigma_p,
+            spec.gas_volatility_sigma_g,
+            spec.power_gas_corr_rho,
+            df,
+            t,
+        );
+        let (margrabe_call, _) = price_spark(
+            fp,
+            fuel,
+            T::zero(),
+            spec.power_volatility_sigma_p,
+            spec.gas_volatility_sigma_g,
+            spec.power_gas_corr_rho,
+            df,
+            t,
+        );
+
+        // Exact Margrabe (1978) exchange formula at K_VOM = 0:
+        let sig_m = (spec.power_volatility_sigma_p * spec.power_volatility_sigma_p
+            - T::from_f64(2.0)
+                * spec.power_gas_corr_rho
+                * spec.power_volatility_sigma_p
+                * spec.gas_volatility_sigma_g
+            + spec.gas_volatility_sigma_g * spec.gas_volatility_sigma_g)
+            .max_val(T::from_f64(1e-8))
+            .sqrt();
+        let std_m = sig_m * t.sqrt();
+        let d1_m = ((fp / fuel).ln() + T::from_f64(0.5) * std_m * std_m) / std_m;
+        let d2_m = d1_m - std_m;
+        let exact_margrabe = df * (fp * norm_cdf(d1_m) - fuel * norm_cdf(d2_m));
+        let m_err = (margrabe_call - exact_margrabe).abs();
+
+        EydelandCleanSparkSpreadOptionReport {
+            intrinsic_clean_spark_spread: intrinsic,
+            composite_fuel_and_vom_strike_a: a,
+            composite_spread_volatility: sig_comp,
+            margrabe_zero_strike_exchange_call: margrabe_call,
+            bjerksund_stensland_spark_call: bs_call,
+            margrabe_limit_consistency_error: m_err,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_52_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn eydeland_clean_spark_spread_option_invariants_and_ad_parity() {
+            let spec = EydelandCleanSparkSpreadOptionSpec {
+                forward_power_price_fp: 68.0,
+                forward_gas_price_fg: 7.2,
+                plant_heat_rate_h: 7.5,
+                fixed_vom_and_carbon_k: 8.5,
+                power_volatility_sigma_p: 0.42,
+                gas_volatility_sigma_g: 0.36,
+                power_gas_corr_rho: 0.72,
+                risk_free_rate: 0.04,
+                expiry_years_t: 0.5,
+            };
+            let rep = evaluate_eydeland_clean_spark_spread_option(&spec);
+            assert!(rep.margrabe_limit_consistency_error < 1e-12);
+            assert!(rep.margrabe_zero_strike_exchange_call > rep.bjerksund_stensland_spark_call);
+
+            let h = 1e-6;
+            let r_ad =
+                evaluate_eydeland_clean_spark_spread_option(&EydelandCleanSparkSpreadOptionSpec {
+                    forward_power_price_fp: Dual::<1>::variable(spec.forward_power_price_fp, 0),
+                    forward_gas_price_fg: Dual::<1>::from_value(spec.forward_gas_price_fg),
+                    plant_heat_rate_h: Dual::<1>::from_value(spec.plant_heat_rate_h),
+                    fixed_vom_and_carbon_k: Dual::<1>::from_value(spec.fixed_vom_and_carbon_k),
+                    power_volatility_sigma_p: Dual::<1>::from_value(spec.power_volatility_sigma_p),
+                    gas_volatility_sigma_g: Dual::<1>::from_value(spec.gas_volatility_sigma_g),
+                    power_gas_corr_rho: Dual::<1>::from_value(spec.power_gas_corr_rho),
+                    risk_free_rate: Dual::<1>::from_value(spec.risk_free_rate),
+                    expiry_years_t: Dual::<1>::from_value(spec.expiry_years_t),
+                });
+            let mut sp = spec;
+            sp.forward_power_price_fp += h;
+            let mut sm = spec;
+            sm.forward_power_price_fp -= h;
+            let fd = (evaluate_eydeland_clean_spark_spread_option(&sp)
+                .bjerksund_stensland_spark_call
+                - evaluate_eydeland_clean_spark_spread_option(&sm).bjerksund_stensland_spark_call)
+                / (2.0 * h);
+            assert!((r_ad.bjerksund_stensland_spark_call.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_eydeland_clean_spark_spread_option_module::*;
+
+mod evaluate_eydeland_crack_spread_three_asset_kirk_module {
+    // Eydeland & Wolyniec (2003) & Carmona–Durrleman (2003) Three-Asset 3:2:1 Refinery
+    // Crack-Spread Kirk–Margrabe Moment-Matching Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct EydelandThreeAssetCrackSpreadSpec<T: Real = f64> {
+        pub crude_forward_barrel_fc: T,
+        pub gasoline_forward_barrel_fg: T,
+        pub distillate_forward_barrel_fh: T,
+        pub fixed_refining_strike_k: T,
+        pub crude_vol_sigma_c: T,
+        pub gasoline_vol_sigma_g: T,
+        pub distillate_vol_sigma_h: T,
+        pub corr_gas_dist_rho_gh: T,
+        pub corr_product_crude_rho_pc: T,
+        pub risk_free_rate_r: T,
+        pub expiry_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct EydelandThreeAssetCrackSpreadReport<T: Real = f64> {
+        pub composite_product_basket_forward: T,
+        pub intrinsic_321_crack_margin: T,
+        pub composite_product_volatility: T,
+        pub kirk_composite_crack_volatility: T,
+        pub crack_spread_call_price_per_bbl: T,
+        pub crude_leg_delta_sensitivity: T,
+    }
+
+    pub fn evaluate_eydeland_crack_spread_three_asset_kirk<T: Real>(
+        spec: &EydelandThreeAssetCrackSpreadSpec<T>,
+    ) -> EydelandThreeAssetCrackSpreadReport<T> {
+        let fc = spec.crude_forward_barrel_fc.max_val(T::from_f64(1e-4));
+        let fg = spec.gasoline_forward_barrel_fg.max_val(T::from_f64(1e-4));
+        let fh = spec.distillate_forward_barrel_fh.max_val(T::from_f64(1e-4));
+        let k = spec.fixed_refining_strike_k;
+        let t = spec.expiry_years_t.max_val(T::from_f64(0.02));
+        let df = (-spec.risk_free_rate_r * t).exp();
+
+        // 3:2:1 crack per barrel of crude: ProductBasket = (2/3) * F_gas + (1/3) * F_distillate:
+        let w_g = T::from_f64(2.0 / 3.0);
+        let w_h = T::from_f64(1.0 / 3.0);
+        let f_prod = w_g * fg + w_h * fh;
+        let intrinsic = f_prod - fc - k;
+
+        // Levy (1992) moment-matched volatility of the 2:1 product basket:
+        let share_g = (w_g * fg) / f_prod;
+        let share_h = (w_h * fh) / f_prod;
+        let var_prod = (share_g * share_g * spec.gasoline_vol_sigma_g * spec.gasoline_vol_sigma_g
+            + share_h * share_h * spec.distillate_vol_sigma_h * spec.distillate_vol_sigma_h
+            + T::from_f64(2.0)
+                * share_g
+                * share_h
+                * spec.corr_gas_dist_rho_gh
+                * spec.gasoline_vol_sigma_g
+                * spec.distillate_vol_sigma_h)
+            .max_val(T::from_f64(1e-8));
+        let sig_prod = var_prod.sqrt();
+
+        // Kirk (1995) approximation against composite strike A = F_crude + K:
+        let a = (fc + k).max_val(T::from_f64(1e-4));
+        let w_c = fc / a;
+        let var_kirk = (var_prod
+            - T::from_f64(2.0)
+                * spec.corr_product_crude_rho_pc
+                * sig_prod
+                * spec.crude_vol_sigma_c
+                * w_c
+            + spec.crude_vol_sigma_c * spec.crude_vol_sigma_c * w_c * w_c)
+            .max_val(T::from_f64(1e-8));
+        let sig_kirk = var_kirk.sqrt();
+        let std = sig_kirk * t.sqrt();
+
+        let d1 = ((f_prod / a).ln() + T::from_f64(0.5) * std * std) / std;
+        let d2 = d1 - std;
+        let call_price = df * (f_prod * norm_cdf(d1) - a * norm_cdf(d2));
+        let crude_delta = -df * norm_cdf(d2);
+
+        EydelandThreeAssetCrackSpreadReport {
+            composite_product_basket_forward: f_prod,
+            intrinsic_321_crack_margin: intrinsic,
+            composite_product_volatility: sig_prod,
+            kirk_composite_crack_volatility: sig_kirk,
+            crack_spread_call_price_per_bbl: call_price,
+            crude_leg_delta_sensitivity: crude_delta,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_53_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn eydeland_crack_spread_three_asset_kirk_invariants_and_ad_parity() {
+            let spec = EydelandThreeAssetCrackSpreadSpec {
+                crude_forward_barrel_fc: 76.0,
+                gasoline_forward_barrel_fg: 94.0,
+                distillate_forward_barrel_fh: 98.0,
+                fixed_refining_strike_k: 6.5,
+                crude_vol_sigma_c: 0.34,
+                gasoline_vol_sigma_g: 0.38,
+                distillate_vol_sigma_h: 0.36,
+                corr_gas_dist_rho_gh: 0.82,
+                corr_product_crude_rho_pc: 0.86,
+                risk_free_rate_r: 0.04,
+                expiry_years_t: 0.5,
+            };
+            let rep = evaluate_eydeland_crack_spread_three_asset_kirk(&spec);
+            assert!(rep.intrinsic_321_crack_margin > 0.0);
+            assert!(rep.crack_spread_call_price_per_bbl > rep.intrinsic_321_crack_margin * 0.9);
+            assert!(rep.crude_leg_delta_sensitivity < 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_eydeland_crack_spread_three_asset_kirk(
+                &EydelandThreeAssetCrackSpreadSpec {
+                    crude_forward_barrel_fc: Dual::<1>::variable(spec.crude_forward_barrel_fc, 0),
+                    gasoline_forward_barrel_fg: Dual::<1>::from_value(
+                        spec.gasoline_forward_barrel_fg,
+                    ),
+                    distillate_forward_barrel_fh: Dual::<1>::from_value(
+                        spec.distillate_forward_barrel_fh,
+                    ),
+                    fixed_refining_strike_k: Dual::<1>::from_value(spec.fixed_refining_strike_k),
+                    crude_vol_sigma_c: Dual::<1>::from_value(spec.crude_vol_sigma_c),
+                    gasoline_vol_sigma_g: Dual::<1>::from_value(spec.gasoline_vol_sigma_g),
+                    distillate_vol_sigma_h: Dual::<1>::from_value(spec.distillate_vol_sigma_h),
+                    corr_gas_dist_rho_gh: Dual::<1>::from_value(spec.corr_gas_dist_rho_gh),
+                    corr_product_crude_rho_pc: Dual::<1>::from_value(
+                        spec.corr_product_crude_rho_pc,
+                    ),
+                    risk_free_rate_r: Dual::<1>::from_value(spec.risk_free_rate_r),
+                    expiry_years_t: Dual::<1>::from_value(spec.expiry_years_t),
+                },
+            );
+            let mut sp = spec;
+            sp.crude_forward_barrel_fc += h;
+            let mut sm = spec;
+            sm.crude_forward_barrel_fc -= h;
+            let fd = (evaluate_eydeland_crack_spread_three_asset_kirk(&sp)
+                .crack_spread_call_price_per_bbl
+                - evaluate_eydeland_crack_spread_three_asset_kirk(&sm)
+                    .crack_spread_call_price_per_bbl)
+                / (2.0 * h);
+            assert!((r_ad.crack_spread_call_price_per_bbl.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_eydeland_crack_spread_three_asset_kirk_module::*;

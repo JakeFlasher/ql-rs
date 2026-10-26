@@ -141,7 +141,7 @@ fn bgk_monitoring_and_variance_swap() {
 }
 
 #[test]
-fn phase11_variance_and_corridor_replication() {
+fn suite23_variance_and_corridor_replication() {
     let quotes = (0..21)
         .map(|i| VarianceSwapStrikeQuote {
             strike: 60.0 + i as f64 * 4.0,
@@ -171,7 +171,7 @@ fn phase11_variance_and_corridor_replication() {
 }
 
 #[test]
-fn phase12_round4_autocallable_price_greeks_and_life_invariants() {
+fn suite24_autocallable_price_greeks_and_life_invariants() {
     let s = WorstOfAutocallableSpec {
         notional: 1.0,
         spots: vec![100.25, 100.0],

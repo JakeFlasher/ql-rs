@@ -1,7 +1,4 @@
 use crate::Real;
-pub use crate::phase30::*;
-#[allow(unused_imports)]
-pub use crate::phase38::*;
 use nalgebra::{DMatrix, DVector, LU};
 use std::fmt;
 
@@ -515,7 +512,7 @@ pub fn solve_penman_damodaran_riv_aeg_and_implied_erp_ift<T: Real>(
 }
 
 #[cfg(test)]
-mod phase22_tests {
+mod domain_suite_34_tests {
     use super::*;
     use crate::Dual;
     #[test]
@@ -559,7 +556,7 @@ mod phase22_tests {
 }
 
 #[cfg(test)]
-mod phase24_tests {
+mod domain_suite_36_tests {
     use super::*;
     use crate::Dual;
     fn mk<T: Real>(p: T) -> PenmanDamodaranResidualIncomeIerpSpec<T> {
@@ -575,7 +572,7 @@ mod phase24_tests {
         }
     }
     #[test]
-    fn ier_phase24() {
+    fn ier_suite36() {
         let r = solve_penman_damodaran_riv_aeg_and_implied_erp_ift(&mk(110.0));
         assert!(r.riv_ddm_clean_surplus_error.abs() < 1e-11);
         assert!((r.riv_intrinsic_value - 110.0).abs() < 1e-10);

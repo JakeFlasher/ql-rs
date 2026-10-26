@@ -1,43 +1,4 @@
 #![allow(clippy::needless_range_loop)]
-pub use crate::phase37::{
-    MeucciBlackLittermanWoodburyReport, MeucciBlackLittermanWoodburySpec,
-    evaluate_meucci_black_litterman_woodbury_equivalence,
-};
-pub use crate::phase38::{
-    CampbellFamaMacbethShankenReport, CampbellFamaMacbethShankenSpec,
-    CampbellViceiraIntertemporalSaaReport, CampbellViceiraIntertemporalSaaSpec,
-    KarnoskySingerMultiCurrencyReport, KarnoskySingerMultiCurrencySpec,
-    evaluate_campbell_fama_macbeth_and_shanken_eiv,
-    evaluate_campbell_viceira_intertemporal_hedging_saa,
-    evaluate_karnosky_singer_multicurrency_attribution,
-};
-#[allow(unused_imports)]
-pub use crate::phase39::*;
-#[allow(unused_imports)]
-pub use crate::phase40::*;
-#[allow(unused_imports)]
-pub use crate::phase41::*;
-#[allow(unused_imports)]
-pub use crate::phase42::*;
-
-pub use crate::phase30::*;
-pub use crate::phase31::{
-    BrockHommesAdaptiveBeliefReport, BrockHommesAdaptiveBeliefSpec, DgtwTreynorMazuyTimingReport,
-    DgtwTreynorMazuyTimingSpec, evaluate_brock_hommes_adaptive_belief_switching,
-    evaluate_dgtw_characteristic_and_treynor_mazuy_timing,
-};
-pub use crate::phase32::*;
-pub use crate::phase33::{
-    PottersBouchaudStieltjesRieReport, PottersBouchaudStieltjesRieSpec,
-    TsayEgarchHamiltonRegimeReport, TsayEgarchHamiltonRegimeSpec,
-    evaluate_potters_bouchaud_stieltjes_rie_shrinkage,
-    evaluate_tsay_egarch_and_hamilton_markov_switching,
-};
-pub use crate::phase34::*;
-pub use crate::phase35::{
-    GrinoldQianTransferCoefficientFlAmReport, GrinoldQianTransferCoefficientFlAmSpec,
-    evaluate_grinold_qian_transfer_coefficient_and_flam,
-};
 use ql_ad::Real;
 
 #[derive(Clone, Debug)]
@@ -3916,7 +3877,7 @@ pub fn evaluate_grinold_qian_christopherson_ic_decay_and_timing<T: Real>(
 }
 
 #[cfg(test)]
-mod phase23_tests {
+mod domain_suite_35_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -3963,10 +3924,10 @@ mod phase23_tests {
 }
 
 #[cfg(test)]
-mod phase14_tests {
+mod domain_suite_26_tests {
     use super::*;
     #[test]
-    fn phase14_hrp_diagonal_inverse_variance() {
+    fn suite26_hrp_diagonal_inverse_variance() {
         let c = vec![vec![0.04, 0.0], vec![0.0, 0.09]];
         let w = hierarchical_risk_parity_weights(&c);
         assert!((w[0] - 0.09 / 0.13).abs() < 1e-12);
@@ -3975,7 +3936,7 @@ mod phase14_tests {
 }
 
 #[cfg(test)]
-mod phase13_tests {
+mod domain_suite_25_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -4015,7 +3976,7 @@ mod phase13_tests {
 }
 
 #[cfg(test)]
-mod phase15_tests {
+mod domain_suite_27_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -4085,7 +4046,7 @@ mod phase15_tests {
 }
 
 #[cfg(test)]
-mod phase17_tests {
+mod domain_suite_29_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -4157,7 +4118,7 @@ mod phase17_tests {
 }
 
 #[cfg(test)]
-mod phase18_tests {
+mod domain_suite_30_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -4209,7 +4170,7 @@ mod phase18_tests {
 }
 
 #[cfg(test)]
-mod phase19_tests {
+mod domain_suite_31_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -4278,7 +4239,7 @@ mod phase19_tests {
 }
 
 #[cfg(test)]
-mod phase20_tests {
+mod domain_suite_32_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -4330,7 +4291,7 @@ mod phase20_tests {
 }
 
 #[cfg(test)]
-mod phase21_tests {
+mod domain_suite_33_tests {
     use super::*;
 
     #[test]
@@ -4357,7 +4318,7 @@ mod phase21_tests {
 }
 
 #[cfg(test)]
-mod phase22_tests {
+mod domain_suite_34_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -4405,11 +4366,11 @@ mod phase22_tests {
 }
 
 #[cfg(test)]
-mod phase24_tests {
+mod domain_suite_36_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
-    fn rie_and_gp_phase24() {
+    fn rie_and_gp_suite36() {
         let r = solve_potters_bouchaud_rie_nonlinear_shrinkage(&PottersBouchaudRieCovarianceSpec {
             sample_covariance: vec![vec![0.04, 0.01], vec![0.01, 0.09]],
             num_observations_t: 100,
@@ -4530,7 +4491,7 @@ mod phase24_tests {
 }
 
 #[cfg(test)]
-mod phase25_tests {
+mod domain_suite_37_tests {
     use super::*;
     use ql_ad::Dual;
     fn causal<T: Real>(x: T) -> LopezDePradoCausalFactorSpec<T> {
@@ -4615,7 +4576,7 @@ mod phase25_tests {
 }
 
 #[cfg(test)]
-mod phase26_tests {
+mod domain_suite_38_tests {
     use super::*;
     use ql_ad::Dual;
     fn spec<T: Real>(ic: T) -> GrinoldKahnClarkeFundamentalLawSpec<T> {
@@ -4653,7 +4614,7 @@ mod phase26_tests {
 }
 
 #[cfg(test)]
-mod phase27_tests {
+mod domain_suite_39_tests {
     use super::*;
     use ql_ad::Dual;
     fn make<T: Real>(x: T) -> BussetiBoydRiskConstrainedKellySpec<T> {
@@ -4687,7 +4648,7 @@ mod phase27_tests {
     }
 
     #[test]
-    fn phase27_invariants() {
+    fn suite39_invariants() {
         let r = solve_busseti_boyd_risk_constrained_kelly(&make(0.05));
         assert!(r.kelly_fraction_kappa > 0.0 && r.kelly_fraction_kappa <= 1.0);
         assert!(r.horizon_fire_sale_discount_bps < r.initial_fire_sale_dislocation_bps);
@@ -4695,7 +4656,7 @@ mod phase27_tests {
 }
 
 #[cfg(test)]
-mod phase29_tests {
+mod domain_suite_41_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]

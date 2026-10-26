@@ -333,7 +333,7 @@ pub fn evaluate_cgmy_fractional_fft_and_pide<T: Real>(
 }
 
 #[cfg(test)]
-mod phase22_tests {
+mod domain_suite_34_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]

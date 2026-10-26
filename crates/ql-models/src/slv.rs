@@ -414,7 +414,7 @@ pub fn solve_carmona_delarue_mean_field_systemic_interbank_game<T: Real>(
 }
 
 #[cfg(test)]
-mod phase27_tests {
+mod domain_suite_39_tests {
     use super::*;
     use ql_ad::Dual;
     fn make<T: Real>(x: T) -> DoubleHestonKernelSlvSpec<T> {
@@ -451,7 +451,7 @@ mod phase27_tests {
     }
 
     #[test]
-    fn phase27_invariants() {
+    fn suite39_invariants() {
         let r = evaluate_double_heston_cumulants_and_kernel_slv(&make(1.0));
         assert!(
             r.cumulant_c2_variance > 0.0
@@ -462,7 +462,7 @@ mod phase27_tests {
 }
 
 #[cfg(test)]
-mod phase29_tests {
+mod domain_suite_41_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]

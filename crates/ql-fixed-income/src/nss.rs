@@ -313,7 +313,7 @@ pub fn analyze_tuckman_key_rate_durations_and_pca_hedge<T: Real>(
 }
 
 #[cfg(test)]
-mod phase22_tests {
+mod domain_suite_34_tests {
     use super::*;
     use ql_ad::Dual;
 

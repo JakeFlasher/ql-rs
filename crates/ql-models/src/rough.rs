@@ -1,5 +1,4 @@
 #![allow(clippy::needless_range_loop)]
-pub use crate::phase32::*;
 use crate::{Complex, CosHestonEngine, HestonParams};
 use ql_ad::Real;
 use ql_math as ql_mc;
@@ -1069,7 +1068,7 @@ pub fn evaluate_jacquier_chebyshev_rough_vol_surrogate<T: Real>(
 }
 
 #[cfg(test)]
-mod phase23_tests {
+mod domain_suite_35_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -1142,7 +1141,7 @@ mod phase23_tests {
 }
 
 #[cfg(test)]
-mod phase16_tests {
+mod domain_suite_28_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -1202,7 +1201,7 @@ mod phase16_tests {
 }
 
 #[cfg(test)]
-mod phase18_tests {
+mod domain_suite_30_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -1265,7 +1264,7 @@ mod phase18_tests {
 }
 
 #[cfg(test)]
-mod phase21_tests {
+mod domain_suite_33_tests {
     use super::*;
 
     #[test]
@@ -1316,7 +1315,7 @@ mod phase21_tests {
 }
 
 #[cfg(test)]
-mod phase24_tests {
+mod domain_suite_36_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(k: T) -> BayerHorvathOberhauserPathSignatureSpec<T> {
@@ -1338,7 +1337,7 @@ mod phase24_tests {
         }
     }
     #[test]
-    fn phase24() {
+    fn domain_suite_36() {
         let r = evaluate_bayer_oberhauser_signature_option_pricing(&mk(100.));
         assert!(r.chens_identity_max_error.val() < 1e-12);
         assert!(r.shuffle_identity_error.val() < 1e-12);
@@ -1358,7 +1357,7 @@ mod phase24_tests {
 }
 
 #[cfg(test)]
-mod phase28_tests {
+mod domain_suite_40_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(x: T) -> JacquierDeepRoughVolSurrogateSpec<T> {

@@ -1087,14 +1087,14 @@ impl Fd1dHullWhiteBermudanEngine {
 }
 
 #[cfg(test)]
-mod phase14_tests {
+mod domain_suite_26_tests {
     use super::*;
     use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;
     use ql_models::HullWhite1F;
     use ql_time::Date;
     #[test]
-    fn phase14_midcurve_and_cube_are_live() {
+    fn suite26_midcurve_and_cube_are_live() {
         let d = Date::from_ymd(2024, 1, 1).unwrap();
         let ois = FlatForwardCurve::new(d, 0.03);
         let fwd = FlatForwardCurve::new(d, 0.035);

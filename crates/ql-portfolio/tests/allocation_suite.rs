@@ -59,7 +59,7 @@ fn long_only_markowitz_wrapper_is_budgeted() {
 }
 
 #[test]
-fn phase12_mean_cvar_and_execution_invariants() {
+fn suite24_mean_cvar_and_execution_invariants() {
     let cvar_spec = ql_portfolio::MeanCvarSpec {
         scenario_returns: vec![
             vec![-0.08, -0.01],

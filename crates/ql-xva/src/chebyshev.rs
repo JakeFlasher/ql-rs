@@ -528,7 +528,7 @@ pub fn compute_chebyshev_dim_and_mva(
 }
 
 #[cfg(test)]
-mod phase28_tests {
+mod domain_suite_40_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(x: T) -> AlbaneseCrepeyZeronBalanceSheetXvaSpec<T> {

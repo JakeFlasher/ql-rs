@@ -486,7 +486,7 @@ pub fn price_kth_to_default_basket<T: Real>(
 }
 
 #[cfg(test)]
-mod phase13_tests {
+mod domain_suite_25_tests {
     use super::*;
     use ql_curves::{FlatForwardCurve, YieldTermStructure};
     use ql_time::Date;
@@ -726,7 +726,7 @@ pub fn price_mezzanine_tranche_base_correlation<T: Real>(
 }
 
 #[cfg(test)]
-mod phase16_tests {
+mod domain_suite_28_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -989,7 +989,7 @@ pub fn price_okane_bespoke_tranche_and_student_t_basket<T: Real>(
 }
 
 #[cfg(test)]
-mod phase22_tests {
+mod domain_suite_34_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -1054,3 +1054,446 @@ mod phase22_tests {
         assert!(v.val().is_finite() && vd.d[0].is_finite());
     }
 }
+
+mod evaluate_lando_schonbucher_kth_to_default_basket_module {
+    #![allow(clippy::excessive_precision)]
+    use ql_ad::Real;
+    use ql_math::{inv_norm_cdf, norm_cdf};
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct LandoSchonbucherBasketDefaultSpec<T: Real = f64> {
+        pub obligor_hazard_rates: [T; 4],
+        pub factor_loading_beta: T,
+        pub recovery_rate: T,
+        pub risk_free_rate: T,
+        pub maturity_years: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct LandoSchonbucherBasketDefaultReport<T: Real = f64> {
+        pub unconditional_default_count_probs: [T; 5],
+        pub loss_distribution_sum_error: T,
+        pub first_to_default_prob: T,
+        pub second_to_default_prob: T,
+        pub first_to_default_spread_bps: T,
+        pub second_to_default_spread_bps: T,
+        pub correlation_diversification_ratio: T,
+    }
+
+    pub fn evaluate_lando_schonbucher_kth_to_default_basket<T: Real>(
+        spec: &LandoSchonbucherBasketDefaultSpec<T>,
+    ) -> LandoSchonbucherBasketDefaultReport<T> {
+        let nodes = [
+            -2.8569700138728056,
+            -1.3556261799742659,
+            0.0,
+            1.3556261799742659,
+            2.8569700138728056,
+        ];
+        let weights = [
+            0.011257411327720689,
+            0.22207592200561264,
+            0.5333333333333333,
+            0.22207592200561264,
+            0.011257411327720689,
+        ];
+        let t = spec.maturity_years.max_val(T::from_f64(1e-6));
+        let beta = spec.factor_loading_beta;
+        let denom = (T::one() - beta * beta).max_val(T::from_f64(1e-8)).sqrt();
+        let mut c = [T::zero(); 4];
+        let mut sum_lambda = T::zero();
+        for i in 0..4 {
+            let p_i = (T::one() - (-spec.obligor_hazard_rates[i] * t).exp())
+                .max_val(T::from_f64(1e-8))
+                .min_val(T::from_f64(1.0 - 1e-8));
+            c[i] = inv_norm_cdf(p_i);
+            sum_lambda += spec.obligor_hazard_rates[i];
+        }
+        let mut probs = [T::zero(); 5];
+        for q_idx in 0..5 {
+            let m = T::from_f64(nodes[q_idx]);
+            let w = T::from_f64(weights[q_idx]);
+            let mut cond = [T::zero(); 5];
+            cond[0] = T::one();
+            for i in 0..4 {
+                let pi_m = norm_cdf((c[i] - beta * m) / denom);
+                let mut next = [T::zero(); 5];
+                for k in 0..=i {
+                    next[k] += cond[k] * (T::one() - pi_m);
+                    next[k + 1] += cond[k] * pi_m;
+                }
+                cond = next;
+            }
+            for k in 0..5 {
+                probs[k] += w * cond[k];
+            }
+        }
+        let total_p = probs[0] + probs[1] + probs[2] + probs[3] + probs[4];
+        let diff = T::one() - total_p;
+        let err = (diff * diff + T::from_f64(1e-30)).sqrt();
+        let q1 = probs[1] + probs[2] + probs[3] + probs[4];
+        let q2 = probs[2] + probs[3] + probs[4];
+        let lam1 = -(T::one() - q1).max_val(T::from_f64(1e-12)).ln() / t;
+        let lam2 = -(T::one() - q2).max_val(T::from_f64(1e-12)).ln() / t;
+        let df_adj = T::one() + T::from_f64(0.05) * spec.risk_free_rate * t;
+        let lgd = T::one() - spec.recovery_rate;
+        let s1 = lgd * lam1 * df_adj * T::from_f64(10000.0);
+        let s2 = lgd * lam2 * df_adj * T::from_f64(10000.0);
+        LandoSchonbucherBasketDefaultReport {
+            unconditional_default_count_probs: probs,
+            loss_distribution_sum_error: err,
+            first_to_default_prob: q1,
+            second_to_default_prob: q2,
+            first_to_default_spread_bps: s1,
+            second_to_default_spread_bps: s2,
+            correlation_diversification_ratio: lam1 / sum_lambda.max_val(T::from_f64(1e-8)),
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_47_tests {
+        use super::*;
+        use ql_ad::Dual;
+        fn spec<T: Real>(x: T) -> LandoSchonbucherBasketDefaultSpec<T> {
+            LandoSchonbucherBasketDefaultSpec {
+                obligor_hazard_rates: [
+                    T::from_f64(0.015) + x,
+                    T::from_f64(0.02),
+                    T::from_f64(0.025),
+                    T::from_f64(0.03),
+                ],
+                factor_loading_beta: T::from_f64(0.5),
+                recovery_rate: T::from_f64(0.4),
+                risk_free_rate: T::from_f64(0.03),
+                maturity_years: T::from_f64(5.0),
+            }
+        }
+        #[test]
+        fn suite47_credit_invariants_and_dual_fd() {
+            let r = evaluate_lando_schonbucher_kth_to_default_basket(&spec(0.0));
+            assert!(r.loss_distribution_sum_error < 1e-12);
+            assert!(r.first_to_default_spread_bps > r.second_to_default_spread_bps);
+            let h = 1e-6;
+            let fd = (evaluate_lando_schonbucher_kth_to_default_basket(&spec(h))
+                .first_to_default_spread_bps
+                - evaluate_lando_schonbucher_kth_to_default_basket(&spec(-h))
+                    .first_to_default_spread_bps)
+                / (2.0 * h);
+            let ad = evaluate_lando_schonbucher_kth_to_default_basket(&spec(Dual::<1>::variable(
+                0.0, 0,
+            )))
+            .first_to_default_spread_bps;
+            assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-4);
+        }
+    }
+}
+pub use evaluate_lando_schonbucher_kth_to_default_basket_module::*;
+
+mod evaluate_lando_marshall_olkin_fatal_shock_basket_module {
+    // Lando (2004) & Schönbucher (2003) Marshall–Olkin Fatal-Shock Common-Poisson
+    // Dynamic Credit Contagion & First/Second-to-Default Basket Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LandoMarshallOlkinContagionSpec<T: Real = f64> {
+        pub idiosyncratic_intensity_lambda1: T,
+        pub idiosyncratic_intensity_lambda2: T,
+        pub fatal_common_shock_lambda12: T,
+        pub recovery_rate: T,
+        pub risk_free_rate: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct LandoMarshallOlkinContagionReport<T: Real = f64> {
+        pub marginal_hazard_rate_1: T,
+        pub marginal_hazard_rate_2: T,
+        pub default_time_tail_correlation: T,
+        pub joint_survival_prob_stt: T,
+        pub simultaneous_default_prob: T,
+        pub first_to_default_par_spread_bps: T,
+        pub second_to_default_par_spread_bps: T,
+        pub inclusion_exclusion_spread_identity_error: T,
+    }
+
+    pub fn evaluate_lando_marshall_olkin_fatal_shock_basket<T: Real>(
+        spec: &LandoMarshallOlkinContagionSpec<T>,
+    ) -> LandoMarshallOlkinContagionReport<T> {
+        let l1 = spec
+            .idiosyncratic_intensity_lambda1
+            .max_val(T::from_f64(1e-5));
+        let l2 = spec
+            .idiosyncratic_intensity_lambda2
+            .max_val(T::from_f64(1e-5));
+        let l12 = spec.fatal_common_shock_lambda12.max_val(T::zero());
+        let lgd = T::one() - spec.recovery_rate;
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.25));
+
+        // Marginal hazard rates bar_lambda_i = lambda_i + lambda_12
+        let h1 = l1 + l12;
+        let h2 = l2 + l12;
+        let l_tot = l1 + l2 + l12;
+
+        // Marshall-Olkin exponential default-time correlation:
+        // Corr(tau_1, tau_2) = lambda_12 / (lambda_1 + lambda_2 + lambda_12)
+        let rho_tau = l12 / l_tot;
+        let s_tt = (-l_tot * t).exp();
+
+        // Probability that both obligors default simultaneously via the fatal shock before T:
+        let p_sim = (l12 / l_tot) * (T::one() - s_tt);
+
+        // Continuous-premium CDS par spread with constant hazard rate h is (1 - R) * h.
+        // For First-to-Default (tau_FtD = min(tau_1, tau_2) ~ Exp(l1 + l2 + l12)):
+        let s_ftd = lgd * l_tot;
+        let s_1 = lgd * h1;
+        let s_2 = lgd * h2;
+
+        // By inclusion-exclusion on protection legs and risky annuities for Second-to-Default (tau_StD = max(tau_1, tau_2)):
+        let r = spec.risk_free_rate.max_val(T::from_f64(1e-4));
+        let rpv01 = |lam: T| -> T { (T::one() - (-(r + lam) * t).exp()) / (r + lam) };
+        let prot = |lam: T| -> T { lgd * lam * rpv01(lam) };
+
+        let prot_std = prot(h1) + prot(h2) - prot(l_tot);
+        let rpv_std = rpv01(h1) + rpv01(h2) - rpv01(l_tot);
+        let s_std = prot_std / rpv_std.max_val(T::from_f64(1e-8));
+
+        // Protection PV identity check: Prot(1) + Prot(2) = Prot(FtD) + Prot(StD)
+        let id_err = (prot(h1) + prot(h2) - (prot(l_tot) + prot_std)).abs()
+            + ((s_1 + s_2) - (s_ftd + lgd * l12)).abs();
+
+        LandoMarshallOlkinContagionReport {
+            marginal_hazard_rate_1: h1,
+            marginal_hazard_rate_2: h2,
+            default_time_tail_correlation: rho_tau,
+            joint_survival_prob_stt: s_tt,
+            simultaneous_default_prob: p_sim,
+            first_to_default_par_spread_bps: s_ftd * T::from_f64(1e4),
+            second_to_default_par_spread_bps: s_std * T::from_f64(1e4),
+            inclusion_exclusion_spread_identity_error: id_err,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_51_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn lando_marshall_olkin_contagion_invariants_and_ad_parity() {
+            let spec = LandoMarshallOlkinContagionSpec {
+                idiosyncratic_intensity_lambda1: 0.018,
+                idiosyncratic_intensity_lambda2: 0.024,
+                fatal_common_shock_lambda12: 0.012,
+                recovery_rate: 0.40,
+                risk_free_rate: 0.035,
+                maturity_years_t: 5.0,
+            };
+            let rep = evaluate_lando_marshall_olkin_fatal_shock_basket(&spec);
+            assert!(
+                rep.default_time_tail_correlation > 0.0 && rep.default_time_tail_correlation < 1.0
+            );
+            assert!(rep.first_to_default_par_spread_bps > rep.second_to_default_par_spread_bps);
+            assert!(rep.inclusion_exclusion_spread_identity_error < 1e-12);
+
+            let h = 1e-6;
+            let r_ad = evaluate_lando_marshall_olkin_fatal_shock_basket(
+                &LandoMarshallOlkinContagionSpec {
+                    idiosyncratic_intensity_lambda1: Dual::<1>::from_value(
+                        spec.idiosyncratic_intensity_lambda1,
+                    ),
+                    idiosyncratic_intensity_lambda2: Dual::<1>::from_value(
+                        spec.idiosyncratic_intensity_lambda2,
+                    ),
+                    fatal_common_shock_lambda12: Dual::<1>::variable(
+                        spec.fatal_common_shock_lambda12,
+                        0,
+                    ),
+                    recovery_rate: Dual::<1>::from_value(spec.recovery_rate),
+                    risk_free_rate: Dual::<1>::from_value(spec.risk_free_rate),
+                    maturity_years_t: Dual::<1>::from_value(spec.maturity_years_t),
+                },
+            );
+            let mut sp = spec;
+            sp.fatal_common_shock_lambda12 += h;
+            let mut sm = spec;
+            sm.fatal_common_shock_lambda12 -= h;
+            let fd = (evaluate_lando_marshall_olkin_fatal_shock_basket(&sp)
+                .second_to_default_par_spread_bps
+                - evaluate_lando_marshall_olkin_fatal_shock_basket(&sm)
+                    .second_to_default_par_spread_bps)
+                / (2.0 * h);
+            assert!((r_ad.second_to_default_par_spread_bps.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_lando_marshall_olkin_fatal_shock_basket_module::*;
+
+mod evaluate_okane_cdo_base_correlation_tranche_module {
+    // O'Kane (2008) & Brigo–Pallavicini–Torresetti (2010) Synthetic CDO Tranche
+    // Base-Correlation Skew Interpolation & Gauss-Hermite Vasicek Expected Tranche Loss Engine.
+
+    use ql_ad::Real;
+    use ql_math::{inv_norm_cdf, norm_cdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct OKaneCdoBaseCorrelationTrancheSpec<T: Real = f64> {
+        pub portfolio_hazard_rate_lambda: T,
+        pub recovery_rate_r: T,
+        pub attachment_point_k1: T,
+        pub detachment_point_k2: T,
+        pub base_correlation_k1_rho1: T,
+        pub base_correlation_k2_rho2: T,
+        pub ois_discount_rate_r: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct OKaneCdoBaseCorrelationTrancheReport<T: Real = f64> {
+        pub expected_portfolio_loss_fraction: T,
+        pub equity_base_tranche_expected_loss_k1: T,
+        pub senior_base_tranche_expected_loss_k2: T,
+        pub mezzanine_expected_tranche_loss_etl: T,
+        pub base_correlation_skew_slope: T,
+        pub mezzanine_fair_running_spread_bps: T,
+        pub detachment_monotonicity_derivative: T,
+    }
+
+    fn base_tranche_loss_gh5<T: Real>(c_thresh: T, lgd: T, k_det: T, rho: T) -> T {
+        let nodes = [
+            -2.856_970_013_872_805_6,
+            -1.355_626_179_974_266,
+            0.0,
+            1.355_626_179_974_266,
+            2.856_970_013_872_805_6,
+        ];
+        let weights = [
+            0.011_257_411_327_720_69,
+            0.222_075_922_005_612_64,
+            0.533_333_333_333_333_3,
+            0.222_075_922_005_612_64,
+            0.011_257_411_327_720_69,
+        ];
+        let r_clamped = rho.max_val(T::from_f64(0.01)).min_val(T::from_f64(0.95));
+        let sqrt_rho = r_clamped.sqrt();
+        let sqrt_omr = (T::one() - r_clamped).sqrt();
+        let eps = T::from_f64(1e-4);
+
+        let mut acc = T::zero();
+        for (&zm_f, &wm_f) in nodes.iter().zip(weights.iter()) {
+            let zm = T::from_f64(zm_f);
+            let wm = T::from_f64(wm_f);
+            let cond_pd = norm_cdf((c_thresh - sqrt_rho * zm) / sqrt_omr);
+            let cond_loss = lgd * cond_pd;
+            // Smooth min(cond_loss, k_det) = k_det - 0.5 * (diff + sqrt(diff^2 + eps^2))
+            let diff = k_det - cond_loss;
+            let pos_part = T::from_f64(0.5) * (diff + (diff * diff + eps * eps).sqrt());
+            let capped_loss = k_det - pos_part;
+            acc += wm * capped_loss;
+        }
+        acc
+    }
+
+    pub fn evaluate_okane_cdo_base_correlation_tranche<T: Real>(
+        spec: &OKaneCdoBaseCorrelationTrancheSpec<T>,
+    ) -> OKaneCdoBaseCorrelationTrancheReport<T> {
+        let lam = spec.portfolio_hazard_rate_lambda.max_val(T::from_f64(1e-4));
+        let lgd = (T::one() - spec.recovery_rate_r).max_val(T::from_f64(0.05));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.25));
+        let pd = (T::one() - (-lam * t).exp())
+            .max_val(T::from_f64(1e-5))
+            .min_val(T::from_f64(0.999));
+        let c_thresh = inv_norm_cdf(pd);
+        let exp_port_loss = lgd * pd;
+
+        let k1 = spec.attachment_point_k1.max_val(T::from_f64(0.005));
+        let k2 = spec.detachment_point_k2.max_val(k1 + T::from_f64(0.01));
+        let width = k2 - k1;
+
+        let el_k1 = base_tranche_loss_gh5(c_thresh, lgd, k1, spec.base_correlation_k1_rho1);
+        let el_k2 = base_tranche_loss_gh5(c_thresh, lgd, k2, spec.base_correlation_k2_rho2);
+        let el_mezz_dollar = (el_k2 - el_k1).max_val(T::from_f64(1e-6));
+        let etl_mezz = (el_mezz_dollar / width).min_val(T::one());
+
+        let skew_slope = (spec.base_correlation_k2_rho2 - spec.base_correlation_k1_rho1) / width;
+
+        let r = spec.ois_discount_rate_r.max_val(T::from_f64(1e-4));
+        let df_mid = (-r * t * T::from_f64(0.5)).exp();
+        let annuity = ((T::one() - (-r * t).exp()) / r) * (T::one() - T::from_f64(0.5) * etl_mezz);
+        let spread_bps =
+            T::from_f64(10_000.0) * (df_mid * etl_mezz) / annuity.max_val(T::from_f64(0.1));
+
+        let dk = T::from_f64(1e-3);
+        let el_k2_up = base_tranche_loss_gh5(c_thresh, lgd, k2 + dk, spec.base_correlation_k2_rho2);
+        let mono_deriv = (el_k2_up - el_k2) / dk;
+
+        OKaneCdoBaseCorrelationTrancheReport {
+            expected_portfolio_loss_fraction: exp_port_loss,
+            equity_base_tranche_expected_loss_k1: el_k1,
+            senior_base_tranche_expected_loss_k2: el_k2,
+            mezzanine_expected_tranche_loss_etl: etl_mezz,
+            base_correlation_skew_slope: skew_slope,
+            mezzanine_fair_running_spread_bps: spread_bps,
+            detachment_monotonicity_derivative: mono_deriv,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_55_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn okane_cdo_base_correlation_tranche_invariants_and_ad_parity() {
+            let spec = OKaneCdoBaseCorrelationTrancheSpec {
+                portfolio_hazard_rate_lambda: 0.018,
+                recovery_rate_r: 0.40,
+                attachment_point_k1: 0.03,
+                detachment_point_k2: 0.07,
+                base_correlation_k1_rho1: 0.24,
+                base_correlation_k2_rho2: 0.36,
+                ois_discount_rate_r: 0.035,
+                maturity_years_t: 5.0,
+            };
+            let rep = evaluate_okane_cdo_base_correlation_tranche(&spec);
+            assert!(
+                rep.senior_base_tranche_expected_loss_k2 > rep.equity_base_tranche_expected_loss_k1
+            );
+            assert!(
+                rep.mezzanine_expected_tranche_loss_etl > 0.0
+                    && rep.mezzanine_expected_tranche_loss_etl < 1.0
+            );
+            assert!(
+                rep.detachment_monotonicity_derivative > 0.0
+                    && rep.detachment_monotonicity_derivative < 1.0
+            );
+
+            let h = 1e-6;
+            let r_ad =
+                evaluate_okane_cdo_base_correlation_tranche(&OKaneCdoBaseCorrelationTrancheSpec {
+                    portfolio_hazard_rate_lambda: Dual::<1>::variable(
+                        spec.portfolio_hazard_rate_lambda,
+                        0,
+                    ),
+                    recovery_rate_r: Dual::<1>::from_value(spec.recovery_rate_r),
+                    attachment_point_k1: Dual::<1>::from_value(spec.attachment_point_k1),
+                    detachment_point_k2: Dual::<1>::from_value(spec.detachment_point_k2),
+                    base_correlation_k1_rho1: Dual::<1>::from_value(spec.base_correlation_k1_rho1),
+                    base_correlation_k2_rho2: Dual::<1>::from_value(spec.base_correlation_k2_rho2),
+                    ois_discount_rate_r: Dual::<1>::from_value(spec.ois_discount_rate_r),
+                    maturity_years_t: Dual::<1>::from_value(spec.maturity_years_t),
+                });
+            let mut sp = spec;
+            sp.portfolio_hazard_rate_lambda += h;
+            let mut sm = spec;
+            sm.portfolio_hazard_rate_lambda -= h;
+            let fd = (evaluate_okane_cdo_base_correlation_tranche(&sp)
+                .mezzanine_fair_running_spread_bps
+                - evaluate_okane_cdo_base_correlation_tranche(&sm)
+                    .mezzanine_fair_running_spread_bps)
+                / (2.0 * h);
+            assert!((r_ad.mezzanine_fair_running_spread_bps.d[0] - fd).abs() < 1e-3);
+        }
+    }
+}
+pub use evaluate_okane_cdo_base_correlation_tranche_module::*;

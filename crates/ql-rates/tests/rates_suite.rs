@@ -253,7 +253,7 @@ fn bermudan_tree_and_fd_are_live_for_payer_and_receiver() {
 }
 
 #[test]
-fn phase12_g2_fmm_surface_invariants() {
+fn suite24_g2_fmm_surface_invariants() {
     let (ois, fwd) = curve();
     let model = G2PlusPlus {
         a: 0.1,

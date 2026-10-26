@@ -190,7 +190,7 @@ pub fn carr_madan_fft_levy_price_strip<T: Real, M: LevyModel<T>>(
 }
 
 #[cfg(test)]
-mod phase14_tests {
+mod domain_suite_26_tests {
     use super::*;
     use crate::{VarianceGamma, cos_levy_price_strip};
     use ql_ad::Dual;

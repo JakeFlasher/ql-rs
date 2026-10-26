@@ -1172,7 +1172,7 @@ pub fn evaluate_fournie_lasry_lions_malliavin_bel_greeks<T: Real>(
 }
 
 #[cfg(test)]
-mod phase22_tests {
+mod domain_suite_34_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -1213,7 +1213,7 @@ mod phase22_tests {
 }
 
 #[cfg(test)]
-mod phase25_tests {
+mod domain_suite_37_tests {
     use super::*;
     use ql_ad::Dual;
     fn bel<T: Real>(x: T) -> FournieLasryLionsMalliavinBelSpec<T> {
@@ -1273,7 +1273,7 @@ mod phase25_tests {
 }
 
 #[cfg(test)]
-mod phase23_tests {
+mod domain_suite_35_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -1327,7 +1327,7 @@ mod phase23_tests {
 }
 
 #[cfg(test)]
-mod phase26_tests {
+mod domain_suite_38_tests {
     use super::*;
     use ql_ad::Dual;
     fn spec<T: Real>(spot: T) -> GilesCapriottiMultilevelMcAadSpec<T> {
@@ -1363,7 +1363,7 @@ mod phase26_tests {
 }
 
 #[cfg(test)]
-mod phase29_tests {
+mod domain_suite_41_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -1399,7 +1399,7 @@ mod phase29_tests {
 }
 
 #[cfg(test)]
-mod phase21_tests {
+mod domain_suite_33_tests {
     use super::*;
 
     #[test]

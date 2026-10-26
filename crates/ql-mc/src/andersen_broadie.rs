@@ -158,7 +158,7 @@ impl AmcEngine {
 }
 
 #[cfg(test)]
-mod phase13_tests {
+mod domain_suite_25_tests {
     use super::*;
     #[test]
     fn bounds_order() {

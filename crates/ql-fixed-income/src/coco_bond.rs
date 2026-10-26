@@ -342,7 +342,7 @@ pub fn price_despiegeleer_coco_and_mandatory_convertible<T: Real>(
 }
 
 #[cfg(test)]
-mod phase27_tests {
+mod domain_suite_39_tests {
     use super::*;
     use ql_ad::Dual;
     fn make<T: Real>(x: T) -> AcharyaFedsBankRunAndCocoSpec<T> {
@@ -376,7 +376,7 @@ mod phase27_tests {
     }
 
     #[test]
-    fn phase27_invariants() {
+    fn suite39_invariants() {
         let r = analyze_acharya_feds_bank_run_and_optimal_coco(&make(100.0));
         assert!(r.post_coco_stabilized_run_fraction < r.endogenous_uninsured_run_fraction);
         assert!(r.economic_equity_post_coco_conversion > r.economic_equity_with_run_pre_coco);
@@ -384,11 +384,11 @@ mod phase27_tests {
 }
 
 #[cfg(test)]
-mod phase14_tests {
+mod domain_suite_26_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
-    fn phase14_coco_barrier_and_spot_delta() {
+    fn suite26_coco_barrier_and_spot_delta() {
         let s = CocoBondSpec {
             face_value: 100.0,
             coupon_rate: 0.05,
@@ -426,7 +426,7 @@ mod phase14_tests {
 }
 
 #[cfg(test)]
-mod phase22_tests {
+mod domain_suite_34_tests {
     use super::*;
     #[test]
     fn converted_leg_discount_is_finite() {

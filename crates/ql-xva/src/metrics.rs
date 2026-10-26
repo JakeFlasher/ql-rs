@@ -1,15 +1,5 @@
 #![allow(clippy::too_many_arguments)]
 use crate::NpvCube;
-pub use crate::phase35::*;
-pub use crate::phase37::*;
-#[allow(unused_imports)]
-pub use crate::phase39::*;
-#[allow(unused_imports)]
-pub use crate::phase40::*;
-#[allow(unused_imports)]
-pub use crate::phase41::*;
-#[allow(unused_imports)]
-pub use crate::phase42::*;
 use ql_ad::Real;
 
 #[derive(Clone, Debug)]
@@ -1784,7 +1774,7 @@ pub fn evaluate_crepey_bielecki_brigo_marshall_olkin_xva<T: Real>(
 }
 
 #[cfg(test)]
-mod phase23_tests {
+mod domain_suite_35_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -1861,13 +1851,13 @@ mod phase23_tests {
 }
 
 #[cfg(test)]
-mod phase14_tests {
+mod domain_suite_26_tests {
     use super::*;
     use crate::NpvCube;
     use ql_curves::FlatForwardCurve;
     use ql_time::Date;
     #[test]
-    fn phase14_correlated_ftd_is_finite() {
+    fn suite26_correlated_ftd_is_finite() {
         let d = Date::from_ymd(2024, 1, 1).unwrap();
         let curve = FlatForwardCurve::new(d, 0.02);
         let mut cube = NpvCube::new(1, vec![0.5, 1.0], 2);
@@ -1883,7 +1873,7 @@ mod phase14_tests {
 }
 
 #[cfg(test)]
-mod phase13_tests {
+mod domain_suite_25_tests {
     use super::*;
     #[test]
     fn contingent_empty_safe() {
@@ -1902,7 +1892,7 @@ mod phase13_tests {
 }
 
 #[cfg(test)]
-mod phase18_tests {
+mod domain_suite_30_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -1985,7 +1975,7 @@ mod phase18_tests {
 }
 
 #[cfg(test)]
-mod phase20_tests {
+mod domain_suite_32_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -2087,7 +2077,7 @@ mod phase20_tests {
 }
 
 #[cfg(test)]
-mod phase21_tests {
+mod domain_suite_33_tests {
     use super::*;
 
     #[test]
@@ -2116,7 +2106,7 @@ mod phase21_tests {
 }
 
 #[cfg(test)]
-mod phase24_tests {
+mod domain_suite_36_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(x: T) -> CrepeyBieleckiMarshallOlkinBilateralXvaSpec<T> {
@@ -2137,7 +2127,7 @@ mod phase24_tests {
         }
     }
     #[test]
-    fn phase24() {
+    fn domain_suite_36() {
         let r = compute_crepey_bielecki_marshall_olkin_bilateral_xva(&mk(0.0));
         assert_eq!(r.kendall_tau_default_correlation, 0.0);
         assert_eq!(r.cva_common_shock_contagion, 0.0);
@@ -2160,7 +2150,7 @@ mod phase24_tests {
 }
 
 #[cfg(test)]
-mod phase27_tests {
+mod domain_suite_39_tests {
     use super::*;
     use ql_ad::Dual;
     fn make<T: Real>(x: T) -> AlbaneseCrepeyMporBalanceSheetSpec<T> {
@@ -2196,7 +2186,7 @@ mod phase27_tests {
     }
 
     #[test]
-    fn phase27_invariants() {
+    fn suite39_invariants() {
         let r = compute_albanese_crepey_mpor_and_balance_sheet_xva(&make(1.0));
         assert!(r.sticky_mpor_cva > r.classical_mpor_cva);
         assert!(

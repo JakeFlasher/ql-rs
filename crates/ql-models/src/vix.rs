@@ -334,7 +334,7 @@ pub fn evaluate_quintic_ou_spx_vix<T: Real>(
 }
 
 #[cfg(test)]
-mod phase19_tests {
+mod domain_suite_31_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -731,7 +731,7 @@ pub fn evaluate_mixed_rough_bergomi_vix<T: Real>(
 }
 
 #[cfg(test)]
-mod phase20_tests {
+mod domain_suite_32_tests {
     use super::*;
     use ql_ad::Dual;
 

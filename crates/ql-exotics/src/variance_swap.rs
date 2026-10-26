@@ -466,7 +466,7 @@ pub fn price_gamma_swap_and_variance_option<T: Real>(
 }
 
 #[cfg(test)]
-mod phase19_tests {
+mod domain_suite_31_tests {
     use super::*;
     use ql_ad::Dual;
     use ql_models::HestonParams;

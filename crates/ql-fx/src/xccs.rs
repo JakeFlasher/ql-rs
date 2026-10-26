@@ -437,7 +437,7 @@ pub fn price_mtm_resetting_xccs<T: Real>(
 }
 
 #[cfg(test)]
-mod phase18_tests {
+mod domain_suite_30_tests {
     use super::*;
     use ql_ad::Dual;
     use ql_curves::FlatForwardCurve;
@@ -494,7 +494,7 @@ mod phase18_tests {
 }
 
 #[cfg(test)]
-mod phase28_tests {
+mod domain_suite_40_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(x: T) -> BaranBianchettiMtmXccyBasisSpec<T> {

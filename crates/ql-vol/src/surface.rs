@@ -1,14 +1,3 @@
-pub use crate::phase36::*;
-pub use crate::phase37::*;
-pub use crate::phase38::*;
-#[allow(unused_imports)]
-pub use crate::phase39::*;
-#[allow(unused_imports)]
-pub use crate::phase40::*;
-#[allow(unused_imports)]
-pub use crate::phase41::*;
-#[allow(unused_imports)]
-pub use crate::phase42::*;
 use nalgebra::{DMatrix, DVector};
 use ql_ad::{Dual, Dual2, IftSystemSensitivity, Real};
 use ql_math::{MathError, levenberg_marquardt};
@@ -2078,7 +2067,7 @@ pub fn evaluate_gatheral_demeterfi_corridor_variance_and_skew<T: Real>(
 }
 
 #[cfg(test)]
-mod phase27_tests {
+mod domain_suite_39_tests {
     use super::*;
     use ql_ad::Dual;
     fn make<T: Real>(x: T) -> MingoneGlobalArbitrageFreeEssviSpec<T> {
@@ -2103,7 +2092,7 @@ mod phase27_tests {
     }
 
     #[test]
-    fn phase27_invariants() {
+    fn suite39_invariants() {
         let s = make(0.1);
         let r = evaluate_mingone_global_arbitrage_free_essvi(&s);
         assert!(r.slice0_implied_vols.len() == s.test_log_moneyness_grid.len());
@@ -2113,7 +2102,7 @@ mod phase27_tests {
 }
 
 #[cfg(test)]
-mod phase23_tests {
+mod domain_suite_35_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]
@@ -2180,7 +2169,7 @@ mod phase23_tests {
 }
 
 #[cfg(test)]
-mod phase13_tests {
+mod domain_suite_25_tests {
     use super::*;
     #[test]
     fn essvi_three_slice_vega() {
@@ -2215,7 +2204,7 @@ mod phase13_tests {
 }
 
 #[cfg(test)]
-mod phase21_tests {
+mod domain_suite_33_tests {
     use super::*;
 
     #[test]
@@ -2244,7 +2233,7 @@ mod phase21_tests {
 }
 
 #[cfg(test)]
-mod phase24_tests {
+mod domain_suite_36_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(x: T) -> HestonNandiTsayDccGarchSpec<T> {
@@ -2265,7 +2254,7 @@ mod phase24_tests {
         }
     }
     #[test]
-    fn phase24() {
+    fn domain_suite_36() {
         let r = evaluate_heston_nandi_and_tsay_dcc_garch(&mk(100.));
         assert!(r.martingale_mgf_error.val() < 1e-12);
         assert!(r.terminal_dcc_correlation.val().abs() < 1.);
@@ -2280,7 +2269,7 @@ mod phase24_tests {
 }
 
 #[cfg(test)]
-mod phase26_tests {
+mod domain_suite_38_tests {
     use super::*;
     use ql_ad::Dual;
     fn spec<T: Real>(omega: T) -> BergomiForwardStartNapoleonVolSpec<T> {
@@ -2322,7 +2311,7 @@ mod phase26_tests {
 }
 
 #[cfg(test)]
-mod phase28_tests {
+mod domain_suite_40_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(x: T) -> BourgeyGatheralBergomiGuyonSmileSpec<T> {
@@ -2362,7 +2351,7 @@ mod phase28_tests {
 }
 
 #[cfg(test)]
-mod phase29_tests {
+mod domain_suite_41_tests {
     use super::*;
     use ql_ad::Dual;
     #[test]

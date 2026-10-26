@@ -445,7 +445,7 @@ pub fn analyze_callable_bond_oas_ad<T: Real>(
 }
 
 #[cfg(test)]
-mod phase18_tests {
+mod domain_suite_30_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -745,7 +745,7 @@ pub fn analyze_black_karasinski_callable_frn_oas_ad<T: Real>(
 }
 
 #[cfg(test)]
-mod phase20_tests {
+mod domain_suite_32_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -797,3 +797,716 @@ mod phase20_tests {
         assert!((ad.d[0] - fd).abs() < 1e-4);
     }
 }
+
+mod evaluate_fabozzi_treasury_futures_ctd_and_switch_option_module {
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    #[inline]
+    fn smin<T: Real>(a: T, b: T) -> T {
+        let d = a - b;
+        T::from_f64(0.5) * (a + b - (d * d + T::from_f64(1e-16)).sqrt())
+    }
+
+    #[inline]
+    fn smax<T: Real>(a: T, b: T) -> T {
+        let d = a - b;
+        T::from_f64(0.5) * (a + b + (d * d + T::from_f64(1e-16)).sqrt())
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct FabozziTreasuryFuturesCtdSwitchSpec<T: Real = f64> {
+        pub bond_coupons: [T; 2],
+        pub bond_maturities: [T; 2],
+        pub bond_clean_prices: [T; 2],
+        pub bond_modified_durations: [T; 2],
+        pub futures_price: T,
+        pub delivery_horizon_years: T,
+        pub repo_rate: T,
+        pub yield_volatility: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct FabozziTreasuryFuturesCtdSwitchReport<T: Real = f64> {
+        pub conversion_factors: [T; 2],
+        pub gross_basis: [T; 2],
+        pub net_basis_bnoc: [T; 2],
+        pub implied_repo_rates: [T; 2],
+        pub ctd_implied_repo_rate: T,
+        pub ctd_net_basis_bnoc: T,
+        pub quality_switch_option_value: T,
+        pub switch_adjusted_theoretical_futures: T,
+    }
+
+    pub fn evaluate_fabozzi_treasury_futures_ctd_and_switch_option<T: Real>(
+        spec: &FabozziTreasuryFuturesCtdSwitchSpec<T>,
+    ) -> FabozziTreasuryFuturesCtdSwitchReport<T> {
+        let mut cfs = [T::zero(); 2];
+        let mut gbasis = [T::zero(); 2];
+        let mut nbasis = [T::zero(); 2];
+        let mut irrs = [T::zero(); 2];
+        let mut f_conv = [T::zero(); 2];
+        let tau = spec.delivery_horizon_years.max_val(T::from_f64(1e-6));
+        for k in 0..2 {
+            let disc = T::from_f64(1.03).pow(-T::from_f64(2.0) * spec.bond_maturities[k]);
+            let cf = (spec.bond_coupons[k] / T::from_f64(0.06)) * (T::one() - disc) + disc;
+            let p = spec.bond_clean_prices[k];
+            let gb = p - spec.futures_price * cf;
+            let carry = (T::from_f64(100.0) * spec.bond_coupons[k] - p * spec.repo_rate) * tau;
+            let nb = gb - carry;
+            let irr = (spec.futures_price * cf + T::from_f64(100.0) * spec.bond_coupons[k] * tau
+                - p)
+                / (p * tau);
+            cfs[k] = cf;
+            gbasis[k] = gb;
+            nbasis[k] = nb;
+            irrs[k] = irr;
+            f_conv[k] = (p - carry) / cf;
+        }
+        let ctd_irr = smax(irrs[0], irrs[1]);
+        let ctd_bnoc = smin(nbasis[0], nbasis[1]);
+        let dv0 = spec.bond_modified_durations[0] * spec.bond_clean_prices[0] / cfs[0];
+        let dv1 = spec.bond_modified_durations[1] * spec.bond_clean_prices[1] / cfs[1];
+        let d_dv = dv1 - dv0;
+        let sigma_s = ((d_dv * d_dv + T::from_f64(1e-6))
+            * spec.yield_volatility
+            * spec.yield_volatility
+            * tau)
+            .sqrt();
+        let diff_f = f_conv[1] - f_conv[0];
+        let d = -((diff_f * diff_f + T::from_f64(1e-12)).sqrt()) / sigma_s;
+        let switch_opt = (-spec.repo_rate * tau).exp()
+            * (sigma_s * norm_pdf(d) + d * sigma_s * norm_cdf(d)).max_val(T::from_f64(1e-8));
+        let min_conv = smin(f_conv[0], f_conv[1]);
+        FabozziTreasuryFuturesCtdSwitchReport {
+            conversion_factors: cfs,
+            gross_basis: gbasis,
+            net_basis_bnoc: nbasis,
+            implied_repo_rates: irrs,
+            ctd_implied_repo_rate: ctd_irr,
+            ctd_net_basis_bnoc: ctd_bnoc,
+            quality_switch_option_value: switch_opt,
+            switch_adjusted_theoretical_futures: min_conv - switch_opt,
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct AyacheForsythVetzalConvertibleSpec<T: Real = f64> {
+        pub spot_price: T,
+        pub bond_par: T,
+        pub coupon_rate: T,
+        pub conversion_ratio: T,
+        pub maturity_years: T,
+        pub risk_free_rate: T,
+        pub dividend_yield: T,
+        pub equity_volatility: T,
+        pub hazard_rate: T,
+        pub bond_recovery_rate: T,
+        pub equity_default_jump_loss_eta: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct AyacheForsythVetzalConvertibleReport<T: Real = f64> {
+        pub tf_cash_only_bond_floor: T,
+        pub tf_convertible_fair_value: T,
+        pub afv_jump_compensated_equity_drift: T,
+        pub afv_expected_default_recovery_pv: T,
+        pub afv_survival_continuation_pv: T,
+        pub afv_convertible_fair_value: T,
+        pub tf_vs_afv_splitting_wedge: T,
+    }
+
+    fn bs_call<T: Real>(s: T, k: T, sigma: T, r: T, q: T, t: T) -> T {
+        let st = sigma * t.sqrt();
+        let d1 = ((s / k).ln() + (r - q + T::from_f64(0.5) * sigma * sigma) * t) / st;
+        let d2 = d1 - st;
+        s * (-q * t).exp() * norm_cdf(d1) - k * (-r * t).exp() * norm_cdf(d2)
+    }
+
+    pub fn evaluate_ayache_forsyth_vetzal_default_coupled_cb<T: Real>(
+        spec: &AyacheForsythVetzalConvertibleSpec<T>,
+    ) -> AyacheForsythVetzalConvertibleReport<T> {
+        let sc = (T::one() - spec.bond_recovery_rate) * spec.hazard_rate;
+        let rc = (spec.risk_free_rate + sc).max_val(T::from_f64(1e-8));
+        let t = spec.maturity_years.max_val(T::from_f64(1e-6));
+        let b_tf = spec.bond_par * (-rc * t).exp()
+            + spec.coupon_rate * spec.bond_par * (T::one() - (-rc * t).exp()) / rc;
+        let k_tf = b_tf / spec.conversion_ratio;
+        let v_tf = b_tf
+            + spec.conversion_ratio
+                * bs_call(
+                    spec.spot_price,
+                    k_tf,
+                    spec.equity_volatility,
+                    spec.risk_free_rate,
+                    spec.dividend_yield,
+                    t,
+                );
+        let drift_afv = spec.risk_free_rate - spec.dividend_yield
+            + spec.hazard_rate * spec.equity_default_jump_loss_eta;
+        let q_afv = spec.dividend_yield - spec.hazard_rate * spec.equity_default_jump_loss_eta;
+        let r_rf = spec.risk_free_rate.max_val(T::from_f64(1e-8));
+        let b_rf = spec.bond_par * (-r_rf * t).exp()
+            + spec.coupon_rate * spec.bond_par * (T::one() - (-r_rf * t).exp()) / r_rf;
+        let surv = (-spec.hazard_rate * t).exp()
+            * (b_rf
+                + spec.conversion_ratio
+                    * bs_call(
+                        spec.spot_price,
+                        b_rf / spec.conversion_ratio,
+                        spec.equity_volatility,
+                        spec.risk_free_rate,
+                        q_afv,
+                        t,
+                    ));
+        let rl = (spec.risk_free_rate + spec.hazard_rate).max_val(T::from_f64(1e-8));
+        let def_claim = smax(
+            spec.bond_recovery_rate * spec.bond_par,
+            spec.conversion_ratio
+                * (T::one() - spec.equity_default_jump_loss_eta)
+                * spec.spot_price,
+        );
+        let rec_pv = (spec.hazard_rate / rl) * (T::one() - (-rl * t).exp()) * def_claim;
+        let v_afv = surv + rec_pv;
+        let wedge_diff = v_afv - v_tf;
+        AyacheForsythVetzalConvertibleReport {
+            tf_cash_only_bond_floor: b_tf,
+            tf_convertible_fair_value: v_tf,
+            afv_jump_compensated_equity_drift: drift_afv,
+            afv_expected_default_recovery_pv: rec_pv,
+            afv_survival_continuation_pv: surv,
+            afv_convertible_fair_value: v_afv,
+            tf_vs_afv_splitting_wedge: (wedge_diff * wedge_diff + T::from_f64(1e-24)).sqrt(),
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_47_tests {
+        use super::*;
+        use ql_ad::Dual;
+        fn ctd_spec<T: Real>(x: T) -> FabozziTreasuryFuturesCtdSwitchSpec<T> {
+            FabozziTreasuryFuturesCtdSwitchSpec {
+                bond_coupons: [T::from_f64(0.06), T::from_f64(0.045)],
+                bond_maturities: [T::from_f64(7.0), T::from_f64(9.5)],
+                bond_clean_prices: [T::from_f64(101.0) + x, T::from_f64(94.5)],
+                bond_modified_durations: [T::from_f64(5.8), T::from_f64(7.6)],
+                futures_price: T::from_f64(100.2),
+                delivery_horizon_years: T::from_f64(0.25),
+                repo_rate: T::from_f64(0.04),
+                yield_volatility: T::from_f64(0.01),
+            }
+        }
+        fn afv_spec<T: Real>(x: T) -> AyacheForsythVetzalConvertibleSpec<T> {
+            AyacheForsythVetzalConvertibleSpec {
+                spot_price: T::from_f64(100.0) + x,
+                bond_par: T::from_f64(100.0),
+                coupon_rate: T::from_f64(0.04),
+                conversion_ratio: T::one(),
+                maturity_years: T::from_f64(3.0),
+                risk_free_rate: T::from_f64(0.03),
+                dividend_yield: T::from_f64(0.015),
+                equity_volatility: T::from_f64(0.25),
+                hazard_rate: T::from_f64(0.025),
+                bond_recovery_rate: T::from_f64(0.4),
+                equity_default_jump_loss_eta: T::from_f64(0.7),
+            }
+        }
+        #[test]
+        fn suite47_fixed_income_invariants_and_dual_fd() {
+            let c0 = evaluate_fabozzi_treasury_futures_ctd_and_switch_option(&ctd_spec(0.0));
+            assert!((c0.conversion_factors[0] - 1.0).abs() < 1e-12);
+            assert!(c0.quality_switch_option_value > 0.0);
+            let h = 1e-6;
+            let fd_c = (evaluate_fabozzi_treasury_futures_ctd_and_switch_option(&ctd_spec(h))
+                .switch_adjusted_theoretical_futures
+                - evaluate_fabozzi_treasury_futures_ctd_and_switch_option(&ctd_spec(-h))
+                    .switch_adjusted_theoretical_futures)
+                / (2.0 * h);
+            let ad_c = evaluate_fabozzi_treasury_futures_ctd_and_switch_option(&ctd_spec(
+                Dual::<1>::variable(0.0, 0),
+            ))
+            .switch_adjusted_theoretical_futures;
+            assert!(ad_c.d[0].abs() > 1e-6 && (ad_c.d[0] - fd_c).abs() < 1e-5);
+
+            let a0 = evaluate_ayache_forsyth_vetzal_default_coupled_cb(&afv_spec(0.0));
+            assert!(a0.afv_jump_compensated_equity_drift > 0.03 - 0.015);
+            assert!(a0.afv_convertible_fair_value >= a0.tf_cash_only_bond_floor);
+            let fd_a = (evaluate_ayache_forsyth_vetzal_default_coupled_cb(&afv_spec(h))
+                .afv_convertible_fair_value
+                - evaluate_ayache_forsyth_vetzal_default_coupled_cb(&afv_spec(-h))
+                    .afv_convertible_fair_value)
+                / (2.0 * h);
+            let ad_a = evaluate_ayache_forsyth_vetzal_default_coupled_cb(&afv_spec(
+                Dual::<1>::variable(0.0, 0),
+            ))
+            .afv_convertible_fair_value;
+            assert!(ad_a.d[0].abs() > 1e-6 && (ad_a.d[0] - fd_a).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_fabozzi_treasury_futures_ctd_and_switch_option_module::*;
+
+mod evaluate_fabozzi_callable_putable_oas_and_convexity_module {
+    #![allow(clippy::needless_range_loop, clippy::assign_op_pattern)]
+    use ql_ad::Real;
+
+    #[inline]
+    fn smin<T: Real>(a: T, b: T) -> T {
+        let d = a - b;
+        T::from_f64(0.5) * (a + b - (d * d + T::from_f64(1e-16)).sqrt())
+    }
+
+    #[inline]
+    fn smax<T: Real>(a: T, b: T) -> T {
+        let d = a - b;
+        T::from_f64(0.5) * (a + b + (d * d + T::from_f64(1e-16)).sqrt())
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct FabozziCallablePutableOasSpec<T: Real = f64> {
+        pub initial_short_rate: T,
+        pub rate_drift_per_year: T,
+        pub short_rate_vol: T,
+        pub oas_spread: T,
+        pub coupon_rate: T,
+        pub call_strike_price: T,
+        pub put_strike_price: T,
+        pub maturity_years: T,
+        pub yield_shift_dy: T,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct FabozziCallablePutableOasReport<T: Real = f64> {
+        pub straight_bond_fair_value: T,
+        pub callable_bond_fair_value: T,
+        pub putable_bond_fair_value: T,
+        pub embedded_call_option_value: T,
+        pub embedded_put_option_value: T,
+        pub embedded_option_identity_error: T,
+        pub straight_effective_duration: T,
+        pub callable_effective_duration: T,
+        pub straight_effective_convexity: T,
+        pub callable_effective_convexity: T,
+    }
+
+    fn price_trees_shifted<T: Real>(
+        spec: &FabozziCallablePutableOasSpec<T>,
+        shift: T,
+    ) -> (T, T, T) {
+        let dt = spec.maturity_years.max_val(T::from_f64(1e-6)) / T::from_f64(3.0);
+        let par = T::from_f64(100.0);
+        let cpn = par * spec.coupon_rate * dt;
+        let term_payoff = par + cpn;
+        let mut vs = [term_payoff; 4];
+        let mut vc = [term_payoff; 4];
+        let mut vp = [term_payoff; 4];
+        let half = T::from_f64(0.5);
+        let sig_dt = spec.short_rate_vol * dt.sqrt();
+
+        for step in (0..3).rev() {
+            let t_f = T::from_f64(step as f64);
+            for j in 0..=step {
+                let two_j_minus_t = T::from_f64((2 * j as i32 - step as i32) as f64);
+                let r_node = (spec.initial_short_rate + t_f * spec.rate_drift_per_year)
+                    * (two_j_minus_t * sig_dt).exp()
+                    + spec.oas_spread
+                    + shift;
+                let df = (-r_node * dt).exp();
+                let cont_s = df * half * (vs[j + 1] + vs[j]);
+                let cont_c = df * half * (vc[j + 1] + vc[j]);
+                let cont_p = df * half * (vp[j + 1] + vp[j]);
+                if step > 0 {
+                    vs[j] = cont_s + cpn;
+                    vc[j] = smin(cont_c, spec.call_strike_price) + cpn;
+                    vp[j] = smax(cont_p, spec.put_strike_price) + cpn;
+                } else {
+                    vs[j] = cont_s;
+                    vc[j] = cont_c;
+                    vp[j] = cont_p;
+                }
+            }
+        }
+        (vs[0], vc[0], vp[0])
+    }
+
+    pub fn evaluate_fabozzi_callable_putable_oas_and_convexity<T: Real>(
+        spec: &FabozziCallablePutableOasSpec<T>,
+    ) -> FabozziCallablePutableOasReport<T> {
+        let dy = spec.yield_shift_dy.max_val(T::from_f64(1e-5));
+        let (vs_0, vc_0, vp_0) = price_trees_shifted(spec, T::zero());
+        let (vs_up, vc_up, _) = price_trees_shifted(spec, dy);
+        let (vs_dn, vc_dn, _) = price_trees_shifted(spec, -dy);
+
+        let call_val = vs_0 - vc_0;
+        let put_val = vp_0 - vs_0;
+        let diff = (vc_0 + call_val) - (vp_0 - put_val);
+        let id_err = (diff * diff + T::from_f64(1e-30)).sqrt();
+
+        let two = T::from_f64(2.0);
+        let d_eff_s = (vs_dn - vs_up) / (two * vs_0 * dy);
+        let d_eff_c = (vc_dn - vc_up) / (two * vc_0 * dy);
+        let c_eff_s = (vs_up + vs_dn - two * vs_0) / (vs_0 * dy * dy);
+        let c_eff_c = (vc_up + vc_dn - two * vc_0) / (vc_0 * dy * dy);
+
+        FabozziCallablePutableOasReport {
+            straight_bond_fair_value: vs_0,
+            callable_bond_fair_value: vc_0,
+            putable_bond_fair_value: vp_0,
+            embedded_call_option_value: call_val,
+            embedded_put_option_value: put_val,
+            embedded_option_identity_error: id_err,
+            straight_effective_duration: d_eff_s,
+            callable_effective_duration: d_eff_c,
+            straight_effective_convexity: c_eff_s,
+            callable_effective_convexity: c_eff_c,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_48_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn fabozzi_callable_putable_oas_invariants_and_ad_parity() {
+            let spec = FabozziCallablePutableOasSpec {
+                initial_short_rate: 0.035,
+                rate_drift_per_year: 0.002,
+                short_rate_vol: 0.18,
+                oas_spread: 0.006,
+                coupon_rate: 0.055,
+                call_strike_price: 100.5,
+                put_strike_price: 99.5,
+                maturity_years: 3.0,
+                yield_shift_dy: 0.0025,
+            };
+            let rep = evaluate_fabozzi_callable_putable_oas_and_convexity(&spec);
+            assert!(rep.embedded_option_identity_error < 1e-12);
+            assert!(rep.callable_effective_duration < rep.straight_effective_duration);
+            assert!(rep.callable_effective_convexity < rep.straight_effective_convexity);
+
+            let h = 1e-6;
+            let r_ad = evaluate_fabozzi_callable_putable_oas_and_convexity(
+                &FabozziCallablePutableOasSpec {
+                    initial_short_rate: Dual::<1>::variable(spec.initial_short_rate, 0),
+                    rate_drift_per_year: Dual::<1>::from_value(spec.rate_drift_per_year),
+                    short_rate_vol: Dual::<1>::from_value(spec.short_rate_vol),
+                    oas_spread: Dual::<1>::from_value(spec.oas_spread),
+                    coupon_rate: Dual::<1>::from_value(spec.coupon_rate),
+                    call_strike_price: Dual::<1>::from_value(spec.call_strike_price),
+                    put_strike_price: Dual::<1>::from_value(spec.put_strike_price),
+                    maturity_years: Dual::<1>::from_value(spec.maturity_years),
+                    yield_shift_dy: Dual::<1>::from_value(spec.yield_shift_dy),
+                },
+            );
+            let mut sp = spec;
+            sp.initial_short_rate += h;
+            let mut sm = spec;
+            sm.initial_short_rate -= h;
+            let _fd = (evaluate_fabozzi_callable_putable_oas_and_convexity(&sp)
+                .callable_bond_fair_value
+                - evaluate_fabozzi_callable_putable_oas_and_convexity(&sm)
+                    .callable_bond_fair_value)
+                / (2.0 * h);
+            assert!((r_ad.callable_bond_fair_value.d[0] - _fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_fabozzi_callable_putable_oas_and_convexity_module::*;
+
+mod evaluate_fabozzi_collared_frn_discount_margin_module {
+    // Fabozzi (2021) & Tuckman (2011) Collared Floating-Rate Note (`FRN`) Discount Margin (`DM`),
+    // Spread Duration vs. Rate Duration & Option-Adjusted Discount Margin (`OADM`) Engine.
+
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct FabozziCollaredFrnDiscountMarginSpec<T: Real = f64> {
+        pub par_face: T,
+        pub index_rate_r: T,
+        pub quoted_margin_qm: T,
+        pub discount_margin_dm: T,
+        pub cap_strike: T,
+        pub floor_strike: T,
+        pub rate_normal_vol_sigma: T,
+        pub time_to_next_reset_tau1: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct FabozziCollaredFrnDiscountMarginReport<T: Real = f64> {
+        pub straight_frn_price: T,
+        pub par_reset_identity_error: T,
+        pub embedded_cap_pv: T,
+        pub embedded_floor_pv: T,
+        pub collared_frn_price: T,
+        pub spread_duration_dm: T,
+        pub interest_rate_duration: T,
+        pub option_adjusted_discount_margin_oadm: T,
+    }
+
+    fn bachelier_caplet<T: Real>(fwd: T, strike: T, std: T, is_cap: bool) -> T {
+        let s = std.max_val(T::from_f64(1e-8));
+        let diff = if is_cap { fwd - strike } else { strike - fwd };
+        let d = diff / s;
+        diff * norm_cdf(d) + s * norm_pdf(d)
+    }
+
+    fn straight_frn_pv<T: Real>(par: T, r: T, qm: T, dm: T, tau1: T) -> T {
+        let n = 4usize;
+        let mut pv = T::zero();
+        let c_rate = r + qm;
+        let disc_rate = (r + dm).max_val(T::from_f64(1e-4));
+        for k in 1..=n {
+            let tk = tau1 + T::from_f64((k - 1) as f64);
+            let df = (T::one() + disc_rate).pow(-tk);
+            let accrual = if k == 1 { tau1 } else { T::one() };
+            let cf = if k == n {
+                par * (T::one() + c_rate * accrual)
+            } else {
+                par * c_rate * accrual
+            };
+            pv += cf * df;
+        }
+        pv
+    }
+
+    pub fn evaluate_fabozzi_collared_frn_discount_margin<T: Real>(
+        spec: &FabozziCollaredFrnDiscountMarginSpec<T>,
+    ) -> FabozziCollaredFrnDiscountMarginReport<T> {
+        let par = spec.par_face;
+        let r = spec.index_rate_r;
+        let qm = spec.quoted_margin_qm;
+        let dm = spec.discount_margin_dm;
+        let tau1 = spec.time_to_next_reset_tau1.max_val(T::from_f64(0.01));
+
+        let v_straight = straight_frn_pv(par, r, qm, dm, tau1);
+        // Exact Fabozzi/Tuckman FRN par-reset identity: at reset (tau1 = 1) with DM == QM, V == Par!
+        let v_par_check = straight_frn_pv(par, r, qm, qm, T::one());
+        let par_err = (v_par_check - par).abs();
+
+        let fwd_coupon = r + qm;
+        let disc_rate = (r + dm).max_val(T::from_f64(1e-4));
+        let mut cap_pv = T::zero();
+        let mut floor_pv = T::zero();
+        let mut risky_dv01 = T::zero();
+
+        for k in 1..=4usize {
+            let tk = tau1 + T::from_f64((k - 1) as f64);
+            let df = (T::one() + disc_rate).pow(-tk);
+            let std = spec.rate_normal_vol_sigma * tk.sqrt();
+            cap_pv += par * df * bachelier_caplet(fwd_coupon, spec.cap_strike, std, true);
+            floor_pv += par * df * bachelier_caplet(fwd_coupon, spec.floor_strike, std, false);
+            risky_dv01 += par * df;
+        }
+
+        // Collared FRN = Straight FRN + Long Floor - Short Cap:
+        let v_collared = v_straight + floor_pv - cap_pv;
+
+        // Analytical spread duration (w.r.t. DM) vs. interest-rate duration (w.r.t. parallel index shift):
+        let bump = T::from_f64(1e-4);
+        let sd_dm = (straight_frn_pv(par, r, qm, dm - bump, tau1)
+            - straight_frn_pv(par, r, qm, dm + bump, tau1))
+            / (T::from_f64(2.0) * bump * v_straight);
+        let ir_dur = (straight_frn_pv(par, r - bump, qm, dm, tau1)
+            - straight_frn_pv(par, r + bump, qm, dm, tau1))
+            / (T::from_f64(2.0) * bump * v_straight);
+
+        // Option-Adjusted Discount Margin (OADM):
+        let oadm = dm + (floor_pv - cap_pv) / risky_dv01.max_val(T::from_f64(1e-6));
+
+        FabozziCollaredFrnDiscountMarginReport {
+            straight_frn_price: v_straight,
+            par_reset_identity_error: par_err,
+            embedded_cap_pv: cap_pv,
+            embedded_floor_pv: floor_pv,
+            collared_frn_price: v_collared,
+            spread_duration_dm: sd_dm,
+            interest_rate_duration: ir_dur.abs(),
+            option_adjusted_discount_margin_oadm: oadm,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_52_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn fabozzi_collared_frn_discount_margin_invariants_and_ad_parity() {
+            let spec = FabozziCollaredFrnDiscountMarginSpec {
+                par_face: 100.0,
+                index_rate_r: 0.042,
+                quoted_margin_qm: 0.012,
+                discount_margin_dm: 0.015,
+                cap_strike: 0.065,
+                floor_strike: 0.035,
+                rate_normal_vol_sigma: 0.011,
+                time_to_next_reset_tau1: 0.25,
+            };
+            let rep = evaluate_fabozzi_collared_frn_discount_margin(&spec);
+            // Par-reset theorem & DM > QM => discount price < 100:
+            assert!(rep.par_reset_identity_error < 1e-11);
+            assert!(rep.straight_frn_price < 100.0);
+            // Spread duration of an FRN is much larger than its interest-rate duration:
+            assert!(rep.spread_duration_dm > rep.interest_rate_duration * 4.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_fabozzi_collared_frn_discount_margin(
+                &FabozziCollaredFrnDiscountMarginSpec {
+                    par_face: Dual::<1>::from_value(spec.par_face),
+                    index_rate_r: Dual::<1>::from_value(spec.index_rate_r),
+                    quoted_margin_qm: Dual::<1>::from_value(spec.quoted_margin_qm),
+                    discount_margin_dm: Dual::<1>::variable(spec.discount_margin_dm, 0),
+                    cap_strike: Dual::<1>::from_value(spec.cap_strike),
+                    floor_strike: Dual::<1>::from_value(spec.floor_strike),
+                    rate_normal_vol_sigma: Dual::<1>::from_value(spec.rate_normal_vol_sigma),
+                    time_to_next_reset_tau1: Dual::<1>::from_value(spec.time_to_next_reset_tau1),
+                },
+            );
+            let mut sp = spec;
+            sp.discount_margin_dm += h;
+            let mut sm = spec;
+            sm.discount_margin_dm -= h;
+            let fd = (evaluate_fabozzi_collared_frn_discount_margin(&sp).collared_frn_price
+                - evaluate_fabozzi_collared_frn_discount_margin(&sm).collared_frn_price)
+                / (2.0 * h);
+            assert!((r_ad.collared_frn_price.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_fabozzi_collared_frn_discount_margin_module::*;
+
+mod evaluate_tuckman_special_repo_fail_penalty_ctd_module {
+    // Tuckman & Serrat (2011) & Fabozzi (2021) Special Repo Rate (`GC` vs. `Special`),
+    // TMPG Fail-Penalty Floor & Cheapest-to-Deliver (`CTD`) Implied-Repo Switch Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TuckmanSpecialRepoFailPenaltyCtdSpec<T: Real = f64> {
+        pub general_collateral_rate_gc: T,
+        pub tmpg_fail_penalty_rate_p: T,
+        pub issue_short_demand_ratio_d: T,
+        pub lendable_supply_elasticity_k: T,
+        pub bond_clean_price: T,
+        pub accrued_interest_at_spot: T,
+        pub coupon_rate_annual: T,
+        pub futures_invoice_price_at_delivery: T,
+        pub holding_period_year_frac_tau: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TuckmanSpecialRepoFailPenaltyCtdReport<T: Real = f64> {
+        pub equilibrium_special_repo_rate: T,
+        pub repo_specialness_spread_bps: T,
+        pub tmpg_fail_floor_rate: T,
+        pub financing_advantage_pv_per_100: T,
+        pub implied_repo_rate_irr: T,
+        pub net_basis_after_specialness: T,
+        pub fail_probability_index: T,
+    }
+
+    pub fn evaluate_tuckman_special_repo_fail_penalty_ctd<T: Real>(
+        spec: &TuckmanSpecialRepoFailPenaltyCtdSpec<T>,
+    ) -> TuckmanSpecialRepoFailPenaltyCtdReport<T> {
+        let gc = spec.general_collateral_rate_gc;
+        let pen = spec.tmpg_fail_penalty_rate_p.max_val(T::from_f64(0.01));
+        let tau = spec.holding_period_year_frac_tau.max_val(T::from_f64(0.01));
+
+        // TMPG fail floor rate = -penalty (or GC - penalty in scarcity equilibrium):
+        let fail_floor = gc - pen;
+        let scarcity = (spec.issue_short_demand_ratio_d
+            * spec.lendable_supply_elasticity_k.max_val(T::from_f64(0.01)))
+        .max_val(T::zero());
+        let fail_prob = T::one() - (-scarcity).exp();
+
+        // Equilibrium special repo rate interpolates smoothly between GC and the TMPG fail floor:
+        let special_rate = gc - pen * fail_prob;
+        let specialness_bps = (gc - special_rate) * T::from_f64(1e4);
+
+        let dirty_spot = (spec.bond_clean_price + spec.accrued_interest_at_spot).max_val(T::one());
+        let fin_adv_pv = dirty_spot * (gc - special_rate) * tau;
+
+        // Implied repo rate (IRR) from cash-and-carry to futures delivery:
+        let carry_coupon = T::from_f64(100.0) * spec.coupon_rate_annual * tau;
+        let proceeds = spec.futures_invoice_price_at_delivery + carry_coupon;
+        let irr = ((proceeds - dirty_spot) / dirty_spot) / tau;
+
+        // Net basis = DirtySpot * (1 + r_special * tau) - CarryCoupon - InvoicePrice:
+        let net_basis = dirty_spot * (T::one() + special_rate * tau)
+            - carry_coupon
+            - spec.futures_invoice_price_at_delivery;
+
+        TuckmanSpecialRepoFailPenaltyCtdReport {
+            equilibrium_special_repo_rate: special_rate,
+            repo_specialness_spread_bps: specialness_bps,
+            tmpg_fail_floor_rate: fail_floor,
+            financing_advantage_pv_per_100: fin_adv_pv,
+            implied_repo_rate_irr: irr,
+            net_basis_after_specialness: net_basis,
+            fail_probability_index: fail_prob,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_53_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn tuckman_special_repo_fail_penalty_ctd_invariants_and_ad_parity() {
+            let spec = TuckmanSpecialRepoFailPenaltyCtdSpec {
+                general_collateral_rate_gc: 0.048,
+                tmpg_fail_penalty_rate_p: 0.030,
+                issue_short_demand_ratio_d: 1.4,
+                lendable_supply_elasticity_k: 0.55,
+                bond_clean_price: 98.5,
+                accrued_interest_at_spot: 0.85,
+                coupon_rate_annual: 0.040,
+                futures_invoice_price_at_delivery: 99.65,
+                holding_period_year_frac_tau: 0.25,
+            };
+            let rep = evaluate_tuckman_special_repo_fail_penalty_ctd(&spec);
+            assert!(rep.equilibrium_special_repo_rate < spec.general_collateral_rate_gc);
+            assert!(rep.equilibrium_special_repo_rate > rep.tmpg_fail_floor_rate);
+            assert!(rep.repo_specialness_spread_bps > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_tuckman_special_repo_fail_penalty_ctd(
+                &TuckmanSpecialRepoFailPenaltyCtdSpec {
+                    general_collateral_rate_gc: Dual::<1>::variable(
+                        spec.general_collateral_rate_gc,
+                        0,
+                    ),
+                    tmpg_fail_penalty_rate_p: Dual::<1>::from_value(spec.tmpg_fail_penalty_rate_p),
+                    issue_short_demand_ratio_d: Dual::<1>::from_value(
+                        spec.issue_short_demand_ratio_d,
+                    ),
+                    lendable_supply_elasticity_k: Dual::<1>::from_value(
+                        spec.lendable_supply_elasticity_k,
+                    ),
+                    bond_clean_price: Dual::<1>::from_value(spec.bond_clean_price),
+                    accrued_interest_at_spot: Dual::<1>::from_value(spec.accrued_interest_at_spot),
+                    coupon_rate_annual: Dual::<1>::from_value(spec.coupon_rate_annual),
+                    futures_invoice_price_at_delivery: Dual::<1>::from_value(
+                        spec.futures_invoice_price_at_delivery,
+                    ),
+                    holding_period_year_frac_tau: Dual::<1>::from_value(
+                        spec.holding_period_year_frac_tau,
+                    ),
+                },
+            );
+            let mut sp = spec;
+            sp.general_collateral_rate_gc += h;
+            let mut sm = spec;
+            sm.general_collateral_rate_gc -= h;
+            let fd = (evaluate_tuckman_special_repo_fail_penalty_ctd(&sp)
+                .net_basis_after_specialness
+                - evaluate_tuckman_special_repo_fail_penalty_ctd(&sm).net_basis_after_specialness)
+                / (2.0 * h);
+            assert!((r_ad.net_basis_after_specialness.d[0] - fd).abs() < 1e-6);
+        }
+    }
+}
+pub use evaluate_tuckman_special_repo_fail_penalty_ctd_module::*;

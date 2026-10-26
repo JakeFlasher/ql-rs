@@ -2224,7 +2224,7 @@ fn benchmark_frtb_cvar_execution(scale: usize) -> ComparisonRow {
     )
 }
 
-fn benchmark_phase13_vix_parisian_robust(scale: usize) -> ComparisonRow {
+fn benchmark_vix_parisian_robust(scale: usize) -> ComparisonRow {
     // Keep this suite honest: every API named in the comparison is exercised
     // by both closures.  In particular, the old implementation omitted the
     // Parisian and monotone-convex paths while still claiming them in the ID.
@@ -2488,7 +2488,7 @@ fn benchmark_phase13_vix_parisian_robust(scale: usize) -> ComparisonRow {
     )
 }
 
-fn benchmark_phase14_double_heston_tarf_coco_hrp(scale: usize) -> ComparisonRow {
+fn benchmark_double_heston_tarf_coco_hrp(scale: usize) -> ComparisonRow {
     let cfg = config(scale);
     let h = 1e-5;
     let tarf_paths = 64;
@@ -2715,7 +2715,7 @@ fn benchmark_phase14_double_heston_tarf_coco_hrp(scale: usize) -> ComparisonRow 
     )
 }
 
-pub fn benchmark_phase15_jy_tba_bergomi_nco(scale: usize) -> ComparisonRow {
+pub fn benchmark_jy_tba_bergomi_nco(scale: usize) -> ComparisonRow {
     let cfg = config(scale);
     let d = date(2024, 1, 1);
     let eval_jy = |x: [f64; 4]| {
@@ -3029,7 +3029,7 @@ pub fn benchmark_phase15_jy_tba_bergomi_nco(scale: usize) -> ComparisonRow {
     )
 }
 
-fn phase16_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
+fn suite28_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     let d = date(2024, 1, 1);
     let curve = FlatForwardCurve::new(d, T::from_f64(0.03) + x[0] * 0.001);
     let chey = price_cheyette_swaption_markov_projection(
@@ -3192,15 +3192,15 @@ pub fn benchmark_cheyette_cmo_qrh_basecorr_cdar_aad(scale: usize) -> ComparisonR
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let h = 1e-5;
     let baseline = || {
-        let base = phase16_workloads(x0);
+        let base = suite28_workloads(x0);
         let mut checksum: f64 = base.iter().sum();
         for lane in 0..4 {
             let mut up = x0;
             let mut dn = x0;
             up[lane] += h;
             dn[lane] -= h;
-            let w_up = phase16_workloads(up);
-            let w_dn = phase16_workloads(dn);
+            let w_up = suite28_workloads(up);
+            let w_dn = suite28_workloads(dn);
             for component in 0..4 {
                 checksum += (w_up[component] - w_dn[component]) / (2.0 * h);
             }
@@ -3215,7 +3215,7 @@ pub fn benchmark_cheyette_cmo_qrh_basecorr_cdar_aad(scale: usize) -> ComparisonR
             D::variable(x0[2], 2),
             D::variable(x0[3], 3),
         ];
-        phase16_workloads(x)
+        suite28_workloads(x)
             .iter()
             .map(|y| y.val + y.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -3230,7 +3230,7 @@ pub fn benchmark_cheyette_cmo_qrh_basecorr_cdar_aad(scale: usize) -> ComparisonR
     )
 }
 
-fn phase17_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
+fn suite29_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     let d = date(2024, 1, 1);
     let curve = FlatForwardCurve::new(d, T::from_f64(0.03) + x[0] * 0.001);
     let asw = ql_fixed_income::analyze_bond_asset_swap_and_z_spread(
@@ -3386,15 +3386,15 @@ pub fn benchmark_asw_mf1f_ah_bess_ep_aad(scale: usize) -> ComparisonRow {
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let h = 1e-5;
     let baseline = || {
-        let base = phase17_workloads(x0);
+        let base = suite29_workloads(x0);
         let mut checksum: f64 = base.iter().sum();
         for lane in 0..4 {
             let mut up = x0;
             let mut dn = x0;
             up[lane] += h;
             dn[lane] -= h;
-            let w_up = phase17_workloads(up);
-            let w_dn = phase17_workloads(dn);
+            let w_up = suite29_workloads(up);
+            let w_dn = suite29_workloads(dn);
             for component in 0..4 {
                 checksum += (w_up[component] - w_dn[component]) / (2.0 * h);
             }
@@ -3409,7 +3409,7 @@ pub fn benchmark_asw_mf1f_ah_bess_ep_aad(scale: usize) -> ComparisonRow {
             D::variable(x0[2], 2),
             D::variable(x0[3], 3),
         ];
-        phase17_workloads(x)
+        suite29_workloads(x)
             .iter()
             .map(|y| y.val + y.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -3458,9 +3458,9 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_sabr_qp(scale),
         benchmark_slv_autocall(scale),
         benchmark_frtb_cvar_execution(scale),
-        benchmark_phase13_vix_parisian_robust(scale),
-        benchmark_phase14_double_heston_tarf_coco_hrp(scale),
-        benchmark_phase15_jy_tba_bergomi_nco(scale),
+        benchmark_vix_parisian_robust(scale),
+        benchmark_double_heston_tarf_coco_hrp(scale),
+        benchmark_jy_tba_bergomi_nco(scale),
         benchmark_cheyette_cmo_qrh_basecorr_cdar_aad(scale),
         benchmark_asw_mf1f_ah_bess_ep_aad(scale),
         benchmark_mtmxccs_colva_zabr_pdv_weather_enb_aad(scale),
@@ -3469,31 +3469,32 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(scale),
         benchmark_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad(scale),
         benchmark_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml(scale),
-        benchmark_phase24_mbs_io_po_rmv_mo_xva_dilution_sig_garch_pot_rie_pin_gp_brinson_ierp(
+        benchmark_mbs_io_po_rmv_mo_xva_dilution_sig_garch_pot_rie_pin_gp_brinson_ierp(
             scale,
         ),
-        benchmark_phase25_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin(scale),
-        benchmark_phase26_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_frtb_cva_lookback_vta_flam_acd_hlz_mlmc(scale),
-        benchmark_phase27_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt(scale),
-        benchmark_phase28_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_zeron_simm_jacquier_rbergomi_choi_spread_bess_sdp_kratz_dark_follmer_diag_diff_pca(scale),
-        benchmark_phase29_veronesi_conv_lando_gen_gatheral_corridor_russian_stop_bates_svj_koziol_cb_mckean_mfg_bcbs_floor_cjp_lob_madhavan_etf_qian_ic_glasserman_is(scale),
-        benchmark_phase30_romer_taylor_damodaran_crp_christoffersen_var_foucault_lvar_barberis_pt_hart_regret_beneish_mscore_campisi_attr_heckman_gmm_elastic_net_reset_cb_fsb_bailin(scale),
-        benchmark_phase31_fabozzi_krd_cmo_pac_asquith_cb_asu2024_cpdi_rsm_asc470_gregory_colva_embrechts_hill_bouchaud_tlf_karnosky_singer_dgtw_timing_brock_hommes_penman_reoi(scale),
-        benchmark_phase32_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cmcds_morini_turlakov_wwr_hhw_adi_capped_call_mw_ahmadi_evar_schur_hrp_bekk_garch_schilit_sloan(scale),
-        benchmark_phase33_rebonato_cms_lm_all_engines(scale),
-        benchmark_phase34_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig(scale),
-        benchmark_phase35_hagan_west_ctd_afv_kth_sacva_gs_kirk_fx_vv_napoleon_tc_meucci_krr_eva(scale),
-        benchmark_phase36_brigo_csa_ctd_fabozzi_callable_oas_lando_jlt_migration_gatheral_corridor_varswap_glasserman_lsm_rogers_dual_cartea_lob_mm_lo_mackinlay_vr_lopez_dsr_purged_cv_roncalli_spinu_erc_ilmanen_vmc_penman_reoi_mccall_bellman(scale),
-        benchmark_phase37_brigo_nss_krd_tuckman_tips_floor_schonbucher_rmv_rt_rfv_gatheral_sticky_lv_gregory_simm_ccp_mva_schwartz_smith_kalman_wystup_fx_dnt_bouzoubaa_timer_meucci_bl_woodbury_gueant_ac_sinh_zou_elastic_net_nk_ree(scale),
-        benchmark_phase38_hagan_west_tension_duffie_lando_pac_cmo_fama_macbeth_shanken_gatheral_asvi_bgk_discrete_barrier_bouchaud_cross_impact_karnosky_singer_merton_jump_campbell_viceira_ohlson_lid_griewank_revolve(scale),
-        benchmark_phase39_brigo_xccy_mtm_fabozzi_spec_pool_io_po_lando_marshall_olkin_gatheral_vix_vvix_gregory_wwr_cva_geman_gibson_schwartz_clark_fx_fva_rubinstein_chooser_grinold_flam_tc_meucci_es_euler_james_stein_sure_campbell_cochrane_habit(scale),
-        benchmark_phase40_brigo_ois_fallback_fabozzi_collared_frn_schonbucher_cds_swaption_fep_bergomi_2f_skew_gregory_sa_ccr_ead_eydeland_spark_spread_wystup_prdc_geske_compound_qian_alpha_decay_roncalli_enb_johansen_vecm_bansal_yaron_lrr(scale),
-        benchmark_phase41_andersen_cms_replication_tuckman_special_repo_okane_cds_upfront_gatheral_ssr_tanaka_gregory_saccr_kva_eydeland_crack_spread_wystup_prdc_cap_haug_eso_dilution_qian_spinu_erc_rockafellar_cvar_htf_pls_krylov_piazzesi_fomc(scale),
-        benchmark_phase42_darbyshire_step_ois_turn_despiegeleer_cb_soft_call_okane_cds_index_skew_gatheral_varswap_truncation_gregory_fva_overlap_geman_working_storage_wystup_malz_fx_fly_goldman_sosin_lookback_ledoit_wolf_shrinkage_almgren_chriss_cara_tsay_estar_acm_cp(scale),
+        benchmark_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin(scale),
+        benchmark_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_frtb_cva_lookback_vta_flam_acd_hlz_mlmc(scale),
+        benchmark_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt(scale),
+        benchmark_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_zeron_simm_jacquier_rbergomi_choi_spread_bess_sdp_kratz_dark_follmer_diag_diff_pca(scale),
+        benchmark_veronesi_conv_lando_gen_gatheral_corridor_russian_stop_bates_svj_koziol_cb_mckean_mfg_bcbs_floor_cjp_lob_madhavan_etf_qian_ic_glasserman_is(scale),
+        benchmark_romer_taylor_damodaran_crp_christoffersen_var_foucault_lvar_barberis_pt_hart_regret_beneish_mscore_campisi_attr_heckman_gmm_elastic_net_reset_cb_fsb_bailin(scale),
+        benchmark_fabozzi_krd_cmo_pac_asquith_cb_asu2024_cpdi_rsm_asc470_gregory_colva_embrechts_hill_bouchaud_tlf_karnosky_singer_dgtw_timing_brock_hommes_penman_reoi(scale),
+        benchmark_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cmcds_morini_turlakov_wwr_hhw_adi_capped_call_mw_ahmadi_evar_schur_hrp_bekk_garch_schilit_sloan(scale),
+        benchmark_rebonato_cms_lm_all_engines(scale),
+        benchmark_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig(scale),
+        benchmark_hagan_west_ctd_afv_kth_sacva_gs_kirk_fx_vv_napoleon_tc_meucci_krr_eva(scale),
+        benchmark_brigo_csa_ctd_fabozzi_callable_oas_lando_jlt_migration_gatheral_corridor_varswap_glasserman_lsm_rogers_dual_cartea_lob_mm_lo_mackinlay_vr_lopez_dsr_purged_cv_roncalli_spinu_erc_ilmanen_vmc_penman_reoi_mccall_bellman(scale),
+        benchmark_brigo_nss_krd_tuckman_tips_floor_schonbucher_rmv_rt_rfv_gatheral_sticky_lv_gregory_simm_ccp_mva_schwartz_smith_kalman_wystup_fx_dnt_bouzoubaa_timer_meucci_bl_woodbury_gueant_ac_sinh_zou_elastic_net_nk_ree(scale),
+        benchmark_hagan_west_tension_duffie_lando_pac_cmo_fama_macbeth_shanken_gatheral_asvi_bgk_discrete_barrier_bouchaud_cross_impact_karnosky_singer_merton_jump_campbell_viceira_ohlson_lid_griewank_revolve(scale),
+        benchmark_brigo_xccy_mtm_fabozzi_spec_pool_io_po_lando_marshall_olkin_gatheral_vix_vvix_gregory_wwr_cva_geman_gibson_schwartz_clark_fx_fva_rubinstein_chooser_grinold_flam_tc_meucci_es_euler_james_stein_sure_campbell_cochrane_habit(scale),
+        benchmark_brigo_ois_fallback_fabozzi_collared_frn_schonbucher_cds_swaption_fep_bergomi_2f_skew_gregory_sa_ccr_ead_eydeland_spark_spread_wystup_prdc_geske_compound_qian_alpha_decay_roncalli_enb_johansen_vecm_bansal_yaron_lrr(scale),
+        benchmark_andersen_cms_replication_tuckman_special_repo_okane_cds_upfront_gatheral_ssr_tanaka_gregory_saccr_kva_eydeland_crack_spread_wystup_prdc_cap_haug_eso_dilution_qian_spinu_erc_rockafellar_cvar_htf_pls_krylov_piazzesi_fomc(scale),
+        benchmark_darbyshire_step_ois_turn_despiegeleer_cb_soft_call_okane_cds_index_skew_gatheral_varswap_truncation_gregory_fva_overlap_geman_working_storage_wystup_malz_fx_fly_goldman_sosin_lookback_ledoit_wolf_shrinkage_almgren_chriss_cara_tsay_estar_acm_cp(scale),
+        benchmark_henrard_tenor_basis_fabozzi_msr_recapture_okane_cdo_base_corr_gatheral_fwd_start_smile_gregory_pykhtin_csa_mta_eydeland_gas_swing_wystup_fx_kiko_stulz_rainbow_jagannathan_ma_obizhaeva_wang_newey_west_hac_gabaix_disaster(scale),
     ]
 }
 
-pub fn phase34_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite46_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let dx0 = x[0] * T::from_f64(0.01);
     let dx1 = x[1] * T::from_f64(0.01);
     let dx2 = x[2] * T::from_f64(0.01);
@@ -3705,13 +3706,13 @@ pub fn phase34_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     ]
 }
 
-pub fn benchmark_phase34_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig(
+pub fn benchmark_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase34_workloads(x).iter().copied().sum::<f64>();
+        let f = |x: [f64; 4]| suite46_workloads(x).iter().copied().sum::<f64>();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -3732,7 +3733,7 @@ pub fn benchmark_phase34_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_
             Dual::variable(x0[2], 2),
             Dual::variable(x0[3], 3),
         ];
-        phase34_workloads(x)
+        suite46_workloads(x)
             .iter()
             .map(|v| v.val + v.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -3747,7 +3748,7 @@ pub fn benchmark_phase34_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_
     )
 }
 
-pub fn phase27_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite39_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let ftpl = ql_inflation::evaluate_cochrane_ftpl_and_maturity_inflation_smoothing(
         &ql_inflation::CochraneFiscalTheoryPriceLevelSpec {
             debt_maturities_years: vec![T::from_f64(1.0), T::from_f64(5.0), T::from_f64(10.0)],
@@ -3984,13 +3985,13 @@ pub fn phase27_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     ]
 }
 
-pub fn benchmark_phase27_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt(
+pub fn benchmark_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.02_f64, -0.01, 0.03, -0.01];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase27_workloads(x).iter().map(|v| v.val()).sum::<f64>();
+        let f = |x: [f64; 4]| suite39_workloads(x).iter().map(|v| v.val()).sum::<f64>();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -4012,7 +4013,7 @@ pub fn benchmark_phase27_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_achary
             D::variable(x0[2], 2),
             D::variable(x0[3], 3),
         ];
-        phase27_workloads(x)
+        suite39_workloads(x)
             .iter()
             .map(|v| v.val + v.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -4028,7 +4029,7 @@ pub fn benchmark_phase27_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_achary
 }
 
 /// Cross-pillar scalar and forward-mode AD parity workload.
-fn phase22_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
+fn suite34_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     let p = ql_models::Bergomi2FParams {
         xi0: T::from_f64(0.04),
         omega: T::from_f64(1.0) + x[0] * 0.01,
@@ -4280,14 +4281,14 @@ pub fn benchmark_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad(scale: usize) -> 
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let h = 1e-5;
     let baseline = || {
-        let mut checksum: f64 = phase22_workloads(x0).iter().sum();
+        let mut checksum: f64 = suite34_workloads(x0).iter().sum();
         for lane in 0..4 {
             let mut up = x0;
             let mut dn = x0;
             up[lane] += h;
             dn[lane] -= h;
-            let a = phase22_workloads(up);
-            let b = phase22_workloads(dn);
+            let a = suite34_workloads(up);
+            let b = suite34_workloads(dn);
             checksum += a
                 .iter()
                 .zip(b.iter())
@@ -4304,7 +4305,7 @@ pub fn benchmark_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad(scale: usize) -> 
             D::variable(x0[2], 2),
             D::variable(x0[3], 3),
         ];
-        phase22_workloads(x)
+        suite34_workloads(x)
             .iter()
             .map(|y| y.val + y.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -4344,7 +4345,7 @@ pub fn run_all_benchmark_suites_with_Config(
     run_all_benchmark_suites_with_config(warmup_iters, samples)
 }
 
-fn phase18_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
+fn suite30_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     let d = date(2024, 1, 1);
     let curve_dom = FlatForwardCurve::new(d, T::from_f64(0.03) + x[0] * 0.001);
     let curve_for = FlatForwardCurve::new(d, T::from_f64(0.02) + x[1] * 0.001);
@@ -4574,15 +4575,15 @@ pub fn benchmark_mtmxccs_colva_zabr_pdv_weather_enb_aad(scale: usize) -> Compari
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let h = 1e-5;
     let baseline = || {
-        let b = phase18_workloads(x0);
+        let b = suite30_workloads(x0);
         let mut c = b.iter().sum();
         for lane in 0..4 {
             let mut u = x0;
             let mut d = x0;
             u[lane] += h;
             d[lane] -= h;
-            let bu = phase18_workloads(u);
-            let bd = phase18_workloads(d);
+            let bu = suite30_workloads(u);
+            let bd = suite30_workloads(d);
             for j in 0..4 {
                 c += (bu[j] - bd[j]) / (2.0 * h);
             }
@@ -4597,7 +4598,7 @@ pub fn benchmark_mtmxccs_colva_zabr_pdv_weather_enb_aad(scale: usize) -> Compari
             D::variable(x0[2], 2),
             D::variable(x0[3], 3),
         ];
-        phase18_workloads(x)
+        suite30_workloads(x)
             .iter()
             .map(|y| y.val + y.d.iter().sum::<f64>())
             .sum()
@@ -4612,7 +4613,7 @@ pub fn benchmark_mtmxccs_colva_zabr_pdv_weather_enb_aad(scale: usize) -> Compari
     )
 }
 
-fn phase19_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
+fn suite31_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     let d = date(2024, 1, 1);
     let curve = FlatForwardCurve::new(d, T::from_f64(0.035) + x[0] * 0.001);
     let mbs = ql_fixed_income::analyze_mbs_burnout_oas_ad(
@@ -4893,15 +4894,15 @@ pub fn benchmark_burnout_cmcds_quintic_afv_cs_schur_aad(scale: usize) -> Compari
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let h = 1e-5;
     let baseline = || {
-        let b = phase19_workloads(x0);
+        let b = suite31_workloads(x0);
         let mut c = b.iter().sum();
         for lane in 0..4 {
             let mut u = x0;
             let mut d = x0;
             u[lane] += h;
             d[lane] -= h;
-            let bu = phase19_workloads(u);
-            let bd = phase19_workloads(d);
+            let bu = suite31_workloads(u);
+            let bd = suite31_workloads(d);
             for j in 0..4 {
                 c += (bu[j] - bd[j]) / (2.0 * h);
             }
@@ -4916,7 +4917,7 @@ pub fn benchmark_burnout_cmcds_quintic_afv_cs_schur_aad(scale: usize) -> Compari
             D::variable(x0[2], 2),
             D::variable(x0[3], 3),
         ];
-        phase19_workloads(x)
+        suite31_workloads(x)
             .iter()
             .map(|y| y.val + y.d.iter().sum::<f64>())
             .sum()
@@ -4931,7 +4932,7 @@ pub fn benchmark_burnout_cmcds_quintic_afv_cs_schur_aad(scale: usize) -> Compari
     )
 }
 
-fn phase20_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
+fn suite32_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     let d = date(2024, 1, 1);
     let curve = FlatForwardCurve::new(d, T::from_f64(0.03) + x[0] * 0.001);
 
@@ -5189,15 +5190,15 @@ pub fn benchmark_sinhou_mb_rbergomi_choi_afs_expectile_aad(scale: usize) -> Comp
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let h = 1e-5;
     let baseline = || {
-        let b = phase20_workloads(x0);
+        let b = suite32_workloads(x0);
         let mut c: f64 = b.iter().sum();
         for lane in 0..4 {
             let mut u = x0;
             let mut d = x0;
             u[lane] += h;
             d[lane] -= h;
-            let bu = phase20_workloads(u);
-            let bd = phase20_workloads(d);
+            let bu = suite32_workloads(u);
+            let bd = suite32_workloads(d);
             for j in 0..4 {
                 c += (bu[j] - bd[j]) / (2.0 * h);
             }
@@ -5212,7 +5213,7 @@ pub fn benchmark_sinhou_mb_rbergomi_choi_afs_expectile_aad(scale: usize) -> Comp
             D::variable(x0[2], 2),
             D::variable(x0[3], 3),
         ];
-        phase20_workloads(x)
+        suite32_workloads(x)
             .iter()
             .map(|y| y.val + y.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -5227,7 +5228,7 @@ pub fn benchmark_sinhou_mb_rbergomi_choi_afs_expectile_aad(scale: usize) -> Comp
     )
 }
 
-fn phase21_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
+fn suite33_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     let d = date(2024, 1, 1);
     let r = T::from_f64(0.03) + x[0] * 0.001;
     let curve = FlatForwardCurve::new(d, r);
@@ -5439,7 +5440,7 @@ pub fn benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let h = 1e-5;
     let baseline = move || {
-        let f = |x: [f64; 4]| phase21_workloads(x).iter().sum::<f64>();
+        let f = |x: [f64; 4]| suite33_workloads(x).iter().sum::<f64>();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -5458,7 +5459,7 @@ pub fn benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(
             D::variable(x0[2], 2),
             D::variable(x0[3], 3),
         ];
-        phase21_workloads(x)
+        suite33_workloads(x)
             .iter()
             .map(|y| y.val + y.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -5474,7 +5475,7 @@ pub fn benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(
 }
 
 /// Direct twelve-engine workload across RKHS, FMM, VV, LSV, JLT, CTD, QRH, Parisian, Aïd, propagator, NCO, and DML.
-pub fn phase23_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite35_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let rk = ql_curves::calibrate_filipovic_rkhs_smooth_yield_curve(
         &ql_curves::FilipovicRkhsYieldCurveSpec {
             cashflow_times: vec![T::one(), T::from_f64(2.0)],
@@ -5703,7 +5704,7 @@ pub fn benchmark_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml(
     let cfg = config(scale);
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase23_workloads(x).iter().copied().sum::<f64>();
+        let f = |x: [f64; 4]| suite35_workloads(x).iter().copied().sum::<f64>();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -5721,7 +5722,7 @@ pub fn benchmark_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml(
             Dual::variable(x0[2], 2),
             Dual::variable(x0[3], 3),
         ];
-        phase23_workloads(x)
+        suite35_workloads(x)
             .iter()
             .map(|y| y.val + y.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -5736,7 +5737,7 @@ pub fn benchmark_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml(
     )
 }
 
-pub fn phase24_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite36_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let m = ql_fixed_income::analyze_davidson_levin_mbs_io_po_strips(
         &ql_fixed_income::DavidsonLevinIoPoStripMbsSpec {
             notional: T::from_f64(100.0),
@@ -5959,7 +5960,7 @@ pub fn phase24_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     ]
 }
 
-pub fn phase25_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite37_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let kal = ql_curves::evaluate_tsay_kalman_rts_state_space_curve(
         &ql_curves::TsayKalmanRtsStateSpaceCurveSpec {
             transition_f: [
@@ -6170,13 +6171,13 @@ pub fn phase25_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
         ma.call_malliavin_delta,
     ]
 }
-pub fn benchmark_phase25_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin(
+pub fn benchmark_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.02, -0.01, 0.03, -0.01];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase25_workloads(x).iter().map(|v| v.val()).sum::<f64>();
+        let f = |x: [f64; 4]| suite37_workloads(x).iter().map(|v| v.val()).sum::<f64>();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -6198,7 +6199,7 @@ pub fn benchmark_phase25_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lpp
             D::variable(x0[2], 2),
             D::variable(x0[3], 3),
         ];
-        phase25_workloads(x)
+        suite37_workloads(x)
             .iter()
             .map(|v| v.val + v.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -6212,13 +6213,13 @@ pub fn benchmark_phase25_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lpp
         sota,
     )
 }
-pub fn benchmark_phase24_mbs_io_po_rmv_mo_xva_dilution_sig_garch_pot_rie_pin_gp_brinson_ierp(
+pub fn benchmark_mbs_io_po_rmv_mo_xva_dilution_sig_garch_pot_rie_pin_gp_brinson_ierp(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.02, -0.01, 0.03, -0.01];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase24_workloads(x).iter().map(|v| v.val()).sum::<f64>();
+        let f = |x: [f64; 4]| suite36_workloads(x).iter().map(|v| v.val()).sum::<f64>();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -6239,7 +6240,7 @@ pub fn benchmark_phase24_mbs_io_po_rmv_mo_xva_dilution_sig_garch_pot_rie_pin_gp_
             Dual::variable(x0[2], 2),
             Dual::variable(x0[3], 3),
         ];
-        phase24_workloads(x)
+        suite36_workloads(x)
             .iter()
             .map(|v| v.val + v.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -6254,7 +6255,7 @@ pub fn benchmark_phase24_mbs_io_po_rmv_mo_xva_dilution_sig_garch_pot_rie_pin_gp_
     )
 }
 
-pub fn phase26_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite38_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let times = vec![
         T::from_f64(0.25) + x[0] * 0.01,
         T::from_f64(0.5) + x[1] * 0.01,
@@ -6465,13 +6466,13 @@ pub fn phase26_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     ]
 }
 
-pub fn benchmark_phase26_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_frtb_cva_lookback_vta_flam_acd_hlz_mlmc(
+pub fn benchmark_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_frtb_cva_lookback_vta_flam_acd_hlz_mlmc(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.02_f64, -0.01, 0.03, -0.01];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase26_workloads(x).iter().map(|v| v.val()).sum::<f64>();
+        let f = |x: [f64; 4]| suite38_workloads(x).iter().map(|v| v.val()).sum::<f64>();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -6492,7 +6493,7 @@ pub fn benchmark_phase26_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_fr
             Dual::variable(x0[2], 2),
             Dual::variable(x0[3], 3),
         ];
-        phase26_workloads(x)
+        suite38_workloads(x)
             .iter()
             .map(|v| v.val + v.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -6507,7 +6508,7 @@ pub fn benchmark_phase26_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_fr
     )
 }
 
-pub fn phase28_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite40_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let irr = ql_curves::evaluate_bcbs_d368_six_scenario_irrbb(
         &ql_curves::BcbsD368SixScenarioIrrbbSpec {
             bucket_midpoints_years: vec![T::from_f64(0.5), T::from_f64(2.0), T::from_f64(5.0)],
@@ -6722,13 +6723,13 @@ pub fn phase28_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     ]
 }
 
-pub fn benchmark_phase28_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_zeron_simm_jacquier_rbergomi_choi_spread_bess_sdp_kratz_dark_follmer_diag_diff_pca(
+pub fn benchmark_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_zeron_simm_jacquier_rbergomi_choi_spread_bess_sdp_kratz_dark_follmer_diag_diff_pca(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase28_workloads(x).iter().map(|v| v.val()).sum::<f64>();
+        let f = |x: [f64; 4]| suite40_workloads(x).iter().map(|v| v.val()).sum::<f64>();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -6749,7 +6750,7 @@ pub fn benchmark_phase28_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_ze
             Dual::variable(x0[2], 2),
             Dual::variable(x0[3], 3),
         ];
-        phase28_workloads(x)
+        suite40_workloads(x)
             .iter()
             .map(|y| y.val + y.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -6764,7 +6765,7 @@ pub fn benchmark_phase28_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_ze
     )
 }
 
-pub fn phase29_workloads<T: Real>(x: [T; 4]) -> T {
+pub fn suite41_workloads<T: Real>(x: [T; 4]) -> T {
     let a = ql_fixed_income::evaluate_veronesi_fabozzi_futures_convexity_and_prepayment(
         &ql_fixed_income::VeronesiFabozziConvexityPrepaymentSpec {
             forward_rate: T::from_f64(0.03) + x[0] * 0.01,
@@ -6952,13 +6953,13 @@ pub fn phase29_workloads<T: Real>(x: [T; 4]) -> T {
         + l.importance_sampled_call_price
 }
 
-pub fn benchmark_phase29_veronesi_conv_lando_gen_gatheral_corridor_russian_stop_bates_svj_koziol_cb_mckean_mfg_bcbs_floor_cjp_lob_madhavan_etf_qian_ic_glasserman_is(
+pub fn benchmark_veronesi_conv_lando_gen_gatheral_corridor_russian_stop_bates_svj_koziol_cb_mckean_mfg_bcbs_floor_cjp_lob_madhavan_etf_qian_ic_glasserman_is(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase29_workloads(x).val();
+        let f = |x: [f64; 4]| suite41_workloads(x).val();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -6980,7 +6981,7 @@ pub fn benchmark_phase29_veronesi_conv_lando_gen_gatheral_corridor_russian_stop_
             Dual::variable(x0[3], 3),
         ];
         {
-            let y = phase29_workloads(x);
+            let y = suite41_workloads(x);
             y.val + y.d.iter().sum::<f64>()
         }
     };
@@ -6994,7 +6995,7 @@ pub fn benchmark_phase29_veronesi_conv_lando_gen_gatheral_corridor_russian_stop_
     )
 }
 
-pub fn phase30_workloads<T: Real>(x: [T; 4]) -> T {
+pub fn suite42_workloads<T: Real>(x: [T; 4]) -> T {
     let r = T::from_f64(0.03) + x[0] * T::from_f64(0.001);
     let vol = T::from_f64(0.2) + x[1] * T::from_f64(0.01);
     let spot = T::from_f64(100.0) + x[2];
@@ -7248,13 +7249,13 @@ pub fn phase30_workloads<T: Real>(x: [T; 4]) -> T {
         + camp.karnosky_singer_unhedged_currency_surprise
 }
 
-pub fn benchmark_phase30_romer_taylor_damodaran_crp_christoffersen_var_foucault_lvar_barberis_pt_hart_regret_beneish_mscore_campisi_attr_heckman_gmm_elastic_net_reset_cb_fsb_bailin(
+pub fn benchmark_romer_taylor_damodaran_crp_christoffersen_var_foucault_lvar_barberis_pt_hart_regret_beneish_mscore_campisi_attr_heckman_gmm_elastic_net_reset_cb_fsb_bailin(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase30_workloads(x).val();
+        let f = |x: [f64; 4]| suite42_workloads(x).val();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -7275,7 +7276,7 @@ pub fn benchmark_phase30_romer_taylor_damodaran_crp_christoffersen_var_foucault_
             Dual::variable(x0[2], 2),
             Dual::variable(x0[3], 3),
         ];
-        let y = phase30_workloads(x);
+        let y = suite42_workloads(x);
         y.val + y.d.iter().sum::<f64>()
     };
     run_comparison(
@@ -7288,7 +7289,7 @@ pub fn benchmark_phase30_romer_taylor_damodaran_crp_christoffersen_var_foucault_
     )
 }
 
-pub fn phase31_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite43_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let r = T::from_f64(0.03) + x[0] * T::from_f64(0.001);
     let v = T::from_f64(0.2) + x[1] * T::from_f64(0.01);
     let spot = T::from_f64(100.0) + x[2];
@@ -7519,13 +7520,13 @@ pub fn phase31_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     ]
 }
 
-pub fn benchmark_phase31_fabozzi_krd_cmo_pac_asquith_cb_asu2024_cpdi_rsm_asc470_gregory_colva_embrechts_hill_bouchaud_tlf_karnosky_singer_dgtw_timing_brock_hommes_penman_reoi(
+pub fn benchmark_fabozzi_krd_cmo_pac_asquith_cb_asu2024_cpdi_rsm_asc470_gregory_colva_embrechts_hill_bouchaud_tlf_karnosky_singer_dgtw_timing_brock_hommes_penman_reoi(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase31_workloads(x).iter().copied().sum::<f64>().val();
+        let f = |x: [f64; 4]| suite43_workloads(x).iter().copied().sum::<f64>().val();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -7546,7 +7547,7 @@ pub fn benchmark_phase31_fabozzi_krd_cmo_pac_asquith_cb_asu2024_cpdi_rsm_asc470_
             Dual::variable(x0[2], 2),
             Dual::variable(x0[3], 3),
         ];
-        let y = phase31_workloads(x);
+        let y = suite43_workloads(x);
         y.iter()
             .map(|v| v.val + v.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -7561,7 +7562,7 @@ pub fn benchmark_phase31_fabozzi_krd_cmo_pac_asquith_cb_asu2024_cpdi_rsm_asc470_
     )
 }
 
-pub fn phase32_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite44_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let r = ql_models::evaluate_gairat_polala_cheyette_local_vol_caplet(
         &ql_models::GairatPolalaCheyetteCapletSpec {
             forward_rate: T::from_f64(0.03) + x[0],
@@ -7778,13 +7779,13 @@ pub fn phase32_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
         qual.schilit_shenanigan_composite_z,
     ]
 }
-pub fn benchmark_phase32_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cmcds_morini_turlakov_wwr_hhw_adi_capped_call_mw_ahmadi_evar_schur_hrp_bekk_garch_schilit_sloan(
+pub fn benchmark_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cmcds_morini_turlakov_wwr_hhw_adi_capped_call_mw_ahmadi_evar_schur_hrp_bekk_garch_schilit_sloan(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase32_workloads(x).iter().copied().sum::<f64>().val();
+        let f = |x: [f64; 4]| suite44_workloads(x).iter().copied().sum::<f64>().val();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -7805,7 +7806,7 @@ pub fn benchmark_phase32_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cm
             Dual::variable(x0[2], 2),
             Dual::variable(x0[3], 3),
         ];
-        phase32_workloads(x)
+        suite44_workloads(x)
             .iter()
             .map(|v| v.val + v.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -7820,7 +7821,7 @@ pub fn benchmark_phase32_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cm
     )
 }
 
-pub fn phase33_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite45_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let dx0 = x[0] * T::from_f64(0.01);
     let dx1 = x[1] * T::from_f64(0.01);
     let dx2 = x[2] * T::from_f64(0.01);
@@ -8018,11 +8019,11 @@ pub fn phase33_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     ]
 }
 
-pub fn benchmark_phase33_rebonato_cms_lm_all_engines(scale: usize) -> ComparisonRow {
+pub fn benchmark_rebonato_cms_lm_all_engines(scale: usize) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase33_workloads(x).iter().copied().sum::<f64>();
+        let f = |x: [f64; 4]| suite45_workloads(x).iter().copied().sum::<f64>();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -8043,7 +8044,7 @@ pub fn benchmark_phase33_rebonato_cms_lm_all_engines(scale: usize) -> Comparison
             Dual::variable(x0[2], 2),
             Dual::variable(x0[3], 3),
         ];
-        phase33_workloads(x)
+        suite45_workloads(x)
             .iter()
             .map(|v| v.val + v.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -8058,7 +8059,7 @@ pub fn benchmark_phase33_rebonato_cms_lm_all_engines(scale: usize) -> Comparison
     )
 }
 
-pub fn phase35_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite47_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let dx0 = x[0] * T::from_f64(0.005);
     let dx1 = x[1] * T::from_f64(0.005);
     let dx2 = x[2] * T::from_f64(0.005);
@@ -8262,13 +8263,13 @@ pub fn phase35_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     ]
 }
 
-pub fn benchmark_phase35_hagan_west_ctd_afv_kth_sacva_gs_kirk_fx_vv_napoleon_tc_meucci_krr_eva(
+pub fn benchmark_hagan_west_ctd_afv_kth_sacva_gs_kirk_fx_vv_napoleon_tc_meucci_krr_eva(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase35_workloads(x).iter().copied().sum::<f64>();
+        let f = |x: [f64; 4]| suite47_workloads(x).iter().copied().sum::<f64>();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -8289,7 +8290,7 @@ pub fn benchmark_phase35_hagan_west_ctd_afv_kth_sacva_gs_kirk_fx_vv_napoleon_tc_
             Dual::variable(x0[2], 2),
             Dual::variable(x0[3], 3),
         ];
-        phase35_workloads(x)
+        suite47_workloads(x)
             .iter()
             .map(|v| v.val + v.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -8304,7 +8305,7 @@ pub fn benchmark_phase35_hagan_west_ctd_afv_kth_sacva_gs_kirk_fx_vv_napoleon_tc_
     )
 }
 
-pub fn phase36_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite48_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let s = T::from_f64(0.005);
     let dx0 = x[0] * s;
     let dx1 = x[1] * s;
@@ -8540,13 +8541,13 @@ pub fn phase36_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     ]
 }
 
-pub fn benchmark_phase36_brigo_csa_ctd_fabozzi_callable_oas_lando_jlt_migration_gatheral_corridor_varswap_glasserman_lsm_rogers_dual_cartea_lob_mm_lo_mackinlay_vr_lopez_dsr_purged_cv_roncalli_spinu_erc_ilmanen_vmc_penman_reoi_mccall_bellman(
+pub fn benchmark_brigo_csa_ctd_fabozzi_callable_oas_lando_jlt_migration_gatheral_corridor_varswap_glasserman_lsm_rogers_dual_cartea_lob_mm_lo_mackinlay_vr_lopez_dsr_purged_cv_roncalli_spinu_erc_ilmanen_vmc_penman_reoi_mccall_bellman(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase36_workloads(x).iter().copied().sum::<f64>();
+        let f = |x: [f64; 4]| suite48_workloads(x).iter().copied().sum::<f64>();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -8567,7 +8568,7 @@ pub fn benchmark_phase36_brigo_csa_ctd_fabozzi_callable_oas_lando_jlt_migration_
             Dual::variable(x0[2], 2),
             Dual::variable(x0[3], 3),
         ];
-        phase36_workloads(x)
+        suite48_workloads(x)
             .iter()
             .map(|v| v.val + v.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -8582,7 +8583,7 @@ pub fn benchmark_phase36_brigo_csa_ctd_fabozzi_callable_oas_lando_jlt_migration_
     )
 }
 
-pub fn phase37_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite49_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let s = T::from_f64(0.005);
     let dx0 = x[0] * s;
     let dx1 = x[1] * s;
@@ -8782,13 +8783,13 @@ pub fn phase37_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     ]
 }
 
-pub fn benchmark_phase37_brigo_nss_krd_tuckman_tips_floor_schonbucher_rmv_rt_rfv_gatheral_sticky_lv_gregory_simm_ccp_mva_schwartz_smith_kalman_wystup_fx_dnt_bouzoubaa_timer_meucci_bl_woodbury_gueant_ac_sinh_zou_elastic_net_nk_ree(
+pub fn benchmark_brigo_nss_krd_tuckman_tips_floor_schonbucher_rmv_rt_rfv_gatheral_sticky_lv_gregory_simm_ccp_mva_schwartz_smith_kalman_wystup_fx_dnt_bouzoubaa_timer_meucci_bl_woodbury_gueant_ac_sinh_zou_elastic_net_nk_ree(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase37_workloads(x).iter().copied().sum::<f64>();
+        let f = |x: [f64; 4]| suite49_workloads(x).iter().copied().sum::<f64>();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -8809,7 +8810,7 @@ pub fn benchmark_phase37_brigo_nss_krd_tuckman_tips_floor_schonbucher_rmv_rt_rfv
             Dual::variable(x0[2], 2),
             Dual::variable(x0[3], 3),
         ];
-        phase37_workloads(x)
+        suite49_workloads(x)
             .iter()
             .map(|v| v.val + v.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -8824,7 +8825,7 @@ pub fn benchmark_phase37_brigo_nss_krd_tuckman_tips_floor_schonbucher_rmv_rt_rfv
     )
 }
 
-pub fn phase38_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite50_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let s = T::from_f64(0.005);
     let dx0 = x[0] * s;
     let dx1 = x[1] * s;
@@ -9024,13 +9025,13 @@ pub fn phase38_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     ]
 }
 
-pub fn benchmark_phase38_hagan_west_tension_duffie_lando_pac_cmo_fama_macbeth_shanken_gatheral_asvi_bgk_discrete_barrier_bouchaud_cross_impact_karnosky_singer_merton_jump_campbell_viceira_ohlson_lid_griewank_revolve(
+pub fn benchmark_hagan_west_tension_duffie_lando_pac_cmo_fama_macbeth_shanken_gatheral_asvi_bgk_discrete_barrier_bouchaud_cross_impact_karnosky_singer_merton_jump_campbell_viceira_ohlson_lid_griewank_revolve(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase38_workloads(x).iter().copied().sum::<f64>();
+        let f = |x: [f64; 4]| suite50_workloads(x).iter().copied().sum::<f64>();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -9051,7 +9052,7 @@ pub fn benchmark_phase38_hagan_west_tension_duffie_lando_pac_cmo_fama_macbeth_sh
             Dual::variable(x0[2], 2),
             Dual::variable(x0[3], 3),
         ];
-        phase38_workloads(x)
+        suite50_workloads(x)
             .iter()
             .map(|v| v.val + v.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -9066,7 +9067,7 @@ pub fn benchmark_phase38_hagan_west_tension_duffie_lando_pac_cmo_fama_macbeth_sh
     )
 }
 
-pub fn phase39_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite51_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let s = T::from_f64(0.005);
     let dx0 = x[0] * s;
     let dx1 = x[1] * s;
@@ -9261,13 +9262,13 @@ pub fn phase39_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     ]
 }
 
-pub fn benchmark_phase39_brigo_xccy_mtm_fabozzi_spec_pool_io_po_lando_marshall_olkin_gatheral_vix_vvix_gregory_wwr_cva_geman_gibson_schwartz_clark_fx_fva_rubinstein_chooser_grinold_flam_tc_meucci_es_euler_james_stein_sure_campbell_cochrane_habit(
+pub fn benchmark_brigo_xccy_mtm_fabozzi_spec_pool_io_po_lando_marshall_olkin_gatheral_vix_vvix_gregory_wwr_cva_geman_gibson_schwartz_clark_fx_fva_rubinstein_chooser_grinold_flam_tc_meucci_es_euler_james_stein_sure_campbell_cochrane_habit(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase39_workloads(x).iter().copied().sum::<f64>();
+        let f = |x: [f64; 4]| suite51_workloads(x).iter().copied().sum::<f64>();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -9288,7 +9289,7 @@ pub fn benchmark_phase39_brigo_xccy_mtm_fabozzi_spec_pool_io_po_lando_marshall_o
             Dual::variable(x0[2], 2),
             Dual::variable(x0[3], 3),
         ];
-        phase39_workloads(x)
+        suite51_workloads(x)
             .iter()
             .map(|v| v.val + v.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -9303,7 +9304,7 @@ pub fn benchmark_phase39_brigo_xccy_mtm_fabozzi_spec_pool_io_po_lando_marshall_o
     )
 }
 
-pub fn phase40_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite52_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let s = T::from_f64(0.005);
     let dx0 = x[0] * s;
     let dx1 = x[1] * s;
@@ -9483,13 +9484,13 @@ pub fn phase40_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     ]
 }
 
-pub fn benchmark_phase40_brigo_ois_fallback_fabozzi_collared_frn_schonbucher_cds_swaption_fep_bergomi_2f_skew_gregory_sa_ccr_ead_eydeland_spark_spread_wystup_prdc_geske_compound_qian_alpha_decay_roncalli_enb_johansen_vecm_bansal_yaron_lrr(
+pub fn benchmark_brigo_ois_fallback_fabozzi_collared_frn_schonbucher_cds_swaption_fep_bergomi_2f_skew_gregory_sa_ccr_ead_eydeland_spark_spread_wystup_prdc_geske_compound_qian_alpha_decay_roncalli_enb_johansen_vecm_bansal_yaron_lrr(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase40_workloads(x).iter().copied().sum::<f64>();
+        let f = |x: [f64; 4]| suite52_workloads(x).iter().copied().sum::<f64>();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -9510,7 +9511,7 @@ pub fn benchmark_phase40_brigo_ois_fallback_fabozzi_collared_frn_schonbucher_cds
             Dual::variable(x0[2], 2),
             Dual::variable(x0[3], 3),
         ];
-        phase40_workloads(x)
+        suite52_workloads(x)
             .iter()
             .map(|v| v.val + v.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -9525,7 +9526,7 @@ pub fn benchmark_phase40_brigo_ois_fallback_fabozzi_collared_frn_schonbucher_cds
     )
 }
 
-pub fn phase41_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite53_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let s = T::from_f64(0.005);
     let dx0 = x[0] * s;
     let dx1 = x[1] * s;
@@ -9720,13 +9721,13 @@ pub fn phase41_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     ]
 }
 
-pub fn benchmark_phase41_andersen_cms_replication_tuckman_special_repo_okane_cds_upfront_gatheral_ssr_tanaka_gregory_saccr_kva_eydeland_crack_spread_wystup_prdc_cap_haug_eso_dilution_qian_spinu_erc_rockafellar_cvar_htf_pls_krylov_piazzesi_fomc(
+pub fn benchmark_andersen_cms_replication_tuckman_special_repo_okane_cds_upfront_gatheral_ssr_tanaka_gregory_saccr_kva_eydeland_crack_spread_wystup_prdc_cap_haug_eso_dilution_qian_spinu_erc_rockafellar_cvar_htf_pls_krylov_piazzesi_fomc(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase41_workloads(x).iter().copied().sum::<f64>();
+        let f = |x: [f64; 4]| suite53_workloads(x).iter().copied().sum::<f64>();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -9747,7 +9748,7 @@ pub fn benchmark_phase41_andersen_cms_replication_tuckman_special_repo_okane_cds
             Dual::variable(x0[2], 2),
             Dual::variable(x0[3], 3),
         ];
-        phase41_workloads(x)
+        suite53_workloads(x)
             .iter()
             .map(|v| v.val + v.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -9762,7 +9763,7 @@ pub fn benchmark_phase41_andersen_cms_replication_tuckman_special_repo_okane_cds
     )
 }
 
-pub fn phase42_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+pub fn suite54_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let s = T::from_f64(0.005);
     let dx0 = x[0] * s;
     let dx1 = x[1] * s;
@@ -9960,13 +9961,13 @@ pub fn phase42_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     ]
 }
 
-pub fn benchmark_phase42_darbyshire_step_ois_turn_despiegeleer_cb_soft_call_okane_cds_index_skew_gatheral_varswap_truncation_gregory_fva_overlap_geman_working_storage_wystup_malz_fx_fly_goldman_sosin_lookback_ledoit_wolf_shrinkage_almgren_chriss_cara_tsay_estar_acm_cp(
+pub fn benchmark_darbyshire_step_ois_turn_despiegeleer_cb_soft_call_okane_cds_index_skew_gatheral_varswap_truncation_gregory_fva_overlap_geman_working_storage_wystup_malz_fx_fly_goldman_sosin_lookback_ledoit_wolf_shrinkage_almgren_chriss_cara_tsay_estar_acm_cp(
     scale: usize,
 ) -> ComparisonRow {
     let cfg = config(scale);
     let x0 = [0.2, -0.1, 0.3, -0.2];
     let baseline = move || {
-        let f = |x: [f64; 4]| phase42_workloads(x).iter().copied().sum::<f64>();
+        let f = |x: [f64; 4]| suite54_workloads(x).iter().copied().sum::<f64>();
         let mut z = f(x0);
         for i in 0..4 {
             let mut u = x0;
@@ -9987,7 +9988,7 @@ pub fn benchmark_phase42_darbyshire_step_ois_turn_despiegeleer_cb_soft_call_okan
             Dual::variable(x0[2], 2),
             Dual::variable(x0[3], 3),
         ];
-        phase42_workloads(x)
+        suite54_workloads(x)
             .iter()
             .map(|v| v.val + v.d.iter().sum::<f64>())
             .sum::<f64>()
@@ -9995,6 +9996,240 @@ pub fn benchmark_phase42_darbyshire_step_ois_turn_despiegeleer_cb_soft_call_okan
     run_comparison(
         "54_darbyshire_step_ois_turn_despiegeleer_cb_soft_call_okane_cds_index_skew_gatheral_varswap_truncation_gregory_fva_overlap_geman_working_storage_wystup_malz_fx_fly_goldman_sosin_lookback_ledoit_wolf_shrinkage_almgren_chriss_cara_tsay_estar_acm_cp",
         "Step-OIS-Turn / CB-SoftCall-MW / CDX-Skew-Basis / VarSwap-Trunc / FVA-DVA-Overlap / Working-Storage / FX-Malz-Fly / GSG-Lookback / Ledoit-Wolf-CC / Almgren-CARA / ESTAR-Band / ACM-CP-TP AD",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
+}
+
+pub fn suite55_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+    let s = T::from_f64(0.005);
+    let dx0 = x[0] * s;
+    let dx1 = x[1] * s;
+    let dx2 = x[2] * s;
+    let dx3 = x[3] * s;
+
+    let tb = ql_curves::evaluate_henrard_tenor_basis_multiplicative_spread(
+        &ql_curves::HenrardTenorBasisMultiplicativeSpreadSpec {
+            ois_discount_rate_r: T::from_f64(0.038) + dx0,
+            forward_3m_period1_f1: T::from_f64(0.041) + dx1,
+            forward_3m_period2_f2: T::from_f64(0.043) + dx2,
+            quoted_forward_6m_f6: T::from_f64(0.0445) + dx3,
+            vol_3m_period1_sigma1: T::from_f64(0.18),
+            vol_3m_period2_sigma2: T::from_f64(0.19),
+            subperiod_correlation_rho12: T::from_f64(0.85),
+            start_time_years_t0: T::from_f64(1.0),
+        },
+    );
+
+    let msr = ql_fixed_income::evaluate_fabozzi_agency_msr_valuation(
+        &ql_fixed_income::FabozziAgencyMsrValuationSpec {
+            gross_servicing_fee_rate: T::from_f64(0.0025) + dx0 * T::from_f64(0.1),
+            ancillary_float_income_rate: T::from_f64(0.0004),
+            annual_servicing_cost_rate: T::from_f64(0.0006),
+            wac_mortgage_coupon: T::from_f64(0.060) + dx1,
+            current_primary_mortgage_rate: T::from_f64(0.052) + dx2,
+            base_turnover_cpr: T::from_f64(0.06),
+            max_refi_cpr: T::from_f64(0.42),
+            refi_scurve_steepness_kappa: T::from_f64(120.0),
+            lender_recapture_fraction_alpha: T::from_f64(0.28) + dx3,
+            ois_discount_plus_oas_rate: T::from_f64(0.075),
+        },
+    );
+
+    let cdo = ql_credit::evaluate_okane_cdo_base_correlation_tranche(
+        &ql_credit::OKaneCdoBaseCorrelationTrancheSpec {
+            portfolio_hazard_rate_lambda: T::from_f64(0.018) + dx0,
+            recovery_rate_r: T::from_f64(0.40),
+            attachment_point_k1: T::from_f64(0.03),
+            detachment_point_k2: T::from_f64(0.07),
+            base_correlation_k1_rho1: T::from_f64(0.24) + dx1,
+            base_correlation_k2_rho2: T::from_f64(0.36) + dx2,
+            ois_discount_rate_r: T::from_f64(0.035) + dx3,
+            maturity_years_t: T::from_f64(5.0),
+        },
+    );
+
+    let fwd_sm = ql_vol::evaluate_gatheral_forward_start_cliquet_smile(
+        &ql_vol::GatheralForwardStartCliquetSmileSpec {
+            spot_price_s0: T::from_f64(100.0) + x[0],
+            reset_strike_moneyness_alpha: T::from_f64(1.02) + dx1,
+            reset_time_years_t1: T::from_f64(0.50),
+            maturity_time_years_t2: T::from_f64(1.50),
+            forward_initial_variance_v0: T::from_f64(0.04) + dx2,
+            mean_reversion_speed_kappa: T::from_f64(1.8),
+            vol_of_vol_eta: T::from_f64(0.55) + dx3,
+            spot_vol_correlation_rho: T::from_f64(-0.65),
+            risk_free_rate_r: T::from_f64(0.04),
+            dividend_yield_q: T::from_f64(0.015),
+        },
+    );
+
+    let csa_mta = ql_xva::evaluate_gregory_pykhtin_csa_threshold_mta_cva(
+        &ql_xva::GregoryPykhtinCsaThresholdMtaCvaSpec {
+            uncollateralized_exposure_vol_sigma_v: T::from_f64(35.0) + x[0],
+            current_mtm_value_v0: T::from_f64(12.0) + x[1],
+            csa_threshold_h: T::from_f64(15.0) + x[2],
+            minimum_transfer_amount_mta: T::from_f64(2.5),
+            independent_amount_ia: T::from_f64(4.0),
+            margin_period_of_risk_days: T::from_f64(10.0),
+            counterparty_hazard_rate_lambda: T::from_f64(0.022) + dx3,
+            recovery_rate_r: T::from_f64(0.40),
+            ois_discount_rate_r: T::from_f64(0.038),
+            horizon_years_t: T::from_f64(3.0),
+        },
+    );
+
+    let swing = ql_commodities::evaluate_eydeland_gas_swing_take_or_pay(
+        &ql_commodities::EydelandGasSwingTakeOrPaySpec {
+            forward_gas_prices_f: [
+                T::from_f64(3.20) + dx0,
+                T::from_f64(3.85) + dx1,
+                T::from_f64(3.45) + dx2,
+            ],
+            contract_strike_price_k: T::from_f64(3.30),
+            min_period_volume_qmin: T::from_f64(0.50),
+            max_period_volume_qmax: T::from_f64(1.50),
+            min_cumulative_acq_qmin_tot: T::from_f64(2.20),
+            max_cumulative_acq_qmax_tot: T::from_f64(3.80),
+            shortfall_makeup_penalty_per_unit: T::from_f64(0.85),
+            spot_gas_volatility_sigma: T::from_f64(0.45) + dx3,
+            risk_free_rate_r: T::from_f64(0.04),
+        },
+    );
+
+    let kiko =
+        ql_fx::evaluate_wystup_fx_window_kiko_barrier(&ql_fx::WystupFxWindowKikoBarrierSpec {
+            spot_fx_s0: T::from_f64(1.085) + dx0,
+            strike_fx_k: T::from_f64(1.080),
+            lower_knock_in_barrier_l: T::from_f64(1.020),
+            upper_knock_out_barrier_u: T::from_f64(1.155),
+            window_start_years_t1: T::from_f64(0.15),
+            window_end_years_t2: T::from_f64(0.75),
+            maturity_years_t: T::from_f64(1.00),
+            domestic_rate_rd: T::from_f64(0.045) + dx1,
+            foreign_rate_rf: T::from_f64(0.030) + dx2,
+            volatility_sigma: T::from_f64(0.095) + dx3,
+            upper_ko_rebate_r: T::from_f64(0.0080),
+        });
+
+    let stulz = ql_exotics::evaluate_stulz_two_asset_rainbow_option(
+        &ql_exotics::StulzTwoAssetRainbowOptionSpec {
+            spot_asset_1_s1: T::from_f64(100.0) + x[0],
+            spot_asset_2_s2: T::from_f64(105.0) + x[1],
+            strike_price_k: T::from_f64(98.0),
+            vol_asset_1_sigma1: T::from_f64(0.22) + dx2,
+            vol_asset_2_sigma2: T::from_f64(0.28),
+            correlation_rho: T::from_f64(0.45) + dx3,
+            dividend_yield_1_q1: T::from_f64(0.015),
+            dividend_yield_2_q2: T::from_f64(0.020),
+            risk_free_rate_r: T::from_f64(0.045),
+            maturity_years_t: T::from_f64(1.0),
+        },
+    );
+
+    let jm = ql_portfolio::evaluate_jagannathan_ma_no_short_sale_shrinkage(
+        &ql_portfolio::JagannathanMaCovarianceShrinkageSpec {
+            asset_volatilities: [
+                T::from_f64(0.26) + dx0,
+                T::from_f64(0.18) + dx1,
+                T::from_f64(0.14) + dx2,
+            ],
+            correlation_12: T::from_f64(0.85) + dx3,
+            correlation_13: T::from_f64(0.25),
+            correlation_23: T::from_f64(0.30),
+            weight_upper_cap_u: T::from_f64(0.65),
+        },
+    );
+
+    let ow = ql_portfolio::evaluate_obizhaeva_wang_transient_lob_execution(
+        &ql_portfolio::ObizhaevaWangTransientLobExecutionSpec {
+            total_order_size_x0: T::from_f64(100.0) + x[0],
+            execution_horizon_t: T::from_f64(1.0),
+            lob_depth_density_q0: T::from_f64(25.0) + x[1],
+            permanent_impact_gamma: T::from_f64(0.008),
+            lob_resilience_speed_rho: T::from_f64(3.2) + dx2,
+            asset_volatility_sigma: T::from_f64(0.25) + dx3,
+            risk_aversion_lambda: T::from_f64(0.15),
+        },
+    );
+
+    let hac = ql_dml::evaluate_newey_west_andrews_hac_variance(
+        &ql_dml::NeweyWestAndrewsHacVarianceSpec {
+            sample_variance_gamma0: T::from_f64(0.040) + dx0,
+            autocovariance_lag1_gamma1: T::from_f64(0.022) + dx1,
+            autocovariance_lag2_gamma2: T::from_f64(0.012) + dx2,
+            autocovariance_lag3_gamma3: T::from_f64(0.006),
+            sample_size_n: T::from_f64(250.0),
+            ols_point_estimate_beta: T::from_f64(0.035) + dx3,
+        },
+    );
+
+    let gab = ql_models::evaluate_gabaix_rare_disaster_resilience(
+        &ql_models::GabaixRareDisasterResilienceSpec {
+            disaster_probability_p: T::from_f64(0.018) + dx0,
+            consumption_recovery_in_disaster_b: T::from_f64(0.72) + dx1,
+            dividend_recovery_in_disaster_f: T::from_f64(0.55) + dx2,
+            crra_risk_aversion_gamma: T::from_f64(4.0),
+            time_preference_rate_rho: T::from_f64(0.025),
+            normal_growth_rate_g: T::from_f64(0.020),
+            resilience_deviation_h_hat: T::from_f64(-0.008) + dx3,
+            resilience_mean_reversion_phi_h: T::from_f64(0.20),
+        },
+    );
+
+    [
+        tb.ois_discounted_basis_swaplet_pv,
+        msr.recapture_adjusted_msr_fair_value_pct,
+        cdo.mezzanine_fair_running_spread_bps,
+        fwd_sm.stochastic_vol_forward_start_call,
+        csa_mta.collateralized_cva,
+        swing.total_swing_contract_value,
+        kiko.window_kiko_call_value,
+        stulz.call_on_max_value,
+        jm.constrained_gmv_portfolio_volatility,
+        ow.risk_adjusted_total_cost,
+        hac.hac_robust_t_statistic,
+        gab.linearity_generating_price_dividend_ratio,
+    ]
+}
+
+pub fn benchmark_henrard_tenor_basis_fabozzi_msr_recapture_okane_cdo_base_corr_gatheral_fwd_start_smile_gregory_pykhtin_csa_mta_eydeland_gas_swing_wystup_fx_kiko_stulz_rainbow_jagannathan_ma_obizhaeva_wang_newey_west_hac_gabaix_disaster(
+    scale: usize,
+) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let baseline = move || {
+        let f = |x: [f64; 4]| suite55_workloads(x).iter().copied().sum::<f64>();
+        let mut z = f(x0);
+        for i in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[i] += 1e-5;
+            d[i] -= 1e-5;
+            z += (f(u) - f(d)) / (2e-5);
+        }
+        for _ in 0..20 {
+            std::hint::black_box(f(x0));
+        }
+        z
+    };
+    let sota = move || {
+        let x: [Dual<4>; 4] = [
+            Dual::variable(x0[0], 0),
+            Dual::variable(x0[1], 1),
+            Dual::variable(x0[2], 2),
+            Dual::variable(x0[3], 3),
+        ];
+        suite55_workloads(x)
+            .iter()
+            .map(|v| v.val + v.d.iter().sum::<f64>())
+            .sum::<f64>()
+    };
+    run_comparison(
+        "55_henrard_tenor_basis_fabozzi_msr_recapture_okane_cdo_base_corr_gatheral_fwd_start_smile_gregory_pykhtin_csa_mta_eydeland_gas_swing_wystup_fx_kiko_stulz_rainbow_jagannathan_ma_obizhaeva_wang_newey_west_hac_gabaix_disaster",
+        "Tenor-Basis-Mult / MSR-Recapture / CDO-Base-Corr / Fwd-Start-Smile / CSA-MTA-CVA / Gas-Swing / FX-Window-KIKO / Stulz-Rainbow / Jagannathan-Ma / Obizhaeva-Wang / Newey-West-HAC / Gabaix-Disaster AD",
         cfg,
         1e-4,
         baseline,

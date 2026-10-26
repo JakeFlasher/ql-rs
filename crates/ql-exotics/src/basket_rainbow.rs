@@ -1052,7 +1052,7 @@ pub fn evaluate_choi_li_deng_multi_asset_spread_basket<T: Real>(
 }
 
 #[cfg(test)]
-mod phase20_tests {
+mod domain_suite_32_tests {
     use super::*;
     use ql_ad::Dual;
 
@@ -1143,7 +1143,7 @@ mod phase20_tests {
 }
 
 #[cfg(test)]
-mod phase28_tests {
+mod domain_suite_40_tests {
     use super::*;
     use ql_ad::Dual;
     fn mk<T: Real>(x: T) -> ChoiLiDengMultiAssetSpreadBasketSpec<T> {
@@ -1174,3 +1174,189 @@ mod phase28_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
+
+mod evaluate_stulz_two_asset_rainbow_option_module {
+    // Haug (2007, Ch. 5.1) & Stulz (1982) Two-Asset Minimum & Maximum Rainbow Option
+    // (`Call-on-Min`, `Call-on-Max`, `Put-on-Min`, `Put-on-Max`) & Margrabe Exchange Parity Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct StulzTwoAssetRainbowOptionSpec<T: Real = f64> {
+        pub spot_asset_1_s1: T,
+        pub spot_asset_2_s2: T,
+        pub strike_price_k: T,
+        pub vol_asset_1_sigma1: T,
+        pub vol_asset_2_sigma2: T,
+        pub correlation_rho: T,
+        pub dividend_yield_1_q1: T,
+        pub dividend_yield_2_q2: T,
+        pub risk_free_rate_r: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct StulzTwoAssetRainbowOptionReport<T: Real = f64> {
+        pub call_on_min_value: T,
+        pub call_on_max_value: T,
+        pub put_on_min_value: T,
+        pub put_on_max_value: T,
+        pub margrabe_exchange_option_value: T,
+        pub vanilla_call_sum_benchmark: T,
+        pub stulz_sum_parity_residual: T,
+    }
+
+    fn bvn_cdf_gl10<T: Real>(a: T, b: T, rho: T) -> T {
+        let nodes = [
+            -0.973_906_528_517_171_7,
+            -0.865_063_366_688_984_5,
+            -0.679_409_568_299_024_4,
+            -0.433_395_394_129_247_2,
+            -0.148_874_338_981_631_2,
+            0.148_874_338_981_631_2,
+            0.433_395_394_129_247_2,
+            0.679_409_568_299_024_4,
+            0.865_063_366_688_984_5,
+            0.973_906_528_517_171_7,
+        ];
+        let weights = [
+            0.066_671_344_308_688_1,
+            0.149_451_349_150_580_6,
+            0.219_086_362_515_982,
+            0.269_266_719_309_996_3,
+            0.295_524_224_714_752_9,
+            0.295_524_224_714_752_9,
+            0.269_266_719_309_996_3,
+            0.219_086_362_515_982,
+            0.149_451_349_150_580_6,
+            0.066_671_344_308_688_1,
+        ];
+        let r = rho.max_val(T::from_f64(-0.995)).min_val(T::from_f64(0.995));
+        let half_r = T::from_f64(0.5) * r;
+        let inv_two_pi = T::from_f64(0.159_154_943_091_895_35);
+        let mut integral = T::zero();
+        for (&node, &weight) in nodes.iter().zip(weights.iter()) {
+            let xi = half_r * (T::from_f64(node) + T::one());
+            let omx2 = (T::one() - xi * xi).max_val(T::from_f64(1e-8));
+            let num = -(a * a - T::from_f64(2.0) * xi * a * b + b * b) / (T::from_f64(2.0) * omx2);
+            integral += T::from_f64(weight) * num.exp() / omx2.sqrt();
+        }
+        norm_cdf(a) * norm_cdf(b) + half_r * inv_two_pi * integral
+    }
+
+    pub fn evaluate_stulz_two_asset_rainbow_option<T: Real>(
+        spec: &StulzTwoAssetRainbowOptionSpec<T>,
+    ) -> StulzTwoAssetRainbowOptionReport<T> {
+        let s1 = spec.spot_asset_1_s1.max_val(T::from_f64(1e-4));
+        let s2 = spec.spot_asset_2_s2.max_val(T::from_f64(1e-4));
+        let k = spec.strike_price_k.max_val(T::from_f64(1e-4));
+        let sig1 = spec.vol_asset_1_sigma1.max_val(T::from_f64(1e-4));
+        let sig2 = spec.vol_asset_2_sigma2.max_val(T::from_f64(1e-4));
+        let rho = spec
+            .correlation_rho
+            .max_val(T::from_f64(-0.98))
+            .min_val(T::from_f64(0.98));
+        let q1 = spec.dividend_yield_1_q1;
+        let q2 = spec.dividend_yield_2_q2;
+        let r = spec.risk_free_rate_r;
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+        let sqrt_t = t.sqrt();
+
+        let sig_v = (sig1 * sig1 + sig2 * sig2 - T::from_f64(2.0) * rho * sig1 * sig2)
+            .max_val(T::from_f64(1e-6))
+            .sqrt();
+        let y1 = ((s1 / k).ln() + (r - q1 + T::from_f64(0.5) * sig1 * sig1) * t) / (sig1 * sqrt_t);
+        let y2 = ((s2 / k).ln() + (r - q2 + T::from_f64(0.5) * sig2 * sig2) * t) / (sig2 * sqrt_t);
+        let rho1 = (sig1 - rho * sig2) / sig_v;
+        let rho2 = (sig2 - rho * sig1) / sig_v;
+        let d =
+            ((s1 / s2).ln() + (q2 - q1 + T::from_f64(0.5) * sig_v * sig_v) * t) / (sig_v * sqrt_t);
+
+        let pv_s1 = s1 * (-q1 * t).exp();
+        let pv_s2 = s2 * (-q2 * t).exp();
+        let pv_k = k * (-r * t).exp();
+
+        // Stulz (1982, Eq. 12) Call on Minimum:
+        let c_min = pv_s1 * bvn_cdf_gl10(y1, -d, -rho1)
+            + pv_s2 * bvn_cdf_gl10(y2, d - sig_v * sqrt_t, -rho2)
+            - pv_k * bvn_cdf_gl10(y1 - sig1 * sqrt_t, y2 - sig2 * sqrt_t, rho);
+
+        // Stulz (1982, Eq. 14) Call on Maximum (independent bivariate normal evaluation):
+        let c_max = pv_s1 * bvn_cdf_gl10(y1, d, rho1)
+            + pv_s2 * bvn_cdf_gl10(y2, -d + sig_v * sqrt_t, rho2)
+            - pv_k * (T::one() - bvn_cdf_gl10(-y1 + sig1 * sqrt_t, -y2 + sig2 * sqrt_t, rho));
+
+        // Vanilla calls C(S1, K) + C(S2, K):
+        let c1 = pv_s1 * norm_cdf(y1) - pv_k * norm_cdf(y1 - sig1 * sqrt_t);
+        let c2 = pv_s2 * norm_cdf(y2) - pv_k * norm_cdf(y2 - sig2 * sqrt_t);
+        let vanilla_sum = c1 + c2;
+        let parity_res = (c_min + c_max) - vanilla_sum;
+
+        // Margrabe (1978) zero-strike exchange option max(S1 - S2, 0) & min/max puts via Stulz parity:
+        let margrabe_exch = pv_s1 * norm_cdf(d) - pv_s2 * norm_cdf(d - sig_v * sqrt_t);
+        let v_max_zero_k = pv_s2 + margrabe_exch;
+        let v_min_zero_k = pv_s1 - margrabe_exch;
+        let p_min = pv_k - v_min_zero_k + c_min;
+        let p_max = pv_k - v_max_zero_k + c_max;
+
+        StulzTwoAssetRainbowOptionReport {
+            call_on_min_value: c_min,
+            call_on_max_value: c_max,
+            put_on_min_value: p_min,
+            put_on_max_value: p_max,
+            margrabe_exchange_option_value: margrabe_exch,
+            vanilla_call_sum_benchmark: vanilla_sum,
+            stulz_sum_parity_residual: parity_res,
+        }
+    }
+
+    #[cfg(test)]
+    mod domain_suite_55_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn stulz_two_asset_rainbow_option_invariants_and_ad_parity() {
+            let spec = StulzTwoAssetRainbowOptionSpec {
+                spot_asset_1_s1: 100.0,
+                spot_asset_2_s2: 105.0,
+                strike_price_k: 98.0,
+                vol_asset_1_sigma1: 0.22,
+                vol_asset_2_sigma2: 0.28,
+                correlation_rho: 0.45,
+                dividend_yield_1_q1: 0.015,
+                dividend_yield_2_q2: 0.020,
+                risk_free_rate_r: 0.045,
+                maturity_years_t: 1.0,
+            };
+            let rep = evaluate_stulz_two_asset_rainbow_option(&spec);
+            assert!(rep.call_on_max_value > rep.call_on_min_value);
+            assert!(rep.put_on_min_value > rep.put_on_max_value);
+            assert!(rep.stulz_sum_parity_residual.abs() < 1e-4);
+
+            let h = 1e-6;
+            let r_ad = evaluate_stulz_two_asset_rainbow_option(&StulzTwoAssetRainbowOptionSpec {
+                spot_asset_1_s1: Dual::<1>::variable(spec.spot_asset_1_s1, 0),
+                spot_asset_2_s2: Dual::<1>::from_value(spec.spot_asset_2_s2),
+                strike_price_k: Dual::<1>::from_value(spec.strike_price_k),
+                vol_asset_1_sigma1: Dual::<1>::from_value(spec.vol_asset_1_sigma1),
+                vol_asset_2_sigma2: Dual::<1>::from_value(spec.vol_asset_2_sigma2),
+                correlation_rho: Dual::<1>::from_value(spec.correlation_rho),
+                dividend_yield_1_q1: Dual::<1>::from_value(spec.dividend_yield_1_q1),
+                dividend_yield_2_q2: Dual::<1>::from_value(spec.dividend_yield_2_q2),
+                risk_free_rate_r: Dual::<1>::from_value(spec.risk_free_rate_r),
+                maturity_years_t: Dual::<1>::from_value(spec.maturity_years_t),
+            });
+            let mut sp = spec;
+            sp.spot_asset_1_s1 += h;
+            let mut sm = spec;
+            sm.spot_asset_1_s1 -= h;
+            let fd = (evaluate_stulz_two_asset_rainbow_option(&sp).call_on_max_value
+                - evaluate_stulz_two_asset_rainbow_option(&sm).call_on_max_value)
+                / (2.0 * h);
+            assert!((r_ad.call_on_max_value.d[0] - fd).abs() < 1e-5);
+        }
+    }
+}
+pub use evaluate_stulz_two_asset_rainbow_option_module::*;

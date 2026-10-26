@@ -323,7 +323,7 @@ fn wwr_zero_preserves_ad_and_epe() {
 }
 
 #[test]
-fn phase12_frtb_sa_ima_and_bilateral_xva_invariants() {
+fn suite24_frtb_sa_ima_and_bilateral_xva_invariants() {
     let sa = ql_xva::compute_frtb_sa(&ql_xva::FrtbSaSpec {
         buckets: vec![ql_xva::FrtbSensitivityBucket {
             risk_class: ql_xva::FrtbRiskClass::Girr,
