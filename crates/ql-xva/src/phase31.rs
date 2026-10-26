@@ -56,8 +56,14 @@ pub fn evaluate_gregory_csa_threshold_mta_and_ctd_colva<T: Real>(
         let max_spread = s.ccy1_collateral_spread * zeta.norm_cdf()
             + s.ccy2_collateral_spread * (-zeta).norm_cdf()
             + ds * zeta.norm_pdf();
-        single += disc * s.ccy1_collateral_spread;
-        ctd += disc * max_spread;
+        let dt = if i == 0 {
+            t.max_val(T::from_f64(1e-8))
+        } else {
+            (t - s.time_grid[i - 1]).max_val(T::from_f64(1e-8))
+        };
+        let col_bal = (mu - threshold).max_val(T::zero());
+        single += disc * dt * col_bal * s.ccy1_collateral_spread;
+        ctd += disc * dt * col_bal * max_spread;
     }
     let option = (ctd - single).max_val(T::zero());
     GregoryCsaThresholdMtaCtdColvaReport {

@@ -99,9 +99,11 @@ mod phase31_tests {
 
     #[test]
     fn phase31_invariants_and_dual_fd() {
-        let r = evaluate_rsm_asc470_debt_modification_and_restructuring(&spec(0.0));
+        let s0 = spec(0.0);
+        let r = evaluate_rsm_asc470_debt_modification_and_restructuring(&s0);
         assert!(r.asc470_50_pv_difference_pct >= 0.0);
         assert!(r.prospective_modified_eir.is_finite());
+        assert!((pv_mod(&s0, r.prospective_modified_eir) - s0.carrying_amount).abs() < 1e-8);
         let h = 1e-6;
         let fd = (evaluate_rsm_asc470_debt_modification_and_restructuring(&spec(h))
             .prospective_modified_eir

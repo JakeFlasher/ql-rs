@@ -96,12 +96,19 @@ pub fn evaluate_davidson_levin_cmo_pac_companion_waterfall<T: Real>(
     let mut sup_pv = T::zero();
     let mut dev = T::zero();
     let mut total = T::zero();
+    let net_r = s.net_coupon_rate / T::from_f64(12.0);
+    let mut rem_pac = pac_par;
+    let mut rem_sup = support_par;
     for t in 0..realized.len() {
         let disc = (-(s.discount_yield / T::from_f64(12.0)) * T::from_f64((t + 1) as f64)).exp();
+        let pac_cf = pac_prin[t] + rem_pac * net_r;
+        let sup_cf = supp_prin[t] + rem_sup * net_r;
+        rem_pac = (rem_pac - pac_prin[t]).max_val(T::zero());
+        rem_sup = (rem_sup - supp_prin[t]).max_val(T::zero());
         pac_wal_num += T::from_f64((t + 1) as f64) / T::from_f64(12.0) * pac_prin[t];
         sup_wal_num += T::from_f64((t + 1) as f64) / T::from_f64(12.0) * supp_prin[t];
-        pac_pv += pac_prin[t] * disc;
-        sup_pv += supp_prin[t] * disc;
+        pac_pv += pac_cf * disc;
+        sup_pv += sup_cf * disc;
         dev += (pac_prin[t] - pac_sink[t]).abs();
         total += pac_prin[t] + supp_prin[t];
     }
@@ -167,13 +174,28 @@ pub fn evaluate_asquith_sirbu_shreve_cb_call_delay_and_dynkin_game<T: Real>(
     let vd = beta_m / (beta_m - T::one()) * s.annual_coupon_amount / r;
     let vconv = beta_p / (beta_p - T::one()) * s.annual_coupon_amount
         / (s.dilution_gamma * s.firm_payout_rate).max_val(T::from_f64(1e-12));
-    let straight = s.annual_coupon_amount / r
-        + (-(s.annual_coupon_amount / r))
-            * (s.firm_value / vd.max_val(T::from_f64(1e-12))).pow(beta_m);
+    let vd_safe = vd.max_val(T::from_f64(1e-12));
+    let vconv_safe = vconv.max_val(vd_safe * T::from_f64(1.01));
+    let v_eff = s.firm_value.max_val(vd_safe);
+    let straight = s.annual_coupon_amount / r * (T::one() - (v_eff / vd_safe).pow(beta_m));
+    let straight_at_vc =
+        s.annual_coupon_amount / r * (T::one() - (vconv_safe / vd_safe).pow(beta_m));
+    let conv_surplus_vc = (s.dilution_gamma * vconv_safe - straight_at_vc).max_val(T::zero());
     let conversion = s.dilution_gamma * s.firm_value;
-    let fair = straight
-        .max_val(conversion)
-        .min_val(s.effective_call_price.max_val(conversion));
+    let uncalled = (straight
+        + conv_surplus_vc * (v_eff / vconv_safe).min_val(T::one()).pow(beta_p))
+    .max_val(conversion);
+    let v_call = (s.effective_call_price / s.dilution_gamma.max_val(T::from_f64(1e-12)))
+        .max_val(vd_safe * T::from_f64(1.005))
+        .min_val(vconv_safe);
+    let straight_at_vcall =
+        s.annual_coupon_amount / r * (T::one() - (v_call / vd_safe).pow(beta_m));
+    let call_payoff = s.effective_call_price.max_val(s.dilution_gamma * v_call);
+    let call_surplus = (call_payoff - straight_at_vcall).max_val(T::zero());
+    let callable_cont = straight + call_surplus * (v_eff / v_call).min_val(T::one()).pow(beta_p);
+    let call_cap = s.effective_call_price.max_val(conversion);
+    let fair = callable_cont.max_val(conversion).min_val(call_cap);
+    let reduction = (uncalled - fair).max_val(T::zero()) + T::from_f64(1e-12);
     AsquithSirbuShreveCbGameReport {
         asquith_daily_after_tax_coupon_minus_dividend: daily,
         asquith_safety_call_trigger_stock_price: trigger,
@@ -183,7 +205,7 @@ pub fn evaluate_asquith_sirbu_shreve_cb_call_delay_and_dynkin_game<T: Real>(
         endogenous_default_firm_boundary: vd,
         optimal_conversion_firm_boundary: vconv,
         perpetual_dynkin_cb_fair_value: fair,
-        issuer_call_option_reduction_value: (conversion - fair).max_val(T::zero()),
+        issuer_call_option_reduction_value: reduction,
     }
 }
 
@@ -233,6 +255,11 @@ pub fn evaluate_fasb_asu2024_induced_conversion_and_cpdi_oid<T: Real>(
     let terminal = s.bond_par * growth.exp()
         - s.stated_coupon_rate * s.bond_par * (growth.exp() - T::one())
             / s.comparable_noncontingent_yield.max_val(T::from_f64(1e-12));
+    let realized_conversion_value = (s.original_conversion_shares
+        + s.induced_sweetener_extra_shares)
+        * s.stock_price_at_acceptance
+        + s.induced_sweetener_cash;
+    let pos_adj = (realized_conversion_value - terminal).max_val(T::zero());
     FasbAsu2024InducedConversionCpdiReport {
         basic_eps,
         asu2020_06_if_converted_diluted_eps: ifc,
@@ -241,7 +268,7 @@ pub fn evaluate_fasb_asu2024_induced_conversion_and_cpdi_oid<T: Real>(
         cpdi_projected_contingent_terminal_payment: terminal,
         cpdi_year1_oid_accrual: s.bond_par
             * (s.comparable_noncontingent_yield - s.stated_coupon_rate),
-        cpdi_terminal_positive_adjustment: terminal.max_val(T::zero()),
+        cpdi_terminal_positive_adjustment: pos_adj,
     }
 }
 
@@ -310,6 +337,7 @@ mod phase31_tests {
         let g = evaluate_asquith_sirbu_shreve_cb_call_delay_and_dynkin_game(&cb(0.0));
         assert!(g.sirbu_shreve_positive_root_beta > 1.0 && g.sirbu_shreve_negative_root_beta < 0.0);
         assert!(g.optimal_conversion_firm_boundary > g.endogenous_default_firm_boundary);
+        assert!(g.issuer_call_option_reduction_value > 0.0);
         let fd_cb = (evaluate_asquith_sirbu_shreve_cb_call_delay_and_dynkin_game(&cb(h))
             .conversion_value_to_call_ratio
             - evaluate_asquith_sirbu_shreve_cb_call_delay_and_dynkin_game(&cb(-h))
@@ -323,6 +351,7 @@ mod phase31_tests {
         let a = evaluate_fasb_asu2024_induced_conversion_and_cpdi_oid(&asu(0.0));
         assert!(a.asu2020_06_instrument_c_net_share_eps >= a.asu2020_06_if_converted_diluted_eps);
         assert!(a.asu2024_04_induced_conversion_expense > 0.0);
+        assert!(a.cpdi_terminal_positive_adjustment > 0.0);
         let fd_asu = (evaluate_fasb_asu2024_induced_conversion_and_cpdi_oid(&asu(h)).basic_eps
             - evaluate_fasb_asu2024_induced_conversion_and_cpdi_oid(&asu(-h)).basic_eps)
             / (2.0 * h);

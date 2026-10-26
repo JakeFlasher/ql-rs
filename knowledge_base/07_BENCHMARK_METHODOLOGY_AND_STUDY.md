@@ -57,6 +57,10 @@ Each suite has a deterministic workload, one warmup, 3 timing samples, and a con
 | 31 | Base plus four central finite-difference bumps across burnout-MBS/OAS, CMCDS, Quintic OU SPX/VIX, AFV convertible PDE, Clewlow–Strickland strip swaption, and Schur-HRP/nonlinear shrinkage | Single-pass Phase 19 `Dual<4>` institutional engine evaluations with parity against finite differences.
 | 32 | Base plus four central finite-difference bumps across Sinh-OU/CIR++ RFR, callable BK FRN, Morini–Brigo index options, WWM-XVA, mixed rough Bergomi VIX, Choi/Li–Deng–Zhou spreads, MRJD commodities, AFS LOB, EXVaR and PCRP | Single-pass Phase 20 `Dual<4>` institutional engine evaluations with parity against finite differences.
 | 39 | Base plus four central finite-difference bumps across FTPL, G2++ twist swaption, eSSVI, offshore convertible, CoCo, MPOR, double-Heston/SLV, Curran Asian, Warin storage, Roll-Corwin microstructure, Busseti-Kelly and differentiable QP | Generic `Dual<4>` workload versus central finite differences across all twelve engines. |
+| 40 | Base plus four central finite-difference bumps across Phase 29 rates, credit, volatility, FX, energy-storage and portfolio engines | Generic `Dual<4>` workload versus central finite differences across all twelve Phase 29 engines. |
+| 41 | Base plus four central finite-difference bumps across Phase 30 book-backed quantitative-finance engines | Generic `Dual<4>` workload versus central finite differences across all twelve Phase 30 engines. |
+| 42 | Base plus four central finite-difference bumps across Phase 30 book-backed quantitative-finance engines and terminal integration | Generic `Dual<4>` workload versus central finite differences across all twelve Phase 30 engines. |
+| 43 | Base plus four central finite-difference bumps across Fabozzi–Tuckman KRD/LSC, Davidson–Levin CMO PAC/Companion, Asquith–Sîrbu–Shreve CB game, FASB ASU 2024-04/CPDI, RSM ASC 470-50/310-40, Gregory CSA ColVA/CTD, Embrechts Hill/Pickands EVT, Bouchaud–Potters TLF cumulants, Karnosky–Singer/Menchero attribution, DGTW/Treynor–Mazuy timing, Brock–Hommes ABS, and Penman ReOI/Ohlson–Juettner AEG | Generic `Dual<4>` workload versus central finite differences across all twelve Phase 31 engines. |
 
 ## 5. Current empirical table
 
@@ -113,4 +117,7 @@ Phase 29 adds twelve book-backed SOTA quantitative finance engines, Benchmark Su
 
 
 ### Phase 30 current release
+Phase 30 adds twelve book-backed SOTA quantitative-finance engines, Benchmark Suite 42, workstation Tab 40, and `BOTTOM_ROWS = 37`.
+
+### Phase 31 current release
 The current release includes twelve book-backed SOTA quantitative-finance engines, Benchmark Suite 43, workstation Tab 41, and `BOTTOM_ROWS = 38`.

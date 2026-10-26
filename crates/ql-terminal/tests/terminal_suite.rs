@@ -515,9 +515,18 @@ fn phase31_tab41_terminal_renders_and_reacts() {
     ws.set_scenario(ScenarioKind::CreditWideningPlus100Bp);
     let stressed = ws.step_tick();
     assert_eq!(TabId::TAB_COUNT, 41);
+    assert_eq!(TabId::ALL.len(), 41);
     assert!(TabId::ALL.contains(&TabId::Phase31BookSota));
+    assert!(
+        TabId::Phase31BookSota
+            .label()
+            .starts_with("41 Phase 31 SOTA")
+    );
     assert!(normal.phase31_sota_metric.is_finite());
     assert!((normal.phase31_sota_metric - stressed.phase31_sota_metric).abs() > 1e-12);
+    ws.set_scenario(ScenarioKind::StagflationPlus150Bp);
+    let stag = ws.step_tick();
+    assert!((stag.phase31_sota_metric - normal.phase31_sota_metric).abs() > 1e-12);
     assert!(
         ws.render_dashboard(&stressed, false)
             .contains("41 Phase31 SOTA")

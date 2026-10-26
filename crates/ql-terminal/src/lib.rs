@@ -27,10 +27,18 @@ pub mod prelude {
         LandoIsraelGeneratorLogarithmReport, LandoIsraelGeneratorLogarithmSpec,
         compute_lando_israel_generator_logarithm_and_migration,
     };
+    pub use ql_credit::{
+        RsmAsc470DebtModificationReport, RsmAsc470DebtModificationSpec,
+        evaluate_rsm_asc470_debt_modification_and_restructuring,
+    };
     pub use ql_curves::*;
     pub use ql_curves::{
         BcbsD368SixScenarioIrrbbReport, BcbsD368SixScenarioIrrbbSpec,
         evaluate_bcbs_d368_six_scenario_irrbb,
+    };
+    pub use ql_curves::{
+        FabozziKeyRateLscImmunizationReport, FabozziKeyRateLscImmunizationSpec,
+        evaluate_fabozzi_tuckman_key_rate_and_lsc_immunization,
     };
     pub use ql_curves::{
         RomerVeronesiTaylorRuleMacroCurveReport, RomerVeronesiTaylorRuleMacroCurveSpec,
@@ -76,6 +84,14 @@ pub mod prelude {
     pub use ql_fixed_income::{
         AnDaoquanCliffordChanceResettableCbReport, AnDaoquanCliffordChanceResettableCbSpec,
         evaluate_an_daoquan_clifford_chance_resettable_convertible,
+    };
+    pub use ql_fixed_income::{
+        AsquithSirbuShreveCbGameReport, AsquithSirbuShreveCbGameSpec,
+        DavidsonLevinCmoPacCompanionReport, DavidsonLevinCmoPacCompanionSpec,
+        FasbAsu2024InducedConversionCpdiReport, FasbAsu2024InducedConversionCpdiSpec,
+        evaluate_asquith_sirbu_shreve_cb_call_delay_and_dynkin_game,
+        evaluate_davidson_levin_cmo_pac_companion_waterfall,
+        evaluate_fasb_asu2024_induced_conversion_and_cpdi_oid,
     };
     pub use ql_fixed_income::{
         KoziolAsquithFasbStrategicConvertibleReport, KoziolAsquithFasbStrategicConvertibleSpec,
@@ -143,6 +159,7 @@ pub mod prelude {
         PenmanReoiOhlsonJuettnerReport, PenmanReoiOhlsonJuettnerSpec,
         evaluate_penman_reoi_and_ohlson_juettner_aeg_valuation,
     };
+    pub use ql_models::{rough::*, slv::*};
     pub use ql_pde::*;
     pub use ql_portfolio::*;
     pub use ql_portfolio::{
@@ -157,6 +174,18 @@ pub mod prelude {
         evaluate_colin_bacon_campisi_fixed_income_attribution,
         evaluate_foucault_vandermerwe_lob_schedule_and_lvar,
         evaluate_hart_mascolell_regret_matching_allocation,
+    };
+    pub use ql_portfolio::{
+        BouchaudPottersCumulantSmileReport, BouchaudPottersCumulantSmileSpec,
+        BrockHommesAdaptiveBeliefReport, BrockHommesAdaptiveBeliefSpec,
+        DgtwTreynorMazuyTimingReport, DgtwTreynorMazuyTimingSpec,
+        EmbrechtsHillPickandsSubexponentialReport, EmbrechtsHillPickandsSubexponentialSpec,
+        KarnoskySingerMencheroAttributionReport, KarnoskySingerMencheroAttributionSpec,
+        evaluate_bouchaud_potters_power_law_cumulant_and_smile_scaling,
+        evaluate_brock_hommes_adaptive_belief_switching,
+        evaluate_dgtw_characteristic_and_treynor_mazuy_timing,
+        evaluate_embrechts_hill_pickands_and_subexponential_tail,
+        evaluate_karnosky_singer_multicurrency_and_menchero_attribution,
     };
     pub use ql_portfolio::{
         BussetiBoydRiskConstrainedKellyReport, BussetiBoydRiskConstrainedKellySpec,
@@ -214,6 +243,10 @@ pub mod prelude {
     pub use ql_xva::{
         BcbsD424OutputFloorAndSmaOpRiskReport, BcbsD424OutputFloorAndSmaOpRiskSpec,
         evaluate_bcbs_d424_output_floor_and_sma_op_risk,
+    };
+    pub use ql_xva::{
+        GregoryCsaThresholdMtaCtdColvaReport, GregoryCsaThresholdMtaCtdColvaSpec,
+        evaluate_gregory_csa_threshold_mta_and_ctd_colva,
     };
 }
 
@@ -565,6 +598,8 @@ pub enum TabId {
 impl TabId {
     #[allow(non_upper_case_globals)]
     pub const Phase30Sota: Self = Self::Phase30BookSota;
+    #[allow(non_upper_case_globals)]
+    pub const Phase31Sota: Self = Self::Phase31BookSota;
     pub const TAB_COUNT: usize = 41;
     pub const ALL: [Self; 41] = [
         Self::Market,
@@ -2928,7 +2963,7 @@ impl DeskWorkstation {
         let evt = ql_portfolio::evaluate_embrechts_hill_pickands_and_subexponential_tail(
             &ql_portfolio::EmbrechtsHillPickandsSubexponentialSpec {
                 loss_samples: vec![
-                    120.0, 100.0, 90.0, 80.0, 70.0, 60.0, 50.0, 45.0, 40.0, 35.0, 30.0, 25.0,
+                    160.0, 110.0, 82.0, 66.0, 56.0, 50.0, 46.0, 43.0, 40.0, 38.0, 36.0, 35.0,
                 ],
                 tail_order_k: 2,
                 extreme_tail_prob: 0.01,
@@ -3005,15 +3040,26 @@ impl DeskWorkstation {
         k.bond_present_value
             + cmo.pac_present_value
             + cb.perpetual_dynkin_cb_fair_value
+            + cb.asquith_safety_call_trigger_stock_price * 1e-2
+            + cb.conversion_value_to_call_ratio
             + asu.basic_eps
+            + asu.asu2020_06_instrument_c_net_share_eps
+            + asu.asu2024_04_induced_conversion_expense * 1e-2
+            + asu.cpdi_projected_contingent_terminal_payment * 1e-3
             + modif.pv_modified_cashflows_at_orig_eir
+            + modif.prospective_modified_eir
             + colva.ctd_multi_currency_colva
             + evt.weissman_extreme_var * 1e-3
             + tlf.bouchaud_potters_non_gaussian_var
             + attr.cumulative_active_return
+            + attr.karnosky_singer_security_selection
+            + attr.karnosky_singer_currency_management
+            + attr.menchero_natural_scaling_multiplier * 1e-3
             + tm.treynor_mazuy_timing_gamma
+            + tm.dgtw_characteristic_selectivity_cs
             + bh.terminal_price_deviation
             + pen.reoi_intrinsic_equity_value * 1e-2
+            + pen.ohlson_juettner_implied_cost_of_equity
     }
 
     pub fn phase31_live_metric(&self) -> f64 {
@@ -6531,6 +6577,36 @@ mod phase30_tests {
         assert!(
             ws.render_dashboard(&stressed, false)
                 .contains("40 Phase30 SOTA")
+        );
+    }
+}
+
+#[cfg(test)]
+mod phase31_tests {
+    use super::*;
+
+    #[test]
+    fn phase31_tab41_terminal_renders_and_reacts() {
+        assert_eq!(TabId::TAB_COUNT, 41);
+        assert_eq!(TabId::ALL.len(), 41);
+        assert!(
+            TabId::Phase31BookSota
+                .label()
+                .starts_with("41 Phase 31 SOTA")
+        );
+        let mut ws = DeskWorkstation::new();
+        ws.set_scenario(ScenarioKind::Normal);
+        let normal = ws.step_tick();
+        ws.set_scenario(ScenarioKind::CreditWideningPlus100Bp);
+        let credit = ws.step_tick();
+        ws.set_scenario(ScenarioKind::StagflationPlus150Bp);
+        let stag = ws.step_tick();
+        assert!(normal.phase31_sota_metric.is_finite());
+        assert!((credit.phase31_sota_metric - normal.phase31_sota_metric).abs() > 1e-12);
+        assert!((stag.phase31_sota_metric - normal.phase31_sota_metric).abs() > 1e-12);
+        assert!(
+            ws.render_dashboard(&stag, false)
+                .contains("41 Phase31 SOTA")
         );
     }
 }

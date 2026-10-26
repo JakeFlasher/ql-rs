@@ -73,6 +73,17 @@ fn phase26_suite38_and_invariants() {
     assert!(row.parity_ok);
     assert!(row.max_abs_diff < 1e-4);
     assert!(row.speedup > 1.0);
+    let x_dual = [
+        ql_ad::Dual::<4>::variable(0.2, 0),
+        ql_ad::Dual::<4>::variable(-0.1, 1),
+        ql_ad::Dual::<4>::variable(0.3, 2),
+        ql_ad::Dual::<4>::variable(-0.2, 3),
+    ];
+    let y_dual = ql_benches::suites::phase31_workloads(x_dual);
+    for (idx, item) in y_dual.iter().enumerate() {
+        let grad_l1: f64 = item.d.iter().map(|v| v.abs()).sum();
+        assert!(grad_l1 > 1e-9, "entry {idx} has zero Dual<4> gradient");
+    }
 }
 
 #[test]

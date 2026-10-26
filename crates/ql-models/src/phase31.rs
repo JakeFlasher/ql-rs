@@ -43,7 +43,8 @@ pub fn evaluate_penman_reoi_and_ohlson_juettner_aeg_valuation<T: Real>(
     let roe = rnoa + flev * spread;
     let roe_direct = (s.operating_income_after_tax_1 - s.net_financial_expense_after_tax_1) / cse;
     let reoi1 = s.operating_income_after_tax_1 - s.wacc * noa;
-    let reoi2 = s.operating_income_after_tax_2 - s.wacc * noa;
+    let noa1 = noa * (T::one() + s.terminal_reoi_growth);
+    let reoi2 = s.operating_income_after_tax_2 - s.wacc * noa1;
     let rw = s.wacc.max_val(T::from_f64(1e-8));
     let ev = noa
         + reoi1 / (T::one() + rw)

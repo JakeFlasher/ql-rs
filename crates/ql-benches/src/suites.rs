@@ -7099,7 +7099,7 @@ pub fn phase31_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     );
     let rm = ql_credit::evaluate_rsm_asc470_debt_modification_and_restructuring(
         &ql_credit::RsmAsc470DebtModificationSpec {
-            carrying_amount: T::from_f64(100.0),
+            carrying_amount: T::from_f64(100.0) + x[1],
             original_par: T::from_f64(100.0),
             original_coupon_rate: T::from_f64(0.03),
             original_effective_rate: r,
@@ -7131,21 +7131,21 @@ pub fn phase31_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let eh = ql_portfolio::evaluate_embrechts_hill_pickands_and_subexponential_tail(
         &ql_portfolio::EmbrechtsHillPickandsSubexponentialSpec {
             loss_samples: vec![
-                T::from_f64(120.0),
-                T::from_f64(100.0),
-                T::from_f64(90.0),
-                T::from_f64(80.0),
-                T::from_f64(70.0),
-                T::from_f64(60.0),
+                T::from_f64(160.0) + spot * T::from_f64(0.1),
+                T::from_f64(110.0),
+                T::from_f64(82.0),
+                T::from_f64(66.0),
+                T::from_f64(56.0),
                 T::from_f64(50.0),
-                T::from_f64(45.0),
+                T::from_f64(46.0),
+                T::from_f64(43.0),
                 T::from_f64(40.0),
+                T::from_f64(38.0),
+                T::from_f64(36.0),
                 T::from_f64(35.0),
-                T::from_f64(30.0),
-                T::from_f64(25.0),
             ],
             tail_order_k: 2,
-            extreme_tail_prob: T::from_f64(0.01),
+            extreme_tail_prob: T::from_f64(0.01) + x[3].abs() * T::from_f64(0.001),
             portfolio_positions_count: 8,
         },
     );
@@ -7172,7 +7172,10 @@ pub fn phase31_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
             local_eurodollar_rates: vec![T::from_f64(0.02), T::from_f64(0.025)],
             base_eurodollar_rate: r,
             spot_fx_returns: vec![T::from_f64(0.01), T::from_f64(-0.005)],
-            multi_period_port_returns: vec![T::from_f64(0.02), T::from_f64(0.03)],
+            multi_period_port_returns: vec![
+                T::from_f64(0.02) + x[0] * T::from_f64(0.01),
+                T::from_f64(0.03) + x[1] * T::from_f64(0.01),
+            ],
             multi_period_bench_returns: vec![T::from_f64(0.018), T::from_f64(0.025)],
         },
     );
@@ -7180,14 +7183,17 @@ pub fn phase31_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
         &ql_portfolio::DgtwTreynorMazuyTimingSpec {
             current_weights: vec![T::from_f64(0.6), T::from_f64(0.4)],
             lagged_weights: vec![T::from_f64(0.5), T::from_f64(0.5)],
-            stock_returns: vec![T::from_f64(0.08), T::from_f64(0.03)],
+            stock_returns: vec![
+                T::from_f64(0.08) + x[0] * T::from_f64(0.01),
+                T::from_f64(0.03) + x[1] * T::from_f64(0.01),
+            ],
             current_char_bench_returns: vec![T::from_f64(0.06), T::from_f64(0.04)],
             lagged_char_bench_returns: vec![T::from_f64(0.05), T::from_f64(0.04)],
             portfolio_excess_series: vec![
                 T::from_f64(0.01),
                 T::from_f64(0.02),
-                T::from_f64(0.04),
-                T::from_f64(0.08),
+                T::from_f64(0.04) + x[2] * T::from_f64(0.005),
+                T::from_f64(0.08) + x[3] * T::from_f64(0.005),
             ],
             market_excess_series: vec![
                 T::zero(),
@@ -7229,16 +7235,25 @@ pub fn phase31_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     [
         k.bond_present_value,
         cmo.pac_present_value,
-        cb.perpetual_dynkin_cb_fair_value,
-        asu.basic_eps,
-        rm.pv_modified_cashflows_at_orig_eir,
+        cb.perpetual_dynkin_cb_fair_value
+            + cb.asquith_safety_call_trigger_stock_price * T::from_f64(1e-2)
+            + cb.conversion_value_to_call_ratio,
+        asu.basic_eps
+            + asu.asu2020_06_instrument_c_net_share_eps
+            + asu.asu2024_04_induced_conversion_expense * T::from_f64(1e-2)
+            + asu.cpdi_projected_contingent_terminal_payment * T::from_f64(1e-3),
+        rm.pv_modified_cashflows_at_orig_eir + rm.prospective_modified_eir,
         cv.ctd_multi_currency_colva,
         eh.weissman_extreme_var * T::from_f64(1e-3),
         bp.bouchaud_potters_non_gaussian_var,
-        ks.cumulative_active_return,
-        tm.treynor_mazuy_timing_gamma,
+        ks.cumulative_active_return
+            + ks.karnosky_singer_security_selection
+            + ks.karnosky_singer_currency_management
+            + ks.menchero_natural_scaling_multiplier * T::from_f64(1e-3),
+        tm.treynor_mazuy_timing_gamma + tm.dgtw_characteristic_selectivity_cs,
         bh.terminal_price_deviation,
-        pe.reoi_intrinsic_equity_value * T::from_f64(1e-2),
+        pe.reoi_intrinsic_equity_value * T::from_f64(1e-2)
+            + pe.ohlson_juettner_implied_cost_of_equity,
     ]
 }
 

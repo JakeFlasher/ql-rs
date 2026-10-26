@@ -35,8 +35,8 @@
 | `ql-commodities` | `crates/ql-commodities` | Asset classes | Futures curves, Schwartz–Smith, Clewlow–Strickland strip swaptions, weather HDD/CDD, clean spark/dark spreads, 3-leg spreads, Average Price Options (APO), take-or-pay and BESS arbitrage DP |
 | `ql-levy` | `crates/ql-levy` | Models | Merton, Kou, VG, CGMY COS, Lewis/Carr–Madan FFT |
 | `ql-fixed-income` | `crates/ql-fixed-income` | Rates | NSS, callable/OAS, CoCo AT1 bonds, convertibles, AFV default-coupled PDE, CPI/MBS burnout/OAS, specified pools, TBA rolls, Treasury futures CTD, Agency CMO waterfalls, ASW and IFT z-spreads |
-| `ql-benches` | `crates/ql-benches` | Delivery | 42-suite parity/timing harness |
-| `ql-terminal` | `crates/ql-terminal` | Delivery | Unified SDK, 40-tab Braille/ANSI workstation |
+| `ql-benches` | `crates/ql-benches` | Delivery | 43-suite parity/timing harness |
+| `ql-terminal` | `crates/ql-terminal` | Delivery | Unified SDK, 41-tab Braille/ANSI workstation |
 
 ## Numerical capabilities
 

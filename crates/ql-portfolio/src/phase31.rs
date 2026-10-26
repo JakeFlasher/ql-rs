@@ -46,8 +46,8 @@ pub fn evaluate_embrechts_hill_pickands_and_subexponential_tail<T: Real>(
     let var = threshold * (T::from_f64(k as f64) / (n * p)).ln().exp().pow(xi);
     let es = var / (T::one() - xi.min_val(T::from_f64(0.95)).max_val(T::from_f64(-10.0)));
     let m = T::from_f64(s.portfolio_positions_count.max(1) as f64);
-    let multiplier = m;
-    let excess = m.pow(xi.max_val(T::zero()));
+    let multiplier = m.pow(xi.max_val(T::zero()));
+    let excess = multiplier / m.sqrt();
     EmbrechtsHillPickandsSubexponentialReport {
         hill_xi_tail_index: xi,
         hill_alpha_pareto_exponent: alpha,
@@ -103,10 +103,12 @@ pub fn evaluate_bouchaud_potters_power_law_cumulant_and_smile_scaling<T: Real>(
             + persistent / T::from_f64(24.0) * (s.log_moneyness * s.log_moneyness / v - T::one()));
     let naive = s.confidence_z * v.sqrt();
     let z = s.confidence_z;
+    let loss_k3 = -k3;
     let cf = z
-        + k3 / T::from_f64(6.0) * (z * z - T::one())
+        + loss_k3 / T::from_f64(6.0) * (z * z - T::one())
         + persistent / T::from_f64(24.0) * (z * z * z - T::from_f64(3.0) * z)
-        - k3 * k3 / T::from_f64(36.0) * (T::from_f64(2.0) * z * z * z - T::from_f64(5.0) * z);
+        - loss_k3 * loss_k3 / T::from_f64(36.0)
+            * (T::from_f64(2.0) * z * z * z - T::from_f64(5.0) * z);
     let non_gaussian = v.sqrt() * cf;
     BouchaudPottersCumulantSmileReport {
         horizon_skewness_k3: k3,
@@ -193,10 +195,32 @@ pub fn evaluate_karnosky_singer_multicurrency_and_menchero_attribution<T: Real>(
     let rp = rp_cum - T::one();
     let rb = rb_cum - T::one();
     let cumulative = rp - rb;
-    let periods = T::from_f64(s.multi_period_port_returns.len().max(1) as f64);
+    let n_mp = s
+        .multi_period_port_returns
+        .len()
+        .min(s.multi_period_bench_returns.len());
+    let periods = T::from_f64(n_mp.max(1) as f64);
     let diff_root = rp_cum.pow(T::one() / periods) - rb_cum.pow(T::one() / periods);
-    let multiplier = (cumulative / periods) / diff_root.max_val(T::from_f64(1e-12));
-    let linked = multiplier * diff_root * periods;
+    let diff_root_safe = if diff_root >= T::zero() {
+        diff_root.max_val(T::from_f64(1e-12))
+    } else {
+        diff_root.min_val(T::from_f64(-1e-12))
+    };
+    let multiplier = (cumulative / periods) / diff_root_safe;
+    let mut sum_a = T::zero();
+    let mut sum_a2 = T::zero();
+    for i in 0..n_mp {
+        let a_t = s.multi_period_port_returns[i] - s.multi_period_bench_returns[i];
+        sum_a += a_t;
+        sum_a2 += a_t * a_t;
+    }
+    let c_scale = (cumulative - multiplier * sum_a) / sum_a2.max_val(T::from_f64(1e-12));
+    let mut linked = T::zero();
+    for i in 0..n_mp {
+        let a_t = s.multi_period_port_returns[i] - s.multi_period_bench_returns[i];
+        let alpha_t = c_scale * a_t;
+        linked += (multiplier + alpha_t) * a_t;
+    }
     KarnoskySingerMencheroAttributionReport {
         karnosky_singer_market_allocation: mkt,
         karnosky_singer_security_selection: sec,
@@ -378,9 +402,27 @@ pub fn evaluate_brock_hommes_adaptive_belief_switching<T: Real>(
     let eig = ((T::one() - n1_star) * s.chartist_trend_extrapolation_g
         + n1_star * s.fundamentalist_damping_v1)
         / r;
-    let critical = ((s.fundamentalist_damping_v1 - r) / (r - s.chartist_trend_extrapolation_g))
-        .abs()
-        .max_val(T::from_f64(1e-12));
+    let ratio = ((r - s.fundamentalist_damping_v1)
+        / (s.chartist_trend_extrapolation_g - r)
+            .abs()
+            .max_val(T::from_f64(1e-12)))
+    .abs()
+    .max_val(T::from_f64(1e-12));
+    let critical = ratio.ln().abs()
+        / s.fundamentalist_info_cost_c1
+            .abs()
+            .max_val(T::from_f64(1e-12));
+    let n_shocks = T::from_f64(s.shock_innovations.len().max(1) as f64);
+    let traj_rms = (path.iter().skip(1).fold(T::zero(), |acc, &v| acc + v * v) / n_shocks)
+        .max_val(T::from_f64(1e-24))
+        .sqrt();
+    let shock_rms = (s
+        .shock_innovations
+        .iter()
+        .fold(T::zero(), |acc, &v| acc + v * v)
+        / n_shocks)
+        .max_val(T::from_f64(1e-24))
+        .sqrt();
     BrockHommesAdaptiveBeliefReport {
         terminal_fundamentalist_fraction: T::one() - frac.last().copied().unwrap_or(T::zero()),
         terminal_chartist_fraction: frac.last().copied().unwrap_or(T::zero()),
@@ -389,8 +431,7 @@ pub fn evaluate_brock_hommes_adaptive_belief_switching<T: Real>(
         terminal_price_deviation: x,
         price_deviation_trajectory: path,
         chartist_fraction_trajectory: frac,
-        endogenous_excess_volatility_ratio: x.abs()
-            / s.initial_price_deviation.abs().max_val(T::from_f64(1e-12)),
+        endogenous_excess_volatility_ratio: traj_rms / shock_rms.max_val(T::from_f64(1e-12)),
     }
 }
 
@@ -402,18 +443,18 @@ mod phase31_tests {
     fn hill<T: Real>(x: T) -> EmbrechtsHillPickandsSubexponentialSpec<T> {
         EmbrechtsHillPickandsSubexponentialSpec {
             loss_samples: vec![
-                T::from_f64(120.0) + x,
-                T::from_f64(100.0),
-                T::from_f64(90.0),
-                T::from_f64(80.0),
-                T::from_f64(70.0),
-                T::from_f64(60.0),
+                T::from_f64(160.0) + x,
+                T::from_f64(110.0),
+                T::from_f64(82.0),
+                T::from_f64(66.0),
+                T::from_f64(56.0),
                 T::from_f64(50.0),
-                T::from_f64(45.0),
+                T::from_f64(46.0),
+                T::from_f64(43.0),
                 T::from_f64(40.0),
+                T::from_f64(38.0),
+                T::from_f64(36.0),
                 T::from_f64(35.0),
-                T::from_f64(30.0),
-                T::from_f64(25.0),
             ],
             tail_order_k: 2,
             extreme_tail_prob: T::from_f64(0.01),
@@ -424,7 +465,7 @@ mod phase31_tests {
     #[test]
     fn phase31_invariants_and_dual_fd() {
         let hrep = evaluate_embrechts_hill_pickands_and_subexponential_tail(&hill(0.0));
-        assert!(hrep.hill_xi_tail_index > 0.0);
+        assert!(hrep.hill_xi_tail_index > 0.0 && hrep.pickands_xi_tail_index > 0.0);
         assert!(hrep.weissman_extreme_es > hrep.weissman_extreme_var);
         let h = 1e-6;
         let fd = (evaluate_embrechts_hill_pickands_and_subexponential_tail(&hill(h))
@@ -470,6 +511,53 @@ mod phase31_tests {
             ks.karnosky_singer_active_return_error < 1e-12
                 && ks.menchero_multi_period_linking_error < 1e-12
         );
+        fn bp_spec<T: Real>(x: T) -> BouchaudPottersCumulantSmileSpec<T> {
+            BouchaudPottersCumulantSmileSpec {
+                single_period_vol: T::from_f64(0.2) + x,
+                single_period_skewness: T::from_f64(-0.2),
+                single_period_excess_kurtosis: T::from_f64(3.0),
+                vol_of_vol_kurtosis_component: T::from_f64(2.0),
+                vol_decorrelation_steps: T::from_f64(10.0),
+                horizon_steps_n: T::from_f64(20.0),
+                log_moneyness: T::from_f64(0.1),
+                confidence_z: T::from_f64(2.33),
+            }
+        }
+        let fd_bp = (evaluate_bouchaud_potters_power_law_cumulant_and_smile_scaling(&bp_spec(h))
+            .bouchaud_potters_non_gaussian_var
+            - evaluate_bouchaud_potters_power_law_cumulant_and_smile_scaling(&bp_spec(-h))
+                .bouchaud_potters_non_gaussian_var)
+            / (2.0 * h);
+        let ad_bp = evaluate_bouchaud_potters_power_law_cumulant_and_smile_scaling(&bp_spec(
+            Dual::<1>::variable(0.0, 0),
+        ))
+        .bouchaud_potters_non_gaussian_var;
+        assert!(ad_bp.d[0].abs() > 1e-6 && (ad_bp.d[0] - fd_bp).abs() < 1e-5);
+        fn ks_spec<T: Real>(x: T) -> KarnoskySingerMencheroAttributionSpec<T> {
+            KarnoskySingerMencheroAttributionSpec {
+                portfolio_asset_weights: vec![T::from_f64(0.6), T::from_f64(0.4)],
+                benchmark_asset_weights: vec![T::from_f64(0.5), T::from_f64(0.5)],
+                portfolio_currency_weights: vec![T::from_f64(0.6), T::from_f64(0.4)],
+                benchmark_currency_weights: vec![T::from_f64(0.5), T::from_f64(0.5)],
+                local_portfolio_returns: vec![T::from_f64(0.08) + x, T::from_f64(0.03)],
+                local_benchmark_returns: vec![T::from_f64(0.06), T::from_f64(0.04)],
+                local_eurodollar_rates: vec![T::from_f64(0.02), T::from_f64(0.025)],
+                base_eurodollar_rate: T::from_f64(0.03),
+                spot_fx_returns: vec![T::from_f64(0.01), T::from_f64(-0.005)],
+                multi_period_port_returns: vec![T::from_f64(0.02), T::from_f64(0.03)],
+                multi_period_bench_returns: vec![T::from_f64(0.018), T::from_f64(0.025)],
+            }
+        }
+        let fd_ks = (evaluate_karnosky_singer_multicurrency_and_menchero_attribution(&ks_spec(h))
+            .karnosky_singer_security_selection
+            - evaluate_karnosky_singer_multicurrency_and_menchero_attribution(&ks_spec(-h))
+                .karnosky_singer_security_selection)
+            / (2.0 * h);
+        let ad_ks = evaluate_karnosky_singer_multicurrency_and_menchero_attribution(&ks_spec(
+            Dual::<1>::variable(0.0, 0),
+        ))
+        .karnosky_singer_security_selection;
+        assert!(ad_ks.d[0].abs() > 1e-6 && (ad_ks.d[0] - fd_ks).abs() < 1e-5);
         let d =
             evaluate_dgtw_characteristic_and_treynor_mazuy_timing(&DgtwTreynorMazuyTimingSpec {
                 current_weights: vec![0.6, 0.4],
@@ -481,6 +569,37 @@ mod phase31_tests {
                 market_excess_series: vec![0.0, 0.02, 0.04, 0.08],
             });
         assert!(d.dgtw_decomposition_identity_error < 1e-12 && d.treynor_mazuy_timing_gamma > 0.0);
+        fn tm_spec<T: Real>(x: T) -> DgtwTreynorMazuyTimingSpec<T> {
+            DgtwTreynorMazuyTimingSpec {
+                current_weights: vec![T::from_f64(0.6), T::from_f64(0.4)],
+                lagged_weights: vec![T::from_f64(0.5), T::from_f64(0.5)],
+                stock_returns: vec![T::from_f64(0.08), T::from_f64(0.03)],
+                current_char_bench_returns: vec![T::from_f64(0.06), T::from_f64(0.04)],
+                lagged_char_bench_returns: vec![T::from_f64(0.05), T::from_f64(0.04)],
+                portfolio_excess_series: vec![
+                    T::from_f64(0.01),
+                    T::from_f64(0.02),
+                    T::from_f64(0.04),
+                    T::from_f64(0.08) + x,
+                ],
+                market_excess_series: vec![
+                    T::zero(),
+                    T::from_f64(0.02),
+                    T::from_f64(0.04),
+                    T::from_f64(0.08),
+                ],
+            }
+        }
+        let fd_tm = (evaluate_dgtw_characteristic_and_treynor_mazuy_timing(&tm_spec(h))
+            .treynor_mazuy_timing_gamma
+            - evaluate_dgtw_characteristic_and_treynor_mazuy_timing(&tm_spec(-h))
+                .treynor_mazuy_timing_gamma)
+            / (2.0 * h);
+        let ad_tm = evaluate_dgtw_characteristic_and_treynor_mazuy_timing(&tm_spec(
+            Dual::<1>::variable(0.0, 0),
+        ))
+        .treynor_mazuy_timing_gamma;
+        assert!(ad_tm.d[0].abs() > 1e-6 && (ad_tm.d[0] - fd_tm).abs() < 1e-5);
         let bh = evaluate_brock_hommes_adaptive_belief_switching(&BrockHommesAdaptiveBeliefSpec {
             initial_price_deviation: 0.1,
             risk_free_rate: 0.03,
@@ -497,5 +616,27 @@ mod phase31_tests {
                 < 1e-12
         );
         assert!(bh.steady_state_jacobian_eigenvalue > 1.0);
+        fn bh_spec<T: Real>(x: T) -> BrockHommesAdaptiveBeliefSpec<T> {
+            BrockHommesAdaptiveBeliefSpec {
+                initial_price_deviation: T::from_f64(0.1) + x,
+                risk_free_rate: T::from_f64(0.03),
+                fundamentalist_damping_v1: T::from_f64(0.8),
+                chartist_trend_extrapolation_g: T::from_f64(1.2),
+                fundamentalist_info_cost_c1: T::from_f64(0.1),
+                intensity_of_choice_beta: T::from_f64(8.0),
+                fitness_memory_eta: T::from_f64(0.8),
+                risk_aversion_sigma2: T::one(),
+                shock_innovations: vec![T::from_f64(0.01), T::from_f64(-0.005), T::from_f64(0.003)],
+            }
+        }
+        let fd_bh = (evaluate_brock_hommes_adaptive_belief_switching(&bh_spec(h))
+            .terminal_price_deviation
+            - evaluate_brock_hommes_adaptive_belief_switching(&bh_spec(-h))
+                .terminal_price_deviation)
+            / (2.0 * h);
+        let ad_bh =
+            evaluate_brock_hommes_adaptive_belief_switching(&bh_spec(Dual::<1>::variable(0.0, 0)))
+                .terminal_price_deviation;
+        assert!(ad_bh.d[0].abs() > 1e-6 && (ad_bh.d[0] - fd_bh).abs() < 1e-5);
     }
 }
