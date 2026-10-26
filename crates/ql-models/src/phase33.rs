@@ -53,8 +53,8 @@ pub fn evaluate_damodaran_rd_capitalization_and_patent_real_option<T: Real>(
     let d2 = d1 - vol * t.sqrt();
     let call =
         v * (-q * t).exp() * d1.norm_cdf() - k * (-s.risk_free_rate * t).exp() * d2.norm_cdf();
-    let lq = s.abandonment_salvage_value;
-    let pd1 = ((lq / v).ln() + (s.risk_free_rate - q + T::from_f64(0.5) * vol * vol) * t)
+    let lq = s.abandonment_salvage_value.max_val(T::from_f64(1e-8));
+    let pd1 = ((v / lq).ln() + (s.risk_free_rate - q + T::from_f64(0.5) * vol * vol) * t)
         / (vol * t.sqrt());
     let pd2 = pd1 - vol * t.sqrt();
     let put = lq * (-s.risk_free_rate * t).exp() * (-pd2).norm_cdf()
@@ -109,7 +109,7 @@ pub fn evaluate_mascolell_cochrane_arrow_debreu_sdf<T: Real>(
     for i in 0..3 {
         q[i] = psi[i] / p;
     }
-    let er = s
+    let ep_raw = s
         .state_probabilities
         .iter()
         .enumerate()
@@ -121,7 +121,9 @@ pub fn evaluate_mascolell_cochrane_arrow_debreu_sdf<T: Real>(
         .enumerate()
         .map(|(i, pr)| *pr * m[i] * s.equity_payoff_states[i])
         .fold(T::zero(), |a, x| a + x);
-    let cov = ep - p * er;
+    let ep_safe = ep.max_val(T::from_f64(1e-12));
+    let er = ep_raw / ep_safe;
+    let cov = T::one() - p * er;
     let prem = -rf * cov;
     let vm = s
         .state_probabilities
@@ -134,10 +136,14 @@ pub fn evaluate_mascolell_cochrane_arrow_debreu_sdf<T: Real>(
         .state_probabilities
         .iter()
         .enumerate()
-        .map(|(i, pr)| *pr * (s.equity_payoff_states[i] - er) * (s.equity_payoff_states[i] - er))
+        .map(|(i, pr)| {
+            let ri = s.equity_payoff_states[i] / ep_safe;
+            *pr * (ri - er) * (ri - er)
+        })
         .fold(T::zero(), |a, x| a + x)
-        .sqrt();
-    let sharpe = (er - rf).abs() / vr;
+        .sqrt()
+        .max_val(T::from_f64(1e-12));
+    let sharpe = ((er - rf) * (er - rf) + T::from_f64(1e-30)).sqrt() / vr;
     MasColellCochraneArrowDebreuSdfReport {
         arrow_debreu_state_prices: psi,
         risk_neutral_probabilities_q: q,
@@ -167,5 +173,39 @@ mod phase33_tests {
         assert!(
             evaluate_mascolell_cochrane_arrow_debreu_sdf(&s).q_measure_conservation_error < 1e-12
         );
+    }
+}
+#[cfg(test)]
+mod phase33_tests_ad {
+    use super::*;
+    use ql_ad::Dual;
+    fn s<T: Real>(x: T) -> DamodaranRdCapitalizationRealOptionSpec<T> {
+        DamodaranRdCapitalizationRealOptionSpec {
+            reported_ebit: T::from_f64(10.),
+            reported_invested_capital: T::from_f64(100.),
+            effective_tax_rate: T::from_f64(0.25),
+            current_rd_expense: T::from_f64(5.) + x,
+            historical_rd_expenses: vec![T::from_f64(4.), T::from_f64(3.), T::from_f64(2.)],
+            patent_project_pv: T::from_f64(20.),
+            patent_development_cost: T::from_f64(10.),
+            patent_life_years: T::from_f64(5.),
+            project_volatility: T::from_f64(0.3),
+            risk_free_rate: T::from_f64(0.03),
+            abandonment_salvage_value: T::from_f64(8.),
+        }
+    }
+    #[test]
+    fn dual_fd() {
+        let h = 1e-6;
+        let fd = (evaluate_damodaran_rd_capitalization_and_patent_real_option(&s(h))
+            .rd_adjusted_after_tax_roic
+            - evaluate_damodaran_rd_capitalization_and_patent_real_option(&s(-h))
+                .rd_adjusted_after_tax_roic)
+            / (2. * h);
+        let ad = evaluate_damodaran_rd_capitalization_and_patent_real_option(&s(
+            Dual::<1>::variable(0., 0),
+        ))
+        .rd_adjusted_after_tax_roic;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

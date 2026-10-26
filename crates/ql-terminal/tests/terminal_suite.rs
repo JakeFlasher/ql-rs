@@ -561,5 +561,23 @@ fn phase32_tab42_terminal_renders_and_reacts() {
 #[test]
 fn phase33_tab43_terminal_renders_and_reacts() {
     assert_eq!(ql_terminal::TabId::TAB_COUNT, 43);
-    assert!(ql_terminal::TabId::ALL.contains(&ql_terminal::TabId::Phase33BookSota));
+    assert_eq!(ql_terminal::TabId::ALL.len(), 43);
+    assert!(
+        ql_terminal::TabId::Phase33BookSota
+            .label()
+            .starts_with("43 Phase 33 SOTA")
+    );
+    let mut ws = ql_terminal::DeskWorkstation::new();
+    let n = ws.phase33_live_metric();
+    let _ = ws.step_tick();
+    ws.set_scenario(ql_terminal::ScenarioKind::CreditWideningPlus100Bp);
+    let c = ws.phase33_live_metric();
+    ws.set_scenario(ql_terminal::ScenarioKind::StagflationPlus150Bp);
+    let st = ws.phase33_live_metric();
+    assert!(n.is_finite() && (n - c).abs() > 1e-12 && (c - st).abs() > 1e-12);
+    let frame = ws.step_tick();
+    assert!(
+        ws.render_dashboard(&frame, false)
+            .contains("43 Phase33 SOTA")
+    );
 }

@@ -4,6 +4,10 @@ pub use crate::phase31::{
     evaluate_davidson_levin_cmo_pac_companion_waterfall,
     evaluate_fasb_asu2024_induced_conversion_and_cpdi_oid,
 };
+pub use crate::phase33::{
+    TuckmanSpecifiedPoolDollarRollReport, TuckmanSpecifiedPoolDollarRollSpec,
+    evaluate_tuckman_specified_pool_payup_and_dollar_roll,
+};
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
 use ql_inflation::ZeroInflationCurve;

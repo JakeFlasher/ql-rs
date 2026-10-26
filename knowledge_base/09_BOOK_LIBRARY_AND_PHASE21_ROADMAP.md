@@ -66,7 +66,7 @@ Phase 31 adds twelve book-backed SOTA quantitative-finance engines, Benchmark Su
 
 ### Phase 32 current release
 
-Phase 32 adds 12 book-backed SOTA engines, Benchmark Suite 45, and Workstation Tab 43 (BOTTOM_ROWS = 40).
+Phase 32 adds 12 book-backed SOTA engines, Benchmark Suite 44, and Workstation Tab 42 (BOTTOM_ROWS = 39).
 
 
 ### Phase 33 current release

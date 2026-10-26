@@ -150,4 +150,6 @@ fn phase32_suite44_workload_is_registered() {
 #[test]
 fn phase33_suite45_workload_is_registered() {
     assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("45_")));
+    let row = ql_benches::benchmark_phase33_rebonato_cms_lm_all_engines(1);
+    assert!(row.parity_ok && row.max_abs_diff < 1e-4);
 }

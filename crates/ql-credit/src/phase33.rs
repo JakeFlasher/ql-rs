@@ -55,23 +55,34 @@ pub fn evaluate_duffie_singleton_leland_toft_capital_structure<T: Real>(
 #[cfg(test)]
 mod phase33_tests {
     use super::*;
+    use ql_ad::Dual;
+    fn spec<T: Real>(x: T) -> DuffieSingletonLelandToftSpec<T> {
+        DuffieSingletonLelandToftSpec {
+            unlevered_asset_value: T::from_f64(100.) + x,
+            annual_coupon_c: T::from_f64(5.),
+            debt_principal_p: T::from_f64(80.),
+            rollover_maturity_t: T::from_f64(5.),
+            corporate_tax_rate: T::from_f64(0.25),
+            bankruptcy_cost_alpha: T::from_f64(0.2),
+            asset_payout_rate: T::from_f64(0.02),
+            risk_free_rate: T::from_f64(0.03),
+            asset_volatility: T::from_f64(0.2),
+        }
+    }
     #[test]
     fn phase33_credit_smoke() {
-        let s = DuffieSingletonLelandToftSpec {
-            unlevered_asset_value: 100.0,
-            annual_coupon_c: 5.0,
-            debt_principal_p: 80.0,
-            rollover_maturity_t: 5.0,
-            corporate_tax_rate: 0.25,
-            bankruptcy_cost_alpha: 0.2,
-            asset_payout_rate: 0.02,
-            risk_free_rate: 0.03,
-            asset_volatility: 0.2,
-        };
-        assert!(
-            evaluate_duffie_singleton_leland_toft_capital_structure(&s)
-                .endogenous_default_boundary_vb
-                < 100.0
-        );
+        let r = evaluate_duffie_singleton_leland_toft_capital_structure(&spec(0.));
+        assert!(r.endogenous_default_boundary_vb < 100.);
+        let h = 1e-6;
+        let fd = (evaluate_duffie_singleton_leland_toft_capital_structure(&spec(h))
+            .risky_debt_fair_value
+            - evaluate_duffie_singleton_leland_toft_capital_structure(&spec(-h))
+                .risky_debt_fair_value)
+            / (2. * h);
+        let ad = evaluate_duffie_singleton_leland_toft_capital_structure(&spec(
+            Dual::<1>::variable(0., 0),
+        ))
+        .risky_debt_fair_value;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

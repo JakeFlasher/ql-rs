@@ -2,6 +2,10 @@
 
 use super::allocation::AllocationError;
 pub use crate::phase30::*;
+pub use crate::phase33::{
+    OharaGlostenMilgromSequentialReport, OharaGlostenMilgromSequentialSpec,
+    evaluate_ohara_glosten_milgrom_sequential_spread,
+};
 use ql_ad::Real;
 
 #[derive(Clone, Debug)]

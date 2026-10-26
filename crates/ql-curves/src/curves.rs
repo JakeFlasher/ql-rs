@@ -6,6 +6,7 @@ pub use crate::phase31::{
     evaluate_fabozzi_tuckman_key_rate_and_lsc_immunization,
 };
 pub use crate::phase32::*;
+pub use crate::phase33::*;
 use ql_ad::Real;
 use ql_math::{Interpolator1D, MonotoneCubicInterpolator};
 use ql_time::{Date, DayCounter};

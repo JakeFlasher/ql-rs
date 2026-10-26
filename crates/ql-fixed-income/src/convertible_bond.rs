@@ -6,6 +6,10 @@ pub use crate::phase31::{
     evaluate_asquith_sirbu_shreve_cb_call_delay_and_dynkin_game,
 };
 pub use crate::phase32::*;
+pub use crate::phase33::{
+    CalamosDeSpiegeleerAscotGammaReport, CalamosDeSpiegeleerAscotGammaSpec,
+    evaluate_calamos_despiegeleer_ascot_and_gamma_scalp,
+};
 use ql_ad::{Dual, Real};
 use ql_vol::black_scholes_price;
 #[derive(Clone, Debug)]

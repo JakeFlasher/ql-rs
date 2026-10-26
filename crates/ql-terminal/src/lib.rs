@@ -1,4 +1,3 @@
-#![allow(ambiguous_glob_reexports)]
 //! A dependency-free terminal dashboard and umbrella SDK for ql-rs.
 
 pub mod prelude {
@@ -141,12 +140,17 @@ pub mod prelude {
         AnalyticBsmHullWhiteEngine, BatesParams, Bergomi2FParams,
         BergomiForwardStartAndVarStripReport, BergomiForwardStartAndVarStripSpec,
         CalibratedHestonModel, Complex, CosHestonEngine, CosHestonHullWhiteEngine,
+        DamodaranRdCapitalizationRealOptionReport, DamodaranRdCapitalizationRealOptionSpec,
         DoubleHestonParams, HestonHullWhiteParams, HestonMarketQuote, HestonParams, HullWhite1F,
-        LiftedHestonParams, MixedRoughBergomiVixReport, MixedRoughBergomiVixSpec, QuinticOuParams,
-        QuinticOuVixSpxReport, VixOptionValuation, bergomi_2f_implied_vol_bg, bergomi_2f_mc_price,
-        bergomi_2f_smile_moments_bg, calibrate_heston, double_heston_cos_price,
-        double_heston_cos_strip_prices, evaluate_bergomi_forward_start_and_var_strip,
-        evaluate_mixed_rough_bergomi_vix, evaluate_quintic_ou_spx_vix, h1_hw_char_func_unit_spot,
+        LiftedHestonParams, MasColellCochraneArrowDebreuSdfReport,
+        MasColellCochraneArrowDebreuSdfSpec, MixedRoughBergomiVixReport, MixedRoughBergomiVixSpec,
+        QuinticOuParams, QuinticOuVixSpxReport, VixOptionValuation, bergomi_2f_implied_vol_bg,
+        bergomi_2f_mc_price, bergomi_2f_smile_moments_bg, calibrate_heston,
+        double_heston_cos_price, double_heston_cos_strip_prices,
+        evaluate_bergomi_forward_start_and_var_strip,
+        evaluate_damodaran_rd_capitalization_and_patent_real_option,
+        evaluate_mascolell_cochrane_arrow_debreu_sdf, evaluate_mixed_rough_bergomi_vix,
+        evaluate_quintic_ou_spx_vix, h1_hw_char_func_unit_spot,
         heston_bates_vix_future_and_option_price, heston_cos_price, lifted_heston_char_fn,
         lifted_heston_char_func_unit_spot, lifted_heston_cos_price, lifted_heston_kernel,
         local_vol::{
@@ -3181,15 +3185,15 @@ impl DeskWorkstation {
         );
         let rie = ql_portfolio::evaluate_potters_bouchaud_stieltjes_rie_shrinkage(
             &ql_portfolio::PottersBouchaudStieltjesRieSpec {
-                sample_eigenvalues: vec![0.5, 1.0, 2.0],
-                aspect_ratio_q: 0.5,
+                sample_eigenvalues: vec![0.5 + credit_bump, 1.0 + r * 0.01, 2.0 + vols * 0.01],
+                aspect_ratio_q: (0.5 + credit_bump).min(0.9),
                 stieltjes_bandwidth_eta: 0.1,
             },
         );
         let eg = ql_portfolio::evaluate_tsay_egarch_and_hamilton_markov_switching(
             &ql_portfolio::TsayEgarchHamiltonRegimeSpec {
-                returns: vec![0.01, -0.02, 0.015],
-                initial_variance: 0.04,
+                returns: vec![0.01 + r * 0.01, -0.02 + credit_bump, 0.015 + vols * 0.001],
+                initial_variance: (0.04 + vols * 0.001).max(0.001),
                 egarch_omega: -0.1,
                 egarch_alpha: 0.1,
                 egarch_leverage_gamma: -0.1,
@@ -3204,7 +3208,7 @@ impl DeskWorkstation {
         );
         let iv = ql_dml::evaluate_wooldridge_greene_2sls_iv_and_did(
             &ql_dml::WooldridgeGreene2slsDidSpec {
-                endogenous_x: vec![1.0, 2.0, 3.0],
+                endogenous_x: vec![1.0 + credit_bump, 2.0 + r * 0.01, 3.0 + vols * 0.01],
                 instrument_z: vec![1.0, 2.1, 2.9],
                 outcome_y: vec![1.2, 2.1, 3.2],
                 treated_pre_mean: 1.0,
@@ -3219,7 +3223,7 @@ impl DeskWorkstation {
                 gumbel_theta: 1.5,
                 student_t_df_nu: 5.0,
                 student_t_corr_rho: 0.3,
-                desk_weights: [0.25; 4],
+                desk_weights: [0.25 + credit_bump * 0.1, 0.25, 0.25, 0.25],
                 desk_expected_losses: [0.01; 4],
                 loss_covariance_4x4: [
                     [0.04, 0.01, 0.0, 0.0],
@@ -3232,7 +3236,7 @@ impl DeskWorkstation {
         );
         let om = ql_portfolio::evaluate_bacon_omega_sortino_and_burke_drawdown(
             &ql_portfolio::BaconOmegaSortinoBurkeDrawdownSpec {
-                period_returns: vec![0.01, -0.005, 0.02],
+                period_returns: vec![0.01 + r * 0.01, -0.005 + credit_bump, 0.02 + vols * 0.001],
                 mar_threshold: 0.0,
                 risk_free_rate: 0.002,
             },
@@ -3255,7 +3259,7 @@ impl DeskWorkstation {
         let ad = ql_models::evaluate_mascolell_cochrane_arrow_debreu_sdf(
             &ql_models::MasColellCochraneArrowDebreuSdfSpec {
                 state_probabilities: [0.3, 0.4, 0.3],
-                consumption_growth_ratios: [0.98, 1.02, 1.05],
+                consumption_growth_ratios: [0.98, 1.02 + credit_bump, 1.05 + r * 0.01],
                 equity_payoff_states: [0.8, 1.1, 1.4],
                 subjective_discount_beta: 0.99,
                 crra_risk_aversion_gamma: 2.0,
@@ -3275,10 +3279,10 @@ impl DeskWorkstation {
             + ad.equilibrium_equity_price * 1e-2
     }
     pub fn phase33_live_metric(&self) -> f64 {
-        let bump = if self.scenario == ScenarioKind::CreditWideningPlus100Bp
-            || self.scenario == ScenarioKind::StagflationPlus150Bp
-        {
+        let bump = if self.scenario == ScenarioKind::CreditWideningPlus100Bp {
             0.01
+        } else if self.scenario == ScenarioKind::StagflationPlus150Bp {
+            0.005
         } else {
             0.0
         };
@@ -7084,9 +7088,25 @@ mod phase33_tests {
     #[test]
     fn phase33_tab43_terminal_renders_and_reacts() {
         assert_eq!(TabId::TAB_COUNT, 43);
-        assert!(TabId::ALL.contains(&TabId::Phase33BookSota));
-        let ws = DeskWorkstation::new();
+        assert_eq!(TabId::ALL.len(), 43);
+        assert!(
+            TabId::Phase33BookSota
+                .label()
+                .starts_with("43 Phase 33 SOTA")
+        );
+        let mut ws = DeskWorkstation::new();
         let a = ws.phase33_live_metric();
-        assert!(a.is_finite());
+        let _ = ws.step_tick();
+        assert!(ws.phase33_live_metric().is_finite());
+        ws.set_scenario(ScenarioKind::CreditWideningPlus100Bp);
+        let c = ws.phase33_live_metric();
+        ws.set_scenario(ScenarioKind::StagflationPlus150Bp);
+        let st = ws.phase33_live_metric();
+        assert!(a.is_finite() && (a - c).abs() > 1e-12 && (c - st).abs() > 1e-12);
+        let frame = ws.step_tick();
+        assert!(
+            ws.render_dashboard(&frame, false)
+                .contains("43 Phase33 SOTA")
+        );
     }
 }

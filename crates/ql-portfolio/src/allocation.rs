@@ -7,6 +7,12 @@ pub use crate::phase31::{
     evaluate_dgtw_characteristic_and_treynor_mazuy_timing,
 };
 pub use crate::phase32::*;
+pub use crate::phase33::{
+    PottersBouchaudStieltjesRieReport, PottersBouchaudStieltjesRieSpec,
+    TsayEgarchHamiltonRegimeReport, TsayEgarchHamiltonRegimeSpec,
+    evaluate_potters_bouchaud_stieltjes_rie_shrinkage,
+    evaluate_tsay_egarch_and_hamilton_markov_switching,
+};
 use ql_ad::Real;
 
 #[derive(Clone, Debug)]

@@ -28,19 +28,25 @@ pub fn evaluate_ohara_glosten_milgrom_sequential_spread<T: Real>(
     let th = s.informed_signal_accuracy_theta;
     let mut p = s.initial_prior_p0;
     let mut q = T::zero();
-    let ask0 = s.low_value_vl + p * (b * th + T::from_f64(0.5) * (T::one() - b)) * d;
-    let bid0 = s.low_value_vl + p * (b * (T::one() - th) + T::from_f64(0.5) * (T::one() - b)) * d;
+    let buy_h = b * th + T::from_f64(0.5) * (T::one() - b);
+    let buy_l = b * (T::one() - th) + T::from_f64(0.5) * (T::one() - b);
+    let pb0 = (p * buy_h + (T::one() - p) * buy_l).max_val(T::from_f64(1e-12));
+    let ps0 = (T::one() - pb0).max_val(T::from_f64(1e-12));
+    let ask0 = s.low_value_vl + (p * buy_h / pb0) * d;
+    let bid0 = s.low_value_vl + (p * buy_l / ps0) * d;
     let h0 = -(p * p.ln() + (T::one() - p) * (T::one() - p).ln());
     for &flow in &s.signed_order_flow {
-        let pb = p * (b * th + T::from_f64(0.5) * (T::one() - b))
-            + (T::one() - p) * (b * (T::one() - th) + T::from_f64(0.5) * (T::one() - b));
-        let pp = p * (b * th + T::from_f64(0.5) * (T::one() - b)) / pb;
-        let pm = p * (b * (T::one() - th) + T::from_f64(0.5) * (T::one() - b)) / (T::one() - pb);
+        let pb = (p * buy_h + (T::one() - p) * buy_l).max_val(T::from_f64(1e-12));
+        let ps = (T::one() - pb).max_val(T::from_f64(1e-12));
+        let pp = p * buy_h / pb;
+        let pm = p * buy_l / ps;
         p = (T::one() + flow) / T::from_f64(2.0) * pp + (T::one() - flow) / T::from_f64(2.0) * pm;
         q -= flow;
     }
-    let ask = s.low_value_vl + p * (b * th + T::from_f64(0.5) * (T::one() - b)) * d;
-    let bid = s.low_value_vl + p * (b * (T::one() - th) + T::from_f64(0.5) * (T::one() - b)) * d;
+    let pb_t = (p * buy_h + (T::one() - p) * buy_l).max_val(T::from_f64(1e-12));
+    let ps_t = (T::one() - pb_t).max_val(T::from_f64(1e-12));
+    let ask = s.low_value_vl + (p * buy_h / pb_t) * d;
+    let bid = s.low_value_vl + (p * buy_l / ps_t) * d;
     let mid = s.low_value_vl + p * d - s.dealer_inventory_gamma * d * d * p * (T::one() - p) * q;
     let h = -(p * p.ln() + (T::one() - p) * (T::one() - p).ln());
     OharaGlostenMilgromSequentialReport {
@@ -124,7 +130,8 @@ pub fn evaluate_potters_bouchaud_stieltjes_rie_shrinkage<T: Real>(
         rie_condition_number: max_r / min_r,
         trace_conservation_error: (shr.iter().copied().fold(T::zero(), |a, x| a + x) - suml).abs(),
         markowitz_oos_variance_inflation_factor: T::one() / (T::one() - s.aspect_ratio_q),
-        inverse_variance_portfolio_risk_reduction: T::one() - min_r / min_s,
+        inverse_variance_portfolio_risk_reduction: T::one()
+            - min_s / min_r.max_val(T::from_f64(1e-12)),
     }
 }
 #[derive(Clone, Debug)]
@@ -185,7 +192,8 @@ pub fn evaluate_tsay_egarch_and_hamilton_markov_switching<T: Real>(
     TsayEgarchHamiltonRegimeReport {
         terminal_egarch_log_variance: lh,
         terminal_egarch_volatility: (lh.exp()).sqrt(),
-        egarch_negative_shock_asymmetry_ratio: T::one() - s.egarch_leverage_gamma,
+        egarch_negative_shock_asymmetry_ratio: (s.egarch_alpha - s.egarch_leverage_gamma)
+            / (s.egarch_alpha + s.egarch_leverage_gamma).max_val(T::from_f64(1e-6)),
         ergodic_crisis_probability: (T::one() - s.stay_calm_p00)
             / (T::from_f64(2.0) - s.stay_calm_p00 - s.stay_crisis_p11),
         terminal_filtered_crisis_probability: pc,
@@ -351,5 +359,33 @@ mod phase33_tests {
         assert!(
             evaluate_bacon_omega_sortino_and_burke_drawdown(&s).keating_shadwick_omega_ratio > 1.0
         );
+    }
+}
+#[cfg(test)]
+mod phase33_tests_ad {
+    use super::*;
+    use ql_ad::Dual;
+    fn s<T: Real>(x: T) -> OharaGlostenMilgromSequentialSpec<T> {
+        OharaGlostenMilgromSequentialSpec {
+            low_value_vl: T::from_f64(90.),
+            high_value_vh: T::from_f64(110.),
+            initial_prior_p0: T::from_f64(0.5) + x,
+            informed_trader_fraction_mu: T::from_f64(0.3),
+            informed_signal_accuracy_theta: T::from_f64(0.8),
+            dealer_inventory_gamma: T::from_f64(0.01),
+            signed_order_flow: vec![T::from_f64(0.4), T::from_f64(0.3)],
+        }
+    }
+    #[test]
+    fn dual_fd() {
+        let h = 1e-6;
+        let fd = (evaluate_ohara_glosten_milgrom_sequential_spread(&s(h))
+            .inventory_skewed_reservation_mid
+            - evaluate_ohara_glosten_milgrom_sequential_spread(&s(-h))
+                .inventory_skewed_reservation_mid)
+            / (2. * h);
+        let ad = evaluate_ohara_glosten_milgrom_sequential_spread(&s(Dual::<1>::variable(0., 0)))
+            .inventory_skewed_reservation_mid;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

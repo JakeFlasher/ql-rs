@@ -2,6 +2,7 @@
 #![allow(clippy::excessive_precision)]
 
 use crate::SurvivalProbabilityCurve;
+pub use crate::phase33::*;
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
 

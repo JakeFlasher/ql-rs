@@ -35,6 +35,9 @@ pub fn evaluate_calamos_despiegeleer_ascot_and_gamma_scalp<T: Real>(
     let rr = s.risk_free_rate + (T::one() - s.recovery_rate) * lambda;
     let disc = (-rr * s.maturity_years).exp();
     let floor = s.bond_par * disc + s.coupon_rate * s.bond_par * (T::one() - disc) / rr;
+    let rr0 = s.risk_free_rate + (T::one() - s.recovery_rate) * s.base_hazard_rate;
+    let disc0 = (-rr0 * s.maturity_years).exp();
+    let k_recall = s.bond_par * disc0 + s.coupon_rate * s.bond_par * (T::one() - disc0) / rr0;
     let strike = s.bond_par / s.conversion_ratio;
     let st = s.spot_price;
     let v = s.implied_vol;
@@ -54,7 +57,8 @@ pub fn evaluate_calamos_despiegeleer_ascot_and_gamma_scalp<T: Real>(
         risky_credit_bond_floor: floor,
         conversion_parity_value: s.conversion_ratio * st,
         convertible_bond_fair_value: cb,
-        ascot_option_strip_value: (cb - floor).max_val(T::zero()),
+        ascot_option_strip_value: T::from_f64(0.5)
+            * (cb - k_recall + ((cb - k_recall) * (cb - k_recall) + T::from_f64(1e-16)).sqrt()),
         cb_equity_delta: delta,
         cb_dollar_gamma: gamma * st * st,
         expected_gamma_scalp_pnl: T::from_f64(0.5)
@@ -126,21 +130,52 @@ pub fn evaluate_tuckman_specified_pool_payup_and_dollar_roll<T: Real>(
 #[cfg(test)]
 mod phase33_tests {
     use super::*;
+    use ql_ad::Dual;
+    fn a<T: Real>(x: T) -> CalamosDeSpiegeleerAscotGammaSpec<T> {
+        CalamosDeSpiegeleerAscotGammaSpec {
+            spot_price: T::from_f64(100.) + x,
+            reference_spot: T::from_f64(100.),
+            bond_par: T::from_f64(100.),
+            coupon_rate: T::from_f64(0.04),
+            conversion_ratio: T::one(),
+            implied_vol: T::from_f64(0.25),
+            realized_vol: T::from_f64(0.3),
+            risk_free_rate: T::from_f64(0.03),
+            dividend_yield: T::from_f64(0.01),
+            base_hazard_rate: T::from_f64(0.02),
+            equity_credit_power_p: T::from_f64(1.2),
+            recovery_rate: T::from_f64(0.4),
+            maturity_years: T::from_f64(3.),
+            holding_period_years: T::one(),
+        }
+    }
+    fn r<T: Real>(x: T) -> TuckmanSpecifiedPoolDollarRollSpec<T> {
+        TuckmanSpecifiedPoolDollarRollSpec {
+            net_coupon_rate: T::from_f64(0.04) + x,
+            discount_yield: T::from_f64(0.025),
+            effective_maturity_years: T::from_f64(5.),
+            ctd_tba_cpr: T::from_f64(0.08),
+            llb_pool_cpr_multiplier: T::from_f64(0.7),
+            tba_front_month_price: T::from_f64(100.),
+            tba_back_month_price: T::from_f64(99.8),
+            gc_repo_rate: T::from_f64(0.03),
+        }
+    }
     #[test]
     fn phase33_fixed_income_smoke() {
-        let s = TuckmanSpecifiedPoolDollarRollSpec {
-            net_coupon_rate: 0.03,
-            discount_yield: 0.02,
-            effective_maturity_years: 5.0,
-            ctd_tba_cpr: 0.08,
-            llb_pool_cpr_multiplier: 0.7,
-            tba_front_month_price: 100.0,
-            tba_back_month_price: 99.8,
-            gc_repo_rate: 0.03,
-        };
-        assert!(
-            evaluate_tuckman_specified_pool_payup_and_dollar_roll(&s).specified_pool_payup_32nds
-                > 0.0
-        );
+        let h = 1e-6;
+        let x = evaluate_calamos_despiegeleer_ascot_and_gamma_scalp(&a(0.));
+        assert!(x.convertible_bond_fair_value >= x.risky_credit_bond_floor);
+        let fd = (evaluate_calamos_despiegeleer_ascot_and_gamma_scalp(&a(h))
+            .convertible_bond_fair_value
+            - evaluate_calamos_despiegeleer_ascot_and_gamma_scalp(&a(-h))
+                .convertible_bond_fair_value)
+            / (2. * h);
+        let ad =
+            evaluate_calamos_despiegeleer_ascot_and_gamma_scalp(&a(Dual::<1>::variable(0., 0)))
+                .convertible_bond_fair_value;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+        let p = evaluate_tuckman_specified_pool_payup_and_dollar_roll(&r(0.));
+        assert!(p.specified_pool_payup_32nds > 0.);
     }
 }

@@ -10,6 +10,12 @@ pub use crate::phase31::{
     evaluate_embrechts_hill_pickands_and_subexponential_tail,
     evaluate_karnosky_singer_multicurrency_and_menchero_attribution,
 };
+pub use crate::phase33::{
+    BaconOmegaSortinoBurkeDrawdownReport, BaconOmegaSortinoBurkeDrawdownSpec,
+    McneilFreyCopulaEulerAllocationReport, McneilFreyCopulaEulerAllocationSpec,
+    evaluate_bacon_omega_sortino_and_burke_drawdown,
+    evaluate_mcneil_frey_copula_tail_and_euler_allocation,
+};
 
 use ql_ad::{Real, TapeScope, TapeVar};
 

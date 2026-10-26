@@ -1,5 +1,5 @@
 #![allow(clippy::needless_range_loop)]
-pub mod phase33;
+mod phase33;
 pub use phase33::*;
 pub mod phase32;
 use nalgebra::{DMatrix, DVector};

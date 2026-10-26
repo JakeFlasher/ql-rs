@@ -35,14 +35,19 @@ pub fn evaluate_brigo_mercurio_rebonato_swaption_and_cms<T: Real>(
     }
     let sw = sw / a;
     let mut var = T::zero();
-    let mut wsum = T::zero();
+    let mut ws = T::zero();
     for i in 0..n {
         let wi = s.accrual_taus[i] * s.discount_factors[i] / a;
-        wsum += wi;
+        ws += wi;
         for j in 0..n {
             let wj = s.accrual_taus[j] * s.discount_factors[j] / a;
-            let dt = (s.fixing_tenors[i] - s.fixing_tenors[j]).abs();
-            let rho = (-(s.corr_decay_beta * dt)).exp();
+            let d = if i == j {
+                T::zero()
+            } else {
+                let z = s.fixing_tenors[i] - s.fixing_tenors[j];
+                (z * z + T::from_f64(1e-30)).sqrt()
+            };
+            let rho = (-(s.corr_decay_beta * d)).exp();
             var += wi
                 * wj
                 * s.forward_rates[i]
@@ -54,23 +59,20 @@ pub fn evaluate_brigo_mercurio_rebonato_swaption_and_cms<T: Real>(
         }
     }
     let vol = var.sqrt();
-    let x = sw;
+    let x = sw.max_val(T::from_f64(1e-8));
     let one = T::one();
-    let g = (one - (one + x).powf(-(n as f64))) / x;
-    let h = T::from_f64(1e-5);
-    let gp = ((one - (one + x + h).powf(-(n as f64))) / (x + h)
-        - (one - (one + x - h).powf(-(n as f64))) / (x - h))
-        / (h * 2.0);
-    let gpp = (((one - (one + x + h).powf(-(n as f64))) / (x + h)) - T::from_f64(2.0) * g
-        + ((one - (one + x - h).powf(-(n as f64))) / (x - h)))
-        / (h * h);
+    let nf = T::from_f64(n as f64);
+    let u = one + x;
+    let g = (one - u.powf(-(n as f64))) / x;
+    let gp = (nf * u.powf(-(n as f64) - 1.0)) / x - g / x;
+    let gpp = -(nf * (nf + one) * u.powf(-(n as f64) - 2.0)) / x - T::from_f64(2.0) * gp / x;
     let ratio = -(gpp / gp);
     let adj = T::from_f64(0.5) * x * x * ratio * ((vol * vol * s.option_expiry).exp() - one);
     let cms = x + adj;
-    let d1 = ((cms / s.swaption_strike).ln() + T::from_f64(0.5) * vol * vol * s.option_expiry)
+    let d1 = ((sw / s.swaption_strike).ln() + T::from_f64(0.5) * vol * vol * s.option_expiry)
         / (vol * s.option_expiry.sqrt());
     let d2 = d1 - vol * s.option_expiry.sqrt();
-    let pv = a * (cms * d1.norm_cdf() - s.swaption_strike * d2.norm_cdf());
+    let pv = a * (sw * d1.norm_cdf() - s.swaption_strike * d2.norm_cdf());
     BrigoMercurioRebonatoCmsReport {
         swap_annuity_pv01: a,
         forward_swap_rate: sw,
@@ -79,26 +81,38 @@ pub fn evaluate_brigo_mercurio_rebonato_swaption_and_cms<T: Real>(
         cms_convexity_adjustment_bps: adj * T::from_f64(10000.0),
         convexity_adjusted_cms_rate: cms,
         black76_payer_swaption_pv: pv,
-        weights_sum_conservation_error: (wsum - one).abs(),
+        weights_sum_conservation_error: (ws - one).abs(),
     }
 }
 #[cfg(test)]
 mod phase33_tests {
     use super::*;
+    use ql_ad::Dual;
+    fn spec<T: Real>(x: T) -> BrigoMercurioRebonatoCmsSpec<T> {
+        BrigoMercurioRebonatoCmsSpec {
+            fixing_tenors: vec![T::one(), T::from_f64(2.)],
+            accrual_taus: vec![T::one(), T::one()],
+            forward_rates: vec![T::from_f64(0.03) + x, T::from_f64(0.035)],
+            discount_factors: vec![T::from_f64(0.98), T::from_f64(0.95)],
+            forward_vols: vec![T::from_f64(0.2), T::from_f64(0.2)],
+            corr_decay_beta: T::from_f64(0.1),
+            option_expiry: T::one(),
+            swaption_strike: T::from_f64(0.03),
+        }
+    }
     #[test]
     fn phase33_rebonato_smoke() {
-        let s = BrigoMercurioRebonatoCmsSpec {
-            fixing_tenors: vec![1.0, 2.0],
-            accrual_taus: vec![1.0, 1.0],
-            forward_rates: vec![0.03, 0.035],
-            discount_factors: vec![0.98, 0.95],
-            forward_vols: vec![0.2, 0.2],
-            corr_decay_beta: 0.1,
-            option_expiry: 1.0,
-            swaption_strike: 0.03,
-        };
-        assert!(
-            evaluate_brigo_mercurio_rebonato_swaption_and_cms(&s).rebonato_lmm_swaption_vol > 0.0
-        );
+        let r = evaluate_brigo_mercurio_rebonato_swaption_and_cms(&spec(0.));
+        assert!(r.weights_sum_conservation_error < 1e-12 && r.cms_convexity_adjustment_bps > 0.);
+        let h = 1e-6;
+        let fd = (evaluate_brigo_mercurio_rebonato_swaption_and_cms(&spec(h))
+            .black76_payer_swaption_pv
+            - evaluate_brigo_mercurio_rebonato_swaption_and_cms(&spec(-h))
+                .black76_payer_swaption_pv)
+            / (2. * h);
+        let ad =
+            evaluate_brigo_mercurio_rebonato_swaption_and_cms(&spec(Dual::<1>::variable(0., 0)))
+                .black76_payer_swaption_pv;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

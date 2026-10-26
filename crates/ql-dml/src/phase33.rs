@@ -45,14 +45,18 @@ pub fn evaluate_wooldridge_greene_2sls_iv_and_did<T: Real>(
     let ols = xy / xx;
     let pi = xz / zz;
     let mut rss = T::zero();
+    let mut vu = T::zero();
+    let iv = zy / xz;
     for i in 0..n {
         let fit = mx + pi * (s.instrument_z[i] - mz);
-        let e = s.endogenous_x[i] - fit;
-        rss += e * e;
+        let vhat = s.endogenous_x[i] - fit;
+        let uhat = (s.outcome_y[i] - my) - iv * (s.endogenous_x[i] - mx);
+        rss += vhat * vhat;
+        vu += vhat * uhat;
     }
-    let f = T::from_f64((n - 2) as f64) * pi * pi * zz / rss;
-    let iv = zy / xz;
-    let cf = ols - iv;
+    let rss_safe = rss.max_val(T::from_f64(1e-12));
+    let f = T::from_f64((n.saturating_sub(2).max(1)) as f64) * pi * pi * zz / rss_safe;
+    let cf = vu / rss_safe;
     let counter = s.treated_pre_mean + s.control_post_mean - s.control_pre_mean;
     let att = s.treated_post_mean - counter;
     WooldridgeGreene2slsDidReport {
@@ -81,5 +85,46 @@ mod phase33_tests {
             control_post_mean: 1.1,
         };
         assert!(evaluate_wooldridge_greene_2sls_iv_and_did(&s).first_stage_f_statistic > 0.0);
+    }
+}
+#[cfg(test)]
+mod phase33_tests_ad {
+    use super::*;
+    use ql_ad::Dual;
+    fn s<T: Real>(x: T) -> WooldridgeGreene2slsDidSpec<T> {
+        WooldridgeGreene2slsDidSpec {
+            endogenous_x: vec![
+                T::one() + x,
+                T::from_f64(2.),
+                T::from_f64(3.),
+                T::from_f64(4.),
+            ],
+            instrument_z: vec![
+                T::one(),
+                T::from_f64(2.1),
+                T::from_f64(2.9),
+                T::from_f64(4.1),
+            ],
+            outcome_y: vec![
+                T::from_f64(1.2),
+                T::from_f64(2.1),
+                T::from_f64(3.2),
+                T::from_f64(4.2),
+            ],
+            treated_pre_mean: T::one(),
+            treated_post_mean: T::from_f64(1.2),
+            control_pre_mean: T::one(),
+            control_post_mean: T::from_f64(1.1),
+        }
+    }
+    #[test]
+    fn dual_fd() {
+        let h = 1e-6;
+        let fd = (evaluate_wooldridge_greene_2sls_iv_and_did(&s(h)).two_stage_ls_iv_beta
+            - evaluate_wooldridge_greene_2sls_iv_and_did(&s(-h)).two_stage_ls_iv_beta)
+            / (2. * h);
+        let ad = evaluate_wooldridge_greene_2sls_iv_and_did(&s(Dual::<1>::variable(0., 0)))
+            .two_stage_ls_iv_beta;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
