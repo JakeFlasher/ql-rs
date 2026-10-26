@@ -1,4 +1,4 @@
-# Authoritative Book Library Catalog (`books/`) & Phase 21+ SOTA Extraction Map
+# Authoritative Book Library Catalog (books/) & Quantitative Domain Map
 
 ## 1. Complete Catalog of `/home/jakeshea/rust_quantlib/books/`
 
@@ -22,7 +22,7 @@ The workspace book library contains **86 books and monographs across 14 topic fo
 
 ---
 
-## 2. Phase 21+ SOTA Extraction Map (Zero-Overlap Institutional Candidates)
+## 2. Book-Backed Quantitative Models Integrated Across ql-rs
 
 1. **Mandatory Convertibles (`DECS` / `PERCS` / `PRIDES`) & Endogenous Dilution-Adjusted Warrants** — De Spiegeleer, Schoutens & Van Hulle (2014, Ch. 11) & Koziol (2004).
 2. **4-Factor Structural Mortgage Prepayment & IO/PO Strip OAS** — Davidson & Levin (2014, Ch. 6–8) & Tuckman–Serrat (2011).
@@ -35,39 +35,5 @@ The workspace book library contains **86 books and monographs across 14 topic fo
 9. **Garleanu & Pedersen (2013) Dynamic Multi-Period Portfolio Optimization with Quadratic Transaction Costs & Mean-Reverting Alpha Decay** — Pedersen (2015, Ch. 3).
 10. **Bacon (2023) Brinson–Fachler & Carino (1999) Exact Logarithmic Multi-Period Performance Attribution** — Bacon (2023, Ch. 5 & 8).
 
-### Phase 24 Round 1 delivery
-The twelve institutional engines above are now wired into `ql-fixed-income`, `ql-credit`, `ql-xva`, `ql-models`, `ql-vol`, `ql-portfolio`, and `ql-ad`, with Suite 36 (`36_mbs_io_po_rmv_mo_xva_dilution_sig_garch_pot_rie_pin_gp_brinson_ierp`) and workstation Tab 34 (`34 Phase 24 SOTA`).
 
-
-### Phase 25 book-backed SOTA delivery
-Phase 25 adds twelve book-backed engines: Tsay Kalman/RTS state-space smoothing, Johansen–Tsay VECM cointegration, Cochrane–Hansen–Jagannathan SDF/Campbell–Shiller news, IFRS 9 CECL multistage ECL, Wakker–Tversky–Kahneman CPT, Hasbrouck information share/DSSW limits, Fong–Vasicek stochastic-volatility bonds, Lando–Cox affine default/liquidity, Sornette LPPL crash hazard, Thorp–Kassouf–Calamos convertible arbitrage, López de Prado causal backdoor/collider bias, and Fournié–Lasry–Lions Malliavin BEL Greeks. They are exposed in workstation Tab 35 and validated by Suite 37 (`37_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin`).
-
-## Phase 26 SOTA engines
-Phase 26 adds twelve book-backed generic engines: Hunt–Kennedy–Pelsser Markov-functional rates/range accrual, Tuckman–Burghardt Treasury wildcard and CTD switching, Wystup Pivot-TARF corridors, Bergomi forward-start/Napoleon convexity, Schönbucher defaultable range accruals, Green/BCBS FRTB-CVA capital, Heynen–Kat lookbacks, Eydeland–Wolyniec virtual tolling, Grinold–Kahn/Clarke FLAM, Engle–Russell ACD, Harvey–Liu–Zhu multiple-testing Sharpe haircuts, and Giles–Capriotti MLMC AAD. They are exposed in workstation Tab 36 and validated by Suite 38 (`38_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_frtb_cva_lookback_vta_flam_acd_hlz_mlmc`); the workstation layout uses `BOTTOM_ROWS = 33`.
-
-
-Phase 27 extends the library with FTPL, G2++, eSSVI, offshore convertible, CoCo, MPOR, double-Heston/SLV, Curran Asian, Warin storage, Roll-Corwin microstructure, Busseti-Kelly, and differentiable QP engines in Suite 39 and Tab 37.
-
-
-## Phase 27 SOTA engines
-Suite 39 (`39_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt`) and Tab 37 add twelve book-backed SOTA engines; the terminal layout uses `BOTTOM_ROWS = 34`.
-
-Suite 40 and Tab 38 add the Phase 28 book-backed SOTA expansion (IRRBB, RFR, MtM XCCY, Bergomi-Guyon, AT1 CoCo, SIMM/XVA, rough Bergomi, spread baskets, BESS, dark pools, convex risk, and Diff-PCA); the terminal layout uses `BOTTOM_ROWS = 35`.
-
-
-Phase 29 adds twelve book-backed SOTA quantitative finance engines, Benchmark Suite 41, and workstation Tab 39 with `BOTTOM_ROWS = 36`.
-
-
-### Phase 30 current release
-Phase 30 adds twelve book-backed SOTA quantitative-finance engines, Benchmark Suite 42, workstation Tab 40, and `BOTTOM_ROWS = 37`.
-
-### Phase 31 current release
-Phase 31 adds twelve book-backed SOTA quantitative-finance engines, Benchmark Suite 43, workstation Tab 41, and `BOTTOM_ROWS = 38`.
-
-### Phase 32 current release
-
-Phase 32 adds 12 book-backed SOTA engines, Benchmark Suite 44, and Workstation Tab 42 (BOTTOM_ROWS = 39).
-
-
-### Phase 33 current release
-Phase 33 adds twelve book-backed SOTA quantitative finance engines, Benchmark Suite 45, and Workstation Tab 43 (BOTTOM_ROWS = 40).
+The integrated models span mandatory and dilution-adjusted convertibles; structural mortgage prepayment and IO/PO OAS; RMV/RFV credit basis and CDS; Marshall–Olkin bilateral XVA; path-signature pricing; GARCH and dynamic correlation; POT/GPD tail risk; microstructure impact and informed trading; dynamic portfolio optimization; and multi-period performance attribution. These kernels are implemented across the fixed-income, credit, XVA, models, volatility, portfolio, and automatic-differentiation crates with deterministic parity coverage.

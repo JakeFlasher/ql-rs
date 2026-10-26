@@ -225,7 +225,7 @@ Following Bayer, Friz & Gatheral (2016) and McCrickerd & Pakkanen (2018) ([`52_M
 
 ---
 
-## 9. Phase 13 Institutional Frontiers: Monotone Convex & Meeting-Date OIS Curves, Global eSSVI & VIX Derivatives, Parisian/Parasian Exotics, Andersen–Broadie Dual AMC, Coterminal Cascade / Range Accruals / LPI Inflation, $k$-th-to-Default & Cashflow-Aware MPoR XVA, and Ledoit–Wolf / Robust Markowitz
+## 9. Institutional Quantitative Frontiers: Monotone Convex & Meeting-Date OIS Curves, Global eSSVI & VIX Derivatives, Parisian/Parasian Exotics, Andersen–Broadie Dual AMC, Coterminal Cascade / Range Accruals / LPI Inflation, $k$-th-to-Default & Cashflow-Aware MPoR XVA, and Ledoit–Wolf / Robust Markowitz
 
 ### 9.1 Hagan–West (2006) Monotone Convex Splines & Central-Bank Meeting-Date Step-Jump OIS Curves
 - Following Hagan & West (2006), interpolating discrete forwards $f_i^d = (r_i t_i - r_{i-1} t_{i-1}) / \Delta_i$ via the four-region monotone convex piecewise quadratic $g(x) = f(t_{i-1} + \Delta_i x) - f_i^d$ guarantees $\int_0^1 g(x)\,dx = 0$ (exact discount factor recovery at all pillars), non-negative instantaneous forwards $f(t) \ge 0$, and localized par-rate DV01s without the Gibbs oscillations of cubic zero-rate splines.

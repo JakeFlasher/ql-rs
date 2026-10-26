@@ -66,33 +66,3 @@ Date / Calendar / Convention
 | Delivery | `ql-benches`, `ql-terminal` | Statistical parity, SDK, 43-tab Braille/ANSI UI | 45-suite harness and terminal suite |
 
 
-## Phase 18–19 Institutional Expansion
-The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB, entropy pooling, dynamic SIMM/MVA, Schur-HRP/OAS nonlinear shrinkage. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic OU SPX/VIX, AFV convertibles, Clewlow–Strickland swaptions, JLT rating migration, free-boundary SABR, gamma/variance swaps and Avellaneda–Stoikov/CDaR allocation. The workstation now exposes Tab 36 and the benchmark suite contains 38 AD parity workloads.
-
-Phase 20 and Phase 21 institutional engines are now integrated end-to-end: every workload is deterministic, differentiable through `Dual<N>`, covered by collapse/arbitrage invariants, and surfaced in the 43-tab terminal and synchronized 45-row benchmark suite.
-
-Phase 26 extends the release to Suite 38 and workstation Tab 36 (Tab 36 Phase 26 SOTA; `BOTTOM_ROWS = 33`).
-
-
-## Phase 27 SOTA engines
-Phase 27 adds twelve book-backed SOTA engines in Suite 39 (`39_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt`) and workstation Tab 37; the layout uses `BOTTOM_ROWS = 34`.
-
-Phase 28 extends the benchmark harness to 40 suites and the terminal workstation to 38 tabs. Tab 38 (`38:P28-SOTA`) and Suite 40 cover IRRBB, backward-looking RFR smiles, MtM XCCY convexity, Bergomi-Guyon expansions, AT1 CoCo PONV, dynamic SIMM/XVA, rough Bergomi surrogates, spread baskets, BESS SDP, dark-pool execution, convex risk diagnostics, and Diff-PCA.
-
-
-Phase 29 adds twelve book-backed SOTA quantitative finance engines, Benchmark Suite 41, and workstation Tab 39 with `BOTTOM_ROWS = 36`.
-
-
-### Phase 30 current release
-Phase 30 adds twelve book-backed SOTA quantitative-finance engines, Benchmark Suite 42, workstation Tab 40, and `BOTTOM_ROWS = 37`.
-
-### Phase 31 current release
-Phase 31 adds twelve book-backed SOTA quantitative-finance engines, Benchmark Suite 43, workstation Tab 41, and BOTTOM_ROWS = 38.
-
-### Phase 32 current release
-
-Phase 32 adds 12 book-backed SOTA engines, Benchmark Suite 44, and Workstation Tab 42 (BOTTOM_ROWS = 39).
-
-
-### Phase 33 current release
-Phase 33 adds twelve book-backed SOTA quantitative finance engines, Benchmark Suite 45, and Workstation Tab 43 (BOTTOM_ROWS = 40).

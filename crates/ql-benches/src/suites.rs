@@ -3756,7 +3756,7 @@ pub fn benchmark_phase27_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_achary
     };
     run_comparison(
         "39_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt",
-        "Phase27 SOTA FTPL/G2/eSSVI/Offshore-CB/CoCo/MPOR/Double-Heston/Curran/Warin/Roll-Corwin/Busseti-Kelly/Diff-QP",
+        "FTPL / G2++ / eSSVI / Offshore-CB / CoCo / MPOR / Double-Heston / Curran / Warin / Roll-Corwin / Busseti-Kelly / Diff-QP AD",
         cfg,
         1e-4,
         baseline,
@@ -3764,10 +3764,7 @@ pub fn benchmark_phase27_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_achary
     )
 }
 
-/// Phase 22 cross-pillar scalar/forward-mode parity workload.
-/// Generic Phase 22 workload used by both finite-difference and forward-mode
-/// benchmark paths.  Each lane combines three independent engines so the
-/// benchmark exercises all twelve Phase 22 pillars without extra f(x0) calls.
+/// Cross-pillar scalar and forward-mode AD parity workload.
 fn phase22_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     let p = ql_models::Bergomi2FParams {
         xi0: T::from_f64(0.04),
@@ -4051,7 +4048,7 @@ pub fn benchmark_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad(scale: usize) -> 
     };
     run_comparison(
         "34_krd_lpi_coco_bergomi2f_cgmy_gueant_meucci_aad",
-        "Phase22 KRD/LPI/CoCo/Bergomi/CGMY/Guéant/Meucci/AAD",
+        "KRD / LPI / CoCo / Bergomi / CGMY / Guéant / Meucci AD vs FD",
         cfg,
         1e-4,
         baseline,
@@ -4074,7 +4071,7 @@ pub fn run_all_benchmark_suites_with_config(
     with_config_override(warmup_iters, samples, || run_all_benchmarks(1))
 }
 
-/// Compatibility spelling retained for callers that used the Phase 10 prompt
+/// Compatibility spelling retained for callers using the capitalised Config alias.
 /// verbatim (`Config` was capitalised there).
 #[allow(non_snake_case)]
 pub fn run_all_benchmark_suites_with_Config(
@@ -5171,7 +5168,7 @@ fn phase21_workloads<T: Real>(x: [T; 4]) -> [T; 4] {
     ]
 }
 
-/// Phase 21 institutional expansion benchmark.
+/// Monotone-convex, Clark FX, SA-CCR KVA, rough volatility, Cartea, and Paleologo AD benchmark.
 pub fn benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(
     scale: usize,
 ) -> ComparisonRow {
@@ -5205,7 +5202,7 @@ pub fn benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(
     };
     run_comparison(
         "33_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad",
-        "Phase21 institutional 12-engine AAD vs FD",
+        "Monotone-Convex / Clark-FX / SA-CCR-KVA / rVol / Cartea / Paleologo AD",
         cfg,
         1e-4,
         baseline,
@@ -5213,7 +5210,7 @@ pub fn benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(
     )
 }
 
-/// Direct Phase 23 workload: one value from each of the twelve book-backed engines.
+/// Direct twelve-engine workload across RKHS, FMM, VV, LSV, JLT, CTD, QRH, Parisian, Aïd, propagator, NCO, and DML.
 pub fn phase23_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let rk = ql_curves::calibrate_filipovic_rkhs_smooth_yield_curve(
         &ql_curves::FilipovicRkhsYieldCurveSpec {
@@ -5468,7 +5465,7 @@ pub fn benchmark_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml(
     };
     run_comparison(
         "35_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml",
-        "Phase23 RKHS/FMM/VV/LSV/JLT/CTD/QRH/Parisian/Aïd/Propagator/NCO/DML",
+        "RKHS / FMM / VV / LSV / JLT / CTD / QRH / Parisian / Aïd / Propagator / NCO / DML AD",
         cfg,
         1e-4,
         baseline,
@@ -5945,7 +5942,7 @@ pub fn benchmark_phase25_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lpp
     };
     run_comparison(
         "37_kalman_rts_vecm_hj_sdf_ifrs9_cpt_hasbrouck_fv_lando_lppl_cb_arb_causal_malliavin",
-        "Phase25 Kalman/RTS/VECM/HJ-SDF/IFRS9/CPT/Hasbrouck/FV/Lando/LPPL/CB-Arb/Causal/Malliavin",
+        "Kalman-RTS / VECM / HJ-SDF / IFRS9 / CPT / Hasbrouck / FV / Lando / LPPL / CB-Arb / Causal / Malliavin AD",
         cfg,
         1e-4,
         baseline,
@@ -6239,7 +6236,7 @@ pub fn benchmark_phase26_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_fr
     };
     run_comparison(
         "38_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_frtb_cva_lookback_vta_flam_acd_hlz_mlmc",
-        "Phase26 MF-Rates/Wildcard/CTD/Pivot-TARF/Bergomi/Schönbucher/FRTB-CVA/Lookback/VTA/FLAM/ACD/HLZ/MLMC",
+        "MF-Rates / Wildcard / CTD / Pivot-TARF / Bergomi / Schönbucher / FRTB-CVA / Lookback / VTA / FLAM / ACD / HLZ / MLMC AD",
         cfg,
         1e-4,
         baseline,
@@ -6496,7 +6493,7 @@ pub fn benchmark_phase28_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_ze
     };
     run_comparison(
         "40_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_zeron_simm_jacquier_rbergomi_choi_spread_bess_sdp_kratz_dark_follmer_diag_diff_pca",
-        "Phase28 BCBS/IRRBB/Turfus-RFR/Baran-MtM/Bourgey-BG/FEDS-PONV/Zeron-SIMM/Jacquier-rBergomi/Choi-Spread/BESS-SDP/Kratz-Dark/Föllmer/Diff-PCA",
+        "BCBS-IRRBB / Turfus-RFR / Baran-MtM / Bourgey-BG / FEDS-PONV / Zeron-SIMM / Jacquier-rBergomi / Choi-Spread / BESS-SDP / Kratz-Dark / Föllmer / Diff-PCA AD",
         cfg,
         1e-4,
         baseline,
@@ -6726,7 +6723,7 @@ pub fn benchmark_phase29_veronesi_conv_lando_gen_gatheral_corridor_russian_stop_
     };
     run_comparison(
         "41_veronesi_conv_lando_gen_gatheral_corridor_russian_stop_bates_svj_koziol_cb_mckean_mfg_bcbs_floor_cjp_lob_madhavan_etf_qian_ic_glasserman_is",
-        "Phase29 Veronesi/Lando/Gatheral/Russian/Bates/Koziol/MFG/BCBS/CJP/ETF/Qian/Glasserman",
+        "Veronesi / Lando / Gatheral-Corridor / Russian / Bates-SVJ / Koziol-CB / MFG / BCBS-Floor / CJP-LOB / ETF / Qian-IC / Glasserman-IS AD",
         cfg,
         1e-4,
         baseline,
@@ -7020,7 +7017,7 @@ pub fn benchmark_phase30_romer_taylor_damodaran_crp_christoffersen_var_foucault_
     };
     run_comparison(
         "42_romer_taylor_damodaran_crp_christoffersen_var_foucault_lvar_barberis_pt_hart_regret_beneish_mscore_campisi_attr_heckman_gmm_elastic_net_reset_cb_fsb_bailin",
-        "Phase30 Romer/Taylor/Damodaran/Christoffersen/Foucault/Barberis/Hart/Beneish/Campisi/Heckman/Elastic/ResetCB/FSB",
+        "Romer-Taylor / Damodaran-CRP / Cumulant-VaR / LOB-LVaR / Prospect / Regret / Beneish / Campisi / Heckman / Elastic-Net / Reset-CB / FSB-BailIn AD",
         cfg,
         1e-4,
         baseline,
@@ -7293,7 +7290,7 @@ pub fn benchmark_phase31_fabozzi_krd_cmo_pac_asquith_cb_asu2024_cpdi_rsm_asc470_
     };
     run_comparison(
         "43_fabozzi_krd_cmo_pac_asquith_cb_asu2024_cpdi_rsm_asc470_gregory_colva_embrechts_hill_bouchaud_tlf_karnosky_singer_dgtw_timing_brock_hommes_penman_reoi",
-        "Phase31 book-backed SOTA engines",
+        "KRD-LSC / CMO-PAC / Asquith-CB / ASU2024-CPDI / ASC470-Mod / ColVA-CTD / Hill-EVT / Bouchaud-TLF / Karnosky-FX / DGTW-Timing / Brock-Hommes / Penman-ReOI AD",
         cfg,
         1e-4,
         baseline,
@@ -7552,7 +7549,7 @@ pub fn benchmark_phase32_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cm
     };
     run_comparison(
         "44_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cmcds_morini_turlakov_wwr_hhw_adi_capped_call_mw_ahmadi_evar_schur_hrp_bekk_garch_schilit_sloan",
-        "Phase32 book-backed SOTA engines",
+        "Cheyette-LV / ADB-NDIRS / Andreasen-ZABR / QRH-Zumbach / CMCDS-Morini / Turlakov-WWR / HHW-ADI / CappedCall-MW / Ahmadi-EVaR / Schur-HRP / BEKK-GARCH / Schilit-Sloan AD",
         cfg,
         1e-4,
         baseline,
@@ -7790,7 +7787,7 @@ pub fn benchmark_phase33_rebonato_cms_lm_all_engines(scale: usize) -> Comparison
     };
     run_comparison(
         "45_rebonato_cms_leland_toft_calamos_ascot_spec_pool_roll_glosten_milgrom_potters_rie_egarch_hamilton_wooldridge_2sls_mcneil_euler_bacon_omega_damodaran_rd_mwg_arrow_debreu",
-        "Phase33 book-backed SOTA engines",
+        "Rebonato-CMS / Leland-Toft / Calamos-Ascot / SpecPool-Roll / Glosten-Milgrom / Potters-RIE / EGARCH-Hamilton / Wooldridge-2SLS / McNeil-Euler / Bacon-Omega / Damodaran-RD / Arrow-Debreu AD",
         cfg,
         1e-4,
         baseline,

@@ -292,7 +292,7 @@ fn phase22_tab32_terminal_renders_and_ticks_cleanly() {
     assert_eq!(TabId::ALL.len(), 43);
     assert_eq!(
         TabId::Phase22Sota.label(),
-        "32 Phase 22 SOTA / KRD / LPI / CoCo / Bergomi / CGMY / AAD"
+        "32 KRD / LPI / CoCo / Bergomi / CGMY / AAD"
     );
     let mut ws = DeskWorkstation::new();
     let normal = ws.step_tick();
@@ -376,7 +376,7 @@ fn phase23_tab33_terminal_renders_and_reacts() {
 fn phase24_tab34_terminal_renders_and_reacts() {
     assert_eq!(
         TabId::Phase24Sota.label(),
-        "34 Phase 24 SOTA / MBS-IO-PO / RMV / MO-XVA / Dilution / Sig / GARCH / POT / RIE / PIN / GP / Brinson / IERP"
+        "34 MBS-IO-PO / RMV / MO-XVA / Dilution / Sig / GARCH / POT / RIE / PIN / GP / Brinson / IERP"
     );
     let mut ws = DeskWorkstation::new();
     let mut values = Vec::new();
@@ -401,7 +401,7 @@ fn phase24_tab34_terminal_renders_and_reacts() {
 fn phase25_tab35_terminal_renders_and_reacts() {
     let mut ws = DeskWorkstation::new();
     assert_eq!(TabId::ALL.len(), 43);
-    assert!(TabId::Phase25Sota.label().starts_with("35 Phase 25 SOTA"));
+    assert!(TabId::Phase25Sota.label().starts_with("35 Kalman-RTS / VECM / HJ-SDF / IFRS9 / CPT / Hasbrouck / FV / Lando / LPPL / CB-Arb / Causal / Malliavin"));
     let mut values = Vec::new();
     for scenario in [
         ScenarioKind::RatesParallelPlus50Bp,
@@ -418,7 +418,7 @@ fn phase25_tab35_terminal_renders_and_reacts() {
             f.kalman_vecm_hj_ifrs9_cpt_hasbrouck_fv_lando_lppl_cbarb_causal_malliavin_metric
                 .is_finite()
         );
-        assert!(ws.render_dashboard(&f, false).contains("35 Phase25"));
+        assert!(ws.render_dashboard(&f, false).contains("35 Kalman/VECM"));
     }
     assert!(values.windows(2).any(|w| (w[1] - w[0]).abs() > 1e-12));
 }
@@ -431,10 +431,9 @@ fn phase26_tab36_terminal_renders_and_reacts() {
     let stress = ws.step_tick();
     assert!(stress.phase26_sota_metric.is_finite());
     assert!((stress.phase26_sota_metric - normal.phase26_sota_metric).abs() > 1e-12);
-    assert!(
-        ws.render_dashboard(&stress, false)
-            .contains("36 Phase26 SOTA")
-    );
+    assert!(ws.render_dashboard(&stress, false).contains(
+        "36 MF-Rates/Wildcard/TARF/Bergomi/Schönbucher/FRTB-CVA/Lookback/VTA/FLAM/ACD/HLZ/MLMC"
+    ));
     assert_eq!(TabId::TAB_COUNT, 43);
     assert!(TabId::ALL.contains(&TabId::Phase26Sota));
 }
@@ -449,7 +448,7 @@ fn phase27_tab37_terminal_renders_and_reacts() {
     assert!((stressed.phase27_sota_metric - normal.phase27_sota_metric).abs() > 1e-12);
     assert!(
         ws.render_dashboard(&stressed, false)
-            .contains("37 Phase 27 SOTA")
+            .contains("37 FTPL/G2/eSSVI/CB/CoCo/MPOR/Double-Heston/Curran/Warin/Roll/Busseti/KKT")
     );
     assert_eq!(TabId::TAB_COUNT, 43);
 }
@@ -463,7 +462,10 @@ fn phase28_tab38_terminal_renders_and_reacts() {
     let fb = ws.step_tick();
     let b = ws.render_dashboard(&fb, false);
     assert_eq!(TabId::ALL.len(), 43);
-    assert!(a.contains("38:P28-SOTA") && b.contains("38:P28-SOTA"));
+    assert!(
+        a.contains("38 IRRBB/RFR/XCCY/BG/CoCo/SIMM/rBergomi/Spread/BESS/Dark/Risk/Diff-PCA")
+            && b.contains("38 IRRBB/RFR/XCCY/BG/CoCo/SIMM/rBergomi/Spread/BESS/Dark/Risk/Diff-PCA")
+    );
     assert_ne!(a, b);
 }
 
@@ -473,7 +475,10 @@ fn phase29_tab39_terminal_renders_and_reacts() {
     let frame = ws.step_tick();
     let dashboard = ws.render_dashboard(&frame, false);
     assert_eq!(TabId::ALL.len(), 43);
-    assert!(dashboard.contains("39 Phase29 SOTA"));
+    assert!(
+        dashboard
+            .contains("39 Veronesi/Lando/Corridor/Russian/Bates/Koziol/MFG/BCBS/CJP/ETF/IC/IS")
+    );
     assert!(frame.phase29_sota_metric.is_finite());
     let base = ws.phase29_live_metric();
     ws.set_scenario(ScenarioKind::CreditWideningPlus100Bp);
@@ -496,16 +501,15 @@ fn phase30_tab40_terminal_renders_and_reacts() {
     assert!(
         TabId::Phase30BookSota
             .label()
-            .starts_with("40 Phase 30 SOTA")
+            .starts_with("40 Taylor-Curve / Damodaran-CRP / Cumulant-VaR / LOB-LVaR / Prospect-CGO / Regret-Match / Beneish-HKAS32 / Campisi-FI / Heckman-GMM / Elastic-Net / Reset-CB / FSB-BailIn")
     );
     assert_ne!(normal.phase30_sota_metric, stressed.phase30_sota_metric);
     ws.set_scenario(ScenarioKind::StagflationPlus150Bp);
     let stag = ws.step_tick();
     assert!((stag.phase30_sota_metric - normal.phase30_sota_metric).abs() > 1e-12);
-    assert!(
-        ws.render_dashboard(&stressed, false)
-            .contains("40 Phase30 SOTA")
-    );
+    assert!(ws.render_dashboard(&stressed, false).contains(
+        "40 Taylor/Damodaran/VaR/LVaR/CGO/Regret/Beneish/Campisi/Heckman/Elastic/ResetCB/FSB"
+    ));
 }
 
 #[test]
@@ -520,7 +524,7 @@ fn phase31_tab41_terminal_renders_and_reacts() {
     assert!(
         TabId::Phase31BookSota
             .label()
-            .starts_with("41 Phase 31 SOTA")
+            .starts_with("41 KRD-LSC / CMO-PAC / Asquith-CB / ASU2024-CPDI / ASC470-Mod / ColVA-CTD / Hill-EVT / Bouchaud-TLF / Karnosky-FX / DGTW-Timing / Brock-Hommes / Penman-ReOI")
     );
     assert!(normal.phase31_sota_metric.is_finite());
     assert!((normal.phase31_sota_metric - stressed.phase31_sota_metric).abs() > 1e-12);
@@ -529,7 +533,7 @@ fn phase31_tab41_terminal_renders_and_reacts() {
     assert!((stag.phase31_sota_metric - normal.phase31_sota_metric).abs() > 1e-12);
     assert!(
         ws.render_dashboard(&stressed, false)
-            .contains("41 Phase31 SOTA")
+            .contains("41 KRD-LSC/CMO-PAC/Asquith-CB/ASU2024/ASC470/ColVA/Hill/Bouchaud/Karnosky/DGTW/Brock/Penman")
     );
 }
 
@@ -541,7 +545,7 @@ fn phase32_tab42_terminal_renders_and_reacts() {
     assert!(
         TabId::Phase32BookSota
             .label()
-            .starts_with("42 Phase 32 SOTA")
+            .starts_with("42 Cheyette-LV / ADB-NDIRS / Andreasen-ZABR / QRH-Zumbach / CMCDS-Morini / Turlakov-WWR / HHW-ADI / CappedCall-MW / Ahmadi-EVaR / Schur-HRP / BEKK-GARCH / Schilit-Sloan")
     );
     let mut desk = DeskWorkstation::default();
     let base = desk.phase32_live_metric();
@@ -554,7 +558,7 @@ fn phase32_tab42_terminal_renders_and_reacts() {
     let frame = desk.step_tick();
     assert!(
         desk.render_dashboard(&frame, false)
-            .contains("42 Phase32 SOTA")
+            .contains("42 Cheyette/NDIRS/ZABR/QRH/CMCDS/WWR/HHW/CB/EVaR/Schur/BEKK/Quality")
     );
 }
 
@@ -565,7 +569,7 @@ fn phase33_tab43_terminal_renders_and_reacts() {
     assert!(
         ql_terminal::TabId::Phase33BookSota
             .label()
-            .starts_with("43 Phase 33 SOTA")
+            .starts_with("43 Rebonato-CMS / Leland-Toft / Calamos-Ascot / SpecPool-Roll / Glosten-Milgrom / Potters-RIE / EGARCH-Hamilton / Wooldridge-2SLS / McNeil-Euler / Bacon-Omega / Damodaran-RD / Arrow-Debreu")
     );
     let mut ws = ql_terminal::DeskWorkstation::new();
     let n = ws.phase33_live_metric();
@@ -578,6 +582,6 @@ fn phase33_tab43_terminal_renders_and_reacts() {
     let frame = ws.step_tick();
     assert!(
         ws.render_dashboard(&frame, false)
-            .contains("43 Phase33 SOTA")
+            .contains("43 Rebonato-CMS/Leland-Toft/Calamos/RIE/Arrow-Debreu")
     );
 }

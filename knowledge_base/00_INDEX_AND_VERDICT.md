@@ -40,7 +40,7 @@ The comparison in `03_CROSS_LANGUAGE_BENCHMARK_ARCHITECTURES.md` shows that the 
 | `05_BLUEPRINT_MODERN_RUST_QUANTLIB.md` | Detailed 23-crate software and mathematical blueprint. |
 | `06_LITERATURE_AND_REFERENCES.md` | Annotated 66-paper and repository bibliography. |
 | `07_BENCHMARK_METHODOLOGY_AND_STUDY.md` | Harness design, suite descriptions, and empirical interpretation. |
-| `08_BENCHMARK_RESULTS.md` | Reproducible 43-suite benchmark output. |
+| `08_BENCHMARK_RESULTS.md` | Reproducible 45-suite benchmark output. |
 
 ## Release verification
 
@@ -52,29 +52,3 @@ cargo run -p ql-benches --release
 ```
 
 
-## Phase 18 Institutional Expansion
-The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZABR/PDV volatility, KIKO/window barriers, Everest and capped timer options, weather degree-day and clean spark/dark spreads, minimum-torsion ENB and entropy pooling. Phase 19 adds burnout-MBS/OAS, CMCDS, Quintic OU SPX/VIX, AFV convertibles, Clewlow–Strickland swaptions, Schur-HRP and nonlinear shrinkage. The workstation now exposes Tab 39 and the benchmark suite contains 41 AD parity workloads.
-
-Phase 20 adds production-grade inflation, structured-credit, rough-volatility, callable, portfolio, and XVA engines with exact Dual/IFT parity. Phase 21 completes the institutional expansion with Hagan–West monotone-convex bootstrapping, Piterbarg quasi-Gaussian amortizing swaptions, Clark FX delta-smile calibration, Gatheral–Gyöngy LSV leverage, Green SA-CCR lifetime KVA/MVA, Gregory Euler netting allocation, Bayer–Friz–Gatheral rough volatility, Bouzoubaa cliquets, Burger multifuel dispatch, Cartea–Jaimungal execution, Paleologo factor-neutral allocation, and checkpointed Glasserman–Malliavin AAD.
-
-Phase 27 delivers Suite 39 and workstation Tab 37 (`BOTTOM_ROWS = 34`) with twelve book-backed SOTA quantitative engines.
-
-Phase 28 delivers Suite 40 and workstation Tab 38 (`BOTTOM_ROWS = 35`) with twelve additional book-backed SOTA quantitative engines spanning IRRBB, RFR, XCCY, rough volatility, CoCo/XVA, storage, execution, risk measures, and differential PCA.
-
-
-Phase 29 adds twelve book-backed SOTA quantitative finance engines, Benchmark Suite 41, and workstation Tab 39 with `BOTTOM_ROWS = 36`.
-
-
-### Phase 30 current release
-Phase 30 adds twelve book-backed SOTA quantitative-finance engines, Benchmark Suite 42, workstation Tab 40, and `BOTTOM_ROWS = 37`.
-
-### Phase 31 current release
-Phase 31 adds twelve book-backed SOTA quantitative-finance engines, Benchmark Suite 43, workstation Tab 41, and BOTTOM_ROWS = 38.
-
-### Phase 32 current release
-
-Phase 32 adds 12 book-backed SOTA engines, Benchmark Suite 44, and Workstation Tab 42 (BOTTOM_ROWS = 39).
-
-
-### Phase 33 current release
-Phase 33 adds twelve book-backed SOTA quantitative finance engines, Benchmark Suite 45, and Workstation Tab 43 (BOTTOM_ROWS = 40).

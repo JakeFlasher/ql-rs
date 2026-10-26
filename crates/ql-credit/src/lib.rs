@@ -1099,7 +1099,7 @@ pub fn analyze_duffie_singleton_rmv_rfv_and_cds_basis<T: Real>(
         rmv_minus_rfv_premium_bias: rmv - rfv,
     }
 }
-/// Compatibility entry point using the Phase 24 engine's descriptive name.
+/// Compatibility entry point for Duffie-Singleton RMV/RFV recovery and CDS-bond basis analysis.
 pub fn evaluate_duffie_singleton_larix_recovery_and_basis<T: Real>(
     s: &DuffieSingletonRecoveryAndCdsBasisSpec<T>,
 ) -> DuffieSingletonRecoveryAndCdsBasisReport<T> {
