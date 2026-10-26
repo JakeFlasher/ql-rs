@@ -3124,7 +3124,6 @@ impl DeskWorkstation {
         let inflation = m.inflation_quotes.first().map(|(_, v)| *v).unwrap_or(0.02);
         let r = m.ois_quotes.first().copied().unwrap_or(0.03) + credit_bump + inflation * 0.05;
         let spot = m.eq_spot.max(50.0);
-        let vol = m.eq_vol.max(0.15);
         let repo = ql_curves::evaluate_tuckman_repo_specialness_and_oftr_basis(
             &ql_curves::TuckmanRepoSpecialnessBasisSpec {
                 otr_dirty_price: spot,
@@ -3152,140 +3151,10 @@ impl DeskWorkstation {
                 burgard_kjaer_alpha: 0.5,
             },
         );
-        let decs = ql_fixed_income::evaluate_despiegeleer_mandatory_convertible_decs_and_percs(
-            &ql_fixed_income::DeSpiegeleerMandatoryConvertibleDecsSpec {
-                spot_price: spot,
-                par_amount: 100.0,
-                lower_strike_kl: spot * 0.9,
-                upper_strike_ku: spot * 1.2,
-                decs_coupon_rate: 0.06,
-                risk_free_rate: r,
-                dividend_yield: 0.02,
-                credit_spread: 0.015 + credit_bump,
-                lower_strike_vol: vol,
-                upper_strike_vol: vol * 0.9,
-                maturity_years: 3.0,
-            },
-        );
-        let mbs = ql_fixed_income::evaluate_davidson_levin_four_factor_prepayment_io_po(
-            &ql_fixed_income::DavidsonLevinFourFactorIoPoSpec {
-                initial_balance: 100.0,
-                gross_wac_rate: 0.06,
-                net_passthrough_coupon: 0.055,
-                current_mortgage_rate: r + 0.015,
-                base_turnover_cpr: 0.06,
-                max_refi_cpr: 0.35,
-                burnout_sensitivity_beta: 0.5,
-                seasonality_amplitude: 0.1,
-                oas_discount_rate: r + 0.01,
-                num_periods: 12,
-            },
-        );
-        let kyle = ql_portfolio::evaluate_foucault_kyle_lambda_and_ekop_pin(
-            &ql_portfolio::FoucaultKyleEkopPinSpec {
-                prior_price_p0: spot,
-                insider_valuation_v: spot * 1.05,
-                fundamental_std_sigma_v: 2.0,
-                noise_order_std_sigma_u: 10.0,
-                event_prob_alpha: 0.3,
-                bad_news_prob_delta: 0.4,
-                informed_arrival_mu: 40.0,
-                uninformed_buy_eps_b: 50.0,
-                uninformed_sell_eps_s: 50.0,
-                observed_buys_b: 75.0 + r * 10.0,
-                observed_sells_s: 45.0,
-            },
-        );
-        let gp = ql_portfolio::evaluate_garleanu_pedersen_dynamic_aim_portfolio(
-            &ql_portfolio::GarleanuPedersenDynamicAimSpec {
-                current_weights: [0.1, 0.2],
-                alpha_signals: [0.06 + r * 0.1, 0.04],
-                alpha_decay_phi: [0.2, 0.15],
-                return_cov_2x2: [[0.04, 0.01], [0.01, 0.03]],
-                impact_lambda_2x2: [[0.02, 0.002], [0.002, 0.015]],
-                risk_aversion_gamma: 2.0,
-                discount_factor_rho: 0.05,
-            },
-        );
-        let gjr = ql_portfolio::evaluate_tsay_gjr_and_dcc_garch_dynamic_correlation(
-            &ql_portfolio::TsayGjrDccGarchSpec {
-                asset1_returns: vec![-0.02, -0.03, 0.015 + r * 0.05],
-                asset2_returns: vec![-0.018, -0.025, 0.012],
-                gjr_omega: [0.00002, 0.00002],
-                gjr_alpha: [0.08, 0.07],
-                gjr_gamma_leverage: [0.12, 0.10],
-                gjr_beta: [0.82, 0.83],
-                dcc_a: 0.06,
-                dcc_b: 0.90,
-                unconditional_corr_rho0: 0.5,
-            },
-        );
-        let lppl = ql_portfolio::evaluate_sornette_jls_lppl_crash_hazard(
-            &ql_portfolio::SornetteJlsLpplBubbleSpec {
-                observation_times: vec![0.1, 0.4, 0.7],
-                observed_log_prices: vec![4.5, 4.65, 4.85],
-                eval_time_t: 0.8,
-                critical_time_tc: 1.05,
-                power_exponent_m: 0.45,
-                log_periodic_omega: 7.5,
-                phase_phi: 0.5,
-                jls_Compensation_kappa: 0.15 + r * 0.1,
-                baseline_hazard_h0: 0.05,
-            },
-        );
-        let spec = ql_portfolio::evaluate_follmer_schied_entropic_and_spectral_risk(
-            &ql_portfolio::FollmerSchiedEntropicSpectralRiskSpec {
-                scenario_losses: vec![-0.03, 0.01, 0.04, 0.09 + r],
-                scenario_probabilities: vec![0.25, 0.25, 0.25, 0.25],
-                entropic_risk_aversion_theta: 5.0,
-                spectral_aversion_gamma: 2.0,
-                tail_threshold_alpha: 0.5,
-            },
-        );
-        let brin = ql_portfolio::evaluate_bacon_brinson_fachler_and_carino_linking(
-            &ql_portfolio::BaconBrinsonFachlerCarinoSpec {
-                period1_port_weights: [0.4, 0.35, 0.25],
-                period1_bench_weights: [0.33, 0.33, 0.34],
-                period1_port_returns: [0.05 + r * 0.1, 0.03, 0.02],
-                period1_bench_returns: [0.04, 0.025, 0.015],
-                period2_port_weights: [0.45, 0.30, 0.25],
-                period2_bench_weights: [0.35, 0.35, 0.30],
-                period2_port_returns: [0.04, 0.02, 0.03],
-                period2_bench_returns: [0.03, 0.02, 0.025],
-            },
-        );
-        let prel = ql_portfolio::evaluate_wakker_prelec_rdu_and_choquet_ambiguity(
-            &ql_portfolio::WakkerPrelecChoquetSpec {
-                state_outcomes: [-20.0, -5.0, 10.0, 30.0 + r * 10.0],
-                state_probabilities: [0.15, 0.25, 0.35, 0.25],
-                prelec_curvature_alpha: 0.65,
-                prelec_elevation_beta: 1.0,
-                tversky_gain_power: 0.88,
-                tversky_loss_power: 0.88,
-                loss_aversion_lambda: 2.25,
-                neo_additive_optimism_a: 0.1,
-                neo_additive_pessimism_b: 0.25,
-            },
-        );
-        let sig = ql_dml::evaluate_bayer_path_signature_chen_and_levy_area(
-            &ql_dml::BayerPathSignatureChenLevyAreaSpec {
-                time_grid: vec![0.0, 0.5, 1.0],
-                spot_path: vec![spot, spot * 1.04, spot * (1.02 + r * 0.1)],
-                linear_functional_weights: [0.1, 0.2, 0.3, 0.4, -0.2, 0.1],
-            },
-        );
         repo.structural_liquidity_yield_spread_bps * 0.01
             + bk.total_burgard_kjaer_xva_charge
-            + decs.decs_mandatory_fair_value * 0.01
-            + mbs.passthrough_present_value * 0.01
-            + kyle.ekop_pin_probability
-            + gp.expected_net_utility_gain
-            + gjr.terminal_equal_weight_portfolio_vol
-            + lppl.lppl_fitted_price * 0.1
-            + spec.entropic_convex_risk_measure
-            + brin.carino_smoothed_active_return
-            + prel.prospect_certainty_equivalent * 0.1
-            + sig.signature_linear_payoff * 0.01
+            + r
+            + inflation
     }
     pub fn phase34_live_metric(&self) -> f64 {
         let bump = match self.scenario {
