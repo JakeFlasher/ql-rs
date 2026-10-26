@@ -1,3 +1,4 @@
+#![allow(ambiguous_glob_reexports)]
 //! A dependency-free terminal dashboard and umbrella SDK for ql-rs.
 
 pub mod prelude {
@@ -639,6 +640,7 @@ pub enum TabId {
     Phase31BookSota,
     Phase32BookSota,
     Phase33BookSota,
+    Phase34BookSota,
 }
 impl TabId {
     #[allow(non_upper_case_globals)]
@@ -649,8 +651,10 @@ impl TabId {
     pub const Phase32Sota: Self = Self::Phase32BookSota;
     #[allow(non_upper_case_globals)]
     pub const Phase33Sota: Self = Self::Phase33BookSota;
-    pub const TAB_COUNT: usize = 43;
-    pub const ALL: [Self; 43] = [
+    #[allow(non_upper_case_globals)]
+    pub const Phase34Sota: Self = Self::Phase34BookSota;
+    pub const TAB_COUNT: usize = 44;
+    pub const ALL: [Self; 44] = [
         Self::Market,
         Self::Rates,
         Self::Credit,
@@ -694,6 +698,7 @@ impl TabId {
         Self::Phase31BookSota,
         Self::Phase32BookSota,
         Self::Phase33BookSota,
+        Self::Phase34BookSota,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -765,6 +770,9 @@ impl TabId {
             }
             Self::Phase33BookSota => {
                 "43 Rebonato-CMS / Leland-Toft / Calamos-Ascot / SpecPool-Roll / Glosten-Milgrom / Potters-RIE / EGARCH-Hamilton / Wooldridge-2SLS / McNeil-Euler / Bacon-Omega / Damodaran-RD / Arrow-Debreu"
+            }
+            Self::Phase34BookSota => {
+                "44 Tuckman-Repo / BK-FVA / DECS / MBS-IO-PO / Kyle-PIN / GP-Aim / GJR-DCC / LPPL / Spectral-Risk / Brinson-Carino / Prelec-CPT / Path-Sig"
             }
         }
     }
@@ -6363,7 +6371,7 @@ impl DeskWorkstation {
         // There are six IR buckets, five credit buckets and ten telemetry
         // lines (including Tab 23).  Render all 21 rows instead of silently
         // dropping the final BL/Risk-Parity line.
-        const BOTTOM_ROWS: usize = 40;
+        const BOTTOM_ROWS: usize = 41;
         while left_bottom.len() < BOTTOM_ROWS {
             left_bottom.push(String::new());
         }
@@ -6452,7 +6460,7 @@ mod phase14_tests {
     use super::*;
     #[test]
     fn phase14_tab_is_registered() {
-        assert_eq!(TabId::ALL.len(), 43);
+        assert_eq!(TabId::ALL.len(), 44);
         assert!(TabId::ALL.contains(&TabId::Phase14Sota));
         assert!(TabId::ALL.contains(&TabId::Phase15Sota));
         let mut ws = DeskWorkstation::new();
@@ -6493,7 +6501,7 @@ mod phase16_tests {
 
     #[test]
     fn phase16_tab_and_metric_are_live() {
-        assert_eq!(TabId::ALL.len(), 43);
+        assert_eq!(TabId::ALL.len(), 44);
         assert!(TabId::ALL.contains(&TabId::Phase16Sota));
         let mut ws = DeskWorkstation::new();
         let frame = ws.step_tick();
@@ -6517,7 +6525,7 @@ mod phase17_tests {
 
     #[test]
     fn phase17_tab_metric_dashboard_and_rates_reactivity() {
-        assert_eq!(TabId::ALL.len(), 43);
+        assert_eq!(TabId::ALL.len(), 44);
         assert!(TabId::ALL.contains(&TabId::Phase17Sota));
         assert_eq!(
             TabId::Phase17Sota.label(),
@@ -6556,7 +6564,7 @@ mod phase18_tests {
     use super::*;
     #[test]
     fn phase18_tab_metric_dashboard_and_stress_reactivity() {
-        assert_eq!(TabId::ALL.len(), 43);
+        assert_eq!(TabId::ALL.len(), 44);
         assert_eq!(
             TabId::Phase18Sota.label(),
             "28 MtM-XCCS / CTD-COLVA / ZABR-PDV / Weather / ENB"
@@ -6599,7 +6607,7 @@ mod phase19_tests {
 
     #[test]
     fn phase19_tab29_terminal_renders_and_ticks_cleanly() {
-        assert_eq!(TabId::ALL.len(), 43);
+        assert_eq!(TabId::ALL.len(), 44);
         assert_eq!(
             TabId::Phase19Sota.label(),
             "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP"
@@ -6637,7 +6645,7 @@ mod phase20_tests {
 
     #[test]
     fn phase20_tab_metric_dashboard_and_stress_reactivity() {
-        assert_eq!(TabId::ALL.len(), 43);
+        assert_eq!(TabId::ALL.len(), 44);
         assert!(TabId::ALL.contains(&TabId::Phase20Sota));
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
@@ -6677,7 +6685,7 @@ mod phase21_tests {
 
     #[test]
     fn phase21_terminal_reactivity() {
-        assert_eq!(TabId::ALL.len(), 43);
+        assert_eq!(TabId::ALL.len(), 44);
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
         let next = ws.step_tick();
@@ -6784,7 +6792,7 @@ mod phase24_tests {
     use super::*;
     #[test]
     fn phase24_tab_metric_tick_and_rate_reactivity() {
-        assert_eq!(TabId::ALL.len(), 43);
+        assert_eq!(TabId::ALL.len(), 44);
         assert!(TabId::Phase24Sota.label().starts_with("34 MBS-IO-PO"));
         let mut ws = DeskWorkstation::new();
         let a = ws.step_tick();
@@ -6905,8 +6913,8 @@ mod phase26_tests {
         assert!(ws.render_dashboard(&stressed, false).contains(
             "36 MF-Rates/Wildcard/TARF/Bergomi/Schönbucher/FRTB-CVA/Lookback/VTA/FLAM/ACD/HLZ/MLMC"
         ));
-        assert_eq!(TabId::TAB_COUNT, 43);
-        assert_eq!(TabId::ALL.len(), 43);
+        assert_eq!(TabId::TAB_COUNT, 44);
+        assert_eq!(TabId::ALL.len(), 44);
         assert!(TabId::ALL.contains(&TabId::Phase26Sota));
     }
 }
@@ -6928,8 +6936,8 @@ mod phase27_tests {
                 "37 FTPL/G2/eSSVI/CB/CoCo/MPOR/Double-Heston/Curran/Warin/Roll/Busseti/KKT"
             )
         );
-        assert_eq!(TabId::TAB_COUNT, 43);
-        assert_eq!(TabId::ALL.len(), 43);
+        assert_eq!(TabId::TAB_COUNT, 44);
+        assert_eq!(TabId::ALL.len(), 44);
         assert!(TabId::ALL.contains(&TabId::Phase27Sota));
     }
 
@@ -6972,7 +6980,7 @@ mod phase28_tests {
         ws.scenario = ScenarioKind::CreditWideningPlus100Bp;
         let stressed_frame = ws.step_tick();
         let stressed = ws.render_dashboard(&stressed_frame, false);
-        assert_eq!(TabId::ALL.len(), 43);
+        assert_eq!(TabId::ALL.len(), 44);
         assert!(TabId::ALL.contains(&TabId::Phase28Sota));
         assert!(
             normal
@@ -7002,7 +7010,7 @@ mod phase29_tests {
     use super::*;
     #[test]
     fn phase29_tab39_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 43);
+        assert_eq!(TabId::TAB_COUNT, 44);
         assert!(TabId::Phase29Sota.label().starts_with("39 Veronesi / Lando-Log / Corridor-Var / Russian / Bates-SVJ / Koziol-CB / MFG / BCBS-Floor / CJP-LOB / ETF-AP / IC-Decay / Glasserman-IS"));
         let mut ws = DeskWorkstation::default();
         let a = ws.step_tick();
@@ -7022,8 +7030,8 @@ mod phase30_tests {
 
     #[test]
     fn phase30_tab40_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 43);
-        assert_eq!(TabId::ALL.len(), 43);
+        assert_eq!(TabId::TAB_COUNT, 44);
+        assert_eq!(TabId::ALL.len(), 44);
         assert!(
             TabId::Phase30BookSota
                 .label()
@@ -7049,8 +7057,8 @@ mod phase31_tests {
 
     #[test]
     fn phase31_tab41_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 43);
-        assert_eq!(TabId::ALL.len(), 43);
+        assert_eq!(TabId::TAB_COUNT, 44);
+        assert_eq!(TabId::ALL.len(), 44);
         assert!(
             TabId::Phase31BookSota
                 .label()
@@ -7078,8 +7086,8 @@ mod phase32_tests {
     use super::*;
     #[test]
     fn phase32_tab42_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 43);
-        assert_eq!(TabId::ALL.len(), 43);
+        assert_eq!(TabId::TAB_COUNT, 44);
+        assert_eq!(TabId::ALL.len(), 44);
         assert!(
             TabId::Phase32BookSota
                 .label()
@@ -7109,8 +7117,8 @@ mod phase33_tests {
     use super::*;
     #[test]
     fn phase33_tab43_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 43);
-        assert_eq!(TabId::ALL.len(), 43);
+        assert_eq!(TabId::TAB_COUNT, 44);
+        assert_eq!(TabId::ALL.len(), 44);
         assert!(
             TabId::Phase33BookSota
                 .label()

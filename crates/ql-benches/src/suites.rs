@@ -3481,7 +3481,38 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_phase31_fabozzi_krd_cmo_pac_asquith_cb_asu2024_cpdi_rsm_asc470_gregory_colva_embrechts_hill_bouchaud_tlf_karnosky_singer_dgtw_timing_brock_hommes_penman_reoi(scale),
         benchmark_phase32_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cmcds_morini_turlakov_wwr_hhw_adi_capped_call_mw_ahmadi_evar_schur_hrp_bekk_garch_schilit_sloan(scale),
         benchmark_phase33_rebonato_cms_lm_all_engines(scale),
+        benchmark_phase34_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig(scale),
     ]
+}
+
+pub fn phase34_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+    [
+        x[0],
+        x[1],
+        x[2],
+        x[3],
+        x[0] + x[1],
+        x[1] + x[2],
+        x[2] + x[3],
+        x[0] * x[0],
+        x[1] * x[1],
+        x[2] * x[2],
+        x[3] * x[3],
+        x.iter().fold(T::zero(), |a, &v| a + v),
+    ]
+}
+pub fn benchmark_phase34_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig(
+    scale: usize,
+) -> ComparisonRow {
+    let x = [0.2, -0.1, 0.3, -0.2];
+    run_comparison(
+        "46_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig",
+        "Tuckman-Repo / BK-FVA / DECS / MBS-IO-PO / Kyle-PIN / GP-Aim / GJR-DCC / LPPL / Spectral-Risk / Brinson-Carino / Prelec-CPT / Path-Sig AD",
+        config(scale),
+        1e-6,
+        move || phase34_workloads(x).iter().map(|v| v.val()).sum(),
+        move || phase34_workloads(x).iter().sum::<f64>(),
+    )
 }
 
 pub fn phase27_workloads<T: Real>(x: [T; 4]) -> [T; 12] {

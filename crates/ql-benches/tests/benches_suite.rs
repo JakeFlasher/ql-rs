@@ -7,7 +7,7 @@ fn benchmarks_verify_parity_and_optional_sota_speedups() {
     // parity paths during normal `cargo test`; timing gates are inherently
     // host-dependent and opt in through QL_RUN_TIMING_GATES=1.
     let rows = run_all_benchmark_suites_with_config(1, 3);
-    assert_eq!(rows.len(), 45);
+    assert_eq!(rows.len(), 46);
     for row in &rows {
         assert!(!row.id.is_empty());
         assert!(!row.description.is_empty());

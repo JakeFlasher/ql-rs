@@ -13,7 +13,7 @@ use ql_benches::{
 #[test]
 fn phase21_suite33_and_invariants() {
     let rows = with_config_override(1, 3, || run_all_benchmarks(1));
-    assert_eq!(rows.len(), 45);
+    assert_eq!(rows.len(), 46);
     let row = with_config_override(1, 3, || {
         benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(1)
     });
@@ -153,7 +153,7 @@ fn phase33_suite45_and_invariants() {
     for y in ql_benches::phase33_workloads(x) {
         assert!(y.d.iter().map(|v| v.abs()).sum::<f64>() > 1e-9);
     }
-    assert_eq!(ql_benches::SUITE_COUNT, 45);
+    assert_eq!(ql_benches::SUITE_COUNT, 46);
     let row = ql_benches::benchmark_phase33_rebonato_cms_lm_all_engines(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-4 && row.speedup > 1.0);
 }

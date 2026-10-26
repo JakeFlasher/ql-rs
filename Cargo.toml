@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/ql-time",
+    "crates/ql-time-series",
     "crates/ql-ad",
     "crates/ql-math",
     "crates/ql-curves",
