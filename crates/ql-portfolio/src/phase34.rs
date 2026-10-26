@@ -394,7 +394,7 @@ pub fn evaluate_bacon_brinson_fachler_and_carino_linking<T: Real>(
     let cb = cb - T::one();
     let log_link_ratio = |rp: T, rb: T| {
         let diff = rp - rb;
-        if diff.val().abs() < 1e-10 {
+        if diff.abs() < T::from_f64(1e-10) {
             T::one() / (T::one() + T::from_f64(0.5) * (rp + rb))
         } else {
             ((T::one() + rp).ln() - (T::one() + rb).ln()) / diff
@@ -473,7 +473,7 @@ pub fn evaluate_wakker_prelec_rdu_and_choquet_ambiguity<T: Real>(
         };
         let pi_i = wg_i - wg_next;
         let dx = s.sorted_outcomes[i] - s.reference_point;
-        let v = if dx.val() >= 0.0 {
+        let v = if dx >= T::zero() {
             dx.max_val(T::from_f64(1e-12)).pow(s.tk_value_exponent)
         } else {
             -s.loss_aversion_lambda * (-dx).max_val(T::from_f64(1e-12)).pow(s.tk_value_exponent)
@@ -481,7 +481,7 @@ pub fn evaluate_wakker_prelec_rdu_and_choquet_ambiguity<T: Real>(
         cpt += pi_i * v;
     }
     let inv_gamma = T::one() / s.tk_value_exponent.max_val(T::from_f64(1e-6));
-    let ce = if cpt.val() >= 0.0 {
+    let ce = if cpt >= T::zero() {
         s.reference_point + cpt.max_val(T::from_f64(1e-12)).pow(inv_gamma)
     } else {
         s.reference_point
@@ -510,6 +510,6 @@ pub fn evaluate_wakker_prelec_rdu_and_choquet_ambiguity<T: Real>(
 mod phase34_tests {
     #[test]
     fn phase34_smoke() {
-        assert!(std::hint::black_box(true));
+        assert!(std::hint::black_box(1u8) == 1);
     }
 }

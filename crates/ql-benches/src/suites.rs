@@ -3486,21 +3486,217 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
 }
 
 pub fn phase34_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+    let dx0 = x[0] * T::from_f64(0.01);
+    let dx1 = x[1] * T::from_f64(0.01);
+    let dx2 = x[2] * T::from_f64(0.01);
+    let dx3 = x[3] * T::from_f64(0.01);
+    let repo = ql_curves::evaluate_tuckman_repo_specialness_and_oftr_basis(
+        &ql_curves::TuckmanRepoSpecialnessBasisSpec {
+            otr_dirty_price: T::from_f64(100.0) + x[0],
+            otr_yield: T::from_f64(0.04) + dx1,
+            oftr_yield: T::from_f64(0.0415) + dx2,
+            modified_duration: T::from_f64(7.5),
+            gc_repo_rate: T::from_f64(0.05) + dx3,
+            special_repo_rate: T::from_f64(0.035),
+            specialness_horizon_years: T::from_f64(0.25),
+            repo_haircut_fraction: T::from_f64(0.02),
+            equity_funding_rate: T::from_f64(0.06),
+        },
+    );
+    let bk = ql_credit::evaluate_crepey_burgard_kjaer_bilateral_xva_and_fva(
+        &ql_credit::CrepeyBurgardKjaerBilateralFvaSpec {
+            time_grid: vec![T::from_f64(0.5), T::one(), T::from_f64(2.0)],
+            epe_profile: vec![
+                T::from_f64(10.0) + x[0],
+                T::from_f64(12.0) + x[1],
+                T::from_f64(8.0),
+            ],
+            ene_profile: vec![T::from_f64(6.0), T::from_f64(7.0), T::from_f64(5.0)],
+            cpty_hazard_rate: T::from_f64(0.02) + dx2,
+            bank_hazard_rate: T::from_f64(0.015) + dx3,
+            cpty_recovery_rate: T::from_f64(0.4),
+            bank_recovery_rate: T::from_f64(0.4),
+            risk_free_rate: T::from_f64(0.03),
+            liquidity_funding_spread: T::from_f64(0.008),
+            burgard_kjaer_alpha: T::from_f64(0.5),
+        },
+    );
+    let decs = ql_fixed_income::evaluate_despiegeleer_mandatory_convertible_decs_and_percs(
+        &ql_fixed_income::DeSpiegeleerMandatoryConvertibleDecsSpec {
+            spot_price: T::from_f64(100.0) + x[0],
+            par_amount: T::from_f64(100.0),
+            lower_strike_kl: T::from_f64(90.0),
+            upper_strike_ku: T::from_f64(120.0),
+            decs_coupon_rate: T::from_f64(0.06),
+            risk_free_rate: T::from_f64(0.03) + dx1,
+            dividend_yield: T::from_f64(0.02),
+            credit_spread: T::from_f64(0.015),
+            lower_strike_vol: T::from_f64(0.25) + dx2,
+            upper_strike_vol: T::from_f64(0.22) + dx3,
+            maturity_years: T::from_f64(3.0),
+        },
+    );
+    let mbs = ql_fixed_income::evaluate_davidson_levin_four_factor_prepayment_io_po(
+        &ql_fixed_income::DavidsonLevinFourFactorIoPoSpec {
+            initial_balance: T::from_f64(100.0),
+            gross_wac_rate: T::from_f64(0.06),
+            net_passthrough_coupon: T::from_f64(0.055),
+            current_mortgage_rate: T::from_f64(0.05) + dx0,
+            base_turnover_cpr: T::from_f64(0.06),
+            max_refi_cpr: T::from_f64(0.35) + dx1,
+            burnout_sensitivity_beta: T::from_f64(0.5),
+            seasonality_amplitude: T::from_f64(0.1),
+            oas_discount_rate: T::from_f64(0.045) + dx2,
+            num_periods: 12,
+        },
+    );
+    let kyle = ql_portfolio::evaluate_foucault_kyle_lambda_and_ekop_pin(
+        &ql_portfolio::FoucaultKyleEkopPinSpec {
+            prior_price_p0: T::from_f64(100.0),
+            insider_valuation_v: T::from_f64(105.0) + x[0],
+            fundamental_std_sigma_v: T::from_f64(2.0) + dx1,
+            noise_order_std_sigma_u: T::from_f64(10.0) + x[2],
+            event_prob_alpha: T::from_f64(0.3),
+            bad_news_prob_delta: T::from_f64(0.4),
+            informed_arrival_mu: T::from_f64(40.0) + x[3],
+            uninformed_buy_eps_b: T::from_f64(50.0),
+            uninformed_sell_eps_s: T::from_f64(50.0),
+            observed_buys_b: T::from_f64(75.0),
+            observed_sells_s: T::from_f64(48.0),
+        },
+    );
+    let gp = ql_portfolio::evaluate_garleanu_pedersen_dynamic_aim_portfolio(
+        &ql_portfolio::GarleanuPedersenDynamicAimSpec {
+            current_weights: [T::from_f64(0.2), T::from_f64(0.1)],
+            fast_alpha_signal: [T::from_f64(0.04) + dx0, T::from_f64(0.02) + dx1],
+            slow_alpha_signal: [T::from_f64(0.03), T::from_f64(0.025)],
+            fast_decay_phi: T::from_f64(0.5),
+            slow_decay_phi: T::from_f64(0.1),
+            covariance_2x2: [
+                [T::from_f64(0.04), T::from_f64(0.01)],
+                [T::from_f64(0.01), T::from_f64(0.05)],
+            ],
+            risk_aversion_gamma: T::from_f64(2.0) + dx2,
+            transaction_cost_lambda: T::from_f64(0.5) + dx3,
+            discount_rate_rho: T::from_f64(0.05),
+        },
+    );
+    let gjr = ql_portfolio::evaluate_tsay_gjr_and_dcc_garch_dynamic_correlation(
+        &ql_portfolio::TsayGjrDccGarchSpec {
+            bivariate_returns: vec![
+                [T::from_f64(-0.02) + dx0, T::from_f64(-0.015) + dx1],
+                [T::from_f64(0.012) + dx2, T::from_f64(-0.01) + dx3],
+                [T::from_f64(-0.018), T::from_f64(-0.022)],
+            ],
+            omega: [T::from_f64(0.00002), T::from_f64(0.00003)],
+            alpha: [T::from_f64(0.05), T::from_f64(0.06)],
+            gjr_gamma: [T::from_f64(0.08), T::from_f64(0.07)],
+            beta: [T::from_f64(0.85), T::from_f64(0.84)],
+            unconditional_corr: T::from_f64(0.5),
+            dcc_a: T::from_f64(0.05),
+            dcc_b: T::from_f64(0.90),
+        },
+    );
+    let lppl = ql_portfolio::evaluate_sornette_jls_lppl_crash_hazard(
+        &ql_portfolio::SornetteJlsLpplCrashHazardSpec {
+            current_time_t: T::from_f64(1.0),
+            critical_time_tc: T::from_f64(1.5) + dx0,
+            horizon_dt: T::from_f64(0.1),
+            peak_log_price_a: T::from_f64(5.0) + dx1,
+            power_law_slope_b: T::from_f64(-0.4) + dx2,
+            log_periodic_amp_c: T::from_f64(0.03),
+            critical_exponent_m: T::from_f64(0.5),
+            log_periodic_omega: T::from_f64(6.5),
+            phase_phi: T::from_f64(1.0),
+            crash_loss_kappa: T::from_f64(0.2) + dx3,
+        },
+    );
+    let spec = ql_portfolio::evaluate_follmer_schied_entropic_and_spectral_risk(
+        &ql_portfolio::FollmerSchiedEntropicSpectralRiskSpec {
+            ordered_losses: vec![
+                T::from_f64(0.5) + dx0,
+                T::from_f64(1.2) + dx1,
+                T::from_f64(2.5) + dx2,
+                T::from_f64(4.0) + dx3,
+            ],
+            entropic_theta: T::from_f64(0.5),
+            spectral_power_gamma: T::from_f64(2.5),
+        },
+    );
+    let brin = ql_portfolio::evaluate_bacon_brinson_fachler_and_carino_linking(
+        &ql_portfolio::BaconBrinsonFachlerCarinoSpec {
+            portfolio_sector_weights: vec![T::from_f64(0.6), T::from_f64(0.4)],
+            benchmark_sector_weights: vec![T::from_f64(0.5), T::from_f64(0.5)],
+            portfolio_sector_returns: vec![T::from_f64(0.08) + dx0, T::from_f64(0.03) + dx1],
+            benchmark_sector_returns: vec![T::from_f64(0.06), T::from_f64(0.02)],
+            multi_period_port_returns: vec![
+                T::from_f64(0.04) + dx0,
+                T::from_f64(0.03) + dx1,
+                T::from_f64(-0.01) + dx2,
+            ],
+            multi_period_bench_returns: vec![
+                T::from_f64(0.03),
+                T::from_f64(0.02),
+                T::from_f64(-0.015),
+            ],
+        },
+    );
+    let prel = ql_portfolio::evaluate_wakker_prelec_rdu_and_choquet_ambiguity(
+        &ql_portfolio::WakkerPrelecChoquetProspectSpec {
+            sorted_outcomes: [
+                T::from_f64(-10.0) + x[0],
+                T::from_f64(-2.0),
+                T::from_f64(8.0) + x[1],
+                T::from_f64(20.0) + x[2],
+            ],
+            state_probabilities: [
+                T::from_f64(0.1),
+                T::from_f64(0.3),
+                T::from_f64(0.4),
+                T::from_f64(0.2),
+            ],
+            reference_point: T::zero(),
+            prelec_curvature_alpha: T::from_f64(0.65),
+            prelec_elevation_beta: T::from_f64(1.0) + dx3,
+            tk_value_exponent: T::from_f64(0.88),
+            loss_aversion_lambda: T::from_f64(2.25),
+            ambiguity_aversion_delta: T::from_f64(0.15),
+        },
+    );
+    let sig = ql_dml::evaluate_bayer_path_signature_chen_and_levy_area(
+        &ql_dml::BayerPathSignatureChenLevyAreaSpec {
+            time_grid: vec![T::zero(), T::from_f64(0.5), T::one()],
+            spot_path: vec![
+                T::from_f64(100.0) + x[0],
+                T::from_f64(104.0) + x[1],
+                T::from_f64(102.0) + x[2],
+            ],
+            linear_functional_weights: [
+                T::from_f64(0.1),
+                T::from_f64(0.2),
+                T::from_f64(0.3),
+                T::from_f64(0.4),
+                T::from_f64(-0.2),
+                T::from_f64(0.1) + dx3,
+            ],
+        },
+    );
     [
-        x[0],
-        x[1],
-        x[2],
-        x[3],
-        x[0] + x[1],
-        x[1] + x[2],
-        x[2] + x[3],
-        x[0] * x[0],
-        x[1] * x[1],
-        x[2] * x[2],
-        x[3] * x[3],
-        x.iter().fold(T::zero(), |a, &v| a + v),
+        repo.haircut_funded_levered_roe,
+        bk.total_burgard_kjaer_xva_charge,
+        decs.decs_mandatory_fair_value,
+        mbs.passthrough_present_value,
+        kyle.expected_insider_profit + kyle.posterior_event_probability,
+        gp.expected_net_utility_gain,
+        gjr.terminal_equal_weight_portfolio_vol,
+        lppl.lppl_fitted_price,
+        spec.entropic_convex_risk_measure + spec.kusuoka_power_spectral_risk_measure,
+        brin.carino_smoothed_active_return,
+        prel.prospect_certainty_equivalent,
+        sig.signature_linear_payoff + sig.signed_levy_area,
     ]
 }
+
 pub fn benchmark_phase34_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig(
     scale: usize,
 ) -> ComparisonRow {

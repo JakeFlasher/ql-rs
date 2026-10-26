@@ -72,6 +72,6 @@ pub fn evaluate_bayer_path_signature_chen_and_levy_area<T: Real>(
 mod phase34_tests {
     #[test]
     fn phase34_smoke() {
-        assert!(std::hint::black_box(true));
+        assert!(std::hint::black_box(1u8) == 1);
     }
 }

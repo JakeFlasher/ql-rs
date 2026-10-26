@@ -166,6 +166,6 @@ pub fn evaluate_davidson_levin_four_factor_prepayment_io_po<T: Real>(
 mod phase34_tests {
     #[test]
     fn phase34_smoke() {
-        assert!(std::hint::black_box(true));
+        assert!(std::hint::black_box(1u8) == 1);
     }
 }

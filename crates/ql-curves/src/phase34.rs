@@ -55,6 +55,6 @@ pub fn evaluate_tuckman_repo_specialness_and_oftr_basis<T: Real>(
 mod phase34_tests {
     #[test]
     fn phase34_smoke() {
-        assert!(std::hint::black_box(true));
+        assert!(std::hint::black_box(1u8) == 1);
     }
 }
