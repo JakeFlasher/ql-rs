@@ -961,3 +961,113 @@ mod phase27_tests {
         assert!(r.hedge_variance_reduction_ratio > 0.5);
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct BessAnalyticalSdpDegradationStorageSpec<T: Real = f64> {
+    pub energy_capacity_mwh: T,
+    pub max_power_mw: T,
+    pub initial_soc_fraction: T,
+    pub min_soc_fraction: T,
+    pub max_soc_fraction: T,
+    pub charge_efficiency: T,
+    pub discharge_efficiency: T,
+    pub battery_capex_usd: T,
+    pub rated_cycle_life: T,
+    pub peak_mean_price_mwh: T,
+    pub offpeak_mean_price_mwh: T,
+    pub price_volatility_mwh: T,
+    pub horizon_days: usize,
+    pub discount_rate_annual: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct BessAnalyticalSdpDegradationStorageReport<T: Real = f64> {
+    pub round_trip_efficiency: T,
+    pub marginal_degradation_cost_per_mwh: T,
+    pub shadow_water_value_per_mwh: T,
+    pub optimal_charge_threshold_price: T,
+    pub optimal_discharge_threshold_price: T,
+    pub hysteresis_deadband_width: T,
+    pub negative_price_charge_probability: T,
+    pub expected_daily_net_arbitrage_usd: T,
+    pub expected_annual_equivalent_cycles: T,
+    pub total_bess_npv_usd: T,
+    pub gross_arbitrage_without_degradation_usd: T,
+}
+
+pub fn evaluate_bess_analytical_sdp_degradation_storage<T: Real>(
+    s: &BessAnalyticalSdpDegradationStorageSpec<T>,
+) -> BessAnalyticalSdpDegradationStorageReport<T> {
+    let rt = s.charge_efficiency * s.discharge_efficiency;
+    let deg = s.battery_capex_usd
+        / (s.rated_cycle_life.max_val(T::from_f64(1e-8))
+            * s.energy_capacity_mwh.max_val(T::from_f64(1e-8)));
+    let water = (s.peak_mean_price_mwh - s.offpeak_mean_price_mwh) * rt.sqrt();
+    let charge = s.offpeak_mean_price_mwh - deg;
+    let discharge = s.peak_mean_price_mwh + deg;
+    let deadband = (discharge - charge).max_val(T::from_f64(1e-8));
+    let neg_prob = ((-s.offpeak_mean_price_mwh)
+        / (s.price_volatility_mwh.max_val(T::from_f64(1e-8)) * T::from_f64(2.0).sqrt()))
+    .norm_cdf();
+    let daily = (discharge * rt - charge)
+        * s.max_power_mw.min_val(s.energy_capacity_mwh)
+        * (s.max_soc_fraction - s.min_soc_fraction).max_val(T::zero());
+    let cycles = T::from_f64(s.horizon_days as f64)
+        * T::from_f64(0.5)
+        * (s.max_soc_fraction - s.min_soc_fraction).max_val(T::zero());
+    let gross = daily * T::from_f64(s.horizon_days as f64);
+    let npv = (gross - deg * cycles * s.energy_capacity_mwh)
+        * (-s.discount_rate_annual * T::from_f64(s.horizon_days as f64) / T::from_f64(365.0)).exp();
+    BessAnalyticalSdpDegradationStorageReport {
+        round_trip_efficiency: rt,
+        marginal_degradation_cost_per_mwh: deg,
+        shadow_water_value_per_mwh: water,
+        optimal_charge_threshold_price: charge,
+        optimal_discharge_threshold_price: discharge,
+        hysteresis_deadband_width: deadband,
+        negative_price_charge_probability: neg_prob,
+        expected_daily_net_arbitrage_usd: daily,
+        expected_annual_equivalent_cycles: cycles / T::from_f64(s.horizon_days.max(1) as f64)
+            * T::from_f64(365.0),
+        total_bess_npv_usd: npv,
+        gross_arbitrage_without_degradation_usd: gross,
+    }
+}
+
+#[cfg(test)]
+mod phase28_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn mk<T: Real>(x: T) -> BessAnalyticalSdpDegradationStorageSpec<T> {
+        BessAnalyticalSdpDegradationStorageSpec {
+            energy_capacity_mwh: T::from_f64(100.0) + x,
+            max_power_mw: T::from_f64(50.0),
+            initial_soc_fraction: T::from_f64(0.5),
+            min_soc_fraction: T::from_f64(0.1),
+            max_soc_fraction: T::from_f64(0.9),
+            charge_efficiency: T::from_f64(0.9),
+            discharge_efficiency: T::from_f64(0.9),
+            battery_capex_usd: T::from_f64(100000.0),
+            rated_cycle_life: T::from_f64(4000.0),
+            peak_mean_price_mwh: T::from_f64(100.0),
+            offpeak_mean_price_mwh: T::from_f64(20.0),
+            price_volatility_mwh: T::from_f64(30.0),
+            horizon_days: 365,
+            discount_rate_annual: T::from_f64(0.08),
+        }
+    }
+    #[test]
+    fn bess_invariants_and_dual() {
+        let r = evaluate_bess_analytical_sdp_degradation_storage(&mk(0.0));
+        assert!(r.optimal_discharge_threshold_price > r.optimal_charge_threshold_price);
+        assert!(r.hysteresis_deadband_width > 0.0);
+        assert!(r.gross_arbitrage_without_degradation_usd >= r.total_bess_npv_usd);
+        let h = 1e-5;
+        let fd = (evaluate_bess_analytical_sdp_degradation_storage(&mk(h)).total_bess_npv_usd
+            - evaluate_bess_analytical_sdp_degradation_storage(&mk(-h)).total_bess_npv_usd)
+            / (2.0 * h);
+        let ad = evaluate_bess_analytical_sdp_degradation_storage(&mk(Dual::<1>::variable(0.0, 0)))
+            .total_bess_npv_usd;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

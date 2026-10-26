@@ -7,6 +7,88 @@ use ql_curves::{DiscountCurve, YieldTermStructure};
 use ql_math::brent_solve;
 use ql_time::Date;
 
+#[derive(Clone, Debug)]
+pub struct BaranBianchettiMtmXccyBasisSpec<T: Real = f64> {
+    pub spot_fx_dom_per_for: T,
+    pub foreign_notional: T,
+    pub payment_times: Vec<T>,
+    pub dom_ois_discount_factors: Vec<T>,
+    pub for_xccy_discount_factors: Vec<T>,
+    pub dom_forward_rates: Vec<T>,
+    pub for_forward_rates: Vec<T>,
+    pub quoted_dom_basis_spread: T,
+    pub dom_rate_vol: T,
+    pub fx_spot_vol: T,
+    pub corr_dom_rate_fx: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct BaranBianchettiMtmXccyBasisReport<T: Real = f64> {
+    pub mtm_domestic_leg_pv: T,
+    pub foreign_leg_pv_in_dom: T,
+    pub interim_notional_reset_pv: T,
+    pub fx_reset_convexity_adjustment_pv: T,
+    pub mtm_swap_npv_in_dom: T,
+    pub par_mtm_basis_spread_bps: T,
+    pub par_constant_notional_basis_spread_bps: T,
+    pub mtm_vs_constant_notional_wedge_bps: T,
+}
+
+pub fn evaluate_baran_bianchetti_mtm_xccy_basis_swap<T: Real>(
+    s: &BaranBianchettiMtmXccyBasisSpec<T>,
+) -> BaranBianchettiMtmXccyBasisReport<T> {
+    let n = s
+        .payment_times
+        .len()
+        .min(s.dom_ois_discount_factors.len())
+        .min(s.for_xccy_discount_factors.len());
+    assert!(n > 0);
+    let mut dom_leg = T::zero();
+    let mut for_leg = T::zero();
+    let mut reset = T::zero();
+    let mut convex = T::zero();
+    let mut ann = T::zero();
+    let mut prev = T::zero();
+    for i in 0..n {
+        let t = s.payment_times[i];
+        let dt = (t - prev).max_val(T::from_f64(1e-8));
+        let dd = s.dom_ois_discount_factors[i];
+        let df = s.for_xccy_discount_factors[i];
+        let rd = s.dom_forward_rates.get(i).copied().unwrap_or(T::zero());
+        let rf = s.for_forward_rates.get(i).copied().unwrap_or(T::zero());
+        dom_leg += s.foreign_notional * dt * (rd + s.quoted_dom_basis_spread) * dd;
+        let fx_fwd = s.spot_fx_dom_per_for * df / dd.max_val(T::from_f64(1e-12));
+        for_leg += s.foreign_notional * dt * rf * df * fx_fwd;
+        let c = (-s.corr_dom_rate_fx * s.dom_rate_vol * s.fx_spot_vol * prev).exp();
+        let raw_reset = s.foreign_notional * (fx_fwd - s.spot_fx_dom_per_for) * dd;
+        reset += raw_reset;
+        convex += raw_reset * (c - T::one());
+        ann += s.foreign_notional * dt * dd;
+        prev = t;
+    }
+    let base = dom_leg + for_leg + reset + convex;
+    let base_without_basis = base - s.quoted_dom_basis_spread * ann;
+    let par_mtm = -base_without_basis / ann.max_val(T::from_f64(1e-12));
+    let const_ann = s.foreign_notional
+        * s.payment_times
+            .iter()
+            .zip(s.dom_ois_discount_factors.iter())
+            .map(|(t, d)| (*t).max_val(T::from_f64(1e-8)) * *d)
+            .fold(T::zero(), |a, x| a + x);
+    let par_const = -(dom_leg + for_leg + reset) / const_ann.max_val(T::from_f64(1e-12));
+    let npv = base_without_basis + s.quoted_dom_basis_spread * ann;
+    BaranBianchettiMtmXccyBasisReport {
+        mtm_domestic_leg_pv: dom_leg,
+        foreign_leg_pv_in_dom: for_leg,
+        interim_notional_reset_pv: reset,
+        fx_reset_convexity_adjustment_pv: convex,
+        mtm_swap_npv_in_dom: npv,
+        par_mtm_basis_spread_bps: par_mtm * T::from_f64(1e4),
+        par_constant_notional_basis_spread_bps: par_const * T::from_f64(1e4),
+        mtm_vs_constant_notional_wedge_bps: (par_mtm - par_const) * T::from_f64(1e4),
+    }
+}
+
 pub fn fx_forward_rate<T: Real>(spot_fx: T, dom_csa_df: T, for_csa_df: T) -> T {
     spot_fx * for_csa_df / dom_csa_df
 }
@@ -401,5 +483,53 @@ mod phase18_tests {
         };
         let ad = price_mtm_resetting_xccs(&sd, &cd_d, &cf_d, &cfc_d).npv;
         assert!((ad.d[0] - fd).abs() < 2e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase28_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn mk<T: Real>(x: T) -> BaranBianchettiMtmXccyBasisSpec<T> {
+        BaranBianchettiMtmXccyBasisSpec {
+            spot_fx_dom_per_for: T::from_f64(1.1) + x,
+            foreign_notional: T::from_f64(100.0),
+            payment_times: vec![T::from_f64(0.5), T::one(), T::from_f64(1.5)],
+            dom_ois_discount_factors: vec![T::from_f64(0.99), T::from_f64(0.97), T::from_f64(0.95)],
+            for_xccy_discount_factors: vec![
+                T::from_f64(0.985),
+                T::from_f64(0.96),
+                T::from_f64(0.93),
+            ],
+            dom_forward_rates: vec![T::from_f64(0.03); 3],
+            for_forward_rates: vec![T::from_f64(0.02); 3],
+            quoted_dom_basis_spread: T::from_f64(0.001),
+            dom_rate_vol: T::from_f64(0.2),
+            fx_spot_vol: T::from_f64(0.1),
+            corr_dom_rate_fx: T::from_f64(-0.3),
+        }
+    }
+    #[test]
+    fn mtm_xccy_invariants_and_dual() {
+        let mut s = mk(0.0);
+        s.corr_dom_rate_fx = 0.0;
+        let r = evaluate_baran_bianchetti_mtm_xccy_basis_swap(&s);
+        assert!(r.fx_reset_convexity_adjustment_pv.abs() < 1e-12);
+        let mut p = mk(0.0);
+        let q = evaluate_baran_bianchetti_mtm_xccy_basis_swap(&p).par_mtm_basis_spread_bps * 1e-4;
+        p.quoted_dom_basis_spread = q;
+        assert!(
+            evaluate_baran_bianchetti_mtm_xccy_basis_swap(&p)
+                .mtm_swap_npv_in_dom
+                .abs()
+                < 1e-8
+        );
+        let h = 1e-5;
+        let fd = (evaluate_baran_bianchetti_mtm_xccy_basis_swap(&mk(h)).mtm_domestic_leg_pv
+            - evaluate_baran_bianchetti_mtm_xccy_basis_swap(&mk(-h)).mtm_domestic_leg_pv)
+            / (2.0 * h);
+        let ad = evaluate_baran_bianchetti_mtm_xccy_basis_swap(&mk(Dual::<1>::variable(0.0, 0)))
+            .mtm_domestic_leg_pv;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

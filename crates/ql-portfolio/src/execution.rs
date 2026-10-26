@@ -1867,3 +1867,112 @@ mod phase27_tests {
         assert!(r.parkinson_high_low_volatility > 0.0);
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct MitchellPedersenKratzDarkPoolSpiralSpec<T: Real = f64> {
+    pub initial_inventory_shares: T,
+    pub reference_price: T,
+    pub execution_horizon_days: T,
+    pub daily_volatility: T,
+    pub lit_temporary_impact_eta: T,
+    pub lit_permanent_impact_gamma: T,
+    pub risk_aversion_lambda: T,
+    pub dark_pool_poisson_intensity: T,
+    pub dark_pool_adverse_selection_bps: T,
+    pub specialist_immediate_capital: T,
+    pub slow_moving_external_capital: T,
+    pub capital_arrival_speed_beta: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct MitchellPedersenKratzDarkPoolSpiralReport<T: Real = f64> {
+    pub almgren_chriss_lit_only_cost: T,
+    pub kratz_schoneborn_dark_lit_cost: T,
+    pub dark_pool_cost_reduction_pct: T,
+    pub expected_dark_pool_fill_fraction: T,
+    pub initial_lit_trading_rate: T,
+    pub initial_dark_pool_submission_size: T,
+    pub mitchell_pedersen_initial_fire_sale_discount_bps: T,
+    pub mitchell_pedersen_horizon_fire_sale_discount_bps: T,
+    pub dislocation_recovery_half_life_days: T,
+    pub total_spiral_adjusted_shortfall: T,
+}
+
+pub fn evaluate_mitchell_pedersen_slow_capital_and_kratz_dark_pool<T: Real>(
+    s: &MitchellPedersenKratzDarkPoolSpiralSpec<T>,
+) -> MitchellPedersenKratzDarkPoolSpiralReport<T> {
+    let t = s.execution_horizon_days.max_val(T::from_f64(1e-8));
+    let rate = s.initial_inventory_shares / t;
+    let impact = s.lit_temporary_impact_eta * rate * rate
+        + s.lit_permanent_impact_gamma * s.initial_inventory_shares * rate;
+    let lit_cost = impact * s.reference_price;
+    let fill = T::one() - (-s.dark_pool_poisson_intensity.max_val(T::zero()) * t).exp();
+    let dark_size = s.initial_inventory_shares * fill * T::from_f64(0.5);
+    let adverse =
+        s.dark_pool_adverse_selection_bps * T::from_f64(1e-4) * dark_size * s.reference_price;
+    let dark_cost = (lit_cost * (T::one() - fill) + adverse).max_val(T::zero());
+    let reduction =
+        (lit_cost - dark_cost) / lit_cost.abs().max_val(T::from_f64(1e-8)) * T::from_f64(100.0);
+    let initial_discount =
+        (s.risk_aversion_lambda * s.daily_volatility * s.initial_inventory_shares
+            / s.specialist_immediate_capital.max_val(T::from_f64(1e-8)))
+        .abs()
+            * T::from_f64(1e4);
+    let horizon_discount = initial_discount * (-s.capital_arrival_speed_beta * t).exp();
+    MitchellPedersenKratzDarkPoolSpiralReport {
+        almgren_chriss_lit_only_cost: lit_cost,
+        kratz_schoneborn_dark_lit_cost: dark_cost,
+        dark_pool_cost_reduction_pct: reduction,
+        expected_dark_pool_fill_fraction: fill,
+        initial_lit_trading_rate: rate,
+        initial_dark_pool_submission_size: dark_size,
+        mitchell_pedersen_initial_fire_sale_discount_bps: initial_discount,
+        mitchell_pedersen_horizon_fire_sale_discount_bps: horizon_discount,
+        dislocation_recovery_half_life_days: T::from_f64(2.0).ln()
+            / s.capital_arrival_speed_beta.max_val(T::from_f64(1e-8)),
+        total_spiral_adjusted_shortfall: dark_cost
+            + horizon_discount * T::from_f64(1e-4) * s.initial_inventory_shares * s.reference_price,
+    }
+}
+
+#[cfg(test)]
+mod phase28_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn mk<T: Real>(x: T) -> MitchellPedersenKratzDarkPoolSpiralSpec<T> {
+        MitchellPedersenKratzDarkPoolSpiralSpec {
+            initial_inventory_shares: T::from_f64(1e5) + x,
+            reference_price: T::from_f64(100.0),
+            execution_horizon_days: T::from_f64(5.0),
+            daily_volatility: T::from_f64(0.02),
+            lit_temporary_impact_eta: T::from_f64(1e-6),
+            lit_permanent_impact_gamma: T::from_f64(2e-6),
+            risk_aversion_lambda: T::from_f64(0.1),
+            dark_pool_poisson_intensity: T::from_f64(0.3),
+            dark_pool_adverse_selection_bps: T::from_f64(5.0),
+            specialist_immediate_capital: T::from_f64(1e7),
+            slow_moving_external_capital: T::from_f64(2e7),
+            capital_arrival_speed_beta: T::from_f64(0.4),
+        }
+    }
+    #[test]
+    fn dark_pool_invariants_and_dual() {
+        let r = evaluate_mitchell_pedersen_slow_capital_and_kratz_dark_pool(&mk(0.0));
+        assert!(r.kratz_schoneborn_dark_lit_cost < r.almgren_chriss_lit_only_cost);
+        assert!(
+            r.mitchell_pedersen_horizon_fire_sale_discount_bps
+                < r.mitchell_pedersen_initial_fire_sale_discount_bps
+        );
+        let h = 1e-5;
+        let fd = (evaluate_mitchell_pedersen_slow_capital_and_kratz_dark_pool(&mk(h))
+            .almgren_chriss_lit_only_cost
+            - evaluate_mitchell_pedersen_slow_capital_and_kratz_dark_pool(&mk(-h))
+                .almgren_chriss_lit_only_cost)
+            / (2.0 * h);
+        let ad = evaluate_mitchell_pedersen_slow_capital_and_kratz_dark_pool(&mk(
+            Dual::<1>::variable(0.0, 0),
+        ))
+        .almgren_chriss_lit_only_cost;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

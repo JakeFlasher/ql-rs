@@ -2131,3 +2131,103 @@ mod phase26_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct FollmerSchiedGennaioliDiagnosticRiskSpec<T: Real = f64> {
+    pub scenario_pnl: Vec<T>,
+    pub baseline_probabilities: Vec<T>,
+    pub entropic_ambiguity_theta: T,
+    pub kl_divergence_budget_eta: T,
+    pub diagnostic_overreaction_theta: T,
+    pub boom_news_drift_shock: T,
+    pub bust_news_drift_shock: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct FollmerSchiedGennaioliDiagnosticRiskReport<T: Real = f64> {
+    pub rational_expected_loss: T,
+    pub follmer_schied_entropic_risk_measure: T,
+    pub worst_case_kl_divergence: T,
+    pub ambiguity_penalty_premium: T,
+    pub kl_ball_robust_superhedging_bound: T,
+    pub diagnostic_boom_perceived_risk: T,
+    pub diagnostic_bust_perceived_risk: T,
+    pub gennaioli_shleifer_crisis_belief_reversal_spike: T,
+    pub boom_tail_neglect_bias: T,
+}
+
+pub fn evaluate_follmer_schied_convex_risk_and_diagnostic_expectations<T: Real>(
+    s: &FollmerSchiedGennaioliDiagnosticRiskSpec<T>,
+) -> FollmerSchiedGennaioliDiagnosticRiskReport<T> {
+    let n = s.scenario_pnl.len().min(s.baseline_probabilities.len());
+    assert!(n > 0);
+    let mut ps = T::zero();
+    let mut exp_loss = T::zero();
+    for i in 0..n {
+        ps += s.baseline_probabilities[i];
+        exp_loss -= s.baseline_probabilities[i] * s.scenario_pnl[i];
+    }
+    let theta = s.entropic_ambiguity_theta.abs().max_val(T::from_f64(1e-8));
+    let mut z = T::zero();
+    for i in 0..n {
+        z += (s.baseline_probabilities[i] / ps.max_val(T::from_f64(1e-12)))
+            * (s.scenario_pnl[i] / theta).exp();
+    }
+    let entropic = theta * z.ln();
+    let penalty = (entropic - exp_loss).max_val(T::zero());
+    let kl = s.kl_divergence_budget_eta.max_val(T::zero());
+    let robust = entropic
+        + (T::from_f64(2.0) * kl).sqrt()
+            * s.scenario_pnl
+                .iter()
+                .map(|x| x.abs())
+                .fold(T::zero(), |a, x| a.max_val(x));
+    let boom = exp_loss + s.diagnostic_overreaction_theta * s.boom_news_drift_shock.abs();
+    let bust = exp_loss + s.diagnostic_overreaction_theta * s.bust_news_drift_shock.abs();
+    FollmerSchiedGennaioliDiagnosticRiskReport {
+        rational_expected_loss: exp_loss,
+        follmer_schied_entropic_risk_measure: entropic.max_val(exp_loss),
+        worst_case_kl_divergence: kl,
+        ambiguity_penalty_premium: penalty,
+        kl_ball_robust_superhedging_bound: robust,
+        diagnostic_boom_perceived_risk: boom,
+        diagnostic_bust_perceived_risk: bust,
+        gennaioli_shleifer_crisis_belief_reversal_spike: (bust - boom).abs(),
+        boom_tail_neglect_bias: (boom - exp_loss).max_val(T::zero()),
+    }
+}
+
+#[cfg(test)]
+mod phase28_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn mk<T: Real>(x: T) -> FollmerSchiedGennaioliDiagnosticRiskSpec<T> {
+        FollmerSchiedGennaioliDiagnosticRiskSpec {
+            scenario_pnl: vec![T::from_f64(1.0) + x, T::from_f64(-2.0), T::from_f64(-5.0)],
+            baseline_probabilities: vec![T::from_f64(0.5), T::from_f64(0.3), T::from_f64(0.2)],
+            entropic_ambiguity_theta: T::from_f64(2.0),
+            kl_divergence_budget_eta: T::from_f64(0.1),
+            diagnostic_overreaction_theta: T::from_f64(1.5),
+            boom_news_drift_shock: T::from_f64(0.2),
+            bust_news_drift_shock: T::from_f64(1.0),
+        }
+    }
+    #[test]
+    fn risk_invariants_and_dual() {
+        let r = evaluate_follmer_schied_convex_risk_and_diagnostic_expectations(&mk(0.0));
+        assert!(r.follmer_schied_entropic_risk_measure >= r.rational_expected_loss);
+        assert!(r.diagnostic_bust_perceived_risk > r.diagnostic_boom_perceived_risk);
+        assert!(r.gennaioli_shleifer_crisis_belief_reversal_spike > 0.0);
+        let h = 1e-5;
+        let fd = (evaluate_follmer_schied_convex_risk_and_diagnostic_expectations(&mk(h))
+            .follmer_schied_entropic_risk_measure
+            - evaluate_follmer_schied_convex_risk_and_diagnostic_expectations(&mk(-h))
+                .follmer_schied_entropic_risk_measure)
+            / (2.0 * h);
+        let ad = evaluate_follmer_schied_convex_risk_and_diagnostic_expectations(&mk(
+            Dual::<1>::variable(0.0, 0),
+        ))
+        .follmer_schied_entropic_risk_measure;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

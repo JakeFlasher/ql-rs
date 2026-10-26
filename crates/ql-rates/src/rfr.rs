@@ -179,6 +179,114 @@ pub fn price_lyashenko_mercurio_fmm_caplet_and_swaption<T: Real>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct TurfusWillemsRfrInArrearsSmileSpec<T: Real = f64> {
+    pub accrual_start_t1: T,
+    pub accrual_end_t2: T,
+    pub forward_rfr_rate: T,
+    pub strike_rate: T,
+    pub discount_factor_t2: T,
+    pub sabr_alpha: T,
+    pub sabr_beta: T,
+    pub sabr_rho: T,
+    pub sabr_nu: T,
+    pub hull_white_mean_reversion: T,
+    pub notional: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct TurfusWillemsRfrInArrearsSmileReport<T: Real = f64> {
+    pub accrual_fraction: T,
+    pub willems_effective_maturity: T,
+    pub willems_effective_vol_of_vol: T,
+    pub turfus_mean_reversion_damping: T,
+    pub forward_looking_implied_vol: T,
+    pub in_arrears_implied_vol: T,
+    pub in_arrears_atm_skew: T,
+    pub in_arrears_smile_curvature: T,
+    pub forward_looking_caplet_pv: T,
+    pub in_arrears_caplet_pv: T,
+    pub in_arrears_volatility_ratio: T,
+}
+
+pub fn evaluate_turfus_willems_rfr_in_arrears_caplet_smile<T: Real>(
+    s: &TurfusWillemsRfrInArrearsSmileSpec<T>,
+) -> TurfusWillemsRfrInArrearsSmileReport<T> {
+    let dt = (s.accrual_end_t2 - s.accrual_start_t1).max_val(T::from_f64(1e-10));
+    let t1 = s.accrual_start_t1.max_val(T::zero());
+    let t2 = s.accrual_end_t2.max_val(T::from_f64(1e-10));
+    let ratio = ((s.accrual_end_t2 - t1) / dt).max_val(T::zero());
+    let teff = t1 + dt / T::from_f64(3.0) * ratio * ratio * ratio;
+    let alpha_hat = s.sabr_alpha * (teff / t2).max_val(T::zero()).sqrt();
+    let nu_hat = s.sabr_nu
+        * ((t1 * t1 + t1 * dt + T::from_f64(0.6) * dt * dt)
+            / (teff * t2).max_val(T::from_f64(1e-12)))
+        .max_val(T::zero())
+        .sqrt();
+    let kappa_dt = s.hull_white_mean_reversion * dt;
+    let g2 = if kappa_dt.abs().val() < 1e-4 {
+        T::one() - kappa_dt / T::from_f64(3.0) + kappa_dt * kappa_dt / T::from_f64(12.0)
+    } else {
+        T::from_f64(2.0) * (kappa_dt - T::one() + (-kappa_dt).exp()) / (kappa_dt * kappa_dt)
+    };
+    let f = s.forward_rfr_rate.max_val(T::from_f64(1e-8));
+    let k = s.strike_rate.max_val(T::from_f64(1e-8));
+    let beta = s.sabr_beta;
+    let fk = (f * k).pow((T::one() - beta) / T::from_f64(2.0));
+    let z = nu_hat / alpha_hat.max_val(T::from_f64(1e-12)) * (f - k);
+    let xz = ((T::one() - T::from_f64(2.0) * s.sabr_rho * z + z * z).sqrt() + z - s.sabr_rho)
+        / (T::one() - s.sabr_rho);
+    let base = alpha_hat / fk.max_val(T::from_f64(1e-12))
+        * (T::one()
+            + ((T::one() - beta) * (T::one() - beta) / T::from_f64(24.0)
+                * (alpha_hat * alpha_hat / (f * k).max_val(T::from_f64(1e-12)))
+                + s.sabr_rho * beta * nu_hat * alpha_hat / (T::from_f64(4.0) * fk)
+                + (T::from_f64(2.0) - T::from_f64(3.0) * s.sabr_rho * s.sabr_rho)
+                    * nu_hat
+                    * nu_hat
+                    / T::from_f64(24.0))
+                * teff);
+    let fwd_vol = if (f - k).abs().val() < 1e-8 {
+        base
+    } else {
+        base * z / xz.max_val(T::from_f64(1e-12))
+    };
+    let damping = g2.max_val(T::zero());
+    let in_vol = (fwd_vol
+        * (T::one() + s.hull_white_mean_reversion * dt * damping * T::from_f64(0.5)))
+    .max_val(T::from_f64(1e-8));
+    let atm_skew = s.sabr_rho * s.sabr_nu * damping / f.max_val(T::from_f64(1e-8));
+    let curvature = s.sabr_nu * s.sabr_nu * (T::one() - s.sabr_rho * s.sabr_rho) * damping;
+    let pv_fwd = s.notional
+        * dt
+        * s.discount_factor_t2
+        * black76_price(
+            f,
+            k,
+            fwd_vol,
+            teff.max_val(T::from_f64(1e-8)),
+            T::one(),
+            true,
+        );
+    let pv_arrears = s.notional
+        * dt
+        * s.discount_factor_t2
+        * black76_price(f, k, in_vol, dt.max_val(T::from_f64(1e-8)), T::one(), true);
+    TurfusWillemsRfrInArrearsSmileReport {
+        accrual_fraction: dt,
+        willems_effective_maturity: teff,
+        willems_effective_vol_of_vol: nu_hat,
+        turfus_mean_reversion_damping: damping,
+        forward_looking_implied_vol: fwd_vol,
+        in_arrears_implied_vol: in_vol,
+        in_arrears_atm_skew: atm_skew,
+        in_arrears_smile_curvature: curvature,
+        forward_looking_caplet_pv: pv_fwd,
+        in_arrears_caplet_pv: pv_arrears,
+        in_arrears_volatility_ratio: in_vol / fwd_vol.max_val(T::from_f64(1e-12)),
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum RfrRateType {
     ForwardLooking,
@@ -1149,5 +1257,42 @@ mod phase20_tests {
         };
         let ad = price_sinh_ou_rfr_caplet(&spec_d, &curve_d).npv;
         assert!((ad.d[0] - fd).abs() < 1e-3);
+    }
+}
+
+#[cfg(test)]
+mod phase28_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn mk<T: Real>(x: T) -> TurfusWillemsRfrInArrearsSmileSpec<T> {
+        TurfusWillemsRfrInArrearsSmileSpec {
+            accrual_start_t1: x.max_val(T::zero()),
+            accrual_end_t2: T::from_f64(0.5),
+            forward_rfr_rate: T::from_f64(0.03),
+            strike_rate: T::from_f64(0.025),
+            discount_factor_t2: T::from_f64(0.98),
+            sabr_alpha: T::from_f64(0.02),
+            sabr_beta: T::from_f64(0.5),
+            sabr_rho: T::from_f64(-0.2),
+            sabr_nu: T::from_f64(0.4),
+            hull_white_mean_reversion: T::from_f64(0.1),
+            notional: T::from_f64(1e6),
+        }
+    }
+    #[test]
+    fn rfr_smile_dual_fd() {
+        let r0 = evaluate_turfus_willems_rfr_in_arrears_caplet_smile(&mk(0.0));
+        assert!((r0.willems_effective_maturity - 0.5 / 3.0).abs() < 1e-12);
+        assert!(r0.in_arrears_caplet_pv > 0.0);
+        let h = 1e-5;
+        let fd = (evaluate_turfus_willems_rfr_in_arrears_caplet_smile(&mk(0.2 + h))
+            .in_arrears_caplet_pv
+            - evaluate_turfus_willems_rfr_in_arrears_caplet_smile(&mk(0.2 - h))
+                .in_arrears_caplet_pv)
+            / (2.0 * h);
+        let ad =
+            evaluate_turfus_willems_rfr_in_arrears_caplet_smile(&mk(Dual::<1>::variable(0.2, 0)))
+                .in_arrears_caplet_pv;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

@@ -3,22 +3,20 @@ use std::fs;
 use std::path::PathBuf;
 fn main() {
     let rows = run_all_benchmarks(5);
-    assert_eq!(rows.len(), 39, "Phase 27 benchmark suite registration");
+    assert_eq!(rows.len(), 40, "Phase 27 benchmark suite registration");
     let mut speedups: Vec<f64> = rows.iter().map(|r| r.speedup).collect();
     speedups.sort_by(f64::total_cmp);
     let median = speedups[speedups.len() / 2];
     let mean = speedups.iter().sum::<f64>() / speedups.len() as f64;
     let report = format!(
-        "{}\nSummary: 39 benchmark suites; speedups range from **{:.2}x** to **{:.2}x** (median **{:.2}x**, mean **{:.2}x**). All parity checks pass their domain tolerances; Suite 39 parity is **{:.3e}**.\n",
+        "{}\nSummary: {} benchmark suites; speedups range from **{:.2}x** to **{:.2}x** (median **{:.2}x**, mean **{:.2}x**). All parity checks pass their domain tolerances; latest suite parity is **{:.3e}**.\n",
         format_markdown_table(&rows),
+        rows.len(),
         speedups[0],
-        speedups[38],
+        speedups[speedups.len() - 1],
         median,
         mean,
-        rows.iter()
-            .find(|r| r.id.starts_with("39_"))
-            .map(|r| r.parity_diff)
-            .unwrap_or_default()
+        rows.last().map(|r| r.parity_diff).unwrap_or_default()
     );
     println!("{report}");
     let write_report = std::env::args().skip(1).any(|arg| arg == "--write-report")

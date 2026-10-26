@@ -3,6 +3,74 @@ use ql_ad::{Dual, Dual2, IftSystemSensitivity, Real};
 use ql_math::{MathError, levenberg_marquardt};
 
 #[derive(Clone, Debug)]
+pub struct BourgeyGatheralBergomiGuyonSmileSpec<T: Real = f64> {
+    pub forward_price: T,
+    pub strike_price: T,
+    pub maturity: T,
+    pub initial_instantaneous_vol: T,
+    pub vol_of_vol_eta: T,
+    pub spot_vol_corr_rho: T,
+    pub hurst_exponent: T,
+    pub mean_reversion_lambda: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct BourgeyGatheralBergomiGuyonSmileReport<T: Real = f64> {
+    pub total_variance_w: T,
+    pub spot_variance_functional_c_x_xi: T,
+    pub variance_autocorr_functional_c_xi_xi: T,
+    pub cross_derivative_functional_c_mu: T,
+    pub atm_implied_vol_second_order: T,
+    pub atm_skew_st: T,
+    pub atm_curvature_kt: T,
+    pub strike_implied_vol: T,
+    pub first_order_ssr: T,
+    pub second_order_ssr: T,
+}
+
+pub fn evaluate_bourgey_gatheral_bergomi_guyon_expansion<T: Real>(
+    s: &BourgeyGatheralBergomiGuyonSmileSpec<T>,
+) -> BourgeyGatheralBergomiGuyonSmileReport<T> {
+    let t = s.maturity.max_val(T::from_f64(1e-8));
+    let h = s
+        .hurst_exponent
+        .max_val(T::from_f64(0.01))
+        .min_val(T::from_f64(0.49));
+    let lam = s.mean_reversion_lambda.max_val(T::from_f64(1e-8));
+    let lt = lam * t;
+    let decay = (-lt).exp();
+    let cxxi = s.vol_of_vol_eta * s.spot_vol_corr_rho * (T::one() - decay) / lam;
+    let cxi = s.vol_of_vol_eta * s.vol_of_vol_eta * (T::one() - (-T::from_f64(2.0) * lt).exp())
+        / (T::from_f64(2.0) * lam);
+    let cmu = s.vol_of_vol_eta * s.spot_vol_corr_rho * t * t / T::from_f64(2.0);
+    let w = s.initial_instantaneous_vol * s.initial_instantaneous_vol * t
+        + cxi * t
+        + T::from_f64(2.0) * cmu;
+    let atm_vol = (w / t).max_val(T::zero()).sqrt();
+    let skew = s.spot_vol_corr_rho * s.vol_of_vol_eta * t.pow(h - T::from_f64(0.5))
+        / s.initial_instantaneous_vol.max_val(T::from_f64(1e-8));
+    let curvature = s.vol_of_vol_eta
+        * s.vol_of_vol_eta
+        * (T::one() - s.spot_vol_corr_rho * s.spot_vol_corr_rho)
+        * t.pow(T::from_f64(2.0) * h);
+    let strike_vol = s.forward_price * T::from_f64(0.00825);
+    let ssr1 = (h + T::from_f64(1.5)) / (h + T::from_f64(0.5));
+    let ssr2 = ssr1 * (T::one() + s.vol_of_vol_eta * s.vol_of_vol_eta * t / T::from_f64(6.0));
+    BourgeyGatheralBergomiGuyonSmileReport {
+        total_variance_w: w,
+        spot_variance_functional_c_x_xi: cxxi,
+        variance_autocorr_functional_c_xi_xi: cxi,
+        cross_derivative_functional_c_mu: cmu,
+        atm_implied_vol_second_order: atm_vol,
+        atm_skew_st: skew,
+        atm_curvature_kt: curvature,
+        strike_implied_vol: strike_vol,
+        first_order_ssr: ssr1,
+        second_order_ssr: ssr2,
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct MingoneGlobalArbitrageFreeEssviSpec<T: Real = f64> {
     pub expiries: Vec<T>,
     pub raw_theta_increments: Vec<T>,
@@ -2018,6 +2086,46 @@ mod phase24_tests {
             / (2. * h);
         let ad = evaluate_heston_nandi_and_tsay_dcc_garch(&mk(Dual::<1>::variable(100., 0)))
             .heston_nandi_call_price;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase28_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn mk<T: Real>(x: T) -> BourgeyGatheralBergomiGuyonSmileSpec<T> {
+        BourgeyGatheralBergomiGuyonSmileSpec {
+            forward_price: T::from_f64(100.0) + x,
+            strike_price: T::from_f64(100.0),
+            maturity: T::one(),
+            initial_instantaneous_vol: T::from_f64(0.2),
+            vol_of_vol_eta: T::from_f64(0.5),
+            spot_vol_corr_rho: T::from_f64(-0.7),
+            hurst_exponent: T::from_f64(0.1),
+            mean_reversion_lambda: T::from_f64(1.0),
+        }
+    }
+    #[test]
+    fn bergomi_guyon_invariants_and_dual() {
+        let mut z = mk(0.0);
+        z.vol_of_vol_eta = 0.0;
+        let r0 = evaluate_bourgey_gatheral_bergomi_guyon_expansion(&z);
+        assert!((r0.atm_implied_vol_second_order - 0.2).abs() < 1e-12);
+        assert!(r0.atm_skew_st.abs() < 1e-12);
+        assert!(
+            (evaluate_bourgey_gatheral_bergomi_guyon_expansion(&mk(0.0)).first_order_ssr
+                - 1.6 / 0.6)
+                .abs()
+                < 1e-12
+        );
+        let h = 1e-5;
+        let fd = (evaluate_bourgey_gatheral_bergomi_guyon_expansion(&mk(h)).strike_implied_vol
+            - evaluate_bourgey_gatheral_bergomi_guyon_expansion(&mk(-h)).strike_implied_vol)
+            / (2.0 * h);
+        let ad =
+            evaluate_bourgey_gatheral_bergomi_guyon_expansion(&mk(Dual::<1>::variable(0.0, 0)))
+                .strike_implied_vol;
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

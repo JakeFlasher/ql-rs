@@ -58,3 +58,5 @@ The Phase 18 release adds MtM-XCCS and tenor-basis analytics, CTD-COLVA/WWR, ZAB
 Phase 20 adds production-grade inflation, structured-credit, rough-volatility, callable, portfolio, and XVA engines with exact Dual/IFT parity. Phase 21 completes the institutional expansion with Hagan–West monotone-convex bootstrapping, Piterbarg quasi-Gaussian amortizing swaptions, Clark FX delta-smile calibration, Gatheral–Gyöngy LSV leverage, Green SA-CCR lifetime KVA/MVA, Gregory Euler netting allocation, Bayer–Friz–Gatheral rough volatility, Bouzoubaa cliquets, Burger multifuel dispatch, Cartea–Jaimungal execution, Paleologo factor-neutral allocation, and checkpointed Glasserman–Malliavin AAD.
 
 Phase 27 delivers Suite 39 and workstation Tab 37 (`BOTTOM_ROWS = 34`) with twelve book-backed SOTA quantitative engines.
+
+Phase 28 delivers Suite 40 and workstation Tab 38 (`BOTTOM_ROWS = 35`) with twelve additional book-backed SOTA quantitative engines spanning IRRBB, RFR, XCCY, rough volatility, CoCo/XVA, storage, execution, risk measures, and differential PCA.

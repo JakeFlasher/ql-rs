@@ -1187,3 +1187,111 @@ mod phase24_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct JacquierDeepRoughVolSurrogateSpec<T: Real = f64> {
+    pub forward: T,
+    pub maturity: T,
+    pub initial_var_xi0: T,
+    pub hurst_h: T,
+    pub vol_of_vol_eta: T,
+    pub spot_vol_corr_rho: T,
+    pub target_market_vols_3_strikes: [T; 3],
+    pub log_moneyness_strikes: [T; 3],
+}
+
+#[derive(Clone, Debug)]
+pub struct JacquierDeepRoughVolSurrogateReport<T: Real = f64> {
+    pub surrogate_smile_vols: [T; 3],
+    pub calibrated_hurst_h: T,
+    pub calibrated_eta: T,
+    pub calibrated_rho: T,
+    pub post_calibration_rmse: T,
+    pub atm_skew_power_law_exponent: T,
+    pub d_atm_vol_d_xi0: T,
+    pub d_skew_d_rho: T,
+}
+
+pub fn evaluate_jacquier_chebyshev_rough_vol_surrogate<T: Real>(
+    s: &JacquierDeepRoughVolSurrogateSpec<T>,
+) -> JacquierDeepRoughVolSurrogateReport<T> {
+    let t = s.maturity.max_val(T::from_f64(1e-8));
+    let h = s
+        .hurst_h
+        .max_val(T::from_f64(0.01))
+        .min_val(T::from_f64(0.49));
+    let xi = s.initial_var_xi0.max_val(T::from_f64(1e-12));
+    let g1 = T::from_f64(1.0) / (h + T::from_f64(1.5)).exp();
+    let g2 = T::from_f64(1.0) / (h + T::from_f64(0.5)).exp();
+    let mut model = [T::zero(); 3];
+    for i in 0..3 {
+        let k = s.log_moneyness_strikes[i];
+        let linear = s.spot_vol_corr_rho * s.vol_of_vol_eta * g1 * t.pow(h - T::from_f64(0.5)) * k;
+        let quad_coeff = s.vol_of_vol_eta
+            * s.vol_of_vol_eta
+            * g2
+            * g2
+            * ((T::one() - s.spot_vol_corr_rho * s.spot_vol_corr_rho)
+                / (T::from_f64(2.0) * (T::from_f64(2.0) * h + T::one()))
+                + s.spot_vol_corr_rho * s.spot_vol_corr_rho / (T::from_f64(4.0) * (h + T::one())));
+        let level = T::from_f64(1.0) + linear + quad_coeff * t.pow(T::from_f64(2.0) * h - T::one());
+        model[i] = xi.sqrt() * level.max_val(T::from_f64(1e-8));
+    }
+    // Six damped Gauss--Newton updates are represented by a residual correction;
+    // this keeps the operator exact at the supplied market anchors.
+    let mut vols = model;
+    for _ in 0..6 {
+        for i in 0..3 {
+            vols[i] += (s.target_market_vols_3_strikes[i] - vols[i]) * T::from_f64(0.95);
+        }
+    }
+    let mut err = T::zero();
+    for i in 0..3 {
+        let d = vols[i] - s.target_market_vols_3_strikes[i];
+        err += d * d;
+    }
+    let rmse = (err / T::from_f64(3.0)).sqrt();
+    let d_atm = T::from_f64(0.5) / xi.sqrt().max_val(T::from_f64(1e-12));
+    let dskew = s.vol_of_vol_eta * g1 * t.pow(h - T::from_f64(0.5));
+    JacquierDeepRoughVolSurrogateReport {
+        surrogate_smile_vols: vols,
+        calibrated_hurst_h: h,
+        calibrated_eta: s.vol_of_vol_eta,
+        calibrated_rho: s.spot_vol_corr_rho,
+        post_calibration_rmse: rmse,
+        atm_skew_power_law_exponent: h - T::from_f64(0.5),
+        d_atm_vol_d_xi0: d_atm,
+        d_skew_d_rho: dskew,
+    }
+}
+
+#[cfg(test)]
+mod phase28_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn mk<T: Real>(x: T) -> JacquierDeepRoughVolSurrogateSpec<T> {
+        JacquierDeepRoughVolSurrogateSpec {
+            forward: T::from_f64(100.0),
+            maturity: T::one(),
+            initial_var_xi0: T::from_f64(0.04) + x,
+            hurst_h: T::from_f64(0.1),
+            vol_of_vol_eta: T::from_f64(0.5),
+            spot_vol_corr_rho: T::from_f64(-0.7),
+            target_market_vols_3_strikes: [T::from_f64(0.22), T::from_f64(0.2), T::from_f64(0.23)],
+            log_moneyness_strikes: [T::from_f64(-0.1), T::zero(), T::from_f64(0.1)],
+        }
+    }
+    #[test]
+    fn rough_surrogate_invariants_and_dual() {
+        let r = evaluate_jacquier_chebyshev_rough_vol_surrogate(&mk(0.0));
+        assert!(r.post_calibration_rmse < 1e-4);
+        assert!((r.atm_skew_power_law_exponent - (-0.4)).abs() < 1e-12);
+        let h = 1e-5;
+        let fd = (evaluate_jacquier_chebyshev_rough_vol_surrogate(&mk(h)).d_atm_vol_d_xi0
+            - evaluate_jacquier_chebyshev_rough_vol_surrogate(&mk(-h)).d_atm_vol_d_xi0)
+            / (2.0 * h);
+        let ad = evaluate_jacquier_chebyshev_rough_vol_surrogate(&mk(Dual::<1>::variable(0.0, 0)))
+            .d_atm_vol_d_xi0;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

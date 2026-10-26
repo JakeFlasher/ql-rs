@@ -76,3 +76,5 @@ Phase 26 extends the release to Suite 38 and workstation Tab 36 (Tab 36 Phase 26
 
 ## Phase 27 SOTA engines
 Phase 27 adds twelve book-backed SOTA engines in Suite 39 (`39_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt`) and workstation Tab 37; the layout uses `BOTTOM_ROWS = 34`.
+
+Phase 28 extends the benchmark harness to 40 suites and the terminal workstation to 38 tabs. Tab 38 (`38:P28-SOTA`) and Suite 40 cover IRRBB, backward-looking RFR smiles, MtM XCCY convexity, Bergomi-Guyon expansions, AT1 CoCo PONV, dynamic SIMM/XVA, rough Bergomi surrogates, spread baskets, BESS SDP, dark-pool execution, convex risk diagnostics, and Diff-PCA.

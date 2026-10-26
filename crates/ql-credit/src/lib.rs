@@ -1777,3 +1777,131 @@ mod phase25_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct FedsDeSpiegeleerAt1CocoDualTriggerSpec<T: Real = f64> {
+    pub notional: T,
+    pub coupon_rate: T,
+    pub maturity: T,
+    pub risk_free_rate: T,
+    pub initial_cet1_ratio: T,
+    pub mechanical_cet1_trigger: T,
+    pub ponv_cet1_trigger: T,
+    pub supervisory_ponv_hazard_lambda: T,
+    pub asset_volatility: T,
+    pub cet1_asset_elasticity: T,
+    pub initial_stock_price: T,
+    pub conversion_price: T,
+    pub floor_stock_price: T,
+    pub existing_common_shares: T,
+    pub write_down_fraction: T,
+    pub is_equity_conversion: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct FedsDeSpiegeleerAt1CocoDualTriggerReport<T: Real = f64> {
+    pub mechanical_cet1_trigger_prob: T,
+    pub total_dual_trigger_prob: T,
+    pub trigger_implied_stock_price: T,
+    pub conversion_share_count: T,
+    pub equity_dilution_fraction: T,
+    pub effective_trigger_recovery_rate: T,
+    pub coupon_leg_pv: T,
+    pub principal_survival_pv: T,
+    pub trigger_recovery_pv: T,
+    pub at1_coco_fair_value: T,
+    pub at1_coco_credit_spread_bps: T,
+    pub write_down_vs_conversion_pv_wedge: T,
+}
+
+pub fn evaluate_feds_despiegeleer_at1_coco_dual_trigger<T: Real>(
+    s: &FedsDeSpiegeleerAt1CocoDualTriggerSpec<T>,
+) -> FedsDeSpiegeleerAt1CocoDualTriggerReport<T> {
+    let t = s.maturity.max_val(T::from_f64(1e-8));
+    let vol_t = s.asset_volatility.max_val(T::from_f64(1e-8)) * t.sqrt();
+    let distance = (s.initial_cet1_ratio - s.mechanical_cet1_trigger)
+        / (s.cet1_asset_elasticity.abs().max_val(T::from_f64(1e-8)) * vol_t);
+    let mech = (-distance).norm_cdf();
+    let ponv_gap = (s.mechanical_cet1_trigger - s.ponv_cet1_trigger).abs();
+    let sup_hazard = s.supervisory_ponv_hazard_lambda.max_val(T::zero()) * (T::one() + ponv_gap);
+    let sup = T::one() - (-sup_hazard * t).exp();
+    let total = mech + (T::one() - mech) * sup;
+    let trigger_stock = s.initial_stock_price
+        * (-(s.cet1_asset_elasticity * (s.initial_cet1_ratio - s.mechanical_cet1_trigger))).exp();
+    let conv_price = s
+        .conversion_price
+        .max_val(s.floor_stock_price.max_val(T::from_f64(1e-8)));
+    let shares = s.notional / conv_price;
+    let dilution = shares / (s.existing_common_shares + shares).max_val(T::from_f64(1e-12));
+    let recovery_conv = (trigger_stock / conv_price)
+        .min_val(T::one())
+        .max_val(T::zero());
+    let recovery = if s.is_equity_conversion {
+        recovery_conv
+    } else {
+        T::one() - s.write_down_fraction
+    };
+    let df = (-s.risk_free_rate * t).exp();
+    let coupon = s.notional * s.coupon_rate * t * df;
+    let survival = s.notional * (T::one() - total) * df;
+    let recpv = s.notional * total * recovery * df;
+    let fair = coupon + survival + recpv;
+    let spread = ((s.notional - fair) / s.notional.max_val(T::from_f64(1e-12)) / t)
+        .max_val(T::from_f64(1e-8))
+        * T::from_f64(1e4);
+    let write_down_value = s.notional * (T::one() - s.write_down_fraction) * total * df;
+    FedsDeSpiegeleerAt1CocoDualTriggerReport {
+        mechanical_cet1_trigger_prob: mech,
+        total_dual_trigger_prob: total.max_val(mech),
+        trigger_implied_stock_price: trigger_stock,
+        conversion_share_count: shares,
+        equity_dilution_fraction: dilution,
+        effective_trigger_recovery_rate: recovery,
+        coupon_leg_pv: coupon,
+        principal_survival_pv: survival,
+        trigger_recovery_pv: recpv,
+        at1_coco_fair_value: fair,
+        at1_coco_credit_spread_bps: spread,
+        write_down_vs_conversion_pv_wedge: write_down_value - recpv,
+    }
+}
+
+#[cfg(test)]
+mod phase28_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn mk<T: Real>(x: T) -> FedsDeSpiegeleerAt1CocoDualTriggerSpec<T> {
+        FedsDeSpiegeleerAt1CocoDualTriggerSpec {
+            notional: T::from_f64(100.0),
+            coupon_rate: T::from_f64(0.08),
+            maturity: T::from_f64(5.0),
+            risk_free_rate: T::from_f64(0.03),
+            initial_cet1_ratio: T::from_f64(0.12) + x,
+            mechanical_cet1_trigger: T::from_f64(0.07),
+            ponv_cet1_trigger: T::from_f64(0.05),
+            supervisory_ponv_hazard_lambda: T::from_f64(0.03),
+            asset_volatility: T::from_f64(0.2),
+            cet1_asset_elasticity: T::one(),
+            initial_stock_price: T::from_f64(20.0),
+            conversion_price: T::from_f64(15.0),
+            floor_stock_price: T::from_f64(5.0),
+            existing_common_shares: T::from_f64(100.0),
+            write_down_fraction: T::from_f64(0.5),
+            is_equity_conversion: true,
+        }
+    }
+    #[test]
+    fn coco_invariants_and_dual() {
+        let r = evaluate_feds_despiegeleer_at1_coco_dual_trigger(&mk(0.0));
+        assert!(r.total_dual_trigger_prob >= r.mechanical_cet1_trigger_prob);
+        assert!(r.at1_coco_credit_spread_bps > 0.0);
+        assert!(r.equity_dilution_fraction > 0.0 && r.equity_dilution_fraction < 1.0);
+        let h = 1e-5;
+        let fd = (evaluate_feds_despiegeleer_at1_coco_dual_trigger(&mk(h)).at1_coco_fair_value
+            - evaluate_feds_despiegeleer_at1_coco_dual_trigger(&mk(-h)).at1_coco_fair_value)
+            / (2.0 * h);
+        let ad = evaluate_feds_despiegeleer_at1_coco_dual_trigger(&mk(Dual::<1>::variable(0.0, 0)))
+            .at1_coco_fair_value;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}

@@ -78,6 +78,113 @@ fn rkhs_kernel_and_dt<T: Real>(t: T, u: T, alpha: T) -> (T, T) {
     };
     (e * core, -alpha * e * core + e * dcore)
 }
+
+/// BCBS d368/d582 six-scenario standardized IRRBB engine.
+#[derive(Clone, Debug)]
+pub struct BcbsD368SixScenarioIrrbbSpec<T: Real = f64> {
+    pub bucket_midpoints_years: Vec<T>,
+    pub asset_repricing_cashflows: Vec<T>,
+    pub liability_repricing_cashflows: Vec<T>,
+    pub baseline_zero_rates: Vec<T>,
+    pub parallel_shock_bps: T,
+    pub short_shock_bps: T,
+    pub long_shock_bps: T,
+    pub decay_tau_years: T,
+    pub tier1_capital: T,
+    pub pass_through_deposit_beta: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct BcbsD368SixScenarioIrrbbReport<T: Real = f64> {
+    pub baseline_eve: T,
+    pub scenario_delta_eves: [T; 6],
+    pub worst_case_delta_eveloss: T,
+    pub worst_scenario_index: usize,
+    pub parallel_up_delta_nii_1y: T,
+    pub parallel_down_delta_nii_1y: T,
+    pub steepener_delta_eve: T,
+    pub flattener_delta_eve: T,
+    pub supervisory_outlier_ratio_tier1: T,
+}
+
+pub fn evaluate_bcbs_d368_six_scenario_irrbb<T: Real>(
+    s: &BcbsD368SixScenarioIrrbbSpec<T>,
+) -> BcbsD368SixScenarioIrrbbReport<T> {
+    let n = s
+        .bucket_midpoints_years
+        .len()
+        .min(s.asset_repricing_cashflows.len())
+        .min(s.liability_repricing_cashflows.len())
+        .min(s.baseline_zero_rates.len());
+    assert!(n > 0, "IRRBB requires at least one bucket");
+    let tau = s.decay_tau_years.max_val(T::from_f64(1e-8));
+    let beta = s.pass_through_deposit_beta;
+    let mut base = T::zero();
+    let mut net_1y = T::zero();
+    for i in 0..n {
+        let t = s.bucket_midpoints_years[i];
+        let dep = if t.val() <= 1.0 {
+            T::one() - beta
+        } else {
+            T::one()
+        };
+        let cf = s.asset_repricing_cashflows[i] - dep * s.liability_repricing_cashflows[i];
+        base += cf * (-s.baseline_zero_rates[i] * t).exp();
+        if t.val() <= 1.0 {
+            net_1y += (T::one() - t)
+                * (s.asset_repricing_cashflows[i] - beta * s.liability_repricing_cashflows[i]);
+        }
+    }
+    let rp = s.parallel_shock_bps * T::from_f64(1e-4);
+    let rs = s.short_shock_bps * T::from_f64(1e-4);
+    let rl = s.long_shock_bps * T::from_f64(1e-4);
+    let mut deltas = [T::zero(); 6];
+    for scenario in 0..6 {
+        let mut eve = T::zero();
+        for i in 0..n {
+            let t = s.bucket_midpoints_years[i];
+            let sh = (-t / tau).exp();
+            let lh = T::one() - sh;
+            let shock = match scenario {
+                0 => rp,
+                1 => -rp,
+                2 => -T::from_f64(0.65) * rs * sh + T::from_f64(0.90) * rl * lh,
+                3 => T::from_f64(0.80) * rs * sh - T::from_f64(0.60) * rl * lh,
+                4 => rs * sh,
+                _ => -rs * sh,
+            };
+            let dep = if t.val() <= 1.0 {
+                T::one() - beta
+            } else {
+                T::one()
+            };
+            let cf = s.asset_repricing_cashflows[i] - dep * s.liability_repricing_cashflows[i];
+            eve += cf * (-(s.baseline_zero_rates[i] + shock) * t).exp();
+        }
+        deltas[scenario] = eve - base;
+    }
+    let mut worst_loss = T::zero();
+    let mut worst_idx = 0;
+    for (i, d) in deltas.iter().enumerate() {
+        let loss = (-*d).max_val(T::zero());
+        if loss.val() > worst_loss.val() {
+            worst_loss = loss;
+            worst_idx = i;
+        }
+    }
+    BcbsD368SixScenarioIrrbbReport {
+        baseline_eve: base,
+        scenario_delta_eves: deltas,
+        worst_case_delta_eveloss: worst_loss,
+        worst_scenario_index: worst_idx,
+        parallel_up_delta_nii_1y: rp * net_1y,
+        parallel_down_delta_nii_1y: -rp * net_1y,
+        steepener_delta_eve: deltas[2],
+        flattener_delta_eve: deltas[3],
+        supervisory_outlier_ratio_tier1: worst_loss
+            / s.tier1_capital.abs().max_val(T::from_f64(1e-12)),
+    }
+}
 pub fn calibrate_filipovic_rkhs_smooth_yield_curve<T: Real>(
     s: &FilipovicRkhsYieldCurveSpec<T>,
 ) -> FilipovicRkhsYieldCurveReport<T> {
@@ -1331,5 +1438,48 @@ mod phase25_tests {
             evaluate_tsay_kalman_rts_state_space_curve(&spec(Dual::<1>::variable(1.0, 0)))
                 .smoothed_states[0][0];
         assert!((ad_state.d[0] - fd_state).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase28_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    fn mk<T: Real>(x: T) -> BcbsD368SixScenarioIrrbbSpec<T> {
+        BcbsD368SixScenarioIrrbbSpec {
+            bucket_midpoints_years: vec![T::from_f64(0.5), T::from_f64(2.0), T::from_f64(5.0)],
+            asset_repricing_cashflows: vec![
+                T::from_f64(10.0) + x,
+                T::from_f64(8.0),
+                T::from_f64(5.0),
+            ],
+            liability_repricing_cashflows: vec![
+                T::from_f64(7.0),
+                T::from_f64(6.0),
+                T::from_f64(4.0),
+            ],
+            baseline_zero_rates: vec![T::from_f64(0.02), T::from_f64(0.025), T::from_f64(0.03)],
+            parallel_shock_bps: T::from_f64(200.0),
+            short_shock_bps: T::from_f64(250.0),
+            long_shock_bps: T::from_f64(100.0),
+            decay_tau_years: T::from_f64(4.0),
+            tier1_capital: T::from_f64(100.0),
+            pass_through_deposit_beta: T::from_f64(0.5),
+        }
+    }
+
+    #[test]
+    fn irrbb_invariants_and_dual() {
+        let r = evaluate_bcbs_d368_six_scenario_irrbb(&mk(0.0));
+        assert!(r.worst_case_delta_eveloss >= 0.0);
+        assert!((r.parallel_up_delta_nii_1y + r.parallel_down_delta_nii_1y).abs() < 1e-12);
+        let h = 1e-5;
+        let fd = (evaluate_bcbs_d368_six_scenario_irrbb(&mk(h)).baseline_eve
+            - evaluate_bcbs_d368_six_scenario_irrbb(&mk(-h)).baseline_eve)
+            / (2.0 * h);
+        let ad =
+            evaluate_bcbs_d368_six_scenario_irrbb(&mk(Dual::<1>::variable(0.0, 0))).baseline_eve;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

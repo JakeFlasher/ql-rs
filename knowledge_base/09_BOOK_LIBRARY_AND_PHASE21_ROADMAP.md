@@ -51,3 +51,5 @@ Phase 27 extends the library with FTPL, G2++, eSSVI, offshore convertible, CoCo,
 
 ## Phase 27 SOTA engines
 Suite 39 (`39_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt`) and Tab 37 add twelve book-backed SOTA engines; the terminal layout uses `BOTTOM_ROWS = 34`.
+
+Suite 40 and Tab 38 add the Phase 28 book-backed SOTA expansion (IRRBB, RFR, MtM XCCY, Bergomi-Guyon, AT1 CoCo, SIMM/XVA, rough Bergomi, spread baskets, BESS, dark pools, convex risk, and Diff-PCA); the terminal layout uses `BOTTOM_ROWS = 35`.

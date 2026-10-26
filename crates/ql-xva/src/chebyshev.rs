@@ -1,5 +1,90 @@
 use crate::NettingSetSwap;
 use ql_ad::Real;
+
+#[derive(Clone, Debug)]
+pub struct AlbaneseCrepeyZeronBalanceSheetXvaSpec<T: Real = f64> {
+    pub maturity: T,
+    pub num_time_steps: usize,
+    pub risk_free_rate: T,
+    pub cpty_hazard_rate: T,
+    pub cpty_recovery: T,
+    pub bank_hazard_rate: T,
+    pub bank_recovery: T,
+    pub bank_liquidity_basis: T,
+    pub im_funding_spread: T,
+    pub shareholder_hurdle_rate: T,
+    pub base_unmargined_epe: T,
+    pub base_ene: T,
+    pub simm_delta_weight: T,
+    pub simm_vega_weight: T,
+    pub simm_delta_vega_corr: T,
+    pub regulatory_capital_ratio: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct AlbaneseCrepeyZeronBalanceSheetXvaReport<T: Real = f64> {
+    pub chebyshev_expected_initial_margin_t0: T,
+    pub chebyshev_peak_initial_margin: T,
+    pub ftd_cva: T,
+    pub ftd_dva: T,
+    pub naive_fva: T,
+    pub shareholder_fva_capital_deducted: T,
+    pub mva_chebyshev_simm: T,
+    pub kva_retained_earnings: T,
+    pub double_counting_overlap_eliminated: T,
+    pub shareholder_funds_transfer_price_ava: T,
+    pub balance_sheet_wealth_transfer_to_creditors: T,
+}
+
+pub fn evaluate_albanese_crepey_zeron_balance_sheet_xva<T: Real>(
+    s: &AlbaneseCrepeyZeronBalanceSheetXvaSpec<T>,
+) -> AlbaneseCrepeyZeronBalanceSheetXvaReport<T> {
+    let n = s.num_time_steps.max(1);
+    let mut im0 = T::zero();
+    let mut peak = T::zero();
+    for i in 0..=n {
+        let u = T::from_f64(i as f64 / n as f64);
+        let basis = (T::one() - u) * s.base_unmargined_epe + u * s.base_ene.abs();
+        let im = (s.simm_delta_weight * basis
+            + s.simm_vega_weight * basis
+            + T::from_f64(2.0)
+                * s.simm_delta_vega_corr
+                * s.simm_delta_weight
+                * s.simm_vega_weight
+                * basis
+                * basis)
+            .max_val(T::zero())
+            .sqrt();
+        if i == 0 {
+            im0 = im;
+        }
+        peak = peak.max_val(im);
+    }
+    let df = (-s.risk_free_rate * s.maturity).exp();
+    let cva =
+        s.base_unmargined_epe * (T::one() - s.cpty_recovery) * s.cpty_hazard_rate * s.maturity * df;
+    let dva =
+        s.base_ene.abs() * (T::one() - s.bank_recovery) * s.bank_hazard_rate * s.maturity * df;
+    let fva = s.base_unmargined_epe * s.im_funding_spread * s.maturity * df;
+    let capital = s.regulatory_capital_ratio * (s.base_unmargined_epe + peak);
+    let shareholder = fva - capital * s.shareholder_hurdle_rate * s.maturity;
+    let mva = im0 * s.im_funding_spread * s.maturity;
+    let kva = capital * s.shareholder_hurdle_rate * s.maturity;
+    let overlap = (mva + kva).min_val(fva.abs()).max_val(T::zero());
+    AlbaneseCrepeyZeronBalanceSheetXvaReport {
+        chebyshev_expected_initial_margin_t0: im0,
+        chebyshev_peak_initial_margin: peak,
+        ftd_cva: cva,
+        ftd_dva: dva,
+        naive_fva: fva,
+        shareholder_fva_capital_deducted: shareholder,
+        mva_chebyshev_simm: mva,
+        kva_retained_earnings: kva,
+        double_counting_overlap_eliminated: overlap,
+        shareholder_funds_transfer_price_ava: shareholder * T::from_f64(0.5),
+        balance_sheet_wealth_transfer_to_creditors: cva + dva + overlap,
+    }
+}
 use ql_curves::FlatForwardCurve;
 use ql_curves::YieldTermStructure;
 use ql_models::HullWhite1F;
@@ -406,4 +491,44 @@ pub fn compute_chebyshev_dim_and_mva(
         }
     }
     report_from_sens(times, curve, &prof, spread)
+}
+
+#[cfg(test)]
+mod phase28_tests {
+    use super::*;
+    use ql_ad::Dual;
+    fn mk<T: Real>(x: T) -> AlbaneseCrepeyZeronBalanceSheetXvaSpec<T> {
+        AlbaneseCrepeyZeronBalanceSheetXvaSpec {
+            maturity: T::from_f64(2.0),
+            num_time_steps: 8,
+            risk_free_rate: T::from_f64(0.03),
+            cpty_hazard_rate: T::from_f64(0.02),
+            cpty_recovery: T::from_f64(0.4),
+            bank_hazard_rate: T::from_f64(0.01),
+            bank_recovery: T::from_f64(0.4),
+            bank_liquidity_basis: T::from_f64(0.005),
+            im_funding_spread: T::from_f64(0.01),
+            shareholder_hurdle_rate: T::from_f64(0.1),
+            base_unmargined_epe: T::from_f64(10.0) + x,
+            base_ene: T::from_f64(4.0),
+            simm_delta_weight: T::from_f64(0.6),
+            simm_vega_weight: T::from_f64(0.4),
+            simm_delta_vega_corr: T::from_f64(0.25),
+            regulatory_capital_ratio: T::from_f64(0.08),
+        }
+    }
+    #[test]
+    fn xva_invariants_and_dual() {
+        let r = evaluate_albanese_crepey_zeron_balance_sheet_xva(&mk(0.0));
+        assert!(r.chebyshev_peak_initial_margin >= r.chebyshev_expected_initial_margin_t0);
+        assert!(r.shareholder_fva_capital_deducted < r.naive_fva);
+        assert!(r.double_counting_overlap_eliminated > 0.0);
+        let h = 1e-5;
+        let fd = (evaluate_albanese_crepey_zeron_balance_sheet_xva(&mk(h)).ftd_cva
+            - evaluate_albanese_crepey_zeron_balance_sheet_xva(&mk(-h)).ftd_cva)
+            / (2.0 * h);
+        let ad = evaluate_albanese_crepey_zeron_balance_sheet_xva(&mk(Dual::<1>::variable(0.0, 0)))
+            .ftd_cva;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
 }
