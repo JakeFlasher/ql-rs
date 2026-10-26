@@ -3757,3 +3757,160 @@ mod kenyon_green_csa_lva_mod {
     }
 }
 pub use kenyon_green_csa_lva_mod::*;
+mod gregory_brigo_bilateral_cva_dva_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Gregory (2009, *Risk*; 2020, *The xVA Challenge*, 4th ed., Ch. 14)
+    /// & Brigo, Capponi, Pallavicini & Papatheodorou (2011) First-to-Default (FtD) bilateral
+    /// CVA/DVA model with Marshall–Olkin simultaneous default intensity $\lambda_{CB}$.
+    #[derive(Debug, Clone, Copy)]
+    pub struct GregoryBrigoBilateralCvaDvaSpec<T: Real> {
+        /// Expected Positive Exposure $\text{EPE}$ of the portfolio (e.g., $18.0$).
+        pub expected_positive_exposure_epe: T,
+        /// Expected Negative Exposure magnitude $\text{ENE} > 0$ of the portfolio (e.g., $11.0$).
+        pub expected_negative_exposure_ene: T,
+        /// Counterparty marginal default hazard rate $\lambda_C$ (e.g., $0.026$).
+        pub counterparty_hazard_lambda_c: T,
+        /// Bank own marginal default hazard rate $\lambda_B$ (e.g., $0.015$).
+        pub bank_own_hazard_lambda_b: T,
+        /// Marshall–Olkin common systemic shock hazard rate $\lambda_{CB} \in (0, \min(\lambda_C, \lambda_B))$ (e.g., $0.004$).
+        pub common_shock_hazard_lambda_cb: T,
+        /// Counterparty Loss Given Default $\text{LGD}_C \in (0, 1)$ (e.g., $0.60$).
+        pub counterparty_lgd_c: T,
+        /// Bank own Loss Given Default $\text{LGD}_B \in (0, 1)$ (e.g., $0.60$).
+        pub bank_own_lgd_b: T,
+        /// OIS risk-free discount rate $r$ (e.g., $0.035$).
+        pub risk_free_rate_r: T,
+        /// Portfolio maturity $T$ in years (e.g., $5.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_gregory_brigo_first_to_default_bilateral_cva_dva`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct GregoryBrigoBilateralCvaDvaAnalytics<T: Real> {
+        /// Total first-to-default hazard rate $\lambda_{\text{FtD}} = \lambda_C + \lambda_B - \lambda_{CB}$.
+        pub first_to_default_hazard_rate: T,
+        /// Survival-conditioned bilateral CVA $\text{CVA}_{\text{FtD}}$.
+        pub bilateral_first_to_default_cva: T,
+        /// Survival-conditioned bilateral DVA $\text{DVA}_{\text{FtD}}$.
+        pub bilateral_first_to_default_dva: T,
+        /// Net bilateral credit valuation adjustment $\text{BCVA} = \text{CVA}_{\text{FtD}} - \text{DVA}_{\text{FtD}}$.
+        pub net_bilateral_cva_charge: T,
+    }
+
+    /// Evaluates the Gregory (2009; 2020, Ch. 14) & Brigo et al. (2011) bilateral CVA and DVA
+    /// under Marshall–Olkin joint survival $S_{C,B}(t) = \exp\big(-(\lambda_C + \lambda_B - \lambda_{CB})t\big)$,
+    /// accounting for survival conditioning and simultaneous default close-out splitting.
+    pub fn evaluate_gregory_brigo_first_to_default_bilateral_cva_dva<T: Real>(
+        spec: &GregoryBrigoBilateralCvaDvaSpec<T>,
+    ) -> GregoryBrigoBilateralCvaDvaAnalytics<T> {
+        let lam_c = spec.counterparty_hazard_lambda_c;
+        let lam_b = spec.bank_own_hazard_lambda_b;
+        let lam_cb = spec.common_shock_hazard_lambda_cb;
+
+        // Marshall-Olkin first-to-default intensity: lam_1 + lam_2 + lam_12 = lam_C + lam_B - lam_CB
+        let lam_ftd = lam_c + lam_b - lam_cb;
+        let eff_rate = spec.risk_free_rate_r + lam_ftd;
+        let risky_annuity = (T::one() - (-eff_rate * spec.maturity_years_t).exp()) / eff_rate;
+
+        // Effective default intensity attributed to C first (plus half of simultaneous shock) and B first
+        let half = T::from_f64(0.5);
+        let lam_c_first = lam_c - half * lam_cb;
+        let lam_b_first = lam_b - half * lam_cb;
+
+        let cva_ftd = spec.counterparty_lgd_c
+            * lam_c_first
+            * spec.expected_positive_exposure_epe
+            * risky_annuity;
+        let dva_ftd =
+            spec.bank_own_lgd_b * lam_b_first * spec.expected_negative_exposure_ene * risky_annuity;
+        let net_bcva = cva_ftd - dva_ftd;
+
+        GregoryBrigoBilateralCvaDvaAnalytics {
+            first_to_default_hazard_rate: lam_ftd,
+            bilateral_first_to_default_cva: cva_ftd,
+            bilateral_first_to_default_dva: dva_ftd,
+            net_bilateral_cva_charge: net_bcva,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn gregory_brigo_bilateral_cva_dva_invariants_and_ad_parity() {
+            let base = GregoryBrigoBilateralCvaDvaSpec {
+                expected_positive_exposure_epe: 18.0_f64,
+                expected_negative_exposure_ene: 11.0_f64,
+                counterparty_hazard_lambda_c: 0.026_f64,
+                bank_own_hazard_lambda_b: 0.015_f64,
+                common_shock_hazard_lambda_cb: 0.004_f64,
+                counterparty_lgd_c: 0.60_f64,
+                bank_own_lgd_b: 0.60_f64,
+                risk_free_rate_r: 0.035_f64,
+                maturity_years_t: 5.0_f64,
+            };
+            let res = evaluate_gregory_brigo_first_to_default_bilateral_cva_dva(&base);
+            assert!(res.first_to_default_hazard_rate > base.counterparty_hazard_lambda_c);
+            assert!(res.bilateral_first_to_default_cva > res.bilateral_first_to_default_dva);
+            assert!(res.net_bilateral_cva_charge > 0.0);
+
+            let inputs = [
+                base.expected_positive_exposure_epe,
+                base.expected_negative_exposure_ene,
+                base.counterparty_hazard_lambda_c,
+                base.bank_own_hazard_lambda_b,
+                base.common_shock_hazard_lambda_cb,
+                base.counterparty_lgd_c,
+                base.bank_own_lgd_b,
+                base.risk_free_rate_r,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<9>::from_value(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = GregoryBrigoBilateralCvaDvaSpec {
+                expected_positive_exposure_epe: dual_in[0],
+                expected_negative_exposure_ene: dual_in[1],
+                counterparty_hazard_lambda_c: dual_in[2],
+                bank_own_hazard_lambda_b: dual_in[3],
+                common_shock_hazard_lambda_cb: dual_in[4],
+                counterparty_lgd_c: dual_in[5],
+                bank_own_lgd_b: dual_in[6],
+                risk_free_rate_r: dual_in[7],
+                maturity_years_t: dual_in[8],
+            };
+            let r_ad = evaluate_gregory_brigo_first_to_default_bilateral_cva_dva(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 9]| GregoryBrigoBilateralCvaDvaSpec {
+                    expected_positive_exposure_epe: v[0],
+                    expected_negative_exposure_ene: v[1],
+                    counterparty_hazard_lambda_c: v[2],
+                    bank_own_hazard_lambda_b: v[3],
+                    common_shock_hazard_lambda_cb: v[4],
+                    counterparty_lgd_c: v[5],
+                    bank_own_lgd_b: v[6],
+                    risk_free_rate_r: v[7],
+                    maturity_years_t: v[8],
+                };
+                let rp = evaluate_gregory_brigo_first_to_default_bilateral_cva_dva(&mk(p));
+                let rm = evaluate_gregory_brigo_first_to_default_bilateral_cva_dva(&mk(m));
+                let fd = (rp.net_bilateral_cva_charge - rm.net_bilateral_cva_charge) / (2.0 * eps);
+                assert!(
+                    r_ad.net_bilateral_cva_charge.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.net_bilateral_cva_charge.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use gregory_brigo_bilateral_cva_dva_mod::*;

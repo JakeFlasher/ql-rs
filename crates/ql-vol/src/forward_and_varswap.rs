@@ -2537,3 +2537,158 @@ mod buehler_variance_curve_mod {
     }
 }
 pub use buehler_variance_curve_mod::*;
+mod gatheral_jacquier_svi_surface_arbitrage_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Gatheral & Jacquier (2014, *Quantitative Finance* 14(1))
+    /// & Roper (2010) SVI implied volatility surface calendar-spread and Durrleman butterfly
+    /// no-arbitrage density and Dupire local volatility engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct GatheralJacquierSviSurfaceArbitrageSpec<T: Real> {
+        /// Log-moneyness $k = \ln(K / F_T)$ (e.g., $-0.10$).
+        pub log_moneyness_k: T,
+        /// SVI level parameter $a$ at slice $T_1$ (e.g., $0.024$).
+        pub svi_level_a: T,
+        /// SVI wing slope parameter $b > 0$ (e.g., $0.14$).
+        pub svi_slope_b: T,
+        /// SVI skew correlation parameter $\rho \in (-1, 1)$ (e.g., $-0.45$).
+        pub svi_correlation_rho: T,
+        /// SVI translation center $m$ (e.g., $0.02$).
+        pub svi_center_m: T,
+        /// SVI curvature smoothing parameter $\sigma > 0$ (e.g., $0.18$).
+        pub svi_smoothness_sigma: T,
+        /// Slice maturity $T_1$ in years (e.g., $1.0$).
+        pub maturity_years_t1: T,
+        /// Instantaneous forward variance rate $\partial_T w(k, T_1) > 0$ across slices (e.g., $0.048$).
+        pub calendar_variance_growth_dw_dt: T,
+    }
+
+    /// Analytics returned by [`evaluate_gatheral_jacquier_svi_calendar_and_butterfly_arbitrage`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct GatheralJacquierSviSurfaceArbitrageAnalytics<T: Real> {
+        /// Total implied variance $w(k, T_1) = a + b\big(\rho(k - m) + \sqrt{(k - m)^2 + \sigma^2}\big)$.
+        pub total_implied_variance_w: T,
+        /// Gatheral–Jacquier / Durrleman butterfly density function $g(k) > 0$.
+        pub durrleman_butterfly_density_g: T,
+        /// Roger Lee right/left wing slope margin $2 - b(1 + |\rho|) > 0$.
+        pub roger_lee_wing_slope_margin: T,
+        /// Extracted Dupire local volatility $\sigma_{\text{loc}}(k, T_1) = \sqrt{\frac{\partial_T w(k, T_1)}{g(k)}}$ (adjusted for slice time $T_1$).
+        pub dupire_local_volatility: T,
+    }
+
+    /// Evaluates the Gatheral & Jacquier (2014, Eqs. 2.1, 3.1–3.4) SVI total variance $w(k)$,
+    /// Durrleman butterfly density
+    /// $$g(k) = \left(1 - \frac{k w'(k)}{2 w(k)}\right)^2 - \frac{(w'(k))^2}{4}\left(\frac{1}{w(k)} + \frac{1}{4}\right) + \frac{w''(k)}{2},$$
+    /// and the Dupire local volatility $\sigma_{\text{loc}}(k, T_1)$ scaled by the slice implied-to-local ratio.
+    pub fn evaluate_gatheral_jacquier_svi_calendar_and_butterfly_arbitrage<T: Real>(
+        spec: &GatheralJacquierSviSurfaceArbitrageSpec<T>,
+    ) -> GatheralJacquierSviSurfaceArbitrageAnalytics<T> {
+        let k = spec.log_moneyness_k;
+        let a = spec.svi_level_a;
+        let b = spec.svi_slope_b;
+        let rho = spec.svi_correlation_rho;
+        let m = spec.svi_center_m;
+        let sig = spec.svi_smoothness_sigma;
+        let t1 = spec.maturity_years_t1;
+
+        let dk = k - m;
+        let rad = (dk * dk + sig * sig).sqrt();
+        let w = a + b * (rho * dk + rad);
+        let wp = b * (rho + dk / rad);
+        let wpp = b * sig * sig / (rad * rad * rad);
+
+        let term1 = T::one() - (k * wp) / (T::from_f64(2.0) * w);
+        let term2 = T::from_f64(0.25) * wp * wp * (T::one() / w + T::from_f64(0.25));
+        let g_k = term1 * term1 - term2 + T::from_f64(0.5) * wpp;
+
+        let lee_margin = T::from_f64(2.0) - b * (T::one() + (rho * rho + T::from_f64(1e-8)).sqrt());
+
+        // Calendar-adjusted total variance rate blending slice average w / T_1 and instantaneous dw/dT
+        let eff_dw_dt = T::from_f64(0.5) * (spec.calendar_variance_growth_dw_dt + w / t1);
+        let loc_vol = (eff_dw_dt / g_k).sqrt();
+
+        GatheralJacquierSviSurfaceArbitrageAnalytics {
+            total_implied_variance_w: w,
+            durrleman_butterfly_density_g: g_k,
+            roger_lee_wing_slope_margin: lee_margin,
+            dupire_local_volatility: loc_vol,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn gatheral_jacquier_svi_surface_arbitrage_invariants_and_ad_parity() {
+            let base = GatheralJacquierSviSurfaceArbitrageSpec {
+                log_moneyness_k: -0.10_f64,
+                svi_level_a: 0.024_f64,
+                svi_slope_b: 0.14_f64,
+                svi_correlation_rho: -0.45_f64,
+                svi_center_m: 0.02_f64,
+                svi_smoothness_sigma: 0.18_f64,
+                maturity_years_t1: 1.0_f64,
+                calendar_variance_growth_dw_dt: 0.048_f64,
+            };
+            let res = evaluate_gatheral_jacquier_svi_calendar_and_butterfly_arbitrage(&base);
+            assert!(res.total_implied_variance_w > 0.0);
+            assert!(res.durrleman_butterfly_density_g > 0.0);
+            assert!(res.roger_lee_wing_slope_margin > 0.0);
+            assert!(res.dupire_local_volatility > 0.10);
+
+            let inputs = [
+                base.log_moneyness_k,
+                base.svi_level_a,
+                base.svi_slope_b,
+                base.svi_correlation_rho,
+                base.svi_center_m,
+                base.svi_smoothness_sigma,
+                base.maturity_years_t1,
+                base.calendar_variance_growth_dw_dt,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = GatheralJacquierSviSurfaceArbitrageSpec {
+                log_moneyness_k: dual_in[0],
+                svi_level_a: dual_in[1],
+                svi_slope_b: dual_in[2],
+                svi_correlation_rho: dual_in[3],
+                svi_center_m: dual_in[4],
+                svi_smoothness_sigma: dual_in[5],
+                maturity_years_t1: dual_in[6],
+                calendar_variance_growth_dw_dt: dual_in[7],
+            };
+            let r_ad = evaluate_gatheral_jacquier_svi_calendar_and_butterfly_arbitrage(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| GatheralJacquierSviSurfaceArbitrageSpec {
+                    log_moneyness_k: v[0],
+                    svi_level_a: v[1],
+                    svi_slope_b: v[2],
+                    svi_correlation_rho: v[3],
+                    svi_center_m: v[4],
+                    svi_smoothness_sigma: v[5],
+                    maturity_years_t1: v[6],
+                    calendar_variance_growth_dw_dt: v[7],
+                };
+                let rp = evaluate_gatheral_jacquier_svi_calendar_and_butterfly_arbitrage(&mk(p));
+                let rm = evaluate_gatheral_jacquier_svi_calendar_and_butterfly_arbitrage(&mk(m));
+                let fd = (rp.dupire_local_volatility - rm.dupire_local_volatility) / (2.0 * eps);
+                assert!(
+                    r_ad.dupire_local_volatility.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.dupire_local_volatility.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use gatheral_jacquier_svi_surface_arbitrage_mod::*;

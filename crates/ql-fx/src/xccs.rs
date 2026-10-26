@@ -1820,3 +1820,184 @@ mod gabaix_maggiori_fx_carry_mod {
     }
 }
 pub use gabaix_maggiori_fx_carry_mod::*;
+mod wystup_fx_fader_option_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Wystup (2017, *FX Options and Structured Products*, 2nd ed.,
+    /// Ch. 5, §5.4) FX Fade-In / Fade-Out corridor accrual option and fader forward engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupFxFaderOptionSpec<T: Real> {
+        /// Spot FX rate $S_0$ (e.g., $1.09$).
+        pub spot_fx_s0: T,
+        /// Fader option strike $K$ (e.g., $1.07$).
+        pub strike_k: T,
+        /// Lower fader accrual corridor bound $L < S_0$ (e.g., $1.03$).
+        pub corridor_lower_bound_l: T,
+        /// Upper fader accrual corridor bound $U > S_0$ (e.g., $1.16$).
+        pub corridor_upper_bound_u: T,
+        /// Domestic risk-free rate $r_d$ (e.g., $0.036$).
+        pub domestic_rate_rd: T,
+        /// Foreign risk-free rate $r_f$ (e.g., $0.024$).
+        pub foreign_rate_rf: T,
+        /// FX volatility $\sigma$ (e.g., $0.11$).
+        pub fx_volatility_sigma: T,
+        /// Option maturity $T$ in years (e.g., $1.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_wystup_fx_corridor_fader_option_and_forward`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupFxFaderOptionAnalytics<T: Real> {
+        /// Expected risk-neutral corridor accrual fraction $\mathbb{E}^{\mathbb{Q}}[\mathbf{1}_{\{L < S_t < U\}}]$.
+        pub expected_corridor_accrual_fraction: T,
+        /// Vanilla Garman–Kohlhagen FX call price $c_{\text{GK}}(S_0, K, T)$.
+        pub vanilla_garman_kohlhagen_call: T,
+        /// Fade-In corridor call option value $V_{\text{fade-in}}$.
+        pub fade_in_corridor_call_value: T,
+        /// Fade-Out corridor call option value $V_{\text{fade-out}} = c_{\text{GK}} - V_{\text{fade-in}}$.
+        pub fade_out_corridor_call_value: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    #[inline]
+    fn corridor_prob<T: Real>(s0: T, l: T, u: T, rd: T, rf: T, sig: T, t: T) -> T {
+        let std_dev = sig * t.sqrt();
+        let drift = (rd - rf - T::from_f64(0.5) * sig * sig) * t;
+        let d_u = ((u / s0).ln() - drift) / std_dev;
+        let d_l = ((l / s0).ln() - drift) / std_dev;
+        std_norm_cdf(d_u) - std_norm_cdf(d_l)
+    }
+
+    /// Evaluates the Wystup (2017, §5.4) FX Fade-In and Fade-Out corridor call options,
+    /// satisfying exact fade-in + fade-out parity $V_{\text{fade-in}} + V_{\text{fade-out}} \equiv c_{\text{GK}}(S_0, K, T)$.
+    pub fn evaluate_wystup_fx_corridor_fader_option_and_forward<T: Real>(
+        spec: &WystupFxFaderOptionSpec<T>,
+    ) -> WystupFxFaderOptionAnalytics<T> {
+        let s0 = spec.spot_fx_s0;
+        let k = spec.strike_k;
+        let l = spec.corridor_lower_bound_l;
+        let u = spec.corridor_upper_bound_u;
+        let rd = spec.domestic_rate_rd;
+        let rf = spec.foreign_rate_rf;
+        let sig = spec.fx_volatility_sigma;
+        let t = spec.maturity_years_t;
+        let half = T::from_f64(0.5);
+
+        // Two-point (mid-horizon t/2 and terminal T) corridor occupancy probability under Q and spot-measure Q^S
+        let p_q_mid = corridor_prob(s0, l, u, rd, rf, sig, half * t);
+        let p_q_end = corridor_prob(s0, l, u, rd, rf, sig, t);
+        let p_accrual = half * (p_q_mid + p_q_end);
+
+        // Under spot-numeraire measure Q^S, drift shifts by +sig^2 (equivalent to r_d -> r_d + sig^2)
+        let p_s_mid = corridor_prob(s0, l, u, rd + sig * sig, rf, sig, half * t);
+        let p_s_end = corridor_prob(s0, l, u, rd + sig * sig, rf, sig, t);
+        let p_s_accrual = half * (p_s_mid + p_s_end);
+
+        let std_dev = sig * t.sqrt();
+        let d1 = ((s0 / k).ln() + (rd - rf + half * sig * sig) * t) / std_dev;
+        let d2 = d1 - std_dev;
+        let asset_leg = s0 * (-rf * t).exp() * std_norm_cdf(d1);
+        let strike_leg = k * (-rd * t).exp() * std_norm_cdf(d2);
+        let vanilla_call = asset_leg - strike_leg;
+
+        let fade_in_call = p_s_accrual * asset_leg - p_accrual * strike_leg;
+        let fade_out_call = vanilla_call - fade_in_call;
+
+        WystupFxFaderOptionAnalytics {
+            expected_corridor_accrual_fraction: p_accrual,
+            vanilla_garman_kohlhagen_call: vanilla_call,
+            fade_in_corridor_call_value: fade_in_call,
+            fade_out_corridor_call_value: fade_out_call,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn wystup_fx_fader_option_invariants_and_ad_parity() {
+            let base = WystupFxFaderOptionSpec {
+                spot_fx_s0: 1.09_f64,
+                strike_k: 1.07_f64,
+                corridor_lower_bound_l: 1.03_f64,
+                corridor_upper_bound_u: 1.16_f64,
+                domestic_rate_rd: 0.036_f64,
+                foreign_rate_rf: 0.024_f64,
+                fx_volatility_sigma: 0.11_f64,
+                maturity_years_t: 1.0_f64,
+            };
+            let res = evaluate_wystup_fx_corridor_fader_option_and_forward(&base);
+            assert!(
+                res.expected_corridor_accrual_fraction > 0.3
+                    && res.expected_corridor_accrual_fraction < 1.0
+            );
+            assert!(res.fade_in_corridor_call_value > 0.0);
+            assert!(res.fade_out_corridor_call_value > 0.0);
+            assert!(
+                (res.fade_in_corridor_call_value + res.fade_out_corridor_call_value
+                    - res.vanilla_garman_kohlhagen_call)
+                    .abs()
+                    < 1e-12
+            );
+
+            let inputs = [
+                base.spot_fx_s0,
+                base.strike_k,
+                base.corridor_lower_bound_l,
+                base.corridor_upper_bound_u,
+                base.domestic_rate_rd,
+                base.foreign_rate_rf,
+                base.fx_volatility_sigma,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = WystupFxFaderOptionSpec {
+                spot_fx_s0: dual_in[0],
+                strike_k: dual_in[1],
+                corridor_lower_bound_l: dual_in[2],
+                corridor_upper_bound_u: dual_in[3],
+                domestic_rate_rd: dual_in[4],
+                foreign_rate_rf: dual_in[5],
+                fx_volatility_sigma: dual_in[6],
+                maturity_years_t: dual_in[7],
+            };
+            let r_ad = evaluate_wystup_fx_corridor_fader_option_and_forward(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| WystupFxFaderOptionSpec {
+                    spot_fx_s0: v[0],
+                    strike_k: v[1],
+                    corridor_lower_bound_l: v[2],
+                    corridor_upper_bound_u: v[3],
+                    domestic_rate_rd: v[4],
+                    foreign_rate_rf: v[5],
+                    fx_volatility_sigma: v[6],
+                    maturity_years_t: v[7],
+                };
+                let rp = evaluate_wystup_fx_corridor_fader_option_and_forward(&mk(p));
+                let rm = evaluate_wystup_fx_corridor_fader_option_and_forward(&mk(m));
+                let fd =
+                    (rp.fade_in_corridor_call_value - rm.fade_in_corridor_call_value) / (2.0 * eps);
+                assert!(
+                    r_ad.fade_in_corridor_call_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.fade_in_corridor_call_value.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use wystup_fx_fader_option_mod::*;

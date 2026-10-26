@@ -2842,3 +2842,175 @@ mod cheuk_vorst_shout_reset_mod {
     }
 }
 pub use cheuk_vorst_shout_reset_mod::*;
+mod broadie_detemple_capped_call_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Broadie & Detemple (1995, *Review of Financial Studies* 8(1))
+    /// American capped call option engine with payoff $\min\big((S_t - K)^+, L_{\text{cap}} - K\big)$.
+    #[derive(Debug, Clone, Copy)]
+    pub struct BroadieDetempleAmericanCappedCallSpec<T: Real> {
+        /// Current spot price $S_0 < L_{\text{cap}}$ (e.g., $100.0$).
+        pub spot_price_s0: T,
+        /// Option strike $K$ (e.g., $96.0$).
+        pub strike_k: T,
+        /// Upper price cap $L_{\text{cap}} > \max(S_0, K)$ at which payoff reaches $L_{\text{cap}} - K$ (e.g., $118.0$).
+        pub cap_level_l: T,
+        /// Risk-free interest rate $r > 0$ (e.g., $0.045$).
+        pub risk_free_rate_r: T,
+        /// Continuous dividend yield $q > 0$ (e.g., $0.025$).
+        pub dividend_yield_q: T,
+        /// Volatility $\sigma > 0$ (e.g., $0.24$).
+        pub volatility_sigma: T,
+        /// Maturity $T$ in years (e.g., $1.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_broadie_detemple_american_capped_call_option`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct BroadieDetempleAmericanCappedCallAnalytics<T: Real> {
+        /// European capped call value $c_{\text{cap}}^{\text{Eur}}(S_0, K, L_{\text{cap}}, T)$.
+        pub european_capped_call_value: T,
+        /// Discounted first-passage cap-hit rebate $(L_{\text{cap}} - K)\mathbb{E}^{\mathbb{Q}}[e^{-r\tau_{L}}\mathbf{1}_{\{\tau_L \le T\}}]$.
+        pub early_cap_hit_present_value: T,
+        /// Continuation value of exercising only at maturity on paths that never hit $L_{\text{cap}}$.
+        pub no_touch_terminal_spread_value: T,
+        /// Total Broadie–Detemple American capped call value $C_{\text{cap}}^{\text{Am}}(S_0, K, L_{\text{cap}}, T)$.
+        pub american_capped_call_value: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    #[inline]
+    fn bs_call<T: Real>(s: T, k: T, r: T, q: T, sig: T, t: T) -> T {
+        let std_dev = sig * t.sqrt();
+        let d1 = ((s / k).ln() + (r - q + T::from_f64(0.5) * sig * sig) * t) / std_dev;
+        let d2 = d1 - std_dev;
+        s * (-q * t).exp() * std_norm_cdf(d1) - k * (-r * t).exp() * std_norm_cdf(d2)
+    }
+
+    /// Evaluates the Broadie & Detemple (1995, Theorem 1, pp. 166–170) American capped call
+    /// option by decomposing into:
+    /// 1. The immediate exercise rebate $(L_{\text{cap}} - K)$ paid at the first hitting time $\tau_L \le T$ of the cap boundary, and
+    /// 2. The down-and-out / up-and-out survival value of $(S_T - K)^+$ on $\{\tau_L > T\}$.
+    pub fn evaluate_broadie_detemple_american_capped_call_option<T: Real>(
+        spec: &BroadieDetempleAmericanCappedCallSpec<T>,
+    ) -> BroadieDetempleAmericanCappedCallAnalytics<T> {
+        let s0 = spec.spot_price_s0;
+        let k = spec.strike_k;
+        let l_cap = spec.cap_level_l;
+        let r = spec.risk_free_rate_r;
+        let q = spec.dividend_yield_q;
+        let sig = spec.volatility_sigma;
+        let sig2 = sig * sig;
+        let t = spec.maturity_years_t;
+        let std_dev = sig * t.sqrt();
+
+        // European bull-spread capped call = c_BS(S_0, K) - c_BS(S_0, L_cap)
+        let euro_capped = bs_call(s0, k, r, q, sig, t) - bs_call(s0, l_cap, r, q, sig, t);
+
+        // Broadie & Detemple (1995) cap-touch discounted Laplace transform E[e^{-r*tau_L} 1_{tau_L <= T}]
+        let mu = (r - q - T::from_f64(0.5) * sig2) / sig2;
+        let lam_hit = (mu * mu + T::from_f64(2.0) * r / sig2).sqrt();
+        let log_l_s = (l_cap / s0).ln();
+        let z_plus = -log_l_s / std_dev + lam_hit * std_dev;
+        let z_minus = -log_l_s / std_dev - lam_hit * std_dev;
+        let l_over_s = l_cap / s0;
+
+        let cap_payoff = l_cap - k;
+        let early_cap_pv = cap_payoff
+            * (l_over_s.pow(mu - lam_hit) * std_norm_cdf(z_plus)
+                + l_over_s.pow(mu + lam_hit) * std_norm_cdf(z_minus));
+
+        // Terminal capped payoff conditional on not hitting L_cap before T (up-and-out call spread)
+        let hit_prob_exp = (-r * t).exp()
+            * (std_norm_cdf(-log_l_s / std_dev + mu * std_dev)
+                + l_over_s.pow(T::from_f64(2.0) * mu)
+                    * std_norm_cdf(-log_l_s / std_dev - mu * std_dev));
+        let no_touch_spread = euro_capped - cap_payoff * hit_prob_exp;
+        let am_capped = no_touch_spread + early_cap_pv;
+
+        BroadieDetempleAmericanCappedCallAnalytics {
+            european_capped_call_value: euro_capped,
+            early_cap_hit_present_value: early_cap_pv,
+            no_touch_terminal_spread_value: no_touch_spread,
+            american_capped_call_value: am_capped,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn broadie_detemple_capped_call_invariants_and_ad_parity() {
+            let base = BroadieDetempleAmericanCappedCallSpec {
+                spot_price_s0: 100.0_f64,
+                strike_k: 96.0_f64,
+                cap_level_l: 118.0_f64,
+                risk_free_rate_r: 0.045_f64,
+                dividend_yield_q: 0.025_f64,
+                volatility_sigma: 0.24_f64,
+                maturity_years_t: 1.0_f64,
+            };
+            let res = evaluate_broadie_detemple_american_capped_call_option(&base);
+            assert!(res.european_capped_call_value > 0.0);
+            assert!(res.early_cap_hit_present_value > 0.0);
+            assert!(res.american_capped_call_value > res.european_capped_call_value);
+            assert!(res.american_capped_call_value < base.cap_level_l - base.strike_k);
+
+            let inputs = [
+                base.spot_price_s0,
+                base.strike_k,
+                base.cap_level_l,
+                base.risk_free_rate_r,
+                base.dividend_yield_q,
+                base.volatility_sigma,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BroadieDetempleAmericanCappedCallSpec {
+                spot_price_s0: dual_in[0],
+                strike_k: dual_in[1],
+                cap_level_l: dual_in[2],
+                risk_free_rate_r: dual_in[3],
+                dividend_yield_q: dual_in[4],
+                volatility_sigma: dual_in[5],
+                maturity_years_t: dual_in[6],
+            };
+            let r_ad = evaluate_broadie_detemple_american_capped_call_option(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| BroadieDetempleAmericanCappedCallSpec {
+                    spot_price_s0: v[0],
+                    strike_k: v[1],
+                    cap_level_l: v[2],
+                    risk_free_rate_r: v[3],
+                    dividend_yield_q: v[4],
+                    volatility_sigma: v[5],
+                    maturity_years_t: v[6],
+                };
+                let rp = evaluate_broadie_detemple_american_capped_call_option(&mk(p));
+                let rm = evaluate_broadie_detemple_american_capped_call_option(&mk(m));
+                let fd =
+                    (rp.american_capped_call_value - rm.american_capped_call_value) / (2.0 * eps);
+                assert!(
+                    r_ad.american_capped_call_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.american_capped_call_value.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use broadie_detemple_capped_call_mod::*;

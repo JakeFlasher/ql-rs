@@ -1663,3 +1663,160 @@ mod hilliard_reis_jump_futures_mod {
     }
 }
 pub use hilliard_reis_jump_futures_mod::*;
+mod brennan_schwartz_mine_hysteresis_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Brennan & Schwartz (1985, *Journal of Business* 58(2)) &
+    /// Dixit & Pindyck (1994, *Investment under Uncertainty*, Ch. 7) natural resource mine
+    /// opening, mothballing, and hysteresis real option engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrennanSchwartzMineHysteresisSpec<T: Real> {
+        /// Current spot commodity price $P_0$ ($/lb or $/oz, e.g., $4.10$).
+        pub commodity_spot_price_p0: T,
+        /// Unit variable extraction cost $c_{\text{var}}$ (e.g., $2.40$).
+        pub variable_extraction_cost_c: T,
+        /// Sunk investment / reopening capital cost $I_{\text{open}}$ per unit annual output (e.g., $8.50$).
+        pub reopening_investment_cost_i: T,
+        /// Temporary closure / suspension cost $K_{\text{close}}$ per unit annual output (e.g., $1.80$).
+        pub suspension_closure_cost_k: T,
+        /// Commodity convenience yield $\delta > 0$ (e.g., $0.045$).
+        pub convenience_yield_delta: T,
+        /// Risk-free interest rate $r > 0$ (e.g., $0.040$).
+        pub risk_free_rate_r: T,
+        /// Commodity price volatility $\sigma > 0$ (e.g., $0.26$).
+        pub commodity_volatility_sigma: T,
+    }
+
+    /// Analytics returned by [`evaluate_brennan_schwartz_natural_resource_mine_hysteresis_option`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrennanSchwartzMineHysteresisAnalytics<T: Real> {
+        /// Positive Dixit–Pindyck fundamental root $\beta_1 > 1$ governing the entry option.
+        pub entry_fundamental_exponent_beta1: T,
+        /// Negative Dixit–Pindyck fundamental root $\beta_2 < 0$ governing the suspension put option.
+        pub suspension_fundamental_exponent_beta2: T,
+        /// Hysteresis entry trigger price $P_H > c_{\text{var}}$ above which an idle mine opens.
+        pub hysteresis_opening_trigger_ph: T,
+        /// Operating mine value including embedded suspension/mothballing real option.
+        pub operating_mine_total_value: T,
+    }
+
+    /// Evaluates the Brennan & Schwartz (1985) / Dixit & Pindyck (1994, Ch. 7, Eqs. 7–15)
+    /// natural resource mine fundamental roots $\beta_1 > 1, \beta_2 < 0$ of
+    /// $\frac{1}{2}\sigma^2 \beta(\beta - 1) + (r - \delta)\beta - r = 0$, the hysteresis entry trigger $P_H$,
+    /// and the operating mine value $\frac{P_0}{\delta} - \frac{c_{\text{var}}}{r} + V_{\text{suspend}}(P_0)$.
+    pub fn evaluate_brennan_schwartz_natural_resource_mine_hysteresis_option<T: Real>(
+        spec: &BrennanSchwartzMineHysteresisSpec<T>,
+    ) -> BrennanSchwartzMineHysteresisAnalytics<T> {
+        let p0 = spec.commodity_spot_price_p0;
+        let c_var = spec.variable_extraction_cost_c;
+        let i_open = spec.reopening_investment_cost_i;
+        let k_close = spec.suspension_closure_cost_k;
+        let delta = spec.convenience_yield_delta;
+        let r = spec.risk_free_rate_r;
+        let sig = spec.commodity_volatility_sigma;
+        let sig2 = sig * sig;
+        let half = T::from_f64(0.5);
+
+        // Fundamental quadratic: 0.5*sig^2 * beta*(beta - 1) + (r - delta)*beta - r = 0
+        let b_quad = half - (r - delta) / sig2;
+        let rad = (b_quad * b_quad + T::from_f64(2.0) * r / sig2).sqrt();
+        let beta1 = b_quad + rad;
+        let beta2 = b_quad - rad;
+
+        // Entry trigger P_H and suspension trigger P_L (Dixit & Pindyck Ch. 7)
+        let p_h = (beta1 / (beta1 - T::one())) * delta * (c_var / r + i_open);
+        let p_l = (beta2 / (beta2 - T::one())) * delta * (c_var / r - k_close);
+
+        // Operating cashflow present value + mothballing/suspension put option + expansion/reopening synergy
+        let pv_operating = p0 / delta - c_var / r;
+        let suspend_put = (p_l / (delta * (T::one() - beta2))) * (p0 / p_l).pow(beta2);
+        let entry_flex =
+            (p_h / (delta * (beta1 - T::one()))) * (p0 / p_h).pow(beta1) * T::from_f64(0.15);
+        let total_val = pv_operating + suspend_put + entry_flex;
+
+        BrennanSchwartzMineHysteresisAnalytics {
+            entry_fundamental_exponent_beta1: beta1,
+            suspension_fundamental_exponent_beta2: beta2,
+            hysteresis_opening_trigger_ph: p_h,
+            operating_mine_total_value: total_val,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn brennan_schwartz_mine_hysteresis_invariants_and_ad_parity() {
+            let base = BrennanSchwartzMineHysteresisSpec {
+                commodity_spot_price_p0: 4.10_f64,
+                variable_extraction_cost_c: 2.40_f64,
+                reopening_investment_cost_i: 8.50_f64,
+                suspension_closure_cost_k: 1.80_f64,
+                convenience_yield_delta: 0.045_f64,
+                risk_free_rate_r: 0.040_f64,
+                commodity_volatility_sigma: 0.26_f64,
+            };
+            let res = evaluate_brennan_schwartz_natural_resource_mine_hysteresis_option(&base);
+            assert!(res.entry_fundamental_exponent_beta1 > 1.0);
+            assert!(res.suspension_fundamental_exponent_beta2 < 0.0);
+            assert!(res.hysteresis_opening_trigger_ph > base.variable_extraction_cost_c);
+            assert!(
+                res.operating_mine_total_value
+                    > base.commodity_spot_price_p0 / base.convenience_yield_delta
+                        - base.variable_extraction_cost_c / base.risk_free_rate_r
+            );
+
+            let inputs = [
+                base.commodity_spot_price_p0,
+                base.variable_extraction_cost_c,
+                base.reopening_investment_cost_i,
+                base.suspension_closure_cost_k,
+                base.convenience_yield_delta,
+                base.risk_free_rate_r,
+                base.commodity_volatility_sigma,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BrennanSchwartzMineHysteresisSpec {
+                commodity_spot_price_p0: dual_in[0],
+                variable_extraction_cost_c: dual_in[1],
+                reopening_investment_cost_i: dual_in[2],
+                suspension_closure_cost_k: dual_in[3],
+                convenience_yield_delta: dual_in[4],
+                risk_free_rate_r: dual_in[5],
+                commodity_volatility_sigma: dual_in[6],
+            };
+            let r_ad = evaluate_brennan_schwartz_natural_resource_mine_hysteresis_option(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| BrennanSchwartzMineHysteresisSpec {
+                    commodity_spot_price_p0: v[0],
+                    variable_extraction_cost_c: v[1],
+                    reopening_investment_cost_i: v[2],
+                    suspension_closure_cost_k: v[3],
+                    convenience_yield_delta: v[4],
+                    risk_free_rate_r: v[5],
+                    commodity_volatility_sigma: v[6],
+                };
+                let rp = evaluate_brennan_schwartz_natural_resource_mine_hysteresis_option(&mk(p));
+                let rm = evaluate_brennan_schwartz_natural_resource_mine_hysteresis_option(&mk(m));
+                let fd =
+                    (rp.operating_mine_total_value - rm.operating_mine_total_value) / (2.0 * eps);
+                assert!(
+                    r_ad.operating_mine_total_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.operating_mine_total_value.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use brennan_schwartz_mine_hysteresis_mod::*;

@@ -2640,3 +2640,168 @@ mod kalotay_williams_fabozzi_callable_mod {
     }
 }
 pub use kalotay_williams_fabozzi_callable_mod::*;
+mod fabozzi_effective_duration_oas_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Fabozzi (2012, *The Handbook of Fixed Income Securities*,
+    /// 8th ed., Ch. 38–40) & Tuckman & Serrat (2022, Ch. 19) Option-Adjusted Spread (OAS),
+    /// effective duration $D_{\text{eff}}$, and negative effective convexity $\text{Conv}_{\text{eff}}$ engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct FabozziEffectiveDurationOasSpec<T: Real> {
+        /// Benchmark risk-free yield $y_0$ (e.g., $0.042$).
+        pub benchmark_yield_y0: T,
+        /// Option-Adjusted Spread $\text{OAS}$ over the benchmark curve (e.g., $0.0085$).
+        pub option_adjusted_spread_oas: T,
+        /// Annual bond coupon rate $c$ per unit par (e.g., $0.056$).
+        pub coupon_rate_c: T,
+        /// Issuer call price $K_{\text{call}}$ per $100$ par (e.g., $100.5$).
+        pub call_price_k: T,
+        /// Forward price volatility $\sigma_P$ of the underlying option-free bond at call horizon (e.g., $0.065$).
+        pub bond_price_volatility_sigma: T,
+        /// Parallel curve shift $\Delta y > 0$ used for effective duration/convexity (e.g., $0.0025$).
+        pub parallel_yield_shift_dy: T,
+        /// Effective bond maturity $T$ in years (e.g., $5.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_fabozzi_tuckman_effective_duration_and_convexity_oas`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct FabozziEffectiveDurationOasAnalytics<T: Real> {
+        /// Option-free corporate bond value $V_{\text{nc}}(y_0 + \text{OAS})$ per $100$ par.
+        pub option_free_bond_price: T,
+        /// Callable corporate bond value $V_{\text{call}}(y_0 + \text{OAS}) = V_{\text{nc}} - C_{\text{call}}$.
+        pub callable_bond_price: T,
+        /// Fabozzi–Tuckman effective duration $D_{\text{eff}} = \frac{V_{\text{call}}(-\Delta y) - V_{\text{call}}(+\Delta y)}{2 V_{\text{call}}(0)\Delta y}$.
+        pub effective_duration: T,
+        /// Fabozzi–Tuckman effective convexity $\text{Conv}_{\text{eff}} = \frac{V_{\text{call}}(-\Delta y) + V_{\text{call}}(+\Delta y) - 2 V_{\text{call}}(0)}{V_{\text{call}}(0)(\Delta y)^2}$.
+        pub effective_convexity: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    #[inline]
+    fn std_norm_pdf<T: Real>(x: T) -> T {
+        T::from_f64(0.398_942_280_401_432_7) * (-T::from_f64(0.5) * x * x).exp()
+    }
+
+    #[inline]
+    fn callable_price_at_yield<T: Real>(y_tot: T, c: T, k_call: T, sig_p: T, t: T) -> (T, T) {
+        let par = T::from_f64(100.0);
+        let df = (-y_tot * t).exp();
+        let annuity = (T::one() - df) / y_tot;
+        let v_nc = par * (c * annuity + df);
+
+        // Embedded issuer call option value via Bachelier normal bond-price call at half-maturity
+        let t_call = T::from_f64(0.5) * t;
+        let df_call = (-y_tot * t_call).exp();
+        let std_p = par * sig_p * t_call.sqrt();
+        let diff = v_nc - k_call;
+        let z = diff / std_p;
+        let call_val = df_call * (diff * std_norm_cdf(z) + std_p * std_norm_pdf(z));
+        (v_nc, v_nc - call_val)
+    }
+
+    /// Evaluates the Fabozzi (2012, Ch. 38–40) & Tuckman & Serrat (2022, Ch. 19) callable bond
+    /// price, effective duration $D_{\text{eff}}$, and negative effective convexity $\text{Conv}_{\text{eff}}$
+    /// holding the Option-Adjusted Spread (OAS) constant across $\pm \Delta y$ curve shifts.
+    pub fn evaluate_fabozzi_tuckman_effective_duration_and_convexity_oas<T: Real>(
+        spec: &FabozziEffectiveDurationOasSpec<T>,
+    ) -> FabozziEffectiveDurationOasAnalytics<T> {
+        let y_base = spec.benchmark_yield_y0 + spec.option_adjusted_spread_oas;
+        let dy = spec.parallel_yield_shift_dy;
+        let c = spec.coupon_rate_c;
+        let k_call = spec.call_price_k;
+        let sig_p = spec.bond_price_volatility_sigma;
+        let t = spec.maturity_years_t;
+
+        let (v_nc_0, v_call_0) = callable_price_at_yield(y_base, c, k_call, sig_p, t);
+        let (_, v_call_dn) = callable_price_at_yield(y_base - dy, c, k_call, sig_p, t);
+        let (_, v_call_up) = callable_price_at_yield(y_base + dy, c, k_call, sig_p, t);
+
+        let eff_dur = (v_call_dn - v_call_up) / (T::from_f64(2.0) * v_call_0 * dy);
+        let eff_conv = (v_call_dn + v_call_up - T::from_f64(2.0) * v_call_0) / (v_call_0 * dy * dy);
+
+        FabozziEffectiveDurationOasAnalytics {
+            option_free_bond_price: v_nc_0,
+            callable_bond_price: v_call_0,
+            effective_duration: eff_dur,
+            effective_convexity: eff_conv,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn fabozzi_effective_duration_oas_invariants_and_ad_parity() {
+            let base = FabozziEffectiveDurationOasSpec {
+                benchmark_yield_y0: 0.042_f64,
+                option_adjusted_spread_oas: 0.0085_f64,
+                coupon_rate_c: 0.056_f64,
+                call_price_k: 100.5_f64,
+                bond_price_volatility_sigma: 0.065_f64,
+                parallel_yield_shift_dy: 0.0025_f64,
+                maturity_years_t: 5.0_f64,
+            };
+            let res = evaluate_fabozzi_tuckman_effective_duration_and_convexity_oas(&base);
+            assert!(res.option_free_bond_price > res.callable_bond_price);
+            assert!(res.effective_duration > 0.0 && res.effective_duration < base.maturity_years_t);
+            // Near-the-money callable bond exhibits negative effective convexity
+            assert!(res.effective_convexity < 0.0);
+
+            let inputs = [
+                base.benchmark_yield_y0,
+                base.option_adjusted_spread_oas,
+                base.coupon_rate_c,
+                base.call_price_k,
+                base.bond_price_volatility_sigma,
+                base.parallel_yield_shift_dy,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = FabozziEffectiveDurationOasSpec {
+                benchmark_yield_y0: dual_in[0],
+                option_adjusted_spread_oas: dual_in[1],
+                coupon_rate_c: dual_in[2],
+                call_price_k: dual_in[3],
+                bond_price_volatility_sigma: dual_in[4],
+                parallel_yield_shift_dy: dual_in[5],
+                maturity_years_t: dual_in[6],
+            };
+            let r_ad = evaluate_fabozzi_tuckman_effective_duration_and_convexity_oas(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| FabozziEffectiveDurationOasSpec {
+                    benchmark_yield_y0: v[0],
+                    option_adjusted_spread_oas: v[1],
+                    coupon_rate_c: v[2],
+                    call_price_k: v[3],
+                    bond_price_volatility_sigma: v[4],
+                    parallel_yield_shift_dy: v[5],
+                    maturity_years_t: v[6],
+                };
+                let rp = evaluate_fabozzi_tuckman_effective_duration_and_convexity_oas(&mk(p));
+                let rm = evaluate_fabozzi_tuckman_effective_duration_and_convexity_oas(&mk(m));
+                let fd = (rp.effective_duration - rm.effective_duration) / (2.0 * eps);
+                assert!(
+                    r_ad.effective_duration.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.effective_duration.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use fabozzi_effective_duration_oas_mod::*;

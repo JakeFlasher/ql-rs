@@ -6246,3 +6246,161 @@ mod gls_tasche_cornish_fisher_raroc_mod {
     }
 }
 pub use gls_tasche_cornish_fisher_raroc_mod::*;
+mod cont_deguest_scandolo_robust_risk_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Cont, Deguest & Scandolo (2010, *Mathematical Finance* 20(4))
+    /// & Kou, Peng & Heyde (2013, *Mathematics of Operations Research* 38(3)) Hampel influence
+    /// function and tail robustness comparison of VaR, Expected Shortfall, and Median Shortfall ($\text{MS}_\alpha$).
+    #[derive(Debug, Clone, Copy)]
+    pub struct ContDeguestScandoloRobustRiskSpec<T: Real> {
+        /// Portfolio location loss parameter $\mu_L$ (e.g., $0.012$).
+        pub loss_location_mu: T,
+        /// Generalized Pareto / heavy-tail scale parameter $s_L > 0$ (e.g., $0.025$).
+        pub tail_scale_s: T,
+        /// Extreme-value tail shape index $\xi \in (0, 0.5)$ (e.g., $0.24$).
+        pub tail_index_xi: T,
+        /// Tail tail-probability level $p = 1 - \alpha \in (0, 0.10)$ (e.g., $0.025$ for $97.5\%$ ES/MS).
+        pub tail_probability_p: T,
+        /// Dirac point-mass contamination weight $\varepsilon_{\text{cont}} > 0$ (e.g., $0.002$).
+        pub contamination_epsilon: T,
+        /// Extreme stress outlier loss level $z_{\text{outlier}} > \text{VaR}_{1-p}$ (e.g., $0.28$).
+        pub stress_outlier_loss_z: T,
+    }
+
+    /// Analytics returned by [`evaluate_cont_deguest_scandolo_tail_risk_influence_sensitivity`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct ContDeguestScandoloRobustRiskAnalytics<T: Real> {
+        /// Baseline Generalized Pareto Value-at-Risk $\text{VaR}_{1-p}$.
+        pub baseline_value_at_risk: T,
+        /// Baseline Kou–Peng–Heyde Median Shortfall $\text{MS}_{1-p} = \text{VaR}_{1-p/2}$.
+        pub baseline_median_shortfall: T,
+        /// Baseline Expected Shortfall $\text{ES}_{1-p}$.
+        pub baseline_expected_shortfall: T,
+        /// Contamination-perturbed Median Shortfall vs. ES robustness ratio $\text{MS}_{1-p}^{(\varepsilon)} / \text{ES}_{1-p}^{(\varepsilon)}$.
+        pub contaminated_median_to_expected_shortfall_ratio: T,
+    }
+
+    /// Evaluates the Cont, Deguest & Scandolo (2010, Proposition 3.2) Hampel influence functions
+    /// for $\text{VaR}_{1-p}$, Median Shortfall $\text{MS}_{1-p} = \text{VaR}_{1-p/2}$ (Kou, Peng & Heyde 2013),
+    /// and Expected Shortfall $\text{ES}_{1-p}$ under a heavy-tailed Generalized Pareto loss law:
+    /// - $\text{IF}(z; \text{MS}_{1-p}) = \frac{1 - p/2}{f(\text{VaR}_{1-p/2})}$ is **bounded** in $z$, whereas
+    /// - $\text{IF}(z; \text{ES}_{1-p}) = \text{VaR}_{1-p} - \text{ES}_{1-p} + \frac{z - \text{VaR}_{1-p}}{p}$ grows **linearly** with the outlier $z$.
+    pub fn evaluate_cont_deguest_scandolo_tail_risk_influence_sensitivity<T: Real>(
+        spec: &ContDeguestScandoloRobustRiskSpec<T>,
+    ) -> ContDeguestScandoloRobustRiskAnalytics<T> {
+        let mu = spec.loss_location_mu;
+        let s = spec.tail_scale_s;
+        let xi = spec.tail_index_xi;
+        let p = spec.tail_probability_p;
+        let eps = spec.contamination_epsilon;
+        let z_out = spec.stress_outlier_loss_z;
+
+        // Generalized Pareto quantile VaR_{1-p} = mu + (s / xi) * (p^(-xi) - 1)
+        let p_neg_xi = p.pow(-xi);
+        let var_p = mu + (s / xi) * (p_neg_xi - T::one());
+
+        // Median Shortfall MS_{1-p} = VaR_{1 - p/2} (Kou, Peng & Heyde 2013)
+        let p_half = T::from_f64(0.5) * p;
+        let p_half_neg_xi = p_half.pow(-xi);
+        let ms_p = mu + (s / xi) * (p_half_neg_xi - T::one());
+
+        // Expected Shortfall ES_{1-p} = (VaR_{1-p} + s - xi*mu) / (1 - xi)
+        let es_p = (var_p + s - xi * mu) / (T::one() - xi);
+
+        // Hampel influence function at outlier z_out > MS_{1-p}:
+        // Density at MS_{1-p} is f(MS_{1-p}) = (1 / s) * (p / 2)^(1 + xi)
+        // IF(z; MS_{1-p}) = (1 - p/2) / f(MS_{1-p})
+        let inv_f_ms = s * p_half.pow(-(T::one() + xi));
+        let if_ms = (T::one() - p_half) * inv_f_ms;
+
+        // IF(z_out; ES_{1-p}) = VaR_{1-p} - ES_{1-p} + (z_out - VaR_{1-p}) / p (Cont, Deguest & Scandolo 2010)
+        let if_es = var_p - es_p + (z_out - var_p) / p;
+
+        let ms_cont = ms_p + eps * if_ms;
+        let es_cont = es_p + eps * if_es;
+        let rob_ratio = ms_cont / es_cont;
+
+        ContDeguestScandoloRobustRiskAnalytics {
+            baseline_value_at_risk: var_p,
+            baseline_median_shortfall: ms_p,
+            baseline_expected_shortfall: es_p,
+            contaminated_median_to_expected_shortfall_ratio: rob_ratio,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn cont_deguest_scandolo_robust_risk_invariants_and_ad_parity() {
+            let base = ContDeguestScandoloRobustRiskSpec {
+                loss_location_mu: 0.012_f64,
+                tail_scale_s: 0.025_f64,
+                tail_index_xi: 0.24_f64,
+                tail_probability_p: 0.025_f64,
+                contamination_epsilon: 0.002_f64,
+                stress_outlier_loss_z: 0.28_f64,
+            };
+            let res = evaluate_cont_deguest_scandolo_tail_risk_influence_sensitivity(&base);
+            assert!(res.baseline_median_shortfall > res.baseline_value_at_risk);
+            assert!(res.baseline_expected_shortfall > res.baseline_median_shortfall);
+            assert!(
+                res.contaminated_median_to_expected_shortfall_ratio > 0.5
+                    && res.contaminated_median_to_expected_shortfall_ratio < 1.0
+            );
+
+            let inputs = [
+                base.loss_location_mu,
+                base.tail_scale_s,
+                base.tail_index_xi,
+                base.tail_probability_p,
+                base.contamination_epsilon,
+                base.stress_outlier_loss_z,
+            ];
+            let mut dual_in = [Dual::<6>::from_value(0.0); 6];
+            for i in 0..6 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = ContDeguestScandoloRobustRiskSpec {
+                loss_location_mu: dual_in[0],
+                tail_scale_s: dual_in[1],
+                tail_index_xi: dual_in[2],
+                tail_probability_p: dual_in[3],
+                contamination_epsilon: dual_in[4],
+                stress_outlier_loss_z: dual_in[5],
+            };
+            let r_ad = evaluate_cont_deguest_scandolo_tail_risk_influence_sensitivity(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..6 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 6]| ContDeguestScandoloRobustRiskSpec {
+                    loss_location_mu: v[0],
+                    tail_scale_s: v[1],
+                    tail_index_xi: v[2],
+                    tail_probability_p: v[3],
+                    contamination_epsilon: v[4],
+                    stress_outlier_loss_z: v[5],
+                };
+                let rp = evaluate_cont_deguest_scandolo_tail_risk_influence_sensitivity(&mk(p));
+                let rm = evaluate_cont_deguest_scandolo_tail_risk_influence_sensitivity(&mk(m));
+                let fd = (rp.contaminated_median_to_expected_shortfall_ratio
+                    - rm.contaminated_median_to_expected_shortfall_ratio)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.contaminated_median_to_expected_shortfall_ratio.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!(
+                    (r_ad.contaminated_median_to_expected_shortfall_ratio.d[i] - fd).abs() < 1e-5
+                );
+            }
+        }
+    }
+}
+pub use cont_deguest_scandolo_robust_risk_mod::*;

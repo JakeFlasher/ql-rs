@@ -5426,3 +5426,174 @@ mod maclean_thorp_ziemba_drawdown_kelly_mod {
     }
 }
 pub use maclean_thorp_ziemba_drawdown_kelly_mod::*;
+mod meucci_entropy_pooling_view_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Meucci (2008, *Risk* 21(9), *"Fully Flexible Views: Theory
+    /// and Practice"*) & Satchell & Scowcroft (2000) relative-entropy (Kullback–Leibler)
+    /// posterior view pooling and mean-variance allocation engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct MeucciEntropyPoolingAllocationSpec<T: Real> {
+        /// Prior expected excess return $\mu_1$ of asset 1 (e.g., $0.065$).
+        pub prior_mean_asset1_mu1: T,
+        /// Prior expected excess return $\mu_2$ of asset 2 (e.g., $0.050$).
+        pub prior_mean_asset2_mu2: T,
+        /// Prior variance $\sigma_1^2$ of asset 1 (e.g., $0.040$).
+        pub prior_variance_asset1_v1: T,
+        /// Prior variance $\sigma_2^2$ of asset 2 (e.g., $0.030$).
+        pub prior_variance_asset2_v2: T,
+        /// Prior correlation $\rho_{12} \in (-1, 1)$ between assets 1 and 2 (e.g., $0.35$).
+        pub prior_correlation_rho12: T,
+        /// Relative-return view target $v_{\text{view}}$ on spread $R_1 - R_2$ (e.g., $0.032$).
+        pub spread_view_target_v: T,
+        /// View variance $\tau_{\text{view}}^2 > 0$ on spread $R_1 - R_2$ (e.g., $0.022$).
+        pub spread_view_variance_tau2: T,
+        /// Investor confidence $c_{\text{view}} \in (0, 1)$ in the entropy-pooled posterior (e.g., $0.65$).
+        pub view_confidence_c: T,
+    }
+
+    /// Analytics returned by [`evaluate_meucci_satchell_scowcroft_entropy_pooling_view_allocation`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct MeucciEntropyPoolingViewAnalytics<T: Real> {
+        /// Confidence-pooled posterior expected excess return $\mu_{1,c}$ of asset 1.
+        pub posterior_mean_asset1: T,
+        /// Confidence-pooled posterior expected excess return $\mu_{2,c}$ of asset 2.
+        pub posterior_mean_asset2: T,
+        /// Kullback–Leibler relative entropy $\mathcal{D}_{\text{KL}}(f_{\text{KL}} \parallel f_0)$ of the full-confidence view.
+        pub relative_entropy_kl_divergence: T,
+        /// Posterior squared Sharpe ratio $\mu_c^\top \Sigma_c^{-1} \mu_c$ under the entropy-pooled distribution.
+        pub posterior_squared_sharpe_ratio: T,
+    }
+
+    /// Evaluates the Meucci (2008, Eqs. 15–22) analytical Gaussian Entropy Pooling posterior
+    /// for view $p^\top R = R_1 - R_2 \sim \mathcal{N}(v_{\text{view}}, \tau_{\text{view}}^2)$:
+    /// $$\mu_{\text{KL}} = \mu_0 + \frac{\Sigma_0 p}{p^\top \Sigma_0 p}(v_{\text{view}} - p^\top \mu_0), \qquad \Sigma_{\text{KL}} = \Sigma_0 + \frac{\Sigma_0 p p^\top \Sigma_0}{(p^\top \Sigma_0 p)^2}(\tau_{\text{view}}^2 - p^\top \Sigma_0 p),$$
+    /// blends with prior at confidence $c_{\text{view}}$, and computes the exact KL divergence and posterior squared Sharpe ratio.
+    pub fn evaluate_meucci_satchell_scowcroft_entropy_pooling_view_allocation<T: Real>(
+        spec: &MeucciEntropyPoolingAllocationSpec<T>,
+    ) -> MeucciEntropyPoolingViewAnalytics<T> {
+        let mu1 = spec.prior_mean_asset1_mu1;
+        let mu2 = spec.prior_mean_asset2_mu2;
+        let v1 = spec.prior_variance_asset1_v1;
+        let v2 = spec.prior_variance_asset2_v2;
+        let cov12 = spec.prior_correlation_rho12 * (v1 * v2).sqrt();
+
+        // View vector p = [1, -1]^T: prior spread mean and variance
+        let prior_spread_mean = mu1 - mu2;
+        let prior_spread_var = v1 + v2 - T::from_f64(2.0) * cov12;
+
+        // Sigma_0 * p = [v1 - cov12, cov12 - v2]^T
+        let sp1 = v1 - cov12;
+        let sp2 = cov12 - v2;
+
+        let mean_shift = (spec.spread_view_target_v - prior_spread_mean) / prior_spread_var;
+        let c = spec.view_confidence_c;
+
+        // Confidence-blended posterior mean mu_c = mu_0 + c * (Sigma_0 p / (p^T Sigma_0 p)) * (v - p^T mu_0)
+        let mu1_c = mu1 + c * sp1 * mean_shift;
+        let mu2_c = mu2 + c * sp2 * mean_shift;
+
+        // Confidence-blended posterior covariance Sigma_c = Sigma_0 + c * ((tau^2 - s0^2)/s0^4) * (Sigma_0 p)(Sigma_0 p)^T
+        let var_scale = c * (spec.spread_view_variance_tau2 - prior_spread_var)
+            / (prior_spread_var * prior_spread_var);
+        let v1_c = v1 + var_scale * sp1 * sp1;
+        let v2_c = v2 + var_scale * sp2 * sp2;
+        let cov12_c = cov12 + var_scale * sp1 * sp2;
+
+        // Exact KL divergence D_KL(N(v, tau^2) || N(prior_spread_mean, prior_spread_var))
+        let ratio_v = spec.spread_view_variance_tau2 / prior_spread_var;
+        let diff_m = spec.spread_view_target_v - prior_spread_mean;
+        let kl_div = T::from_f64(0.5)
+            * (ratio_v - T::one() - ratio_v.ln() + (diff_m * diff_m) / prior_spread_var);
+
+        let det_c = v1_c * v2_c - cov12_c * cov12_c;
+        let sr2_post = (v2_c * mu1_c * mu1_c - T::from_f64(2.0) * cov12_c * mu1_c * mu2_c
+            + v1_c * mu2_c * mu2_c)
+            / det_c;
+
+        MeucciEntropyPoolingViewAnalytics {
+            posterior_mean_asset1: mu1_c,
+            posterior_mean_asset2: mu2_c,
+            relative_entropy_kl_divergence: kl_div,
+            posterior_squared_sharpe_ratio: sr2_post,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn meucci_entropy_pooling_view_invariants_and_ad_parity() {
+            let base = MeucciEntropyPoolingAllocationSpec {
+                prior_mean_asset1_mu1: 0.065_f64,
+                prior_mean_asset2_mu2: 0.050_f64,
+                prior_variance_asset1_v1: 0.040_f64,
+                prior_variance_asset2_v2: 0.030_f64,
+                prior_correlation_rho12: 0.35_f64,
+                spread_view_target_v: 0.032_f64,
+                spread_view_variance_tau2: 0.022_f64,
+                view_confidence_c: 0.65_f64,
+            };
+            let res = evaluate_meucci_satchell_scowcroft_entropy_pooling_view_allocation(&base);
+            assert!(res.posterior_mean_asset1 > base.prior_mean_asset1_mu1);
+            assert!(res.posterior_mean_asset2 < base.prior_mean_asset2_mu2);
+            assert!(res.relative_entropy_kl_divergence > 0.0);
+            assert!(res.posterior_squared_sharpe_ratio > 0.0);
+
+            let inputs = [
+                base.prior_mean_asset1_mu1,
+                base.prior_mean_asset2_mu2,
+                base.prior_variance_asset1_v1,
+                base.prior_variance_asset2_v2,
+                base.prior_correlation_rho12,
+                base.spread_view_target_v,
+                base.spread_view_variance_tau2,
+                base.view_confidence_c,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = MeucciEntropyPoolingAllocationSpec {
+                prior_mean_asset1_mu1: dual_in[0],
+                prior_mean_asset2_mu2: dual_in[1],
+                prior_variance_asset1_v1: dual_in[2],
+                prior_variance_asset2_v2: dual_in[3],
+                prior_correlation_rho12: dual_in[4],
+                spread_view_target_v: dual_in[5],
+                spread_view_variance_tau2: dual_in[6],
+                view_confidence_c: dual_in[7],
+            };
+            let r_ad = evaluate_meucci_satchell_scowcroft_entropy_pooling_view_allocation(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| MeucciEntropyPoolingAllocationSpec {
+                    prior_mean_asset1_mu1: v[0],
+                    prior_mean_asset2_mu2: v[1],
+                    prior_variance_asset1_v1: v[2],
+                    prior_variance_asset2_v2: v[3],
+                    prior_correlation_rho12: v[4],
+                    spread_view_target_v: v[5],
+                    spread_view_variance_tau2: v[6],
+                    view_confidence_c: v[7],
+                };
+                let rp = evaluate_meucci_satchell_scowcroft_entropy_pooling_view_allocation(&mk(p));
+                let rm = evaluate_meucci_satchell_scowcroft_entropy_pooling_view_allocation(&mk(m));
+                let fd = (rp.posterior_squared_sharpe_ratio - rm.posterior_squared_sharpe_ratio)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.posterior_squared_sharpe_ratio.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.posterior_squared_sharpe_ratio.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use meucci_entropy_pooling_view_mod::*;

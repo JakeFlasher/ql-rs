@@ -3435,3 +3435,151 @@ mod wachter_disaster_volatility_mod {
     }
 }
 pub use wachter_disaster_volatility_mod::*;
+mod christiano_eichenbaum_evans_nk_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Christiano, Eichenbaum & Evans (2005, *Journal of Political
+    /// Economy* 113(1)) & Smets & Wouters (2007, *AER* 97(3)) medium-scale New Keynesian DSGE
+    /// model with hybrid Calvo price stickiness, external habit formation, and investment-growth
+    /// adjustment costs.
+    #[derive(Debug, Clone, Copy)]
+    pub struct ChristianoEichenbaumEvansNkSpec<T: Real> {
+        /// Calvo price non-reoptimization probability $\xi_p \in (0, 1)$ (e.g., $0.68$).
+        pub calvo_price_stickiness_xi_p: T,
+        /// Backward inflation indexation weight $\iota_p \in (0, 1)$ (e.g., $0.45$).
+        pub inflation_indexation_iota_p: T,
+        /// Household subjective discount factor $\beta \in (0, 1)$ (e.g., $0.99$).
+        pub discount_factor_beta: T,
+        /// External consumption habit persistence $h \in (0, 1)$ (e.g., $0.70$).
+        pub habit_persistence_h: T,
+        /// Investment growth-rate adjustment cost curvature $S''(1) = \kappa_I > 0$ (e.g., $4.50$).
+        pub investment_adjustment_curvature_kappa_i: T,
+        /// Steady-state investment share of output $\omega_I \in (0, 1)$ (e.g., $0.22$).
+        pub steady_state_investment_share: T,
+        /// Real interest-rate gap shock $\hat{r}_t > 0$ (e.g., $0.010$).
+        pub real_interest_rate_shock: T,
+    }
+
+    /// Analytics returned by [`evaluate_christiano_eichenbaum_evans_calvo_investment_nk_impulse`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct ChristianoEichenbaumEvansNkAnalytics<T: Real> {
+        /// Structural hybrid New Keynesian Phillips Curve (NKPC) marginal-cost slope $\kappa_p$.
+        pub hybrid_nkpc_marginal_cost_slope: T,
+        /// Habit-attenuated consumption Euler interest-rate sensitivity $-\partial \hat{c}_t / \partial \hat{r}_t$.
+        pub habit_euler_consumption_sensitivity: T,
+        /// Investment-adjustment-cost Tobin's $Q$ sensitivity $-\partial \hat{I}_t / \partial \hat{r}_t$.
+        pub investment_adjustment_q_sensitivity: T,
+        /// Equilibrium inflation impact response $-\hat{\pi}_t$ to a contractionary real interest rate shock $\hat{r}_t$.
+        pub contractionary_inflation_impulse_response: T,
+    }
+
+    /// Evaluates the Christiano, Eichenbaum & Evans (2005) / Smets & Wouters (2007) structural
+    /// New Keynesian transmission mechanism:
+    /// - Hybrid NKPC slope $\kappa_p = \frac{(1 - \xi_p)(1 - \beta \xi_p)}{\xi_p(1 + \beta \iota_p)}$,
+    /// - Habit-adjusted consumption Euler sensitivity $\eta_c = \frac{1 - h}{1 + h}$,
+    /// - Investment flow adjustment-cost sensitivity $\eta_I = \frac{1}{\kappa_I(1 + \beta)}$,
+    /// - Aggregate demand contraction $\Delta \hat{y}_t = -\big((1 - \omega_I)\eta_c + \omega_I \eta_I\big)\hat{r}_t$, and
+    /// - Hybrid NKPC inflation impact response $-\hat{\pi}_t = \kappa_p \left(\frac{1 + h}{1 - h}\right)(-\Delta \hat{y}_t)$.
+    pub fn evaluate_christiano_eichenbaum_evans_calvo_investment_nk_impulse<T: Real>(
+        spec: &ChristianoEichenbaumEvansNkSpec<T>,
+    ) -> ChristianoEichenbaumEvansNkAnalytics<T> {
+        let xi_p = spec.calvo_price_stickiness_xi_p;
+        let iota_p = spec.inflation_indexation_iota_p;
+        let beta = spec.discount_factor_beta;
+        let h = spec.habit_persistence_h;
+        let kappa_i = spec.investment_adjustment_curvature_kappa_i;
+        let omega_i = spec.steady_state_investment_share;
+        let r_shock = spec.real_interest_rate_shock;
+
+        let kappa_p =
+            ((T::one() - xi_p) * (T::one() - beta * xi_p)) / (xi_p * (T::one() + beta * iota_p));
+        let eta_c = (T::one() - h) / (T::one() + h);
+        let eta_i = T::one() / (kappa_i * (T::one() + beta));
+
+        let output_contraction = ((T::one() - omega_i) * eta_c + omega_i * eta_i) * r_shock;
+        let mc_elasticity = T::one() + T::from_f64(0.5) * (T::one() / eta_c + kappa_i * omega_i);
+        let inflation_drop = kappa_p * mc_elasticity * output_contraction;
+
+        ChristianoEichenbaumEvansNkAnalytics {
+            hybrid_nkpc_marginal_cost_slope: kappa_p,
+            habit_euler_consumption_sensitivity: eta_c,
+            investment_adjustment_q_sensitivity: eta_i,
+            contractionary_inflation_impulse_response: inflation_drop,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn christiano_eichenbaum_evans_nk_invariants_and_ad_parity() {
+            let base = ChristianoEichenbaumEvansNkSpec {
+                calvo_price_stickiness_xi_p: 0.68_f64,
+                inflation_indexation_iota_p: 0.45_f64,
+                discount_factor_beta: 0.99_f64,
+                habit_persistence_h: 0.70_f64,
+                investment_adjustment_curvature_kappa_i: 4.50_f64,
+                steady_state_investment_share: 0.22_f64,
+                real_interest_rate_shock: 0.010_f64,
+            };
+            let res = evaluate_christiano_eichenbaum_evans_calvo_investment_nk_impulse(&base);
+            assert!(res.hybrid_nkpc_marginal_cost_slope > 0.0);
+            assert!(res.habit_euler_consumption_sensitivity > 0.0);
+            assert!(res.investment_adjustment_q_sensitivity > 0.0);
+            assert!(res.contractionary_inflation_impulse_response > 0.0);
+
+            let inputs = [
+                base.calvo_price_stickiness_xi_p,
+                base.inflation_indexation_iota_p,
+                base.discount_factor_beta,
+                base.habit_persistence_h,
+                base.investment_adjustment_curvature_kappa_i,
+                base.steady_state_investment_share,
+                base.real_interest_rate_shock,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = ChristianoEichenbaumEvansNkSpec {
+                calvo_price_stickiness_xi_p: dual_in[0],
+                inflation_indexation_iota_p: dual_in[1],
+                discount_factor_beta: dual_in[2],
+                habit_persistence_h: dual_in[3],
+                investment_adjustment_curvature_kappa_i: dual_in[4],
+                steady_state_investment_share: dual_in[5],
+                real_interest_rate_shock: dual_in[6],
+            };
+            let r_ad = evaluate_christiano_eichenbaum_evans_calvo_investment_nk_impulse(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| ChristianoEichenbaumEvansNkSpec {
+                    calvo_price_stickiness_xi_p: v[0],
+                    inflation_indexation_iota_p: v[1],
+                    discount_factor_beta: v[2],
+                    habit_persistence_h: v[3],
+                    investment_adjustment_curvature_kappa_i: v[4],
+                    steady_state_investment_share: v[5],
+                    real_interest_rate_shock: v[6],
+                };
+                let rp = evaluate_christiano_eichenbaum_evans_calvo_investment_nk_impulse(&mk(p));
+                let rm = evaluate_christiano_eichenbaum_evans_calvo_investment_nk_impulse(&mk(m));
+                let fd = (rp.contractionary_inflation_impulse_response
+                    - rm.contractionary_inflation_impulse_response)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.contractionary_inflation_impulse_response.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.contractionary_inflation_impulse_response.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use christiano_eichenbaum_evans_nk_mod::*;

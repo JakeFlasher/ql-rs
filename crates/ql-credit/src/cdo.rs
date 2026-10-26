@@ -3153,3 +3153,140 @@ mod schonbucher_clayton_cdo_mod {
     }
 }
 pub use schonbucher_clayton_cdo_mod::*;
+mod frye_altman_downturn_lgd_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Frye (2000, *Risk* 13(11), *"Depressing Recoveries"*) &
+    /// Altman, Brady, Resti & Sironi (2005, *Journal of Business* 78(6)) single-factor
+    /// procyclical downturn LGD and credit portfolio loss model.
+    #[derive(Debug, Clone, Copy)]
+    pub struct FryeAltmanDownturnLgdSpec<T: Real> {
+        /// Through-the-cycle inverse-normal default threshold $c_{\text{PD}} = \Phi^{-1}(\overline{\text{PD}})$ (e.g., $-2.0537$ for $2\%$ PD).
+        pub default_threshold_z_pd: T,
+        /// Asset-return systematic factor correlation $\rho_A \in (0, 1)$ (e.g., $0.18$).
+        pub asset_factor_correlation_rho: T,
+        /// Expected through-the-cycle collateral recovery rate $\mu_R \in (0, 1)$ (e.g., $0.45$).
+        pub expected_recovery_rate_mu_r: T,
+        /// Collateral recovery volatility $\sigma_R > 0$ (e.g., $0.20$).
+        pub recovery_volatility_sigma_r: T,
+        /// Systematic factor loading $q_R \in (0, 1)$ of recovery rate on macro factor $Z$ (e.g., $0.55$).
+        pub recovery_factor_loading_q_r: T,
+        /// Adverse tail macro realization magnitude $z_{\alpha} = -\Phi^{-1}(1 - \alpha) > 0$ (e.g., $2.3263$ for $99\%$).
+        pub adverse_macro_quantile_z_alpha: T,
+    }
+
+    /// Analytics returned by [`evaluate_frye_altman_procyclical_downturn_lgd_credit_loss`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct FryeAltmanDownturnLgdAnalytics<T: Real> {
+        /// Conditional default probability $\text{PD}(Z = -z_\alpha)$ in the systemic downturn.
+        pub conditional_downturn_pd: T,
+        /// Conditional downturn Loss Given Default $\text{LGD}_{\text{down}}(Z = -z_\alpha) > 1 - \mu_R$.
+        pub conditional_downturn_lgd: T,
+        /// Constant-recovery Vasicek portfolio loss at $Z = -z_\alpha$, $(1 - \mu_R)\text{PD}(-z_\alpha)$.
+        pub constant_lgd_stressed_loss: T,
+        /// Procyclical Frye–Altman stressed portfolio loss $\text{LGD}_{\text{down}}(-z_\alpha)\,\text{PD}(-z_\alpha)$.
+        pub procyclical_downturn_stressed_loss: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    /// Evaluates the Frye (2000) / Altman, Brady, Resti & Sironi (2005) single-factor
+    /// procyclical default-recovery portfolio loss at systematic downturn $Z = -z_\alpha$:
+    /// $$\text{PD}(-z_\alpha) = \Phi\!\left(\frac{c_{\text{PD}} + \sqrt{\rho_A}\,z_\alpha}{\sqrt{1 - \rho_A}}\right), \qquad \text{LGD}_{\text{down}}(-z_\alpha) = 1 - \big(\mu_R - \sigma_R q_R z_\alpha\big).$$
+    pub fn evaluate_frye_altman_procyclical_downturn_lgd_credit_loss<T: Real>(
+        spec: &FryeAltmanDownturnLgdSpec<T>,
+    ) -> FryeAltmanDownturnLgdAnalytics<T> {
+        let rho = spec.asset_factor_correlation_rho;
+        let z_a = spec.adverse_macro_quantile_z_alpha;
+        let cond_arg = (spec.default_threshold_z_pd + rho.sqrt() * z_a) / (T::one() - rho).sqrt();
+        let pd_down = std_norm_cdf(cond_arg);
+
+        let r_down = spec.expected_recovery_rate_mu_r
+            - spec.recovery_volatility_sigma_r * spec.recovery_factor_loading_q_r * z_a;
+        let lgd_ttc = T::one() - spec.expected_recovery_rate_mu_r;
+        let lgd_down = T::one() - r_down;
+
+        let loss_const = lgd_ttc * pd_down;
+        let loss_procyc = lgd_down * pd_down;
+
+        FryeAltmanDownturnLgdAnalytics {
+            conditional_downturn_pd: pd_down,
+            conditional_downturn_lgd: lgd_down,
+            constant_lgd_stressed_loss: loss_const,
+            procyclical_downturn_stressed_loss: loss_procyc,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn frye_altman_downturn_lgd_invariants_and_ad_parity() {
+            let base = FryeAltmanDownturnLgdSpec {
+                default_threshold_z_pd: -2.0537_f64,
+                asset_factor_correlation_rho: 0.18_f64,
+                expected_recovery_rate_mu_r: 0.45_f64,
+                recovery_volatility_sigma_r: 0.20_f64,
+                recovery_factor_loading_q_r: 0.55_f64,
+                adverse_macro_quantile_z_alpha: 2.3263_f64,
+            };
+            let res = evaluate_frye_altman_procyclical_downturn_lgd_credit_loss(&base);
+            assert!(res.conditional_downturn_pd > 0.05 && res.conditional_downturn_pd < 0.50);
+            assert!(res.conditional_downturn_lgd > 1.0 - base.expected_recovery_rate_mu_r);
+            assert!(res.procyclical_downturn_stressed_loss > res.constant_lgd_stressed_loss);
+
+            let inputs = [
+                base.default_threshold_z_pd,
+                base.asset_factor_correlation_rho,
+                base.expected_recovery_rate_mu_r,
+                base.recovery_volatility_sigma_r,
+                base.recovery_factor_loading_q_r,
+                base.adverse_macro_quantile_z_alpha,
+            ];
+            let mut dual_in = [Dual::<6>::from_value(0.0); 6];
+            for i in 0..6 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = FryeAltmanDownturnLgdSpec {
+                default_threshold_z_pd: dual_in[0],
+                asset_factor_correlation_rho: dual_in[1],
+                expected_recovery_rate_mu_r: dual_in[2],
+                recovery_volatility_sigma_r: dual_in[3],
+                recovery_factor_loading_q_r: dual_in[4],
+                adverse_macro_quantile_z_alpha: dual_in[5],
+            };
+            let r_ad = evaluate_frye_altman_procyclical_downturn_lgd_credit_loss(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..6 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 6]| FryeAltmanDownturnLgdSpec {
+                    default_threshold_z_pd: v[0],
+                    asset_factor_correlation_rho: v[1],
+                    expected_recovery_rate_mu_r: v[2],
+                    recovery_volatility_sigma_r: v[3],
+                    recovery_factor_loading_q_r: v[4],
+                    adverse_macro_quantile_z_alpha: v[5],
+                };
+                let rp = evaluate_frye_altman_procyclical_downturn_lgd_credit_loss(&mk(p));
+                let rm = evaluate_frye_altman_procyclical_downturn_lgd_credit_loss(&mk(m));
+                let fd = (rp.procyclical_downturn_stressed_loss
+                    - rm.procyclical_downturn_stressed_loss)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.procyclical_downturn_stressed_loss.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.procyclical_downturn_stressed_loss.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use frye_altman_downturn_lgd_mod::*;

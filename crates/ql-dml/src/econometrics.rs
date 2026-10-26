@@ -3323,3 +3323,160 @@ mod ait_sahalia_jacod_jump_test_mod {
     }
 }
 pub use ait_sahalia_jacod_jump_test_mod::*;
+mod pesaran_shin_smith_ardl_bounds_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Pesaran, Shin & Smith (2001, *Journal of Applied Econometrics*
+    /// 16(3)) Autoregressive Distributed Lag (ARDL) bounds test for level relationships
+    /// across mixed $I(0)/I(1)$ regressors.
+    #[derive(Debug, Clone, Copy)]
+    pub struct PesaranShinSmithArdlBoundsSpec<T: Real> {
+        /// Error-correction speed of adjustment $\pi_{yy} < 0$ on lagged dependent level $y_{t-1}$ (e.g., $-0.24$).
+        pub lagged_dependent_coef_pi_yy: T,
+        /// Long-run forcing coefficient $\pi_{yx}$ on lagged regressor level $x_{t-1}$ (e.g., $0.36$).
+        pub lagged_regressor_coef_pi_yx: T,
+        /// Sample variance $s_{yy}$ of demeaned $y_{t-1}$ (e.g., $1.45$).
+        pub lagged_y_variance_s_yy: T,
+        /// Sample variance $s_{xx}$ of demeaned $x_{t-1}$ (e.g., $1.80$).
+        pub lagged_x_variance_s_xx: T,
+        /// Sample covariance $s_{yx}$ between demeaned $y_{t-1}$ and $x_{t-1}$ (e.g., $0.95$).
+        pub lagged_yx_covariance_s_yx: T,
+        /// Conditional ECM residual variance $\hat{\sigma}_\varepsilon^2$ (e.g., $0.085$).
+        pub residual_variance_sigma2: T,
+        /// Effective sample observations $T_{\text{obs}}$ (e.g., $120.0$).
+        pub sample_size_t_obs: T,
+    }
+
+    /// Analytics returned by [`evaluate_pesaran_shin_smith_ardl_bounds_cointegration_test`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct PesaranShinSmithArdlBoundsAnalytics<T: Real> {
+        /// Implied long-run level equilibrium multiplier $\hat{\theta}_{\text{LR}} = -\pi_{yx} / \pi_{yy}$.
+        pub long_run_level_multiplier_theta: T,
+        /// Banerjee–Dolado–Mestre $t$-bounds statistic $t_{\text{BDM}}$ on $\pi_{yy} = 0$.
+        pub bdm_t_bounds_statistic: T,
+        /// Pesaran–Shin–Smith joint $F_{\text{PSS}}$-bounds statistic testing $H_0: \pi_{yy} = \pi_{yx} = 0$.
+        pub pss_f_bounds_statistic: T,
+        /// Long-run multiplier delta-method standard error $\text{SE}(\hat{\theta}_{\text{LR}})$.
+        pub long_run_multiplier_standard_error: T,
+    }
+
+    /// Evaluates the Pesaran, Shin & Smith (2001, Eqs. 16–22) ARDL conditional error-correction
+    /// bounds test statistics $F_{\text{PSS}}$ and $t_{\text{BDM}}$, together with the long-run
+    /// equilibrium level multiplier $\hat{\theta}_{\text{LR}} = -\pi_{yx}/\pi_{yy}$ and its delta-method SE.
+    pub fn evaluate_pesaran_shin_smith_ardl_bounds_cointegration_test<T: Real>(
+        spec: &PesaranShinSmithArdlBoundsSpec<T>,
+    ) -> PesaranShinSmithArdlBoundsAnalytics<T> {
+        let pi_yy = spec.lagged_dependent_coef_pi_yy;
+        let pi_yx = spec.lagged_regressor_coef_pi_yx;
+        let s_yy = spec.lagged_y_variance_s_yy;
+        let s_xx = spec.lagged_x_variance_s_xx;
+        let s_yx = spec.lagged_yx_covariance_s_yx;
+        let sig2 = spec.residual_variance_sigma2;
+        let t_obs = spec.sample_size_t_obs;
+
+        let theta_lr = -pi_yx / pi_yy;
+
+        // Joint quadratic form pi^T (T * S_zz) pi / (2 * sig2) for H_0: pi_yy = pi_yx = 0
+        let quad =
+            pi_yy * pi_yy * s_yy + T::from_f64(2.0) * pi_yy * pi_yx * s_yx + pi_yx * pi_yx * s_xx;
+        let f_pss = (t_obs * quad) / (T::from_f64(2.0) * sig2);
+
+        // Inverse covariance of (pi_yy, pi_yx): Var(pi) = (sig2 / (T * det_S)) * [[s_xx, -s_yx], [-s_yx, s_yy]]
+        let det_s = s_yy * s_xx - s_yx * s_yx;
+        let var_pi_yy = (sig2 * s_xx) / (t_obs * det_s);
+        let var_pi_yx = (sig2 * s_yy) / (t_obs * det_s);
+        let cov_pi = -(sig2 * s_yx) / (t_obs * det_s);
+
+        let t_bdm = pi_yy / var_pi_yy.sqrt();
+
+        // Delta-method variance of theta_LR = -pi_yx / pi_yy:
+        // d(theta)/d(pi_yy) = pi_yx / pi_yy^2 = -theta / pi_yy, d(theta)/d(pi_yx) = -1 / pi_yy
+        let inv_pi_yy2 = T::one() / (pi_yy * pi_yy);
+        let var_theta = inv_pi_yy2
+            * (theta_lr * theta_lr * var_pi_yy + T::from_f64(2.0) * theta_lr * cov_pi + var_pi_yx);
+        let se_theta = var_theta.sqrt();
+
+        PesaranShinSmithArdlBoundsAnalytics {
+            long_run_level_multiplier_theta: theta_lr,
+            bdm_t_bounds_statistic: t_bdm,
+            pss_f_bounds_statistic: f_pss,
+            long_run_multiplier_standard_error: se_theta,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn pesaran_shin_smith_ardl_bounds_invariants_and_ad_parity() {
+            let base = PesaranShinSmithArdlBoundsSpec {
+                lagged_dependent_coef_pi_yy: -0.24_f64,
+                lagged_regressor_coef_pi_yx: 0.36_f64,
+                lagged_y_variance_s_yy: 1.45_f64,
+                lagged_x_variance_s_xx: 1.80_f64,
+                lagged_yx_covariance_s_yx: 0.95_f64,
+                residual_variance_sigma2: 0.085_f64,
+                sample_size_t_obs: 120.0_f64,
+            };
+            let res = evaluate_pesaran_shin_smith_ardl_bounds_cointegration_test(&base);
+            assert!((res.long_run_level_multiplier_theta - 1.5).abs() < 1e-12);
+            assert!(res.bdm_t_bounds_statistic < -3.5);
+            // Exceeds Pesaran-Shin-Smith (2001) upper I(1) critical bound (~5.73 at 1%)
+            assert!(res.pss_f_bounds_statistic > 6.0);
+            assert!(res.long_run_multiplier_standard_error > 0.0);
+
+            let inputs = [
+                base.lagged_dependent_coef_pi_yy,
+                base.lagged_regressor_coef_pi_yx,
+                base.lagged_y_variance_s_yy,
+                base.lagged_x_variance_s_xx,
+                base.lagged_yx_covariance_s_yx,
+                base.residual_variance_sigma2,
+                base.sample_size_t_obs,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = PesaranShinSmithArdlBoundsSpec {
+                lagged_dependent_coef_pi_yy: dual_in[0],
+                lagged_regressor_coef_pi_yx: dual_in[1],
+                lagged_y_variance_s_yy: dual_in[2],
+                lagged_x_variance_s_xx: dual_in[3],
+                lagged_yx_covariance_s_yx: dual_in[4],
+                residual_variance_sigma2: dual_in[5],
+                sample_size_t_obs: dual_in[6],
+            };
+            let r_ad = evaluate_pesaran_shin_smith_ardl_bounds_cointegration_test(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| PesaranShinSmithArdlBoundsSpec {
+                    lagged_dependent_coef_pi_yy: v[0],
+                    lagged_regressor_coef_pi_yx: v[1],
+                    lagged_y_variance_s_yy: v[2],
+                    lagged_x_variance_s_xx: v[3],
+                    lagged_yx_covariance_s_yx: v[4],
+                    residual_variance_sigma2: v[5],
+                    sample_size_t_obs: v[6],
+                };
+                let rp = evaluate_pesaran_shin_smith_ardl_bounds_cointegration_test(&mk(p));
+                let rm = evaluate_pesaran_shin_smith_ardl_bounds_cointegration_test(&mk(m));
+                let fd = (rp.long_run_multiplier_standard_error
+                    - rm.long_run_multiplier_standard_error)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.long_run_multiplier_standard_error.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.long_run_multiplier_standard_error.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use pesaran_shin_smith_ardl_bounds_mod::*;

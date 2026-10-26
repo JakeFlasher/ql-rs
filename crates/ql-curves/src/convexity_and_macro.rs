@@ -2011,3 +2011,166 @@ mod smith_wilson_ufr_extrapolation_mod {
     }
 }
 pub use smith_wilson_ufr_extrapolation_mod::*;
+mod hagan_west_monotone_convex_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Hagan & West (2006, *Applied Mathematical Finance* 13(2);
+    /// 2008, *Wilmott Magazine*) monotone convex forward-rate curve interpolation engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct HaganWestMonotoneConvexSpec<T: Real> {
+        /// Left interval start maturity $t_{i-1}$ in years (e.g., $2.0$).
+        pub interval_start_years_t0: T,
+        /// Right interval end maturity $t_i$ in years (e.g., $5.0$).
+        pub interval_end_years_t1: T,
+        /// Target evaluation maturity $t \in (t_{i-1}, t_i)$ in years (e.g., $3.5$).
+        pub target_maturity_years_t: T,
+        /// Continuously compounded zero rate $r(t_{i-1})$ at $t_{i-1}$ (e.g., $0.031$).
+        pub start_zero_rate_r0: T,
+        /// Discrete forward rate $f_{i-1}^d$ on the preceding interval $[t_{i-2}, t_{i-1}]$ (e.g., $0.032$).
+        pub previous_discrete_forward_f_prev: T,
+        /// Discrete forward rate $f_i^d$ on the active interval $[t_{i-1}, t_i]$ (e.g., $0.038$).
+        pub current_discrete_forward_f_curr: T,
+        /// Discrete forward rate $f_{i+1}^d$ on the succeeding interval $[t_i, t_{i+1}]$ (e.g., $0.043$).
+        pub next_discrete_forward_f_next: T,
+        /// Adjacent-interval blending weight $w \in (0, 1)$ at interior pillar nodes (e.g., $0.50$).
+        pub node_blending_weight_w: T,
+    }
+
+    /// Analytics returned by [`evaluate_hagan_west_monotone_convex_forward_interpolation`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct HaganWestMonotoneConvexAnalytics<T: Real> {
+        /// Left pillar instantaneous forward rate $f(t_{i-1})$.
+        pub left_node_instantaneous_forward: T,
+        /// Right pillar instantaneous forward rate $f(t_i)$.
+        pub right_node_instantaneous_forward: T,
+        /// Monotone-convex instantaneous forward rate $f(t)$ at $t \in (t_{i-1}, t_i)$.
+        pub instantaneous_forward_rate: T,
+        /// Monotone-convex interpolated zero-coupon yield $r(t)$ at $t$.
+        pub interpolated_zero_rate: T,
+    }
+
+    /// Evaluates the Hagan & West (2006, Eqs. 16–25) monotone convex quadratic forward spline
+    /// on normalized coordinate $x = \frac{t - t_{i-1}}{t_i - t_{i-1}} \in (0, 1)$:
+    /// $$f(x) = f_i^d + g_0(1 - 4x + 3x^2) + g_1(-2x + 3x^2),$$
+    /// where $g_0 = f(t_{i-1}) - f_i^d$ and $g_1 = f(t_i) - f_i^d$ satisfy $\int_0^1 (f(x) - f_i^d)\,dx = 0$,
+    /// and recovers the exact zero rate $r(t) = \frac{t_{i-1} r(t_{i-1}) + (t_i - t_{i-1})\int_0^x f(u)\,du}{t}$.
+    pub fn evaluate_hagan_west_monotone_convex_forward_interpolation<T: Real>(
+        spec: &HaganWestMonotoneConvexSpec<T>,
+    ) -> HaganWestMonotoneConvexAnalytics<T> {
+        let t0 = spec.interval_start_years_t0;
+        let t1 = spec.interval_end_years_t1;
+        let t = spec.target_maturity_years_t;
+        let dt = t1 - t0;
+        let x = (t - t0) / dt;
+
+        let w = spec.node_blending_weight_w;
+        let f_prev = spec.previous_discrete_forward_f_prev;
+        let f_curr = spec.current_discrete_forward_f_curr;
+        let f_next = spec.next_discrete_forward_f_next;
+
+        // Hagan & West (2006, Eq. 16) node instantaneous forwards
+        let f_left = w * f_prev + (T::one() - w) * f_curr;
+        let f_right = w * f_curr + (T::one() - w) * f_next;
+
+        let g0 = f_left - f_curr;
+        let g1 = f_right - f_curr;
+        let x2 = x * x;
+        let x3 = x2 * x;
+
+        // Quadratic zero-integral basis g(x) = g0*(1 - 4x + 3x^2) + g1*(-2x + 3x^2)
+        let g_x = g0 * (T::one() - T::from_f64(4.0) * x + T::from_f64(3.0) * x2)
+            + g1 * (-T::from_f64(2.0) * x + T::from_f64(3.0) * x2);
+        let f_inst = f_curr + g_x;
+
+        // Exact integral int_0^x f(u) du = f_curr*x + g0*(x - 2x^2 + x^3) + g1*(-x^2 + x^3)
+        let int_f = f_curr * x + g0 * (x - T::from_f64(2.0) * x2 + x3) + g1 * (-x2 + x3);
+
+        let r_interp = (t0 * spec.start_zero_rate_r0 + dt * int_f) / t;
+
+        HaganWestMonotoneConvexAnalytics {
+            left_node_instantaneous_forward: f_left,
+            right_node_instantaneous_forward: f_right,
+            instantaneous_forward_rate: f_inst,
+            interpolated_zero_rate: r_interp,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn hagan_west_monotone_convex_invariants_and_ad_parity() {
+            let base = HaganWestMonotoneConvexSpec {
+                interval_start_years_t0: 2.0_f64,
+                interval_end_years_t1: 5.0_f64,
+                target_maturity_years_t: 3.4_f64,
+                start_zero_rate_r0: 0.031_f64,
+                previous_discrete_forward_f_prev: 0.032_f64,
+                current_discrete_forward_f_curr: 0.038_f64,
+                next_discrete_forward_f_next: 0.044_f64,
+                node_blending_weight_w: 0.50_f64,
+            };
+            let res = evaluate_hagan_west_monotone_convex_forward_interpolation(&base);
+            assert!(res.left_node_instantaneous_forward < res.right_node_instantaneous_forward);
+            assert!(
+                res.instantaneous_forward_rate >= res.left_node_instantaneous_forward
+                    && res.instantaneous_forward_rate <= res.right_node_instantaneous_forward
+            );
+            assert!(res.interpolated_zero_rate > base.start_zero_rate_r0);
+
+            let inputs = [
+                base.interval_start_years_t0,
+                base.interval_end_years_t1,
+                base.target_maturity_years_t,
+                base.start_zero_rate_r0,
+                base.previous_discrete_forward_f_prev,
+                base.current_discrete_forward_f_curr,
+                base.next_discrete_forward_f_next,
+                base.node_blending_weight_w,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = HaganWestMonotoneConvexSpec {
+                interval_start_years_t0: dual_in[0],
+                interval_end_years_t1: dual_in[1],
+                target_maturity_years_t: dual_in[2],
+                start_zero_rate_r0: dual_in[3],
+                previous_discrete_forward_f_prev: dual_in[4],
+                current_discrete_forward_f_curr: dual_in[5],
+                next_discrete_forward_f_next: dual_in[6],
+                node_blending_weight_w: dual_in[7],
+            };
+            let r_ad = evaluate_hagan_west_monotone_convex_forward_interpolation(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| HaganWestMonotoneConvexSpec {
+                    interval_start_years_t0: v[0],
+                    interval_end_years_t1: v[1],
+                    target_maturity_years_t: v[2],
+                    start_zero_rate_r0: v[3],
+                    previous_discrete_forward_f_prev: v[4],
+                    current_discrete_forward_f_curr: v[5],
+                    next_discrete_forward_f_next: v[6],
+                    node_blending_weight_w: v[7],
+                };
+                let rp = evaluate_hagan_west_monotone_convex_forward_interpolation(&mk(p));
+                let rm = evaluate_hagan_west_monotone_convex_forward_interpolation(&mk(m));
+                let fd = (rp.interpolated_zero_rate - rm.interpolated_zero_rate) / (2.0 * eps);
+                assert!(
+                    r_ad.interpolated_zero_rate.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.interpolated_zero_rate.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use hagan_west_monotone_convex_mod::*;
