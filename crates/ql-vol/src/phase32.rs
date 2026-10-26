@@ -93,24 +93,43 @@ pub fn evaluate_andreasen_huge_one_step_zabr_calibration<T: Real>(
             * (T::one() - T::from_f64(0.001) * s.nu),
         one_step_bachelier_implied_vol: lv,
         min_grid_butterfly_density: min_density,
-        density_mass_conservation_error: (mass - telescoping).abs(),
+        density_mass_conservation_error: ((mass - telescoping) * (mass - telescoping)
+            + T::from_f64(1e-30))
+        .sqrt(),
     }
 }
 #[cfg(test)]
 mod phase32_tests {
     use super::*;
+    use ql_ad::Dual;
+
+    fn spec<T: Real>(x: T) -> AndreasenHugeOneStepZabrSpec<T> {
+        AndreasenHugeOneStepZabrSpec {
+            forward: T::from_f64(100.0) + x,
+            strike: T::from_f64(100.0),
+            expiry: T::one(),
+            alpha: T::from_f64(0.2),
+            beta: T::from_f64(0.5),
+            rho: T::from_f64(-0.2),
+            nu: T::from_f64(0.4),
+            discount_factor: T::one(),
+        }
+    }
+
     #[test]
     fn positive_price() {
-        let s = AndreasenHugeOneStepZabrSpec {
-            forward: 100.0,
-            strike: 100.0,
-            expiry: 1.0,
-            alpha: 0.2,
-            beta: 0.5,
-            rho: -0.2,
-            nu: 0.4,
-            discount_factor: 1.0,
-        };
-        assert!(evaluate_andreasen_huge_one_step_zabr_calibration(&s).one_step_fd_call_price > 0.0);
+        let r = evaluate_andreasen_huge_one_step_zabr_calibration(&spec(0.0));
+        assert!(r.one_step_fd_call_price > 0.0);
+        assert!(r.min_grid_butterfly_density >= 0.0);
+        assert!(r.density_mass_conservation_error < 1e-12);
+        let h = 1e-6;
+        let fd = (evaluate_andreasen_huge_one_step_zabr_calibration(&spec(h))
+            .one_step_fd_call_price
+            - evaluate_andreasen_huge_one_step_zabr_calibration(&spec(-h)).one_step_fd_call_price)
+            / (2.0 * h);
+        let ad =
+            evaluate_andreasen_huge_one_step_zabr_calibration(&spec(Dual::<1>::variable(0.0, 0)))
+                .one_step_fd_call_price;
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
     }
 }

@@ -61,23 +61,37 @@ pub fn evaluate_adb_rbi_ndirs_and_asset_swap_basis<T: Real>(
 #[cfg(test)]
 mod phase32_tests {
     use super::*;
+    use ql_ad::Dual;
+
+    fn spec<T: Real>(x: T, fx_vol: f64) -> AdbRbiNdirsAssetSwapSpec<T> {
+        AdbRbiNdirsAssetSwapSpec {
+            payment_tenors: vec![T::one(), T::from_f64(2.0)],
+            onshore_forward_rates: vec![T::from_f64(0.03) + x, T::from_f64(0.035)],
+            usd_ois_discount_factors: vec![T::from_f64(0.97), T::from_f64(0.94)],
+            local_rate_vol: T::from_f64(0.1),
+            ndf_fx_vol: T::from_f64(fx_vol),
+            rate_fx_corr: T::from_f64(0.2),
+            sovereign_bond_yield: T::from_f64(0.045),
+            usd_sofr_yield: T::from_f64(0.03),
+            ndf_ccs_basis_spread: T::from_f64(0.005),
+            withholding_tax_rate: T::from_f64(0.1),
+        }
+    }
+
     #[test]
     fn convexity_zero_fx() {
-        let s = AdbRbiNdirsAssetSwapSpec {
-            payment_tenors: vec![1.0],
-            onshore_forward_rates: vec![0.03],
-            usd_ois_discount_factors: vec![1.0],
-            local_rate_vol: 0.1,
-            ndf_fx_vol: 0.0,
-            rate_fx_corr: 0.0,
-            sovereign_bond_yield: 0.04,
-            usd_sofr_yield: 0.03,
-            ndf_ccs_basis_spread: 0.0,
-            withholding_tax_rate: 0.0,
-        };
         assert_eq!(
-            evaluate_adb_rbi_ndirs_and_asset_swap_basis(&s).ndirs_quanto_convexity_bps,
+            evaluate_adb_rbi_ndirs_and_asset_swap_basis(&spec(0.0, 0.0)).ndirs_quanto_convexity_bps,
             0.0
         );
+        let h = 1e-6;
+        let fd = (evaluate_adb_rbi_ndirs_and_asset_swap_basis(&spec(h, 0.15))
+            .offshore_par_ndirs_rate
+            - evaluate_adb_rbi_ndirs_and_asset_swap_basis(&spec(-h, 0.15)).offshore_par_ndirs_rate)
+            / (2.0 * h);
+        let ad =
+            evaluate_adb_rbi_ndirs_and_asset_swap_basis(&spec(Dual::<1>::variable(0.0, 0), 0.15))
+                .offshore_par_ndirs_rate;
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
     }
 }

@@ -212,8 +212,12 @@ pub fn evaluate_schilit_sloan_dechow_dichev_earnings_quality<T: Real>(
     let dd_pred = (T::from_f64(0.20) * s.cfo_prev - T::from_f64(0.50) * s.cfo_curr
         + T::from_f64(0.20) * s.cfo_next)
         / noa_avg.abs().max_val(T::from_f64(1e-8));
-    let resid = (wc_accrual_scaled - dd_pred).abs();
-    let z = (ccc1 - ccc0).abs() / T::from_f64(365.0) + sloan.abs() + cfo_ratio.abs() + resid;
+    let resid =
+        ((wc_accrual_scaled - dd_pred) * (wc_accrual_scaled - dd_pred) + T::from_f64(1e-24)).sqrt();
+    let ccc_diff = ((ccc1 - ccc0) * (ccc1 - ccc0) + T::from_f64(1e-24)).sqrt();
+    let sloan_abs = (sloan * sloan + T::from_f64(1e-24)).sqrt();
+    let cfo_abs = (cfo_ratio * cfo_ratio + T::from_f64(1e-24)).sqrt();
+    let z = ccc_diff / T::from_f64(365.0) + sloan_abs + cfo_abs + resid;
     SchilitSloanDechowDichevQualityReport {
         days_sales_outstanding_1: dso1,
         days_inventory_on_hand_1: dio1,
@@ -230,29 +234,104 @@ pub fn evaluate_schilit_sloan_dechow_dichev_earnings_quality<T: Real>(
 #[cfg(test)]
 mod phase32_tests {
     use super::*;
-    use ql_ad::{Dual, Real};
+    use ql_ad::Dual;
+
+    fn caplet_spec<T: Real>(x: T) -> GairatPolalaCheyetteCapletSpec<T> {
+        GairatPolalaCheyetteCapletSpec {
+            forward_rate: T::from_f64(0.03) + x,
+            strike_rate: T::from_f64(0.032),
+            fixing_time_t1: T::one(),
+            payment_time_t2: T::from_f64(1.5),
+            mean_reversion_kappa: T::from_f64(0.1),
+            initial_sigma0: T::from_f64(0.015),
+            initial_skew_b: T::from_f64(-0.2),
+            target_atm_normal_vol: T::from_f64(0.01),
+            target_otm_normal_vol: T::from_f64(0.0105),
+            discount_factor_t2: T::from_f64(0.96),
+        }
+    }
+
+    fn qrh_spec<T: Real>(x: T) -> GatheralJusselinQuadraticRoughHestonSpec<T> {
+        GatheralJusselinQuadraticRoughHestonSpec {
+            forward: T::from_f64(100.0) + x,
+            strike: T::from_f64(102.0),
+            expiry: T::one(),
+            hurst_h: T::from_f64(0.1),
+            weight_a: T::from_f64(0.2),
+            asymmetry_center_b: T::from_f64(0.3),
+            floor_variance_c: T::from_f64(0.02),
+            initial_state_z0: T::from_f64(0.1),
+            kernel_eta: T::from_f64(0.5),
+            mean_reversion_lambda: T::one(),
+        }
+    }
+
+    fn qual_spec<T: Real>(x: T) -> SchilitSloanDechowDichevQualitySpec<T> {
+        SchilitSloanDechowDichevQualitySpec {
+            revenue_0: T::from_f64(100.0),
+            revenue_1: T::from_f64(105.0) + x,
+            cogs_0: T::from_f64(60.0),
+            cogs_1: T::from_f64(62.0),
+            accounts_receivable_0: T::from_f64(10.0),
+            accounts_receivable_1: T::from_f64(14.0),
+            inventory_0: T::from_f64(8.0),
+            inventory_1: T::from_f64(11.0),
+            accounts_payable_0: T::from_f64(7.0),
+            accounts_payable_1: T::from_f64(7.0),
+            net_operating_assets_0: T::from_f64(50.0),
+            net_operating_assets_1: T::from_f64(58.0),
+            net_income_1: T::from_f64(10.0),
+            cfo_prev: T::from_f64(8.0),
+            cfo_curr: T::from_f64(6.0),
+            cfo_next: T::from_f64(8.5),
+        }
+    }
+
     #[test]
-    fn dual_fd_parity() {
-        let d = |v: f64| Dual::<1>::from_f64(v);
-        let x = Dual::<1>::variable(0.2, 0);
-        let s = GairatPolalaCheyetteCapletSpec {
-            forward_rate: x,
-            strike_rate: d(0.21),
-            fixing_time_t1: d(1.0),
-            payment_time_t2: d(1.5),
-            mean_reversion_kappa: d(0.1),
-            initial_sigma0: d(0.2),
-            initial_skew_b: d(-0.2),
-            target_atm_normal_vol: d(0.01),
-            target_otm_normal_vol: d(0.011),
-            discount_factor_t2: d(0.98),
-        };
+    fn phase32_invariants_and_dual_fd() {
+        let h = 1e-6;
+        let c0 = evaluate_gairat_polala_cheyette_local_vol_caplet(&caplet_spec(0.0));
+        assert!(c0.deterministic_auxiliary_y_bar > 0.0 && c0.calibration_rmse < 1e-4);
+        let fd_c = (evaluate_gairat_polala_cheyette_local_vol_caplet(&caplet_spec(h))
+            .bachelier_caplet_pv
+            - evaluate_gairat_polala_cheyette_local_vol_caplet(&caplet_spec(-h))
+                .bachelier_caplet_pv)
+            / (2.0 * h);
+        let ad_c = evaluate_gairat_polala_cheyette_local_vol_caplet(&caplet_spec(
+            Dual::<1>::variable(0.0, 0),
+        ))
+        .bachelier_caplet_pv;
+        assert!(ad_c.d[0].abs() > 1e-6 && (ad_c.d[0] - fd_c).abs() < 1e-5);
+
+        let q0 = evaluate_gatheral_jusselin_quadratic_rough_heston(&qrh_spec(0.0));
+        assert!(q0.instantaneous_variance_v0 >= 0.02 && q0.qrh_atm_skew < 0.0);
+        let fd_q = (evaluate_gatheral_jusselin_quadratic_rough_heston(&qrh_spec(h)).qrh_call_price
+            - evaluate_gatheral_jusselin_quadratic_rough_heston(&qrh_spec(-h)).qrh_call_price)
+            / (2.0 * h);
+        let ad_q = evaluate_gatheral_jusselin_quadratic_rough_heston(&qrh_spec(
+            Dual::<1>::variable(0.0, 0),
+        ))
+        .qrh_call_price;
+        assert!(ad_q.d[0].abs() > 1e-6 && (ad_q.d[0] - fd_q).abs() < 1e-5);
+
+        let s0 = evaluate_schilit_sloan_dechow_dichev_earnings_quality(&qual_spec(0.0));
         assert!(
-            evaluate_gairat_polala_cheyette_local_vol_caplet(&s)
-                .bachelier_caplet_pv
-                .d[0]
+            (s0.cash_conversion_cycle_1
+                - (s0.days_sales_outstanding_1 + s0.days_inventory_on_hand_1
+                    - s0.days_payable_outstanding_1))
                 .abs()
-                > 1e-6
+                < 1e-12
         );
+        assert!(s0.ccc_deterioration_days > 0.0);
+        let fd_s = (evaluate_schilit_sloan_dechow_dichev_earnings_quality(&qual_spec(h))
+            .schilit_shenanigan_composite_z
+            - evaluate_schilit_sloan_dechow_dichev_earnings_quality(&qual_spec(-h))
+                .schilit_shenanigan_composite_z)
+            / (2.0 * h);
+        let ad_s = evaluate_schilit_sloan_dechow_dichev_earnings_quality(&qual_spec(
+            Dual::<1>::variable(0.0, 0),
+        ))
+        .schilit_shenanigan_composite_z;
+        assert!(ad_s.d[0].abs() > 1e-6 && (ad_s.d[0] - fd_s).abs() < 1e-5);
     }
 }

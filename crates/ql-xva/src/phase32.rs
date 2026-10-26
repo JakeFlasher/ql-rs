@@ -67,24 +67,36 @@ pub fn evaluate_turlakov_green_kenyon_wwr_and_kva<T: Real>(
 #[cfg(test)]
 mod phase32_tests {
     use super::*;
+    use ql_ad::Dual;
+
+    fn spec<T: Real>(x: T) -> TurlakovGreenKenyonWwrKvaSpec<T> {
+        TurlakovGreenKenyonWwrKvaSpec {
+            time_grid: vec![T::one()],
+            independent_epe_profile: vec![T::one() + x],
+            pfe_addon_profile: vec![T::one()],
+            base_cpty_hazard: T::from_f64(0.02),
+            hazard_log_vol: T::from_f64(0.3),
+            exposure_vol: T::from_f64(0.2),
+            wwr_correlation_rho: T::from_f64(0.5),
+            lgd: T::from_f64(0.6),
+            risk_free_rate: T::from_f64(0.02),
+            bank_hazard_rate: T::from_f64(0.01),
+            ccr_risk_weight: T::from_f64(0.08),
+            shareholder_cost_of_capital: T::from_f64(0.1),
+            capital_return_offset_beta: T::from_f64(0.5),
+        }
+    }
+
     #[test]
     fn wwr_positive() {
-        let s = TurlakovGreenKenyonWwrKvaSpec {
-            time_grid: vec![1.0],
-            independent_epe_profile: vec![1.0],
-            pfe_addon_profile: vec![1.0],
-            base_cpty_hazard: 0.02,
-            hazard_log_vol: 0.3,
-            exposure_vol: 0.2,
-            wwr_correlation_rho: 0.5,
-            lgd: 0.6,
-            risk_free_rate: 0.02,
-            bank_hazard_rate: 0.01,
-            ccr_risk_weight: 0.08,
-            shareholder_cost_of_capital: 0.1,
-            capital_return_offset_beta: 0.5,
-        };
-        let r = evaluate_turlakov_green_kenyon_wwr_and_kva(&s);
-        assert!(r.turlakov_wwr_cva > r.independent_cva);
+        let r = evaluate_turlakov_green_kenyon_wwr_and_kva(&spec(0.0));
+        assert!(r.turlakov_wwr_cva > r.independent_cva && r.green_kenyon_kva > 0.0);
+        let h = 1e-6;
+        let fd = (evaluate_turlakov_green_kenyon_wwr_and_kva(&spec(h)).total_wwr_cva_plus_kva
+            - evaluate_turlakov_green_kenyon_wwr_and_kva(&spec(-h)).total_wwr_cva_plus_kva)
+            / (2.0 * h);
+        let ad = evaluate_turlakov_green_kenyon_wwr_and_kva(&spec(Dual::<1>::variable(0.0, 0)))
+            .total_wwr_cva_plus_kva;
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
     }
 }

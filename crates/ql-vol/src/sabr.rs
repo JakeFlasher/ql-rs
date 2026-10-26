@@ -125,51 +125,6 @@ pub fn evaluate_free_boundary_sabr<T: Real>(
     }
 }
 
-#[cfg(test)]
-mod phase19_tests {
-    use super::*;
-    use ql_ad::Dual;
-
-    #[test]
-    fn free_boundary_sabr_negative_strikes_bachelier_parity_and_ad() {
-        let p = FreeBoundarySabrParams {
-            forward: -0.004,
-            expiry: 1.0,
-            alpha: 0.008,
-            beta: 0.25,
-            rho: -0.20,
-            nu: 0.45,
-        };
-        for &k in &[-0.015, -0.004, 0.0, 0.010] {
-            let q = evaluate_free_boundary_sabr(&p, k, 0.99);
-            assert!(q.normal_vol > 0.0 && q.normal_vol.is_finite());
-            assert!(q.risk_neutral_density > 0.0);
-            assert!((q.call_price - q.put_price - 0.99 * (p.forward - k)).abs() < 1e-12);
-        }
-
-        let h = 1e-5;
-        let eval_f = |f: f64| {
-            let mut sp = p;
-            sp.forward = f;
-            evaluate_free_boundary_sabr(&sp, -0.002, 0.99).call_price
-        };
-        let fd = (eval_f(-0.004 + h) - eval_f(-0.004 - h)) / (2.0 * h);
-        type D = Dual<1>;
-        let pd = FreeBoundarySabrParams {
-            forward: D::variable(-0.004, 0),
-            expiry: D::one(),
-            alpha: D::from_value(0.008),
-            beta: D::from_value(0.25),
-            rho: D::from_value(-0.20),
-            nu: D::from_value(0.45),
-        };
-        let ad =
-            evaluate_free_boundary_sabr(&pd, D::from_value(-0.002), D::from_value(0.99)).call_price;
-        assert!(ad.d[0] > 0.0);
-        assert!((ad.d[0] - fd).abs() < 2e-6);
-    }
-}
-
 #[derive(Copy, Clone, Debug)]
 pub struct ThirdOrderSpeedVolExpansionSpec<T: Real = f64> {
     pub xi0: T,
@@ -382,5 +337,50 @@ mod phase20_tests {
         let ad = evaluate_third_order_speed_vol_expansion(&spec_d).call_price;
         assert!(ad.d[0] > 0.0);
         assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase19_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn free_boundary_sabr_negative_strikes_bachelier_parity_and_ad() {
+        let p = FreeBoundarySabrParams {
+            forward: -0.004,
+            expiry: 1.0,
+            alpha: 0.008,
+            beta: 0.25,
+            rho: -0.20,
+            nu: 0.45,
+        };
+        for &k in &[-0.015, -0.004, 0.0, 0.010] {
+            let q = evaluate_free_boundary_sabr(&p, k, 0.99);
+            assert!(q.normal_vol > 0.0 && q.normal_vol.is_finite());
+            assert!(q.risk_neutral_density > 0.0);
+            assert!((q.call_price - q.put_price - 0.99 * (p.forward - k)).abs() < 1e-12);
+        }
+
+        let h = 1e-5;
+        let eval_f = |f: f64| {
+            let mut sp = p;
+            sp.forward = f;
+            evaluate_free_boundary_sabr(&sp, -0.002, 0.99).call_price
+        };
+        let fd = (eval_f(-0.004 + h) - eval_f(-0.004 - h)) / (2.0 * h);
+        type D = Dual<1>;
+        let pd = FreeBoundarySabrParams {
+            forward: D::variable(-0.004, 0),
+            expiry: D::one(),
+            alpha: D::from_value(0.008),
+            beta: D::from_value(0.25),
+            rho: D::from_value(-0.20),
+            nu: D::from_value(0.45),
+        };
+        let ad =
+            evaluate_free_boundary_sabr(&pd, D::from_value(-0.002), D::from_value(0.99)).call_price;
+        assert!(ad.d[0] > 0.0);
+        assert!((ad.d[0] - fd).abs() < 2e-6);
     }
 }

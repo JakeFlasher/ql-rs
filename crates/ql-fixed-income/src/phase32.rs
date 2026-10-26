@@ -83,24 +83,42 @@ pub fn evaluate_mayer_brown_ssga_capped_call_overlay_and_make_whole<T: Real>(
 #[cfg(test)]
 mod phase32_tests {
     use super::*;
+    use ql_ad::Dual;
+
+    fn spec<T: Real>(x: T) -> MayerBrownSsgaCappedCallMakeWholeSpec<T> {
+        MayerBrownSsgaCappedCallMakeWholeSpec {
+            bond_par: T::from_f64(100.0),
+            spot_price: T::from_f64(100.0) + x,
+            base_conversion_price: T::from_f64(90.0),
+            cap_strike_price: T::from_f64(120.0),
+            volatility: T::from_f64(0.2),
+            risk_free_rate: T::from_f64(0.03),
+            maturity_years: T::from_f64(5.0),
+            acquisition_offer_price: T::from_f64(110.0),
+            remaining_years_at_acquisition: T::from_f64(2.0),
+            tax_rate_section_163j: T::from_f64(0.2),
+        }
+    }
+
     #[test]
     fn overlay_positive() {
-        let s = MayerBrownSsgaCappedCallMakeWholeSpec {
-            bond_par: 100.0,
-            spot_price: 100.0,
-            base_conversion_price: 90.0,
-            cap_strike_price: 120.0,
-            volatility: 0.2,
-            risk_free_rate: 0.03,
-            maturity_years: 5.0,
-            acquisition_offer_price: 110.0,
-            remaining_years_at_acquisition: 2.0,
-            tax_rate_section_163j: 0.2,
-        };
+        let r = evaluate_mayer_brown_ssga_capped_call_overlay_and_make_whole(&spec(0.0));
+        assert!(r.capped_call_overlay_gross_cost > 0.0);
         assert!(
-            evaluate_mayer_brown_ssga_capped_call_overlay_and_make_whole(&s)
-                .capped_call_overlay_gross_cost
-                > 0.0
+            r.capped_call_hedged_dilution_shares_at_offer
+                <= r.unhedged_net_dilution_shares_at_offer
         );
+        assert!(r.make_whole_additional_shares > 0.0);
+        let h = 1e-6;
+        let fd = (evaluate_mayer_brown_ssga_capped_call_overlay_and_make_whole(&spec(h))
+            .capped_call_overlay_gross_cost
+            - evaluate_mayer_brown_ssga_capped_call_overlay_and_make_whole(&spec(-h))
+                .capped_call_overlay_gross_cost)
+            / (2.0 * h);
+        let ad = evaluate_mayer_brown_ssga_capped_call_overlay_and_make_whole(&spec(
+            Dual::<1>::variable(0.0, 0),
+        ))
+        .capped_call_overlay_gross_cost;
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
     }
 }

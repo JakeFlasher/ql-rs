@@ -6861,11 +6861,27 @@ mod phase32_tests {
     #[test]
     fn phase32_tab42_terminal_renders_and_reacts() {
         assert_eq!(TabId::TAB_COUNT, 42);
-        assert!(TabId::Phase32BookSota.label().starts_with("42 Phase 32"));
-        let mut d = DeskWorkstation::default();
-        let a = d.phase32_live_metric();
-        d.scenario = ScenarioKind::CreditWideningPlus100Bp;
-        let b = d.phase32_live_metric();
-        assert_ne!(a, b);
+        assert_eq!(TabId::ALL.len(), 42);
+        assert!(
+            TabId::Phase32BookSota
+                .label()
+                .starts_with("42 Phase 32 SOTA")
+        );
+        let mut ws = DeskWorkstation::default();
+        let m0 = ws.phase32_live_metric();
+        let f1 = ws.step_tick();
+        assert!((f1.phase32_sota_metric - m0).abs() > 1e-12);
+        ws.set_scenario(ScenarioKind::Normal);
+        let normal = ws.step_tick();
+        ws.set_scenario(ScenarioKind::CreditWideningPlus100Bp);
+        let credit = ws.step_tick();
+        ws.set_scenario(ScenarioKind::StagflationPlus150Bp);
+        let stag = ws.step_tick();
+        assert!((credit.phase32_sota_metric - normal.phase32_sota_metric).abs() > 1e-12);
+        assert!((stag.phase32_sota_metric - normal.phase32_sota_metric).abs() > 1e-12);
+        assert!(
+            ws.render_dashboard(&stag, false)
+                .contains("42 Phase32 SOTA")
+        );
     }
 }

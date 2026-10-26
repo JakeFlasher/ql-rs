@@ -71,24 +71,38 @@ pub fn evaluate_brigo_morini_cmcds_and_credit_index_option<T: Real>(
 #[cfg(test)]
 mod phase32_tests {
     use super::*;
+    use ql_ad::Dual;
+
+    fn spec<T: Real>(x: T) -> BrigoMoriniCmcdsCreditOptionSpec<T> {
+        BrigoMoriniCmcdsCreditOptionSpec {
+            reset_times: vec![T::one(), T::from_f64(2.0)],
+            forward_cds_spreads: vec![T::from_f64(0.01), T::from_f64(0.01)],
+            spread_volatility: T::from_f64(0.2),
+            annuity_convexity_gamma: T::from_f64(0.5),
+            flat_par_cds_spread: T::from_f64(0.01) + x,
+            option_expiry: T::one(),
+            option_strike_spread: T::from_f64(0.01),
+            risky_pv01_annuity: T::from_f64(4.0),
+            hazard_rate: T::from_f64(0.02),
+            recovery_rate: T::from_f64(0.4),
+            risk_free_rate: T::from_f64(0.02),
+        }
+    }
+
     #[test]
     fn fep_positive() {
-        let s = BrigoMoriniCmcdsCreditOptionSpec {
-            reset_times: vec![1.0],
-            forward_cds_spreads: vec![0.01],
-            spread_volatility: 0.2,
-            annuity_convexity_gamma: 0.5,
-            flat_par_cds_spread: 0.01,
-            option_expiry: 1.0,
-            option_strike_spread: 0.01,
-            risky_pv01_annuity: 4.0,
-            hazard_rate: 0.02,
-            recovery_rate: 0.4,
-            risk_free_rate: 0.02,
-        };
-        assert!(
-            evaluate_brigo_morini_cmcds_and_credit_index_option(&s).fep_adjusted_forward_spread
-                > 0.01
-        );
+        let r = evaluate_brigo_morini_cmcds_and_credit_index_option(&spec(0.0));
+        assert!(r.cmcds_equilibrium_participation_rate < 1.0);
+        assert!(r.fep_adjusted_forward_spread > 0.01);
+        let h = 1e-6;
+        let fd = (evaluate_brigo_morini_cmcds_and_credit_index_option(&spec(h))
+            .morini_brigo_payer_swaption_pv
+            - evaluate_brigo_morini_cmcds_and_credit_index_option(&spec(-h))
+                .morini_brigo_payer_swaption_pv)
+            / (2.0 * h);
+        let ad =
+            evaluate_brigo_morini_cmcds_and_credit_index_option(&spec(Dual::<1>::variable(0.0, 0)))
+                .morini_brigo_payer_swaption_pv;
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
     }
 }

@@ -273,18 +273,99 @@ pub fn evaluate_tsay_bekk_garch_volatility_spillover<T: Real>(
 #[cfg(test)]
 mod phase32_tests {
     use super::*;
+    use ql_ad::Dual;
+
+    fn evar_spec<T: Real>(x: T) -> AhmadiJavidEntropicVarPortfolioSpec<T> {
+        AhmadiJavidEntropicVarPortfolioSpec {
+            scenario_returns: vec![
+                vec![T::from_f64(0.02) + x, T::from_f64(-0.01)],
+                vec![T::from_f64(-0.04), T::from_f64(0.01)],
+                vec![T::from_f64(0.01), T::from_f64(0.015)],
+            ],
+            scenario_probabilities: vec![T::from_f64(0.4), T::from_f64(0.3), T::from_f64(0.3)],
+            initial_weights: vec![T::from_f64(0.6), T::from_f64(0.4)],
+            tail_alpha: T::from_f64(0.1),
+            risk_aversion_lambda: T::one(),
+        }
+    }
+
+    fn hrp_spec<T: Real>(x: T) -> CottonSchurHrpRmtNcoSpec<T> {
+        CottonSchurHrpRmtNcoSpec {
+            covariance_4x4: [
+                [
+                    T::from_f64(0.04) + x,
+                    T::from_f64(0.01),
+                    T::zero(),
+                    T::zero(),
+                ],
+                [T::from_f64(0.01), T::from_f64(0.05), T::zero(), T::zero()],
+                [T::zero(), T::zero(), T::from_f64(0.03), T::from_f64(0.01)],
+                [T::zero(), T::zero(), T::from_f64(0.01), T::from_f64(0.06)],
+            ],
+            schur_gamma: T::from_f64(0.5),
+            sample_aspect_ratio_q: T::from_f64(0.5),
+        }
+    }
+
+    fn bekk_spec<T: Real>(x: T) -> TsayBekkGarchSpilloverSpec<T> {
+        TsayBekkGarchSpilloverSpec {
+            chol_c: [
+                [T::from_f64(0.1), T::zero()],
+                [T::from_f64(0.02), T::from_f64(0.1)],
+            ],
+            arch_a: [
+                [T::from_f64(0.1), T::from_f64(0.02)],
+                [T::from_f64(0.01), T::from_f64(0.1)],
+            ],
+            garch_b: [[T::from_f64(0.8), T::zero()], [T::zero(), T::from_f64(0.7)]],
+            initial_cov: [
+                [T::from_f64(0.04), T::zero()],
+                [T::zero(), T::from_f64(0.04)],
+            ],
+            return_innovations: vec![
+                [T::from_f64(0.01) + x, T::from_f64(-0.02)],
+                [T::from_f64(0.02), T::from_f64(0.01)],
+            ],
+        }
+    }
+
     #[test]
     fn weights_conserve() {
-        let s = CottonSchurHrpRmtNcoSpec {
-            covariance_4x4: [
-                [1.0, 0.1, 0.0, 0.0],
-                [0.1, 1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.1],
-                [0.0, 0.0, 0.1, 1.0],
-            ],
-            schur_gamma: 0.5,
-            sample_aspect_ratio_q: 0.5,
-        };
-        assert!(evaluate_cotton_schur_hrp_and_rmt_nco(&s).weights_sum_conservation_error < 1e-12);
+        let h = 1e-6;
+        let ev0 = evaluate_ahmadi_javid_entropic_var_portfolio(&evar_spec(0.0));
+        assert!(ev0.exact_chernoff_evar >= ev0.empirical_cvar);
+        assert!(ev0.optimized_portfolio_evar <= ev0.exact_chernoff_evar);
+        let fd_ev = (evaluate_ahmadi_javid_entropic_var_portfolio(&evar_spec(h))
+            .exact_chernoff_evar
+            - evaluate_ahmadi_javid_entropic_var_portfolio(&evar_spec(-h)).exact_chernoff_evar)
+            / (2.0 * h);
+        let ad_ev =
+            evaluate_ahmadi_javid_entropic_var_portfolio(&evar_spec(Dual::<1>::variable(0.0, 0)))
+                .exact_chernoff_evar;
+        assert!(ad_ev.d[0].abs() > 1e-6 && (ad_ev.d[0] - fd_ev).abs() < 1e-5);
+
+        let hrp0 = evaluate_cotton_schur_hrp_and_rmt_nco(&hrp_spec(0.0));
+        assert!(hrp0.weights_sum_conservation_error < 1e-12);
+        assert!(hrp0.schur_hrp_portfolio_variance <= hrp0.classical_hrp_variance);
+        let fd_hrp = (evaluate_cotton_schur_hrp_and_rmt_nco(&hrp_spec(h))
+            .schur_hrp_portfolio_variance
+            - evaluate_cotton_schur_hrp_and_rmt_nco(&hrp_spec(-h)).schur_hrp_portfolio_variance)
+            / (2.0 * h);
+        let ad_hrp = evaluate_cotton_schur_hrp_and_rmt_nco(&hrp_spec(Dual::<1>::variable(0.0, 0)))
+            .schur_hrp_portfolio_variance;
+        assert!(ad_hrp.d[0].abs() > 1e-6 && (ad_hrp.d[0] - fd_hrp).abs() < 1e-5);
+
+        let bk0 = evaluate_tsay_bekk_garch_volatility_spillover(&bekk_spec(0.0));
+        assert!(bk0.terminal_cov_determinant > 0.0);
+        assert!(bk0.terminal_dynamic_correlation.abs() < 1.0);
+        let fd_bk = (evaluate_tsay_bekk_garch_volatility_spillover(&bekk_spec(h))
+            .bivariate_gaussian_log_likelihood
+            - evaluate_tsay_bekk_garch_volatility_spillover(&bekk_spec(-h))
+                .bivariate_gaussian_log_likelihood)
+            / (2.0 * h);
+        let ad_bk =
+            evaluate_tsay_bekk_garch_volatility_spillover(&bekk_spec(Dual::<1>::variable(0.0, 0)))
+                .bivariate_gaussian_log_likelihood;
+        assert!(ad_bk.d[0].abs() > 1e-6 && (ad_bk.d[0] - fd_bk).abs() < 1e-5);
     }
 }

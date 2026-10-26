@@ -81,24 +81,36 @@ pub fn evaluate_haentjens_inthout_heston_hull_white_adi<T: Real>(
 #[cfg(test)]
 mod phase32_tests {
     use super::*;
+    use ql_ad::Dual;
+
+    fn spec<T: Real>(x: T) -> HaentjensInthoutHhwAdiSpec<T> {
+        HaentjensInthoutHhwAdiSpec {
+            spot: T::from_f64(100.0) + x,
+            strike: T::from_f64(100.0),
+            expiry: T::one(),
+            initial_var_v0: T::from_f64(0.04),
+            mean_rev_kappa_v: T::one(),
+            long_var_theta_v: T::from_f64(0.04),
+            vol_of_vol_sigma_v: T::from_f64(0.3),
+            initial_rate_r0: T::from_f64(0.03),
+            rate_mean_rev_kappa_r: T::from_f64(0.1),
+            rate_vol_sigma_r: T::from_f64(0.01),
+            corr_spot_vol: T::from_f64(0.2),
+            corr_spot_rate: T::from_f64(0.3),
+        }
+    }
+
     #[test]
     fn vp_positive() {
-        let s = HaentjensInthoutHhwAdiSpec {
-            spot: 100.0,
-            strike: 100.0,
-            expiry: 1.0,
-            initial_var_v0: 0.04,
-            mean_rev_kappa_v: 1.0,
-            long_var_theta_v: 0.04,
-            vol_of_vol_sigma_v: 0.3,
-            initial_rate_r0: 0.03,
-            rate_mean_rev_kappa_r: 0.1,
-            rate_vol_sigma_r: 0.01,
-            corr_spot_vol: 0.2,
-            corr_spot_rate: 0.3,
-        };
-        assert!(
-            evaluate_haentjens_inthout_heston_hull_white_adi(&s).hull_white_bond_variance_vp > 0.0
-        );
+        let r = evaluate_haentjens_inthout_heston_hull_white_adi(&spec(0.0));
+        assert!(r.hull_white_bond_variance_vp > 0.0 && r.stochastic_rate_corr_uplift > 0.0);
+        let h = 1e-6;
+        let fd = (evaluate_haentjens_inthout_heston_hull_white_adi(&spec(h)).hhw_adi_call_price
+            - evaluate_haentjens_inthout_heston_hull_white_adi(&spec(-h)).hhw_adi_call_price)
+            / (2.0 * h);
+        let ad =
+            evaluate_haentjens_inthout_heston_hull_white_adi(&spec(Dual::<1>::variable(0.0, 0)))
+                .hhw_adi_call_price;
+        assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
     }
 }
