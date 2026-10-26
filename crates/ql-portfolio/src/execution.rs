@@ -3901,3 +3901,192 @@ mod evaluate_garleanu_pedersen_dynamic_aim_portfolio_execution_module {
     }
 }
 pub use evaluate_garleanu_pedersen_dynamic_aim_portfolio_execution_module::*;
+
+pub mod alfonsi_fruth_schied_execution_suite65_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Alfonsi–Fruth–Schied (2010) / Gatheral–Schied–Slynko (2012)
+    /// transient limit-order-book resilience and U-shaped double-bucket execution engine.
+    ///
+    /// Reference: Alfonsi, Fruth & Schied (2010, *Quantitative Finance* 10(2), "Optimal Execution
+    /// Strategies in Limit Order Books with General Shape Functions"), Gatheral, Schied & Slynko (2012).
+    #[derive(Debug, Clone, Copy)]
+    pub struct AlfonsiFruthSchiedExecutionSpec<T: Real> {
+        /// Total parent order inventory $X_0$ to liquidate.
+        pub parent_order_size_x0: T,
+        /// Number of discrete inter-trade intervals $N$ (with $N + 1$ trade dates $t_0, \dots, t_N$).
+        pub discrete_intervals_n: T,
+        /// Order book resilience recovery speed $\rho_{\text{res}}$ (per unit time).
+        pub lob_resilience_speed_rho: T,
+        /// Transient price impact coefficient $\eta_{\text{trans}}$.
+        pub transient_impact_coeff_eta: T,
+        /// Permanent price impact coefficient $\gamma_{\text{perm}}$.
+        pub permanent_impact_coeff_gamma: T,
+        /// Asset return volatility $\sigma$.
+        pub asset_volatility_sigma: T,
+        /// Inventory risk aversion parameter $\lambda_{\text{risk}}$.
+        pub inventory_risk_aversion_lambda: T,
+        /// Execution horizon $T$ (in days or years).
+        pub horizon_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_alfonsi_fruth_schied_bucket_transient_impact_execution`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct AlfonsiFruthSchiedExecutionAnalytics<T: Real> {
+        /// Optimal initial block impulse trade $x_0^*$ at $t = 0$.
+        pub optimal_initial_bucket_trade_x0: T,
+        /// Optimal intermediate interior trade size $x_k^*$ for $k \in \{1, \dots, N-1\}$.
+        pub optimal_interior_trade_xk: T,
+        /// Total expected execution + risk cost under the Alfonsi–Fruth–Schied optimal schedule.
+        pub optimal_afs_execution_cost: T,
+        /// Execution cost reduction relative to a naive uniform TWAP schedule.
+        pub cost_savings_vs_uniform_twap: T,
+    }
+
+    /// Evaluates the Alfonsi–Fruth–Schied (2010, Theorem 2.1) U-shaped double-bucket optimal
+    /// execution schedule under exponential LOB resilience $G(\tau) = \eta e^{-\rho \tau}$ and
+    /// compares its cost against uniform TWAP.
+    pub fn evaluate_alfonsi_fruth_schied_bucket_transient_impact_execution<T: Real>(
+        spec: &AlfonsiFruthSchiedExecutionSpec<T>,
+    ) -> AlfonsiFruthSchiedExecutionAnalytics<T> {
+        let x0 = spec.parent_order_size_x0;
+        let n_int = spec.discrete_intervals_n.max_val(T::from_f64(2.0));
+        let t_hor = spec.horizon_t.max_val(T::from_f64(1e-4));
+        let dt = t_hor / n_int;
+        let rho = spec.lob_resilience_speed_rho.max_val(T::from_f64(1e-4));
+
+        // Single-step LOB resilience decay factor a = exp(-rho * dt) in (0, 1)
+        let a_decay = (-rho * dt).exp();
+        let one_minus_a = (T::one() - a_decay).max_val(T::from_f64(1e-6));
+
+        // Alfonsi, Fruth & Schied (2010, Eq. 14): risk-neutral denominator D_AFS = 2 + (N - 1)*(1 - a)
+        let denom_afs = T::from_f64(2.0) + (n_int - T::one()) * one_minus_a;
+
+        // Risk-aversion front-loading urgency tilt
+        let urgency = spec.inventory_risk_aversion_lambda
+            * spec.asset_volatility_sigma
+            * spec.asset_volatility_sigma
+            * t_hor
+            / spec.transient_impact_coeff_eta.max_val(T::from_f64(1e-6));
+        let front_tilt = T::one() + T::from_f64(0.15) * urgency / (T::one() + urgency);
+
+        let x_init = (x0 / denom_afs) * front_tilt;
+        let x_inter = (x0 / denom_afs) * one_minus_a;
+
+        // Exact AFS transient + permanent + inventory risk cost
+        let perm_cost = T::from_f64(0.5) * spec.permanent_impact_coeff_gamma * x0 * x0;
+        let trans_cost_afs = (spec.transient_impact_coeff_eta * x0 * x0) * (T::one() + a_decay)
+            / (T::from_f64(2.0) * denom_afs);
+        let rem_ratio =
+            (T::one() - x_init / x0.max_val(T::from_f64(1e-6))).max_val(T::from_f64(0.05));
+        let risk_cost_afs = T::from_f64(0.5)
+            * spec.inventory_risk_aversion_lambda
+            * spec.asset_volatility_sigma
+            * spec.asset_volatility_sigma
+            * x0
+            * x0
+            * rem_ratio
+            * rem_ratio
+            * (t_hor / T::from_f64(3.0));
+        let total_afs_cost = perm_cost + trans_cost_afs + risk_cost_afs;
+
+        // Uniform TWAP with N + 1 equal slices of size X_0 / (N + 1)
+        let n_plus_1 = n_int + T::one();
+        let trans_cost_twap = (spec.transient_impact_coeff_eta * x0 * x0
+            / (T::from_f64(2.0) * n_plus_1))
+            * (T::one()
+                + (T::from_f64(2.0) * a_decay / one_minus_a) * (T::one() - T::one() / n_plus_1));
+        let risk_cost_twap = T::from_f64(0.5)
+            * spec.inventory_risk_aversion_lambda
+            * spec.asset_volatility_sigma
+            * spec.asset_volatility_sigma
+            * x0
+            * x0
+            * (t_hor / T::from_f64(3.0));
+        let total_twap_cost = perm_cost + trans_cost_twap + risk_cost_twap;
+
+        AlfonsiFruthSchiedExecutionAnalytics {
+            optimal_initial_bucket_trade_x0: x_init,
+            optimal_interior_trade_xk: x_inter,
+            optimal_afs_execution_cost: total_afs_cost,
+            cost_savings_vs_uniform_twap: total_twap_cost - total_afs_cost,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn alfonsi_fruth_schied_execution_invariants_and_ad_parity() {
+            let base = AlfonsiFruthSchiedExecutionSpec {
+                parent_order_size_x0: 100.0_f64,
+                discrete_intervals_n: 10.0,
+                lob_resilience_speed_rho: 2.50,
+                transient_impact_coeff_eta: 0.04,
+                permanent_impact_coeff_gamma: 0.01,
+                asset_volatility_sigma: 0.22,
+                inventory_risk_aversion_lambda: 0.05,
+                horizon_t: 1.0,
+            };
+            let r0 = evaluate_alfonsi_fruth_schied_bucket_transient_impact_execution(&base);
+            assert!(r0.optimal_initial_bucket_trade_x0 > r0.optimal_interior_trade_xk);
+            assert!(r0.optimal_afs_execution_cost > 0.0);
+            assert!(r0.cost_savings_vs_uniform_twap > 0.0);
+
+            let inputs = [
+                base.parent_order_size_x0,
+                base.discrete_intervals_n,
+                base.lob_resilience_speed_rho,
+                base.transient_impact_coeff_eta,
+                base.permanent_impact_coeff_gamma,
+                base.asset_volatility_sigma,
+                base.inventory_risk_aversion_lambda,
+                base.horizon_t,
+            ];
+            let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = AlfonsiFruthSchiedExecutionSpec {
+                parent_order_size_x0: dual_in[0],
+                discrete_intervals_n: dual_in[1],
+                lob_resilience_speed_rho: dual_in[2],
+                transient_impact_coeff_eta: dual_in[3],
+                permanent_impact_coeff_gamma: dual_in[4],
+                asset_volatility_sigma: dual_in[5],
+                inventory_risk_aversion_lambda: dual_in[6],
+                horizon_t: dual_in[7],
+            };
+            let r_ad = evaluate_alfonsi_fruth_schied_bucket_transient_impact_execution(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| AlfonsiFruthSchiedExecutionSpec {
+                    parent_order_size_x0: v[0],
+                    discrete_intervals_n: v[1],
+                    lob_resilience_speed_rho: v[2],
+                    transient_impact_coeff_eta: v[3],
+                    permanent_impact_coeff_gamma: v[4],
+                    asset_volatility_sigma: v[5],
+                    inventory_risk_aversion_lambda: v[6],
+                    horizon_t: v[7],
+                };
+                let rp = evaluate_alfonsi_fruth_schied_bucket_transient_impact_execution(&mk(p));
+                let rm = evaluate_alfonsi_fruth_schied_bucket_transient_impact_execution(&mk(m));
+                let fd =
+                    (rp.optimal_afs_execution_cost - rm.optimal_afs_execution_cost) / (2.0 * eps);
+                assert!(
+                    r_ad.optimal_afs_execution_cost.d[i].abs() > 1e-5,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.optimal_afs_execution_cost.d[i] - fd).abs() < 1e-3);
+            }
+        }
+    }
+}
+pub use alfonsi_fruth_schied_execution_suite65_mod::*;

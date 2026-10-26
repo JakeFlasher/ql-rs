@@ -1287,3 +1287,220 @@ mod evaluate_wystup_fx_corridor_accrual_range_note_module {
     }
 }
 pub use evaluate_wystup_fx_corridor_accrual_range_note_module::*;
+
+pub mod piterbarg_prdc_bermudan_suite65_mod {
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    /// Specification for the Piterbarg (2005) / Clark (2011) Power Reverse Dual Currency (PRDC)
+    /// FX–IR quanto convexity and Target Redemption (TARN) auto-call strip engine.
+    ///
+    /// Reference: Piterbarg (2005, *Risk*, "TARNs: Models, Valuation, Risk Sensitivities"),
+    /// Clark (2011, *Foreign Exchange Option Pricing*, Ch. 9), Wystup (2017, Ch. 8).
+    #[derive(Debug, Clone, Copy)]
+    pub struct PiterbargPrdcBermudanSpec<T: Real> {
+        /// Notional $N$.
+        pub notional_n: T,
+        /// Initial spot FX rate $S_0$ (domestic per foreign unit).
+        pub spot_fx_s0: T,
+        /// Foreign coupon gearing multiplier $g_f$.
+        pub foreign_coupon_gearing_gf: T,
+        /// Domestic coupon floor/strike deduction $g_d$.
+        pub domestic_funding_deduction_gd: T,
+        /// Domestic interest rate $r_d$.
+        pub domestic_rate_rd: T,
+        /// Foreign interest rate $r_f$.
+        pub foreign_rate_rf: T,
+        /// FX spot volatility $\sigma_{\text{FX}}$.
+        pub fx_volatility_sigma_fx: T,
+        /// Domestic interest-rate volatility $\sigma_d$.
+        pub domestic_rate_vol_sigma_d: T,
+        /// Correlation $\rho_{d,\text{FX}}$ between domestic rate and FX spot.
+        pub domestic_fx_correlation_rho: T,
+        /// Target cumulative coupon cap $C_{\text{target}}$ (as fraction of notional).
+        pub target_redemption_cap_c_target: T,
+        /// Total maturity $T$ across $M = 4$ coupon dates (in years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_piterbarg_fx_power_reverse_dual_currency_prdc_bermudan_redemption`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct PiterbargPrdcBermudanAnalytics<T: Real> {
+        /// Present value of the unredeemed (no-TARN) PRDC coupon strip with FX–IR convexity.
+        pub unredeemed_prdc_strip_pv: T,
+        /// FX–IR correlation quanto convexity valuation adjustment.
+        pub fx_ir_correlation_convexity_wedge: T,
+        /// Expected survival probability through the final reset date.
+        pub terminal_survival_probability: T,
+        /// Present value of the Target-Redemption (TARN) auto-callable PRDC note.
+        pub tarn_capped_prdc_present_value: T,
+    }
+
+    /// Evaluates a 4-period Power Reverse Dual Currency (PRDC) note with FX–IR correlation quanto
+    /// drift adjustment and smooth Target Redemption (TARN) knock-out survival probabilities.
+    pub fn evaluate_piterbarg_fx_power_reverse_dual_currency_prdc_bermudan_redemption<T: Real>(
+        spec: &PiterbargPrdcBermudanSpec<T>,
+    ) -> PiterbargPrdcBermudanAnalytics<T> {
+        const PERIODS: usize = 4;
+        let t_mat = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+        let dt = t_mat / T::from_f64(PERIODS as f64);
+        let s0 = spec.spot_fx_s0.max_val(T::from_f64(1e-4));
+        let gf = spec.foreign_coupon_gearing_gf.max_val(T::from_f64(1e-4));
+        let gd = spec
+            .domestic_funding_deduction_gd
+            .max_val(T::from_f64(1e-4));
+        let s_ref = T::from_f64(100.0);
+        let k_fx = s_ref * (gd / gf);
+        let sig_fx = spec.fx_volatility_sigma_fx.max_val(T::from_f64(1e-4));
+
+        let mut unredeemed_pv = T::zero();
+        let mut unredeemed_flat_corr_pv = T::zero();
+        let mut tarn_pv = T::zero();
+        let mut cum_expected_coupon = T::zero();
+        let mut surv_prob = T::one();
+
+        for m in 1..=PERIODS {
+            let tm = T::from_f64(m as f64) * dt;
+            let sqrt_tm = tm.sqrt();
+            let v_sqrt = sig_fx * sqrt_tm;
+
+            let f_base = s0 * ((spec.domestic_rate_rd - spec.foreign_rate_rf) * tm).exp();
+            // Clark (2011, Ch. 9): domestic bond numeraire FX-IR quanto adjustment exp(-0.5 * rho * sigma_d * sigma_FX * t_m^2)
+            let quanto_mult = (-T::from_f64(0.5)
+                * spec.domestic_fx_correlation_rho
+                * spec.domestic_rate_vol_sigma_d
+                * sig_fx
+                * tm
+                * tm)
+                .exp();
+            let f_adj = f_base * quanto_mult;
+
+            let d1_adj = ((f_adj / k_fx).ln() + T::from_f64(0.5) * v_sqrt * v_sqrt) / v_sqrt;
+            let d2_adj = d1_adj - v_sqrt;
+            let c_m_adj = dt * (gf / s_ref) * (f_adj * norm_cdf(d1_adj) - k_fx * norm_cdf(d2_adj));
+
+            let d1_base = ((f_base / k_fx).ln() + T::from_f64(0.5) * v_sqrt * v_sqrt) / v_sqrt;
+            let d2_base = d1_base - v_sqrt;
+            let c_m_base =
+                dt * (gf / s_ref) * (f_base * norm_cdf(d1_base) - k_fx * norm_cdf(d2_base));
+
+            let df_m = (-spec.domestic_rate_rd * tm).exp();
+            unredeemed_pv += spec.notional_n * df_m * c_m_adj;
+            unredeemed_flat_corr_pv += spec.notional_n * df_m * c_m_base;
+
+            // Smooth TARN survival probability before period m coupon
+            let cum_disp = (gf * dt * sig_fx * sqrt_tm * T::from_f64(m as f64).sqrt())
+                .max_val(T::from_f64(1e-4));
+            let z_tarn = (spec.target_redemption_cap_c_target - cum_expected_coupon) / cum_disp;
+            surv_prob = norm_cdf(z_tarn);
+
+            tarn_pv += spec.notional_n * df_m * surv_prob * c_m_adj;
+            cum_expected_coupon += c_m_adj;
+        }
+
+        PiterbargPrdcBermudanAnalytics {
+            unredeemed_prdc_strip_pv: unredeemed_pv,
+            fx_ir_correlation_convexity_wedge: unredeemed_pv - unredeemed_flat_corr_pv,
+            terminal_survival_probability: surv_prob,
+            tarn_capped_prdc_present_value: tarn_pv,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn piterbarg_prdc_bermudan_invariants_and_ad_parity() {
+            let base = PiterbargPrdcBermudanSpec {
+                notional_n: 1_000.0_f64,
+                spot_fx_s0: 105.0,
+                foreign_coupon_gearing_gf: 0.10,
+                domestic_funding_deduction_gd: 0.06,
+                domestic_rate_rd: 0.015,
+                foreign_rate_rf: 0.045,
+                fx_volatility_sigma_fx: 0.14,
+                domestic_rate_vol_sigma_d: 0.012,
+                domestic_fx_correlation_rho: 0.45,
+                target_redemption_cap_c_target: 0.12,
+                maturity_years_t: 4.0,
+            };
+            let r0 =
+                evaluate_piterbarg_fx_power_reverse_dual_currency_prdc_bermudan_redemption(&base);
+            assert!(r0.unredeemed_prdc_strip_pv > r0.tarn_capped_prdc_present_value);
+            assert!(r0.tarn_capped_prdc_present_value > 0.0);
+            assert!(
+                r0.terminal_survival_probability > 0.0 && r0.terminal_survival_probability < 1.0
+            );
+
+            let inputs = [
+                base.notional_n,
+                base.spot_fx_s0,
+                base.foreign_coupon_gearing_gf,
+                base.domestic_funding_deduction_gd,
+                base.domestic_rate_rd,
+                base.foreign_rate_rf,
+                base.fx_volatility_sigma_fx,
+                base.domestic_rate_vol_sigma_d,
+                base.domestic_fx_correlation_rho,
+                base.target_redemption_cap_c_target,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<11>::from_f64(0.0); 11];
+            for i in 0..11 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = PiterbargPrdcBermudanSpec {
+                notional_n: dual_in[0],
+                spot_fx_s0: dual_in[1],
+                foreign_coupon_gearing_gf: dual_in[2],
+                domestic_funding_deduction_gd: dual_in[3],
+                domestic_rate_rd: dual_in[4],
+                foreign_rate_rf: dual_in[5],
+                fx_volatility_sigma_fx: dual_in[6],
+                domestic_rate_vol_sigma_d: dual_in[7],
+                domestic_fx_correlation_rho: dual_in[8],
+                target_redemption_cap_c_target: dual_in[9],
+                maturity_years_t: dual_in[10],
+            };
+            let r_ad = evaluate_piterbarg_fx_power_reverse_dual_currency_prdc_bermudan_redemption(
+                &spec_ad,
+            );
+            let eps = 1e-6;
+            for i in 0..11 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 11]| PiterbargPrdcBermudanSpec {
+                    notional_n: v[0],
+                    spot_fx_s0: v[1],
+                    foreign_coupon_gearing_gf: v[2],
+                    domestic_funding_deduction_gd: v[3],
+                    domestic_rate_rd: v[4],
+                    foreign_rate_rf: v[5],
+                    fx_volatility_sigma_fx: v[6],
+                    domestic_rate_vol_sigma_d: v[7],
+                    domestic_fx_correlation_rho: v[8],
+                    target_redemption_cap_c_target: v[9],
+                    maturity_years_t: v[10],
+                };
+                let rp = evaluate_piterbarg_fx_power_reverse_dual_currency_prdc_bermudan_redemption(
+                    &mk(p),
+                );
+                let rm = evaluate_piterbarg_fx_power_reverse_dual_currency_prdc_bermudan_redemption(
+                    &mk(m),
+                );
+                let fd = (rp.tarn_capped_prdc_present_value - rm.tarn_capped_prdc_present_value)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.tarn_capped_prdc_present_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.tarn_capped_prdc_present_value.d[i] - fd).abs() < 1e-3);
+            }
+        }
+    }
+}
+pub use piterbarg_prdc_bermudan_suite65_mod::*;

@@ -2222,3 +2222,176 @@ mod gabaix_rare_disaster_suite64_tests {
         }
     }
 }
+
+pub mod bansal_yaron_lrr_suite65_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Bansal–Yaron (2004) Long-Run Risks (LRR) Epstein–Zin stochastic
+    /// volatility macro-asset-pricing engine.
+    ///
+    /// Reference: Bansal & Yaron (2004, *Journal of Finance* 59(4), "Risks for the Long Run:
+    /// A Potential Resolution of Asset Pricing Puzzles"), Epstein & Zin (1989, *Econometrica* 57(4)).
+    #[derive(Debug, Clone, Copy)]
+    pub struct BansalYaronLongRunRiskSpec<T: Real> {
+        /// Relative risk aversion $\gamma > 1$.
+        pub risk_aversion_gamma: T,
+        /// Elasticity of intertemporal substitution $\psi > 1$.
+        pub eis_psi: T,
+        /// Persistence of expected consumption growth $\rho_x \in (0, 1)$.
+        pub growth_persistence_rho_x: T,
+        /// Long-run growth shock volatility multiplier $\varphi_e$.
+        pub growth_shock_scale_phi_e: T,
+        /// Persistence of economic volatility $\nu_\sigma \in (0, 1)$.
+        pub volatility_persistence_nu: T,
+        /// Volatility of economic variance $\sigma_w$.
+        pub vol_of_vol_sigma_w: T,
+        /// Current conditional consumption volatility $\sigma_t$.
+        pub current_consumption_vol_sigma_t: T,
+        /// Dividend leverage loading $\phi_d > 1$ on persistent growth $x_t$.
+        pub dividend_leverage_phi_d: T,
+        /// Campbell–Shiller log-linearization constant $\kappa_1 \in (0, 1)$.
+        pub campbell_shiller_kappa1: T,
+    }
+
+    /// Analytics returned by [`evaluate_bansal_yaron_long_run_risk_stochastic_vol_equity_premium`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct BansalYaronLongRunRiskReport<T: Real> {
+        /// Wealth-consumption ratio loading $A_1 = \frac{1 - 1/\psi}{1 - \kappa_1 \rho_x}$ on long-run growth $x_t$.
+        pub wealth_growth_loading_a1: T,
+        /// Wealth-consumption ratio loading $A_2 < 0$ on economic variance $\sigma_t^2$.
+        pub wealth_volatility_loading_a2: T,
+        /// Market price of long-run growth risk $\lambda_e = (1 - \theta) \kappa_1 A_1 \varphi_e$.
+        pub long_run_growth_price_of_risk_lambda_e: T,
+        /// Total Bansal–Yaron conditional equity risk premium (short-run + long-run growth + vol risk).
+        pub conditional_equity_risk_premium: T,
+    }
+
+    /// Evaluates the Bansal–Yaron (2004, Section I.B, Equations A5–A19) analytical Epstein–Zin
+    /// wealth and dividend loadings, innovation risk prices, and conditional equity risk premium.
+    pub fn evaluate_bansal_yaron_long_run_risk_stochastic_vol_equity_premium<T: Real>(
+        spec: &BansalYaronLongRunRiskSpec<T>,
+    ) -> BansalYaronLongRunRiskReport<T> {
+        let gamma = spec.risk_aversion_gamma;
+        let inv_psi = T::one() / spec.eis_psi.max_val(T::from_f64(0.1));
+        let theta = (T::one() - gamma) / (T::one() - inv_psi);
+        let k1 = spec.campbell_shiller_kappa1;
+
+        // Wealth-consumption loadings A_1 and A_2 (Bansal & Yaron 2004, Eqs. A5 & A7)
+        let denom_x = (T::one() - k1 * spec.growth_persistence_rho_x).max_val(T::from_f64(1e-4));
+        let a1 = (T::one() - inv_psi) / denom_x;
+
+        let denom_v = (T::one() - k1 * spec.volatility_persistence_nu).max_val(T::from_f64(1e-4));
+        let term_a1 = a1 * k1 * spec.growth_shock_scale_phi_e;
+        let a2 = (T::from_f64(0.5)
+            * theta
+            * ((T::one() - inv_psi) * (T::one() - inv_psi) + term_a1 * term_a1))
+            / denom_v;
+
+        // Dividend claim loadings A_{1,m} and A_{2,m} (Bansal & Yaron 2004, Eqs. A10-A12)
+        let a1_m = (spec.dividend_leverage_phi_d - inv_psi) / denom_x;
+        let beta_m_e = k1 * a1_m * spec.growth_shock_scale_phi_e;
+        let a2_m = ((T::one() - theta) * k1 * a2 + T::from_f64(0.5) * theta * beta_m_e * beta_m_e)
+            / denom_v;
+        let beta_m_w = k1 * a2_m;
+
+        // Market prices of short-run (lambda_eta), long-run growth (lambda_e), and volatility (lambda_w) risks
+        let lambda_eta = gamma;
+        let lambda_e = (T::one() - theta) * k1 * a1 * spec.growth_shock_scale_phi_e;
+        let lambda_w = (T::one() - theta) * k1 * a2;
+
+        let sig2 = spec.current_consumption_vol_sigma_t * spec.current_consumption_vol_sigma_t;
+        let sig_w2 = spec.vol_of_vol_sigma_w * spec.vol_of_vol_sigma_w;
+
+        // Conditional equity risk premium (Bansal & Yaron 2004, Eq. 17)
+        let erp = (lambda_eta + beta_m_e * lambda_e) * sig2 + beta_m_w * lambda_w * sig_w2;
+
+        BansalYaronLongRunRiskReport {
+            wealth_growth_loading_a1: a1,
+            wealth_volatility_loading_a2: a2,
+            long_run_growth_price_of_risk_lambda_e: lambda_e,
+            conditional_equity_risk_premium: erp,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn bansal_yaron_lrr_invariants_and_ad_parity() {
+            let base = BansalYaronLongRunRiskSpec {
+                risk_aversion_gamma: 7.5_f64,
+                eis_psi: 1.5,
+                growth_persistence_rho_x: 0.975,
+                growth_shock_scale_phi_e: 0.044,
+                volatility_persistence_nu: 0.985,
+                vol_of_vol_sigma_w: 0.00025,
+                current_consumption_vol_sigma_t: 0.027,
+                dividend_leverage_phi_d: 3.0,
+                campbell_shiller_kappa1: 0.99,
+            };
+            let r0 = evaluate_bansal_yaron_long_run_risk_stochastic_vol_equity_premium(&base);
+            assert!(r0.wealth_growth_loading_a1 > 0.0);
+            assert!(r0.wealth_volatility_loading_a2 < 0.0);
+            assert!(r0.long_run_growth_price_of_risk_lambda_e > 0.0);
+            assert!(r0.conditional_equity_risk_premium > 0.01);
+
+            let inputs = [
+                base.risk_aversion_gamma,
+                base.eis_psi,
+                base.growth_persistence_rho_x,
+                base.growth_shock_scale_phi_e,
+                base.volatility_persistence_nu,
+                base.vol_of_vol_sigma_w,
+                base.current_consumption_vol_sigma_t,
+                base.dividend_leverage_phi_d,
+                base.campbell_shiller_kappa1,
+            ];
+            let mut dual_in = [Dual::<9>::from_f64(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BansalYaronLongRunRiskSpec {
+                risk_aversion_gamma: dual_in[0],
+                eis_psi: dual_in[1],
+                growth_persistence_rho_x: dual_in[2],
+                growth_shock_scale_phi_e: dual_in[3],
+                volatility_persistence_nu: dual_in[4],
+                vol_of_vol_sigma_w: dual_in[5],
+                current_consumption_vol_sigma_t: dual_in[6],
+                dividend_leverage_phi_d: dual_in[7],
+                campbell_shiller_kappa1: dual_in[8],
+            };
+            let r_ad = evaluate_bansal_yaron_long_run_risk_stochastic_vol_equity_premium(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 9]| BansalYaronLongRunRiskSpec {
+                    risk_aversion_gamma: v[0],
+                    eis_psi: v[1],
+                    growth_persistence_rho_x: v[2],
+                    growth_shock_scale_phi_e: v[3],
+                    volatility_persistence_nu: v[4],
+                    vol_of_vol_sigma_w: v[5],
+                    current_consumption_vol_sigma_t: v[6],
+                    dividend_leverage_phi_d: v[7],
+                    campbell_shiller_kappa1: v[8],
+                };
+                let rp = evaluate_bansal_yaron_long_run_risk_stochastic_vol_equity_premium(&mk(p));
+                let rm = evaluate_bansal_yaron_long_run_risk_stochastic_vol_equity_premium(&mk(m));
+                let fd = (rp.conditional_equity_risk_premium - rm.conditional_equity_risk_premium)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.conditional_equity_risk_premium.d[i].abs() > 1e-7,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.conditional_equity_risk_premium.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use bansal_yaron_lrr_suite65_mod::*;

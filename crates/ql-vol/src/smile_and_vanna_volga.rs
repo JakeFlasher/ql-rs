@@ -761,3 +761,217 @@ mod evaluate_fouque_papanicolaou_sircar_multiscale_sv_smile_module {
     }
 }
 pub use evaluate_fouque_papanicolaou_sircar_multiscale_sv_smile_module::*;
+
+pub mod bates_svj_smile_suite65_mod {
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    /// Specification for the Bates (1996) Stochastic Volatility with Jumps (SVJ) cumulant smile
+    /// and option valuation engine.
+    ///
+    /// Reference: Bates (1996, *Review of Financial Studies* 9(1), "Jumps and Stochastic Volatility:
+    /// Exchange Rate Processes Implicit in Deutsche Mark Options"), Gatheral (2006, Ch. 5).
+    #[derive(Debug, Clone, Copy)]
+    pub struct BatesSvjSmileSpec<T: Real> {
+        /// Spot price $S_0$.
+        pub spot_price_s0: T,
+        /// Option strike $K$.
+        pub strike_price_k: T,
+        /// Risk-free rate $r$.
+        pub risk_free_rate_r: T,
+        /// Initial diffusive variance $v_0$.
+        pub initial_variance_v0: T,
+        /// Long-run diffusive variance $\theta$.
+        pub long_run_variance_theta: T,
+        /// Variance mean-reversion speed $\kappa$.
+        pub mean_reversion_kappa: T,
+        /// Volatility of variance $\xi$.
+        pub vol_of_vol_xi: T,
+        /// Spot-variance correlation $\rho$.
+        pub spot_vol_correlation_rho: T,
+        /// Poisson jump arrival intensity $\lambda_J$.
+        pub jump_intensity_lambda_j: T,
+        /// Mean log-jump size $\mu_J$.
+        pub mean_log_jump_mu_j: T,
+        /// Log-jump standard deviation $\delta_J$.
+        pub std_log_jump_delta_j: T,
+        /// Option maturity $T$ (in years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_bates_svj_stochastic_vol_jump_characteristic_smile`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct BatesSvjSmileAnalytics<T: Real> {
+        /// Total integrated SVJ variance $V_{\text{tot}}(T) = w_{\text{Heston}}(T) + \lambda_J(\mu_J^2 + \delta_J^2)T$.
+        pub total_integrated_svj_variance: T,
+        /// Standardized third cumulant (SVJ skewness $\gamma_1$).
+        pub svj_standardized_skewness: T,
+        /// Bates SVJ implied volatility $\sigma_{\text{SVJ}}(K, T)$ at strike $K$.
+        pub bates_svj_implied_volatility: T,
+        /// Bates SVJ European call option price.
+        pub bates_svj_call_option_price: T,
+    }
+
+    /// Evaluates the Bates (1996) / Gatheral (2006, Ch. 5) SVJ cumulants (Heston stochastic variance
+    /// plus Merton lognormal jumps), implied volatility smile, and European call option value.
+    pub fn evaluate_bates_svj_stochastic_vol_jump_characteristic_smile<T: Real>(
+        spec: &BatesSvjSmileSpec<T>,
+    ) -> BatesSvjSmileAnalytics<T> {
+        let t = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+        let kap = spec.mean_reversion_kappa.max_val(T::from_f64(1e-4));
+        let exp_kt = (-kap * t).exp();
+        let b_kt = (T::one() - exp_kt) / kap;
+
+        // Heston expected integrated variance w_H(T) = theta * T + (v0 - theta) * B(kappa, T)
+        let w_heston = spec.long_run_variance_theta * t
+            + (spec.initial_variance_v0 - spec.long_run_variance_theta) * b_kt;
+
+        // Jump second, third, and fourth moments around zero
+        let mu_j = spec.mean_log_jump_mu_j;
+        let del_j2 = spec.std_log_jump_delta_j * spec.std_log_jump_delta_j;
+        let j_m2 = mu_j * mu_j + del_j2;
+        let j_m3 = mu_j * (mu_j * mu_j + T::from_f64(3.0) * del_j2);
+        let j_m4 = mu_j * mu_j * mu_j * mu_j
+            + T::from_f64(6.0) * mu_j * mu_j * del_j2
+            + T::from_f64(3.0) * del_j2 * del_j2;
+
+        let v_tot = (w_heston + spec.jump_intensity_lambda_j * j_m2 * t).max_val(T::from_f64(1e-8));
+        let std_tot = v_tot.sqrt();
+
+        // Third cumulant kappa_3(T): Heston leverage + jump asymmetry
+        let c3_heston = (T::from_f64(3.0) * spec.spot_vol_correlation_rho * spec.vol_of_vol_xi
+            / kap)
+            * (spec.long_run_variance_theta * (t - b_kt)
+                + (spec.initial_variance_v0 - spec.long_run_variance_theta) * (b_kt - t * exp_kt));
+        let c3_tot = c3_heston + spec.jump_intensity_lambda_j * j_m3 * t;
+        let gamma1 = c3_tot / (v_tot * std_tot);
+
+        // Fourth cumulant kappa_4(T): Heston vol-of-vol + jump kurtosis
+        let c4_heston = (T::from_f64(3.0) * spec.vol_of_vol_xi * spec.vol_of_vol_xi / (kap * kap))
+            * w_heston
+            * b_kt
+            * (T::one()
+                + T::from_f64(4.0) * spec.spot_vol_correlation_rho * spec.spot_vol_correlation_rho);
+        let c4_tot = c4_heston + spec.jump_intensity_lambda_j * j_m4 * t;
+        let gamma2 = c4_tot / (v_tot * v_tot);
+
+        let f0 = spec.spot_price_s0 * (spec.risk_free_rate_r * t).exp();
+        let log_m =
+            (spec.strike_price_k.max_val(T::from_f64(1e-4)) / f0.max_val(T::from_f64(1e-4))).ln();
+        let z = log_m / std_tot;
+
+        let base_vol = std_tot / t.sqrt();
+        let imp_vol = (base_vol
+            * (T::one()
+                + (gamma1 / T::from_f64(6.0)) * z
+                + (gamma2 / T::from_f64(24.0)) * (z * z - T::one())))
+        .max_val(T::from_f64(1e-4));
+
+        let v_sqrt = imp_vol * t.sqrt();
+        let d1 = (-log_m + T::from_f64(0.5) * v_sqrt * v_sqrt) / v_sqrt;
+        let d2 = d1 - v_sqrt;
+        let df = (-spec.risk_free_rate_r * t).exp();
+        let call_price = df * (f0 * norm_cdf(d1) - spec.strike_price_k * norm_cdf(d2));
+
+        BatesSvjSmileAnalytics {
+            total_integrated_svj_variance: v_tot,
+            svj_standardized_skewness: gamma1,
+            bates_svj_implied_volatility: imp_vol,
+            bates_svj_call_option_price: call_price,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn bates_svj_smile_invariants_and_ad_parity() {
+            let base = BatesSvjSmileSpec {
+                spot_price_s0: 100.0_f64,
+                strike_price_k: 93.0,
+                risk_free_rate_r: 0.04,
+                initial_variance_v0: 0.04,
+                long_run_variance_theta: 0.045,
+                mean_reversion_kappa: 1.80,
+                vol_of_vol_xi: 0.38,
+                spot_vol_correlation_rho: -0.65,
+                jump_intensity_lambda_j: 0.35,
+                mean_log_jump_mu_j: -0.07,
+                std_log_jump_delta_j: 0.11,
+                maturity_years_t: 0.75,
+            };
+            let r0 = evaluate_bates_svj_stochastic_vol_jump_characteristic_smile(&base);
+            assert!(r0.total_integrated_svj_variance > 0.02);
+            assert!(r0.svj_standardized_skewness < 0.0);
+            assert!(r0.bates_svj_implied_volatility > 0.15);
+            assert!(r0.bates_svj_call_option_price > 8.0);
+
+            let inputs = [
+                base.spot_price_s0,
+                base.strike_price_k,
+                base.risk_free_rate_r,
+                base.initial_variance_v0,
+                base.long_run_variance_theta,
+                base.mean_reversion_kappa,
+                base.vol_of_vol_xi,
+                base.spot_vol_correlation_rho,
+                base.jump_intensity_lambda_j,
+                base.mean_log_jump_mu_j,
+                base.std_log_jump_delta_j,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<12>::from_f64(0.0); 12];
+            for i in 0..12 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BatesSvjSmileSpec {
+                spot_price_s0: dual_in[0],
+                strike_price_k: dual_in[1],
+                risk_free_rate_r: dual_in[2],
+                initial_variance_v0: dual_in[3],
+                long_run_variance_theta: dual_in[4],
+                mean_reversion_kappa: dual_in[5],
+                vol_of_vol_xi: dual_in[6],
+                spot_vol_correlation_rho: dual_in[7],
+                jump_intensity_lambda_j: dual_in[8],
+                mean_log_jump_mu_j: dual_in[9],
+                std_log_jump_delta_j: dual_in[10],
+                maturity_years_t: dual_in[11],
+            };
+            let r_ad = evaluate_bates_svj_stochastic_vol_jump_characteristic_smile(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..12 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 12]| BatesSvjSmileSpec {
+                    spot_price_s0: v[0],
+                    strike_price_k: v[1],
+                    risk_free_rate_r: v[2],
+                    initial_variance_v0: v[3],
+                    long_run_variance_theta: v[4],
+                    mean_reversion_kappa: v[5],
+                    vol_of_vol_xi: v[6],
+                    spot_vol_correlation_rho: v[7],
+                    jump_intensity_lambda_j: v[8],
+                    mean_log_jump_mu_j: v[9],
+                    std_log_jump_delta_j: v[10],
+                    maturity_years_t: v[11],
+                };
+                let rp = evaluate_bates_svj_stochastic_vol_jump_characteristic_smile(&mk(p));
+                let rm = evaluate_bates_svj_stochastic_vol_jump_characteristic_smile(&mk(m));
+                let fd =
+                    (rp.bates_svj_call_option_price - rm.bates_svj_call_option_price) / (2.0 * eps);
+                assert!(
+                    r_ad.bates_svj_call_option_price.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.bates_svj_call_option_price.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use bates_svj_smile_suite65_mod::*;

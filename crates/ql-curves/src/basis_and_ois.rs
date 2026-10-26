@@ -1715,3 +1715,179 @@ mod evaluate_lyashenko_mercurio_fmm_in_arrears_caplet_convexity_module {
     }
 }
 pub use evaluate_lyashenko_mercurio_fmm_in_arrears_caplet_convexity_module::*;
+
+pub mod bianchetti_two_curve_quanto_suite65_mod {
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    /// Specification for the Bianchetti (2010) / Ametrano–Bianchetti (2013) two-curve
+    /// OIS vs. projection forward-measure change-of-numeraire quanto convexity engine.
+    ///
+    /// Reference: Bianchetti (2010, *Risk*, "Two Curves, One Price"), Ametrano & Bianchetti (2013,
+    /// *Interest Rate Modelling After the Financial Crisis*), Henrard (2014).
+    #[derive(Debug, Clone, Copy)]
+    pub struct BianchettiTwoCurveForwardQuantoSpec<T: Real> {
+        /// Contract notional $N$.
+        pub notional_n: T,
+        /// Projection-curve forward rate $F_x(0; T_1, T_2)$ under $\mathbb{Q}_x^{T_2}$.
+        pub projection_forward_rate_f0: T,
+        /// Multiplicative tenor-basis spread $s_{\text{basis},0}$ between projection and OIS curves.
+        pub tenor_basis_spread_s0: T,
+        /// Caplet strike rate $K$.
+        pub caplet_strike_k: T,
+        /// Fixing expiry $T_1$ (in years).
+        pub fixing_expiry_years_t1: T,
+        /// Accrual year fraction $\tau = T_2 - T_1$.
+        pub accrual_fraction_tau: T,
+        /// Lognormal volatility $\sigma_F$ of the projection forward rate $F_x$.
+        pub forward_rate_vol_sigma_f: T,
+        /// Lognormal volatility $\sigma_s$ of the basis spread ratio.
+        pub basis_spread_vol_sigma_s: T,
+        /// Correlation $\rho_{F,s}$ between projection forward rate and tenor basis spread.
+        pub forward_basis_correlation_rho: T,
+        /// OIS discount rate $r_{\text{OIS}}$.
+        pub ois_discount_rate_r: T,
+    }
+
+    /// Analytics returned by [`evaluate_bianchetti_two_curve_forward_measure_quanto_convexity`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct BianchettiTwoCurveForwardQuantoAnalytics<T: Real> {
+        /// OIS $T_2$-forward measure quanto-adjusted forward rate $F_x^{\mathbb{Q}_d^{T_2}}(0; T_1, T_2)$.
+        pub ois_measure_quanto_adjusted_forward_rate: T,
+        /// Two-curve change-of-numeraire convexity drift basis-point adjustment.
+        pub two_curve_quanto_convexity_bps: T,
+        /// Unadjusted single-measure Black–76 caplet PV (discounted at OIS).
+        pub unadjusted_two_curve_caplet_pv: T,
+        /// Bianchetti quanto-adjusted collateralized Black–76 caplet PV.
+        pub bianchetti_quanto_adjusted_caplet_pv: T,
+    }
+
+    /// Evaluates the Bianchetti (2010) change-of-numeraire internal-currency quanto adjustment
+    /// between the projection forward measure $\mathbb{Q}_x^{T_2}$ and the OIS forward measure
+    /// $\mathbb{Q}_d^{T_2}$ and prices the resulting collateralized caplet.
+    pub fn evaluate_bianchetti_two_curve_forward_measure_quanto_convexity<T: Real>(
+        spec: &BianchettiTwoCurveForwardQuantoSpec<T>,
+    ) -> BianchettiTwoCurveForwardQuantoAnalytics<T> {
+        let t1 = spec.fixing_expiry_years_t1.max_val(T::from_f64(1e-4));
+        let tau = spec.accrual_fraction_tau.max_val(T::from_f64(1e-4));
+        let t2 = t1 + tau;
+        let f0 = spec.projection_forward_rate_f0.max_val(T::from_f64(1e-5));
+        let k = spec.caplet_strike_k.max_val(T::from_f64(1e-5));
+        let sig_f = spec.forward_rate_vol_sigma_f.max_val(T::from_f64(1e-4));
+        let sig_s = spec.basis_spread_vol_sigma_s.max_val(T::from_f64(1e-4));
+
+        // Bianchetti (2010, Eq. 19): Radon-Nikodym density dQ_d^{T2} / dQ_x^{T2} = [P_d(T1,T2)/P_d(0,T2)] / [P_x(T1,T2)/P_x(0,T2)]
+        // Log-ratio volatility over [0, T1] is tau * s_basis / (1 + tau * s_basis) * sigma_s
+        let basis_weight = (tau * spec.tenor_basis_spread_s0)
+            / (T::one() + tau * spec.tenor_basis_spread_s0.max_val(T::from_f64(0.0)));
+        let quanto_exponent =
+            spec.forward_basis_correlation_rho * sig_f * sig_s * basis_weight * t1;
+        let f_quanto = f0 * quanto_exponent.exp();
+        let convexity_bps = (f_quanto - f0) * T::from_f64(10_000.0);
+
+        let df_ois = (-spec.ois_discount_rate_r * t2).exp();
+        let v_sqrt = sig_f * t1.sqrt();
+
+        let d1_unadj = ((f0 / k).ln() + T::from_f64(0.5) * sig_f * sig_f * t1) / v_sqrt;
+        let d2_unadj = d1_unadj - v_sqrt;
+        let pv_unadj =
+            spec.notional_n * tau * df_ois * (f0 * norm_cdf(d1_unadj) - k * norm_cdf(d2_unadj));
+
+        let d1_q = ((f_quanto / k).ln() + T::from_f64(0.5) * sig_f * sig_f * t1) / v_sqrt;
+        let d2_q = d1_q - v_sqrt;
+        let pv_quanto =
+            spec.notional_n * tau * df_ois * (f_quanto * norm_cdf(d1_q) - k * norm_cdf(d2_q));
+
+        BianchettiTwoCurveForwardQuantoAnalytics {
+            ois_measure_quanto_adjusted_forward_rate: f_quanto,
+            two_curve_quanto_convexity_bps: convexity_bps,
+            unadjusted_two_curve_caplet_pv: pv_unadj,
+            bianchetti_quanto_adjusted_caplet_pv: pv_quanto,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn bianchetti_two_curve_quanto_invariants_and_ad_parity() {
+            let base = BianchettiTwoCurveForwardQuantoSpec {
+                notional_n: 1_000.0_f64,
+                projection_forward_rate_f0: 0.044,
+                tenor_basis_spread_s0: 0.0035,
+                caplet_strike_k: 0.042,
+                fixing_expiry_years_t1: 2.0,
+                accrual_fraction_tau: 0.50,
+                forward_rate_vol_sigma_f: 0.25,
+                basis_spread_vol_sigma_s: 0.35,
+                forward_basis_correlation_rho: 0.65,
+                ois_discount_rate_r: 0.040,
+            };
+            let r0 = evaluate_bianchetti_two_curve_forward_measure_quanto_convexity(&base);
+            assert!(r0.ois_measure_quanto_adjusted_forward_rate > base.projection_forward_rate_f0);
+            assert!(r0.bianchetti_quanto_adjusted_caplet_pv > r0.unadjusted_two_curve_caplet_pv);
+
+            let inputs = [
+                base.notional_n,
+                base.projection_forward_rate_f0,
+                base.tenor_basis_spread_s0,
+                base.caplet_strike_k,
+                base.fixing_expiry_years_t1,
+                base.accrual_fraction_tau,
+                base.forward_rate_vol_sigma_f,
+                base.basis_spread_vol_sigma_s,
+                base.forward_basis_correlation_rho,
+                base.ois_discount_rate_r,
+            ];
+            let mut dual_in = [Dual::<10>::from_f64(0.0); 10];
+            for i in 0..10 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BianchettiTwoCurveForwardQuantoSpec {
+                notional_n: dual_in[0],
+                projection_forward_rate_f0: dual_in[1],
+                tenor_basis_spread_s0: dual_in[2],
+                caplet_strike_k: dual_in[3],
+                fixing_expiry_years_t1: dual_in[4],
+                accrual_fraction_tau: dual_in[5],
+                forward_rate_vol_sigma_f: dual_in[6],
+                basis_spread_vol_sigma_s: dual_in[7],
+                forward_basis_correlation_rho: dual_in[8],
+                ois_discount_rate_r: dual_in[9],
+            };
+            let r_ad = evaluate_bianchetti_two_curve_forward_measure_quanto_convexity(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..10 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 10]| BianchettiTwoCurveForwardQuantoSpec {
+                    notional_n: v[0],
+                    projection_forward_rate_f0: v[1],
+                    tenor_basis_spread_s0: v[2],
+                    caplet_strike_k: v[3],
+                    fixing_expiry_years_t1: v[4],
+                    accrual_fraction_tau: v[5],
+                    forward_rate_vol_sigma_f: v[6],
+                    basis_spread_vol_sigma_s: v[7],
+                    forward_basis_correlation_rho: v[8],
+                    ois_discount_rate_r: v[9],
+                };
+                let rp = evaluate_bianchetti_two_curve_forward_measure_quanto_convexity(&mk(p));
+                let rm = evaluate_bianchetti_two_curve_forward_measure_quanto_convexity(&mk(m));
+                let fd = (rp.bianchetti_quanto_adjusted_caplet_pv
+                    - rm.bianchetti_quanto_adjusted_caplet_pv)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.bianchetti_quanto_adjusted_caplet_pv.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.bianchetti_quanto_adjusted_caplet_pv.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use bianchetti_two_curve_quanto_suite65_mod::*;

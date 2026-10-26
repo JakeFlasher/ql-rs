@@ -3187,3 +3187,169 @@ mod evaluate_lewellen_nagel_shanken_gls_cross_sectional_r2_module {
     }
 }
 pub use evaluate_lewellen_nagel_shanken_gls_cross_sectional_r2_module::*;
+
+pub mod connor_korajczyk_apt_suite65_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Ross (1976) / Connor–Korajczyk (1986, 1988) Asymptotic Principal
+    /// Components Arbitrage Pricing Theory (APT) cross-sectional pricing error engine.
+    ///
+    /// Reference: Connor & Korajczyk (1986, *Journal of Financial Economics* 15(3); 1988, *JFE* 21(2)),
+    /// Ross (1976, *Journal of Economic Theory*), Campbell, Lo & MacKinlay (1997, Ch. 6).
+    #[derive(Debug, Clone, Copy)]
+    pub struct ConnorKorajczykAptSpec<T: Real> {
+        /// Observed asset expected excess return $\mu_i$.
+        pub asset_expected_excess_return_mu: T,
+        /// Factor betas $(\beta_{i,1}, \beta_{i,2})$ on the two pervasive PCA factors.
+        pub asset_pca_factor_betas: [T; 2],
+        /// Pervasive factor risk premia $(\lambda_1, \lambda_2)$.
+        pub pca_factor_risk_premia_lambda: [T; 2],
+        /// Pervasive factor return variances $(\sigma_{f,1}^2, \sigma_{f,2}^2)$.
+        pub pca_factor_variances: [T; 2],
+        /// Asset idiosyncratic residual variance $\sigma_{\varepsilon,i}^2$.
+        pub idiosyncratic_residual_variance_sigma_e2: T,
+        /// Cross-sectional universe size $N$.
+        pub cross_sectional_asset_count_n: T,
+        /// Time-series sample length $T_{\text{obs}}$.
+        pub time_series_sample_length_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_connor_korajczyk_asymptotic_pca_apt_pricing_error`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct ConnorKorajczykAptAnalytics<T: Real> {
+        /// Exact APT factor-implied expected excess return $\mu_i^{\text{APT}} = \beta_i^\top \lambda$.
+        pub apt_factor_implied_excess_return: T,
+        /// Cross-sectional APT pricing error $\alpha_i = \mu_i - \beta_i^\top \lambda$.
+        pub cross_sectional_apt_alpha: T,
+        /// Connor–Korajczyk finite-$(N, T)$ asymptotic PCA variance-adjusted Wald test statistic.
+        pub connor_korajczyk_wald_statistic: T,
+        /// Empirical Bayes / Ross APT shrinkage-adjusted expected excess return.
+        pub apt_shrunk_expected_excess_return: T,
+    }
+
+    /// Evaluates the Ross (1976) / Connor–Korajczyk (1986, 1988) asymptotic PCA factor pricing
+    /// benchmark, finite-$(N, T)$ estimation-adjusted Wald statistic, and APT-shrunk expected return.
+    pub fn evaluate_connor_korajczyk_asymptotic_pca_apt_pricing_error<T: Real>(
+        spec: &ConnorKorajczykAptSpec<T>,
+    ) -> ConnorKorajczykAptAnalytics<T> {
+        let mu_apt = spec.asset_pca_factor_betas[0] * spec.pca_factor_risk_premia_lambda[0]
+            + spec.asset_pca_factor_betas[1] * spec.pca_factor_risk_premia_lambda[1];
+        let alpha = spec.asset_expected_excess_return_mu - mu_apt;
+
+        let sig_e2 = spec
+            .idiosyncratic_residual_variance_sigma_e2
+            .max_val(T::from_f64(1e-6));
+        let n_assets = spec.cross_sectional_asset_count_n.max_val(T::from_f64(2.0));
+        let t_obs = spec.time_series_sample_length_t.max_val(T::from_f64(10.0));
+
+        // Factor tangency Sharpe squared theta_f^2 = sum_k lambda_k^2 / sigma_{f,k}^2
+        let sr1_sq = (spec.pca_factor_risk_premia_lambda[0]
+            * spec.pca_factor_risk_premia_lambda[0])
+            / spec.pca_factor_variances[0].max_val(T::from_f64(1e-6));
+        let sr2_sq = (spec.pca_factor_risk_premia_lambda[1]
+            * spec.pca_factor_risk_premia_lambda[1])
+            / spec.pca_factor_variances[1].max_val(T::from_f64(1e-6));
+        let theta_f2 = sr1_sq + sr2_sq;
+
+        // Connor & Korajczyk (1988): asymptotic variance of alpha_hat includes time-series (1 + theta_f^2)/T
+        // plus finite-N cross-sectional PCA factor extraction error (K / N) * (1 / T)
+        let k_factors = T::from_f64(2.0);
+        let var_alpha_hat =
+            sig_e2 * ((T::one() + theta_f2) / t_obs + (k_factors / (n_assets * t_obs)));
+        let wald_stat = (alpha * alpha) / var_alpha_hat.max_val(T::from_f64(1e-10));
+
+        // Empirical Bayes shrinkage weight toward exact Ross APT restriction alpha = 0
+        let shrink_w = T::one() / (T::one() + wald_stat);
+        let shrunk_mu =
+            shrink_w * mu_apt + (T::one() - shrink_w) * spec.asset_expected_excess_return_mu;
+
+        ConnorKorajczykAptAnalytics {
+            apt_factor_implied_excess_return: mu_apt,
+            cross_sectional_apt_alpha: alpha,
+            connor_korajczyk_wald_statistic: wald_stat,
+            apt_shrunk_expected_excess_return: shrunk_mu,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn connor_korajczyk_apt_invariants_and_ad_parity() {
+            let base = ConnorKorajczykAptSpec {
+                asset_expected_excess_return_mu: 0.088_f64,
+                asset_pca_factor_betas: [1.15, 0.45],
+                pca_factor_risk_premia_lambda: [0.055, 0.032],
+                pca_factor_variances: [0.025, 0.014],
+                idiosyncratic_residual_variance_sigma_e2: 0.036,
+                cross_sectional_asset_count_n: 250.0,
+                time_series_sample_length_t: 180.0,
+            };
+            let r0 = evaluate_connor_korajczyk_asymptotic_pca_apt_pricing_error(&base);
+            assert!(r0.apt_factor_implied_excess_return > 0.05);
+            assert!(r0.connor_korajczyk_wald_statistic > 0.0);
+            assert!(
+                r0.apt_shrunk_expected_excess_return > r0.apt_factor_implied_excess_return
+                    && r0.apt_shrunk_expected_excess_return < base.asset_expected_excess_return_mu
+            );
+
+            let inputs = [
+                base.asset_expected_excess_return_mu,
+                base.asset_pca_factor_betas[0],
+                base.pca_factor_risk_premia_lambda[0],
+                base.pca_factor_variances[0],
+                base.idiosyncratic_residual_variance_sigma_e2,
+                base.cross_sectional_asset_count_n,
+                base.time_series_sample_length_t,
+            ];
+            let mut dual_in = [Dual::<7>::from_f64(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = ConnorKorajczykAptSpec {
+                asset_expected_excess_return_mu: dual_in[0],
+                asset_pca_factor_betas: [
+                    dual_in[1],
+                    Dual::from_f64(base.asset_pca_factor_betas[1]),
+                ],
+                pca_factor_risk_premia_lambda: [
+                    dual_in[2],
+                    Dual::from_f64(base.pca_factor_risk_premia_lambda[1]),
+                ],
+                pca_factor_variances: [dual_in[3], Dual::from_f64(base.pca_factor_variances[1])],
+                idiosyncratic_residual_variance_sigma_e2: dual_in[4],
+                cross_sectional_asset_count_n: dual_in[5],
+                time_series_sample_length_t: dual_in[6],
+            };
+            let r_ad = evaluate_connor_korajczyk_asymptotic_pca_apt_pricing_error(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| ConnorKorajczykAptSpec {
+                    asset_expected_excess_return_mu: v[0],
+                    asset_pca_factor_betas: [v[1], base.asset_pca_factor_betas[1]],
+                    pca_factor_risk_premia_lambda: [v[2], base.pca_factor_risk_premia_lambda[1]],
+                    pca_factor_variances: [v[3], base.pca_factor_variances[1]],
+                    idiosyncratic_residual_variance_sigma_e2: v[4],
+                    cross_sectional_asset_count_n: v[5],
+                    time_series_sample_length_t: v[6],
+                };
+                let rp = evaluate_connor_korajczyk_asymptotic_pca_apt_pricing_error(&mk(p));
+                let rm = evaluate_connor_korajczyk_asymptotic_pca_apt_pricing_error(&mk(m));
+                let fd = (rp.connor_korajczyk_wald_statistic - rm.connor_korajczyk_wald_statistic)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.connor_korajczyk_wald_statistic.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.connor_korajczyk_wald_statistic.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use connor_korajczyk_apt_suite65_mod::*;

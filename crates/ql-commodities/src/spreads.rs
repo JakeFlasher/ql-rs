@@ -2389,3 +2389,184 @@ mod evaluate_eydeland_wolyniec_virtual_power_plant_heat_rate_strip_module {
     }
 }
 pub use evaluate_eydeland_wolyniec_virtual_power_plant_heat_rate_strip_module::*;
+
+pub mod dempster_medova_tang_crack_suite65_mod {
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    /// Specification for the Dempster–Medova–Tang (2008) cointegrated refinery crack spread option engine.
+    ///
+    /// Reference: Dempster, Medova & Tang (2008, *Journal of Banking & Finance* 32(12), "Long Term
+    /// Spread Option Valuation and Hedging"), Eydeland & Wolyniec (2003, Ch. 6), Kirk (1995).
+    #[derive(Debug, Clone, Copy)]
+    pub struct DempsterMedovaTangCrackSpreadSpec<T: Real> {
+        /// Refined product (gasoline/distillate) forward price $F_1$.
+        pub refined_product_forward_f1: T,
+        /// Crude oil feedstock forward price $F_2$.
+        pub crude_feedstock_forward_f2: T,
+        /// Refining processing strike cost $K_{\text{ref}}$.
+        pub refining_strike_k: T,
+        /// Refined product volatility $\sigma_1$.
+        pub product_volatility_sigma1: T,
+        /// Crude feedstock volatility $\sigma_2$.
+        pub crude_volatility_sigma2: T,
+        /// Instantaneous correlation $\rho_{1,2}$ between product and crude.
+        pub product_crude_correlation_rho: T,
+        /// Error-correction cointegration mean-reversion speed $\kappa_{\text{coint}}$.
+        pub cointegration_reversion_speed_kappa: T,
+        /// Risk-free interest rate $r$.
+        pub risk_free_rate_r: T,
+        /// Option maturity $T$ (in years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_dempster_medova_tang_cointegrated_crack_spread_option`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct DempsterMedovaTangCrackSpreadAnalytics<T: Real> {
+        /// Un-cointegrated Kirk (1995) GBM spread option price.
+        pub uncointegrated_kirk_spread_option_price: T,
+        /// Effective cointegration-damped spread volatility $\sigma_{\text{DMT}}(T)$.
+        pub cointegrated_effective_spread_volatility: T,
+        /// Dempster–Medova–Tang cointegrated crack spread option price.
+        pub cointegrated_crack_spread_option_price: T,
+        /// GBM spread variance overpricing bias relative to cointegrated equilibrium.
+        pub gbm_overpricing_bias: T,
+    }
+
+    /// Evaluates the Dempster–Medova–Tang (2008) cointegrated refinery crack spread option price
+    /// and compares it against the un-cointegrated Kirk (1995) GBM approximation.
+    pub fn evaluate_dempster_medova_tang_cointegrated_crack_spread_option<T: Real>(
+        spec: &DempsterMedovaTangCrackSpreadSpec<T>,
+    ) -> DempsterMedovaTangCrackSpreadAnalytics<T> {
+        let t = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+        let f1 = spec.refined_product_forward_f1.max_val(T::from_f64(1e-4));
+        let f2 = spec.crude_feedstock_forward_f2.max_val(T::from_f64(1e-4));
+        let k = spec.refining_strike_k;
+        let f_comp = (f2 + k).max_val(T::from_f64(1e-4));
+        let w2 = f2 / f_comp;
+
+        let sig1 = spec.product_volatility_sigma1.max_val(T::from_f64(1e-4));
+        let sig2 = spec.crude_volatility_sigma2.max_val(T::from_f64(1e-4));
+        let var_kirk = (sig1 * sig1
+            - T::from_f64(2.0) * w2 * spec.product_crude_correlation_rho * sig1 * sig2
+            + w2 * w2 * sig2 * sig2)
+            .max_val(T::from_f64(1e-6));
+        let sig_kirk = var_kirk.sqrt();
+
+        // OU cointegration damping factor psi(2*kappa, T) = (1 - exp(-2*kappa*T)) / (2*kappa*T)
+        let kap = spec
+            .cointegration_reversion_speed_kappa
+            .max_val(T::from_f64(1e-4));
+        let psi_ou =
+            (T::one() - (-T::from_f64(2.0) * kap * t).exp()) / (T::from_f64(2.0) * kap * t);
+        let stationary_share = T::from_f64(0.75);
+        let var_dmt = var_kirk * ((T::one() - stationary_share) + stationary_share * psi_ou);
+        let sig_dmt = var_dmt.sqrt();
+
+        let df = (-spec.risk_free_rate_r * t).exp();
+        let log_ratio = (f1 / f_comp).ln();
+        let sqrt_t = t.sqrt();
+
+        let v_kirk = sig_kirk * sqrt_t;
+        let d1_k = (log_ratio + T::from_f64(0.5) * v_kirk * v_kirk) / v_kirk;
+        let d2_k = d1_k - v_kirk;
+        let price_kirk = df * (f1 * norm_cdf(d1_k) - f_comp * norm_cdf(d2_k));
+
+        let v_dmt = sig_dmt * sqrt_t;
+        let d1_d = (log_ratio + T::from_f64(0.5) * v_dmt * v_dmt) / v_dmt;
+        let d2_d = d1_d - v_dmt;
+        let price_dmt = df * (f1 * norm_cdf(d1_d) - f_comp * norm_cdf(d2_d));
+
+        DempsterMedovaTangCrackSpreadAnalytics {
+            uncointegrated_kirk_spread_option_price: price_kirk,
+            cointegrated_effective_spread_volatility: sig_dmt,
+            cointegrated_crack_spread_option_price: price_dmt,
+            gbm_overpricing_bias: price_kirk - price_dmt,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn dempster_medova_tang_crack_spread_invariants_and_ad_parity() {
+            let base = DempsterMedovaTangCrackSpreadSpec {
+                refined_product_forward_f1: 96.0_f64,
+                crude_feedstock_forward_f2: 78.0,
+                refining_strike_k: 14.0,
+                product_volatility_sigma1: 0.34,
+                crude_volatility_sigma2: 0.30,
+                product_crude_correlation_rho: 0.82,
+                cointegration_reversion_speed_kappa: 1.50,
+                risk_free_rate_r: 0.04,
+                maturity_years_t: 1.5,
+            };
+            let r0 = evaluate_dempster_medova_tang_cointegrated_crack_spread_option(&base);
+            assert!(
+                r0.uncointegrated_kirk_spread_option_price
+                    > r0.cointegrated_crack_spread_option_price
+            );
+            assert!(r0.cointegrated_crack_spread_option_price > 0.0);
+            assert!(r0.gbm_overpricing_bias > 0.0);
+
+            let inputs = [
+                base.refined_product_forward_f1,
+                base.crude_feedstock_forward_f2,
+                base.refining_strike_k,
+                base.product_volatility_sigma1,
+                base.crude_volatility_sigma2,
+                base.product_crude_correlation_rho,
+                base.cointegration_reversion_speed_kappa,
+                base.risk_free_rate_r,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<9>::from_f64(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = DempsterMedovaTangCrackSpreadSpec {
+                refined_product_forward_f1: dual_in[0],
+                crude_feedstock_forward_f2: dual_in[1],
+                refining_strike_k: dual_in[2],
+                product_volatility_sigma1: dual_in[3],
+                crude_volatility_sigma2: dual_in[4],
+                product_crude_correlation_rho: dual_in[5],
+                cointegration_reversion_speed_kappa: dual_in[6],
+                risk_free_rate_r: dual_in[7],
+                maturity_years_t: dual_in[8],
+            };
+            let r_ad = evaluate_dempster_medova_tang_cointegrated_crack_spread_option(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 9]| DempsterMedovaTangCrackSpreadSpec {
+                    refined_product_forward_f1: v[0],
+                    crude_feedstock_forward_f2: v[1],
+                    refining_strike_k: v[2],
+                    product_volatility_sigma1: v[3],
+                    crude_volatility_sigma2: v[4],
+                    product_crude_correlation_rho: v[5],
+                    cointegration_reversion_speed_kappa: v[6],
+                    risk_free_rate_r: v[7],
+                    maturity_years_t: v[8],
+                };
+                let rp = evaluate_dempster_medova_tang_cointegrated_crack_spread_option(&mk(p));
+                let rm = evaluate_dempster_medova_tang_cointegrated_crack_spread_option(&mk(m));
+                let fd = (rp.cointegrated_crack_spread_option_price
+                    - rm.cointegrated_crack_spread_option_price)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.cointegrated_crack_spread_option_price.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.cointegrated_crack_spread_option_price.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use dempster_medova_tang_crack_suite65_mod::*;

@@ -2086,3 +2086,176 @@ mod evaluate_kalotay_fabozzi_callable_bond_refunding_efficiency_module {
     }
 }
 pub use evaluate_kalotay_fabozzi_callable_bond_refunding_efficiency_module::*;
+
+pub mod black_derman_toy_callable_suite65_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Black–Derman–Toy (1990) lognormal short-rate lattice callable bond pricer.
+    ///
+    /// Reference: Black, Derman & Toy (1990, *Financial Analysts Journal* 46(1), "A One-Factor Model
+    /// of Interest Rates and Its Application to Treasury Bond Options"), Tuckman & Serrat (2022, Ch. 11).
+    #[derive(Debug, Clone, Copy)]
+    pub struct BlackDermanToyCallableBondSpec<T: Real> {
+        /// Bond par value $F_{\text{par}}$.
+        pub par_value: T,
+        /// Annualized coupon rate $c$.
+        pub coupon_rate_c: T,
+        /// Initial short-rate median level $r_0$.
+        pub initial_short_rate_r0: T,
+        /// Term structure drift slope $s_{\text{slope}}$ per year.
+        pub term_slope_s: T,
+        /// Lognormal short-rate volatility $\sigma_r$.
+        pub short_rate_log_vol_sigma: T,
+        /// Option-Adjusted Spread (OAS) $s_{\text{oas}}$.
+        pub option_adjusted_spread_oas: T,
+        /// Issuer call price $K_{\text{call}}$.
+        pub call_price_k: T,
+        /// Maturity $T$ (in years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_black_derman_toy_lognormal_short_rate_callable_bond`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct BlackDermanToyCallableBondAnalytics<T: Real> {
+        /// Option-free straight bond price on the BDT lattice.
+        pub straight_bond_price: T,
+        /// Callable bond price on the BDT lattice with smooth call exercise.
+        pub bdt_callable_bond_price: T,
+        /// Embedded issuer call option value $V_{\text{call}} = B_{\text{straight}} - B_{\text{callable}}$.
+        pub embedded_call_option_value: T,
+        /// Effective BDT lattice rate sensitivity (modified duration proxy).
+        pub effective_callable_duration: T,
+    }
+
+    /// Evaluates an option-free and callable bond on a 4-step recombining Black–Derman–Toy (1990)
+    /// lognormal short-rate binomial tree with $N = 4$ discounted period coupons.
+    pub fn evaluate_black_derman_toy_lognormal_short_rate_callable_bond<T: Real>(
+        spec: &BlackDermanToyCallableBondSpec<T>,
+    ) -> BlackDermanToyCallableBondAnalytics<T> {
+        const STEPS: usize = 4;
+        let t_mat = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+        let dt = t_mat / T::from_f64(STEPS as f64);
+        let sqrt_dt = dt.sqrt();
+        let sig = spec.short_rate_log_vol_sigma.max_val(T::from_f64(1e-4));
+        let step_coupon = spec.par_value * spec.coupon_rate_c * dt;
+
+        let smooth_pos = |x: T| -> T {
+            let eps = spec.par_value * T::from_f64(0.025);
+            T::from_f64(0.5) * (x + (x * x + eps * eps).sqrt())
+        };
+
+        let eval_tree = |rate_shift: T| -> (T, T) {
+            let mut straight = [spec.par_value; STEPS + 1];
+            let mut callable = [spec.par_value; STEPS + 1];
+
+            for n in (0..STEPS).rev() {
+                let t_n = T::from_f64(n as f64) * dt;
+                let median_r = (spec.initial_short_rate_r0 + spec.term_slope_s * t_n + rate_shift)
+                    .max_val(T::from_f64(1e-4));
+                for j in 0..=n {
+                    let node_shift = (2 * j as isize - n as isize) as f64;
+                    let r_nj = median_r * (T::from_f64(node_shift) * sig * sqrt_dt).exp();
+                    let df_nj = (-(r_nj + spec.option_adjusted_spread_oas) * dt).exp();
+
+                    let s_cont =
+                        df_nj * (T::from_f64(0.5) * (straight[j + 1] + straight[j]) + step_coupon);
+                    straight[j] = s_cont;
+
+                    let c_cont =
+                        df_nj * (T::from_f64(0.5) * (callable[j + 1] + callable[j]) + step_coupon);
+                    callable[j] = c_cont - smooth_pos(c_cont - spec.call_price_k);
+                }
+            }
+            (straight[0], callable[0])
+        };
+
+        let (s0, c0) = eval_tree(T::zero());
+        let dr = T::from_f64(0.001);
+        let (_s_up, c_up) = eval_tree(dr);
+        let (_s_dn, c_dn) = eval_tree(-dr);
+        let eff_dur = (c_dn - c_up) / (T::from_f64(2.0) * dr * c0.max_val(T::from_f64(1.0)));
+
+        BlackDermanToyCallableBondAnalytics {
+            straight_bond_price: s0,
+            bdt_callable_bond_price: c0,
+            embedded_call_option_value: s0 - c0,
+            effective_callable_duration: eff_dur,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn bdt_callable_bond_invariants_and_ad_parity() {
+            let base = BlackDermanToyCallableBondSpec {
+                par_value: 100.0_f64,
+                coupon_rate_c: 0.055,
+                initial_short_rate_r0: 0.038,
+                term_slope_s: 0.002,
+                short_rate_log_vol_sigma: 0.22,
+                option_adjusted_spread_oas: 0.006,
+                call_price_k: 101.0,
+                maturity_years_t: 4.0,
+            };
+            let r0 = evaluate_black_derman_toy_lognormal_short_rate_callable_bond(&base);
+            assert!(r0.straight_bond_price > r0.bdt_callable_bond_price);
+            assert!(r0.embedded_call_option_value > 0.0);
+            assert!(r0.effective_callable_duration > 0.5);
+
+            let inputs = [
+                base.par_value,
+                base.coupon_rate_c,
+                base.initial_short_rate_r0,
+                base.term_slope_s,
+                base.short_rate_log_vol_sigma,
+                base.option_adjusted_spread_oas,
+                base.call_price_k,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BlackDermanToyCallableBondSpec {
+                par_value: dual_in[0],
+                coupon_rate_c: dual_in[1],
+                initial_short_rate_r0: dual_in[2],
+                term_slope_s: dual_in[3],
+                short_rate_log_vol_sigma: dual_in[4],
+                option_adjusted_spread_oas: dual_in[5],
+                call_price_k: dual_in[6],
+                maturity_years_t: dual_in[7],
+            };
+            let r_ad = evaluate_black_derman_toy_lognormal_short_rate_callable_bond(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| BlackDermanToyCallableBondSpec {
+                    par_value: v[0],
+                    coupon_rate_c: v[1],
+                    initial_short_rate_r0: v[2],
+                    term_slope_s: v[3],
+                    short_rate_log_vol_sigma: v[4],
+                    option_adjusted_spread_oas: v[5],
+                    call_price_k: v[6],
+                    maturity_years_t: v[7],
+                };
+                let rp = evaluate_black_derman_toy_lognormal_short_rate_callable_bond(&mk(p));
+                let rm = evaluate_black_derman_toy_lognormal_short_rate_callable_bond(&mk(m));
+                let fd = (rp.bdt_callable_bond_price - rm.bdt_callable_bond_price) / (2.0 * eps);
+                assert!(
+                    r_ad.bdt_callable_bond_price.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.bdt_callable_bond_price.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use black_derman_toy_callable_suite65_mod::*;

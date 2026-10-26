@@ -2089,3 +2089,177 @@ mod evaluate_brigo_alfonsi_shifted_cir_stochastic_intensity_cds_module {
     }
 }
 pub use evaluate_brigo_alfonsi_shifted_cir_stochastic_intensity_cds_module::*;
+
+pub mod schonbucher_jamshidian_cds_swaption_suite65_mod {
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    /// Specification for the Schönbucher (2000, 2003) / Jamshidian (2004) survival-measure
+    /// knock-out and non-knock-out (FEP-inclusive) payer CDS swaption engine.
+    ///
+    /// Reference: Schönbucher (2000, *Journal of Derivatives*; 2003, *Credit Derivatives Pricing
+    /// Models*, Ch. 7), Jamshidian (2004, *Finance & Stochastics* 8(3)), Brigo & Mercurio (2006, Ch. 23).
+    #[derive(Debug, Clone, Copy)]
+    pub struct SchonbucherJamshidianCdsSwaptionSpec<T: Real> {
+        /// Contract notional $N$.
+        pub notional_n: T,
+        /// Short-term hazard rate $\lambda_0$ over $[0, T_a]$.
+        pub short_term_hazard_rate_lambda0: T,
+        /// Forward CDS hazard rate $\lambda_{\text{fwd}}$ over $[T_a, T_b]$.
+        pub forward_hazard_rate_lambda_fwd: T,
+        /// Swaption strike spread $K$ (decimal).
+        pub strike_spread_k: T,
+        /// Lognormal forward CDS spread volatility $\sigma_S$.
+        pub spread_volatility_sigma_s: T,
+        /// Recovery rate $R \in [0, 1)$.
+        pub recovery_rate_rec: T,
+        /// OIS risk-free discount rate $r$.
+        pub risk_free_rate_r: T,
+        /// Swaption expiry $T_a$ (in years).
+        pub option_expiry_years_ta: T,
+        /// Underlying CDS maturity $T_b > T_a$ (in years).
+        pub cds_maturity_years_tb: T,
+    }
+
+    /// Analytics returned by [`evaluate_schonbucher_jamshidian_survival_measure_payer_cds_swaption`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct SchonbucherJamshidianCdsSwaptionAnalytics<T: Real> {
+        /// Survival-contingent forward risky annuity numeraire $C(0; T_a, T_b)$.
+        pub forward_risky_annuity_rpv01: T,
+        /// Knock-out payer CDS swaption PV under Schönbucher's survival measure.
+        pub knockout_payer_swaption_pv: T,
+        /// Front-End Protection (FEP) PV over $[0, T_a]$ for non-knock-out swaptions.
+        pub front_end_protection_pv: T,
+        /// Total non-knock-out (full protection) payer CDS swaption PV.
+        pub full_non_knockout_swaption_pv: T,
+    }
+
+    /// Evaluates the Schönbucher (2000, 2003) / Jamshidian (2004) survival-measure Black–76 payer
+    /// CDS swaption price and Front-End Protection (FEP) value.
+    pub fn evaluate_schonbucher_jamshidian_survival_measure_payer_cds_swaption<T: Real>(
+        spec: &SchonbucherJamshidianCdsSwaptionSpec<T>,
+    ) -> SchonbucherJamshidianCdsSwaptionAnalytics<T> {
+        let ta = spec.option_expiry_years_ta.max_val(T::from_f64(1e-4));
+        let tenor = (spec.cds_maturity_years_tb - ta).max_val(T::from_f64(0.25));
+        let lam0 = spec
+            .short_term_hazard_rate_lambda0
+            .max_val(T::from_f64(1e-5));
+        let lam_f = spec
+            .forward_hazard_rate_lambda_fwd
+            .max_val(T::from_f64(1e-5));
+        let lgd = (T::one() - spec.recovery_rate_rec).max_val(T::from_f64(1e-4));
+        let r = spec.risk_free_rate_r;
+
+        // Forward risky annuity C(0; T_a, T_b) = exp(-(r + lam0)*T_a) * (1 - exp(-(r + lam_f)*(T_b - T_a))) / (r + lam_f)
+        let surv_df_ta = (-(r + lam0) * ta).exp();
+        let fwd_disc = (r + lam_f).max_val(T::from_f64(1e-5));
+        let fwd_rpv01 = surv_df_ta * (T::one() - (-fwd_disc * tenor).exp()) / fwd_disc;
+
+        // Forward par CDS spread S_0(T_a, T_b) = (1 - R) * lam_f
+        let s0 = lgd * lam_f;
+        let k = spec.strike_spread_k.max_val(T::from_f64(1e-5));
+        let sig_s = spec.spread_volatility_sigma_s.max_val(T::from_f64(1e-4));
+        let v_sqrt = sig_s * ta.sqrt();
+
+        let d1 = ((s0 / k).ln() + T::from_f64(0.5) * sig_s * sig_s * ta) / v_sqrt;
+        let d2 = d1 - v_sqrt;
+        let ko_pv = spec.notional_n * fwd_rpv01 * (s0 * norm_cdf(d1) - k * norm_cdf(d2));
+
+        // Front-End Protection (FEP) PV over [0, T_a]
+        let short_disc = (r + lam0).max_val(T::from_f64(1e-5));
+        let fep_pv = spec.notional_n * lgd * (lam0 / short_disc) * (T::one() - surv_df_ta);
+        let full_pv = ko_pv + fep_pv;
+
+        SchonbucherJamshidianCdsSwaptionAnalytics {
+            forward_risky_annuity_rpv01: fwd_rpv01,
+            knockout_payer_swaption_pv: ko_pv,
+            front_end_protection_pv: fep_pv,
+            full_non_knockout_swaption_pv: full_pv,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn schonbucher_jamshidian_cds_swaption_invariants_and_ad_parity() {
+            let base = SchonbucherJamshidianCdsSwaptionSpec {
+                notional_n: 1_000.0_f64,
+                short_term_hazard_rate_lambda0: 0.018,
+                forward_hazard_rate_lambda_fwd: 0.022,
+                strike_spread_k: 0.012,
+                spread_volatility_sigma_s: 0.45,
+                recovery_rate_rec: 0.40,
+                risk_free_rate_r: 0.04,
+                option_expiry_years_ta: 1.0,
+                cds_maturity_years_tb: 6.0,
+            };
+            let r0 = evaluate_schonbucher_jamshidian_survival_measure_payer_cds_swaption(&base);
+            assert!(r0.forward_risky_annuity_rpv01 > 3.0);
+            assert!(r0.knockout_payer_swaption_pv > 0.0);
+            assert!(r0.front_end_protection_pv > 0.0);
+            assert!(r0.full_non_knockout_swaption_pv > r0.knockout_payer_swaption_pv);
+
+            let inputs = [
+                base.notional_n,
+                base.short_term_hazard_rate_lambda0,
+                base.forward_hazard_rate_lambda_fwd,
+                base.strike_spread_k,
+                base.spread_volatility_sigma_s,
+                base.recovery_rate_rec,
+                base.risk_free_rate_r,
+                base.option_expiry_years_ta,
+                base.cds_maturity_years_tb,
+            ];
+            let mut dual_in = [Dual::<9>::from_f64(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = SchonbucherJamshidianCdsSwaptionSpec {
+                notional_n: dual_in[0],
+                short_term_hazard_rate_lambda0: dual_in[1],
+                forward_hazard_rate_lambda_fwd: dual_in[2],
+                strike_spread_k: dual_in[3],
+                spread_volatility_sigma_s: dual_in[4],
+                recovery_rate_rec: dual_in[5],
+                risk_free_rate_r: dual_in[6],
+                option_expiry_years_ta: dual_in[7],
+                cds_maturity_years_tb: dual_in[8],
+            };
+            let r_ad =
+                evaluate_schonbucher_jamshidian_survival_measure_payer_cds_swaption(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 9]| SchonbucherJamshidianCdsSwaptionSpec {
+                    notional_n: v[0],
+                    short_term_hazard_rate_lambda0: v[1],
+                    forward_hazard_rate_lambda_fwd: v[2],
+                    strike_spread_k: v[3],
+                    spread_volatility_sigma_s: v[4],
+                    recovery_rate_rec: v[5],
+                    risk_free_rate_r: v[6],
+                    option_expiry_years_ta: v[7],
+                    cds_maturity_years_tb: v[8],
+                };
+                let rp =
+                    evaluate_schonbucher_jamshidian_survival_measure_payer_cds_swaption(&mk(p));
+                let rm =
+                    evaluate_schonbucher_jamshidian_survival_measure_payer_cds_swaption(&mk(m));
+                let fd = (rp.full_non_knockout_swaption_pv - rm.full_non_knockout_swaption_pv)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.full_non_knockout_swaption_pv.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.full_non_knockout_swaption_pv.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use schonbucher_jamshidian_cds_swaption_suite65_mod::*;

@@ -2503,3 +2503,184 @@ mod albanese_crepey_saccr_kva_suite64_tests {
         }
     }
 }
+
+pub mod brigo_pallavicini_ccp_xva_suite65_mod {
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    /// Specification for the Brigo–Pallavicini (2014) / Gregory (2020) centrally cleared CCP
+    /// Initial Margin MVA, MPoR tail-breach CVA, and Default Fund mutualization engine.
+    ///
+    /// Reference: Brigo & Pallavicini (2014, *IJTAF* 17(1), "Nonlinear Consistent Valuation of CCP
+    /// Cleared or CSA Bilateral Trades"), Crépey (2015, *Math. Finance*), Gregory (2020, Ch. 17).
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrigoPallaviciniCcpXvaSpec<T: Real> {
+        /// Portfolio mark-to-market volatility $\sigma_V$ (in currency units per $\sqrt{\text{year}}$).
+        pub portfolio_mtm_volatility_sigma_v: T,
+        /// Margin Period of Risk $\Delta_{\text{MPoR}}$ (in years, e.g., $10/252$).
+        pub margin_period_of_risk_years: T,
+        /// Initial Margin confidence level $\alpha_{\text{IM}} \in (0.90, 0.999)$ (e.g., $0.99$).
+        pub im_confidence_alpha: T,
+        /// Initial Margin funding spread $s_{\text{IM}}$.
+        pub im_funding_spread_s_im: T,
+        /// Clearing member default hazard rate $\lambda_{\text{CM}}$ (for residual tail breach CVA).
+        pub clearing_member_hazard_lambda_cm: T,
+        /// Default Fund to Initial Margin scaling ratio $\theta_{\text{DF}}$.
+        pub default_fund_scaling_theta_df: T,
+        /// Default Fund capital + fellow-member mutualization hazard spread $s_{\text{DF}}$.
+        pub default_fund_mutualization_spread_s_df: T,
+        /// OIS risk-free discount rate $r$.
+        pub ois_discount_rate_r: T,
+        /// Portfolio maturity $T$ (in years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_brigo_pallavicini_ccp_default_fund_cva_mva`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrigoPallaviciniCcpXvaAnalytics<T: Real> {
+        /// Lifetime Initial Margin Valuation Adjustment ($MVA_{\text{CCP}}$).
+        pub initial_margin_mva: T,
+        /// Residual MPoR tail-exceedance CVA above Initial Margin ($CVA_{\text{CCP}}$).
+        pub residual_mpor_breach_cva: T,
+        /// CCP Default Fund capital and loss-mutualization valuation adjustment ($DFVA$).
+        pub default_fund_mutualization_cost: T,
+        /// Total CCP clearing valuation adjustment $XVA_{\text{CCP}} = MVA + CVA_{\text{CCP}} + DFVA$.
+        pub total_ccp_clearing_xva: T,
+    }
+
+    /// Evaluates the Brigo–Pallavicini (2014) centrally cleared CCP valuation adjustments ($MVA$,
+    /// residual tail-breach $CVA$, and Default Fund $DFVA$) via 4-point midpoint quadrature.
+    pub fn evaluate_brigo_pallavicini_ccp_default_fund_cva_mva<T: Real>(
+        spec: &BrigoPallaviciniCcpXvaSpec<T>,
+    ) -> BrigoPallaviciniCcpXvaAnalytics<T> {
+        let t_mat = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+        let mpor = spec.margin_period_of_risk_years.max_val(T::from_f64(1e-5));
+        let alpha = spec
+            .im_confidence_alpha
+            .max_val(T::from_f64(0.80))
+            .min_val(T::from_f64(0.9999));
+
+        // Exact AD-propagating inverse normal quantile q_IM = Phi^{-1}(alpha) via two Newton steps
+        let mut q_im = T::from_f64(ql_math::inv_norm_cdf(alpha.val().clamp(1e-12, 1.0 - 1e-12)));
+        for _ in 0..2 {
+            q_im = q_im - (q_im.norm_cdf() - alpha) / q_im.norm_pdf().max_val(T::from_f64(1e-15));
+        }
+
+        let phi_q = q_im.norm_pdf();
+        let tail_exceedance_mult =
+            (phi_q - q_im * (T::one() - norm_cdf(q_im))).max_val(T::from_f64(1e-8));
+        let mpor_vol_0 = spec.portfolio_mtm_volatility_sigma_v * mpor.sqrt();
+
+        const STEPS: usize = 4;
+        let dt = t_mat / T::from_f64(STEPS as f64);
+        let disc_rate = spec.ois_discount_rate_r + spec.clearing_member_hazard_lambda_cm;
+        let lgd_ccp = T::from_f64(0.60);
+
+        let mut mva = T::zero();
+        let mut cva_ccp = T::zero();
+        let mut dfva = T::zero();
+
+        for m in 0..STEPS {
+            let t_mid = (T::from_f64(m as f64) + T::from_f64(0.5)) * dt;
+            let rem_fraction = ((t_mat - t_mid) / t_mat).max_val(T::from_f64(1e-4)).sqrt();
+            let sigma_mpor_t = mpor_vol_0 * rem_fraction;
+            let im_t = q_im * sigma_mpor_t;
+            let epe_breach_t = sigma_mpor_t * tail_exceedance_mult;
+            let df_t = spec.default_fund_scaling_theta_df * im_t;
+
+            let df_disc = (-disc_rate * t_mid).exp();
+            mva += dt * df_disc * spec.im_funding_spread_s_im * im_t;
+            cva_ccp +=
+                dt * df_disc * lgd_ccp * spec.clearing_member_hazard_lambda_cm * epe_breach_t;
+            dfva += dt * df_disc * spec.default_fund_mutualization_spread_s_df * df_t;
+        }
+
+        BrigoPallaviciniCcpXvaAnalytics {
+            initial_margin_mva: mva,
+            residual_mpor_breach_cva: cva_ccp,
+            default_fund_mutualization_cost: dfva,
+            total_ccp_clearing_xva: mva + cva_ccp + dfva,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn brigo_pallavicini_ccp_xva_invariants_and_ad_parity() {
+            let base = BrigoPallaviciniCcpXvaSpec {
+                portfolio_mtm_volatility_sigma_v: 45.0_f64,
+                margin_period_of_risk_years: 10.0 / 252.0,
+                im_confidence_alpha: 0.99,
+                im_funding_spread_s_im: 0.0085,
+                clearing_member_hazard_lambda_cm: 0.015,
+                default_fund_scaling_theta_df: 0.18,
+                default_fund_mutualization_spread_s_df: 0.025,
+                ois_discount_rate_r: 0.038,
+                maturity_years_t: 5.0,
+            };
+            let r0 = evaluate_brigo_pallavicini_ccp_default_fund_cva_mva(&base);
+            assert!(r0.initial_margin_mva > 0.0);
+            assert!(r0.residual_mpor_breach_cva > 0.0);
+            assert!(r0.default_fund_mutualization_cost > 0.0);
+            assert!(r0.total_ccp_clearing_xva > r0.initial_margin_mva);
+
+            let inputs = [
+                base.portfolio_mtm_volatility_sigma_v,
+                base.margin_period_of_risk_years,
+                base.im_confidence_alpha,
+                base.im_funding_spread_s_im,
+                base.clearing_member_hazard_lambda_cm,
+                base.default_fund_scaling_theta_df,
+                base.default_fund_mutualization_spread_s_df,
+                base.ois_discount_rate_r,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<9>::from_f64(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BrigoPallaviciniCcpXvaSpec {
+                portfolio_mtm_volatility_sigma_v: dual_in[0],
+                margin_period_of_risk_years: dual_in[1],
+                im_confidence_alpha: dual_in[2],
+                im_funding_spread_s_im: dual_in[3],
+                clearing_member_hazard_lambda_cm: dual_in[4],
+                default_fund_scaling_theta_df: dual_in[5],
+                default_fund_mutualization_spread_s_df: dual_in[6],
+                ois_discount_rate_r: dual_in[7],
+                maturity_years_t: dual_in[8],
+            };
+            let r_ad = evaluate_brigo_pallavicini_ccp_default_fund_cva_mva(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 9]| BrigoPallaviciniCcpXvaSpec {
+                    portfolio_mtm_volatility_sigma_v: v[0],
+                    margin_period_of_risk_years: v[1],
+                    im_confidence_alpha: v[2],
+                    im_funding_spread_s_im: v[3],
+                    clearing_member_hazard_lambda_cm: v[4],
+                    default_fund_scaling_theta_df: v[5],
+                    default_fund_mutualization_spread_s_df: v[6],
+                    ois_discount_rate_r: v[7],
+                    maturity_years_t: v[8],
+                };
+                let rp = evaluate_brigo_pallavicini_ccp_default_fund_cva_mva(&mk(p));
+                let rm = evaluate_brigo_pallavicini_ccp_default_fund_cva_mva(&mk(m));
+                let fd = (rp.total_ccp_clearing_xva - rm.total_ccp_clearing_xva) / (2.0 * eps);
+                assert!(
+                    r_ad.total_ccp_clearing_xva.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.total_ccp_clearing_xva.d[i] - fd).abs() < 1e-3);
+            }
+        }
+    }
+}
+pub use brigo_pallavicini_ccp_xva_suite65_mod::*;

@@ -2175,3 +2175,165 @@ mod engle_kroner_bekk_suite64_tests {
         }
     }
 }
+
+pub mod hamilton_markov_switching_suite65_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Hamilton (1989, 1994) two-state Markov-switching regime filter engine.
+    ///
+    /// Reference: Hamilton (1989, *Econometrica* 57(2), "A New Approach to the Economic Analysis
+    /// of Nonstationary Time Series and the Business Cycle"; 1994, *Time Series Analysis*, Ch. 22).
+    #[derive(Debug, Clone, Copy)]
+    pub struct HamiltonMarkovSwitchingSpec<T: Real> {
+        /// Current observed macro/return realization $y_t$.
+        pub observed_realization_yt: T,
+        /// Expansion regime ($s_t = 1$) conditional mean $\mu_1$.
+        pub expansion_mean_mu1: T,
+        /// Recession/crisis regime ($s_t = 2$) conditional mean $\mu_2$.
+        pub recession_mean_mu2: T,
+        /// Expansion regime standard deviation $\sigma_1$.
+        pub expansion_volatility_sigma1: T,
+        /// Recession/crisis regime standard deviation $\sigma_2$.
+        pub recession_volatility_sigma2: T,
+        /// Transition probability $p_{11} = \mathbb{P}(s_t = 1 \mid s_{t-1} = 1)$ of staying in expansion.
+        pub stay_expansion_prob_p11: T,
+        /// Transition probability $p_{22} = \mathbb{P}(s_t = 2 \mid s_{t-1} = 2)$ of staying in recession.
+        pub stay_recession_prob_p22: T,
+        /// Prior filtered probability $\xi_{1, t-1 \mid t-1} = \mathbb{P}(s_{t-1} = 1 \mid \mathcal{F}_{t-1})$.
+        pub prior_expansion_prob_xi1: T,
+    }
+
+    /// Analytics returned by [`evaluate_hamilton_markov_switching_regime_filter_step`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct HamiltonMarkovSwitchingAnalytics<T: Real> {
+        /// One-step-ahead predictive expansion probability $\xi_{1, t \mid t-1}$.
+        pub predictive_expansion_probability: T,
+        /// Updated posterior filtered recession probability $\xi_{2, t \mid t} = \mathbb{P}(s_t = 2 \mid \mathcal{F}_t)$.
+        pub filtered_recession_probability: T,
+        /// Marginal log-likelihood contribution $\ell_t = \ln f(y_t \mid \mathcal{F}_{t-1})$.
+        pub marginal_log_likelihood_increment: T,
+        /// One-step-ahead regime-filtered conditional expectation $\mathbb{E}[y_{t+1} \mid \mathcal{F}_t]$.
+        pub next_step_conditional_forecast: T,
+    }
+
+    /// Evaluates one exact Bayes–Hamilton (1989, Section 4) nonlinear Markov-switching filter step.
+    pub fn evaluate_hamilton_markov_switching_regime_filter_step<T: Real>(
+        spec: &HamiltonMarkovSwitchingSpec<T>,
+    ) -> HamiltonMarkovSwitchingAnalytics<T> {
+        let p11 = spec.stay_expansion_prob_p11;
+        let p22 = spec.stay_recession_prob_p22;
+        let xi1_prev = spec.prior_expansion_prob_xi1;
+        let xi2_prev = T::one() - xi1_prev;
+
+        // 1. Predictive regime probabilities xi_{j, t|t-1}
+        let xi1_pred = p11 * xi1_prev + (T::one() - p22) * xi2_prev;
+        let xi2_pred = T::one() - xi1_pred;
+
+        // 2. Regime-conditional Gaussian densities eta_{j, t}
+        let inv_sqrt_2pi = T::from_f64(0.3989422804014327);
+        let sig1 = spec.expansion_volatility_sigma1.max_val(T::from_f64(1e-4));
+        let sig2 = spec.recession_volatility_sigma2.max_val(T::from_f64(1e-4));
+        let z1 = (spec.observed_realization_yt - spec.expansion_mean_mu1) / sig1;
+        let z2 = (spec.observed_realization_yt - spec.recession_mean_mu2) / sig2;
+
+        let eta1 = (inv_sqrt_2pi / sig1) * (-T::from_f64(0.5) * z1 * z1).exp();
+        let eta2 = (inv_sqrt_2pi / sig2) * (-T::from_f64(0.5) * z2 * z2).exp();
+
+        // 3. Marginal density f(y_t | F_{t-1}) and posterior filtered probabilities xi_{j, t|t}
+        let f_yt = (xi1_pred * eta1 + xi2_pred * eta2).max_val(T::from_f64(1e-15));
+        let log_lik = f_yt.ln();
+        let xi1_filt = (xi1_pred * eta1) / f_yt;
+        let xi2_filt = (xi2_pred * eta2) / f_yt;
+
+        // 4. Next-step predictive probabilities xi_{j, t+1|t} and conditional mean E[y_{t+1} | F_t]
+        let xi1_next = p11 * xi1_filt + (T::one() - p22) * xi2_filt;
+        let xi2_next = T::one() - xi1_next;
+        let forecast_next = xi1_next * spec.expansion_mean_mu1 + xi2_next * spec.recession_mean_mu2;
+
+        HamiltonMarkovSwitchingAnalytics {
+            predictive_expansion_probability: xi1_pred,
+            filtered_recession_probability: xi2_filt,
+            marginal_log_likelihood_increment: log_lik,
+            next_step_conditional_forecast: forecast_next,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn hamilton_markov_switching_invariants_and_ad_parity() {
+            let base = HamiltonMarkovSwitchingSpec {
+                observed_realization_yt: -0.018_f64,
+                expansion_mean_mu1: 0.008,
+                recession_mean_mu2: -0.022,
+                expansion_volatility_sigma1: 0.012,
+                recession_volatility_sigma2: 0.028,
+                stay_expansion_prob_p11: 0.95,
+                stay_recession_prob_p22: 0.85,
+                prior_expansion_prob_xi1: 0.80,
+            };
+            let r0 = evaluate_hamilton_markov_switching_regime_filter_step(&base);
+            assert!(r0.predictive_expansion_probability > 0.70);
+            assert!(
+                r0.filtered_recession_probability > 0.30 && r0.filtered_recession_probability < 1.0
+            );
+            assert!(r0.marginal_log_likelihood_increment.is_finite());
+
+            let inputs = [
+                base.observed_realization_yt,
+                base.expansion_mean_mu1,
+                base.recession_mean_mu2,
+                base.expansion_volatility_sigma1,
+                base.recession_volatility_sigma2,
+                base.stay_expansion_prob_p11,
+                base.stay_recession_prob_p22,
+                base.prior_expansion_prob_xi1,
+            ];
+            let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = HamiltonMarkovSwitchingSpec {
+                observed_realization_yt: dual_in[0],
+                expansion_mean_mu1: dual_in[1],
+                recession_mean_mu2: dual_in[2],
+                expansion_volatility_sigma1: dual_in[3],
+                recession_volatility_sigma2: dual_in[4],
+                stay_expansion_prob_p11: dual_in[5],
+                stay_recession_prob_p22: dual_in[6],
+                prior_expansion_prob_xi1: dual_in[7],
+            };
+            let r_ad = evaluate_hamilton_markov_switching_regime_filter_step(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| HamiltonMarkovSwitchingSpec {
+                    observed_realization_yt: v[0],
+                    expansion_mean_mu1: v[1],
+                    recession_mean_mu2: v[2],
+                    expansion_volatility_sigma1: v[3],
+                    recession_volatility_sigma2: v[4],
+                    stay_expansion_prob_p11: v[5],
+                    stay_recession_prob_p22: v[6],
+                    prior_expansion_prob_xi1: v[7],
+                };
+                let rp = evaluate_hamilton_markov_switching_regime_filter_step(&mk(p));
+                let rm = evaluate_hamilton_markov_switching_regime_filter_step(&mk(m));
+                let fd = (rp.next_step_conditional_forecast - rm.next_step_conditional_forecast)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.next_step_conditional_forecast.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.next_step_conditional_forecast.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use hamilton_markov_switching_suite65_mod::*;
