@@ -1,4 +1,8 @@
 #![allow(clippy::needless_range_loop)]
+pub use crate::phase37::{
+    MeucciBlackLittermanWoodburyReport, MeucciBlackLittermanWoodburySpec,
+    evaluate_meucci_black_litterman_woodbury_equivalence,
+};
 
 pub use crate::phase30::*;
 pub use crate::phase31::{

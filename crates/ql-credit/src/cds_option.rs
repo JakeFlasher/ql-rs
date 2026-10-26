@@ -2,6 +2,7 @@
 #![allow(clippy::excessive_precision)]
 pub use crate::phase35::*;
 pub use crate::phase36::*;
+pub use crate::phase37::*;
 
 use crate::SurvivalProbabilityCurve;
 pub use crate::phase33::*;

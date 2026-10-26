@@ -17,6 +17,10 @@ pub use crate::phase36::{
     FabozziCallablePutableOasReport, FabozziCallablePutableOasSpec,
     evaluate_fabozzi_callable_putable_oas_and_convexity,
 };
+pub use crate::phase37::{
+    TuckmanFabozziTipsDeflationFloorReport, TuckmanFabozziTipsDeflationFloorSpec,
+    evaluate_tuckman_fabozzi_tips_deflation_floor_and_bei,
+};
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
 use ql_inflation::ZeroInflationCurve;

@@ -1,4 +1,6 @@
 #![allow(clippy::needless_range_loop)]
+mod phase37;
+pub use phase37::*;
 mod phase36;
 pub use phase36::*;
 mod phase35;

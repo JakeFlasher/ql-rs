@@ -3,6 +3,10 @@ pub use crate::phase36::{
     CarteaJaimungalLobMarketMakingReport, CarteaJaimungalLobMarketMakingSpec,
     evaluate_cartea_jaimungal_lob_market_making,
 };
+pub use crate::phase37::{
+    GueantAlmgrenChrissHyperbolicReport, GueantAlmgrenChrissHyperbolicSpec,
+    evaluate_gueant_almgren_chriss_hyperbolic_liquidation,
+};
 
 use super::allocation::AllocationError;
 pub use crate::phase30::*;
