@@ -1708,3 +1708,196 @@ mod evaluate_hyer_lipton_pugachevsky_passport_option_module {
     }
 }
 pub use evaluate_hyer_lipton_pugachevsky_passport_option_module::*;
+
+mod evaluate_rubinstein_margrabe_exchange_on_exchange_option_module {
+    // Rubinstein (1991, Risk, "Somewhere Over the Rainbow") & Haug (2007, The Complete Guide
+    // to Option Pricing Formulas, Ch. 5.6, p. 216) Two-Asset Exchange-Option-on-an-Exchange-Option
+    // & Margrabe Outperformance Compound Convexity Engine.
+
+    use ql_ad::Real;
+    use ql_math::{bivariate_normal_cdf, norm_cdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct RubinsteinMargrabeExchangeOnExchangeSpec<T: Real = f64> {
+        pub spot_asset1_s1: T,
+        pub spot_asset2_s2: T,
+        pub compound_strike_fraction_q: T,
+        pub dividend_yield_q1: T,
+        pub dividend_yield_q2: T,
+        pub volatility_sigma1: T,
+        pub volatility_sigma2: T,
+        pub asset_correlation_rho: T,
+        pub underlying_expiry_years_t2: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct RubinsteinMargrabeExchangeOnExchangeReport<T: Real = f64> {
+        pub margrabe_relative_volatility: T,
+        pub underlying_margrabe_exchange_value: T,
+        pub critical_exercise_price_ratio_u_star: T,
+        pub temporal_brownian_correlation_rho12: T,
+        pub exchange_on_exchange_call_value: T,
+        pub compound_leverage_ratio: T,
+    }
+
+    pub fn evaluate_rubinstein_margrabe_exchange_on_exchange_option<T: Real>(
+        spec: &RubinsteinMargrabeExchangeOnExchangeSpec<T>,
+    ) -> RubinsteinMargrabeExchangeOnExchangeReport<T> {
+        let s1 = spec.spot_asset1_s1.max_val(T::from_f64(1.0));
+        let s2 = spec.spot_asset2_s2.max_val(T::from_f64(1.0));
+        let q_strike = spec
+            .compound_strike_fraction_q
+            .max_val(T::from_f64(0.005))
+            .min_val(T::from_f64(0.50));
+        let q1 = spec.dividend_yield_q1;
+        let q2 = spec.dividend_yield_q2;
+        let sig1 = spec.volatility_sigma1.max_val(T::from_f64(0.02));
+        let sig2 = spec.volatility_sigma2.max_val(T::from_f64(0.02));
+        let rho = spec
+            .asset_correlation_rho
+            .max_val(T::from_f64(-0.95))
+            .min_val(T::from_f64(0.95));
+        let t2 = spec.underlying_expiry_years_t2.max_val(T::from_f64(0.20));
+        let t1 = T::from_f64(0.40) * t2;
+        let tau = t2 - t1;
+
+        let sig_m = (sig1 * sig1 + sig2 * sig2 - T::from_f64(2.0) * rho * sig1 * sig2)
+            .max_val(T::from_f64(1e-4))
+            .sqrt();
+
+        let std2 = sig_m * t2.sqrt();
+        let d1_m = ((s1 / s2).ln() + (q2 - q1 + T::from_f64(0.5) * sig_m * sig_m) * t2) / std2;
+        let d2_m = d1_m - std2;
+        let v_margrabe =
+            s1 * (-q1 * t2).exp() * norm_cdf(d1_m) - s2 * (-q2 * t2).exp() * norm_cdf(d2_m);
+
+        // Solve critical ratio u* = S_1(T_1) / S_2(T_1) where normalized Margrabe value m(u*) == q_strike
+        // via 6-step Newton-Raphson (preserving exact implicit-function Dual/Dual2 derivatives):
+        let std_tau = sig_m * tau.sqrt();
+        let df1_tau = (-q1 * tau).exp();
+        let df2_tau = (-q2 * tau).exp();
+        let mut u = T::one() + q_strike;
+        for _ in 0..6 {
+            let d1_u = (u.ln() + (q2 - q1 + T::from_f64(0.5) * sig_m * sig_m) * tau) / std_tau;
+            let d2_u = d1_u - std_tau;
+            let m_u = u * df1_tau * norm_cdf(d1_u) - df2_tau * norm_cdf(d2_u);
+            let mp_u = (df1_tau * norm_cdf(d1_u)).max_val(T::from_f64(1e-4));
+            u = (u - (m_u - q_strike) / mp_u).max_val(T::from_f64(0.20));
+        }
+
+        let std1 = sig_m * t1.sqrt();
+        let y1 = ((s1 / (u * s2)).ln() + (q2 - q1 + T::from_f64(0.5) * sig_m * sig_m) * t1) / std1;
+        let y2 = y1 - std1;
+        let rho12 = (t1 / t2).sqrt();
+
+        let v_exonex = s1 * (-q1 * t2).exp() * bivariate_normal_cdf(y1, d1_m, rho12)
+            - s2 * (-q2 * t2).exp() * bivariate_normal_cdf(y2, d2_m, rho12)
+            - q_strike * s2 * (-q2 * t1).exp() * norm_cdf(y2);
+        let lev = v_margrabe / v_exonex.max_val(T::from_f64(1e-4));
+
+        RubinsteinMargrabeExchangeOnExchangeReport {
+            margrabe_relative_volatility: sig_m,
+            underlying_margrabe_exchange_value: v_margrabe,
+            critical_exercise_price_ratio_u_star: u,
+            temporal_brownian_correlation_rho12: rho12,
+            exchange_on_exchange_call_value: v_exonex,
+            compound_leverage_ratio: lev,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_rubinstein_margrabe_exchange_on_exchange_option_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn rubinstein_margrabe_exchange_on_exchange_invariants_and_ad_parity() {
+            let spec = RubinsteinMargrabeExchangeOnExchangeSpec {
+                spot_asset1_s1: 105.0,
+                spot_asset2_s2: 100.0,
+                compound_strike_fraction_q: 0.04,
+                dividend_yield_q1: 0.015,
+                dividend_yield_q2: 0.025,
+                volatility_sigma1: 0.24,
+                volatility_sigma2: 0.20,
+                asset_correlation_rho: 0.55,
+                underlying_expiry_years_t2: 1.50,
+            };
+            let rep = evaluate_rubinstein_margrabe_exchange_on_exchange_option(&spec);
+            assert!(rep.exchange_on_exchange_call_value > 0.0);
+            assert!(rep.exchange_on_exchange_call_value < rep.underlying_margrabe_exchange_value);
+            assert!(rep.critical_exercise_price_ratio_u_star > 0.8);
+
+            let h = 1e-5;
+            let r_ad = evaluate_rubinstein_margrabe_exchange_on_exchange_option(
+                &RubinsteinMargrabeExchangeOnExchangeSpec {
+                    spot_asset1_s1: Dual::<9>::variable(spec.spot_asset1_s1, 0),
+                    spot_asset2_s2: Dual::<9>::variable(spec.spot_asset2_s2, 1),
+                    compound_strike_fraction_q: Dual::<9>::variable(
+                        spec.compound_strike_fraction_q,
+                        2,
+                    ),
+                    dividend_yield_q1: Dual::<9>::variable(spec.dividend_yield_q1, 3),
+                    dividend_yield_q2: Dual::<9>::variable(spec.dividend_yield_q2, 4),
+                    volatility_sigma1: Dual::<9>::variable(spec.volatility_sigma1, 5),
+                    volatility_sigma2: Dual::<9>::variable(spec.volatility_sigma2, 6),
+                    asset_correlation_rho: Dual::<9>::variable(spec.asset_correlation_rho, 7),
+                    underlying_expiry_years_t2: Dual::<9>::variable(
+                        spec.underlying_expiry_years_t2,
+                        8,
+                    ),
+                },
+            );
+            for (idx, &ad) in r_ad.exchange_on_exchange_call_value.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.spot_asset1_s1 += h;
+                        sm.spot_asset1_s1 -= h;
+                    }
+                    1 => {
+                        sp.spot_asset2_s2 += h;
+                        sm.spot_asset2_s2 -= h;
+                    }
+                    2 => {
+                        sp.compound_strike_fraction_q += h;
+                        sm.compound_strike_fraction_q -= h;
+                    }
+                    3 => {
+                        sp.dividend_yield_q1 += h;
+                        sm.dividend_yield_q1 -= h;
+                    }
+                    4 => {
+                        sp.dividend_yield_q2 += h;
+                        sm.dividend_yield_q2 -= h;
+                    }
+                    5 => {
+                        sp.volatility_sigma1 += h;
+                        sm.volatility_sigma1 -= h;
+                    }
+                    6 => {
+                        sp.volatility_sigma2 += h;
+                        sm.volatility_sigma2 -= h;
+                    }
+                    7 => {
+                        sp.asset_correlation_rho += h;
+                        sm.asset_correlation_rho -= h;
+                    }
+                    _ => {
+                        sp.underlying_expiry_years_t2 += h;
+                        sm.underlying_expiry_years_t2 -= h;
+                    }
+                }
+                let fd = (evaluate_rubinstein_margrabe_exchange_on_exchange_option(&sp)
+                    .exchange_on_exchange_call_value
+                    - evaluate_rubinstein_margrabe_exchange_on_exchange_option(&sm)
+                        .exchange_on_exchange_call_value)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-3);
+            }
+        }
+    }
+}
+pub use evaluate_rubinstein_margrabe_exchange_on_exchange_option_module::*;

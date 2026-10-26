@@ -566,3 +566,178 @@ mod evaluate_schwartz_one_factor_mean_reverting_log_futures_module {
     }
 }
 pub use evaluate_schwartz_one_factor_mean_reverting_log_futures_module::*;
+
+mod evaluate_working_brennan_storage_convenience_yield_curve_module {
+    // Working (1949, AER, "The Theory of Price of Storage"), Brennan (1958, AER) & Pirrong (2012,
+    // Commodity Price Dynamics: A Structural Approach, Ch. 2-3) Working Storage Supply Curve,
+    // Stockout Convenience Yield Hyperbola & Contango-to-Backwardation Regime Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WorkingBrennanStorageConvenienceYieldSpec<T: Real = f64> {
+        pub spot_price_s0: T,
+        pub inventory_to_consumption_ratio_i: T,
+        pub minimum_pipeline_inventory_i_min: T,
+        pub convenience_yield_convexity_alpha: T,
+        pub stockout_steepness_exponent_gamma: T,
+        pub physical_storage_cost_rate_u: T,
+        pub risk_free_rate_r: T,
+        pub futures_maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WorkingBrennanStorageConvenienceYieldReport<T: Real = f64> {
+        pub implied_convenience_yield_y: T,
+        pub net_cost_of_carry_rate_b: T,
+        pub working_marginal_price_of_storage_slope: T,
+        pub equilibrium_futures_price: T,
+        pub annualized_futures_basis_pct: T,
+        pub critical_backwardation_inventory_threshold: T,
+    }
+
+    pub fn evaluate_working_brennan_storage_convenience_yield_curve<T: Real>(
+        spec: &WorkingBrennanStorageConvenienceYieldSpec<T>,
+    ) -> WorkingBrennanStorageConvenienceYieldReport<T> {
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(1.0));
+        let inv = spec
+            .inventory_to_consumption_ratio_i
+            .max_val(T::from_f64(0.01));
+        let inv_min = spec
+            .minimum_pipeline_inventory_i_min
+            .max_val(T::from_f64(0.005));
+        let alpha = spec
+            .convenience_yield_convexity_alpha
+            .max_val(T::from_f64(1e-4));
+        let gamma = spec
+            .stockout_steepness_exponent_gamma
+            .max_val(T::from_f64(0.10));
+        let u = spec.physical_storage_cost_rate_u.max_val(T::zero());
+        let r = spec.risk_free_rate_r;
+        let t = spec.futures_maturity_years_t.max_val(T::from_f64(0.05));
+
+        let diff = inv - inv_min;
+        let rad = (diff * diff + T::from_f64(1e-4)).sqrt();
+        let excess_buf = T::from_f64(0.5) * (rad + diff) + T::from_f64(0.02);
+
+        let y_conv = alpha * excess_buf.pow(-gamma);
+        let dbuf_dinv = T::from_f64(0.5) * (T::one() + diff / rad);
+        let working_slope = alpha * gamma * excess_buf.pow(-gamma - T::one()) * dbuf_dinv;
+
+        let b_carry = r + u - y_conv;
+        let f_eq = s0 * (b_carry * t).exp();
+        let basis_pct = ((f_eq - s0) / (s0 * t)) * T::from_f64(100.0);
+
+        let carry_gross = (r + u).max_val(T::from_f64(1e-4));
+        let inv_crit = inv_min + (alpha / carry_gross).pow(T::one() / gamma) - T::from_f64(0.02);
+
+        WorkingBrennanStorageConvenienceYieldReport {
+            implied_convenience_yield_y: y_conv,
+            net_cost_of_carry_rate_b: b_carry,
+            working_marginal_price_of_storage_slope: working_slope,
+            equilibrium_futures_price: f_eq,
+            annualized_futures_basis_pct: basis_pct,
+            critical_backwardation_inventory_threshold: inv_crit,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_working_brennan_storage_convenience_yield_curve_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn working_brennan_storage_convenience_yield_invariants_and_ad_parity() {
+            let spec = WorkingBrennanStorageConvenienceYieldSpec {
+                spot_price_s0: 75.0,
+                inventory_to_consumption_ratio_i: 0.11,
+                minimum_pipeline_inventory_i_min: 0.08,
+                convenience_yield_convexity_alpha: 0.018,
+                stockout_steepness_exponent_gamma: 0.85,
+                physical_storage_cost_rate_u: 0.045,
+                risk_free_rate_r: 0.040,
+                futures_maturity_years_t: 1.0,
+            };
+            let rep = evaluate_working_brennan_storage_convenience_yield_curve(&spec);
+            assert!(rep.implied_convenience_yield_y > 0.10);
+            assert!(rep.net_cost_of_carry_rate_b < 0.0);
+            assert!(rep.equilibrium_futures_price < spec.spot_price_s0);
+            assert!(rep.working_marginal_price_of_storage_slope > 0.0);
+
+            let h = 1e-5;
+            let r_ad = evaluate_working_brennan_storage_convenience_yield_curve(
+                &WorkingBrennanStorageConvenienceYieldSpec {
+                    spot_price_s0: Dual::<8>::variable(spec.spot_price_s0, 0),
+                    inventory_to_consumption_ratio_i: Dual::<8>::variable(
+                        spec.inventory_to_consumption_ratio_i,
+                        1,
+                    ),
+                    minimum_pipeline_inventory_i_min: Dual::<8>::variable(
+                        spec.minimum_pipeline_inventory_i_min,
+                        2,
+                    ),
+                    convenience_yield_convexity_alpha: Dual::<8>::variable(
+                        spec.convenience_yield_convexity_alpha,
+                        3,
+                    ),
+                    stockout_steepness_exponent_gamma: Dual::<8>::variable(
+                        spec.stockout_steepness_exponent_gamma,
+                        4,
+                    ),
+                    physical_storage_cost_rate_u: Dual::<8>::variable(
+                        spec.physical_storage_cost_rate_u,
+                        5,
+                    ),
+                    risk_free_rate_r: Dual::<8>::variable(spec.risk_free_rate_r, 6),
+                    futures_maturity_years_t: Dual::<8>::variable(spec.futures_maturity_years_t, 7),
+                },
+            );
+            for (idx, &ad) in r_ad.equilibrium_futures_price.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.spot_price_s0 += h;
+                        sm.spot_price_s0 -= h;
+                    }
+                    1 => {
+                        sp.inventory_to_consumption_ratio_i += h;
+                        sm.inventory_to_consumption_ratio_i -= h;
+                    }
+                    2 => {
+                        sp.minimum_pipeline_inventory_i_min += h;
+                        sm.minimum_pipeline_inventory_i_min -= h;
+                    }
+                    3 => {
+                        sp.convenience_yield_convexity_alpha += h;
+                        sm.convenience_yield_convexity_alpha -= h;
+                    }
+                    4 => {
+                        sp.stockout_steepness_exponent_gamma += h;
+                        sm.stockout_steepness_exponent_gamma -= h;
+                    }
+                    5 => {
+                        sp.physical_storage_cost_rate_u += h;
+                        sm.physical_storage_cost_rate_u -= h;
+                    }
+                    6 => {
+                        sp.risk_free_rate_r += h;
+                        sm.risk_free_rate_r -= h;
+                    }
+                    _ => {
+                        sp.futures_maturity_years_t += h;
+                        sm.futures_maturity_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_working_brennan_storage_convenience_yield_curve(&sp)
+                    .equilibrium_futures_price
+                    - evaluate_working_brennan_storage_convenience_yield_curve(&sm)
+                        .equilibrium_futures_price)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-3);
+            }
+        }
+    }
+}
+pub use evaluate_working_brennan_storage_convenience_yield_curve_module::*;

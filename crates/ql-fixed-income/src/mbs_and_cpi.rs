@@ -3179,3 +3179,183 @@ mod evaluate_hayre_richard_roll_mbs_prepayment_module {
     }
 }
 pub use evaluate_hayre_richard_roll_mbs_prepayment_module::*;
+
+mod evaluate_fabozzi_hayre_mbs_excess_servicing_gfee_strip_module {
+    // Fabozzi, Bhattacharya & Berliner (2011, Mortgage-Backed Securities, 2nd ed., Ch. 8-10)
+    // & Hayre (2001) Agency MBS Excess Servicing Fee (ESF), Guaranty-Fee (G-Fee) Strip
+    // & Remittance Float-Income IO Valuation Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct FabozziHayreMbsExcessServicingGfeeSpec<T: Real = f64> {
+        pub pool_balance_b0: T,
+        pub gross_wac_rate_w: T,
+        pub net_passthrough_coupon_c: T,
+        pub agency_guaranty_fee_g: T,
+        pub minimum_servicing_fee_s_min: T,
+        pub prepayment_speed_cpr: T,
+        pub scheduled_principal_amortization_a: T,
+        pub discount_rate_r: T,
+        pub pool_horizon_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct FabozziHayreMbsExcessServicingGfeeReport<T: Real = f64> {
+        pub excess_servicing_fee_rate_bps: T,
+        pub io_annuity_price_multiple: T,
+        pub excess_servicing_strip_pv: T,
+        pub agency_gfee_strip_pv: T,
+        pub contractual_base_servicing_pv: T,
+        pub remittance_float_income_pv: T,
+        pub io_prepayment_cpr_semi_elasticity: T,
+    }
+
+    pub fn evaluate_fabozzi_hayre_mbs_excess_servicing_gfee_strip<T: Real>(
+        spec: &FabozziHayreMbsExcessServicingGfeeSpec<T>,
+    ) -> FabozziHayreMbsExcessServicingGfeeReport<T> {
+        let b0 = spec.pool_balance_b0.max_val(T::from_f64(1.0));
+        let w = spec.gross_wac_rate_w;
+        let c_net = spec.net_passthrough_coupon_c;
+        let g = spec.agency_guaranty_fee_g.max_val(T::from_f64(1e-5));
+        let s_min = spec.minimum_servicing_fee_s_min.max_val(T::from_f64(1e-5));
+        let cpr = spec
+            .prepayment_speed_cpr
+            .max_val(T::from_f64(0.005))
+            .min_val(T::from_f64(0.85));
+        let a = spec
+            .scheduled_principal_amortization_a
+            .max_val(T::from_f64(1e-4));
+        let r = spec.discount_rate_r.max_val(T::from_f64(1e-4));
+        let t = spec.pool_horizon_years_t.max_val(T::from_f64(0.5));
+
+        let s_esf = w - c_net - g - s_min;
+        let esf_bps = s_esf * T::from_f64(10_000.0);
+
+        let lam_cpr = -(T::one() - cpr).ln();
+        let lam_tot = a + lam_cpr;
+        let lam_eff = r + lam_tot;
+
+        let e_lt = (-lam_eff * t).exp();
+        let m_io = (T::one() - e_lt) / lam_eff;
+
+        let pv_esf = b0 * s_esf * m_io;
+        let pv_gfee = b0 * g * m_io;
+        let pv_base = b0 * s_min * m_io;
+
+        // Remittance float over a 15-day average monthly float cycle (15/360) on total P&I collection rate (W + lam_tot):
+        let s_float = r * (T::from_f64(15.0 / 360.0)) * (w + lam_tot);
+        let pv_float = b0 * s_float * m_io;
+
+        // Semi-elasticity (1/M_IO) * dM_IO / d(CPR):
+        let dm_dlam = (t * e_lt * lam_eff - (T::one() - e_lt)) / (lam_eff * lam_eff);
+        let cpr_semi_elast = dm_dlam / ((T::one() - cpr) * m_io);
+
+        FabozziHayreMbsExcessServicingGfeeReport {
+            excess_servicing_fee_rate_bps: esf_bps,
+            io_annuity_price_multiple: m_io,
+            excess_servicing_strip_pv: pv_esf,
+            agency_gfee_strip_pv: pv_gfee,
+            contractual_base_servicing_pv: pv_base,
+            remittance_float_income_pv: pv_float,
+            io_prepayment_cpr_semi_elasticity: cpr_semi_elast,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_fabozzi_hayre_mbs_excess_servicing_gfee_strip_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn fabozzi_hayre_mbs_excess_servicing_gfee_strip_invariants_and_ad_parity() {
+            let spec = FabozziHayreMbsExcessServicingGfeeSpec {
+                pool_balance_b0: 100.0,
+                gross_wac_rate_w: 0.0640,
+                net_passthrough_coupon_c: 0.0550,
+                agency_guaranty_fee_g: 0.0045,
+                minimum_servicing_fee_s_min: 0.0025,
+                prepayment_speed_cpr: 0.12,
+                scheduled_principal_amortization_a: 0.018,
+                discount_rate_r: 0.045,
+                pool_horizon_years_t: 10.0,
+            };
+            let rep = evaluate_fabozzi_hayre_mbs_excess_servicing_gfee_strip(&spec);
+            assert!((rep.excess_servicing_fee_rate_bps - 20.0).abs() < 1e-9);
+            assert!(rep.excess_servicing_strip_pv > 0.5);
+            assert!(rep.agency_gfee_strip_pv > rep.excess_servicing_strip_pv);
+            assert!(rep.io_prepayment_cpr_semi_elasticity < 0.0);
+
+            let h = 1e-5;
+            let r_ad = evaluate_fabozzi_hayre_mbs_excess_servicing_gfee_strip(
+                &FabozziHayreMbsExcessServicingGfeeSpec {
+                    pool_balance_b0: Dual::<9>::variable(spec.pool_balance_b0, 0),
+                    gross_wac_rate_w: Dual::<9>::variable(spec.gross_wac_rate_w, 1),
+                    net_passthrough_coupon_c: Dual::<9>::variable(spec.net_passthrough_coupon_c, 2),
+                    agency_guaranty_fee_g: Dual::<9>::variable(spec.agency_guaranty_fee_g, 3),
+                    minimum_servicing_fee_s_min: Dual::<9>::variable(
+                        spec.minimum_servicing_fee_s_min,
+                        4,
+                    ),
+                    prepayment_speed_cpr: Dual::<9>::variable(spec.prepayment_speed_cpr, 5),
+                    scheduled_principal_amortization_a: Dual::<9>::variable(
+                        spec.scheduled_principal_amortization_a,
+                        6,
+                    ),
+                    discount_rate_r: Dual::<9>::variable(spec.discount_rate_r, 7),
+                    pool_horizon_years_t: Dual::<9>::variable(spec.pool_horizon_years_t, 8),
+                },
+            );
+            for (idx, &ad) in r_ad.excess_servicing_strip_pv.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.pool_balance_b0 += h;
+                        sm.pool_balance_b0 -= h;
+                    }
+                    1 => {
+                        sp.gross_wac_rate_w += h;
+                        sm.gross_wac_rate_w -= h;
+                    }
+                    2 => {
+                        sp.net_passthrough_coupon_c += h;
+                        sm.net_passthrough_coupon_c -= h;
+                    }
+                    3 => {
+                        sp.agency_guaranty_fee_g += h;
+                        sm.agency_guaranty_fee_g -= h;
+                    }
+                    4 => {
+                        sp.minimum_servicing_fee_s_min += h;
+                        sm.minimum_servicing_fee_s_min -= h;
+                    }
+                    5 => {
+                        sp.prepayment_speed_cpr += h;
+                        sm.prepayment_speed_cpr -= h;
+                    }
+                    6 => {
+                        sp.scheduled_principal_amortization_a += h;
+                        sm.scheduled_principal_amortization_a -= h;
+                    }
+                    7 => {
+                        sp.discount_rate_r += h;
+                        sm.discount_rate_r -= h;
+                    }
+                    _ => {
+                        sp.pool_horizon_years_t += h;
+                        sm.pool_horizon_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_fabozzi_hayre_mbs_excess_servicing_gfee_strip(&sp)
+                    .excess_servicing_strip_pv
+                    - evaluate_fabozzi_hayre_mbs_excess_servicing_gfee_strip(&sm)
+                        .excess_servicing_strip_pv)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_fabozzi_hayre_mbs_excess_servicing_gfee_strip_module::*;

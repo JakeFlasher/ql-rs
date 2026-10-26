@@ -2533,3 +2533,161 @@ mod evaluate_frazzini_pedersen_betting_against_beta_zero_beta_capm_module {
     }
 }
 pub use evaluate_frazzini_pedersen_betting_against_beta_zero_beta_capm_module::*;
+
+mod evaluate_harvey_liu_zhu_factor_tstat_fdr_haircut_module {
+    // Harvey, Liu & Zhu (2016, Review of Financial Studies, "... and the Cross-Section of Expected
+    // Returns") & Bailey-López de Prado (2014) Benjamini-Hochberg-Yekutieli (BHY) False Discovery Rate
+    // Critical t-Statistic Hurdle & Empirical-Bayes Posterior Sharpe Ratio Haircut Engine.
+
+    use ql_ad::Real;
+    use ql_math::{inv_norm_cdf, norm_cdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct HarveyLiuZhuFactorFdrHaircutSpec<T: Real = f64> {
+        pub observed_factor_t_stat: T,
+        pub sample_months_t: T,
+        pub total_tested_factors_m: T,
+        pub target_fdr_alpha: T,
+        pub prior_true_factor_prob_p0: T,
+        pub prior_true_sharpe_std_sigma0: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct HarveyLiuZhuFactorFdrHaircutReport<T: Real = f64> {
+        pub annualized_observed_sharpe_ratio: T,
+        pub single_test_two_sided_p_value: T,
+        pub bhy_fdr_critical_t_hurdle: T,
+        pub bayes_factor_alternative_vs_null: T,
+        pub posterior_true_factor_probability: T,
+        pub posterior_haircutted_sharpe_ratio: T,
+        pub relative_sharpe_haircut_fraction: T,
+    }
+
+    pub fn evaluate_harvey_liu_zhu_factor_tstat_fdr_haircut<T: Real>(
+        spec: &HarveyLiuZhuFactorFdrHaircutSpec<T>,
+    ) -> HarveyLiuZhuFactorFdrHaircutReport<T> {
+        let t_obs = spec.observed_factor_t_stat;
+        let t_months = spec.sample_months_t.max_val(T::from_f64(24.0));
+        let m_factors = spec.total_tested_factors_m.max_val(T::from_f64(2.0));
+        let alpha_fdr = spec
+            .target_fdr_alpha
+            .max_val(T::from_f64(1e-4))
+            .min_val(T::from_f64(0.25));
+        let p0 = spec
+            .prior_true_factor_prob_p0
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.99));
+        let sig0 = spec.prior_true_sharpe_std_sigma0.max_val(T::from_f64(0.05));
+
+        let v0 = T::from_f64(12.0) / t_months;
+        let sr_obs = t_obs * v0.sqrt();
+        let abs_t = (t_obs * t_obs + T::from_f64(1e-12)).sqrt();
+        let p_single = T::from_f64(2.0) * norm_cdf(-abs_t);
+
+        // Benjamini-Hochberg-Yekutieli (2001) harmonic sum c(M) = ln(M) + gamma_Euler + 1/(2M):
+        let c_m = m_factors.ln()
+            + T::from_f64(std::f64::consts::EULER_GAMMA)
+            + T::one() / (T::from_f64(2.0) * m_factors);
+        let alpha_bhy = (alpha_fdr / (m_factors * c_m)).max_val(T::from_f64(1e-6));
+        let t_crit = -inv_norm_cdf(T::from_f64(0.5) * alpha_bhy);
+
+        // Spike-and-slab Gaussian Empirical-Bayes shrinkage of annualized Sharpe ratio:
+        let sig0_sq = sig0 * sig0;
+        let v1 = v0 + sig0_sq;
+        let shrink_within = sig0_sq / v1;
+        let bf_10 = (v0 / v1).sqrt() * (T::from_f64(0.5) * t_obs * t_obs * shrink_within).exp();
+        let post_prob = (p0 * bf_10) / ((T::one() - p0) + p0 * bf_10);
+        let sr_post = post_prob * shrink_within * sr_obs;
+        let haircut_frac = T::one() - post_prob * shrink_within;
+
+        HarveyLiuZhuFactorFdrHaircutReport {
+            annualized_observed_sharpe_ratio: sr_obs,
+            single_test_two_sided_p_value: p_single,
+            bhy_fdr_critical_t_hurdle: t_crit,
+            bayes_factor_alternative_vs_null: bf_10,
+            posterior_true_factor_probability: post_prob,
+            posterior_haircutted_sharpe_ratio: sr_post,
+            relative_sharpe_haircut_fraction: haircut_frac,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_harvey_liu_zhu_factor_tstat_fdr_haircut_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn harvey_liu_zhu_factor_fdr_haircut_invariants_and_ad_parity() {
+            let spec = HarveyLiuZhuFactorFdrHaircutSpec {
+                observed_factor_t_stat: 3.25,
+                sample_months_t: 240.0,
+                total_tested_factors_m: 316.0,
+                target_fdr_alpha: 0.05,
+                prior_true_factor_prob_p0: 0.15,
+                prior_true_sharpe_std_sigma0: 0.35,
+            };
+            let rep = evaluate_harvey_liu_zhu_factor_tstat_fdr_haircut(&spec);
+            // HLZ (2016): with M ~ 316 factors, the BHY critical t-hurdle exceeds 3.0:
+            assert!(rep.bhy_fdr_critical_t_hurdle > 3.0);
+            assert!(rep.posterior_haircutted_sharpe_ratio < rep.annualized_observed_sharpe_ratio);
+            assert!(rep.relative_sharpe_haircut_fraction > 0.10);
+
+            let h = 1e-5;
+            let r_ad = evaluate_harvey_liu_zhu_factor_tstat_fdr_haircut(
+                &HarveyLiuZhuFactorFdrHaircutSpec {
+                    observed_factor_t_stat: Dual::<6>::variable(spec.observed_factor_t_stat, 0),
+                    sample_months_t: Dual::<6>::variable(spec.sample_months_t, 1),
+                    total_tested_factors_m: Dual::<6>::variable(spec.total_tested_factors_m, 2),
+                    target_fdr_alpha: Dual::<6>::variable(spec.target_fdr_alpha, 3),
+                    prior_true_factor_prob_p0: Dual::<6>::variable(
+                        spec.prior_true_factor_prob_p0,
+                        4,
+                    ),
+                    prior_true_sharpe_std_sigma0: Dual::<6>::variable(
+                        spec.prior_true_sharpe_std_sigma0,
+                        5,
+                    ),
+                },
+            );
+            let comp_ad = r_ad.posterior_haircutted_sharpe_ratio + r_ad.bhy_fdr_critical_t_hurdle;
+            for (idx, &ad) in comp_ad.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.observed_factor_t_stat += h;
+                        sm.observed_factor_t_stat -= h;
+                    }
+                    1 => {
+                        sp.sample_months_t += h;
+                        sm.sample_months_t -= h;
+                    }
+                    2 => {
+                        sp.total_tested_factors_m += h;
+                        sm.total_tested_factors_m -= h;
+                    }
+                    3 => {
+                        sp.target_fdr_alpha += h;
+                        sm.target_fdr_alpha -= h;
+                    }
+                    4 => {
+                        sp.prior_true_factor_prob_p0 += h;
+                        sm.prior_true_factor_prob_p0 -= h;
+                    }
+                    _ => {
+                        sp.prior_true_sharpe_std_sigma0 += h;
+                        sm.prior_true_sharpe_std_sigma0 -= h;
+                    }
+                }
+                let rp = evaluate_harvey_liu_zhu_factor_tstat_fdr_haircut(&sp);
+                let rm = evaluate_harvey_liu_zhu_factor_tstat_fdr_haircut(&sm);
+                let fd = ((rp.posterior_haircutted_sharpe_ratio + rp.bhy_fdr_critical_t_hurdle)
+                    - (rm.posterior_haircutted_sharpe_ratio + rm.bhy_fdr_critical_t_hurdle))
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-3);
+            }
+        }
+    }
+}
+pub use evaluate_harvey_liu_zhu_factor_tstat_fdr_haircut_module::*;

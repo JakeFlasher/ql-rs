@@ -299,7 +299,7 @@ mod evaluate_lopez_de_prado_deflated_sharpe_and_purged_cv_module {
     pub fn evaluate_lopez_de_prado_deflated_sharpe_and_purged_cv<T: Real>(
         spec: &LopezDePradoDsrPurgedCvSpec<T>,
     ) -> LopezDePradoDsrPurgedCvReport<T> {
-        let gamma_em = T::from_f64(0.577_215_664_901_532_9);
+        let gamma_em = T::from_f64(std::f64::consts::EULER_GAMMA);
         let e_val = T::one().exp();
         let k_tr = spec.num_independent_trials_k.max_val(T::from_f64(2.0));
         let p1 = (T::one() - T::one() / k_tr).min_val(T::from_f64(0.9999));
@@ -1393,3 +1393,159 @@ mod evaluate_pesaran_timmermann_directional_timing_hit_ratio_test_module {
     }
 }
 pub use evaluate_pesaran_timmermann_directional_timing_hit_ratio_test_module::*;
+
+mod evaluate_bollerslev_tsay_garch_term_structure_kurtosis_module {
+    // Bollerslev (1986, J. Econometrics, "Generalized Autoregressive Conditional Heteroskedasticity")
+    // & Tsay (2010, Analysis of Financial Time Series, 3rd ed., Ch. 3) GARCH(1,1) Multi-Step
+    // Variance Term Structure, Shock Half-Life & Fourth-Moment Unconditional Excess Kurtosis Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BollerslevTsayGarchTermStructureSpec<T: Real = f64> {
+        pub garch_intercept_omega: T,
+        pub arch_shock_alpha: T,
+        pub garch_persistence_beta: T,
+        pub current_daily_variance_h1: T,
+        pub innovation_kurtosis_kappa_z: T,
+        pub forecast_horizon_days_k: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BollerslevTsayGarchTermStructureReport<T: Real = f64> {
+        pub total_persistence_phi: T,
+        pub unconditional_daily_variance: T,
+        pub k_step_ahead_daily_variance: T,
+        pub annualized_term_structure_volatility: T,
+        pub volatility_shock_half_life_days: T,
+        pub unconditional_return_excess_kurtosis: T,
+    }
+
+    pub fn evaluate_bollerslev_tsay_garch_term_structure_kurtosis<T: Real>(
+        spec: &BollerslevTsayGarchTermStructureSpec<T>,
+    ) -> BollerslevTsayGarchTermStructureReport<T> {
+        let omega = spec.garch_intercept_omega.max_val(T::from_f64(1e-8));
+        let alpha = spec
+            .arch_shock_alpha
+            .max_val(T::from_f64(1e-3))
+            .min_val(T::from_f64(0.30));
+        let beta = spec
+            .garch_persistence_beta
+            .max_val(T::from_f64(0.10))
+            .min_val(T::from_f64(0.95));
+        let h1 = spec.current_daily_variance_h1.max_val(T::from_f64(1e-6));
+        let kappa_z = spec.innovation_kurtosis_kappa_z.max_val(T::from_f64(3.0));
+        let k_days = spec.forecast_horizon_days_k.max_val(T::one());
+
+        let phi = (alpha + beta).min_val(T::from_f64(0.995));
+        let one_m_phi = T::one() - phi;
+        let h_inf = omega / one_m_phi;
+
+        let phi_km1 = phi.pow(k_days - T::one());
+        let phi_k = phi.pow(k_days);
+        let h_k = h_inf + phi_km1 * (h1 - h_inf);
+        let h_avg = h_inf + (h1 - h_inf) * (T::one() - phi_k) / (k_days * one_m_phi);
+        let sig_ann = (T::from_f64(252.0) * h_avg).sqrt();
+
+        let half_life = T::from_f64(2.0_f64.ln()) / (-phi.ln()).max_val(T::from_f64(1e-6));
+
+        // Bollerslev (1986, Theorem 1) unconditional fourth moment kurtosis:
+        // kappa_r = kappa_z * (1 - phi^2) / (1 - phi^2 - (kappa_z - 1) * alpha^2)
+        let one_m_phi2 = T::one() - phi * phi;
+        let denom = (one_m_phi2 - (kappa_z - T::one()) * alpha * alpha).max_val(T::from_f64(1e-4));
+        let kappa_r = kappa_z * one_m_phi2 / denom;
+        let ex_kurt = kappa_r - T::from_f64(3.0);
+
+        BollerslevTsayGarchTermStructureReport {
+            total_persistence_phi: phi,
+            unconditional_daily_variance: h_inf,
+            k_step_ahead_daily_variance: h_k,
+            annualized_term_structure_volatility: sig_ann,
+            volatility_shock_half_life_days: half_life,
+            unconditional_return_excess_kurtosis: ex_kurt,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_bollerslev_tsay_garch_term_structure_kurtosis_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn bollerslev_tsay_garch_term_structure_kurtosis_invariants_and_ad_parity() {
+            let spec = BollerslevTsayGarchTermStructureSpec {
+                garch_intercept_omega: 0.000_004,
+                arch_shock_alpha: 0.085,
+                garch_persistence_beta: 0.895,
+                current_daily_variance_h1: 0.000_32,
+                innovation_kurtosis_kappa_z: 3.50,
+                forecast_horizon_days_k: 21.0,
+            };
+            let rep = evaluate_bollerslev_tsay_garch_term_structure_kurtosis(&spec);
+            assert!(rep.annualized_term_structure_volatility > 0.20);
+            assert!(rep.volatility_shock_half_life_days > 30.0);
+            assert!(rep.unconditional_return_excess_kurtosis > 0.50);
+
+            let h = 1e-6;
+            let r_ad = evaluate_bollerslev_tsay_garch_term_structure_kurtosis(
+                &BollerslevTsayGarchTermStructureSpec {
+                    garch_intercept_omega: Dual::<6>::variable(spec.garch_intercept_omega, 0),
+                    arch_shock_alpha: Dual::<6>::variable(spec.arch_shock_alpha, 1),
+                    garch_persistence_beta: Dual::<6>::variable(spec.garch_persistence_beta, 2),
+                    current_daily_variance_h1: Dual::<6>::variable(
+                        spec.current_daily_variance_h1,
+                        3,
+                    ),
+                    innovation_kurtosis_kappa_z: Dual::<6>::variable(
+                        spec.innovation_kurtosis_kappa_z,
+                        4,
+                    ),
+                    forecast_horizon_days_k: Dual::<6>::variable(spec.forecast_horizon_days_k, 5),
+                },
+            );
+            let comp_ad = r_ad.annualized_term_structure_volatility * Dual::from_f64(10.0)
+                + r_ad.unconditional_return_excess_kurtosis;
+            for (idx, &ad) in comp_ad.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                let step = if idx == 0 { 1e-8 } else { h };
+                match idx {
+                    0 => {
+                        sp.garch_intercept_omega += step;
+                        sm.garch_intercept_omega -= step;
+                    }
+                    1 => {
+                        sp.arch_shock_alpha += step;
+                        sm.arch_shock_alpha -= step;
+                    }
+                    2 => {
+                        sp.garch_persistence_beta += step;
+                        sm.garch_persistence_beta -= step;
+                    }
+                    3 => {
+                        sp.current_daily_variance_h1 += step;
+                        sm.current_daily_variance_h1 -= step;
+                    }
+                    4 => {
+                        sp.innovation_kurtosis_kappa_z += step;
+                        sm.innovation_kurtosis_kappa_z -= step;
+                    }
+                    _ => {
+                        sp.forecast_horizon_days_k += step;
+                        sm.forecast_horizon_days_k -= step;
+                    }
+                }
+                let rp = evaluate_bollerslev_tsay_garch_term_structure_kurtosis(&sp);
+                let rm = evaluate_bollerslev_tsay_garch_term_structure_kurtosis(&sm);
+                let fd = ((rp.annualized_term_structure_volatility * 10.0
+                    + rp.unconditional_return_excess_kurtosis)
+                    - (rm.annualized_term_structure_volatility * 10.0
+                        + rm.unconditional_return_excess_kurtosis))
+                    / (2.0 * step);
+                assert!(ad.abs() > 1e-5);
+                assert!((ad - fd).abs() / ad.abs().max(1.0) < 1e-3);
+            }
+        }
+    }
+}
+pub use evaluate_bollerslev_tsay_garch_term_structure_kurtosis_module::*;

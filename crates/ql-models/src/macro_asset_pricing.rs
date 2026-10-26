@@ -1400,3 +1400,166 @@ mod evaluate_lucas_mehra_prescott_endowment_tree_equity_premium_module {
     }
 }
 pub use evaluate_lucas_mehra_prescott_endowment_tree_equity_premium_module::*;
+
+mod evaluate_campbell_shiller_cape_excess_yield_forecast_module {
+    // Shiller (1981, AER), Campbell & Shiller (1988, RFS; 1998, J. Portfolio Management)
+    // & Ilmanen (2011, Expected Returns, Ch. 8) Cyclically Adjusted Price-to-Earnings (CAPE),
+    // Excess CAPE Yield (ECY) & Mean-Reverting Valuation Multiple Return Forecast Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct CampbellShillerCapeExcessYieldSpec<T: Real = f64> {
+        pub real_equity_index_price_p: T,
+        pub ten_year_real_average_earnings_e10: T,
+        pub historical_mean_log_cape: T,
+        pub annual_valuation_reversion_speed_phi: T,
+        pub expected_real_earnings_growth_g: T,
+        pub dividend_payout_ratio_d: T,
+        pub ten_year_real_bond_yield_y10: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct CampbellShillerCapeExcessYieldReport<T: Real = f64> {
+        pub cyclically_adjusted_pe_cape: T,
+        pub cyclically_adjusted_earnings_yield_caey: T,
+        pub shiller_excess_cape_yield_ecy: T,
+        pub valuation_reversion_annual_drag: T,
+        pub expected_annualized_real_equity_return: T,
+        pub implied_ten_year_equity_risk_premium: T,
+    }
+
+    pub fn evaluate_campbell_shiller_cape_excess_yield_forecast<T: Real>(
+        spec: &CampbellShillerCapeExcessYieldSpec<T>,
+    ) -> CampbellShillerCapeExcessYieldReport<T> {
+        let p = spec.real_equity_index_price_p.max_val(T::from_f64(1.0));
+        let e10 = spec
+            .ten_year_real_average_earnings_e10
+            .max_val(T::from_f64(0.1));
+        let mu_log_cape = spec.historical_mean_log_cape;
+        let phi = spec
+            .annual_valuation_reversion_speed_phi
+            .max_val(T::from_f64(1e-3));
+        let g = spec.expected_real_earnings_growth_g;
+        let d_pay = spec
+            .dividend_payout_ratio_d
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.95));
+        let y10 = spec.ten_year_real_bond_yield_y10;
+
+        let cape = p / e10;
+        let caey = e10 / p;
+        let ecy = caey - y10;
+
+        let val_drag = -phi * (cape.ln() - mu_log_cape);
+        let exp_real_ret = d_pay * caey + g + val_drag;
+        let erp_10 = exp_real_ret - y10;
+
+        CampbellShillerCapeExcessYieldReport {
+            cyclically_adjusted_pe_cape: cape,
+            cyclically_adjusted_earnings_yield_caey: caey,
+            shiller_excess_cape_yield_ecy: ecy,
+            valuation_reversion_annual_drag: val_drag,
+            expected_annualized_real_equity_return: exp_real_ret,
+            implied_ten_year_equity_risk_premium: erp_10,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_campbell_shiller_cape_excess_yield_forecast_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn campbell_shiller_cape_excess_yield_invariants_and_ad_parity() {
+            let spec = CampbellShillerCapeExcessYieldSpec {
+                real_equity_index_price_p: 4800.0,
+                ten_year_real_average_earnings_e10: 160.0,
+                historical_mean_log_cape: 3.05,
+                annual_valuation_reversion_speed_phi: 0.065,
+                expected_real_earnings_growth_g: 0.018,
+                dividend_payout_ratio_d: 0.45,
+                ten_year_real_bond_yield_y10: 0.019,
+            };
+            let rep = evaluate_campbell_shiller_cape_excess_yield_forecast(&spec);
+            assert!((rep.cyclically_adjusted_pe_cape - 30.0).abs() < 1e-12);
+            assert!(rep.shiller_excess_cape_yield_ecy > 0.01);
+            assert!(rep.valuation_reversion_annual_drag < 0.0);
+
+            let h = 1e-5;
+            let r_ad = evaluate_campbell_shiller_cape_excess_yield_forecast(
+                &CampbellShillerCapeExcessYieldSpec {
+                    real_equity_index_price_p: Dual::<7>::variable(
+                        spec.real_equity_index_price_p,
+                        0,
+                    ),
+                    ten_year_real_average_earnings_e10: Dual::<7>::variable(
+                        spec.ten_year_real_average_earnings_e10,
+                        1,
+                    ),
+                    historical_mean_log_cape: Dual::<7>::variable(spec.historical_mean_log_cape, 2),
+                    annual_valuation_reversion_speed_phi: Dual::<7>::variable(
+                        spec.annual_valuation_reversion_speed_phi,
+                        3,
+                    ),
+                    expected_real_earnings_growth_g: Dual::<7>::variable(
+                        spec.expected_real_earnings_growth_g,
+                        4,
+                    ),
+                    dividend_payout_ratio_d: Dual::<7>::variable(spec.dividend_payout_ratio_d, 5),
+                    ten_year_real_bond_yield_y10: Dual::<7>::variable(
+                        spec.ten_year_real_bond_yield_y10,
+                        6,
+                    ),
+                },
+            );
+            for (idx, &ad) in r_ad
+                .implied_ten_year_equity_risk_premium
+                .d
+                .iter()
+                .enumerate()
+            {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.real_equity_index_price_p += h;
+                        sm.real_equity_index_price_p -= h;
+                    }
+                    1 => {
+                        sp.ten_year_real_average_earnings_e10 += h;
+                        sm.ten_year_real_average_earnings_e10 -= h;
+                    }
+                    2 => {
+                        sp.historical_mean_log_cape += h;
+                        sm.historical_mean_log_cape -= h;
+                    }
+                    3 => {
+                        sp.annual_valuation_reversion_speed_phi += h;
+                        sm.annual_valuation_reversion_speed_phi -= h;
+                    }
+                    4 => {
+                        sp.expected_real_earnings_growth_g += h;
+                        sm.expected_real_earnings_growth_g -= h;
+                    }
+                    5 => {
+                        sp.dividend_payout_ratio_d += h;
+                        sm.dividend_payout_ratio_d -= h;
+                    }
+                    _ => {
+                        sp.ten_year_real_bond_yield_y10 += h;
+                        sm.ten_year_real_bond_yield_y10 -= h;
+                    }
+                }
+                let fd = (evaluate_campbell_shiller_cape_excess_yield_forecast(&sp)
+                    .implied_ten_year_equity_risk_premium
+                    - evaluate_campbell_shiller_cape_excess_yield_forecast(&sm)
+                        .implied_ten_year_equity_risk_premium)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_campbell_shiller_cape_excess_yield_forecast_module::*;

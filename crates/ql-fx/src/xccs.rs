@@ -848,3 +848,171 @@ mod evaluate_wystup_dual_currency_deposit_yield_enhancement_module {
     }
 }
 pub use evaluate_wystup_dual_currency_deposit_yield_enhancement_module::*;
+
+mod evaluate_wystup_fx_forward_extra_participating_collar_module {
+    // Wystup (2017, FX Options and Structured Products, 2nd ed., Ch. 8.3, "Forward Extra")
+    // & Clark (2011) FX Forward Extra (Convertible Forward) Participating Collar
+    // & Skew-Adjusted Knock-In Put Rebate Engine.
+
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupFxForwardExtraCollarSpec<T: Real = f64> {
+        pub spot_fx_s0: T,
+        pub worst_case_strike_k: T,
+        pub downside_trigger_barrier_b: T,
+        pub domestic_rate_rd: T,
+        pub foreign_rate_rf: T,
+        pub strike_vol_sigma_k: T,
+        pub put_wing_skew_slope_xi: T,
+        pub expiry_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupFxForwardExtraCollarReport<T: Real = f64> {
+        pub outright_fx_forward_rate: T,
+        pub garman_kohlhagen_call_at_k: T,
+        pub garman_kohlhagen_put_at_k: T,
+        pub wing_implied_volatility_at_b: T,
+        pub knock_in_short_put_value: T,
+        pub forward_extra_client_npv: T,
+        pub participation_pickup_over_outright_fwd: T,
+    }
+
+    pub fn evaluate_wystup_fx_forward_extra_participating_collar<T: Real>(
+        spec: &WystupFxForwardExtraCollarSpec<T>,
+    ) -> WystupFxForwardExtraCollarReport<T> {
+        let s0 = spec.spot_fx_s0.max_val(T::from_f64(0.05));
+        let k = spec.worst_case_strike_k.max_val(T::from_f64(0.05));
+        let b = spec
+            .downside_trigger_barrier_b
+            .max_val(T::from_f64(0.04))
+            .min_val(k - T::from_f64(0.005));
+        let rd = spec.domestic_rate_rd;
+        let rf = spec.foreign_rate_rf;
+        let sig_k = spec.strike_vol_sigma_k.max_val(T::from_f64(0.01));
+        let xi = spec.put_wing_skew_slope_xi;
+        let t = spec.expiry_years_t.max_val(T::from_f64(0.02));
+
+        let sqrt_t = t.sqrt();
+        let df_d = (-rd * t).exp();
+        let fwd = s0 * ((rd - rf) * t).exp();
+
+        let std_k = sig_k * sqrt_t;
+        let d1_k = ((fwd / k).ln() + T::from_f64(0.5) * sig_k * sig_k * t) / std_k;
+        let d2_k = d1_k - std_k;
+        let call_k = df_d * (fwd * norm_cdf(d1_k) - k * norm_cdf(d2_k));
+        let put_k = df_d * (k * norm_cdf(-d2_k) - fwd * norm_cdf(-d1_k));
+
+        let sig_b = (sig_k + xi * (b / k).ln()).max_val(T::from_f64(0.01));
+        let std_b = sig_b * sqrt_t;
+        let d1_b = ((fwd / b).ln() + T::from_f64(0.5) * sig_b * sig_b * t) / std_b;
+        let d2_b = d1_b - std_b;
+
+        let put_b = df_d * (b * norm_cdf(-d2_b) - fwd * norm_cdf(-d1_b));
+        let vega_b = df_d * fwd * norm_pdf(d1_b) * sqrt_t;
+        let dig_put_b = df_d * (k - b) * norm_cdf(-d2_b) - (k - b) * vega_b * (xi / b);
+        let ki_put = put_b + dig_put_b;
+
+        let fe_npv = call_k - ki_put;
+        let pickup = put_k - ki_put;
+
+        WystupFxForwardExtraCollarReport {
+            outright_fx_forward_rate: fwd,
+            garman_kohlhagen_call_at_k: call_k,
+            garman_kohlhagen_put_at_k: put_k,
+            wing_implied_volatility_at_b: sig_b,
+            knock_in_short_put_value: ki_put,
+            forward_extra_client_npv: fe_npv,
+            participation_pickup_over_outright_fwd: pickup,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_wystup_fx_forward_extra_participating_collar_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn wystup_fx_forward_extra_participating_collar_invariants_and_ad_parity() {
+            let spec = WystupFxForwardExtraCollarSpec {
+                spot_fx_s0: 1.0850,
+                worst_case_strike_k: 1.0950,
+                downside_trigger_barrier_b: 1.0350,
+                domestic_rate_rd: 0.045,
+                foreign_rate_rf: 0.030,
+                strike_vol_sigma_k: 0.095,
+                put_wing_skew_slope_xi: -0.14,
+                expiry_years_t: 0.50,
+            };
+            let rep = evaluate_wystup_fx_forward_extra_participating_collar(&spec);
+            assert!(rep.wing_implied_volatility_at_b > spec.strike_vol_sigma_k);
+            assert!(rep.knock_in_short_put_value < rep.garman_kohlhagen_put_at_k);
+            assert!(rep.participation_pickup_over_outright_fwd > 0.0);
+
+            let h = 1e-5;
+            let r_ad = evaluate_wystup_fx_forward_extra_participating_collar(
+                &WystupFxForwardExtraCollarSpec {
+                    spot_fx_s0: Dual::<8>::variable(spec.spot_fx_s0, 0),
+                    worst_case_strike_k: Dual::<8>::variable(spec.worst_case_strike_k, 1),
+                    downside_trigger_barrier_b: Dual::<8>::variable(
+                        spec.downside_trigger_barrier_b,
+                        2,
+                    ),
+                    domestic_rate_rd: Dual::<8>::variable(spec.domestic_rate_rd, 3),
+                    foreign_rate_rf: Dual::<8>::variable(spec.foreign_rate_rf, 4),
+                    strike_vol_sigma_k: Dual::<8>::variable(spec.strike_vol_sigma_k, 5),
+                    put_wing_skew_slope_xi: Dual::<8>::variable(spec.put_wing_skew_slope_xi, 6),
+                    expiry_years_t: Dual::<8>::variable(spec.expiry_years_t, 7),
+                },
+            );
+            for (idx, &ad) in r_ad.forward_extra_client_npv.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.spot_fx_s0 += h;
+                        sm.spot_fx_s0 -= h;
+                    }
+                    1 => {
+                        sp.worst_case_strike_k += h;
+                        sm.worst_case_strike_k -= h;
+                    }
+                    2 => {
+                        sp.downside_trigger_barrier_b += h;
+                        sm.downside_trigger_barrier_b -= h;
+                    }
+                    3 => {
+                        sp.domestic_rate_rd += h;
+                        sm.domestic_rate_rd -= h;
+                    }
+                    4 => {
+                        sp.foreign_rate_rf += h;
+                        sm.foreign_rate_rf -= h;
+                    }
+                    5 => {
+                        sp.strike_vol_sigma_k += h;
+                        sm.strike_vol_sigma_k -= h;
+                    }
+                    6 => {
+                        sp.put_wing_skew_slope_xi += h;
+                        sm.put_wing_skew_slope_xi -= h;
+                    }
+                    _ => {
+                        sp.expiry_years_t += h;
+                        sm.expiry_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_wystup_fx_forward_extra_participating_collar(&sp)
+                    .forward_extra_client_npv
+                    - evaluate_wystup_fx_forward_extra_participating_collar(&sm)
+                        .forward_extra_client_npv)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_wystup_fx_forward_extra_participating_collar_module::*;

@@ -3607,3 +3607,145 @@ mod evaluate_bouchaud_gatheral_square_root_metaorder_impact_module {
     }
 }
 pub use evaluate_bouchaud_gatheral_square_root_metaorder_impact_module::*;
+
+mod evaluate_holden_subrahmanyam_multi_insider_kyle_equilibrium_module {
+    // Kyle (1985, Econometrica) & Holden-Subrahmanyam (1992, J. Finance, "Long-Lived Private
+    // Information and Imperfect Competition") Multi-Insider Cournot Informed Trading Equilibrium,
+    // Market Depth (1 / lambda_N) & Information Revelation Speed Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct HoldenSubrahmanyamMultiInsiderKyleSpec<T: Real = f64> {
+        pub number_of_insiders_n: T,
+        pub fundamental_value_vol_sigma_v: T,
+        pub noise_trader_volume_vol_sigma_u: T,
+        pub private_valuation_surprise_dv: T,
+        pub prior_reference_price_p0: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct HoldenSubrahmanyamMultiInsiderKyleReport<T: Real = f64> {
+        pub per_insider_order_intensity_beta_n: T,
+        pub kyle_price_impact_slope_lambda_n: T,
+        pub equilibrium_market_depth_d_n: T,
+        pub posterior_fundamental_variance_sigma1: T,
+        pub fraction_information_revealed: T,
+        pub expected_clearing_price: T,
+        pub aggregate_insider_expected_profit: T,
+    }
+
+    pub fn evaluate_holden_subrahmanyam_multi_insider_kyle_equilibrium<T: Real>(
+        spec: &HoldenSubrahmanyamMultiInsiderKyleSpec<T>,
+    ) -> HoldenSubrahmanyamMultiInsiderKyleReport<T> {
+        let n = spec.number_of_insiders_n.max_val(T::one());
+        let sig_v = spec
+            .fundamental_value_vol_sigma_v
+            .max_val(T::from_f64(1e-3));
+        let sig_u = spec
+            .noise_trader_volume_vol_sigma_u
+            .max_val(T::from_f64(1e-3));
+        let dv = spec.private_valuation_surprise_dv;
+        let p0 = spec.prior_reference_price_p0;
+
+        let sqrt_n = n.sqrt();
+        let np1 = n + T::one();
+
+        let beta_n = (sig_u / sig_v) / sqrt_n;
+        let lambda_n = (sqrt_n / np1) * (sig_v / sig_u);
+        let depth_n = T::one() / lambda_n;
+
+        let post_var = (sig_v * sig_v) / np1;
+        let info_share = n / np1;
+
+        let x_agg = n * beta_n * dv;
+        let p_clear = p0 + lambda_n * x_agg;
+        let profit_agg = (sqrt_n / np1) * (sig_u / sig_v) * dv * dv;
+
+        HoldenSubrahmanyamMultiInsiderKyleReport {
+            per_insider_order_intensity_beta_n: beta_n,
+            kyle_price_impact_slope_lambda_n: lambda_n,
+            equilibrium_market_depth_d_n: depth_n,
+            posterior_fundamental_variance_sigma1: post_var,
+            fraction_information_revealed: info_share,
+            expected_clearing_price: p_clear,
+            aggregate_insider_expected_profit: profit_agg,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_holden_subrahmanyam_multi_insider_kyle_equilibrium_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn holden_subrahmanyam_multi_insider_kyle_invariants_and_ad_parity() {
+            let spec = HoldenSubrahmanyamMultiInsiderKyleSpec {
+                number_of_insiders_n: 4.0,
+                fundamental_value_vol_sigma_v: 2.50,
+                noise_trader_volume_vol_sigma_u: 120.0,
+                private_valuation_surprise_dv: 1.80,
+                prior_reference_price_p0: 100.0,
+            };
+            let rep = evaluate_holden_subrahmanyam_multi_insider_kyle_equilibrium(&spec);
+            // With N = 4 insiders, N / (N + 1) = 80% of private information is revealed in one round:
+            assert!((rep.fraction_information_revealed - 0.80).abs() < 1e-12);
+            assert!(rep.aggregate_insider_expected_profit > 0.0);
+
+            let h = 1e-5;
+            let r_ad = evaluate_holden_subrahmanyam_multi_insider_kyle_equilibrium(
+                &HoldenSubrahmanyamMultiInsiderKyleSpec {
+                    number_of_insiders_n: Dual::<5>::variable(spec.number_of_insiders_n, 0),
+                    fundamental_value_vol_sigma_v: Dual::<5>::variable(
+                        spec.fundamental_value_vol_sigma_v,
+                        1,
+                    ),
+                    noise_trader_volume_vol_sigma_u: Dual::<5>::variable(
+                        spec.noise_trader_volume_vol_sigma_u,
+                        2,
+                    ),
+                    private_valuation_surprise_dv: Dual::<5>::variable(
+                        spec.private_valuation_surprise_dv,
+                        3,
+                    ),
+                    prior_reference_price_p0: Dual::<5>::variable(spec.prior_reference_price_p0, 4),
+                },
+            );
+            let comp_ad = r_ad.expected_clearing_price + r_ad.aggregate_insider_expected_profit;
+            for (idx, &ad) in comp_ad.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.number_of_insiders_n += h;
+                        sm.number_of_insiders_n -= h;
+                    }
+                    1 => {
+                        sp.fundamental_value_vol_sigma_v += h;
+                        sm.fundamental_value_vol_sigma_v -= h;
+                    }
+                    2 => {
+                        sp.noise_trader_volume_vol_sigma_u += h;
+                        sm.noise_trader_volume_vol_sigma_u -= h;
+                    }
+                    3 => {
+                        sp.private_valuation_surprise_dv += h;
+                        sm.private_valuation_surprise_dv -= h;
+                    }
+                    _ => {
+                        sp.prior_reference_price_p0 += h;
+                        sm.prior_reference_price_p0 -= h;
+                    }
+                }
+                let rp = evaluate_holden_subrahmanyam_multi_insider_kyle_equilibrium(&sp);
+                let rm = evaluate_holden_subrahmanyam_multi_insider_kyle_equilibrium(&sm);
+                let fd = ((rp.expected_clearing_price + rp.aggregate_insider_expected_profit)
+                    - (rm.expected_clearing_price + rm.aggregate_insider_expected_profit))
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_holden_subrahmanyam_multi_insider_kyle_equilibrium_module::*;

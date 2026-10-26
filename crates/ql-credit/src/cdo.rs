@@ -1858,3 +1858,183 @@ mod evaluate_hull_white_double_t_cdo_tail_copula_module {
     }
 }
 pub use evaluate_hull_white_double_t_cdo_tail_copula_module::*;
+
+mod evaluate_vasicek_gordy_asrf_irb_capital_granularity_adjustment_module {
+    // Vasicek (2002, Risk, "The Distribution of Loan Portfolio Value"), Gordy (2003, J. Financial
+    // Intermediation) & Gordy-Lütkebohmert (2013) Asymptotic Single-Risk Factor (ASRF) Basel IRB
+    // Credit Capital (K_IRB), Maturity Adjustment & Finite-Pool Granularity Adjustment (GA) Engine.
+
+    use ql_ad::Real;
+    use ql_math::{inv_norm_cdf, norm_cdf, norm_pdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct VasicekGordyAsrfIrbGranularitySpec<T: Real = f64> {
+        pub unconditional_pd: T,
+        pub downturn_lgd: T,
+        pub asset_correlation_rho: T,
+        pub confidence_level_alpha: T,
+        pub effective_maturity_years_m: T,
+        pub herfindahl_concentration_index_h: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct VasicekGordyAsrfIrbGranularityReport<T: Real = f64> {
+        pub expected_credit_loss_el: T,
+        pub conditional_stressed_default_rate_q: T,
+        pub basel_maturity_adjustment_factor: T,
+        pub asymptotic_irb_unexpected_loss_capital: T,
+        pub finite_pool_granularity_adjustment_ga: T,
+        pub total_granularity_adjusted_capital: T,
+        pub implied_rwa_density_pct: T,
+    }
+
+    pub fn evaluate_vasicek_gordy_asrf_irb_capital_granularity_adjustment<T: Real>(
+        spec: &VasicekGordyAsrfIrbGranularitySpec<T>,
+    ) -> VasicekGordyAsrfIrbGranularityReport<T> {
+        let pd = spec
+            .unconditional_pd
+            .max_val(T::from_f64(1e-4))
+            .min_val(T::from_f64(0.50));
+        let lgd = spec
+            .downturn_lgd
+            .max_val(T::from_f64(0.05))
+            .min_val(T::one());
+        let rho = spec
+            .asset_correlation_rho
+            .max_val(T::from_f64(0.02))
+            .min_val(T::from_f64(0.80));
+        let alpha = spec
+            .confidence_level_alpha
+            .max_val(T::from_f64(0.90))
+            .min_val(T::from_f64(0.9999));
+        let m = spec
+            .effective_maturity_years_m
+            .max_val(T::one())
+            .min_val(T::from_f64(10.0));
+        let h_conc = spec
+            .herfindahl_concentration_index_h
+            .max_val(T::from_f64(1e-4));
+
+        let d_pd = inv_norm_cdf(pd);
+        let z_alpha = inv_norm_cdf(alpha);
+        let sqrt_rho = rho.sqrt();
+        let sqrt_one_m_rho = (T::one() - rho).sqrt();
+        let x_cond = (d_pd + sqrt_rho * z_alpha) / sqrt_one_m_rho;
+        let q_cond = norm_cdf(x_cond);
+
+        let el = lgd * pd;
+
+        // Basel II/III IRB maturity adjustment b(PD) = (0.11852 - 0.05478 * ln(PD))^2:
+        let b_root = T::from_f64(0.11852) - T::from_f64(0.05478) * pd.ln();
+        let b_pd = b_root * b_root;
+        let ma = (T::one() + (m - T::from_f64(2.5)) * b_pd)
+            / (T::one() - T::from_f64(1.5) * b_pd).max_val(T::from_f64(0.1));
+
+        let k_irb = lgd * (q_cond - pd) * ma;
+
+        // First-order Vasicek-Gordy finite-pool granularity adjustment (GA):
+        let phi_cond = norm_pdf(x_cond).max_val(T::from_f64(1e-8));
+        let ga = T::from_f64(0.5)
+            * h_conc
+            * lgd
+            * q_cond
+            * (T::one() - q_cond)
+            * (sqrt_one_m_rho / sqrt_rho)
+            * (z_alpha / phi_cond);
+
+        let k_tot = k_irb + ga;
+        let rwa_pct = k_tot * T::from_f64(1250.0);
+
+        VasicekGordyAsrfIrbGranularityReport {
+            expected_credit_loss_el: el,
+            conditional_stressed_default_rate_q: q_cond,
+            basel_maturity_adjustment_factor: ma,
+            asymptotic_irb_unexpected_loss_capital: k_irb,
+            finite_pool_granularity_adjustment_ga: ga,
+            total_granularity_adjusted_capital: k_tot,
+            implied_rwa_density_pct: rwa_pct,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_vasicek_gordy_asrf_irb_capital_granularity_adjustment_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn vasicek_gordy_asrf_irb_granularity_invariants_and_ad_parity() {
+            let spec = VasicekGordyAsrfIrbGranularitySpec {
+                unconditional_pd: 0.015,
+                downturn_lgd: 0.45,
+                asset_correlation_rho: 0.18,
+                confidence_level_alpha: 0.999,
+                effective_maturity_years_m: 3.0,
+                herfindahl_concentration_index_h: 0.025,
+            };
+            let rep = evaluate_vasicek_gordy_asrf_irb_capital_granularity_adjustment(&spec);
+            assert!(rep.conditional_stressed_default_rate_q > spec.unconditional_pd);
+            assert!(rep.asymptotic_irb_unexpected_loss_capital > 0.02);
+            assert!(rep.finite_pool_granularity_adjustment_ga > 0.0);
+            assert!(
+                rep.total_granularity_adjusted_capital > rep.asymptotic_irb_unexpected_loss_capital
+            );
+
+            let h = 1e-5;
+            let r_ad = evaluate_vasicek_gordy_asrf_irb_capital_granularity_adjustment(
+                &VasicekGordyAsrfIrbGranularitySpec {
+                    unconditional_pd: Dual::<6>::variable(spec.unconditional_pd, 0),
+                    downturn_lgd: Dual::<6>::variable(spec.downturn_lgd, 1),
+                    asset_correlation_rho: Dual::<6>::variable(spec.asset_correlation_rho, 2),
+                    confidence_level_alpha: Dual::<6>::variable(spec.confidence_level_alpha, 3),
+                    effective_maturity_years_m: Dual::<6>::variable(
+                        spec.effective_maturity_years_m,
+                        4,
+                    ),
+                    herfindahl_concentration_index_h: Dual::<6>::variable(
+                        spec.herfindahl_concentration_index_h,
+                        5,
+                    ),
+                },
+            );
+            for (idx, &ad) in r_ad.total_granularity_adjusted_capital.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                let step = if idx == 3 { 1e-6 } else { h };
+                match idx {
+                    0 => {
+                        sp.unconditional_pd += step;
+                        sm.unconditional_pd -= step;
+                    }
+                    1 => {
+                        sp.downturn_lgd += step;
+                        sm.downturn_lgd -= step;
+                    }
+                    2 => {
+                        sp.asset_correlation_rho += step;
+                        sm.asset_correlation_rho -= step;
+                    }
+                    3 => {
+                        sp.confidence_level_alpha += step;
+                        sm.confidence_level_alpha -= step;
+                    }
+                    4 => {
+                        sp.effective_maturity_years_m += step;
+                        sm.effective_maturity_years_m -= step;
+                    }
+                    _ => {
+                        sp.herfindahl_concentration_index_h += step;
+                        sm.herfindahl_concentration_index_h -= step;
+                    }
+                }
+                let fd = (evaluate_vasicek_gordy_asrf_irb_capital_granularity_adjustment(&sp)
+                    .total_granularity_adjusted_capital
+                    - evaluate_vasicek_gordy_asrf_irb_capital_granularity_adjustment(&sm)
+                        .total_granularity_adjusted_capital)
+                    / (2.0 * step);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-3);
+            }
+        }
+    }
+}
+pub use evaluate_vasicek_gordy_asrf_irb_capital_granularity_adjustment_module::*;

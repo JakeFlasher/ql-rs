@@ -888,3 +888,193 @@ mod evaluate_litterman_scheinkman_butterfly_pca_carry_rolldown_module {
     }
 }
 pub use evaluate_litterman_scheinkman_butterfly_pca_carry_rolldown_module::*;
+
+mod evaluate_gurkaynak_sack_wright_svensson_treasury_forward_curve_module {
+    // Gürkaynak, Sack & Wright (2007, J. Monetary Economics, "The U.S. Treasury Yield Curve:
+    // 1961 to the Present") & Svensson (1994, NBER) Off-the-Run Svensson Instantaneous Forward Curve,
+    // Two-Hump Curvature Decomposition & Off-the-Run Liquidity Spread Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GswSvenssonTreasuryCurveSpec<T: Real = f64> {
+        pub svensson_beta0: T,
+        pub svensson_beta1: T,
+        pub svensson_beta2: T,
+        pub svensson_beta3: T,
+        pub svensson_tau1: T,
+        pub svensson_tau2: T,
+        pub maturity_years_t: T,
+        pub on_the_run_par_yield_y_otr: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GswSvenssonTreasuryCurveReport<T: Real = f64> {
+        pub svensson_zero_coupon_yield: T,
+        pub svensson_instantaneous_forward_rate: T,
+        pub forward_minus_zero_slope_wedge_bps: T,
+        pub second_hump_curvature_contribution: T,
+        pub off_the_run_implied_par_yield: T,
+        pub off_the_run_liquidity_spread_bps: T,
+    }
+
+    fn svensson_zero_yield_inner<T: Real>(
+        beta0: T,
+        beta1: T,
+        beta2: T,
+        beta3: T,
+        tau1: T,
+        tau2: T,
+        t: T,
+    ) -> (T, T, T) {
+        let x1 = t / tau1;
+        let x2 = t / tau2;
+        let e1 = (-x1).exp();
+        let e2 = (-x2).exp();
+        let l1 = (T::one() - e1) / x1;
+        let c1 = l1 - e1;
+        let c2 = (T::one() - e2) / x2 - e2;
+        let y_zero = beta0 + beta1 * l1 + beta2 * c1 + beta3 * c2;
+        let f_inst = beta0 + beta1 * e1 + beta2 * x1 * e1 + beta3 * x2 * e2;
+        let hump2 = beta3 * c2;
+        (y_zero, f_inst, hump2)
+    }
+
+    pub fn evaluate_gurkaynak_sack_wright_svensson_treasury_forward_curve<T: Real>(
+        spec: &GswSvenssonTreasuryCurveSpec<T>,
+    ) -> GswSvenssonTreasuryCurveReport<T> {
+        let b0 = spec.svensson_beta0;
+        let b1 = spec.svensson_beta1;
+        let b2 = spec.svensson_beta2;
+        let b3 = spec.svensson_beta3;
+        let tau1 = spec.svensson_tau1.max_val(T::from_f64(0.10));
+        let tau2 = spec.svensson_tau2.max_val(T::from_f64(0.25));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.50));
+        let y_otr = spec.on_the_run_par_yield_y_otr;
+
+        let (y_zero, f_inst, hump2) = svensson_zero_yield_inner(b0, b1, b2, b3, tau1, tau2, t);
+        const GL_NODES: [f64; 4] = [
+            -0.861_136_311_594_052_6,
+            -0.339_981_043_584_856_26,
+            0.339_981_043_584_856_26,
+            0.861_136_311_594_052_6,
+        ];
+        const GL_WEIGHTS: [f64; 4] = [
+            0.347_854_845_137_453_85,
+            0.652_145_154_862_546_1,
+            0.652_145_154_862_546_1,
+            0.347_854_845_137_453_85,
+        ];
+        let half_t = T::from_f64(0.5) * t;
+        let mut annuity = T::zero();
+        for (&xi, &wi) in GL_NODES.iter().zip(GL_WEIGHTS.iter()) {
+            let u = half_t * (T::one() + T::from_f64(xi));
+            let (y_u, _, _) = svensson_zero_yield_inner(b0, b1, b2, b3, tau1, tau2, u);
+            annuity += half_t * T::from_f64(wi) * (-y_u * u).exp();
+        }
+        let p_full = (-y_zero * t).exp();
+        let c_par = (T::one() - p_full) / annuity.max_val(T::from_f64(1e-6));
+
+        let slope_wedge_bps = (f_inst - y_zero) * T::from_f64(10_000.0);
+        let liq_spread_bps = (c_par - y_otr) * T::from_f64(10_000.0);
+
+        GswSvenssonTreasuryCurveReport {
+            svensson_zero_coupon_yield: y_zero,
+            svensson_instantaneous_forward_rate: f_inst,
+            forward_minus_zero_slope_wedge_bps: slope_wedge_bps,
+            second_hump_curvature_contribution: hump2,
+            off_the_run_implied_par_yield: c_par,
+            off_the_run_liquidity_spread_bps: liq_spread_bps,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_gurkaynak_sack_wright_svensson_treasury_forward_curve_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn gsw_svensson_treasury_forward_curve_invariants_and_ad_parity() {
+            let spec = GswSvenssonTreasuryCurveSpec {
+                svensson_beta0: 0.045,
+                svensson_beta1: -0.012,
+                svensson_beta2: 0.018,
+                svensson_beta3: -0.010,
+                svensson_tau1: 1.80,
+                svensson_tau2: 6.50,
+                maturity_years_t: 10.0,
+                on_the_run_par_yield_y_otr: 0.0415,
+            };
+            let rep = evaluate_gurkaynak_sack_wright_svensson_treasury_forward_curve(&spec);
+            assert!(rep.svensson_zero_coupon_yield > 0.02 && rep.svensson_zero_coupon_yield < 0.08);
+            assert!(rep.svensson_instantaneous_forward_rate > 0.02);
+            assert!(rep.second_hump_curvature_contribution < 0.0);
+            assert!(
+                (rep.off_the_run_implied_par_yield - rep.svensson_zero_coupon_yield).abs() < 0.005
+            );
+
+            let h = 1e-5;
+            let r_ad = evaluate_gurkaynak_sack_wright_svensson_treasury_forward_curve(
+                &GswSvenssonTreasuryCurveSpec {
+                    svensson_beta0: Dual::<8>::variable(spec.svensson_beta0, 0),
+                    svensson_beta1: Dual::<8>::variable(spec.svensson_beta1, 1),
+                    svensson_beta2: Dual::<8>::variable(spec.svensson_beta2, 2),
+                    svensson_beta3: Dual::<8>::variable(spec.svensson_beta3, 3),
+                    svensson_tau1: Dual::<8>::variable(spec.svensson_tau1, 4),
+                    svensson_tau2: Dual::<8>::variable(spec.svensson_tau2, 5),
+                    maturity_years_t: Dual::<8>::variable(spec.maturity_years_t, 6),
+                    on_the_run_par_yield_y_otr: Dual::<8>::variable(
+                        spec.on_the_run_par_yield_y_otr,
+                        7,
+                    ),
+                },
+            );
+            for (idx, &ad) in r_ad.off_the_run_liquidity_spread_bps.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.svensson_beta0 += h;
+                        sm.svensson_beta0 -= h;
+                    }
+                    1 => {
+                        sp.svensson_beta1 += h;
+                        sm.svensson_beta1 -= h;
+                    }
+                    2 => {
+                        sp.svensson_beta2 += h;
+                        sm.svensson_beta2 -= h;
+                    }
+                    3 => {
+                        sp.svensson_beta3 += h;
+                        sm.svensson_beta3 -= h;
+                    }
+                    4 => {
+                        sp.svensson_tau1 += h;
+                        sm.svensson_tau1 -= h;
+                    }
+                    5 => {
+                        sp.svensson_tau2 += h;
+                        sm.svensson_tau2 -= h;
+                    }
+                    6 => {
+                        sp.maturity_years_t += h;
+                        sm.maturity_years_t -= h;
+                    }
+                    _ => {
+                        sp.on_the_run_par_yield_y_otr += h;
+                        sm.on_the_run_par_yield_y_otr -= h;
+                    }
+                }
+                let fd = (evaluate_gurkaynak_sack_wright_svensson_treasury_forward_curve(&sp)
+                    .off_the_run_liquidity_spread_bps
+                    - evaluate_gurkaynak_sack_wright_svensson_treasury_forward_curve(&sm)
+                        .off_the_run_liquidity_spread_bps)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-3);
+            }
+        }
+    }
+}
+pub use evaluate_gurkaynak_sack_wright_svensson_treasury_forward_curve_module::*;

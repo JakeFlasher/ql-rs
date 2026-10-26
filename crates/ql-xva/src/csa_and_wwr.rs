@@ -1563,3 +1563,213 @@ mod evaluate_pykhtin_brownian_bridge_mpor_cashflow_spike_epe_module {
     }
 }
 pub use evaluate_pykhtin_brownian_bridge_mpor_cashflow_spike_epe_module::*;
+
+mod evaluate_gregory_incremental_marginal_netting_set_cva_module {
+    // Gregory (2020, The xVA Challenge, 4th ed., Ch. 7 & 14) & Brigo-Morini-Pallavicini (2013)
+    // Incremental vs. Euler Marginal Netting-Set CVA Decomposition & Bilateral Netting Benefit Engine.
+
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GregoryIncrementalMarginalNettingCvaSpec<T: Real = f64> {
+        pub existing_portfolio_mtm_m1: T,
+        pub new_trade_mtm_m2: T,
+        pub existing_portfolio_vol_sigma1: T,
+        pub new_trade_vol_sigma2: T,
+        pub exposure_correlation_rho12: T,
+        pub counterparty_hazard_rate_lambda: T,
+        pub counterparty_recovery_rate_r: T,
+        pub ois_discount_rate_r: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GregoryIncrementalMarginalNettingCvaReport<T: Real = f64> {
+        pub standalone_existing_portfolio_cva: T,
+        pub standalone_new_trade_cva: T,
+        pub netted_portfolio_total_cva: T,
+        pub incremental_trade_cva: T,
+        pub euler_marginal_existing_cva: T,
+        pub euler_marginal_trade_cva: T,
+        pub bilateral_netting_benefit_ratio: T,
+    }
+
+    fn bachelier_epe_inner<T: Real>(m: T, s: T) -> T {
+        let z = m / s;
+        m * norm_cdf(z) + s * norm_pdf(z)
+    }
+
+    pub fn evaluate_gregory_incremental_marginal_netting_set_cva<T: Real>(
+        spec: &GregoryIncrementalMarginalNettingCvaSpec<T>,
+    ) -> GregoryIncrementalMarginalNettingCvaReport<T> {
+        let m1 = spec.existing_portfolio_mtm_m1;
+        let m2 = spec.new_trade_mtm_m2;
+        let sig1 = spec.existing_portfolio_vol_sigma1.max_val(T::from_f64(0.1));
+        let sig2 = spec.new_trade_vol_sigma2.max_val(T::from_f64(0.1));
+        let rho = spec
+            .exposure_correlation_rho12
+            .max_val(T::from_f64(-0.98))
+            .min_val(T::from_f64(0.98));
+        let lam = spec
+            .counterparty_hazard_rate_lambda
+            .max_val(T::from_f64(1e-4));
+        let rec = spec
+            .counterparty_recovery_rate_r
+            .max_val(T::zero())
+            .min_val(T::from_f64(0.95));
+        let r = spec.ois_discount_rate_r.max_val(T::from_f64(1e-4));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.25));
+
+        let sqrt_tau = (T::from_f64(0.5) * t).sqrt();
+        let s1 = sig1 * sqrt_tau;
+        let s2 = sig2 * sqrt_tau;
+        let s_net = (s1 * s1 + s2 * s2 + T::from_f64(2.0) * rho * s1 * s2)
+            .max_val(T::from_f64(1e-6))
+            .sqrt();
+
+        let epe1 = bachelier_epe_inner(m1, s1);
+        let epe2 = bachelier_epe_inner(m2, s2);
+        let m_net = m1 + m2;
+        let epe_net = bachelier_epe_inner(m_net, s_net);
+
+        let rpv01 = (T::one() - (-(r + lam) * t).exp()) / (r + lam);
+        let lgd_mult = (T::one() - rec) * lam * rpv01;
+
+        let cva1 = lgd_mult * epe1;
+        let cva2 = lgd_mult * epe2;
+        let cva_net = lgd_mult * epe_net;
+        let inc_cva2 = cva_net - cva1;
+
+        // Euler homogeneous allocation: CVA_1^Euler + CVA_2^Euler == CVA_net
+        let z_net = m_net / s_net;
+        let cdf_net = norm_cdf(z_net);
+        let pdf_net = norm_pdf(z_net);
+        let euler1 = lgd_mult * (m1 * cdf_net + ((s1 * s1 + rho * s1 * s2) / s_net) * pdf_net);
+        let euler2 = lgd_mult * (m2 * cdf_net + ((s2 * s2 + rho * s1 * s2) / s_net) * pdf_net);
+
+        let nbr = T::one() - epe_net / (epe1 + epe2).max_val(T::from_f64(1e-6));
+
+        GregoryIncrementalMarginalNettingCvaReport {
+            standalone_existing_portfolio_cva: cva1,
+            standalone_new_trade_cva: cva2,
+            netted_portfolio_total_cva: cva_net,
+            incremental_trade_cva: inc_cva2,
+            euler_marginal_existing_cva: euler1,
+            euler_marginal_trade_cva: euler2,
+            bilateral_netting_benefit_ratio: nbr,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_gregory_incremental_marginal_netting_set_cva_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn gregory_incremental_marginal_netting_cva_invariants_and_ad_parity() {
+            let spec = GregoryIncrementalMarginalNettingCvaSpec {
+                existing_portfolio_mtm_m1: 12.0,
+                new_trade_mtm_m2: -4.0,
+                existing_portfolio_vol_sigma1: 18.0,
+                new_trade_vol_sigma2: 10.0,
+                exposure_correlation_rho12: -0.35,
+                counterparty_hazard_rate_lambda: 0.024,
+                counterparty_recovery_rate_r: 0.40,
+                ois_discount_rate_r: 0.038,
+                maturity_years_t: 4.0,
+            };
+            let rep = evaluate_gregory_incremental_marginal_netting_set_cva(&spec);
+            // Euler additivity identity:
+            assert!(
+                (rep.euler_marginal_existing_cva + rep.euler_marginal_trade_cva
+                    - rep.netted_portfolio_total_cva)
+                    .abs()
+                    < 1e-12
+            );
+            // Risk-reducing offsetting trade produces negative incremental CVA:
+            assert!(rep.incremental_trade_cva < 0.0);
+            assert!(rep.bilateral_netting_benefit_ratio > 0.15);
+
+            let h = 1e-5;
+            let r_ad = evaluate_gregory_incremental_marginal_netting_set_cva(
+                &GregoryIncrementalMarginalNettingCvaSpec {
+                    existing_portfolio_mtm_m1: Dual::<9>::variable(
+                        spec.existing_portfolio_mtm_m1,
+                        0,
+                    ),
+                    new_trade_mtm_m2: Dual::<9>::variable(spec.new_trade_mtm_m2, 1),
+                    existing_portfolio_vol_sigma1: Dual::<9>::variable(
+                        spec.existing_portfolio_vol_sigma1,
+                        2,
+                    ),
+                    new_trade_vol_sigma2: Dual::<9>::variable(spec.new_trade_vol_sigma2, 3),
+                    exposure_correlation_rho12: Dual::<9>::variable(
+                        spec.exposure_correlation_rho12,
+                        4,
+                    ),
+                    counterparty_hazard_rate_lambda: Dual::<9>::variable(
+                        spec.counterparty_hazard_rate_lambda,
+                        5,
+                    ),
+                    counterparty_recovery_rate_r: Dual::<9>::variable(
+                        spec.counterparty_recovery_rate_r,
+                        6,
+                    ),
+                    ois_discount_rate_r: Dual::<9>::variable(spec.ois_discount_rate_r, 7),
+                    maturity_years_t: Dual::<9>::variable(spec.maturity_years_t, 8),
+                },
+            );
+            for (idx, &ad) in r_ad.incremental_trade_cva.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.existing_portfolio_mtm_m1 += h;
+                        sm.existing_portfolio_mtm_m1 -= h;
+                    }
+                    1 => {
+                        sp.new_trade_mtm_m2 += h;
+                        sm.new_trade_mtm_m2 -= h;
+                    }
+                    2 => {
+                        sp.existing_portfolio_vol_sigma1 += h;
+                        sm.existing_portfolio_vol_sigma1 -= h;
+                    }
+                    3 => {
+                        sp.new_trade_vol_sigma2 += h;
+                        sm.new_trade_vol_sigma2 -= h;
+                    }
+                    4 => {
+                        sp.exposure_correlation_rho12 += h;
+                        sm.exposure_correlation_rho12 -= h;
+                    }
+                    5 => {
+                        sp.counterparty_hazard_rate_lambda += h;
+                        sm.counterparty_hazard_rate_lambda -= h;
+                    }
+                    6 => {
+                        sp.counterparty_recovery_rate_r += h;
+                        sm.counterparty_recovery_rate_r -= h;
+                    }
+                    7 => {
+                        sp.ois_discount_rate_r += h;
+                        sm.ois_discount_rate_r -= h;
+                    }
+                    _ => {
+                        sp.maturity_years_t += h;
+                        sm.maturity_years_t -= h;
+                    }
+                }
+                let fd = (evaluate_gregory_incremental_marginal_netting_set_cva(&sp)
+                    .incremental_trade_cva
+                    - evaluate_gregory_incremental_marginal_netting_set_cva(&sm)
+                        .incremental_trade_cva)
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_gregory_incremental_marginal_netting_set_cva_module::*;

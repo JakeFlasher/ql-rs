@@ -218,3 +218,171 @@ mod evaluate_hagan_bartlett_normal_sabr_minimum_variance_greeks_module {
     }
 }
 pub use evaluate_hagan_bartlett_normal_sabr_minimum_variance_greeks_module::*;
+
+mod evaluate_carr_wu_proportional_volatility_smile_drift_module {
+    // Gatheral (2006, The Volatility Surface, Ch. 3) & Carr-Wu (2016, J. Financial Economics,
+    // "Analyzing Volatility Risk and Risk Premium in Option Contracts") Near-Expiry Proportional
+    // Implied Volatility Dynamics, No-Arbitrage Calendar Drift Bound & Vanna-Volga Convexity Cost Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_pdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct CarrWuProportionalVolSmileDriftSpec<T: Real = f64> {
+        pub forward_price_f: T,
+        pub strike_price_k: T,
+        pub atm_volatility_sigma0: T,
+        pub implied_vol_of_vol_omega: T,
+        pub spot_vol_correlation_rho: T,
+        pub implied_vol_drift_mu: T,
+        pub time_to_expiry_tau: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct CarrWuProportionalVolSmileDriftReport<T: Real = f64> {
+        pub log_moneyness_k: T,
+        pub skew_slope_contribution: T,
+        pub volga_curvature_contribution: T,
+        pub calendar_drift_contribution: T,
+        pub carr_wu_arbitrage_free_implied_vol: T,
+        pub vanna_volga_convexity_theta_cost: T,
+        pub breakeven_implied_vol_drift_rate: T,
+    }
+
+    pub fn evaluate_carr_wu_proportional_volatility_smile_drift<T: Real>(
+        spec: &CarrWuProportionalVolSmileDriftSpec<T>,
+    ) -> CarrWuProportionalVolSmileDriftReport<T> {
+        let f = spec.forward_price_f.max_val(T::from_f64(1.0));
+        let k_strike = spec.strike_price_k.max_val(T::from_f64(1.0));
+        let sig0 = spec.atm_volatility_sigma0.max_val(T::from_f64(0.02));
+        let omega = spec.implied_vol_of_vol_omega.max_val(T::from_f64(0.01));
+        let rho = spec
+            .spot_vol_correlation_rho
+            .max_val(T::from_f64(-0.98))
+            .min_val(T::from_f64(0.98));
+        let mu = spec.implied_vol_drift_mu;
+        let tau = spec.time_to_expiry_tau.max_val(T::from_f64(0.02));
+
+        let k = (k_strike / f).ln();
+        let sqrt_tau = tau.sqrt();
+        let std0 = sig0 * sqrt_tau;
+        let z = k / std0;
+        let d1 = -z + T::from_f64(0.5) * std0;
+        let d2 = d1 - std0;
+
+        // Carr & Wu (2016, Proposition 1) no-arbitrage implied volatility smile expansion:
+        let skew_term = T::from_f64(0.5) * rho * omega * k;
+        let curv_term = T::from_f64(0.125)
+            * omega
+            * omega
+            * (T::from_f64(2.0) - T::from_f64(3.0) * rho * rho)
+            * sig0
+            * z
+            * z
+            * tau;
+        let cal_term = sig0
+            * (mu + T::from_f64(0.25) * rho * omega * sig0 + T::from_f64(0.125) * omega * omega)
+            * tau;
+
+        let iv_cw = (sig0 + skew_term + curv_term + cal_term).max_val(T::from_f64(0.01));
+
+        // Instantaneous Vanna-Volga dollar convexity cost rate across spot-vol co-movement and vol-of-vol:
+        let vega_density = f * norm_pdf(d1) * sig0;
+        let vv_cost = vega_density
+            * (-rho * omega * d2 + T::from_f64(0.5) * omega * omega * d1 * d2 * sqrt_tau);
+
+        // Required proportional implied-vol drift to break even against Vanna + Volga theta:
+        let mu_be = rho * omega * (d2 / sqrt_tau) - T::from_f64(0.5) * omega * omega * d1 * d2;
+
+        CarrWuProportionalVolSmileDriftReport {
+            log_moneyness_k: k,
+            skew_slope_contribution: skew_term,
+            volga_curvature_contribution: curv_term,
+            calendar_drift_contribution: cal_term,
+            carr_wu_arbitrage_free_implied_vol: iv_cw,
+            vanna_volga_convexity_theta_cost: vv_cost,
+            breakeven_implied_vol_drift_rate: mu_be,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_carr_wu_proportional_volatility_smile_drift_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn carr_wu_proportional_vol_smile_drift_invariants_and_ad_parity() {
+            let spec = CarrWuProportionalVolSmileDriftSpec {
+                forward_price_f: 100.0,
+                strike_price_k: 95.0,
+                atm_volatility_sigma0: 0.22,
+                implied_vol_of_vol_omega: 0.65,
+                spot_vol_correlation_rho: -0.70,
+                implied_vol_drift_mu: -0.04,
+                time_to_expiry_tau: 0.50,
+            };
+            let rep = evaluate_carr_wu_proportional_volatility_smile_drift(&spec);
+            assert!(rep.skew_slope_contribution > 0.0);
+            assert!(rep.carr_wu_arbitrage_free_implied_vol > spec.atm_volatility_sigma0);
+
+            let h = 1e-5;
+            let r_ad = evaluate_carr_wu_proportional_volatility_smile_drift(
+                &CarrWuProportionalVolSmileDriftSpec {
+                    forward_price_f: Dual::<7>::variable(spec.forward_price_f, 0),
+                    strike_price_k: Dual::<7>::variable(spec.strike_price_k, 1),
+                    atm_volatility_sigma0: Dual::<7>::variable(spec.atm_volatility_sigma0, 2),
+                    implied_vol_of_vol_omega: Dual::<7>::variable(spec.implied_vol_of_vol_omega, 3),
+                    spot_vol_correlation_rho: Dual::<7>::variable(spec.spot_vol_correlation_rho, 4),
+                    implied_vol_drift_mu: Dual::<7>::variable(spec.implied_vol_drift_mu, 5),
+                    time_to_expiry_tau: Dual::<7>::variable(spec.time_to_expiry_tau, 6),
+                },
+            );
+            let comp_ad =
+                r_ad.carr_wu_arbitrage_free_implied_vol + r_ad.vanna_volga_convexity_theta_cost;
+            for (idx, &ad) in comp_ad.d.iter().enumerate() {
+                let mut sp = spec;
+                let mut sm = spec;
+                match idx {
+                    0 => {
+                        sp.forward_price_f += h;
+                        sm.forward_price_f -= h;
+                    }
+                    1 => {
+                        sp.strike_price_k += h;
+                        sm.strike_price_k -= h;
+                    }
+                    2 => {
+                        sp.atm_volatility_sigma0 += h;
+                        sm.atm_volatility_sigma0 -= h;
+                    }
+                    3 => {
+                        sp.implied_vol_of_vol_omega += h;
+                        sm.implied_vol_of_vol_omega -= h;
+                    }
+                    4 => {
+                        sp.spot_vol_correlation_rho += h;
+                        sm.spot_vol_correlation_rho -= h;
+                    }
+                    5 => {
+                        sp.implied_vol_drift_mu += h;
+                        sm.implied_vol_drift_mu -= h;
+                    }
+                    _ => {
+                        sp.time_to_expiry_tau += h;
+                        sm.time_to_expiry_tau -= h;
+                    }
+                }
+                let rp = evaluate_carr_wu_proportional_volatility_smile_drift(&sp);
+                let rm = evaluate_carr_wu_proportional_volatility_smile_drift(&sm);
+                let fd = ((rp.carr_wu_arbitrage_free_implied_vol
+                    + rp.vanna_volga_convexity_theta_cost)
+                    - (rm.carr_wu_arbitrage_free_implied_vol
+                        + rm.vanna_volga_convexity_theta_cost))
+                    / (2.0 * h);
+                assert!(ad.abs() > 1e-6);
+                assert!((ad - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use evaluate_carr_wu_proportional_volatility_smile_drift_module::*;
