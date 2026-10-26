@@ -2,6 +2,8 @@
 pub use crate::phase39::*;
 #[allow(unused_imports)]
 pub use crate::phase40::*;
+#[allow(unused_imports)]
+pub use crate::phase41::*;
 use ql_ad::Real;
 use ql_ad::ift_lift_1d;
 use ql_mc::PhiloxRng;

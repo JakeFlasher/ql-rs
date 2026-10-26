@@ -3488,6 +3488,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_phase38_hagan_west_tension_duffie_lando_pac_cmo_fama_macbeth_shanken_gatheral_asvi_bgk_discrete_barrier_bouchaud_cross_impact_karnosky_singer_merton_jump_campbell_viceira_ohlson_lid_griewank_revolve(scale),
         benchmark_phase39_brigo_xccy_mtm_fabozzi_spec_pool_io_po_lando_marshall_olkin_gatheral_vix_vvix_gregory_wwr_cva_geman_gibson_schwartz_clark_fx_fva_rubinstein_chooser_grinold_flam_tc_meucci_es_euler_james_stein_sure_campbell_cochrane_habit(scale),
         benchmark_phase40_brigo_ois_fallback_fabozzi_collared_frn_schonbucher_cds_swaption_fep_bergomi_2f_skew_gregory_sa_ccr_ead_eydeland_spark_spread_wystup_prdc_geske_compound_qian_alpha_decay_roncalli_enb_johansen_vecm_bansal_yaron_lrr(scale),
+        benchmark_phase41_andersen_cms_replication_tuckman_special_repo_okane_cds_upfront_gatheral_ssr_tanaka_gregory_saccr_kva_eydeland_crack_spread_wystup_prdc_cap_haug_eso_dilution_qian_spinu_erc_rockafellar_cvar_htf_pls_krylov_piazzesi_fomc(scale),
     ]
 }
 
@@ -9516,6 +9517,243 @@ pub fn benchmark_phase40_brigo_ois_fallback_fabozzi_collared_frn_schonbucher_cds
     run_comparison(
         "52_brigo_ois_fallback_fabozzi_collared_frn_schonbucher_cds_swaption_fep_bergomi_2f_skew_gregory_sa_ccr_ead_eydeland_spark_spread_wystup_prdc_geske_compound_qian_alpha_decay_roncalli_enb_johansen_vecm_bansal_yaron_lrr",
         "OIS-Fallback / Collared-FRN / CDS-Swaption-FEP / Bergomi-2F-Skew / SA-CCR-EAD / Clean-Spark / FX-PRDC / Geske-Compound / Alpha-Decay-IR / Meucci-ENB / Johansen-VECM / Bansal-Yaron-LRR AD",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
+}
+
+pub fn phase41_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+    let s = T::from_f64(0.005);
+    let dx0 = x[0] * s;
+    let dx1 = x[1] * s;
+    let dx2 = x[2] * s;
+    let dx3 = x[3] * s;
+
+    let cms = ql_curves::evaluate_andersen_piterbarg_cms_replication_convexity(
+        &ql_curves::AndersenPiterbargCmsReplicationSpec {
+            forward_swap_rate_s0: T::from_f64(0.038) + dx0,
+            swap_tenor_years_n: T::from_f64(10.0),
+            payment_frequency_m: T::from_f64(2.0),
+            fixing_expiry_te: T::from_f64(5.0),
+            normal_swaption_vol_sigma_n: T::from_f64(0.0085) + dx1,
+            ois_spread_delta_r: T::from_f64(0.0015) + dx2,
+            mean_reversion_speed_a: T::from_f64(0.04) + dx3,
+        },
+    );
+
+    let repo = ql_fixed_income::evaluate_tuckman_special_repo_fail_penalty_ctd(
+        &ql_fixed_income::TuckmanSpecialRepoFailPenaltyCtdSpec {
+            general_collateral_rate_gc: T::from_f64(0.048) + dx0,
+            tmpg_fail_penalty_rate_p: T::from_f64(0.030),
+            issue_short_demand_ratio_d: T::from_f64(1.4) + dx1,
+            lendable_supply_elasticity_k: T::from_f64(0.55) + dx2,
+            bond_clean_price: T::from_f64(98.5) + x[0],
+            accrued_interest_at_spot: T::from_f64(0.85),
+            coupon_rate_annual: T::from_f64(0.040) + dx3,
+            futures_invoice_price_at_delivery: T::from_f64(99.65),
+            holding_period_year_frac_tau: T::from_f64(0.25),
+        },
+    );
+
+    let cds_uf = ql_credit::evaluate_okane_isda_standard_cds_upfront_triangle(
+        &ql_credit::OKaneIsdaStandardCdsUpfrontSpec {
+            notional_amount: T::from_f64(1000.0) + x[0],
+            market_par_spread_s: T::from_f64(0.0185) + dx1,
+            standard_running_coupon_c: T::from_f64(0.0100),
+            recovery_rate_r: T::from_f64(0.40) + dx2,
+            ois_zero_rate_r: T::from_f64(0.038) + dx3,
+            maturity_years_t: T::from_f64(5.0),
+            accrued_fraction_alpha: T::from_f64(0.35),
+        },
+    );
+
+    let ssr = ql_vol::evaluate_gatheral_ssr_tanaka_stop_loss_hedging(
+        &ql_vol::GatheralSsrTanakaStopLossSpec {
+            spot_price_s0: T::from_f64(100.0) + x[0],
+            strike_price_k: T::from_f64(100.0),
+            risk_free_rate_r: T::from_f64(0.04) + dx1,
+            atm_implied_vol_sigma0: T::from_f64(0.22) + dx2,
+            atm_skew_slope_dsigma_dk: T::from_f64(-0.18),
+            spot_vol_regression_beta: T::from_f64(-0.24) + dx3,
+            maturity_years_t: T::from_f64(0.5),
+            rebalancing_steps_n: T::from_f64(252.0),
+        },
+    );
+
+    let kva = ql_xva::evaluate_gregory_saccr_kva_regulatory_capital(
+        &ql_xva::GregorySaccrKvaRegulatoryCapitalSpec {
+            initial_sa_ccr_ead0: T::from_f64(150.0) + x[0],
+            counterparty_risk_weight_rw: T::from_f64(0.75) + dx1,
+            pillar_1_capital_ratio_k: T::from_f64(0.105),
+            cva_capital_add_on_multiplier: T::from_f64(0.35),
+            shareholder_hurdle_rate_hk: T::from_f64(0.11) + dx2,
+            risk_free_discount_rate_r: T::from_f64(0.038) + dx3,
+            exposure_amortization_decay_mu: T::from_f64(0.18),
+            portfolio_maturity_years_t: T::from_f64(5.0),
+        },
+    );
+
+    let crk = ql_commodities::evaluate_eydeland_crack_spread_three_asset_kirk(
+        &ql_commodities::EydelandThreeAssetCrackSpreadSpec {
+            crude_forward_barrel_fc: T::from_f64(76.0) + x[0],
+            gasoline_forward_barrel_fg: T::from_f64(94.0) + x[1],
+            distillate_forward_barrel_fh: T::from_f64(98.0) + x[2],
+            fixed_refining_strike_k: T::from_f64(6.5),
+            crude_vol_sigma_c: T::from_f64(0.34) + dx3,
+            gasoline_vol_sigma_g: T::from_f64(0.38),
+            distillate_vol_sigma_h: T::from_f64(0.36),
+            corr_gas_dist_rho_gh: T::from_f64(0.82),
+            corr_product_crude_rho_pc: T::from_f64(0.86),
+            risk_free_rate_r: T::from_f64(0.04),
+            expiry_years_t: T::from_f64(0.5),
+        },
+    );
+
+    let prdc_cap =
+        ql_fx::evaluate_wystup_fx_prdc_coupon_convexity(&ql_fx::WystupFxPrdcCallableCapSpec {
+            spot_fx_s0: T::from_f64(108.0) + x[0],
+            initial_fx_s_init: T::from_f64(105.0),
+            foreign_coupon_cf: T::from_f64(0.055) + dx1,
+            domestic_deduction_cd: T::from_f64(0.035),
+            cap_rate_k_cap: T::from_f64(0.030),
+            domestic_rate_rd: T::from_f64(0.012) + dx2,
+            foreign_rate_rf: T::from_f64(0.045),
+            fx_vol_sigma_s: T::from_f64(0.115) + dx3,
+            dom_rate_vol_sigma_d: T::from_f64(0.008),
+            fx_dom_corr_rho_sd: T::from_f64(0.35),
+            coupon_horizon_t: T::from_f64(7.0),
+        });
+
+    let eso = ql_exotics::evaluate_haug_eso_vesting_barrier_dilution(
+        &ql_exotics::HaugEsoVestingBarrierDilutionSpec {
+            spot_price_s0: T::from_f64(100.0) + x[0],
+            strike_price_k: T::from_f64(100.0),
+            risk_free_rate_r: T::from_f64(0.04) + dx1,
+            dividend_yield_q: T::from_f64(0.015),
+            volatility_sigma: T::from_f64(0.30) + dx2,
+            contractual_maturity_t: T::from_f64(10.0),
+            vesting_period_tv: T::from_f64(3.0),
+            forfeiture_hazard_lambda_f: T::from_f64(0.06) + dx3,
+            suboptimal_exercise_multiple_m: T::from_f64(1.8),
+            grant_to_shares_ratio_gamma: T::from_f64(0.05),
+        },
+    );
+
+    let erc = ql_portfolio::evaluate_qian_risk_parity_spinu_log_barrier(
+        &ql_portfolio::QianSpinuRiskParityLogBarrierSpec {
+            asset_volatilities: [
+                T::from_f64(0.18) + dx0,
+                T::from_f64(0.12) + dx1,
+                T::from_f64(0.08) + dx2,
+            ],
+            risk_budgets_b: [
+                T::from_f64(1.0 / 3.0),
+                T::from_f64(1.0 / 3.0),
+                T::from_f64(1.0 / 3.0),
+            ],
+            corr_01: T::from_f64(0.25) + dx3,
+            corr_02: T::from_f64(-0.10),
+            corr_12: T::from_f64(0.15),
+        },
+    );
+
+    let cvar = ql_portfolio::evaluate_rockafellar_uryasev_cvar_minimization(
+        &ql_portfolio::RockafellarUryasevCvarAuxiliarySpec {
+            portfolio_weights: [T::from_f64(0.6) + dx0, T::from_f64(0.4) - dx0],
+            scenario_losses_asset0: [
+                T::from_f64(-0.02),
+                T::from_f64(0.01) + dx1,
+                T::from_f64(0.04) + dx2,
+                T::from_f64(0.09) + dx3,
+            ],
+            scenario_losses_asset1: [
+                T::from_f64(-0.01),
+                T::from_f64(0.005),
+                T::from_f64(0.02),
+                T::from_f64(0.05),
+            ],
+            confidence_alpha: T::from_f64(0.75),
+            smoothing_epsilon: T::from_f64(0.002),
+        },
+    );
+
+    let pls =
+        ql_dml::evaluate_htf_pls_vs_pcr_krylov_shrinkage(&ql_dml::HtfPlsKrylovShrinkageSpec {
+            pc_eigenvalues_d2: [
+                T::from_f64(4.5) + dx0,
+                T::from_f64(1.8) + dx1,
+                T::from_f64(0.4) + dx2,
+            ],
+            ols_pc_projections_u: [T::from_f64(0.8), T::from_f64(1.4), T::from_f64(1.1) + dx3],
+            ridge_penalty_lambda: T::from_f64(0.6),
+            noise_variance_sigma2: T::from_f64(0.05),
+        });
+
+    let fomc = ql_models::evaluate_piazzesi_swanson_fomc_futures_hike_tree(
+        &ql_models::PiazzesiSwansonFomcFuturesHikeSpec {
+            current_target_fed_funds_r0: T::from_f64(0.0475) + dx0,
+            futures_implied_month_avg_rate_f0: T::from_f64(0.0498) + dx1,
+            meeting_day_of_month_d: T::from_f64(15.0),
+            total_days_in_month_n: T::from_f64(30.0),
+            standard_hike_step_delta: T::from_f64(0.0025),
+            piazzesi_swanson_term_premium_bps: T::from_f64(4.5) + dx2,
+            next_meeting_futures_rate_f1: T::from_f64(0.0512) + dx3,
+        },
+    );
+
+    [
+        cms.convexity_adjusted_cms_rate,
+        repo.net_basis_after_specialness,
+        cds_uf.cash_settlement_upfront_amount,
+        ssr.minimum_variance_smile_delta,
+        kva.lifetime_capital_valuation_adjustment_kva,
+        crk.crack_spread_call_price_per_bbl,
+        prdc_cap.capped_prdc_coupon_pv,
+        eso.diluted_per_option_grant_cost,
+        erc.portfolio_volatility,
+        cvar.minimized_auxiliary_cvar,
+        pls.pls1_fitted_norm_sq,
+        fomc.physical_hike_probability_p,
+    ]
+}
+
+pub fn benchmark_phase41_andersen_cms_replication_tuckman_special_repo_okane_cds_upfront_gatheral_ssr_tanaka_gregory_saccr_kva_eydeland_crack_spread_wystup_prdc_cap_haug_eso_dilution_qian_spinu_erc_rockafellar_cvar_htf_pls_krylov_piazzesi_fomc(
+    scale: usize,
+) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let baseline = move || {
+        let f = |x: [f64; 4]| phase41_workloads(x).iter().copied().sum::<f64>();
+        let mut z = f(x0);
+        for i in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[i] += 1e-5;
+            d[i] -= 1e-5;
+            z += (f(u) - f(d)) / (2e-5);
+        }
+        for _ in 0..20 {
+            std::hint::black_box(f(x0));
+        }
+        z
+    };
+    let sota = move || {
+        let x: [Dual<4>; 4] = [
+            Dual::variable(x0[0], 0),
+            Dual::variable(x0[1], 1),
+            Dual::variable(x0[2], 2),
+            Dual::variable(x0[3], 3),
+        ];
+        phase41_workloads(x)
+            .iter()
+            .map(|v| v.val + v.d.iter().sum::<f64>())
+            .sum::<f64>()
+    };
+    run_comparison(
+        "53_andersen_cms_replication_tuckman_special_repo_okane_cds_upfront_gatheral_ssr_tanaka_gregory_saccr_kva_eydeland_crack_spread_wystup_prdc_cap_haug_eso_dilution_qian_spinu_erc_rockafellar_cvar_htf_pls_krylov_piazzesi_fomc",
+        "CMS-Replication / Special-Repo-CTD / ISDA-CDS-Upfront / SSR-Tanaka / SA-CCR-KVA / 3-Asset-Crack / PRDC-Cap / ESO-Dilution / Spinu-ERC / Rockafellar-CVaR / PLS-Krylov / FOMC-Hike AD",
         cfg,
         1e-4,
         baseline,
