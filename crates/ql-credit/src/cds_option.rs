@@ -6,6 +6,8 @@ pub use crate::phase37::*;
 pub use crate::phase38::*;
 #[allow(unused_imports)]
 pub use crate::phase39::*;
+#[allow(unused_imports)]
+pub use crate::phase40::*;
 
 use crate::SurvivalProbabilityCurve;
 pub use crate::phase33::*;

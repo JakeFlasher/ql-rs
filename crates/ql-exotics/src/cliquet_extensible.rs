@@ -3,6 +3,8 @@ pub use crate::phase35::*;
 pub use crate::phase37::*;
 #[allow(unused_imports)]
 pub use crate::phase39::*;
+#[allow(unused_imports)]
+pub use crate::phase40::*;
 use ql_ad::Real;
 use ql_math::bivariate_normal_cdf;
 use ql_vol::black_scholes_price;
