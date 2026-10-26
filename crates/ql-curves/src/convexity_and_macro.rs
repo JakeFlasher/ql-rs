@@ -1078,3 +1078,179 @@ mod evaluate_gurkaynak_sack_wright_svensson_treasury_forward_curve_module {
     }
 }
 pub use evaluate_gurkaynak_sack_wright_svensson_treasury_forward_curve_module::*;
+
+mod evaluate_joslin_priebsch_singleton_unspanned_macro_term_structure_module {
+    // Joslin, Priebsch & Singleton (2014, Journal of Finance 69(3), "Risk Premiums in Dynamic
+    // Term Structure Models with Unspanned Macro Risks"), Duffee (2011, RFS 24(9)),
+    // & Piazzesi (2010) Unspanned Macro Risk Term Structure & Bond Excess Return Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct JoslinPriebschSingletonUnspannedMacroSpec<T: Real = f64> {
+        pub yield_curve_level_l: T,
+        pub yield_curve_slope_s: T,
+        pub yield_curve_curvature_c: T,
+        pub real_output_growth_g: T,
+        pub core_inflation_gap_pi: T,
+        pub macro_on_yields_projection_beta: T,
+        pub spanned_slope_risk_price_lambda_p: T,
+        pub unspanned_macro_risk_price_lambda_m: T,
+        pub q_measure_decay_kappa_q: T,
+        pub bond_maturity_years_n: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct JoslinPriebschSingletonUnspannedMacroReport<T: Real = f64> {
+        pub spanned_model_zero_yield: T,
+        pub orthogonal_unspanned_macro_impulse: T,
+        pub spanned_yield_curve_bond_risk_premium: T,
+        pub unspanned_macro_bond_risk_premium: T,
+        pub total_expected_bond_excess_return: T,
+        pub unspanned_risk_premium_variance_share: T,
+    }
+
+    pub fn evaluate_joslin_priebsch_singleton_unspanned_macro_term_structure<T: Real>(
+        spec: &JoslinPriebschSingletonUnspannedMacroSpec<T>,
+    ) -> JoslinPriebschSingletonUnspannedMacroReport<T> {
+        let l_pc = spec.yield_curve_level_l;
+        let s_pc = spec.yield_curve_slope_s;
+        let c_pc = spec.yield_curve_curvature_c;
+        let g_macro = spec.real_output_growth_g;
+        let pi_macro = spec.core_inflation_gap_pi;
+        let beta_proj = spec.macro_on_yields_projection_beta;
+        let lam_p = spec.spanned_slope_risk_price_lambda_p;
+        let lam_m = spec.unspanned_macro_risk_price_lambda_m;
+        let kappa_q = spec.q_measure_decay_kappa_q.max_val(T::from_f64(0.05));
+        let n = spec.bond_maturity_years_n.max_val(T::from_f64(1.25));
+
+        let kn = kappa_q * n;
+        let e_kn = (-kn).exp();
+        let b_slope = (T::one() - e_kn) / kn;
+        let b_curv = b_slope - e_kn;
+
+        // Under JPS (2014), the Q-measure yield curve is spanned solely by (L, S, C):
+        let y_spanned = l_pc + b_slope * s_pc + b_curv * c_pc;
+
+        // Unspanned macro factor orthogonal to the spanned yield-curve principal components:
+        let raw_macro = T::from_f64(0.60) * pi_macro + T::from_f64(0.40) * g_macro;
+        let spanned_macro_fit =
+            beta_proj * (l_pc + T::from_f64(0.5) * s_pc + T::from_f64(0.25) * c_pc);
+        let m_orth = raw_macro - spanned_macro_fit;
+
+        let nm1 = n - T::one();
+        let knm1 = kappa_q * nm1;
+        let e_knm1 = (-knm1).exp();
+        let b_slope_nm1 = (T::one() - e_knm1) / knm1;
+        let b_curv_nm1 = b_slope_nm1 - e_knm1;
+
+        // 1-year expected bond excess return decomposes into spanned (slope/curvature) + unspanned macro risk premia:
+        let rp_spanned = -nm1 * (b_slope_nm1 * s_pc - T::from_f64(0.5) * b_curv_nm1 * c_pc) * lam_p;
+        let rp_unspanned = -nm1 * lam_m * m_orth;
+        let rp_total = rp_spanned + rp_unspanned;
+
+        let var_sp = rp_spanned * rp_spanned + T::from_f64(1e-8);
+        let var_un = rp_unspanned * rp_unspanned;
+        let share_un = var_un / (var_sp + var_un);
+
+        JoslinPriebschSingletonUnspannedMacroReport {
+            spanned_model_zero_yield: y_spanned,
+            orthogonal_unspanned_macro_impulse: m_orth,
+            spanned_yield_curve_bond_risk_premium: rp_spanned,
+            unspanned_macro_bond_risk_premium: rp_unspanned,
+            total_expected_bond_excess_return: rp_total,
+            unspanned_risk_premium_variance_share: share_un,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_joslin_priebsch_singleton_unspanned_macro_term_structure_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn jps_unspanned_macro_term_structure_invariants_and_ad_parity() {
+            let spec = JoslinPriebschSingletonUnspannedMacroSpec {
+                yield_curve_level_l: 0.042,
+                yield_curve_slope_s: -0.014,
+                yield_curve_curvature_c: 0.008,
+                real_output_growth_g: 0.024,
+                core_inflation_gap_pi: 0.015,
+                macro_on_yields_projection_beta: 0.25,
+                spanned_slope_risk_price_lambda_p: 0.18,
+                unspanned_macro_risk_price_lambda_m: -0.22,
+                q_measure_decay_kappa_q: 0.45,
+                bond_maturity_years_n: 10.0,
+            };
+            let rep = evaluate_joslin_priebsch_singleton_unspanned_macro_term_structure(&spec);
+            assert!(rep.spanned_model_zero_yield > 0.02 && rep.spanned_model_zero_yield < 0.07);
+            assert!(
+                rep.unspanned_risk_premium_variance_share > 0.0
+                    && rep.unspanned_risk_premium_variance_share < 1.0
+            );
+
+            let h = 1e-6;
+            let r_ad = evaluate_joslin_priebsch_singleton_unspanned_macro_term_structure(
+                &JoslinPriebschSingletonUnspannedMacroSpec {
+                    yield_curve_level_l: Dual::<6>::variable(spec.yield_curve_level_l, 0),
+                    yield_curve_slope_s: Dual::<6>::variable(spec.yield_curve_slope_s, 1),
+                    yield_curve_curvature_c: Dual::<6>::variable(spec.yield_curve_curvature_c, 2),
+                    real_output_growth_g: Dual::<6>::variable(spec.real_output_growth_g, 3),
+                    core_inflation_gap_pi: Dual::<6>::variable(spec.core_inflation_gap_pi, 4),
+                    macro_on_yields_projection_beta: Dual::from_f64(
+                        spec.macro_on_yields_projection_beta,
+                    ),
+                    spanned_slope_risk_price_lambda_p: Dual::from_f64(
+                        spec.spanned_slope_risk_price_lambda_p,
+                    ),
+                    unspanned_macro_risk_price_lambda_m: Dual::<6>::variable(
+                        spec.unspanned_macro_risk_price_lambda_m,
+                        5,
+                    ),
+                    q_measure_decay_kappa_q: Dual::from_f64(spec.q_measure_decay_kappa_q),
+                    bond_maturity_years_n: Dual::from_f64(spec.bond_maturity_years_n),
+                },
+            );
+            for i in 0..6 {
+                let mut v = [
+                    spec.yield_curve_level_l,
+                    spec.yield_curve_slope_s,
+                    spec.yield_curve_curvature_c,
+                    spec.real_output_growth_g,
+                    spec.core_inflation_gap_pi,
+                    spec.unspanned_macro_risk_price_lambda_m,
+                ];
+                v[i] += h;
+                let up = evaluate_joslin_priebsch_singleton_unspanned_macro_term_structure(
+                    &JoslinPriebschSingletonUnspannedMacroSpec {
+                        yield_curve_level_l: v[0],
+                        yield_curve_slope_s: v[1],
+                        yield_curve_curvature_c: v[2],
+                        real_output_growth_g: v[3],
+                        core_inflation_gap_pi: v[4],
+                        unspanned_macro_risk_price_lambda_m: v[5],
+                        ..spec
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_joslin_priebsch_singleton_unspanned_macro_term_structure(
+                    &JoslinPriebschSingletonUnspannedMacroSpec {
+                        yield_curve_level_l: v[0],
+                        yield_curve_slope_s: v[1],
+                        yield_curve_curvature_c: v[2],
+                        real_output_growth_g: v[3],
+                        core_inflation_gap_pi: v[4],
+                        unspanned_macro_risk_price_lambda_m: v[5],
+                        ..spec
+                    },
+                );
+                let val_ad = r_ad.spanned_model_zero_yield + r_ad.total_expected_bond_excess_return;
+                let fd = ((up.spanned_model_zero_yield + up.total_expected_bond_excess_return)
+                    - (dn.spanned_model_zero_yield + dn.total_expected_bond_excess_return))
+                    / (2.0 * h);
+                assert!((val_ad.d[i] - fd).abs() < 1e-5, "input {i}");
+            }
+        }
+    }
+}
+pub use evaluate_joslin_priebsch_singleton_unspanned_macro_term_structure_module::*;

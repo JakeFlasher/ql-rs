@@ -2038,3 +2038,221 @@ mod evaluate_vasicek_gordy_asrf_irb_capital_granularity_adjustment_module {
     }
 }
 pub use evaluate_vasicek_gordy_asrf_irb_capital_granularity_adjustment_module::*;
+
+mod evaluate_hull_white_nth_to_default_basket_cds_spread_module {
+    // Hull & White (2004, Journal of Derivatives 12(2), "Valuation of a CDO and an n-th to
+    // Default CDS Without Monte Carlo Simulation"), Schönbucher (2003, Ch. 10),
+    // & O'Kane (2008, Modelling Single-name and Multi-name Credit Derivatives, Ch. 14)
+    // First-to-Default (FtD) & Second-to-Default (StD) Gaussian Copula Basket CDS Engine.
+
+    use ql_ad::Real;
+    use ql_math::{inv_norm_cdf, norm_cdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct HullWhiteNthToDefaultBasketSpec<T: Real = f64> {
+        pub basket_size_m: T,
+        pub individual_hazard_rate_lambda: T,
+        pub recovery_rate_rec: T,
+        pub gaussian_copula_correlation_rho: T,
+        pub risk_free_rate_r: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct HullWhiteNthToDefaultBasketReport<T: Real = f64> {
+        pub unconditional_first_to_default_prob: T,
+        pub unconditional_second_to_default_prob: T,
+        pub first_to_default_fair_spread_bps: T,
+        pub second_to_default_fair_spread_bps: T,
+        pub ftd_to_sum_of_spreads_ratio: T,
+        pub std_to_ftd_tranche_ratio: T,
+    }
+
+    pub fn evaluate_hull_white_nth_to_default_basket_cds_spread<T: Real>(
+        spec: &HullWhiteNthToDefaultBasketSpec<T>,
+    ) -> HullWhiteNthToDefaultBasketReport<T> {
+        let m = spec.basket_size_m.max_val(T::from_f64(2.0));
+        let lam = spec
+            .individual_hazard_rate_lambda
+            .max_val(T::from_f64(1e-4));
+        let rec = spec
+            .recovery_rate_rec
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.90));
+        let rho = spec
+            .gaussian_copula_correlation_rho
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.95));
+        let r = spec.risk_free_rate_r.max_val(T::from_f64(0.001));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.25));
+
+        let lgd = T::one() - rec;
+        let sqrt_rho = rho.sqrt();
+        let sqrt_om_rho = (T::one() - rho).sqrt();
+
+        // 5-point Gauss-Hermite quadrature for standard normal Z ~ N(0, 1):
+        const Z_NODES: [f64; 5] = [
+            -2.856_970_013_872_805_6,
+            -1.355_626_179_974_266,
+            0.0,
+            1.355_626_179_974_266,
+            2.856_970_013_872_805_6,
+        ];
+        const Z_WEIGHTS: [f64; 5] = [
+            0.011_257_411_327_720_69,
+            0.222_075_922_005_612_64,
+            0.533_333_333_333_333_3,
+            0.222_075_922_005_612_64,
+            0.011_257_411_327_720_69,
+        ];
+
+        let dt = t / T::from_f64(4.0);
+        let mut prev_s_ftd = T::one();
+        let mut prev_s_std = T::one();
+        let mut prot_ftd = T::zero();
+        let mut rpv01_ftd = T::zero();
+        let mut prot_std = T::zero();
+        let mut rpv01_std = T::zero();
+
+        for step in 1..=4 {
+            let tj = dt * T::from_f64(step as f64);
+            let t_mid = tj - T::from_f64(0.5) * dt;
+            let df_mid = (-r * t_mid).exp();
+
+            let q_single = (T::one() - (-lam * tj).exp())
+                .max_val(T::from_f64(1e-6))
+                .min_val(T::from_f64(0.9999));
+            let k_thresh = inv_norm_cdf(q_single);
+
+            let mut surv_0 = T::zero();
+            let mut prob_1 = T::zero();
+            for (&zi, &wi) in Z_NODES.iter().zip(Z_WEIGHTS.iter()) {
+                let z = T::from_f64(zi);
+                let w = T::from_f64(wi);
+                let p_cond = norm_cdf((k_thresh - sqrt_rho * z) / sqrt_om_rho)
+                    .max_val(T::from_f64(1e-6))
+                    .min_val(T::from_f64(0.9999));
+                let q_surv = T::one() - p_cond;
+                let ln_q = q_surv.ln();
+                let s0_z = (m * ln_q).exp();
+                let s1_z = m * p_cond * ((m - T::one()) * ln_q).exp();
+                surv_0 += w * s0_z;
+                prob_1 += w * s1_z;
+            }
+
+            let s_ftd_j = surv_0.max_val(T::from_f64(1e-6)).min_val(T::one());
+            let s_std_j = (surv_0 + prob_1)
+                .max_val(T::from_f64(1e-6))
+                .min_val(T::one());
+
+            prot_ftd += lgd * df_mid * (prev_s_ftd - s_ftd_j);
+            rpv01_ftd += dt * df_mid * T::from_f64(0.5) * (prev_s_ftd + s_ftd_j);
+
+            prot_std += lgd * df_mid * (prev_s_std - s_std_j);
+            rpv01_std += dt * df_mid * T::from_f64(0.5) * (prev_s_std + s_std_j);
+
+            prev_s_ftd = s_ftd_j;
+            prev_s_std = s_std_j;
+        }
+
+        let q_ftd = (T::one() - prev_s_ftd).max_val(T::from_f64(1e-6));
+        let q_std = (T::one() - prev_s_std).max_val(T::from_f64(1e-6));
+
+        let s_ftd_bps = (prot_ftd / rpv01_ftd.max_val(T::from_f64(1e-6))) * T::from_f64(10_000.0);
+        let s_std_bps = (prot_std / rpv01_std.max_val(T::from_f64(1e-6))) * T::from_f64(10_000.0);
+
+        let sum_single_bps = m * lam * lgd * T::from_f64(10_000.0);
+        let ftd_ratio = s_ftd_bps / sum_single_bps.max_val(T::from_f64(1e-4));
+        let std_ftd_ratio = s_std_bps / s_ftd_bps.max_val(T::from_f64(1e-4));
+
+        HullWhiteNthToDefaultBasketReport {
+            unconditional_first_to_default_prob: q_ftd,
+            unconditional_second_to_default_prob: q_std,
+            first_to_default_fair_spread_bps: s_ftd_bps,
+            second_to_default_fair_spread_bps: s_std_bps,
+            ftd_to_sum_of_spreads_ratio: ftd_ratio,
+            std_to_ftd_tranche_ratio: std_ftd_ratio,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_hull_white_nth_to_default_basket_cds_spread_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn hull_white_nth_to_default_basket_invariants_and_ad_parity() {
+            let spec = HullWhiteNthToDefaultBasketSpec {
+                basket_size_m: 5.0,
+                individual_hazard_rate_lambda: 0.02,
+                recovery_rate_rec: 0.40,
+                gaussian_copula_correlation_rho: 0.30,
+                risk_free_rate_r: 0.04,
+                maturity_years_t: 5.0,
+            };
+            let rep = evaluate_hull_white_nth_to_default_basket_cds_spread(&spec);
+            assert!(rep.first_to_default_fair_spread_bps > rep.second_to_default_fair_spread_bps);
+            assert!(
+                rep.ftd_to_sum_of_spreads_ratio > 0.20 && rep.ftd_to_sum_of_spreads_ratio < 1.0
+            );
+
+            let h = 1e-6;
+            let r_ad = evaluate_hull_white_nth_to_default_basket_cds_spread(
+                &HullWhiteNthToDefaultBasketSpec {
+                    basket_size_m: Dual::<6>::variable(spec.basket_size_m, 0),
+                    individual_hazard_rate_lambda: Dual::<6>::variable(
+                        spec.individual_hazard_rate_lambda,
+                        1,
+                    ),
+                    recovery_rate_rec: Dual::<6>::variable(spec.recovery_rate_rec, 2),
+                    gaussian_copula_correlation_rho: Dual::<6>::variable(
+                        spec.gaussian_copula_correlation_rho,
+                        3,
+                    ),
+                    risk_free_rate_r: Dual::<6>::variable(spec.risk_free_rate_r, 4),
+                    maturity_years_t: Dual::<6>::variable(spec.maturity_years_t, 5),
+                },
+            );
+            for i in 0..6 {
+                let mut v = [
+                    spec.basket_size_m,
+                    spec.individual_hazard_rate_lambda,
+                    spec.recovery_rate_rec,
+                    spec.gaussian_copula_correlation_rho,
+                    spec.risk_free_rate_r,
+                    spec.maturity_years_t,
+                ];
+                v[i] += h;
+                let up = evaluate_hull_white_nth_to_default_basket_cds_spread(
+                    &HullWhiteNthToDefaultBasketSpec {
+                        basket_size_m: v[0],
+                        individual_hazard_rate_lambda: v[1],
+                        recovery_rate_rec: v[2],
+                        gaussian_copula_correlation_rho: v[3],
+                        risk_free_rate_r: v[4],
+                        maturity_years_t: v[5],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_hull_white_nth_to_default_basket_cds_spread(
+                    &HullWhiteNthToDefaultBasketSpec {
+                        basket_size_m: v[0],
+                        individual_hazard_rate_lambda: v[1],
+                        recovery_rate_rec: v[2],
+                        gaussian_copula_correlation_rho: v[3],
+                        risk_free_rate_r: v[4],
+                        maturity_years_t: v[5],
+                    },
+                );
+                let fd = (up.first_to_default_fair_spread_bps
+                    - dn.first_to_default_fair_spread_bps)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.first_to_default_fair_spread_bps.d[i] - fd).abs() < 1e-3,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_hull_white_nth_to_default_basket_cds_spread_module::*;

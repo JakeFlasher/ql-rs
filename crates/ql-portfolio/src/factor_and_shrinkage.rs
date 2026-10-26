@@ -2859,3 +2859,160 @@ mod evaluate_novy_marx_fama_french_five_factor_spanning_alpha_module {
     }
 }
 pub use evaluate_novy_marx_fama_french_five_factor_spanning_alpha_module::*;
+
+mod evaluate_asness_moskowitz_pedersen_value_momentum_everywhere_module {
+    // Asness, Moskowitz & Pedersen (2013, Journal of Finance 68(3), "Value and Momentum Everywhere"),
+    // Moskowitz, Ooi & Pedersen (2012, JFE 104(2), "Time Series Momentum"),
+    // & Ilmanen (2011, Expected Returns, Ch. 12-13)
+    // Value-Momentum Negative-Correlation Diversification & TSMOM Straddle Smile Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct AsnessMoskowitzPedersenVmeSpec<T: Real = f64> {
+        pub value_expected_excess_return_mu_v: T,
+        pub momentum_expected_excess_return_mu_m: T,
+        pub value_volatility_sigma_v: T,
+        pub momentum_volatility_sigma_m: T,
+        pub value_momentum_correlation_rho_vm: T,
+        pub tsmom_lookback_autocovariance_gamma: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct AsnessMoskowitzPedersenVmeReport<T: Real = f64> {
+        pub standalone_value_sharpe_ratio: T,
+        pub standalone_momentum_sharpe_ratio: T,
+        pub risk_parity_value_weight: T,
+        pub combined_vme_sharpe_ratio: T,
+        pub diversification_sharpe_gain_ratio: T,
+        pub tsmom_straddle_convexity_return: T,
+    }
+
+    pub fn evaluate_asness_moskowitz_pedersen_value_momentum_everywhere<T: Real>(
+        spec: &AsnessMoskowitzPedersenVmeSpec<T>,
+    ) -> AsnessMoskowitzPedersenVmeReport<T> {
+        let mu_v = spec.value_expected_excess_return_mu_v;
+        let mu_m = spec.momentum_expected_excess_return_mu_m;
+        let sig_v = spec.value_volatility_sigma_v.max_val(T::from_f64(0.01));
+        let sig_m = spec.momentum_volatility_sigma_m.max_val(T::from_f64(0.01));
+        let rho_vm = spec
+            .value_momentum_correlation_rho_vm
+            .max_val(T::from_f64(-0.95))
+            .min_val(T::from_f64(0.95));
+        let gamma_ac = spec.tsmom_lookback_autocovariance_gamma;
+
+        let sr_v = mu_v / sig_v;
+        let sr_m = mu_m / sig_m;
+
+        let inv_v = T::one() / sig_v;
+        let inv_m = T::one() / sig_m;
+        let w_v = inv_v / (inv_v + inv_m);
+
+        // Equal-volatility (50/50 risk-parity) combination Sharpe ratio:
+        let sr_vme = (sr_v + sr_m)
+            / (T::from_f64(2.0) * (T::one() + rho_vm))
+                .max_val(T::from_f64(1e-6))
+                .sqrt();
+        let avg_sr = T::from_f64(0.5) * (sr_v + sr_m);
+        let div_gain = sr_vme / avg_sr.max_val(T::from_f64(1e-4));
+
+        // Moskowitz, Ooi & Pedersen (2012, Eq. 5) TSMOM expected return from autocovariance + mean squared drift:
+        let tsmom_ret = mu_m * mu_m + gamma_ac * sig_m * sig_m;
+
+        AsnessMoskowitzPedersenVmeReport {
+            standalone_value_sharpe_ratio: sr_v,
+            standalone_momentum_sharpe_ratio: sr_m,
+            risk_parity_value_weight: w_v,
+            combined_vme_sharpe_ratio: sr_vme,
+            diversification_sharpe_gain_ratio: div_gain,
+            tsmom_straddle_convexity_return: tsmom_ret,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_asness_moskowitz_pedersen_value_momentum_everywhere_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn amp_value_momentum_everywhere_invariants_and_ad_parity() {
+            let spec = AsnessMoskowitzPedersenVmeSpec {
+                value_expected_excess_return_mu_v: 0.045,
+                momentum_expected_excess_return_mu_m: 0.062,
+                value_volatility_sigma_v: 0.10,
+                momentum_volatility_sigma_m: 0.12,
+                value_momentum_correlation_rho_vm: -0.52,
+                tsmom_lookback_autocovariance_gamma: 0.18,
+            };
+            let rep = evaluate_asness_moskowitz_pedersen_value_momentum_everywhere(&spec);
+            assert!(rep.combined_vme_sharpe_ratio > rep.standalone_value_sharpe_ratio);
+            assert!(rep.combined_vme_sharpe_ratio > rep.standalone_momentum_sharpe_ratio);
+            assert!(rep.diversification_sharpe_gain_ratio > 1.35);
+
+            let h = 1e-6;
+            let r_ad = evaluate_asness_moskowitz_pedersen_value_momentum_everywhere(
+                &AsnessMoskowitzPedersenVmeSpec {
+                    value_expected_excess_return_mu_v: Dual::<6>::variable(
+                        spec.value_expected_excess_return_mu_v,
+                        0,
+                    ),
+                    momentum_expected_excess_return_mu_m: Dual::<6>::variable(
+                        spec.momentum_expected_excess_return_mu_m,
+                        1,
+                    ),
+                    value_volatility_sigma_v: Dual::<6>::variable(spec.value_volatility_sigma_v, 2),
+                    momentum_volatility_sigma_m: Dual::<6>::variable(
+                        spec.momentum_volatility_sigma_m,
+                        3,
+                    ),
+                    value_momentum_correlation_rho_vm: Dual::<6>::variable(
+                        spec.value_momentum_correlation_rho_vm,
+                        4,
+                    ),
+                    tsmom_lookback_autocovariance_gamma: Dual::<6>::variable(
+                        spec.tsmom_lookback_autocovariance_gamma,
+                        5,
+                    ),
+                },
+            );
+            for i in 0..6 {
+                let mut v = [
+                    spec.value_expected_excess_return_mu_v,
+                    spec.momentum_expected_excess_return_mu_m,
+                    spec.value_volatility_sigma_v,
+                    spec.momentum_volatility_sigma_m,
+                    spec.value_momentum_correlation_rho_vm,
+                    spec.tsmom_lookback_autocovariance_gamma,
+                ];
+                v[i] += h;
+                let up = evaluate_asness_moskowitz_pedersen_value_momentum_everywhere(
+                    &AsnessMoskowitzPedersenVmeSpec {
+                        value_expected_excess_return_mu_v: v[0],
+                        momentum_expected_excess_return_mu_m: v[1],
+                        value_volatility_sigma_v: v[2],
+                        momentum_volatility_sigma_m: v[3],
+                        value_momentum_correlation_rho_vm: v[4],
+                        tsmom_lookback_autocovariance_gamma: v[5],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_asness_moskowitz_pedersen_value_momentum_everywhere(
+                    &AsnessMoskowitzPedersenVmeSpec {
+                        value_expected_excess_return_mu_v: v[0],
+                        momentum_expected_excess_return_mu_m: v[1],
+                        value_volatility_sigma_v: v[2],
+                        momentum_volatility_sigma_m: v[3],
+                        value_momentum_correlation_rho_vm: v[4],
+                        tsmom_lookback_autocovariance_gamma: v[5],
+                    },
+                );
+                let val_ad = r_ad.combined_vme_sharpe_ratio + r_ad.tsmom_straddle_convexity_return;
+                let fd = ((up.combined_vme_sharpe_ratio + up.tsmom_straddle_convexity_return)
+                    - (dn.combined_vme_sharpe_ratio + dn.tsmom_straddle_convexity_return))
+                    / (2.0 * h);
+                assert!((val_ad.d[i] - fd).abs() < 1e-5, "input {i}");
+            }
+        }
+    }
+}
+pub use evaluate_asness_moskowitz_pedersen_value_momentum_everywhere_module::*;

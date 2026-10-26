@@ -1728,3 +1728,152 @@ mod evaluate_blanchard_lhuillier_lorenzoni_news_noise_kalman_filter_module {
     }
 }
 pub use evaluate_blanchard_lhuillier_lorenzoni_news_noise_kalman_filter_module::*;
+
+mod evaluate_bernanke_gertler_gilchrist_financial_accelerator_module {
+    // Bernanke, Gertler & Gilchrist (1999, Handbook of Macroeconomics, Vol. 1C, Ch. 21,
+    // "The Financial Accelerator in a Quantitative Business Cycle Framework"),
+    // Townsend (1979, JET, "Costly State Verification"), & Kiyotaki & Moore (1997, JPE)
+    // External Finance Premium, Net-Worth Leverage Elasticity & Financial Accelerator Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BernankeGertlerGilchristAcceleratorSpec<T: Real = f64> {
+        pub capital_asset_value_qk: T,
+        pub entrepreneur_net_worth_n: T,
+        pub csv_auditing_cost_fraction_mu: T,
+        pub efp_leverage_elasticity_nu: T,
+        pub risk_free_real_rate_r: T,
+        pub unexpected_asset_price_shock_dq: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BernankeGertlerGilchristAcceleratorReport<T: Real = f64> {
+        pub entrepreneurial_leverage_ratio_l: T,
+        pub external_finance_premium_spread: T,
+        pub required_expected_return_on_capital: T,
+        pub net_worth_shock_multiplier: T,
+        pub bgg_investment_accelerator_multiplier: T,
+        pub amplified_investment_impulse: T,
+    }
+
+    pub fn evaluate_bernanke_gertler_gilchrist_financial_accelerator<T: Real>(
+        spec: &BernankeGertlerGilchristAcceleratorSpec<T>,
+    ) -> BernankeGertlerGilchristAcceleratorReport<T> {
+        let qk = spec.capital_asset_value_qk.max_val(T::from_f64(1.0));
+        let net_w = spec.entrepreneur_net_worth_n.max_val(T::from_f64(0.5));
+        let mu_csv = spec
+            .csv_auditing_cost_fraction_mu
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.50));
+        let nu = spec.efp_leverage_elasticity_nu.max_val(T::from_f64(0.01));
+        let r_f = spec.risk_free_real_rate_r;
+        let dq = spec.unexpected_asset_price_shock_dq;
+
+        let lev = (qk / net_w).max_val(T::from_f64(1.01));
+
+        // BGG (1999) external finance premium s(L) = mu_csv * psi0 * (L^nu - 1) + base_agency:
+        let psi0 = T::from_f64(0.15);
+        let l_pow_nu = (nu * lev.ln()).exp();
+        let efp = mu_csv * psi0 * l_pow_nu;
+        let r_k = (T::one() + r_f) * (T::one() + efp) - T::one();
+
+        // Leveraged net-worth elasticity dn / dq = L:
+        let nw_mult = lev * dq;
+        // BGG Financial Accelerator multiplier on Tobin's q investment impulse:
+        let bgg_mult = T::one() + nu * (lev - T::one()) * (T::one() + efp);
+        let inv_impulse = bgg_mult * dq;
+
+        BernankeGertlerGilchristAcceleratorReport {
+            entrepreneurial_leverage_ratio_l: lev,
+            external_finance_premium_spread: efp,
+            required_expected_return_on_capital: r_k,
+            net_worth_shock_multiplier: nw_mult,
+            bgg_investment_accelerator_multiplier: bgg_mult,
+            amplified_investment_impulse: inv_impulse,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_bernanke_gertler_gilchrist_financial_accelerator_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn bgg_financial_accelerator_invariants_and_ad_parity() {
+            let spec = BernankeGertlerGilchristAcceleratorSpec {
+                capital_asset_value_qk: 200.0,
+                entrepreneur_net_worth_n: 80.0,
+                csv_auditing_cost_fraction_mu: 0.12,
+                efp_leverage_elasticity_nu: 0.08,
+                risk_free_real_rate_r: 0.02,
+                unexpected_asset_price_shock_dq: 0.03,
+            };
+            let rep = evaluate_bernanke_gertler_gilchrist_financial_accelerator(&spec);
+            assert!((rep.entrepreneurial_leverage_ratio_l - 2.5).abs() < 1e-12);
+            assert!(rep.external_finance_premium_spread > 0.0);
+            assert!(rep.bgg_investment_accelerator_multiplier > 1.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_bernanke_gertler_gilchrist_financial_accelerator(
+                &BernankeGertlerGilchristAcceleratorSpec {
+                    capital_asset_value_qk: Dual::<6>::variable(spec.capital_asset_value_qk, 0),
+                    entrepreneur_net_worth_n: Dual::<6>::variable(spec.entrepreneur_net_worth_n, 1),
+                    csv_auditing_cost_fraction_mu: Dual::<6>::variable(
+                        spec.csv_auditing_cost_fraction_mu,
+                        2,
+                    ),
+                    efp_leverage_elasticity_nu: Dual::<6>::variable(
+                        spec.efp_leverage_elasticity_nu,
+                        3,
+                    ),
+                    risk_free_real_rate_r: Dual::<6>::variable(spec.risk_free_real_rate_r, 4),
+                    unexpected_asset_price_shock_dq: Dual::<6>::variable(
+                        spec.unexpected_asset_price_shock_dq,
+                        5,
+                    ),
+                },
+            );
+            for i in 0..6 {
+                let mut v = [
+                    spec.capital_asset_value_qk,
+                    spec.entrepreneur_net_worth_n,
+                    spec.csv_auditing_cost_fraction_mu,
+                    spec.efp_leverage_elasticity_nu,
+                    spec.risk_free_real_rate_r,
+                    spec.unexpected_asset_price_shock_dq,
+                ];
+                v[i] += h;
+                let up = evaluate_bernanke_gertler_gilchrist_financial_accelerator(
+                    &BernankeGertlerGilchristAcceleratorSpec {
+                        capital_asset_value_qk: v[0],
+                        entrepreneur_net_worth_n: v[1],
+                        csv_auditing_cost_fraction_mu: v[2],
+                        efp_leverage_elasticity_nu: v[3],
+                        risk_free_real_rate_r: v[4],
+                        unexpected_asset_price_shock_dq: v[5],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_bernanke_gertler_gilchrist_financial_accelerator(
+                    &BernankeGertlerGilchristAcceleratorSpec {
+                        capital_asset_value_qk: v[0],
+                        entrepreneur_net_worth_n: v[1],
+                        csv_auditing_cost_fraction_mu: v[2],
+                        efp_leverage_elasticity_nu: v[3],
+                        risk_free_real_rate_r: v[4],
+                        unexpected_asset_price_shock_dq: v[5],
+                    },
+                );
+                let val_ad =
+                    r_ad.required_expected_return_on_capital + r_ad.amplified_investment_impulse;
+                let fd = ((up.required_expected_return_on_capital
+                    + up.amplified_investment_impulse)
+                    - (dn.required_expected_return_on_capital + dn.amplified_investment_impulse))
+                    / (2.0 * h);
+                assert!((val_ad.d[i] - fd).abs() < 1e-5, "input {i}");
+            }
+        }
+    }
+}
+pub use evaluate_bernanke_gertler_gilchrist_financial_accelerator_module::*;

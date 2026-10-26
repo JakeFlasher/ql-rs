@@ -741,3 +741,202 @@ mod evaluate_working_brennan_storage_convenience_yield_curve_module {
     }
 }
 pub use evaluate_working_brennan_storage_convenience_yield_curve_module::*;
+
+mod evaluate_gibson_schwartz_two_factor_futures_samuelson_vol_module {
+    // Gibson & Schwartz (1990, Journal of Finance 45(3), "Stochastic Convenience Yield and the
+    // Pricing of Oil Contingent Claims"), Schwartz (1997, JF 52(3), Model 2),
+    // & Geman (2005, Commodities and Commodity Derivatives, Ch. 3)
+    // Two-Factor Stochastic Convenience Yield Futures Curve & Samuelson Term-Structure Volatility Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GibsonSchwartzSamuelsonFuturesSpec<T: Real = f64> {
+        pub spot_price_s0: T,
+        pub initial_convenience_yield_delta0: T,
+        pub convenience_yield_mean_reversion_kappa: T,
+        pub risk_neutral_long_run_convenience_alpha: T,
+        pub spot_volatility_sigma_s: T,
+        pub convenience_yield_volatility_sigma_d: T,
+        pub spot_convenience_correlation_rho: T,
+        pub risk_free_rate_r: T,
+        pub maturity_years_tau: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GibsonSchwartzSamuelsonFuturesReport<T: Real = f64> {
+        pub convenience_yield_loading_b_tau: T,
+        pub gibson_schwartz_futures_price: T,
+        pub instantaneous_futures_volatility: T,
+        pub term_average_black76_option_volatility: T,
+        pub samuelson_volatility_attenuation_ratio: T,
+        pub implied_annualized_roll_yield: T,
+    }
+
+    pub fn evaluate_gibson_schwartz_two_factor_futures_samuelson_vol<T: Real>(
+        spec: &GibsonSchwartzSamuelsonFuturesSpec<T>,
+    ) -> GibsonSchwartzSamuelsonFuturesReport<T> {
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(1.0));
+        let delta0 = spec.initial_convenience_yield_delta0;
+        let kappa = spec
+            .convenience_yield_mean_reversion_kappa
+            .max_val(T::from_f64(0.05));
+        let alpha_q = spec.risk_neutral_long_run_convenience_alpha;
+        let sig_s = spec.spot_volatility_sigma_s.max_val(T::from_f64(0.02));
+        let sig_d = spec
+            .convenience_yield_volatility_sigma_d
+            .max_val(T::from_f64(0.01));
+        let rho = spec
+            .spot_convenience_correlation_rho
+            .max_val(T::from_f64(-0.98))
+            .min_val(T::from_f64(0.98));
+        let r = spec.risk_free_rate_r;
+        let tau = spec.maturity_years_tau.max_val(T::from_f64(0.05));
+
+        let e_kt = (-kappa * tau).exp();
+        let e_2kt = (-T::from_f64(2.0) * kappa * tau).exp();
+        let b_tau = (T::one() - e_kt) / kappa;
+
+        let k2 = kappa * kappa;
+        let k3 = k2 * kappa;
+        let sig_d2 = sig_d * sig_d;
+
+        // Schwartz (1997, Eqs. 18-20) exact affine log-futures term A(tau):
+        let a_tau =
+            (r - alpha_q + sig_d2 / (T::from_f64(2.0) * k2) - (rho * sig_s * sig_d) / kappa) * tau
+                + (sig_d2 / (T::from_f64(4.0) * k3)) * (T::one() - e_2kt)
+                + (alpha_q * kappa + rho * sig_s * sig_d - sig_d2 / kappa) * (b_tau / kappa);
+
+        let log_f = s0.ln() - delta0 * b_tau + a_tau;
+        let f_price = log_f.exp();
+
+        // Instantaneous futures return variance at maturity tau (Samuelson effect):
+        let var_inst = (sig_s * sig_s - T::from_f64(2.0) * rho * sig_s * sig_d * b_tau
+            + sig_d2 * b_tau * b_tau)
+            .max_val(T::from_f64(1e-6));
+        let vol_inst = var_inst.sqrt();
+
+        // Integrated average variance (1/tau) * int_0^tau sigma_F^2(u) du for Black-76 futures options:
+        let int_var = sig_s * sig_s * tau
+            - (T::from_f64(2.0) * rho * sig_s * sig_d / kappa) * (tau - b_tau)
+            + (sig_d2 / k2)
+                * (tau - T::from_f64(2.0) * b_tau
+                    + (T::one() - e_2kt) / (T::from_f64(2.0) * kappa));
+        let vol_term = (int_var / tau).max_val(T::from_f64(1e-6)).sqrt();
+
+        let samuelson_ratio = vol_inst / sig_s;
+        let roll_yield = -(log_f - s0.ln()) / tau;
+
+        GibsonSchwartzSamuelsonFuturesReport {
+            convenience_yield_loading_b_tau: b_tau,
+            gibson_schwartz_futures_price: f_price,
+            instantaneous_futures_volatility: vol_inst,
+            term_average_black76_option_volatility: vol_term,
+            samuelson_volatility_attenuation_ratio: samuelson_ratio,
+            implied_annualized_roll_yield: roll_yield,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_gibson_schwartz_two_factor_futures_samuelson_vol_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn gibson_schwartz_samuelson_futures_invariants_and_ad_parity() {
+            let spec = GibsonSchwartzSamuelsonFuturesSpec {
+                spot_price_s0: 78.0,
+                initial_convenience_yield_delta0: 0.14,
+                convenience_yield_mean_reversion_kappa: 1.35,
+                risk_neutral_long_run_convenience_alpha: 0.08,
+                spot_volatility_sigma_s: 0.36,
+                convenience_yield_volatility_sigma_d: 0.28,
+                spot_convenience_correlation_rho: 0.80,
+                risk_free_rate_r: 0.04,
+                maturity_years_tau: 1.50,
+            };
+            let rep = evaluate_gibson_schwartz_two_factor_futures_samuelson_vol(&spec);
+            // With positive correlation rho > 0, Samuelson effect damps distant futures volatility below spot vol:
+            assert!(rep.instantaneous_futures_volatility < spec.spot_volatility_sigma_s);
+            assert!(rep.samuelson_volatility_attenuation_ratio < 1.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_gibson_schwartz_two_factor_futures_samuelson_vol(
+                &GibsonSchwartzSamuelsonFuturesSpec {
+                    spot_price_s0: Dual::<9>::variable(spec.spot_price_s0, 0),
+                    initial_convenience_yield_delta0: Dual::<9>::variable(
+                        spec.initial_convenience_yield_delta0,
+                        1,
+                    ),
+                    convenience_yield_mean_reversion_kappa: Dual::<9>::variable(
+                        spec.convenience_yield_mean_reversion_kappa,
+                        2,
+                    ),
+                    risk_neutral_long_run_convenience_alpha: Dual::<9>::variable(
+                        spec.risk_neutral_long_run_convenience_alpha,
+                        3,
+                    ),
+                    spot_volatility_sigma_s: Dual::<9>::variable(spec.spot_volatility_sigma_s, 4),
+                    convenience_yield_volatility_sigma_d: Dual::<9>::variable(
+                        spec.convenience_yield_volatility_sigma_d,
+                        5,
+                    ),
+                    spot_convenience_correlation_rho: Dual::<9>::variable(
+                        spec.spot_convenience_correlation_rho,
+                        6,
+                    ),
+                    risk_free_rate_r: Dual::<9>::variable(spec.risk_free_rate_r, 7),
+                    maturity_years_tau: Dual::<9>::variable(spec.maturity_years_tau, 8),
+                },
+            );
+            for i in 0..9 {
+                let mut v = [
+                    spec.spot_price_s0,
+                    spec.initial_convenience_yield_delta0,
+                    spec.convenience_yield_mean_reversion_kappa,
+                    spec.risk_neutral_long_run_convenience_alpha,
+                    spec.spot_volatility_sigma_s,
+                    spec.convenience_yield_volatility_sigma_d,
+                    spec.spot_convenience_correlation_rho,
+                    spec.risk_free_rate_r,
+                    spec.maturity_years_tau,
+                ];
+                v[i] += h;
+                let up = evaluate_gibson_schwartz_two_factor_futures_samuelson_vol(
+                    &GibsonSchwartzSamuelsonFuturesSpec {
+                        spot_price_s0: v[0],
+                        initial_convenience_yield_delta0: v[1],
+                        convenience_yield_mean_reversion_kappa: v[2],
+                        risk_neutral_long_run_convenience_alpha: v[3],
+                        spot_volatility_sigma_s: v[4],
+                        convenience_yield_volatility_sigma_d: v[5],
+                        spot_convenience_correlation_rho: v[6],
+                        risk_free_rate_r: v[7],
+                        maturity_years_tau: v[8],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_gibson_schwartz_two_factor_futures_samuelson_vol(
+                    &GibsonSchwartzSamuelsonFuturesSpec {
+                        spot_price_s0: v[0],
+                        initial_convenience_yield_delta0: v[1],
+                        convenience_yield_mean_reversion_kappa: v[2],
+                        risk_neutral_long_run_convenience_alpha: v[3],
+                        spot_volatility_sigma_s: v[4],
+                        convenience_yield_volatility_sigma_d: v[5],
+                        spot_convenience_correlation_rho: v[6],
+                        risk_free_rate_r: v[7],
+                        maturity_years_tau: v[8],
+                    },
+                );
+                let fd = (up.gibson_schwartz_futures_price - dn.gibson_schwartz_futures_price)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.gibson_schwartz_futures_price.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_gibson_schwartz_two_factor_futures_samuelson_vol_module::*;

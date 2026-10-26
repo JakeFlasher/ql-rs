@@ -3749,3 +3749,155 @@ mod evaluate_holden_subrahmanyam_multi_insider_kyle_equilibrium_module {
     }
 }
 pub use evaluate_holden_subrahmanyam_multi_insider_kyle_equilibrium_module::*;
+
+mod evaluate_garleanu_pedersen_dynamic_aim_portfolio_execution_module {
+    // Gârleanu & Pedersen (2013, Journal of Finance 68(6), "Dynamic Trading with Predictable
+    // Returns and Transaction Costs", Propositions 1 & 2; 2016, RFS 29(4)) & Paleologo (2021)
+    // Riccati Trading Speed, Alpha-Decay Aim Portfolio & Partial-Adjustment Execution Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GarleanuPedersenAimPortfolioSpec<T: Real = f64> {
+        pub current_position_x_prev: T,
+        pub expected_alpha_return_f: T,
+        pub alpha_mean_reversion_speed_phi: T,
+        pub return_variance_sigma2: T,
+        pub risk_aversion_gamma: T,
+        pub proportional_tcost_lambda: T,
+        pub discount_rate_rho_d: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct GarleanuPedersenAimPortfolioReport<T: Real = f64> {
+        pub frictionless_markowitz_target: T,
+        pub riccati_trading_rate_a: T,
+        pub alpha_decay_aim_multiplier: T,
+        pub forward_looking_aim_portfolio: T,
+        pub optimal_next_period_holding_x: T,
+        pub optimal_trade_increment_dx: T,
+    }
+
+    pub fn evaluate_garleanu_pedersen_dynamic_aim_portfolio_execution<T: Real>(
+        spec: &GarleanuPedersenAimPortfolioSpec<T>,
+    ) -> GarleanuPedersenAimPortfolioReport<T> {
+        let x_prev = spec.current_position_x_prev;
+        let alpha_f = spec.expected_alpha_return_f;
+        let phi = spec
+            .alpha_mean_reversion_speed_phi
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.99));
+        let sig2 = spec.return_variance_sigma2.max_val(T::from_f64(1e-4));
+        let gamma = spec.risk_aversion_gamma.max_val(T::from_f64(0.05));
+        let lam_tc = spec.proportional_tcost_lambda.max_val(T::from_f64(0.01));
+        let rho_d = spec.discount_rate_rho_d.max_val(T::from_f64(0.001));
+
+        // Frictionless Markowitz target x_M = alpha / (gamma * sigma^2):
+        let x_markowitz = alpha_f / (gamma * sig2);
+
+        // Gârleanu & Pedersen (2013, Proposition 1) Riccati quadratic for trading speed a in (0, 1):
+        // lambda * a^2 + (gamma + lambda * rho_d) * a - gamma = 0:
+        let b_quad = gamma + lam_tc * rho_d;
+        let disc = b_quad * b_quad + T::from_f64(4.0) * lam_tc * gamma;
+        let a_rate = (-b_quad + disc.sqrt()) / (T::from_f64(2.0) * lam_tc);
+
+        // Proposition 2 (Eq. 18): Aim portfolio multiplier m_aim = gamma / (gamma + phi * lambda * a):
+        let m_aim = gamma / (gamma + phi * lam_tc * a_rate);
+        let x_aim = m_aim * x_markowitz;
+
+        let dx = a_rate * (x_aim - x_prev);
+        let x_next = x_prev + dx;
+
+        GarleanuPedersenAimPortfolioReport {
+            frictionless_markowitz_target: x_markowitz,
+            riccati_trading_rate_a: a_rate,
+            alpha_decay_aim_multiplier: m_aim,
+            forward_looking_aim_portfolio: x_aim,
+            optimal_next_period_holding_x: x_next,
+            optimal_trade_increment_dx: dx,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_garleanu_pedersen_dynamic_aim_portfolio_execution_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn garleanu_pedersen_aim_portfolio_invariants_and_ad_parity() {
+            let spec = GarleanuPedersenAimPortfolioSpec {
+                current_position_x_prev: 0.40,
+                expected_alpha_return_f: 0.035,
+                alpha_mean_reversion_speed_phi: 0.25,
+                return_variance_sigma2: 0.04,
+                risk_aversion_gamma: 2.0,
+                proportional_tcost_lambda: 1.50,
+                discount_rate_rho_d: 0.04,
+            };
+            let rep = evaluate_garleanu_pedersen_dynamic_aim_portfolio_execution(&spec);
+            assert!(rep.riccati_trading_rate_a > 0.0 && rep.riccati_trading_rate_a < 1.0);
+            assert!(rep.forward_looking_aim_portfolio < rep.frictionless_markowitz_target);
+
+            let h = 1e-6;
+            let r_ad = evaluate_garleanu_pedersen_dynamic_aim_portfolio_execution(
+                &GarleanuPedersenAimPortfolioSpec {
+                    current_position_x_prev: Dual::<7>::variable(spec.current_position_x_prev, 0),
+                    expected_alpha_return_f: Dual::<7>::variable(spec.expected_alpha_return_f, 1),
+                    alpha_mean_reversion_speed_phi: Dual::<7>::variable(
+                        spec.alpha_mean_reversion_speed_phi,
+                        2,
+                    ),
+                    return_variance_sigma2: Dual::<7>::variable(spec.return_variance_sigma2, 3),
+                    risk_aversion_gamma: Dual::<7>::variable(spec.risk_aversion_gamma, 4),
+                    proportional_tcost_lambda: Dual::<7>::variable(
+                        spec.proportional_tcost_lambda,
+                        5,
+                    ),
+                    discount_rate_rho_d: Dual::<7>::variable(spec.discount_rate_rho_d, 6),
+                },
+            );
+            for i in 0..7 {
+                let mut v = [
+                    spec.current_position_x_prev,
+                    spec.expected_alpha_return_f,
+                    spec.alpha_mean_reversion_speed_phi,
+                    spec.return_variance_sigma2,
+                    spec.risk_aversion_gamma,
+                    spec.proportional_tcost_lambda,
+                    spec.discount_rate_rho_d,
+                ];
+                v[i] += h;
+                let up = evaluate_garleanu_pedersen_dynamic_aim_portfolio_execution(
+                    &GarleanuPedersenAimPortfolioSpec {
+                        current_position_x_prev: v[0],
+                        expected_alpha_return_f: v[1],
+                        alpha_mean_reversion_speed_phi: v[2],
+                        return_variance_sigma2: v[3],
+                        risk_aversion_gamma: v[4],
+                        proportional_tcost_lambda: v[5],
+                        discount_rate_rho_d: v[6],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_garleanu_pedersen_dynamic_aim_portfolio_execution(
+                    &GarleanuPedersenAimPortfolioSpec {
+                        current_position_x_prev: v[0],
+                        expected_alpha_return_f: v[1],
+                        alpha_mean_reversion_speed_phi: v[2],
+                        return_variance_sigma2: v[3],
+                        risk_aversion_gamma: v[4],
+                        proportional_tcost_lambda: v[5],
+                        discount_rate_rho_d: v[6],
+                    },
+                );
+                let fd = (up.optimal_next_period_holding_x - dn.optimal_next_period_holding_x)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.optimal_next_period_holding_x.d[i] - fd).abs() < 1e-5,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_garleanu_pedersen_dynamic_aim_portfolio_execution_module::*;

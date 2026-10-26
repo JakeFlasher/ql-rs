@@ -1016,3 +1016,179 @@ mod evaluate_wystup_fx_forward_extra_participating_collar_module {
     }
 }
 pub use evaluate_wystup_fx_forward_extra_participating_collar_module::*;
+
+mod evaluate_reiner_wystup_quanto_fx_correlation_convexity_module {
+    // Reiner (1992, Risk 5(3), "Quanto Mechanics"), Wystup (2017, FX Options and Structured
+    // Products, 2nd ed., Ch. 4), & Hull (2021, Options, Futures, and Other Derivatives, Ch. 30)
+    // Quanto FX Equity Forward, Girsanov Covariance Drift & Quanto Call Option Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct ReinerWystupQuantoFxSpec<T: Real = f64> {
+        pub foreign_asset_spot_s0: T,
+        pub strike_price_k: T,
+        pub fixed_quanto_exchange_rate_q_fx: T,
+        pub domestic_rate_rd: T,
+        pub foreign_rate_rf: T,
+        pub foreign_dividend_yield_q: T,
+        pub asset_volatility_sigma_s: T,
+        pub fx_volatility_sigma_x: T,
+        pub asset_fx_correlation_rho_sx: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct ReinerWystupQuantoFxReport<T: Real = f64> {
+        pub unadjusted_foreign_forward_price: T,
+        pub quanto_adjusted_forward_price: T,
+        pub quanto_covariance_drift_rate_bps: T,
+        pub quanto_call_domestic_value: T,
+        pub standard_compo_unadjusted_call_value: T,
+        pub quanto_forward_discount_premium: T,
+    }
+
+    pub fn evaluate_reiner_wystup_quanto_fx_correlation_convexity<T: Real>(
+        spec: &ReinerWystupQuantoFxSpec<T>,
+    ) -> ReinerWystupQuantoFxReport<T> {
+        let s0 = spec.foreign_asset_spot_s0.max_val(T::from_f64(1.0));
+        let k = spec.strike_price_k.max_val(T::from_f64(1.0));
+        let q_fx = spec
+            .fixed_quanto_exchange_rate_q_fx
+            .max_val(T::from_f64(0.01));
+        let rd = spec.domestic_rate_rd;
+        let rf = spec.foreign_rate_rf;
+        let q_div = spec.foreign_dividend_yield_q;
+        let sig_s = spec.asset_volatility_sigma_s.max_val(T::from_f64(0.01));
+        let sig_x = spec.fx_volatility_sigma_x.max_val(T::from_f64(0.01));
+        let rho = spec
+            .asset_fx_correlation_rho_sx
+            .max_val(T::from_f64(-0.98))
+            .min_val(T::from_f64(0.98));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+        let cov_sx = rho * sig_s * sig_x;
+        let drift_unadj = rf - q_div;
+        let drift_quanto = drift_unadj - cov_sx;
+
+        let f_unadj = s0 * (drift_unadj * t).exp();
+        let f_quanto = s0 * (drift_quanto * t).exp();
+
+        let sqrt_t = t.sqrt();
+        let std_s = sig_s * sqrt_t;
+        let df_d = (-rd * t).exp();
+
+        let d1_q = ((f_quanto / k).ln() + T::from_f64(0.5) * sig_s * sig_s * t) / std_s;
+        let d2_q = d1_q - std_s;
+        let c_quanto = q_fx * df_d * (f_quanto * norm_cdf(d1_q) - k * norm_cdf(d2_q));
+
+        let d1_u = ((f_unadj / k).ln() + T::from_f64(0.5) * sig_s * sig_s * t) / std_s;
+        let d2_u = d1_u - std_s;
+        let c_unadj = q_fx * df_d * (f_unadj * norm_cdf(d1_u) - k * norm_cdf(d2_u));
+
+        let cov_bps = -cov_sx * T::from_f64(10_000.0);
+        let quanto_prem = c_quanto - c_unadj;
+
+        ReinerWystupQuantoFxReport {
+            unadjusted_foreign_forward_price: f_unadj,
+            quanto_adjusted_forward_price: f_quanto,
+            quanto_covariance_drift_rate_bps: cov_bps,
+            quanto_call_domestic_value: c_quanto,
+            standard_compo_unadjusted_call_value: c_unadj,
+            quanto_forward_discount_premium: quanto_prem,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_reiner_wystup_quanto_fx_correlation_convexity_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn reiner_wystup_quanto_fx_invariants_and_ad_parity() {
+            let spec = ReinerWystupQuantoFxSpec {
+                foreign_asset_spot_s0: 100.0,
+                strike_price_k: 102.0,
+                fixed_quanto_exchange_rate_q_fx: 1.0,
+                domestic_rate_rd: 0.045,
+                foreign_rate_rf: 0.025,
+                foreign_dividend_yield_q: 0.015,
+                asset_volatility_sigma_s: 0.22,
+                fx_volatility_sigma_x: 0.11,
+                asset_fx_correlation_rho_sx: 0.45,
+                maturity_years_t: 1.0,
+            };
+            let rep = evaluate_reiner_wystup_quanto_fx_correlation_convexity(&spec);
+            assert!(rep.quanto_adjusted_forward_price < rep.unadjusted_foreign_forward_price);
+            assert!(rep.quanto_call_domestic_value < rep.standard_compo_unadjusted_call_value);
+
+            let h = 1e-6;
+            let r_ad =
+                evaluate_reiner_wystup_quanto_fx_correlation_convexity(&ReinerWystupQuantoFxSpec {
+                    foreign_asset_spot_s0: Dual::<8>::variable(spec.foreign_asset_spot_s0, 0),
+                    strike_price_k: Dual::<8>::variable(spec.strike_price_k, 1),
+                    fixed_quanto_exchange_rate_q_fx: Dual::from_f64(
+                        spec.fixed_quanto_exchange_rate_q_fx,
+                    ),
+                    domestic_rate_rd: Dual::<8>::variable(spec.domestic_rate_rd, 2),
+                    foreign_rate_rf: Dual::<8>::variable(spec.foreign_rate_rf, 3),
+                    foreign_dividend_yield_q: Dual::from_f64(spec.foreign_dividend_yield_q),
+                    asset_volatility_sigma_s: Dual::<8>::variable(spec.asset_volatility_sigma_s, 4),
+                    fx_volatility_sigma_x: Dual::<8>::variable(spec.fx_volatility_sigma_x, 5),
+                    asset_fx_correlation_rho_sx: Dual::<8>::variable(
+                        spec.asset_fx_correlation_rho_sx,
+                        6,
+                    ),
+                    maturity_years_t: Dual::<8>::variable(spec.maturity_years_t, 7),
+                });
+            for i in 0..8 {
+                let mut v = [
+                    spec.foreign_asset_spot_s0,
+                    spec.strike_price_k,
+                    spec.domestic_rate_rd,
+                    spec.foreign_rate_rf,
+                    spec.asset_volatility_sigma_s,
+                    spec.fx_volatility_sigma_x,
+                    spec.asset_fx_correlation_rho_sx,
+                    spec.maturity_years_t,
+                ];
+                v[i] += h;
+                let up = evaluate_reiner_wystup_quanto_fx_correlation_convexity(
+                    &ReinerWystupQuantoFxSpec {
+                        foreign_asset_spot_s0: v[0],
+                        strike_price_k: v[1],
+                        domestic_rate_rd: v[2],
+                        foreign_rate_rf: v[3],
+                        asset_volatility_sigma_s: v[4],
+                        fx_volatility_sigma_x: v[5],
+                        asset_fx_correlation_rho_sx: v[6],
+                        maturity_years_t: v[7],
+                        ..spec
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_reiner_wystup_quanto_fx_correlation_convexity(
+                    &ReinerWystupQuantoFxSpec {
+                        foreign_asset_spot_s0: v[0],
+                        strike_price_k: v[1],
+                        domestic_rate_rd: v[2],
+                        foreign_rate_rf: v[3],
+                        asset_volatility_sigma_s: v[4],
+                        fx_volatility_sigma_x: v[5],
+                        asset_fx_correlation_rho_sx: v[6],
+                        maturity_years_t: v[7],
+                        ..spec
+                    },
+                );
+                let fd =
+                    (up.quanto_call_domestic_value - dn.quanto_call_domestic_value) / (2.0 * h);
+                assert!(
+                    (r_ad.quanto_call_domestic_value.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_reiner_wystup_quanto_fx_correlation_convexity_module::*;

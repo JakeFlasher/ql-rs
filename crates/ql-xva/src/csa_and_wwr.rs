@@ -1960,3 +1960,183 @@ mod evaluate_burgard_kjaer_semi_replication_fva_cva_dva_module {
     }
 }
 pub use evaluate_burgard_kjaer_semi_replication_fva_cva_dva_module::*;
+
+mod evaluate_hull_white_exponential_hazard_wrong_way_risk_cva_module {
+    // Hull & White (2012, Journal of Derivatives 19(3), "CVA and Wrong-Way Risk"),
+    // Gregory (2020, The xVA Challenge, 4th ed., Ch. 17), & Brigo, Morini & Pallavicini (2013, Ch. 11)
+    // Exponential Hazard-Exposure Wrong-Way Risk (WWR) Girsanov Drift-Shifted CVA Engine.
+
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct HullWhiteExponentialWwrCvaSpec<T: Real = f64> {
+        pub portfolio_expected_mtm_mu_v: T,
+        pub portfolio_exposure_vol_sigma_v: T,
+        pub baseline_cds_hazard_rate_lambda0: T,
+        pub wwr_exponential_sensitivity_b: T,
+        pub counterparty_lgd: T,
+        pub ois_discount_rate_r: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct HullWhiteExponentialWwrCvaReport<T: Real = f64> {
+        pub calibration_intercept_a_t: T,
+        pub independent_expected_positive_exposure: T,
+        pub wwr_girsanov_shifted_epe: T,
+        pub independent_baseline_cva: T,
+        pub wrong_way_risk_adjusted_cva: T,
+        pub wwr_cva_multiplier_ratio: T,
+    }
+
+    pub fn evaluate_hull_white_exponential_hazard_wrong_way_risk_cva<T: Real>(
+        spec: &HullWhiteExponentialWwrCvaSpec<T>,
+    ) -> HullWhiteExponentialWwrCvaReport<T> {
+        let mu_v = spec.portfolio_expected_mtm_mu_v;
+        let sig_v = spec
+            .portfolio_exposure_vol_sigma_v
+            .max_val(T::from_f64(0.1));
+        let lam0 = spec
+            .baseline_cds_hazard_rate_lambda0
+            .max_val(T::from_f64(1e-4));
+        let b_wwr = spec.wwr_exponential_sensitivity_b;
+        let lgd = spec
+            .counterparty_lgd
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(1.0));
+        let r = spec.ois_discount_rate_r.max_val(T::from_f64(0.001));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.10));
+
+        let var_t = sig_v * sig_v * t;
+        // Hull-White (2012, Eq. 2) hazard calibration a(T) so E[exp(a(T) + b * V_T)] = lambda0:
+        let a_t = lam0.ln() - b_wwr * mu_v - T::from_f64(0.5) * b_wwr * b_wwr * var_t;
+
+        let dt = t / T::from_f64(4.0);
+        let eff_disc = r + lam0;
+        let mut cva_ind = T::zero();
+        let mut cva_wwr = T::zero();
+        let mut weight_sum = T::zero();
+
+        for k in 0..4 {
+            let uk = dt * (T::from_f64(k as f64) + T::from_f64(0.5));
+            let var_u = sig_v * sig_v * uk;
+            let std_u = var_u.sqrt();
+
+            let z_ind = mu_v / std_u;
+            let epe_ind_u = mu_v * norm_cdf(z_ind) + std_u * norm_pdf(z_ind);
+
+            // Under exponential tilting exp(a(u) + b * V_u), Girsanov shifts mean of V_u to mu_v + b * sigma_v^2 * u:
+            let mu_wwr_u = mu_v + b_wwr * var_u;
+            let z_wwr = mu_wwr_u / std_u;
+            let epe_wwr_u = mu_wwr_u * norm_cdf(z_wwr) + std_u * norm_pdf(z_wwr);
+
+            let df_surv = dt * (-eff_disc * uk).exp();
+            weight_sum += df_surv;
+            cva_ind += lam0 * lgd * df_surv * epe_ind_u;
+            cva_wwr += lam0 * lgd * df_surv * epe_wwr_u;
+        }
+
+        let epe_ind = cva_ind / (lam0 * lgd * weight_sum);
+        let epe_wwr = cva_wwr / (lam0 * lgd * weight_sum);
+        let mult = cva_wwr / cva_ind.max_val(T::from_f64(1e-6));
+
+        HullWhiteExponentialWwrCvaReport {
+            calibration_intercept_a_t: a_t,
+            independent_expected_positive_exposure: epe_ind,
+            wwr_girsanov_shifted_epe: epe_wwr,
+            independent_baseline_cva: cva_ind,
+            wrong_way_risk_adjusted_cva: cva_wwr,
+            wwr_cva_multiplier_ratio: mult,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_hull_white_exponential_hazard_wrong_way_risk_cva_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn hull_white_exponential_wwr_cva_invariants_and_ad_parity() {
+            let spec = HullWhiteExponentialWwrCvaSpec {
+                portfolio_expected_mtm_mu_v: 8.0,
+                portfolio_exposure_vol_sigma_v: 12.0,
+                baseline_cds_hazard_rate_lambda0: 0.025,
+                wwr_exponential_sensitivity_b: 0.035,
+                counterparty_lgd: 0.60,
+                ois_discount_rate_r: 0.038,
+                maturity_years_t: 4.0,
+            };
+            let rep = evaluate_hull_white_exponential_hazard_wrong_way_risk_cva(&spec);
+            assert!(rep.wrong_way_risk_adjusted_cva > rep.independent_baseline_cva);
+            assert!(rep.wwr_cva_multiplier_ratio > 1.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_hull_white_exponential_hazard_wrong_way_risk_cva(
+                &HullWhiteExponentialWwrCvaSpec {
+                    portfolio_expected_mtm_mu_v: Dual::<7>::variable(
+                        spec.portfolio_expected_mtm_mu_v,
+                        0,
+                    ),
+                    portfolio_exposure_vol_sigma_v: Dual::<7>::variable(
+                        spec.portfolio_exposure_vol_sigma_v,
+                        1,
+                    ),
+                    baseline_cds_hazard_rate_lambda0: Dual::<7>::variable(
+                        spec.baseline_cds_hazard_rate_lambda0,
+                        2,
+                    ),
+                    wwr_exponential_sensitivity_b: Dual::<7>::variable(
+                        spec.wwr_exponential_sensitivity_b,
+                        3,
+                    ),
+                    counterparty_lgd: Dual::<7>::variable(spec.counterparty_lgd, 4),
+                    ois_discount_rate_r: Dual::<7>::variable(spec.ois_discount_rate_r, 5),
+                    maturity_years_t: Dual::<7>::variable(spec.maturity_years_t, 6),
+                },
+            );
+            for i in 0..7 {
+                let mut v = [
+                    spec.portfolio_expected_mtm_mu_v,
+                    spec.portfolio_exposure_vol_sigma_v,
+                    spec.baseline_cds_hazard_rate_lambda0,
+                    spec.wwr_exponential_sensitivity_b,
+                    spec.counterparty_lgd,
+                    spec.ois_discount_rate_r,
+                    spec.maturity_years_t,
+                ];
+                v[i] += h;
+                let up = evaluate_hull_white_exponential_hazard_wrong_way_risk_cva(
+                    &HullWhiteExponentialWwrCvaSpec {
+                        portfolio_expected_mtm_mu_v: v[0],
+                        portfolio_exposure_vol_sigma_v: v[1],
+                        baseline_cds_hazard_rate_lambda0: v[2],
+                        wwr_exponential_sensitivity_b: v[3],
+                        counterparty_lgd: v[4],
+                        ois_discount_rate_r: v[5],
+                        maturity_years_t: v[6],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_hull_white_exponential_hazard_wrong_way_risk_cva(
+                    &HullWhiteExponentialWwrCvaSpec {
+                        portfolio_expected_mtm_mu_v: v[0],
+                        portfolio_exposure_vol_sigma_v: v[1],
+                        baseline_cds_hazard_rate_lambda0: v[2],
+                        wwr_exponential_sensitivity_b: v[3],
+                        counterparty_lgd: v[4],
+                        ois_discount_rate_r: v[5],
+                        maturity_years_t: v[6],
+                    },
+                );
+                let fd =
+                    (up.wrong_way_risk_adjusted_cva - dn.wrong_way_risk_adjusted_cva) / (2.0 * h);
+                assert!(
+                    (r_ad.wrong_way_risk_adjusted_cva.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_hull_white_exponential_hazard_wrong_way_risk_cva_module::*;

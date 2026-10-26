@@ -1901,3 +1901,189 @@ mod evaluate_rubinstein_margrabe_exchange_on_exchange_option_module {
     }
 }
 pub use evaluate_rubinstein_margrabe_exchange_on_exchange_option_module::*;
+
+mod evaluate_turnbull_wakeman_edgeworth_arithmetic_asian_option_module {
+    // Turnbull & Wakeman (1991, Journal of Financial and Quantitative Analysis 26(3),
+    // "A Quick Algorithm for Pricing European Average Options"), Levy (1992, JIMF 11(5)),
+    // & Kemna & Vorst (1990, JBF 14(1))
+    // Moment-Matched Arithmetic Asian Call vs. Geometric Asian Dispersion Engine.
+
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TurnbullWakemanArithmeticAsianSpec<T: Real = f64> {
+        pub spot_price_s0: T,
+        pub strike_price_k: T,
+        pub risk_free_rate_r: T,
+        pub dividend_yield_q: T,
+        pub volatility_sigma: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct TurnbullWakemanArithmeticAsianReport<T: Real = f64> {
+        pub arithmetic_average_forward_m1: T,
+        pub turnbull_wakeman_effective_volatility: T,
+        pub turnbull_wakeman_arithmetic_call_value: T,
+        pub kemna_vorst_geometric_call_value: T,
+        pub arithmetic_over_geometric_dispersion_spread: T,
+        pub asian_call_spot_delta: T,
+    }
+
+    pub fn evaluate_turnbull_wakeman_edgeworth_arithmetic_asian_option<T: Real>(
+        spec: &TurnbullWakemanArithmeticAsianSpec<T>,
+    ) -> TurnbullWakemanArithmeticAsianReport<T> {
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(1.0));
+        let k = spec.strike_price_k.max_val(T::from_f64(1.0));
+        let r = spec.risk_free_rate_r;
+        let q = spec.dividend_yield_q;
+        let sig = spec.volatility_sigma.max_val(T::from_f64(0.02));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+        let b = (r - q).max_val(T::from_f64(0.005));
+        let var = sig * sig;
+        let bt = b * t;
+        let e_bt = bt.exp();
+
+        // Exact continuous first and second moments of (1/T) * int_0^T (S_u / S_0) du:
+        let m1_ratio = (e_bt - T::one()) / bt;
+        let bpv = b + var;
+        let twobpv = T::from_f64(2.0) * b + var;
+        let t2 = t * t;
+        let m2_ratio = (T::from_f64(2.0) * (twobpv * t).exp()) / (bpv * twobpv * t2)
+            + (T::from_f64(2.0) / (b * t2)) * (T::one() / twobpv - e_bt / bpv);
+
+        let f_arith = s0 * m1_ratio;
+        let var_tw = ((m2_ratio / (m1_ratio * m1_ratio)).max_val(T::from_f64(1.0001))).ln() / t;
+        let sig_tw = var_tw.sqrt();
+
+        let sqrt_t = t.sqrt();
+        let df_r = (-r * t).exp();
+
+        // Exact continuous third moment M3 of (1/T) * int_0^T (S_u / S_0) du:
+        let a1 = b + T::from_f64(2.0) * var;
+        let a2 = bpv;
+        let a12 = a1 + a2;
+        let a123 = a12 + b;
+        let a23 = twobpv;
+        let int_123 = (((a123 * t).exp() - T::one()) / a123 - (e_bt - T::one()) / b) / a12;
+        let int_23 = (((a23 * t).exp() - T::one()) / a23 - (e_bt - T::one()) / b) / a2;
+        let m3_ratio = (T::from_f64(6.0) / (t2 * t * a1)) * (int_123 - int_23);
+        let m3_ln_ratio = (m2_ratio * m2_ratio * m2_ratio) / (m1_ratio * m1_ratio * m1_ratio);
+        let dk3 = s0 * s0 * s0 * (m3_ratio - m3_ln_ratio);
+
+        let std_tw = sig_tw * sqrt_t;
+        let d1_tw = ((f_arith / k).ln() + T::from_f64(0.5) * var_tw * t) / std_tw;
+        let d2_tw = d1_tw - std_tw;
+        let c_ln = df_r * (f_arith * norm_cdf(d1_tw) - k * norm_cdf(d2_tw));
+        let edgeworth_adj = df_r
+            * (dk3 / T::from_f64(6.0))
+            * (norm_pdf(d2_tw) / (k * k * std_tw))
+            * (T::one() - d2_tw / std_tw);
+        let c_tw = c_ln + edgeworth_adj;
+
+        // Kemna & Vorst (1990) exact continuous geometric Asian call benchmark:
+        let sig_g = sig / T::from_f64(3.0).sqrt();
+        let b_g = T::from_f64(0.5) * (b - var / T::from_f64(6.0));
+        let f_geom = s0 * (b_g * t).exp();
+        let std_g = sig_g * sqrt_t;
+        let d1_g = ((f_geom / k).ln() + T::from_f64(0.5) * sig_g * sig_g * t) / std_g;
+        let d2_g = d1_g - std_g;
+        let c_kv = df_r * (f_geom * norm_cdf(d1_g) - k * norm_cdf(d2_g));
+
+        let spread = c_tw - c_kv;
+        let d2_over_std = d2_tw / std_tw;
+        let d_edgeworth_ds0 = df_r
+            * (s0 * s0 * (m3_ratio - m3_ln_ratio) / T::from_f64(6.0))
+            * (norm_pdf(d2_tw) / (k * k * std_tw))
+            * ((T::from_f64(3.0) - d2_over_std) * (T::one() - d2_over_std)
+                - T::one() / (std_tw * std_tw));
+        let delta = df_r * m1_ratio * norm_cdf(d1_tw) + d_edgeworth_ds0;
+
+        TurnbullWakemanArithmeticAsianReport {
+            arithmetic_average_forward_m1: f_arith,
+            turnbull_wakeman_effective_volatility: sig_tw,
+            turnbull_wakeman_arithmetic_call_value: c_tw,
+            kemna_vorst_geometric_call_value: c_kv,
+            arithmetic_over_geometric_dispersion_spread: spread,
+            asian_call_spot_delta: delta,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_turnbull_wakeman_edgeworth_arithmetic_asian_option_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn turnbull_wakeman_arithmetic_asian_invariants_and_ad_parity() {
+            let spec = TurnbullWakemanArithmeticAsianSpec {
+                spot_price_s0: 100.0,
+                strike_price_k: 100.0,
+                risk_free_rate_r: 0.05,
+                dividend_yield_q: 0.015,
+                volatility_sigma: 0.25,
+                maturity_years_t: 1.0,
+            };
+            let rep = evaluate_turnbull_wakeman_edgeworth_arithmetic_asian_option(&spec);
+            // By Jensen's inequality (AM >= GM), arithmetic Asian call strictly exceeds geometric Asian call:
+            assert!(
+                rep.turnbull_wakeman_arithmetic_call_value > rep.kemna_vorst_geometric_call_value
+            );
+            assert!(rep.arithmetic_over_geometric_dispersion_spread > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_turnbull_wakeman_edgeworth_arithmetic_asian_option(
+                &TurnbullWakemanArithmeticAsianSpec {
+                    spot_price_s0: Dual::<6>::variable(spec.spot_price_s0, 0),
+                    strike_price_k: Dual::<6>::variable(spec.strike_price_k, 1),
+                    risk_free_rate_r: Dual::<6>::variable(spec.risk_free_rate_r, 2),
+                    dividend_yield_q: Dual::<6>::variable(spec.dividend_yield_q, 3),
+                    volatility_sigma: Dual::<6>::variable(spec.volatility_sigma, 4),
+                    maturity_years_t: Dual::<6>::variable(spec.maturity_years_t, 5),
+                },
+            );
+            for i in 0..6 {
+                let mut v = [
+                    spec.spot_price_s0,
+                    spec.strike_price_k,
+                    spec.risk_free_rate_r,
+                    spec.dividend_yield_q,
+                    spec.volatility_sigma,
+                    spec.maturity_years_t,
+                ];
+                v[i] += h;
+                let up = evaluate_turnbull_wakeman_edgeworth_arithmetic_asian_option(
+                    &TurnbullWakemanArithmeticAsianSpec {
+                        spot_price_s0: v[0],
+                        strike_price_k: v[1],
+                        risk_free_rate_r: v[2],
+                        dividend_yield_q: v[3],
+                        volatility_sigma: v[4],
+                        maturity_years_t: v[5],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_turnbull_wakeman_edgeworth_arithmetic_asian_option(
+                    &TurnbullWakemanArithmeticAsianSpec {
+                        spot_price_s0: v[0],
+                        strike_price_k: v[1],
+                        risk_free_rate_r: v[2],
+                        dividend_yield_q: v[3],
+                        volatility_sigma: v[4],
+                        maturity_years_t: v[5],
+                    },
+                );
+                let fd = (up.turnbull_wakeman_arithmetic_call_value
+                    - dn.turnbull_wakeman_arithmetic_call_value)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.turnbull_wakeman_arithmetic_call_value.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_turnbull_wakeman_edgeworth_arithmetic_asian_option_module::*;

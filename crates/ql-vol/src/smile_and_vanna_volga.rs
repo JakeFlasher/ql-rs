@@ -386,3 +386,182 @@ mod evaluate_carr_wu_proportional_volatility_smile_drift_module {
     }
 }
 pub use evaluate_carr_wu_proportional_volatility_smile_drift_module::*;
+
+mod evaluate_derman_sticky_smile_regime_delta_adjustment_module {
+    // Derman (1999, Quantitative Finance / Goldman Sachs Quantitative Strategies Research Notes,
+    // "Regimes of Volatility"), Derman & Kani (1994, Risk, "Riding on a Smile"),
+    // & Gatheral (2006, The Volatility Surface, Ch. 1 & 3)
+    // Sticky-Strike vs. Sticky-Delta vs. Sticky-Local-Volatility Hedge Adjustment Engine.
+
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct DermanStickySmileRegimeSpec<T: Real = f64> {
+        pub forward_price_f: T,
+        pub strike_price_k: T,
+        pub atm_volatility_sigma0: T,
+        pub log_moneyness_skew_slope_b1: T,
+        pub log_moneyness_curvature_b2: T,
+        pub risk_free_rate_r: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct DermanStickySmileRegimeReport<T: Real = f64> {
+        pub smile_implied_volatility_at_k: T,
+        pub black_scholes_sticky_strike_delta: T,
+        pub sticky_moneyness_delta: T,
+        pub sticky_local_vol_tree_delta: T,
+        pub sticky_delta_minus_local_vol_wedge: T,
+        pub skew_vanna_hedge_adjustment: T,
+    }
+
+    pub fn evaluate_derman_sticky_smile_regime_delta_adjustment<T: Real>(
+        spec: &DermanStickySmileRegimeSpec<T>,
+    ) -> DermanStickySmileRegimeReport<T> {
+        let f = spec.forward_price_f.max_val(T::from_f64(1.0));
+        let k = spec.strike_price_k.max_val(T::from_f64(1.0));
+        let sig0 = spec.atm_volatility_sigma0.max_val(T::from_f64(0.02));
+        let b1 = spec.log_moneyness_skew_slope_b1;
+        let b2 = spec.log_moneyness_curvature_b2;
+        let r = spec.risk_free_rate_r;
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.02));
+
+        let x = (k / f).ln();
+        let sig_k = (sig0 + b1 * x + T::from_f64(0.5) * b2 * x * x).max_val(T::from_f64(0.01));
+        let dsig_dx = b1 + b2 * x;
+
+        let sqrt_t = t.sqrt();
+        let std = sig_k * sqrt_t;
+        let d1 = (-x + T::from_f64(0.5) * sig_k * sig_k * t) / std;
+        let df = (-r * t).exp();
+
+        let delta_ss = df * norm_cdf(d1);
+        let vega_over_f = df * norm_pdf(d1) * sqrt_t;
+
+        // Under Sticky Moneyness (Sticky Delta), Sigma = Sigma(K/F) => dSigma/dF = -(1/F) * dSigma/dx:
+        let skew_adj = -vega_over_f * dsig_dx;
+        let delta_sd = delta_ss + skew_adj;
+
+        // Under Derman (1999) Sticky Implied Tree / Local Volatility, ATM vol moves at twice the skew slope
+        // so dSigma(K)/dF = +(1/F) * dSigma/dx:
+        let delta_lv = delta_ss - skew_adj;
+        let wedge = delta_sd - delta_lv;
+
+        DermanStickySmileRegimeReport {
+            smile_implied_volatility_at_k: sig_k,
+            black_scholes_sticky_strike_delta: delta_ss,
+            sticky_moneyness_delta: delta_sd,
+            sticky_local_vol_tree_delta: delta_lv,
+            sticky_delta_minus_local_vol_wedge: wedge,
+            skew_vanna_hedge_adjustment: skew_adj,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_derman_sticky_smile_regime_delta_adjustment_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn derman_sticky_smile_regime_invariants_and_ad_parity() {
+            let spec = DermanStickySmileRegimeSpec {
+                forward_price_f: 100.0,
+                strike_price_k: 100.0,
+                atm_volatility_sigma0: 0.20,
+                log_moneyness_skew_slope_b1: -0.15,
+                log_moneyness_curvature_b2: 0.20,
+                risk_free_rate_r: 0.04,
+                maturity_years_t: 0.50,
+            };
+            let rep = evaluate_derman_sticky_smile_regime_delta_adjustment(&spec);
+            // With negative equity skew (b1 < 0), Sticky-Delta call delta exceeds Sticky-Strike delta,
+            // which exceeds Sticky-Local-Vol delta:
+            assert!(rep.sticky_moneyness_delta > rep.black_scholes_sticky_strike_delta);
+            assert!(rep.black_scholes_sticky_strike_delta > rep.sticky_local_vol_tree_delta);
+
+            let h = 1e-6;
+            let r_ad = evaluate_derman_sticky_smile_regime_delta_adjustment(
+                &DermanStickySmileRegimeSpec {
+                    forward_price_f: Dual::<7>::variable(spec.forward_price_f, 0),
+                    strike_price_k: Dual::<7>::variable(spec.strike_price_k, 1),
+                    atm_volatility_sigma0: Dual::<7>::variable(spec.atm_volatility_sigma0, 2),
+                    log_moneyness_skew_slope_b1: Dual::<7>::variable(
+                        spec.log_moneyness_skew_slope_b1,
+                        3,
+                    ),
+                    log_moneyness_curvature_b2: Dual::<7>::variable(
+                        spec.log_moneyness_curvature_b2,
+                        4,
+                    ),
+                    risk_free_rate_r: Dual::<7>::variable(spec.risk_free_rate_r, 5),
+                    maturity_years_t: Dual::<7>::variable(spec.maturity_years_t, 6),
+                },
+            );
+            let spec_otm = DermanStickySmileRegimeSpec {
+                strike_price_k: 95.0,
+                ..spec
+            };
+            let r_ad_otm = evaluate_derman_sticky_smile_regime_delta_adjustment(
+                &DermanStickySmileRegimeSpec {
+                    forward_price_f: Dual::<7>::variable(spec_otm.forward_price_f, 0),
+                    strike_price_k: Dual::<7>::variable(spec_otm.strike_price_k, 1),
+                    atm_volatility_sigma0: Dual::<7>::variable(spec_otm.atm_volatility_sigma0, 2),
+                    log_moneyness_skew_slope_b1: Dual::<7>::variable(
+                        spec_otm.log_moneyness_skew_slope_b1,
+                        3,
+                    ),
+                    log_moneyness_curvature_b2: Dual::<7>::variable(
+                        spec_otm.log_moneyness_curvature_b2,
+                        4,
+                    ),
+                    risk_free_rate_r: Dual::<7>::variable(spec_otm.risk_free_rate_r, 5),
+                    maturity_years_t: Dual::<7>::variable(spec_otm.maturity_years_t, 6),
+                },
+            );
+            let _ = r_ad;
+            for i in 0..7 {
+                let mut v = [
+                    spec_otm.forward_price_f,
+                    spec_otm.strike_price_k,
+                    spec_otm.atm_volatility_sigma0,
+                    spec_otm.log_moneyness_skew_slope_b1,
+                    spec_otm.log_moneyness_curvature_b2,
+                    spec_otm.risk_free_rate_r,
+                    spec_otm.maturity_years_t,
+                ];
+                v[i] += h;
+                let up = evaluate_derman_sticky_smile_regime_delta_adjustment(
+                    &DermanStickySmileRegimeSpec {
+                        forward_price_f: v[0],
+                        strike_price_k: v[1],
+                        atm_volatility_sigma0: v[2],
+                        log_moneyness_skew_slope_b1: v[3],
+                        log_moneyness_curvature_b2: v[4],
+                        risk_free_rate_r: v[5],
+                        maturity_years_t: v[6],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_derman_sticky_smile_regime_delta_adjustment(
+                    &DermanStickySmileRegimeSpec {
+                        forward_price_f: v[0],
+                        strike_price_k: v[1],
+                        atm_volatility_sigma0: v[2],
+                        log_moneyness_skew_slope_b1: v[3],
+                        log_moneyness_curvature_b2: v[4],
+                        risk_free_rate_r: v[5],
+                        maturity_years_t: v[6],
+                    },
+                );
+                let fd = (up.sticky_moneyness_delta - dn.sticky_moneyness_delta) / (2.0 * h);
+                assert!(
+                    (r_ad_otm.sticky_moneyness_delta.d[i] - fd).abs() < 1e-5,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_derman_sticky_smile_regime_delta_adjustment_module::*;

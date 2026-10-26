@@ -1910,3 +1910,179 @@ mod evaluate_tuckman_par_spot_forward_rolldown_horizon_return_module {
     }
 }
 pub use evaluate_tuckman_par_spot_forward_rolldown_horizon_return_module::*;
+
+mod evaluate_kalotay_fabozzi_callable_bond_refunding_efficiency_module {
+    // Kalotay, Williams & Fabozzi (1993, Financial Analysts Journal 49(3), "A Model for
+    // Valuing Bonds and Embedded Options"), Kalotay, Yang & Fabozzi (2007, J. Fixed Income),
+    // & Fabozzi (2021, The Handbook of Fixed Income Securities, 9th ed., Ch. 16 & 40)
+    // Callable Bond Refunding NPV, Forfeited Call Time-Value & Refunding Efficiency Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct KalotayFabozziRefundingEfficiencySpec<T: Real = f64> {
+        pub notional_par_n: T,
+        pub existing_coupon_rate_c_old: T,
+        pub refunding_market_yield_y_ref: T,
+        pub call_strike_price_k_call: T,
+        pub refunding_issuance_cost_c_iss: T,
+        pub yield_volatility_sigma_y: T,
+        pub deferral_option_horizon_t_c: T,
+        pub remaining_maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct KalotayFabozziRefundingEfficiencyReport<T: Real = f64> {
+        pub pv_gross_interest_savings: T,
+        pub net_present_value_refunding_savings: T,
+        pub forfeited_waiting_option_time_value: T,
+        pub total_embedded_refunding_call_value: T,
+        pub kalotay_refunding_efficiency_ratio: T,
+        pub breakeven_refunding_yield_rate: T,
+    }
+
+    pub fn evaluate_kalotay_fabozzi_callable_bond_refunding_efficiency<T: Real>(
+        spec: &KalotayFabozziRefundingEfficiencySpec<T>,
+    ) -> KalotayFabozziRefundingEfficiencyReport<T> {
+        let par = spec.notional_par_n.max_val(T::from_f64(1.0));
+        let c_old = spec.existing_coupon_rate_c_old.max_val(T::from_f64(0.005));
+        let y_ref = spec
+            .refunding_market_yield_y_ref
+            .max_val(T::from_f64(0.002));
+        let k_call = spec.call_strike_price_k_call.max_val(par);
+        let c_iss = spec.refunding_issuance_cost_c_iss.max_val(T::from_f64(0.0));
+        let sig_y = spec.yield_volatility_sigma_y.max_val(T::from_f64(0.02));
+        let t_c = spec.deferral_option_horizon_t_c.max_val(T::from_f64(0.25));
+        let t_mat = spec
+            .remaining_maturity_years_t
+            .max_val(t_c + T::from_f64(1.0));
+
+        let annuity = (T::one() - (-y_ref * t_mat).exp()) / y_ref;
+        let gross_savings = par * (c_old - y_ref) * annuity;
+        let call_prem_and_cost = (k_call - par) + c_iss;
+        let npv_savings = gross_savings - call_prem_and_cost;
+
+        // Black-76 receiver swaption / bond call value over deferral window t_c on remaining tail (t_mat - t_c):
+        let tail_t = t_mat - t_c;
+        let tail_ann = (T::one() - (-y_ref * tail_t).exp()) / y_ref;
+        let k_yield = (c_old - call_prem_and_cost / (par * tail_ann)).max_val(T::from_f64(0.002));
+        let sqrt_tc = t_c.sqrt();
+        let std_y = sig_y * sqrt_tc;
+        let d1 = ((k_yield / y_ref).ln() + T::from_f64(0.5) * sig_y * sig_y * t_c) / std_y;
+        let d2 = d1 - std_y;
+
+        let df_tc = (-y_ref * t_c).exp();
+        // By Black-76 put-call parity, the pure extrinsic waiting time value over t_c on the
+        // remaining tail (t_mat - t_c) is strictly positive:
+        // V_rec(k_yield, y_ref) - Intrinsic_fwd = df_tc * Par * A_tail * (y_ref * N(-d2) - k_yield * N(-d1)) > 0
+        let time_val = df_tc * par * tail_ann * (y_ref * norm_cdf(-d2) - k_yield * norm_cdf(-d1));
+        let total_opt_val = npv_savings + time_val;
+
+        let eff_ratio = npv_savings / total_opt_val.max_val(T::from_f64(1e-4));
+        let breakeven_y = c_old - call_prem_and_cost / (par * annuity);
+
+        KalotayFabozziRefundingEfficiencyReport {
+            pv_gross_interest_savings: gross_savings,
+            net_present_value_refunding_savings: npv_savings,
+            forfeited_waiting_option_time_value: time_val,
+            total_embedded_refunding_call_value: total_opt_val,
+            kalotay_refunding_efficiency_ratio: eff_ratio,
+            breakeven_refunding_yield_rate: breakeven_y,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_kalotay_fabozzi_callable_bond_refunding_efficiency_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn kalotay_fabozzi_refunding_efficiency_invariants_and_ad_parity() {
+            let spec = KalotayFabozziRefundingEfficiencySpec {
+                notional_par_n: 100.0,
+                existing_coupon_rate_c_old: 0.055,
+                refunding_market_yield_y_ref: 0.038,
+                call_strike_price_k_call: 101.0,
+                refunding_issuance_cost_c_iss: 0.65,
+                yield_volatility_sigma_y: 0.22,
+                deferral_option_horizon_t_c: 1.50,
+                remaining_maturity_years_t: 10.0,
+            };
+            let rep = evaluate_kalotay_fabozzi_callable_bond_refunding_efficiency(&spec);
+            assert!(rep.net_present_value_refunding_savings > 0.0);
+            assert!(
+                rep.kalotay_refunding_efficiency_ratio > 0.50
+                    && rep.kalotay_refunding_efficiency_ratio < 1.0
+            );
+
+            let h = 1e-6;
+            let r_ad = evaluate_kalotay_fabozzi_callable_bond_refunding_efficiency(
+                &KalotayFabozziRefundingEfficiencySpec {
+                    notional_par_n: Dual::from_f64(spec.notional_par_n),
+                    existing_coupon_rate_c_old: Dual::<6>::variable(
+                        spec.existing_coupon_rate_c_old,
+                        0,
+                    ),
+                    refunding_market_yield_y_ref: Dual::<6>::variable(
+                        spec.refunding_market_yield_y_ref,
+                        1,
+                    ),
+                    call_strike_price_k_call: Dual::<6>::variable(spec.call_strike_price_k_call, 2),
+                    refunding_issuance_cost_c_iss: Dual::<6>::variable(
+                        spec.refunding_issuance_cost_c_iss,
+                        3,
+                    ),
+                    yield_volatility_sigma_y: Dual::<6>::variable(spec.yield_volatility_sigma_y, 4),
+                    deferral_option_horizon_t_c: Dual::<6>::variable(
+                        spec.deferral_option_horizon_t_c,
+                        5,
+                    ),
+                    remaining_maturity_years_t: Dual::from_f64(spec.remaining_maturity_years_t),
+                },
+            );
+            for i in 0..6 {
+                let mut v = [
+                    spec.existing_coupon_rate_c_old,
+                    spec.refunding_market_yield_y_ref,
+                    spec.call_strike_price_k_call,
+                    spec.refunding_issuance_cost_c_iss,
+                    spec.yield_volatility_sigma_y,
+                    spec.deferral_option_horizon_t_c,
+                ];
+                v[i] += h;
+                let up = evaluate_kalotay_fabozzi_callable_bond_refunding_efficiency(
+                    &KalotayFabozziRefundingEfficiencySpec {
+                        existing_coupon_rate_c_old: v[0],
+                        refunding_market_yield_y_ref: v[1],
+                        call_strike_price_k_call: v[2],
+                        refunding_issuance_cost_c_iss: v[3],
+                        yield_volatility_sigma_y: v[4],
+                        deferral_option_horizon_t_c: v[5],
+                        ..spec
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_kalotay_fabozzi_callable_bond_refunding_efficiency(
+                    &KalotayFabozziRefundingEfficiencySpec {
+                        existing_coupon_rate_c_old: v[0],
+                        refunding_market_yield_y_ref: v[1],
+                        call_strike_price_k_call: v[2],
+                        refunding_issuance_cost_c_iss: v[3],
+                        yield_volatility_sigma_y: v[4],
+                        deferral_option_horizon_t_c: v[5],
+                        ..spec
+                    },
+                );
+                let fd = (up.kalotay_refunding_efficiency_ratio
+                    - dn.kalotay_refunding_efficiency_ratio)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.kalotay_refunding_efficiency_ratio.d[i] - fd).abs() < 1e-5,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_kalotay_fabozzi_callable_bond_refunding_efficiency_module::*;

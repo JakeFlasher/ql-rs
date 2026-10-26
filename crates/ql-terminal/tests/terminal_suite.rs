@@ -102,7 +102,7 @@ fn dashboard_renders_all_quadrants_and_chart_modes() {
 
 #[test]
 fn suite23_tabs_and_live_telemetry_are_present() {
-    assert_eq!(TabId::ALL.len(), 59);
+    assert_eq!(TabId::ALL.len(), 60);
     assert_eq!(TabId::ALL[18], TabId::BermudanVolIft);
     assert_eq!(TabId::ALL[19], TabId::SaCcrSwingQp);
     assert_eq!(TabId::ALL[22], TabId::MonotoneConvexVixParisianRobust);
@@ -125,7 +125,7 @@ fn suite23_tabs_and_live_telemetry_are_present() {
 
 #[test]
 fn suite29_tab_metric_and_rates_scenario_are_live() {
-    assert_eq!(TabId::ALL.len(), 59);
+    assert_eq!(TabId::ALL.len(), 60);
     assert!(TabId::ALL.contains(&TabId::AswMf1fAndreasenHugeBessEp));
     let mut ws = DeskWorkstation::new();
     let frame = ws.step_tick();
@@ -180,7 +180,7 @@ fn suite30_tab28_terminal_renders_and_ticks_cleanly() {
 
 #[test]
 fn suite31_tab29_terminal_renders_and_ticks_cleanly() {
-    assert_eq!(TabId::ALL.len(), 59);
+    assert_eq!(TabId::ALL.len(), 60);
     assert_eq!(
         TabId::BurnoutCmcdsQuinticAfvCsSchur.label(),
         "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP"
@@ -213,7 +213,7 @@ fn suite31_tab29_terminal_renders_and_ticks_cleanly() {
 
 #[test]
 fn suite32_tab30_terminal_renders_and_ticks_cleanly() {
-    assert_eq!(TabId::ALL.len(), 59);
+    assert_eq!(TabId::ALL.len(), 60);
     assert_eq!(
         TabId::SinHouMbRBergomiChoiAfsExpectile.label(),
         "30 Sinh-OU / BK-FRN / Morini-Brigo / WWM-XVA / mrBergomi / Choi / AFS-LOB / EXVaR"
@@ -246,7 +246,7 @@ fn suite32_tab30_terminal_renders_and_ticks_cleanly() {
 
 #[test]
 fn suite33_tab31_terminal_renders_and_ticks_cleanly() {
-    assert_eq!(TabId::ALL.len(), 59);
+    assert_eq!(TabId::ALL.len(), 60);
     assert_eq!(
         TabId::MonotoneConvexClarkSaccrRvolCartea.label(),
         "31 HW-MC / Clark-FX / SA-CCR-KVA / BFG-rVol / Cartea-Alpha / Paleologo"
@@ -289,7 +289,7 @@ fn suite33_tab31_terminal_renders_and_ticks_cleanly() {
 
 #[test]
 fn suite34_tab32_terminal_renders_and_ticks_cleanly() {
-    assert_eq!(TabId::ALL.len(), 59);
+    assert_eq!(TabId::ALL.len(), 60);
     assert_eq!(
         TabId::KrdLpiCocoBergomi2fCgmyGueantMeucci.label(),
         "32 KRD / LPI / CoCo / Bergomi / CGMY / AAD"
@@ -331,7 +331,7 @@ fn suite34_tab32_terminal_renders_and_ticks_cleanly() {
 
 #[test]
 fn suite35_tab33_terminal_renders_and_reacts() {
-    assert_eq!(TabId::ALL.len(), 59);
+    assert_eq!(TabId::ALL.len(), 60);
     assert!(TabId::ALL.contains(&TabId::RkhsFmmVvLsvJltCtdQrhParisianAidNco));
     assert_eq!(
         TabId::RkhsFmmVvLsvJltCtdQrhParisianAidNco.label(),
@@ -400,7 +400,7 @@ fn suite36_tab34_terminal_renders_and_reacts() {
 #[test]
 fn suite37_tab35_terminal_renders_and_reacts() {
     let mut ws = DeskWorkstation::new();
-    assert_eq!(TabId::ALL.len(), 59);
+    assert_eq!(TabId::ALL.len(), 60);
     assert!(TabId::KalmanRtsVecmHjSdfIfrs9CptHasbrouck.label().starts_with("35 Kalman-RTS / VECM / HJ-SDF / IFRS9 / CPT / Hasbrouck / FV / Lando / LPPL / CB-Arb / Causal / Malliavin"));
     let mut values = Vec::new();
     for scenario in [
@@ -443,7 +443,7 @@ fn suite38_tab36_terminal_renders_and_reacts() {
     assert!(ws.render_dashboard(&stress, false).contains(
         "36 MF-Rates/Wildcard/TARF/Bergomi/Schönbucher/FRTB-CVA/Lookback/VTA/FLAM/ACD/HLZ/MLMC"
     ));
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
     assert!(TabId::ALL.contains(&TabId::MfRatesWildcardCtdPivotTarfBergomi));
 }
 
@@ -468,7 +468,7 @@ fn suite39_tab37_terminal_renders_and_reacts() {
         ws.render_dashboard(&stressed, false)
             .contains("37 FTPL/G2/eSSVI/CB/CoCo/MPOR/Double-Heston/Curran/Warin/Roll/Busseti/KKT")
     );
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
 }
 
 #[test]
@@ -479,7 +479,7 @@ fn suite40_tab38_terminal_renders_and_reacts() {
     ws.scenario = ScenarioKind::StagflationPlus150Bp;
     let fb = ws.step_tick();
     let b = ws.render_dashboard(&fb, false);
-    assert_eq!(TabId::ALL.len(), 59);
+    assert_eq!(TabId::ALL.len(), 60);
     assert!(
         a.contains("38 IRRBB/RFR/XCCY/BG/CoCo/SIMM/rBergomi/Spread/BESS/Dark/Risk/Diff-PCA")
             && b.contains("38 IRRBB/RFR/XCCY/BG/CoCo/SIMM/rBergomi/Spread/BESS/Dark/Risk/Diff-PCA")
@@ -492,7 +492,7 @@ fn suite41_tab39_terminal_renders_and_reacts() {
     let mut ws = DeskWorkstation::default();
     let frame = ws.step_tick();
     let dashboard = ws.render_dashboard(&frame, false);
-    assert_eq!(TabId::ALL.len(), 59);
+    assert_eq!(TabId::ALL.len(), 60);
     assert!(
         dashboard
             .contains("39 Veronesi/Lando/Corridor/Russian/Bates/Koziol/MFG/BCBS/CJP/ETF/IC/IS")
@@ -518,8 +518,8 @@ fn suite42_tab40_terminal_renders_and_reacts() {
     let normal = ws.step_tick();
     ws.set_scenario(ScenarioKind::CreditWideningPlus100Bp);
     let stressed = ws.step_tick();
-    assert_eq!(TabId::TAB_COUNT, 59);
-    assert_eq!(TabId::ALL.len(), 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
+    assert_eq!(TabId::ALL.len(), 60);
     assert!(
         TabId::RomerTaylorDamodaranCrpChristoffersenVar
             .label()
@@ -548,8 +548,8 @@ fn suite43_tab41_terminal_renders_and_reacts() {
     let normal = ws.step_tick();
     ws.set_scenario(ScenarioKind::CreditWideningPlus100Bp);
     let stressed = ws.step_tick();
-    assert_eq!(TabId::TAB_COUNT, 59);
-    assert_eq!(TabId::ALL.len(), 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
+    assert_eq!(TabId::ALL.len(), 60);
     assert!(TabId::ALL.contains(&TabId::FabozziKrdCmoPacAsquithCbAsc470Colva));
     assert!(
         TabId::FabozziKrdCmoPacAsquithCbAsc470Colva
@@ -584,8 +584,8 @@ fn suite43_tab41_terminal_renders_and_reacts() {
 #[test]
 fn suite44_tab42_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 59);
-    assert_eq!(TabId::ALL.len(), 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
+    assert_eq!(TabId::ALL.len(), 60);
     assert!(
         TabId::CheyetteCapletAdbNdirsZabrQrhCmcdsAdi
             .label()
@@ -608,8 +608,8 @@ fn suite44_tab42_terminal_renders_and_reacts() {
 
 #[test]
 fn suite45_tab43_terminal_renders_and_reacts() {
-    assert_eq!(ql_terminal::TabId::TAB_COUNT, 59);
-    assert_eq!(ql_terminal::TabId::ALL.len(), 59);
+    assert_eq!(ql_terminal::TabId::TAB_COUNT, 60);
+    assert_eq!(ql_terminal::TabId::ALL.len(), 60);
     assert!(
         ql_terminal::TabId::RebonatoCmsLelandToftAscotPoolRollRie
             .label()
@@ -633,7 +633,7 @@ fn suite45_tab43_terminal_renders_and_reacts() {
 #[test]
 fn suite46_tab44_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
     assert!(
         TabId::TuckmanRepoBkFvaDecsIoPoKylePinGjrLppl
             .label()
@@ -657,7 +657,7 @@ fn suite46_tab44_terminal_renders_and_reacts() {
 #[test]
 fn suite47_tab45_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
     assert!(
         TabId::HaganWestCtdSwitchAfvCbKthDefaultSaCva
             .label()
@@ -681,7 +681,7 @@ fn suite47_tab45_terminal_renders_and_reacts() {
 #[test]
 fn suite48_tab46_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
     assert!(
         TabId::BrigoCsaCtdCallableOasJltCorridorLsm
             .label()
@@ -705,7 +705,7 @@ fn suite48_tab46_terminal_renders_and_reacts() {
 #[test]
 fn suite49_tab47_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
     assert!(
         TabId::BrigoNssKrdTipsFloorRmvTriangleStickyLv
             .label()
@@ -726,7 +726,7 @@ fn suite49_tab47_terminal_renders_and_reacts() {
 #[test]
 fn suite50_tab48_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
     assert!(
         TabId::HaganWestTensionPacCmoFamaMacBethAsviBgk
             .label()
@@ -750,7 +750,7 @@ fn suite50_tab48_terminal_renders_and_reacts() {
 #[test]
 fn suite51_tab49_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
     assert!(
         TabId::BrigoXccyMtmSpecPoolMarshallOlkinVixVvix
             .label()
@@ -771,7 +771,7 @@ fn suite51_tab49_terminal_renders_and_reacts() {
 #[test]
 fn suite52_tab50_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
     assert!(
         TabId::BrigoOisFallbackCollaredFrnCdsFepSparkPrdc
             .label()
@@ -795,7 +795,7 @@ fn suite52_tab50_terminal_renders_and_reacts() {
 #[test]
 fn suite53_tab51_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
     assert!(
         TabId::AndersenCmsSpecialRepoCdsUpfrontSsrKvaCrack
             .label()
@@ -816,7 +816,7 @@ fn suite53_tab51_terminal_renders_and_reacts() {
 #[test]
 fn suite54_tab52_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
     assert!(
         TabId::DarbyshireStepOisCbSoftCallCdxSkewMalzFly
             .label()
@@ -840,7 +840,7 @@ fn suite54_tab52_terminal_renders_and_reacts() {
 #[test]
 fn suite55_tab53_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
     assert!(
         TabId::HenrardTenorBasisMsrRecaptureCdoBaseCorrKiko
             .label()
@@ -864,7 +864,7 @@ fn suite55_tab53_terminal_renders_and_reacts() {
 #[test]
 fn suite56_tab54_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
     assert!(
         TabId::BrigoDiffSwapCallableMuniBkmSkewBreakCva
             .label()
@@ -888,7 +888,7 @@ fn suite56_tab54_terminal_renders_and_reacts() {
 #[test]
 fn suite57_tab55_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
     assert!(
         TabId::AndersenSofrFutHayreMbsPedersenCdxDupireLv
             .label()
@@ -912,7 +912,7 @@ fn suite57_tab55_terminal_renders_and_reacts() {
 #[test]
 fn suite58_tab56_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
     assert!(
         TabId::LittermanScheinkmanPcaFlyTfSplitCbDoubleTCdoLeeWings
             .label()
@@ -936,7 +936,7 @@ fn suite58_tab56_terminal_renders_and_reacts() {
 #[test]
 fn suite59_tab57_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
     assert!(
         TabId::PiterbargCollateralOptTuckmanRolldownMertonKmvBartlettSabr
             .label()
@@ -960,7 +960,7 @@ fn suite59_tab57_terminal_renders_and_reacts() {
 #[test]
 fn suite60_tab58_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
     assert!(
         TabId::GswSvenssonCurveFabozziMbsEsfVasicekGordyIrbCarrWuVol
             .label()
@@ -984,7 +984,7 @@ fn suite60_tab58_terminal_renders_and_reacts() {
 #[test]
 fn suite61_tab59_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 59);
+    assert_eq!(TabId::TAB_COUNT, 60);
     assert!(
         TabId::KimWrightShadowBrennanSchwartzCbDuffieSingletonRmvFukasawaGamma
             .label()
@@ -1005,5 +1005,29 @@ fn suite61_tab59_terminal_renders_and_reacts() {
     assert!(
         desk.render_dashboard(&frame, false)
             .contains("59 Kim-Wright-Shadow/Brennan-Schwartz-CB")
+    );
+}
+
+#[test]
+fn suite62_tab60_terminal_renders_and_reacts() {
+    use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
+    assert_eq!(TabId::TAB_COUNT, 60);
+    assert!(
+        TabId::JpsUnspannedMacroKalotayRefundingHullWhiteNtdDermanSticky
+            .label()
+            .starts_with("60 JPS-Unspanned-Macro")
+    );
+    let mut desk = DeskWorkstation::default();
+    desk.scenario = ScenarioKind::Normal;
+    let n = desk.jps_unspanned_macro_kalotay_refunding_hull_white_ntd_derman_sticky_live_metric();
+    desk.scenario = ScenarioKind::CreditWideningPlus100Bp;
+    let c = desk.jps_unspanned_macro_kalotay_refunding_hull_white_ntd_derman_sticky_live_metric();
+    desk.scenario = ScenarioKind::StagflationPlus150Bp;
+    let s = desk.jps_unspanned_macro_kalotay_refunding_hull_white_ntd_derman_sticky_live_metric();
+    assert!((n - c).abs() > 1e-12 && (c - s).abs() > 1e-12);
+    let frame = desk.step_tick();
+    assert!(
+        desk.render_dashboard(&frame, false)
+            .contains("60 JPS-Unspanned-Macro/Kalotay-Refunding")
     );
 }

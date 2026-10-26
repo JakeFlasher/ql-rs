@@ -1704,3 +1704,166 @@ mod evaluate_corsi_har_realized_volatility_multi_horizon_forecast_module {
     }
 }
 pub use evaluate_corsi_har_realized_volatility_multi_horizon_forecast_module::*;
+
+mod evaluate_bai_ng_approximate_factor_icp2_diffusion_index_module {
+    // Bai & Ng (2002, Econometrica 70(1), "Determining the Number of Factors in Approximate
+    // Factor Models", Eq. 9) & Stock & Watson (2002, JASA 97(460), "Forecasting Using Principal
+    // Components from a Large Number of Predictors")
+    // Approximate Factor Model IC_p2 Criterion & Diffusion-Index Attenuation Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BaiNgApproximateFactorIcp2Spec<T: Real = f64> {
+        pub cross_section_dimension_n: T,
+        pub time_series_dimension_t: T,
+        pub candidate_factor_count_k: T,
+        pub total_panel_variance_sigma_x2: T,
+        pub explained_variance_fraction_r2_k: T,
+        pub diffusion_forecast_beta_f: T,
+        pub factor_shock_signal_s_f: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BaiNgApproximateFactorIcp2Report<T: Real = f64> {
+        pub residual_idiosyncratic_mse_v_k: T,
+        pub bai_ng_complexity_penalty: T,
+        pub bai_ng_ic_p2_criterion: T,
+        pub bai_ng_pc_p2_criterion: T,
+        pub finite_n_factor_reliability_ratio: T,
+        pub attenuated_diffusion_index_forecast: T,
+    }
+
+    pub fn evaluate_bai_ng_approximate_factor_icp2_diffusion_index<T: Real>(
+        spec: &BaiNgApproximateFactorIcp2Spec<T>,
+    ) -> BaiNgApproximateFactorIcp2Report<T> {
+        let n = spec.cross_section_dimension_n.max_val(T::from_f64(10.0));
+        let t_dim = spec.time_series_dimension_t.max_val(T::from_f64(10.0));
+        let k = spec.candidate_factor_count_k.max_val(T::one());
+        let sig_x2 = spec
+            .total_panel_variance_sigma_x2
+            .max_val(T::from_f64(1e-4));
+        let r2_k = spec
+            .explained_variance_fraction_r2_k
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.99));
+        let beta_f = spec.diffusion_forecast_beta_f;
+        let s_f = spec.factor_shock_signal_s_f;
+
+        let v_k = (T::one() - r2_k) * sig_x2;
+
+        // Smooth C_NT^2 = min(N, T) for Bai-Ng (2002, Eq. 9) penalty:
+        let diff_nt = n - t_dim;
+        let c_nt2 = T::from_f64(0.5) * (n + t_dim - (diff_nt * diff_nt + T::from_f64(1.0)).sqrt());
+        let penalty_rate = ((n + t_dim) / (n * t_dim)) * c_nt2.ln();
+        let penalty = k * penalty_rate;
+
+        let ic_p2 = v_k.ln() + penalty;
+        let pc_p2 = v_k + sig_x2 * penalty;
+
+        // Stock & Watson (2002) finite-N signal-to-noise reliability of PCA factor estimate:
+        let sig_f2 = (r2_k / k) * sig_x2;
+        let reliability = (n * sig_f2) / (n * sig_f2 + v_k);
+        let forecast = reliability * beta_f * s_f;
+
+        BaiNgApproximateFactorIcp2Report {
+            residual_idiosyncratic_mse_v_k: v_k,
+            bai_ng_complexity_penalty: penalty,
+            bai_ng_ic_p2_criterion: ic_p2,
+            bai_ng_pc_p2_criterion: pc_p2,
+            finite_n_factor_reliability_ratio: reliability,
+            attenuated_diffusion_index_forecast: forecast,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_bai_ng_approximate_factor_icp2_diffusion_index_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn bai_ng_approximate_factor_icp2_invariants_and_ad_parity() {
+            let spec = BaiNgApproximateFactorIcp2Spec {
+                cross_section_dimension_n: 120.0,
+                time_series_dimension_t: 240.0,
+                candidate_factor_count_k: 4.0,
+                total_panel_variance_sigma_x2: 1.0,
+                explained_variance_fraction_r2_k: 0.58,
+                diffusion_forecast_beta_f: 0.35,
+                factor_shock_signal_s_f: 1.40,
+            };
+            let rep = evaluate_bai_ng_approximate_factor_icp2_diffusion_index(&spec);
+            assert!(rep.bai_ng_complexity_penalty > 0.0);
+            assert!(
+                rep.finite_n_factor_reliability_ratio > 0.90
+                    && rep.finite_n_factor_reliability_ratio < 1.0
+            );
+
+            let h = 1e-5;
+            let r_ad = evaluate_bai_ng_approximate_factor_icp2_diffusion_index(
+                &BaiNgApproximateFactorIcp2Spec {
+                    cross_section_dimension_n: Dual::<7>::variable(
+                        spec.cross_section_dimension_n,
+                        0,
+                    ),
+                    time_series_dimension_t: Dual::<7>::variable(spec.time_series_dimension_t, 1),
+                    candidate_factor_count_k: Dual::<7>::variable(spec.candidate_factor_count_k, 2),
+                    total_panel_variance_sigma_x2: Dual::<7>::variable(
+                        spec.total_panel_variance_sigma_x2,
+                        3,
+                    ),
+                    explained_variance_fraction_r2_k: Dual::<7>::variable(
+                        spec.explained_variance_fraction_r2_k,
+                        4,
+                    ),
+                    diffusion_forecast_beta_f: Dual::<7>::variable(
+                        spec.diffusion_forecast_beta_f,
+                        5,
+                    ),
+                    factor_shock_signal_s_f: Dual::<7>::variable(spec.factor_shock_signal_s_f, 6),
+                },
+            );
+            for i in 0..7 {
+                let mut v = [
+                    spec.cross_section_dimension_n,
+                    spec.time_series_dimension_t,
+                    spec.candidate_factor_count_k,
+                    spec.total_panel_variance_sigma_x2,
+                    spec.explained_variance_fraction_r2_k,
+                    spec.diffusion_forecast_beta_f,
+                    spec.factor_shock_signal_s_f,
+                ];
+                v[i] += h;
+                let up = evaluate_bai_ng_approximate_factor_icp2_diffusion_index(
+                    &BaiNgApproximateFactorIcp2Spec {
+                        cross_section_dimension_n: v[0],
+                        time_series_dimension_t: v[1],
+                        candidate_factor_count_k: v[2],
+                        total_panel_variance_sigma_x2: v[3],
+                        explained_variance_fraction_r2_k: v[4],
+                        diffusion_forecast_beta_f: v[5],
+                        factor_shock_signal_s_f: v[6],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_bai_ng_approximate_factor_icp2_diffusion_index(
+                    &BaiNgApproximateFactorIcp2Spec {
+                        cross_section_dimension_n: v[0],
+                        time_series_dimension_t: v[1],
+                        candidate_factor_count_k: v[2],
+                        total_panel_variance_sigma_x2: v[3],
+                        explained_variance_fraction_r2_k: v[4],
+                        diffusion_forecast_beta_f: v[5],
+                        factor_shock_signal_s_f: v[6],
+                    },
+                );
+                let val_ad = r_ad.bai_ng_pc_p2_criterion + r_ad.attenuated_diffusion_index_forecast;
+                let fd = ((up.bai_ng_pc_p2_criterion + up.attenuated_diffusion_index_forecast)
+                    - (dn.bai_ng_pc_p2_criterion + dn.attenuated_diffusion_index_forecast))
+                    / (2.0 * h);
+                assert!((val_ad.d[i] - fd).abs() < 1e-5, "input {i}");
+            }
+        }
+    }
+}
+pub use evaluate_bai_ng_approximate_factor_icp2_diffusion_index_module::*;
