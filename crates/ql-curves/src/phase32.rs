@@ -33,7 +33,12 @@ pub fn evaluate_adb_rbi_ndirs_and_asset_swap_basis<T: Real>(
         .min(s.onshore_forward_rates.len())
         .min(s.usd_ois_discount_factors.len())
     {
-        let wt = s.payment_tenors[i] * s.usd_ois_discount_factors[i];
+        let dt = if i == 0 {
+            s.payment_tenors[0]
+        } else {
+            s.payment_tenors[i] - s.payment_tenors[i - 1]
+        };
+        let wt = dt.max_val(T::from_f64(1e-8)) * s.usd_ois_discount_factors[i];
         let cv = (s.ndf_fx_vol * s.ndf_fx_vol - s.rate_fx_corr * s.local_rate_vol * s.ndf_fx_vol)
             * s.payment_tenors[i];
         w += wt;
@@ -49,7 +54,7 @@ pub fn evaluate_adb_rbi_ndirs_and_asset_swap_basis<T: Real>(
         offshore_par_ndirs_rate: offr,
         ndirs_quanto_convexity_bps: (offr - onr) * T::from_f64(1e4),
         after_tax_sovereign_yield: s.sovereign_bond_yield * (T::one() - s.withholding_tax_rate),
-        fx_hedged_usd_asset_swap_yield: pickup,
+        fx_hedged_usd_asset_swap_yield: s.usd_sofr_yield + pickup,
         usd_asset_swap_pickup_bps: pickup * T::from_f64(1e4),
     }
 }

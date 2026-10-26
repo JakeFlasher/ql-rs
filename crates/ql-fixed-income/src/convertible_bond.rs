@@ -5,6 +5,7 @@ pub use crate::phase31::{
     AsquithSirbuShreveCbGameReport, AsquithSirbuShreveCbGameSpec,
     evaluate_asquith_sirbu_shreve_cb_call_delay_and_dynkin_game,
 };
+pub use crate::phase32::*;
 use ql_ad::{Dual, Real};
 use ql_vol::black_scholes_price;
 #[derive(Clone, Debug)]

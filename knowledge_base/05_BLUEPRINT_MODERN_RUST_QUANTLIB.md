@@ -50,7 +50,7 @@ Date / Calendar / Convention
 
 ### 3.6 Delivery, measurements, and workstation
 
-`ql-benches` is an offline statistical harness with fixed workloads, warmups, medians, IQRs, speedups, and hard parity assertions across 43 suites (`01_calendar_popcnt` through `43_fabozzi_krd_cmo_pac_asquith_cb_asu2024_cpdi_rsm_asc470_gregory_colva_embrechts_hill_bouchaud_tlf_karnosky_singer_dgtw_timing_brock_hommes_penman_reoi`). `ql-terminal` re-exports `ql_terminal::prelude::*` and renders a zero-dependency 41-tab risk workstation: a $2 \times 4$ sub-pixel `BrailleCanvas`, 24-bit ANSI TrueColor ladders, live blotter values, XVA/SIMM/MVA/SA-CCR/BA-CVA/KVA/FRTB, and calibrated chart series.
+`ql-benches` is an offline statistical harness with fixed workloads, warmups, medians, IQRs, speedups, and hard parity assertions across 44 suites (`01_calendar_popcnt` through `43_fabozzi_krd_cmo_pac_asquith_cb_asu2024_cpdi_rsm_asc470_gregory_colva_embrechts_hill_bouchaud_tlf_karnosky_singer_dgtw_timing_brock_hommes_penman_reoi`). `ql-terminal` re-exports `ql_terminal::prelude::*` and renders a zero-dependency 41-tab risk workstation: a $2 \times 4$ sub-pixel `BrailleCanvas`, 24-bit ANSI TrueColor ladders, live blotter values, XVA/SIMM/MVA/SA-CCR/BA-CVA/KVA/FRTB, and calibrated chart series.
 
 ## 4. Subsystem Architecture Matrix
 
@@ -87,7 +87,7 @@ Phase 29 adds twelve book-backed SOTA quantitative finance engines, Benchmark Su
 Phase 30 adds twelve book-backed SOTA quantitative-finance engines, Benchmark Suite 42, workstation Tab 40, and `BOTTOM_ROWS = 37`.
 
 ### Phase 31 current release
-The current release includes twelve book-backed SOTA quantitative-finance engines, Benchmark Suite 43, workstation Tab 41, and `BOTTOM_ROWS = 38`.
+Phase 31 adds twelve book-backed SOTA quantitative-finance engines, Benchmark Suite 43, workstation Tab 41, and BOTTOM_ROWS = 38.
 
 ### Phase 32 current release
 

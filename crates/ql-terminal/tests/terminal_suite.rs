@@ -537,8 +537,23 @@ fn phase31_tab41_terminal_renders_and_reacts() {
 fn phase32_tab42_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
     assert_eq!(TabId::TAB_COUNT, 42);
+    assert_eq!(TabId::ALL.len(), 42);
+    assert!(
+        TabId::Phase32BookSota
+            .label()
+            .starts_with("42 Phase 32 SOTA")
+    );
     let mut desk = DeskWorkstation::default();
     let base = desk.phase32_live_metric();
     desk.scenario = ScenarioKind::CreditWideningPlus100Bp;
-    assert_ne!(base, desk.phase32_live_metric());
+    let credit = desk.phase32_live_metric();
+    desk.scenario = ScenarioKind::StagflationPlus150Bp;
+    let stag = desk.phase32_live_metric();
+    assert_ne!(base, credit);
+    assert_ne!(base, stag);
+    let frame = desk.step_tick();
+    assert!(
+        desk.render_dashboard(&frame, false)
+            .contains("42 Phase32 SOTA")
+    );
 }

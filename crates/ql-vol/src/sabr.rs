@@ -1,4 +1,5 @@
 #![allow(clippy::excessive_precision)]
+pub use crate::phase32::*;
 use ql_ad::Real;
 
 /// Hagan's normal SABR approximation, generic over the AD scalar.

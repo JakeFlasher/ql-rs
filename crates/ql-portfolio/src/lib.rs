@@ -1,8 +1,7 @@
 pub mod allocation;
-mod phase32;
-pub use phase32::*;
 pub mod dag;
 pub mod execution;
+mod phase32;
 pub mod risk_measures;
 pub use allocation::*;
 pub use dag::*;

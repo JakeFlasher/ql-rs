@@ -143,4 +143,6 @@ fn phase31_suite43_workload_is_registered() {
 fn phase32_suite44_workload_is_registered() {
     let rows = ql_benches::run_all_benchmarks(1);
     assert!(rows.iter().any(|r| r.id.starts_with("44_")));
+    let row = ql_benches::benchmark_phase32_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cmcds_morini_turlakov_wwr_hhw_adi_capped_call_mw_ahmadi_evar_schur_hrp_bekk_garch_schilit_sloan(1);
+    assert!(row.parity_ok && row.max_abs_diff < 1e-4);
 }

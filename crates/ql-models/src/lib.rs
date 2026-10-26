@@ -26,3 +26,7 @@ pub mod bergomi;
 pub use bergomi::*;
 mod phase31;
 pub use phase31::*;
+
+pub mod short_rate;
+
+pub mod equity_valuation;

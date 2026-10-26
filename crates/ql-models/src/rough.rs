@@ -1,4 +1,5 @@
 #![allow(clippy::needless_range_loop)]
+pub use crate::phase32::*;
 use crate::{Complex, CosHestonEngine, HestonParams};
 use ql_ad::Real;
 use ql_math as ql_mc;

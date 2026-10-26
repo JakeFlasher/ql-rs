@@ -48,21 +48,35 @@ pub fn evaluate_gairat_polala_cheyette_local_vol_caplet<T: Real>(
         + T::from_f64(0.5) * s.initial_skew_b * b * (s.strike_rate - s.forward_rate)
             / s.forward_rate.max_val(T::from_f64(1e-8));
     let pre = base * skew;
-    let cal_sigma = (s.target_atm_normal_vol + s.target_otm_normal_vol) / T::from_f64(2.0);
-    let cal_skew =
-        (s.target_otm_normal_vol - s.target_atm_normal_vol) / (base * b.abs() + T::from_f64(1e-8));
-    let cal_vol = base
-        * (T::one()
-            + T::from_f64(0.5) * cal_skew * b * (s.strike_rate - s.forward_rate)
-                / s.forward_rate.max_val(T::from_f64(1e-8)));
+    let f_safe = s.forward_rate.max_val(T::from_f64(1e-8));
+    let dk_rel = (s.strike_rate - s.forward_rate) / f_safe;
+    let dk_safe = if dk_rel.abs() < T::from_f64(1e-6) {
+        T::from_f64(1e-6)
+    } else {
+        dk_rel
+    };
+    let atm_target = s.target_atm_normal_vol.max_val(T::from_f64(1e-8));
+    let cal_skew = T::from_f64(2.0) * (s.target_otm_normal_vol / atm_target - T::one())
+        / (b * dk_safe).max_val(T::from_f64(1e-12));
+    let scale_factor = (T::one() + tau * s.forward_rate) / tau * b / t.sqrt();
+    let y_target = (atm_target / scale_factor.max_val(T::from_f64(1e-8))).powf(2.0);
+    let disc_y = (T::one() + T::from_f64(6.0) * cal_skew * cal_skew * y_target).sqrt();
+    let u_cal = T::from_f64(2.0) * y_target / (T::one() + disc_y);
+    let cal_sigma = (u_cal / q.max_val(T::from_f64(1e-12)))
+        .max_val(T::from_f64(1e-12))
+        .sqrt();
+    let y_cal = u_cal * (T::one() + T::from_f64(1.5) * cal_skew * cal_skew * u_cal);
+    let atm_cal = scale_factor * y_cal.max_val(T::from_f64(1e-16)).sqrt();
+    let cal_vol = atm_cal * (T::one() + T::from_f64(0.5) * cal_skew * b * dk_rel);
     let d = (s.forward_rate - s.strike_rate) / (cal_vol * tau.sqrt()).max_val(T::from_f64(1e-8));
     let pv = s.discount_factor_t2
         * tau
         * ((s.forward_rate - s.strike_rate) * d.norm_cdf() + cal_vol * tau.sqrt() * d.norm_pdf());
-    let rmse = ((cal_vol - s.target_otm_normal_vol) * (cal_vol - s.target_otm_normal_vol)
-        + (base - s.target_atm_normal_vol) * (base - s.target_atm_normal_vol))
-        .sqrt()
-        / T::from_f64(2.0).sqrt();
+    let rmse = (((cal_vol - s.target_otm_normal_vol) * (cal_vol - s.target_otm_normal_vol)
+        + (atm_cal - s.target_atm_normal_vol) * (atm_cal - s.target_atm_normal_vol))
+        / T::from_f64(2.0)
+        + T::from_f64(1e-24))
+    .sqrt();
     GairatPolalaCheyetteCapletReport {
         deterministic_auxiliary_y_bar: y,
         bond_vol_factor_b: b,
@@ -107,17 +121,25 @@ pub fn evaluate_gatheral_jusselin_quadratic_rough_heston<T: Real>(
         * (s.initial_state_z0 - s.asymmetry_center_b)
         + s.floor_variance_c;
     let slope = T::from_f64(2.0) * s.weight_a * (s.initial_state_z0 - s.asymmetry_center_b);
-    let asym =
-        s.weight_a * s.asymmetry_center_b * s.kernel_eta * s.expiry.powf(s.hurst_h.val() + 0.5)
-            / (s.hurst_h + T::from_f64(1.5)).exp()
-            / v.max_val(T::from_f64(1e-8));
-    let atm = v.sqrt();
-    let skew = slope / (T::from_f64(2.0) * atm.max_val(T::from_f64(1e-8)));
-    let curv = T::from_f64(2.0) * s.weight_a;
-    let k = (s.strike / s.forward).ln();
+    let h_plus = s.hurst_h + T::from_f64(0.5);
+    let t_h = s.expiry.max_val(T::from_f64(1e-8)).pow(h_plus);
+    let mr_damp = T::one()
+        / (T::one()
+            + s.mean_reversion_lambda.max_val(T::zero()) * t_h
+            + T::from_f64(0.5) * s.mean_reversion_lambda * s.mean_reversion_lambda * t_h * t_h);
+    let gamma_h32 = T::from_f64(0.886226925452758)
+        * (T::one() + T::from_f64(0.45) * s.hurst_h + T::from_f64(0.15) * s.hurst_h * s.hurst_h);
+    let asym = s.weight_a * s.asymmetry_center_b * s.kernel_eta * t_h * mr_damp
+        / (gamma_h32 * v.max_val(T::from_f64(1e-8)));
+    let v_eff = s.floor_variance_c + (v - s.floor_variance_c) * mr_damp;
+    let atm = v_eff.max_val(T::from_f64(1e-12)).sqrt();
+    let skew = slope * s.kernel_eta * mr_damp / (T::from_f64(2.0) * atm.max_val(T::from_f64(1e-8)));
+    let curv = T::from_f64(2.0) * s.weight_a * s.kernel_eta * s.kernel_eta * mr_damp;
+    let k = (s.strike / s.forward.max_val(T::from_f64(1e-8))).ln();
     let iv =
         (atm * (T::one() + skew * k + T::from_f64(0.5) * curv * k * k)).max_val(T::from_f64(1e-8));
-    let d1 = ((s.forward / s.strike).ln() + T::from_f64(0.5) * iv * iv * s.expiry)
+    let d1 = ((s.forward / s.strike.max_val(T::from_f64(1e-8))).ln()
+        + T::from_f64(0.5) * iv * iv * s.expiry)
         / (iv * s.expiry.sqrt()).max_val(T::from_f64(1e-8));
     let d2 = d1 - iv * s.expiry.sqrt();
     let call = s.forward * d1.norm_cdf() - s.strike * d2.norm_cdf();
@@ -183,9 +205,15 @@ pub fn evaluate_schilit_sloan_dechow_dichev_earnings_quality<T: Real>(
         / noa_avg.abs().max_val(T::from_f64(1e-8));
     let cfo_ratio = (s.net_income_1 - s.cfo_curr)
         / (s.net_income_1.abs() + noa_avg.abs()).max_val(T::from_f64(1e-8));
-    let pred = (s.cfo_prev + s.cfo_curr + s.cfo_next) / T::from_f64(3.0);
-    let resid = (s.net_operating_assets_1 - s.net_operating_assets_0 - pred).abs();
-    let z = (ccc1 - ccc0).abs() + sloan.abs() + cfo_ratio.abs() + resid;
+    let delta_wc = (s.accounts_receivable_1 - s.accounts_receivable_0)
+        + (s.inventory_1 - s.inventory_0)
+        - (s.accounts_payable_1 - s.accounts_payable_0);
+    let wc_accrual_scaled = delta_wc / noa_avg.abs().max_val(T::from_f64(1e-8));
+    let dd_pred = (T::from_f64(0.20) * s.cfo_prev - T::from_f64(0.50) * s.cfo_curr
+        + T::from_f64(0.20) * s.cfo_next)
+        / noa_avg.abs().max_val(T::from_f64(1e-8));
+    let resid = (wc_accrual_scaled - dd_pred).abs();
+    let z = (ccc1 - ccc0).abs() / T::from_f64(365.0) + sloan.abs() + cfo_ratio.abs() + resid;
     SchilitSloanDechowDichevQualityReport {
         days_sales_outstanding_1: dso1,
         days_inventory_on_hand_1: dio1,

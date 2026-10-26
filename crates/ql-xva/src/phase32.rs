@@ -30,7 +30,6 @@ pub fn evaluate_turlakov_green_kenyon_wwr_and_kva<T: Real>(
     let mut ic = T::zero();
     let mut wc = T::zero();
     let mut kva = T::zero();
-    let mut ead = T::zero();
     for i in 0..s
         .time_grid
         .len()
@@ -46,7 +45,6 @@ pub fn evaluate_turlakov_green_kenyon_wwr_and_kva<T: Real>(
         let reg = s.ccr_risk_weight
             * T::from_f64(1.4)
             * (s.independent_epe_profile[i] + s.pfe_addon_profile[i]);
-        ead += s.independent_epe_profile[i] + s.pfe_addon_profile[i];
         kva += dt
             * df
             * (s.shareholder_cost_of_capital - s.capital_return_offset_beta * s.risk_free_rate)
@@ -56,7 +54,12 @@ pub fn evaluate_turlakov_green_kenyon_wwr_and_kva<T: Real>(
         independent_cva: ic,
         turlakov_wwr_cva: wc,
         wwr_amplification_multiplier: wc / ic.max_val(T::from_f64(1e-8)),
-        ccr_sa_ead_t0: ead,
+        ccr_sa_ead_t0: T::from_f64(1.4)
+            * (s.independent_epe_profile
+                .first()
+                .copied()
+                .unwrap_or(T::zero())
+                + s.pfe_addon_profile.first().copied().unwrap_or(T::zero())),
         green_kenyon_kva: kva,
         total_wwr_cva_plus_kva: wc + kva,
     }

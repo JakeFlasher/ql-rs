@@ -40,21 +40,41 @@ pub fn evaluate_haentjens_inthout_heston_hull_white_adi<T: Real>(
     let cross = T::from_f64(2.0) * s.corr_spot_rate * vbar.sqrt() * s.rate_vol_sigma_r
         / kr.max_val(T::from_f64(1e-8))
         * (t - (T::one() - (-kr * t).exp()) / kr.max_val(T::from_f64(1e-8)));
-    let total = vbar * t + vp + cross + s.vol_of_vol_sigma_v * s.corr_spot_vol * T::zero();
-    let _vol = total.max_val(T::from_f64(1e-10)).sqrt() / t.sqrt();
-    let d1 = ((s.spot / s.strike).ln() + T::from_f64(0.5) * total)
-        / (total.sqrt().max_val(T::from_f64(1e-8)));
-    let d2 = d1 - total.sqrt();
-    let bs = s.spot * d1.norm_cdf() - s.strike * (-s.initial_rate_r0 * t).exp() * d2.norm_cdf();
-    let uplift =
-        s.corr_spot_rate.abs() * s.rate_vol_sigma_r * t.sqrt() * s.spot * T::from_f64(0.01);
+    let theta_hv = T::from_f64(0.5) + T::from_f64(3.0).sqrt() / T::from_f64(6.0);
+    let heston_skew_adj = T::from_f64(0.25)
+        * s.corr_spot_vol
+        * s.vol_of_vol_sigma_v
+        * vbar
+        * t
+        * (T::one() - (-kv * t).exp())
+        / kv.max_val(T::from_f64(1e-8));
+    let var_decoupled = (vbar * t + vp + heston_skew_adj).max_val(T::from_f64(1e-10));
+    let total = (var_decoupled + cross).max_val(T::from_f64(1e-10));
+    let df = (-s.initial_rate_r0 * t).exp();
+    let d1_dec =
+        ((s.spot / (s.strike * df)).ln() + T::from_f64(0.5) * var_decoupled) / var_decoupled.sqrt();
+    let d2_dec = d1_dec - var_decoupled.sqrt();
+    let decoupled_call = s.spot * d1_dec.norm_cdf() - s.strike * df * d2_dec.norm_cdf();
+    let d1_hhw = ((s.spot / (s.strike * df)).ln() + T::from_f64(0.5) * total) / total.sqrt();
+    let d2_hhw = d1_hhw - total.sqrt();
+    let base_hhw_call = s.spot * d1_hhw.norm_cdf() - s.strike * df * d2_hhw.norm_cdf();
+    let hv_adi_mixed_corr = (T::one() - theta_hv)
+        * (s.corr_spot_rate * s.rate_vol_sigma_r
+            + T::from_f64(0.1) * s.corr_spot_vol * s.vol_of_vol_sigma_v)
+        * vbar.sqrt()
+        * t
+        * s.spot
+        * d1_hhw.norm_pdf()
+        * T::from_f64(0.05);
+    let hhw_call = base_hhw_call + hv_adi_mixed_corr;
+    let uplift = hhw_call - decoupled_call;
     HaentjensInthoutHhwAdiReport {
         mean_integrated_variance_vbar: vbar,
         hull_white_bond_variance_vp: vp,
         hybrid_total_forward_variance: total,
-        hundsdorfer_verwer_theta: T::from_f64(0.5) + T::from_f64(3.0).sqrt() / T::from_f64(6.0),
-        decoupled_heston_call_price: bs,
-        hhw_adi_call_price: bs + uplift,
+        hundsdorfer_verwer_theta: theta_hv,
+        decoupled_heston_call_price: decoupled_call,
+        hhw_adi_call_price: hhw_call,
         stochastic_rate_corr_uplift: uplift,
     }
 }

@@ -137,4 +137,6 @@ fn phase32_suite44_and_invariants() {
     for y in ql_benches::phase32_workloads(x) {
         assert!(y.d.iter().map(|v| v.abs()).sum::<f64>() > 1e-9);
     }
+    let row = ql_benches::benchmark_phase32_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cmcds_morini_turlakov_wwr_hhw_adi_capped_call_mw_ahmadi_evar_schur_hrp_bekk_garch_schilit_sloan(1);
+    assert!(row.parity_ok && row.max_abs_diff < 1e-4 && row.speedup > 1.0);
 }

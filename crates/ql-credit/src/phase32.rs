@@ -31,10 +31,12 @@ pub fn evaluate_brigo_morini_cmcds_and_credit_index_option<T: Real>(
     let mut up = T::zero();
     for i in 0..s.reset_times.len().min(s.forward_cds_spreads.len()) {
         let t = s.reset_times[i];
+        let dt = if i == 0 { t } else { t - s.reset_times[i - 1] };
+        let w = dt * (-s.risk_free_rate * t).exp() * (-s.hazard_rate * t).exp();
         let u = (s.annuity_convexity_gamma * s.spread_volatility * s.spread_volatility * t).exp();
-        den += s.forward_cds_spreads[i] * u;
-        num += s.flat_par_cds_spread;
-        up += s.forward_cds_spreads[i] * (u - T::one());
+        den += w * s.forward_cds_spreads[i] * u;
+        num += w * s.flat_par_cds_spread;
+        up += w * s.forward_cds_spreads[i] * (u - T::one());
     }
     let part = (num / den.max_val(T::from_f64(1e-8))).min_val(T::one());
     let df = (-s.risk_free_rate * s.option_expiry).exp();
@@ -47,8 +49,14 @@ pub fn evaluate_brigo_morini_cmcds_and_credit_index_option<T: Real>(
         / vol.max_val(T::from_f64(1e-8));
     let d2 = d1 - vol;
     let pv = s.risky_pv01_annuity * (adjf * d1.norm_cdf() - adjk * d2.norm_cdf()) * df;
+    let d1_naive = ((s.flat_par_cds_spread / s.option_strike_spread.max_val(T::from_f64(1e-8)))
+        .ln()
+        + T::from_f64(0.5) * vol * vol)
+        / vol.max_val(T::from_f64(1e-8));
+    let d2_naive = d1_naive - vol;
     let naive = s.risky_pv01_annuity
-        * (s.flat_par_cds_spread * d1.norm_cdf() - s.option_strike_spread * d2.norm_cdf())
+        * (s.flat_par_cds_spread * d1_naive.norm_cdf()
+            - s.option_strike_spread * d2_naive.norm_cdf())
         * df;
     BrigoMoriniCmcdsCreditOptionReport {
         cmcds_convexity_uplift_bps: up / den.max_val(T::from_f64(1e-8)) * T::from_f64(1e4),

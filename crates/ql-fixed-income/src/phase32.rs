@@ -50,24 +50,24 @@ pub fn evaluate_mayer_brown_ssga_capped_call_overlay_and_make_whole<T: Real>(
             s.risk_free_rate,
             s.maturity_years,
         );
-    let gross = (lower - upper).abs();
+    let gross = (lower - upper).max_val(T::zero());
     let after = gross * (T::one() - s.tax_rate_section_163j);
-    let unhedged = (s.acquisition_offer_price / s.base_conversion_price * ratio).max_val(T::zero());
-    let hedged = (unhedged - gross / s.acquisition_offer_price.max_val(T::from_f64(1e-8)))
-        .max_val(T::zero());
+    let s_offer_safe = s.acquisition_offer_price.max_val(T::from_f64(1e-8));
+    let unhedged = ratio
+        * ((s.acquisition_offer_price - s.base_conversion_price).max_val(T::zero()) / s_offer_safe);
+    let hedged = ratio
+        * ((s.acquisition_offer_price - s.cap_strike_price).max_val(T::zero()) / s_offer_safe);
     let intrinsic =
         (s.acquisition_offer_price - s.base_conversion_price).max_val(T::zero()) * ratio;
-    let mw = (ratio
+    let call_at_offer = ratio
         * call(
             s.acquisition_offer_price,
             s.base_conversion_price,
             s.volatility,
             s.risk_free_rate,
             s.remaining_years_at_acquisition,
-        )
-        - intrinsic)
-        .abs()
-        / s.acquisition_offer_price.max_val(T::from_f64(1e-8));
+        );
+    let mw = (call_at_offer - intrinsic).max_val(T::zero()) / s_offer_safe;
     MayerBrownSsgaCappedCallMakeWholeReport {
         base_conversion_ratio: ratio,
         lower_call_option_value: lower,
@@ -77,7 +77,7 @@ pub fn evaluate_mayer_brown_ssga_capped_call_overlay_and_make_whole<T: Real>(
         unhedged_net_dilution_shares_at_offer: unhedged,
         capped_call_hedged_dilution_shares_at_offer: hedged,
         make_whole_additional_shares: mw,
-        total_fundamental_change_conversion_value: intrinsic,
+        total_fundamental_change_conversion_value: (ratio + mw) * s.acquisition_offer_price,
     }
 }
 #[cfg(test)]

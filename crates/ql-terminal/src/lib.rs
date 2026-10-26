@@ -2917,6 +2917,7 @@ impl DeskWorkstation {
 
     pub fn phase32_live_metric_from_market(m: &MarketSnapshot, credit_bump: f64) -> f64 {
         let r = m.ois_quotes.first().copied().unwrap_or(0.03);
+        let inf = m.inflation_quotes.first().map(|(_, v)| *v).unwrap_or(0.02);
         let f = m.eq_spot.max(1.0);
         let vol = m.eq_vol.max(0.1);
         let c = ql_models::evaluate_gairat_polala_cheyette_local_vol_caplet(
@@ -2967,7 +2968,7 @@ impl DeskWorkstation {
                 local_rate_vol: 0.1,
                 ndf_fx_vol: vol * 0.1,
                 rate_fx_corr: 0.2,
-                sovereign_bond_yield: r + 0.02,
+                sovereign_bond_yield: r + inf,
                 usd_sofr_yield: r,
                 ndf_ccs_basis_spread: 0.005,
                 withholding_tax_rate: 0.1,
@@ -3034,6 +3035,42 @@ impl DeskWorkstation {
                 tax_rate_section_163j: 0.21,
             },
         );
+        let hhw = ql_pde::evaluate_haentjens_inthout_heston_hull_white_adi(
+            &ql_pde::HaentjensInthoutHhwAdiSpec {
+                spot: f,
+                strike: f,
+                expiry: 1.0,
+                initial_var_v0: 0.04,
+                mean_rev_kappa_v: 1.0,
+                long_var_theta_v: 0.04,
+                vol_of_vol_sigma_v: 0.3,
+                initial_rate_r0: r,
+                rate_mean_rev_kappa_r: 0.1,
+                rate_vol_sigma_r: 0.01,
+                corr_spot_vol: 0.2,
+                corr_spot_rate: 0.3,
+            },
+        );
+        let qual = ql_models::evaluate_schilit_sloan_dechow_dichev_earnings_quality(
+            &ql_models::SchilitSloanDechowDichevQualitySpec {
+                revenue_0: 100.0,
+                revenue_1: 105.0,
+                cogs_0: 60.0,
+                cogs_1: 63.0,
+                accounts_receivable_0: 10.0,
+                accounts_receivable_1: 12.0,
+                inventory_0: 8.0,
+                inventory_1: 9.0,
+                accounts_payable_0: 7.0,
+                accounts_payable_1: 8.0,
+                net_operating_assets_0: 50.0,
+                net_operating_assets_1: 52.0,
+                net_income_1: 8.0,
+                cfo_prev: 7.0,
+                cfo_curr: 7.5,
+                cfo_next: 8.0,
+            },
+        );
         let cr = ql_credit::evaluate_brigo_morini_cmcds_and_credit_index_option(
             &ql_credit::BrigoMoriniCmcdsCreditOptionSpec {
                 reset_times: vec![1.0, 2.0],
@@ -3059,13 +3096,14 @@ impl DeskWorkstation {
             + b.terminal_var_asset1.val()
             + ql.capped_call_overlay_gross_cost.val() * 1e-2
             + cr.morini_brigo_payer_swaption_pv.val()
+            + hhw.hhw_adi_call_price.val()
+            + qual.schilit_shenanigan_composite_z.val()
     }
     pub fn phase32_live_metric(&self) -> f64 {
-        let bump = if matches!(
-            self.scenario,
-            ScenarioKind::CreditWideningPlus100Bp | ScenarioKind::StagflationPlus150Bp
-        ) {
+        let bump = if self.scenario == ScenarioKind::CreditWideningPlus100Bp {
             0.01
+        } else if self.scenario == ScenarioKind::StagflationPlus150Bp {
+            0.005
         } else {
             0.0
         };

@@ -6,6 +6,7 @@ pub use crate::phase31::{
     DgtwTreynorMazuyTimingSpec, evaluate_brock_hommes_adaptive_belief_switching,
     evaluate_dgtw_characteristic_and_treynor_mazuy_timing,
 };
+pub use crate::phase32::*;
 use ql_ad::Real;
 
 #[derive(Clone, Debug)]
