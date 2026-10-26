@@ -2770,3 +2770,201 @@ pub mod duffie_garleanu_affine_jump_cdo_mod {
     }
 }
 pub use duffie_garleanu_affine_jump_cdo_mod::*;
+
+// ============================================================================
+// Hull & White (2006, 2010) & O'Kane (2008) Implied-Copula Bespoke CDO Tranche
+// ============================================================================
+
+pub mod hull_white_implied_copula_cdo_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Hull & White (2006, *J. Derivatives* 14(2); 2010) and O'Kane (2008, Ch. 20)
+    /// implied-copula hazard-rate distribution and bespoke CDO tranche pricing engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct HullWhiteImpliedCopulaCdoSpec<T: Real> {
+        /// Baseline normal-state portfolio hazard rate $\lambda_0 > 0$.
+        pub base_hazard_rate_lambda0: T,
+        /// Stressed-recession state hazard multiplier $m_{\text{rec}} > 1$.
+        pub recession_hazard_multiplier_m_rec: T,
+        /// Systemic tail-crash state hazard rate $\lambda_{\text{crash}} > 0$.
+        pub systemic_crash_hazard_lambda_crash: T,
+        /// Implied risk-neutral probability of the systemic crash state $p_{\text{crash}} \in (0, 0.3)$.
+        pub crash_state_probability_p_crash: T,
+        /// Portfolio loss given default $\text{LGD} \in (0, 1)$.
+        pub loss_given_default_lgd: T,
+        /// Tranche attachment point $K_1 \in [0, 1)$.
+        pub tranche_attachment_k1: T,
+        /// Tranche detachment point $K_2 \in (K_1, 1]$.
+        pub tranche_detachment_k2: T,
+        /// Risk-free discount rate $r > 0$.
+        pub risk_free_rate_r: T,
+    }
+
+    /// Analytical outputs for the Hull-White implied-copula CDO tranche engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct HullWhiteImpliedCopulaCdoAnalytics<T: Real> {
+        /// Expected portfolio index loss at maturity $\mathbb{E}[L_T]$.
+        pub expected_portfolio_index_loss: T,
+        /// Expected normalized $[K_1, K_2]$ tranche loss fraction at maturity $\mathbb{E}[\ell_{\text{tr}}(T)]$.
+        pub expected_bespoke_tranche_loss_fraction: T,
+        /// Discounted tranche protection leg present value per unit tranche notional.
+        pub tranche_protection_leg_pv: T,
+        /// Implied-copula bespoke tranche par spread $S_{\text{tr}}$ (annualized rate).
+        pub bespoke_tranche_par_spread: T,
+    }
+
+    fn smooth_pos<T: Real>(x: T) -> T {
+        let eps = T::from_f64(0.002);
+        T::from_f64(0.5) * (x + (x * x + eps * eps).sqrt())
+    }
+
+    /// Evaluates the Hull & White (2006, 2010) 4-state implied-copula hazard distribution
+    /// and prices a bespoke $[K_1, K_2]$ CDO tranche.
+    pub fn evaluate_hull_white_implied_copula_bespoke_cdo_tranche_calibration<T: Real>(
+        spec: &HullWhiteImpliedCopulaCdoSpec<T>,
+    ) -> HullWhiteImpliedCopulaCdoAnalytics<T> {
+        let p_crash = spec
+            .crash_state_probability_p_crash
+            .max_val(T::from_f64(1e-4))
+            .min_val(T::from_f64(0.45));
+        let non_crash = T::one() - p_crash;
+        let weights = [
+            T::from_f64(0.55) * non_crash,
+            T::from_f64(0.30) * non_crash,
+            T::from_f64(0.15) * non_crash,
+            p_crash,
+        ];
+
+        let lam0 = spec.base_hazard_rate_lambda0.max_val(T::from_f64(1e-4));
+        let m_rec = spec.recession_hazard_multiplier_m_rec.max_val(T::one());
+        let lam_crash = spec
+            .systemic_crash_hazard_lambda_crash
+            .max_val(T::from_f64(1e-3));
+        let hazards = [T::from_f64(0.5) * lam0, lam0, m_rec * lam0, lam_crash];
+
+        let lgd = spec
+            .loss_given_default_lgd
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.95));
+        let k1 = spec.tranche_attachment_k1.max_val(T::zero());
+        let width = (spec.tranche_detachment_k2 - k1).max_val(T::from_f64(1e-3));
+        let k2 = k1 + width;
+
+        let t_mid = T::from_f64(2.5);
+        let t_mat = T::from_f64(5.0);
+
+        let mut port_loss_mat = T::zero();
+        let mut tr_loss_mid = T::zero();
+        let mut tr_loss_mat = T::zero();
+
+        for (&w, &lam) in weights.iter().zip(hazards.iter()) {
+            let l_mid = lgd * (T::one() - (-lam * t_mid).exp());
+            let l_mat = lgd * (T::one() - (-lam * t_mat).exp());
+            port_loss_mat += w * l_mat;
+
+            let tr_mid = (smooth_pos(l_mid - k1) - smooth_pos(l_mid - k2)) / width;
+            let tr_mat = (smooth_pos(l_mat - k1) - smooth_pos(l_mat - k2)) / width;
+            tr_loss_mid += w * tr_mid;
+            tr_loss_mat += w * tr_mat;
+        }
+
+        let r = spec.risk_free_rate_r;
+        let df1 = (-r * T::from_f64(1.25)).exp();
+        let df2 = (-r * T::from_f64(3.75)).exp();
+        let prot_pv = df1 * tr_loss_mid + df2 * (tr_loss_mat - tr_loss_mid);
+
+        let risky_ann = T::from_f64(2.5)
+            * ((-r * t_mid).exp() * (T::one() - tr_loss_mid)
+                + (-r * t_mat).exp() * (T::one() - tr_loss_mat))
+                .max_val(T::from_f64(1e-4));
+        let par_spread = prot_pv / risky_ann;
+
+        HullWhiteImpliedCopulaCdoAnalytics {
+            expected_portfolio_index_loss: port_loss_mat,
+            expected_bespoke_tranche_loss_fraction: tr_loss_mat,
+            tranche_protection_leg_pv: prot_pv,
+            bespoke_tranche_par_spread: par_spread,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn hull_white_implied_copula_cdo_invariants_and_ad_parity() {
+            let base = HullWhiteImpliedCopulaCdoSpec {
+                base_hazard_rate_lambda0: 0.015_f64,
+                recession_hazard_multiplier_m_rec: 3.2,
+                systemic_crash_hazard_lambda_crash: 0.14,
+                crash_state_probability_p_crash: 0.06,
+                loss_given_default_lgd: 0.60,
+                tranche_attachment_k1: 0.03,
+                tranche_detachment_k2: 0.07,
+                risk_free_rate_r: 0.035,
+            };
+            let r0 = evaluate_hull_white_implied_copula_bespoke_cdo_tranche_calibration(&base);
+            assert!(r0.expected_portfolio_index_loss > 0.0);
+            assert!(
+                r0.expected_bespoke_tranche_loss_fraction > 0.0
+                    && r0.expected_bespoke_tranche_loss_fraction < 1.0
+            );
+            assert!(r0.tranche_protection_leg_pv > 0.0);
+            assert!(r0.bespoke_tranche_par_spread > 0.0);
+
+            let inputs = [
+                base.base_hazard_rate_lambda0,
+                base.recession_hazard_multiplier_m_rec,
+                base.systemic_crash_hazard_lambda_crash,
+                base.crash_state_probability_p_crash,
+                base.loss_given_default_lgd,
+                base.tranche_attachment_k1,
+                base.tranche_detachment_k2,
+                base.risk_free_rate_r,
+            ];
+            let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = HullWhiteImpliedCopulaCdoSpec {
+                base_hazard_rate_lambda0: dual_in[0],
+                recession_hazard_multiplier_m_rec: dual_in[1],
+                systemic_crash_hazard_lambda_crash: dual_in[2],
+                crash_state_probability_p_crash: dual_in[3],
+                loss_given_default_lgd: dual_in[4],
+                tranche_attachment_k1: dual_in[5],
+                tranche_detachment_k2: dual_in[6],
+                risk_free_rate_r: dual_in[7],
+            };
+            let r_ad = evaluate_hull_white_implied_copula_bespoke_cdo_tranche_calibration(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| HullWhiteImpliedCopulaCdoSpec {
+                    base_hazard_rate_lambda0: v[0],
+                    recession_hazard_multiplier_m_rec: v[1],
+                    systemic_crash_hazard_lambda_crash: v[2],
+                    crash_state_probability_p_crash: v[3],
+                    loss_given_default_lgd: v[4],
+                    tranche_attachment_k1: v[5],
+                    tranche_detachment_k2: v[6],
+                    risk_free_rate_r: v[7],
+                };
+                let rp = evaluate_hull_white_implied_copula_bespoke_cdo_tranche_calibration(&mk(p));
+                let rm = evaluate_hull_white_implied_copula_bespoke_cdo_tranche_calibration(&mk(m));
+                let fd =
+                    (rp.bespoke_tranche_par_spread - rm.bespoke_tranche_par_spread) / (2.0 * eps);
+                assert!(
+                    r_ad.bespoke_tranche_par_spread.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.bespoke_tranche_par_spread.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use hull_white_implied_copula_cdo_mod::*;

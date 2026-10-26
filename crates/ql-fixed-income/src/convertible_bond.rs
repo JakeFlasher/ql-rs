@@ -2009,3 +2009,182 @@ mod tsiveriotis_fernandes_suite64_tests {
         }
     }
 }
+
+// ============================================================================
+// Ingersoll (1977) & Spiegeleer-Schoutens (2011) Contingent-Call Convertible Bond
+// ============================================================================
+
+pub mod ingersoll_contingent_call_convertible_bond_mod {
+    use ql_ad::Real;
+    use ql_math::distributions::norm_cdf;
+
+    /// Specification for the Ingersoll (1977) / Brennan & Schwartz (1977) / Spiegeleer & Schoutens (2011)
+    /// convertible bond with hard call protection and forced-conversion issuer call cap.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct IngersollConvertibleBondSpec<T: Real> {
+        /// Current underlying stock price $S_0 > 0$.
+        pub stock_price_s0: T,
+        /// Conversion ratio $\gamma_{\text{conv}} > 0$ (shares per $100 par bond).
+        pub conversion_ratio_cr: T,
+        /// Annual coupon rate $c \ge 0$ paid on $100 par value.
+        pub straight_bond_coupon_c: T,
+        /// Provisional soft-call trigger parity level $K_{\text{call}} > 100$.
+        pub call_trigger_price_k_call: T,
+        /// Hard call-protection window $T_{\text{call}} \in (0, T)$ (years).
+        pub call_protection_years_t_call: T,
+        /// Convertible bond maturity $T > T_{\text{call}}$ (years).
+        pub maturity_years_t: T,
+        /// Credit-risky straight-bond discount yield $r_c > 0$.
+        pub credit_adjusted_discount_rate_r_c: T,
+        /// Equity volatility $\sigma > 0$.
+        pub equity_volatility_sigma: T,
+    }
+
+    /// Analytical outputs for the Ingersoll contingent-call convertible bond engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct IngersollConvertibleBondAnalytics<T: Real> {
+        /// Straight corporate bond floor $B_0$ (present value of coupons and principal).
+        pub straight_bond_investment_floor: T,
+        /// Embedded investor conversion warrant value $W_{\text{conv}}$.
+        pub investor_conversion_warrant_value: T,
+        /// Embedded issuer forced-conversion call option value $C_{\text{issuer}}$.
+        pub issuer_forced_conversion_call_value: T,
+        /// Fair value of the callable convertible bond $V_{\text{CB}} = B_0 + W_{\text{conv}} - C_{\text{issuer}}$.
+        pub convertible_bond_fair_value: T,
+    }
+
+    fn bs_call_parity<T: Real>(parity: T, strike: T, r: T, sig: T, tau: T) -> T {
+        let v_sqrt = (sig * tau.sqrt()).max_val(T::from_f64(1e-6));
+        let d1 = ((parity / strike).ln() + (r + T::from_f64(0.5) * sig * sig) * tau) / v_sqrt;
+        let d2 = d1 - v_sqrt;
+        parity * norm_cdf(d1) - strike * (-r * tau).exp() * norm_cdf(d2)
+    }
+
+    /// Evaluates the Ingersoll (1977, *JFE* 4(3)) and Spiegeleer & Schoutens (2011, Ch. 4)
+    /// callable convertible bond decomposing the straight bond floor, investor conversion right,
+    /// and issuer forced-conversion call option after the call-protection window.
+    pub fn evaluate_ingersoll_contingent_call_forced_conversion_convertible_bond<T: Real>(
+        spec: &IngersollConvertibleBondSpec<T>,
+    ) -> IngersollConvertibleBondAnalytics<T> {
+        let par = T::from_f64(100.0);
+        let s0 = spec.stock_price_s0.max_val(T::from_f64(1e-4));
+        let cr = spec.conversion_ratio_cr.max_val(T::from_f64(1e-4));
+        let parity = cr * s0;
+
+        let t_mat = spec.maturity_years_t.max_val(T::from_f64(0.25));
+        let t_call = spec
+            .call_protection_years_t_call
+            .max_val(T::from_f64(0.05))
+            .min_val(t_mat * T::from_f64(0.95));
+        let rc = spec
+            .credit_adjusted_discount_rate_r_c
+            .max_val(T::from_f64(1e-4));
+        let sig = spec.equity_volatility_sigma.max_val(T::from_f64(1e-4));
+
+        // Straight bond floor at t = 0 and at call-protection expiry t = T_call
+        let df_mat = (-rc * t_mat).exp();
+        let b0 = (spec.straight_bond_coupon_c * par / rc) * (T::one() - df_mat) + par * df_mat;
+
+        let rem_t = t_mat - t_call;
+        let df_rem = (-rc * rem_t).exp();
+        let b_call = (spec.straight_bond_coupon_c * par / rc) * (T::one() - df_rem) + par * df_rem;
+
+        let rf = T::from_f64(0.75) * rc;
+        let w_conv = bs_call_parity(parity, b0, rf, sig, t_mat);
+
+        // Issuer forced-conversion call option active over [T_call, T] with effective call trigger
+        let k_eff = spec.call_trigger_price_k_call.max_val(T::from_f64(101.0))
+            + T::from_f64(0.15) * (b_call - par);
+        let t_eff = T::from_f64(0.5) * (t_call + t_mat);
+        let c_issuer = bs_call_parity(parity, k_eff, rf, sig, t_eff);
+
+        let cb_value = b0 + w_conv - c_issuer;
+
+        IngersollConvertibleBondAnalytics {
+            straight_bond_investment_floor: b0,
+            investor_conversion_warrant_value: w_conv,
+            issuer_forced_conversion_call_value: c_issuer,
+            convertible_bond_fair_value: cb_value,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn ingersoll_convertible_bond_invariants_and_ad_parity() {
+            let base = IngersollConvertibleBondSpec {
+                stock_price_s0: 96.0_f64,
+                conversion_ratio_cr: 1.0,
+                straight_bond_coupon_c: 0.04,
+                call_trigger_price_k_call: 125.0,
+                call_protection_years_t_call: 2.0,
+                maturity_years_t: 5.0,
+                credit_adjusted_discount_rate_r_c: 0.055,
+                equity_volatility_sigma: 0.28,
+            };
+            let r0 = evaluate_ingersoll_contingent_call_forced_conversion_convertible_bond(&base);
+            assert!(r0.straight_bond_investment_floor > 80.0);
+            assert!(r0.investor_conversion_warrant_value > r0.issuer_forced_conversion_call_value);
+            assert!(r0.convertible_bond_fair_value > r0.straight_bond_investment_floor);
+
+            let inputs = [
+                base.stock_price_s0,
+                base.conversion_ratio_cr,
+                base.straight_bond_coupon_c,
+                base.call_trigger_price_k_call,
+                base.call_protection_years_t_call,
+                base.maturity_years_t,
+                base.credit_adjusted_discount_rate_r_c,
+                base.equity_volatility_sigma,
+            ];
+            let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = IngersollConvertibleBondSpec {
+                stock_price_s0: dual_in[0],
+                conversion_ratio_cr: dual_in[1],
+                straight_bond_coupon_c: dual_in[2],
+                call_trigger_price_k_call: dual_in[3],
+                call_protection_years_t_call: dual_in[4],
+                maturity_years_t: dual_in[5],
+                credit_adjusted_discount_rate_r_c: dual_in[6],
+                equity_volatility_sigma: dual_in[7],
+            };
+            let r_ad =
+                evaluate_ingersoll_contingent_call_forced_conversion_convertible_bond(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| IngersollConvertibleBondSpec {
+                    stock_price_s0: v[0],
+                    conversion_ratio_cr: v[1],
+                    straight_bond_coupon_c: v[2],
+                    call_trigger_price_k_call: v[3],
+                    call_protection_years_t_call: v[4],
+                    maturity_years_t: v[5],
+                    credit_adjusted_discount_rate_r_c: v[6],
+                    equity_volatility_sigma: v[7],
+                };
+                let rp =
+                    evaluate_ingersoll_contingent_call_forced_conversion_convertible_bond(&mk(p));
+                let rm =
+                    evaluate_ingersoll_contingent_call_forced_conversion_convertible_bond(&mk(m));
+                let fd =
+                    (rp.convertible_bond_fair_value - rm.convertible_bond_fair_value) / (2.0 * eps);
+                assert!(
+                    r_ad.convertible_bond_fair_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.convertible_bond_fair_value.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use ingersoll_contingent_call_convertible_bond_mod::*;

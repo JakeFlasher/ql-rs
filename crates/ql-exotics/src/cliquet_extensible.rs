@@ -2460,3 +2460,195 @@ pub mod pechtl_haug_time_switch_option_mod {
     }
 }
 pub use pechtl_haug_time_switch_option_mod::*;
+
+// ============================================================================
+// Conze & Viswanathan (1991) & Broadie-Glasserman-Kou (1999) Lookback Extremum Option
+// ============================================================================
+
+pub mod conze_viswanathan_lookback_extremum_mod {
+    use ql_ad::Real;
+    use ql_math::distributions::norm_cdf;
+
+    /// Specification for the Goldman, Sosin & Gatto (1979) / Conze & Viswanathan (1991, *JF* 46(5))
+    /// floating-strike lookback call with Broadie, Glasserman & Kou (1999) discrete monitoring shift.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct ConzeViswanathanLookbackSpec<T: Real> {
+        /// Current spot price $S_0 > 0$.
+        pub spot_price_s0: T,
+        /// Observed running minimum price to date $S_{\min} \le S_0$.
+        pub observed_running_minimum_s_min: T,
+        /// Risk-free interest rate $r > 0$.
+        pub risk_free_rate_r: T,
+        /// Continuous dividend yield $q \ge 0$.
+        pub dividend_yield_q: T,
+        /// Volatility $\sigma > 0$.
+        pub volatility_sigma: T,
+        /// Number of discrete monitoring dates $M \ge 1$.
+        pub discrete_monitoring_steps_m: T,
+        /// Remaining option maturity $T > 0$ (years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytical outputs for the Conze-Viswanathan / Broadie-Glasserman-Kou lookback engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct ConzeViswanathanLookbackAnalytics<T: Real> {
+        /// Broadie-Glasserman-Kou continuity-adjusted running minimum $S_{\min}^{\text{adj}}$.
+        pub continuity_adjusted_minimum_s_min: T,
+        /// Continuous-monitoring Goldman-Sosin-Gatto / Conze-Viswanathan floating lookback call price.
+        pub continuous_floating_lookback_call_price: T,
+        /// Extremum reflection strikeless premium component.
+        pub extremum_reflection_bonus_value: T,
+        /// Discrete-monitoring floating-strike lookback call price $C_{\text{discrete}}(S_0, S_{\min}, T, M)$.
+        pub discrete_floating_lookback_call_price: T,
+    }
+
+    fn floating_lookback_call_inner<T: Real>(s0: T, m_min: T, r: T, q: T, sig: T, t: T) -> (T, T) {
+        let sig2 = sig * sig;
+        let v_sqrt = sig * t.sqrt();
+        let b = (r - q).max_val(T::from_f64(1e-4));
+
+        let a1 = ((s0 / m_min).ln() + (b + T::from_f64(0.5) * sig2) * t) / v_sqrt;
+        let a2 = a1 - v_sqrt;
+        let a3 = ((s0 / m_min).ln() + (-b + T::from_f64(0.5) * sig2) * t) / v_sqrt;
+
+        let df_r = (-r * t).exp();
+        let df_q = (-q * t).exp();
+
+        let vanilla_part = s0 * df_q * norm_cdf(a1) - m_min * df_r * norm_cdf(a2);
+        let power_term = (s0 / m_min).pow(-T::from_f64(2.0) * b / sig2);
+        let reflection_bonus = s0
+            * df_r
+            * (sig2 / (T::from_f64(2.0) * b))
+            * (power_term * norm_cdf(-a3) - (b * t).exp() * norm_cdf(-a1));
+
+        (vanilla_part + reflection_bonus, reflection_bonus)
+    }
+
+    /// Evaluates the Conze & Viswanathan (1991) / Goldman, Sosin & Gatto (1979) floating-strike
+    /// lookback call price and Broadie, Glasserman & Kou (1999) / Haug (2007, Ch. 4.15.5) discrete
+    /// monitoring correction.
+    pub fn evaluate_conze_viswanathan_floating_and_fixed_lookback_extremum_option<T: Real>(
+        spec: &ConzeViswanathanLookbackSpec<T>,
+    ) -> ConzeViswanathanLookbackAnalytics<T> {
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(1e-4));
+        let s_min = spec
+            .observed_running_minimum_s_min
+            .max_val(T::from_f64(1e-4))
+            .min_val(s0 * T::from_f64(0.99));
+        let sig = spec.volatility_sigma.max_val(T::from_f64(1e-4));
+        let t = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+        let m_steps = spec.discrete_monitoring_steps_m.max_val(T::one());
+
+        let (c_cont, bonus_cont) = floating_lookback_call_inner(
+            s0,
+            s_min,
+            spec.risk_free_rate_r,
+            spec.dividend_yield_q,
+            sig,
+            t,
+        );
+
+        // Broadie-Glasserman-Kou (1999) / Cheuk-Vorst (1997) continuity shift beta = -zeta(1/2)/sqrt(2*pi)
+        let beta_bgk = T::from_f64(0.582_597_157_939_010_7);
+        let shift = (beta_bgk * sig * (t / m_steps).sqrt()).exp();
+        let s_min_adj = (s_min * shift).min_val(s0 * T::from_f64(0.999));
+
+        let (c_shifted, _) = floating_lookback_call_inner(
+            s0,
+            s_min_adj,
+            spec.risk_free_rate_r,
+            spec.dividend_yield_q,
+            sig,
+            t,
+        );
+        let c_discrete = c_shifted / shift;
+
+        ConzeViswanathanLookbackAnalytics {
+            continuity_adjusted_minimum_s_min: s_min_adj,
+            continuous_floating_lookback_call_price: c_cont,
+            extremum_reflection_bonus_value: bonus_cont,
+            discrete_floating_lookback_call_price: c_discrete,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn conze_viswanathan_lookback_invariants_and_ad_parity() {
+            let base = ConzeViswanathanLookbackSpec {
+                spot_price_s0: 100.0_f64,
+                observed_running_minimum_s_min: 88.0,
+                risk_free_rate_r: 0.05,
+                dividend_yield_q: 0.015,
+                volatility_sigma: 0.24,
+                discrete_monitoring_steps_m: 52.0,
+                maturity_years_t: 1.0,
+            };
+            let r0 = evaluate_conze_viswanathan_floating_and_fixed_lookback_extremum_option(&base);
+            assert!(r0.continuity_adjusted_minimum_s_min > base.observed_running_minimum_s_min);
+            assert!(r0.extremum_reflection_bonus_value > 0.0);
+            assert!(
+                r0.continuous_floating_lookback_call_price
+                    > r0.discrete_floating_lookback_call_price
+            );
+            assert!(r0.discrete_floating_lookback_call_price > 0.0);
+
+            let inputs = [
+                base.spot_price_s0,
+                base.observed_running_minimum_s_min,
+                base.risk_free_rate_r,
+                base.dividend_yield_q,
+                base.volatility_sigma,
+                base.discrete_monitoring_steps_m,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<7>::from_f64(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = ConzeViswanathanLookbackSpec {
+                spot_price_s0: dual_in[0],
+                observed_running_minimum_s_min: dual_in[1],
+                risk_free_rate_r: dual_in[2],
+                dividend_yield_q: dual_in[3],
+                volatility_sigma: dual_in[4],
+                discrete_monitoring_steps_m: dual_in[5],
+                maturity_years_t: dual_in[6],
+            };
+            let r_ad =
+                evaluate_conze_viswanathan_floating_and_fixed_lookback_extremum_option(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| ConzeViswanathanLookbackSpec {
+                    spot_price_s0: v[0],
+                    observed_running_minimum_s_min: v[1],
+                    risk_free_rate_r: v[2],
+                    dividend_yield_q: v[3],
+                    volatility_sigma: v[4],
+                    discrete_monitoring_steps_m: v[5],
+                    maturity_years_t: v[6],
+                };
+                let rp =
+                    evaluate_conze_viswanathan_floating_and_fixed_lookback_extremum_option(&mk(p));
+                let rm =
+                    evaluate_conze_viswanathan_floating_and_fixed_lookback_extremum_option(&mk(m));
+                let fd = (rp.discrete_floating_lookback_call_price
+                    - rm.discrete_floating_lookback_call_price)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.discrete_floating_lookback_call_price.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.discrete_floating_lookback_call_price.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use conze_viswanathan_lookback_extremum_mod::*;

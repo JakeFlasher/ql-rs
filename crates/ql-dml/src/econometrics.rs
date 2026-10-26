@@ -2672,3 +2672,170 @@ pub mod hansen_lunde_overnight_realized_variance_mod {
     }
 }
 pub use hansen_lunde_overnight_realized_variance_mod::*;
+
+// ============================================================================
+// Engle & Granger (1987), Johansen (1991) & Vidyamurthy (2004) VECM Cointegration Spread
+// ============================================================================
+
+pub mod engle_granger_johansen_cointegration_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Engle & Granger (1987, *Econometrica* 55(2)), Johansen (1991,
+    /// *Econometrica* 59(6)), and Vidyamurthy (2004, Ch. 4–6) VECM cointegration pairs engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct EngleGrangerJohansenCointegrationSpec<T: Real> {
+        /// Current log price of target asset $y_t = \ln P_{Y,t}$.
+        pub current_log_price_y: T,
+        /// Current log price of cointegrating peer asset $x_t = \ln P_{X,t}$.
+        pub current_log_price_x: T,
+        /// Johansen cointegrating vector slope $\beta_{\text{coint}} > 0$.
+        pub cointegration_hedge_ratio_beta: T,
+        /// Long-run equilibrium spread intercept $\mu_{\text{eq}}$.
+        pub equilibrium_intercept_mu: T,
+        /// VECM error-correction adjustment speed $\alpha_{\text{ecm}} \in (0, 1)$.
+        pub error_correction_speed_alpha: T,
+        /// Residual innovation volatility $\sigma_\varepsilon > 0$.
+        pub innovation_volatility_sigma_eps: T,
+        /// Johansen squared canonical correlation $R_{\text{canon}}^2 \in (0, 1)$.
+        pub canonical_correlation_r_sq: T,
+    }
+
+    /// Analytical outputs for the Engle-Granger-Johansen VECM cointegration engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct EngleGrangerJohansenCointegrationAnalytics<T: Real> {
+        /// Current disequilibrium error-correction spread $z_t = y_t - \mu_{\text{eq}} - \beta_{\text{coint}} x_t$.
+        pub disequilibrium_error_correction_spread: T,
+        /// Standardized stationary spread z-score $s_t = z_t / \sigma_z$.
+        pub standardized_stationary_z_score: T,
+        /// Exact discrete-time mean-reversion half-life $t_{1/2} = \frac{\ln 2}{-\ln(1 - \alpha_{\text{ecm}})}$.
+        pub mean_reversion_half_life_periods: T,
+        /// Johansen-eigenvalue-weighted error-correction Sharpe signal.
+        pub cointegration_confidence_weighted_sharpe: T,
+    }
+
+    /// Evaluates the Engle & Granger (1987) / Johansen (1991) error-correction spread,
+    /// stationary z-score, half-life, and canonical-correlation-weighted Sharpe ratio.
+    pub fn evaluate_engle_granger_johansen_cointegration_error_correction_pairs_spread<T: Real>(
+        spec: &EngleGrangerJohansenCointegrationSpec<T>,
+    ) -> EngleGrangerJohansenCointegrationAnalytics<T> {
+        let alpha = spec
+            .error_correction_speed_alpha
+            .max_val(T::from_f64(1e-4))
+            .min_val(T::from_f64(0.95));
+        let sig_eps = spec
+            .innovation_volatility_sigma_eps
+            .max_val(T::from_f64(1e-5));
+        let r_sq = spec
+            .canonical_correlation_r_sq
+            .max_val(T::from_f64(1e-4))
+            .min_val(T::from_f64(0.99));
+
+        let z_t = spec.current_log_price_y
+            - spec.equilibrium_intercept_mu
+            - spec.cointegration_hedge_ratio_beta * spec.current_log_price_x;
+
+        // Stationary AR(1) variance of z_t under phi = 1 - alpha: Var(z) = sigma_eps^2 / (alpha * (2 - alpha))
+        let var_z = (sig_eps * sig_eps) / (alpha * (T::from_f64(2.0) - alpha));
+        let sig_z = var_z.sqrt();
+        let z_score = z_t / sig_z;
+
+        let kappa_ecm = -(T::one() - alpha).ln();
+        let half_life = T::from_f64(std::f64::consts::LN_2) / kappa_ecm;
+
+        // Johansen canonical eigenvalue statistic lambda_J = -ln(1 - R_canon^2)
+        let johansen_lambda = -(T::one() - r_sq).ln();
+        let smooth_abs_z = (z_t * z_t + T::from_f64(1e-8)).sqrt();
+        let ecm_sharpe = (alpha * smooth_abs_z / sig_eps) * johansen_lambda.sqrt();
+
+        EngleGrangerJohansenCointegrationAnalytics {
+            disequilibrium_error_correction_spread: z_t,
+            standardized_stationary_z_score: z_score,
+            mean_reversion_half_life_periods: half_life,
+            cointegration_confidence_weighted_sharpe: ecm_sharpe,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn engle_granger_johansen_cointegration_invariants_and_ad_parity() {
+            let base = EngleGrangerJohansenCointegrationSpec {
+                current_log_price_y: 4.65_f64,
+                current_log_price_x: 4.52,
+                cointegration_hedge_ratio_beta: 1.04,
+                equilibrium_intercept_mu: -0.08,
+                error_correction_speed_alpha: 0.28,
+                innovation_volatility_sigma_eps: 0.032,
+                canonical_correlation_r_sq: 0.24,
+            };
+            let r0 =
+                evaluate_engle_granger_johansen_cointegration_error_correction_pairs_spread(&base);
+            assert!(r0.disequilibrium_error_correction_spread.abs() > 0.0);
+            assert!(r0.standardized_stationary_z_score.abs() > 0.0);
+            assert!(r0.mean_reversion_half_life_periods > 0.0);
+            assert!(r0.cointegration_confidence_weighted_sharpe > 0.0);
+
+            let inputs = [
+                base.current_log_price_y,
+                base.current_log_price_x,
+                base.cointegration_hedge_ratio_beta,
+                base.equilibrium_intercept_mu,
+                base.error_correction_speed_alpha,
+                base.innovation_volatility_sigma_eps,
+                base.canonical_correlation_r_sq,
+            ];
+            let mut dual_in = [Dual::<7>::from_f64(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = EngleGrangerJohansenCointegrationSpec {
+                current_log_price_y: dual_in[0],
+                current_log_price_x: dual_in[1],
+                cointegration_hedge_ratio_beta: dual_in[2],
+                equilibrium_intercept_mu: dual_in[3],
+                error_correction_speed_alpha: dual_in[4],
+                innovation_volatility_sigma_eps: dual_in[5],
+                canonical_correlation_r_sq: dual_in[6],
+            };
+            let r_ad = evaluate_engle_granger_johansen_cointegration_error_correction_pairs_spread(
+                &spec_ad,
+            );
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| EngleGrangerJohansenCointegrationSpec {
+                    current_log_price_y: v[0],
+                    current_log_price_x: v[1],
+                    cointegration_hedge_ratio_beta: v[2],
+                    equilibrium_intercept_mu: v[3],
+                    error_correction_speed_alpha: v[4],
+                    innovation_volatility_sigma_eps: v[5],
+                    canonical_correlation_r_sq: v[6],
+                };
+                let rp =
+                    evaluate_engle_granger_johansen_cointegration_error_correction_pairs_spread(
+                        &mk(p),
+                    );
+                let rm =
+                    evaluate_engle_granger_johansen_cointegration_error_correction_pairs_spread(
+                        &mk(m),
+                    );
+                let fd = (rp.cointegration_confidence_weighted_sharpe
+                    - rm.cointegration_confidence_weighted_sharpe)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.cointegration_confidence_weighted_sharpe.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.cointegration_confidence_weighted_sharpe.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use engle_granger_johansen_cointegration_mod::*;

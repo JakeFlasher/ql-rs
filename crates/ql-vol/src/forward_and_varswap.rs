@@ -2205,3 +2205,161 @@ pub mod carr_lee_volatility_swap_convexity_mod {
     }
 }
 pub use carr_lee_volatility_swap_convexity_mod::*;
+
+// ============================================================================
+// Gatheral (2006) & Gatheral-Jacquier (2014) SVI Raw-to-Jump-Wing & Durrleman Density
+// ============================================================================
+
+pub mod gatheral_jacquier_svi_jump_wing_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Gatheral (2006, Ch. 3) / Gatheral & Jacquier (2014, *QF* 14(1))
+    /// Raw-SVI to Jump-Wing (SVI-JW) reparameterization and Durrleman butterfly density engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct GatheralJacquierSviJumpWingSpec<T: Real> {
+        /// Raw SVI vertical total-variance level $a$.
+        pub raw_svi_a: T,
+        /// Raw SVI wing slope factor $b > 0$.
+        pub raw_svi_b: T,
+        /// Raw SVI correlation/asymmetry parameter $\rho \in (-1, 1)$.
+        pub raw_svi_rho: T,
+        /// Raw SVI log-moneyness vertex shift $m$.
+        pub raw_svi_m: T,
+        /// Raw SVI ATM vertex smoothing parameter $\sigma > 0$.
+        pub raw_svi_sigma: T,
+        /// Evaluation log-forward moneyness $k = \ln(K / F)$.
+        pub evaluation_log_moneyness_k: T,
+        /// Option expiry $T > 0$ (years).
+        pub expiry_years_t: T,
+    }
+
+    /// Analytical outputs for the Gatheral-Jacquier SVI-JW and Durrleman density engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct GatheralJacquierSviJumpWingAnalytics<T: Real> {
+        /// SVI-Jump-Wing ATM variance $v_t = w(0) / T$.
+        pub atm_jump_wing_variance_v_t: T,
+        /// SVI-Jump-Wing ATM volatility skew $\psi_t = \left.\frac{\partial \sigma_{\text{BS}}}{\partial k}\right|_{k=0} \sqrt{T}$.
+        pub atm_jump_wing_skew_psi_t: T,
+        /// Durrleman (2010) / Gatheral-Jacquier butterfly no-arbitrage density factor $g(k) > 0$.
+        pub durrleman_butterfly_density_g_k: T,
+        /// Exact SVI implied volatility $\sigma_{\text{SVI}}(k, T) = \sqrt{w(k) / T}$ at $(k, T)$.
+        pub svi_implied_volatility_sigma_k: T,
+    }
+
+    /// Evaluates the Gatheral & Jacquier (2014, Section 3.2 & Eq. 2.3) Raw-SVI to SVI-Jump-Wing
+    /// reparameterization and Durrleman butterfly arbitrage density $g(k)$ at log-moneyness $k$.
+    pub fn evaluate_gatheral_jacquier_svi_raw_to_jump_wing_reparameterization<T: Real>(
+        spec: &GatheralJacquierSviJumpWingSpec<T>,
+    ) -> GatheralJacquierSviJumpWingAnalytics<T> {
+        let b = spec.raw_svi_b.max_val(T::from_f64(1e-5));
+        let rho = spec
+            .raw_svi_rho
+            .max_val(T::from_f64(-0.99))
+            .min_val(T::from_f64(0.99));
+        let sig = spec.raw_svi_sigma.max_val(T::from_f64(1e-5));
+        let t = spec.expiry_years_t.max_val(T::from_f64(1e-4));
+
+        // ATM (k = 0) total variance w(0) and SVI-JW parameters
+        let r0 = (spec.raw_svi_m * spec.raw_svi_m + sig * sig).sqrt();
+        let w0 = (spec.raw_svi_a + b * (-rho * spec.raw_svi_m + r0)).max_val(T::from_f64(1e-6));
+        let v_t = w0 / t;
+        let psi_t = (b / (T::from_f64(2.0) * w0.sqrt())) * (rho - spec.raw_svi_m / r0);
+
+        // Evaluation strike k = ln(K / F)
+        let dk = spec.evaluation_log_moneyness_k - spec.raw_svi_m;
+        let rk = (dk * dk + sig * sig).sqrt();
+        let wk = (spec.raw_svi_a + b * (rho * dk + rk)).max_val(T::from_f64(1e-6));
+        let wp = b * (rho + dk / rk);
+        let wpp = b * sig * sig / (rk * rk * rk);
+
+        // Durrleman butterfly density g(k) (Gatheral & Jacquier 2014, Eq. 2.3)
+        let k = spec.evaluation_log_moneyness_k;
+        let term1_base = T::one() - (k * wp) / (T::from_f64(2.0) * wk);
+        let term1 = term1_base * term1_base;
+        let term2 = (wp * wp / T::from_f64(4.0)) * (T::one() / wk + T::from_f64(0.25));
+        let g_k = term1 - term2 + T::from_f64(0.5) * wpp;
+
+        let sig_k = (wk / t).sqrt();
+
+        GatheralJacquierSviJumpWingAnalytics {
+            atm_jump_wing_variance_v_t: v_t,
+            atm_jump_wing_skew_psi_t: psi_t,
+            durrleman_butterfly_density_g_k: g_k,
+            svi_implied_volatility_sigma_k: sig_k,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn gatheral_jacquier_svi_jump_wing_invariants_and_ad_parity() {
+            let base = GatheralJacquierSviJumpWingSpec {
+                raw_svi_a: 0.012_f64,
+                raw_svi_b: 0.14,
+                raw_svi_rho: -0.42,
+                raw_svi_m: 0.05,
+                raw_svi_sigma: 0.18,
+                evaluation_log_moneyness_k: -0.10,
+                expiry_years_t: 0.75,
+            };
+            let r0 = evaluate_gatheral_jacquier_svi_raw_to_jump_wing_reparameterization(&base);
+            assert!(r0.atm_jump_wing_variance_v_t > 0.0);
+            assert!(r0.atm_jump_wing_skew_psi_t < 0.0);
+            assert!(r0.durrleman_butterfly_density_g_k > 0.0);
+            assert!(r0.svi_implied_volatility_sigma_k > 0.0);
+
+            let inputs = [
+                base.raw_svi_a,
+                base.raw_svi_b,
+                base.raw_svi_rho,
+                base.raw_svi_m,
+                base.raw_svi_sigma,
+                base.evaluation_log_moneyness_k,
+                base.expiry_years_t,
+            ];
+            let mut dual_in = [Dual::<7>::from_f64(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = GatheralJacquierSviJumpWingSpec {
+                raw_svi_a: dual_in[0],
+                raw_svi_b: dual_in[1],
+                raw_svi_rho: dual_in[2],
+                raw_svi_m: dual_in[3],
+                raw_svi_sigma: dual_in[4],
+                evaluation_log_moneyness_k: dual_in[5],
+                expiry_years_t: dual_in[6],
+            };
+            let r_ad = evaluate_gatheral_jacquier_svi_raw_to_jump_wing_reparameterization(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| GatheralJacquierSviJumpWingSpec {
+                    raw_svi_a: v[0],
+                    raw_svi_b: v[1],
+                    raw_svi_rho: v[2],
+                    raw_svi_m: v[3],
+                    raw_svi_sigma: v[4],
+                    evaluation_log_moneyness_k: v[5],
+                    expiry_years_t: v[6],
+                };
+                let rp = evaluate_gatheral_jacquier_svi_raw_to_jump_wing_reparameterization(&mk(p));
+                let rm = evaluate_gatheral_jacquier_svi_raw_to_jump_wing_reparameterization(&mk(m));
+                let fd = (rp.svi_implied_volatility_sigma_k - rm.svi_implied_volatility_sigma_k)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.svi_implied_volatility_sigma_k.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.svi_implied_volatility_sigma_k.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use gatheral_jacquier_svi_jump_wing_mod::*;

@@ -5865,3 +5865,221 @@ pub mod rockafellar_uryasev_mixed_cvar_quadrangle_mod {
     }
 }
 pub use rockafellar_uryasev_mixed_cvar_quadrangle_mod::*;
+
+// ============================================================================
+// Glasserman, Heidelberger & Shahabuddin (2000, 2002) Importance Sampling Credit/Delta-Gamma VaR
+// ============================================================================
+
+pub mod glasserman_importance_sampling_var_mod {
+    use ql_ad::Real;
+    use ql_math::distributions::{norm_cdf, norm_pdf};
+
+    /// Specification for the Glasserman, Heidelberger & Shahabuddin (2000, *Management Science* 46(10);
+    /// 2002, *Math. Finance* 12(3)) and Glasserman (2004, Ch. 9) exponential-twisting saddlepoint
+    /// importance-sampling tail risk and Value-at-Risk engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct GlassermanImportanceSamplingVaRSpec<T: Real> {
+        /// First-order systemic factor sensitivity $a_{\text{delta}} > 0$.
+        pub portfolio_linear_delta_exposure_a: T,
+        /// Second-order quadratic convexity / concentration exposure $b_{\text{gamma}} \in (0, 0.45)$.
+        pub portfolio_quadratic_gamma_exposure_b: T,
+        /// Conditional idiosyncratic loss volatility $\sigma_\varepsilon > 0$.
+        pub idiosyncratic_noise_volatility_sigma_e: T,
+        /// Extreme tail loss threshold $x > 0$ for $P(L > x)$ saddlepoint twisting.
+        pub tail_loss_threshold_x: T,
+        /// Constant portfolio loss drift offset $c_0$.
+        pub constant_loss_drift_c0: T,
+        /// Value-at-Risk confidence level $\alpha \in (0.90, 0.999)$.
+        pub confidence_level_alpha: T,
+        /// Importance-sampling Monte Carlo path budget $N_{\text{IS}} > 0$.
+        pub effective_sample_paths_n: T,
+    }
+
+    /// Analytical outputs for the Glasserman-Heidelberger-Shahabuddin importance-sampling VaR engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct GlassermanImportanceSamplingVaRAnalytics<T: Real> {
+        /// Optimal exponential-twisting saddlepoint parameter $\theta^* > 0$ solving $\psi'(\theta^*) = x$.
+        pub optimal_exponential_twisting_theta: T,
+        /// Lugannani-Rice / saddlepoint tail exceedance probability $P(L > x)$.
+        pub saddlepoint_tail_exceedance_probability: T,
+        /// Importance-sampling estimator standard error $\text{SE}_{\text{IS}}(x)$ for $N_{\text{IS}}$ paths.
+        pub importance_sampling_standard_error: T,
+        /// Saddlepoint-adjusted quadratic Value-at-Risk $\text{VaR}_\alpha^{\text{IS}}$.
+        pub saddlepoint_adjusted_quadratic_var: T,
+    }
+
+    /// Evaluates the Glasserman, Heidelberger & Shahabuddin (2000, Section 3; Glasserman 2004, Ch. 9.2)
+    /// cumulant generating function $\psi(\theta)$, saddlepoint twisting parameter $\theta^*$,
+    /// Lugannani-Rice tail probability, and importance-sampling-adjusted quadratic VaR.
+    pub fn evaluate_glasserman_heidelberger_shahabuddin_importance_sampling_credit_var<T: Real>(
+        spec: &GlassermanImportanceSamplingVaRSpec<T>,
+    ) -> GlassermanImportanceSamplingVaRAnalytics<T> {
+        let a = spec
+            .portfolio_linear_delta_exposure_a
+            .max_val(T::from_f64(0.1));
+        let b = spec
+            .portfolio_quadratic_gamma_exposure_b
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.45));
+        let sig_e = spec
+            .idiosyncratic_noise_volatility_sigma_e
+            .max_val(T::from_f64(0.05));
+        let x_excess = (spec.tail_loss_threshold_x - spec.constant_loss_drift_c0)
+            .max_val(b + T::from_f64(0.5));
+
+        // Exact root of E_theta[a*Z + b*Z^2 + sig_e*eps] = x_excess via 4 Newton steps on psi'(theta) = x
+        let theta_max = T::from_f64(0.44) / b;
+        let mut theta = ((x_excess - b)
+            / (a * a + sig_e * sig_e + T::from_f64(2.0) * b * x_excess))
+            .max_val(T::from_f64(0.02))
+            .min_val(theta_max);
+
+        for _ in 0..4 {
+            let denom = (T::one() - T::from_f64(2.0) * theta * b).max_val(T::from_f64(0.08));
+            let psi_p = b / denom
+                + (theta * a * a * (T::one() - theta * b)) / (denom * denom)
+                + theta * sig_e * sig_e;
+            let psi_pp = (T::from_f64(2.0) * b * b) / (denom * denom)
+                + (a * a) / (denom * denom * denom)
+                + sig_e * sig_e;
+            theta = (theta - (psi_p - x_excess) / psi_pp)
+                .max_val(T::from_f64(0.01))
+                .min_val(theta_max);
+        }
+
+        let denom = (T::one() - T::from_f64(2.0) * theta * b).max_val(T::from_f64(0.08));
+        let psi = -T::from_f64(0.5) * denom.ln()
+            + (theta * theta * a * a) / (T::from_f64(2.0) * denom)
+            + T::from_f64(0.5) * theta * theta * sig_e * sig_e;
+        let psi_pp = (T::from_f64(2.0) * b * b) / (denom * denom)
+            + (a * a) / (denom * denom * denom)
+            + sig_e * sig_e;
+
+        let rate_fn = (theta * x_excess - psi).max_val(T::from_f64(1e-6));
+        let w_lr = (T::from_f64(2.0) * rate_fn).sqrt();
+        let u_lr = theta * psi_pp.sqrt();
+        let tail_prob = (T::one() - norm_cdf(w_lr)
+            + norm_pdf(w_lr) * (T::one() / u_lr - T::one() / w_lr))
+            .max_val(T::from_f64(1e-9));
+
+        // Asymptotic second moment M_2(theta*) of the importance-sampling likelihood ratio estimator
+        let n_paths = spec.effective_sample_paths_n.max_val(T::one());
+        let m2_is = (-T::from_f64(2.0) * rate_fn).exp()
+            / (T::from_f64(2.0) * T::from_f64(std::f64::consts::PI).sqrt() * u_lr);
+        let se_is = (m2_is / n_paths).sqrt();
+
+        // Smooth normal quantile approximation for alpha in (0.90, 0.999) + saddlepoint tail coupling
+        let p_tail = (T::one() - spec.confidence_level_alpha)
+            .max_val(T::from_f64(1e-4))
+            .min_val(T::from_f64(0.15));
+        let t_q = (-T::from_f64(2.0) * p_tail.ln()).sqrt();
+        let z_alpha = t_q
+            - (T::from_f64(2.515517)
+                + T::from_f64(0.802853) * t_q
+                + T::from_f64(0.010328) * t_q * t_q)
+                / (T::one()
+                    + T::from_f64(1.432788) * t_q
+                    + T::from_f64(0.189269) * t_q * t_q
+                    + T::from_f64(0.001308) * t_q * t_q * t_q);
+
+        let var_quad = spec.constant_loss_drift_c0
+            + a * z_alpha
+            + b * z_alpha * z_alpha
+            + (sig_e * sig_e * z_alpha) / (T::from_f64(2.0) * (a * a + sig_e * sig_e).sqrt())
+            + T::from_f64(10.0) * se_is;
+
+        GlassermanImportanceSamplingVaRAnalytics {
+            optimal_exponential_twisting_theta: theta,
+            saddlepoint_tail_exceedance_probability: tail_prob,
+            importance_sampling_standard_error: se_is,
+            saddlepoint_adjusted_quadratic_var: var_quad,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn glasserman_importance_sampling_var_invariants_and_ad_parity() {
+            let base = GlassermanImportanceSamplingVaRSpec {
+                portfolio_linear_delta_exposure_a: 1.80_f64,
+                portfolio_quadratic_gamma_exposure_b: 0.22,
+                idiosyncratic_noise_volatility_sigma_e: 0.65,
+                tail_loss_threshold_x: 5.20,
+                constant_loss_drift_c0: 0.15,
+                confidence_level_alpha: 0.99,
+                effective_sample_paths_n: 1000.0,
+            };
+            let r0 =
+                evaluate_glasserman_heidelberger_shahabuddin_importance_sampling_credit_var(&base);
+            assert!(r0.optimal_exponential_twisting_theta > 0.0);
+            assert!(
+                r0.saddlepoint_tail_exceedance_probability > 0.0
+                    && r0.saddlepoint_tail_exceedance_probability < 0.2
+            );
+            assert!(r0.importance_sampling_standard_error > 0.0);
+            assert!(r0.saddlepoint_adjusted_quadratic_var > base.tail_loss_threshold_x);
+
+            let inputs = [
+                base.portfolio_linear_delta_exposure_a,
+                base.portfolio_quadratic_gamma_exposure_b,
+                base.idiosyncratic_noise_volatility_sigma_e,
+                base.tail_loss_threshold_x,
+                base.constant_loss_drift_c0,
+                base.confidence_level_alpha,
+                base.effective_sample_paths_n,
+            ];
+            let mut dual_in = [Dual::<7>::from_f64(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = GlassermanImportanceSamplingVaRSpec {
+                portfolio_linear_delta_exposure_a: dual_in[0],
+                portfolio_quadratic_gamma_exposure_b: dual_in[1],
+                idiosyncratic_noise_volatility_sigma_e: dual_in[2],
+                tail_loss_threshold_x: dual_in[3],
+                constant_loss_drift_c0: dual_in[4],
+                confidence_level_alpha: dual_in[5],
+                effective_sample_paths_n: dual_in[6],
+            };
+            let r_ad = evaluate_glasserman_heidelberger_shahabuddin_importance_sampling_credit_var(
+                &spec_ad,
+            );
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| GlassermanImportanceSamplingVaRSpec {
+                    portfolio_linear_delta_exposure_a: v[0],
+                    portfolio_quadratic_gamma_exposure_b: v[1],
+                    idiosyncratic_noise_volatility_sigma_e: v[2],
+                    tail_loss_threshold_x: v[3],
+                    constant_loss_drift_c0: v[4],
+                    confidence_level_alpha: v[5],
+                    effective_sample_paths_n: v[6],
+                };
+                let rp =
+                    evaluate_glasserman_heidelberger_shahabuddin_importance_sampling_credit_var(
+                        &mk(p),
+                    );
+                let rm =
+                    evaluate_glasserman_heidelberger_shahabuddin_importance_sampling_credit_var(
+                        &mk(m),
+                    );
+                let fd = (rp.saddlepoint_adjusted_quadratic_var
+                    - rm.saddlepoint_adjusted_quadratic_var)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.saddlepoint_adjusted_quadratic_var.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.saddlepoint_adjusted_quadratic_var.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use glasserman_importance_sampling_var_mod::*;

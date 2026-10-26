@@ -3073,3 +3073,184 @@ pub mod green_kenyon_tax_valuation_adjustment_mod {
     }
 }
 pub use green_kenyon_tax_valuation_adjustment_mod::*;
+
+// ============================================================================
+// Burgard & Kjaer (2011, 2013) & Gregory (2020) Semi-Replication Funding Strategy XVA
+// ============================================================================
+
+pub mod burgard_kjaer_semi_replication_xva_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Burgard & Kjaer (2011, *J. Risk* 14(2); 2013, *Risk* 26(12))
+    /// PDE semi-replication bilateral counterparty and funding valuation adjustment engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct BurgardKjaerSemiReplicationFundingStrategyXvaSpec<T: Real> {
+        /// Initial risk-free positive mark-to-market exposure $V_0 > 0$.
+        pub risk_free_derivative_value_v0: T,
+        /// Initial negative mark-to-market exposure component $\text{ENE}_0 > 0$.
+        pub negative_exposure_ene0: T,
+        /// Counterparty default hazard rate $\lambda_C > 0$.
+        pub counterparty_hazard_rate_lambda_c: T,
+        /// Bank (own) default hazard rate $\lambda_B > 0$.
+        pub bank_hazard_rate_lambda_b: T,
+        /// Counterparty loss given default $\text{LGD}_C \in (0, 1)$.
+        pub loss_given_default_lgd: T,
+        /// Bank senior unsecured bond recovery rate $R_B \in (0, 1)$.
+        pub own_bond_recovery_r_b: T,
+        /// Semi-replication own-bond hedge weight $\alpha_{\text{BK}} \in [0, 1]$
+        /// ($\alpha_{\text{BK}}=0$: no shortfall at own default; $\alpha_{\text{BK}}=1$: single-bond funding).
+        pub semi_replication_hedge_weight_alpha: T,
+        /// Risk-free OIS discount rate $r > 0$.
+        pub ois_discount_rate_r: T,
+    }
+
+    /// Analytical outputs for the Burgard-Kjaer semi-replication XVA engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct BurgardKjaerSemiReplicationFundingStrategyXvaAnalytics<T: Real> {
+        /// Bilateral Credit Valuation Adjustment $\text{CVA}$.
+        pub bilateral_cva_charge: T,
+        /// Bilateral Debt Valuation Adjustment $\text{DVA}$.
+        pub bilateral_dva_benefit: T,
+        /// Semi-replication Funding Cost Adjustment $\text{FCA}(\alpha_{\text{BK}})$.
+        pub semi_replication_fca_charge: T,
+        /// Total Burgard-Kjaer bilateral and funding adjustment $\text{XVA}_{\text{BK}}$.
+        pub total_burgard_kjaer_xva_charge: T,
+    }
+
+    /// Evaluates the Burgard & Kjaer (2011, Eqs. 19–27; 2013) semi-replication XVA charge
+    /// across a 4-period joint survival-weighted exposure profile.
+    pub fn evaluate_burgard_kjaer_semi_replication_funding_strategy_xva<T: Real>(
+        spec: &BurgardKjaerSemiReplicationFundingStrategyXvaSpec<T>,
+    ) -> BurgardKjaerSemiReplicationFundingStrategyXvaAnalytics<T> {
+        const PERIODS: usize = 4;
+        let dt = T::one();
+        let lam_c = spec
+            .counterparty_hazard_rate_lambda_c
+            .max_val(T::from_f64(1e-5));
+        let lam_b = spec.bank_hazard_rate_lambda_b.max_val(T::from_f64(1e-5));
+        let lgd_c = spec
+            .loss_given_default_lgd
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.95));
+        let lgd_b = (T::one() - spec.own_bond_recovery_r_b)
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.95));
+        let alpha = spec
+            .semi_replication_hedge_weight_alpha
+            .max_val(T::zero())
+            .min_val(T::one());
+
+        // Under Burgard-Kjaer (2011), hedging fraction alpha of own-default windfall reduces
+        // the effective funding rate on V^+ from s_F = (1 - R_B) * lambda_B to (1 - alpha) * s_F
+        // while introducing replacement close-out contagion alpha * s_F * lambda_C * dt.
+        let s_f = lgd_b * lam_b;
+        let r_tot = spec.ois_discount_rate_r + lam_c + lam_b;
+
+        let mut cva = T::zero();
+        let mut dva = T::zero();
+        let mut fca = T::zero();
+
+        for m in 1..=PERIODS {
+            let tm = (T::from_f64(m as f64) - T::from_f64(0.5)) * dt;
+            let epe_m = spec.risk_free_derivative_value_v0
+                * (T::one() + T::from_f64(0.35) * tm)
+                * (-T::from_f64(0.25) * tm).exp();
+            let ene_m = spec.negative_exposure_ene0
+                * (T::one() + T::from_f64(0.25) * tm)
+                * (-T::from_f64(0.30) * tm).exp();
+
+            let df_surv = (-r_tot * tm).exp();
+            cva += dt * df_surv * lgd_c * lam_c * epe_m;
+            dva += dt * df_surv * lgd_b * lam_b * ene_m;
+            let effective_fca_spread = (T::one() - alpha) * s_f + alpha * s_f * lgd_c * lam_c * tm;
+            fca += dt * df_surv * effective_fca_spread * epe_m;
+        }
+
+        let total_xva = cva - dva + fca;
+
+        BurgardKjaerSemiReplicationFundingStrategyXvaAnalytics {
+            bilateral_cva_charge: cva,
+            bilateral_dva_benefit: dva,
+            semi_replication_fca_charge: fca,
+            total_burgard_kjaer_xva_charge: total_xva,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn burgard_kjaer_semi_replication_xva_invariants_and_ad_parity() {
+            let base = BurgardKjaerSemiReplicationFundingStrategyXvaSpec {
+                risk_free_derivative_value_v0: 100.0_f64,
+                negative_exposure_ene0: 45.0,
+                counterparty_hazard_rate_lambda_c: 0.022,
+                bank_hazard_rate_lambda_b: 0.015,
+                loss_given_default_lgd: 0.60,
+                own_bond_recovery_r_b: 0.40,
+                semi_replication_hedge_weight_alpha: 0.65,
+                ois_discount_rate_r: 0.035,
+            };
+            let r0 = evaluate_burgard_kjaer_semi_replication_funding_strategy_xva(&base);
+            assert!(r0.bilateral_cva_charge > 0.0);
+            assert!(r0.bilateral_dva_benefit > 0.0);
+            assert!(r0.semi_replication_fca_charge > 0.0);
+            assert!(r0.total_burgard_kjaer_xva_charge > 0.0);
+
+            let inputs = [
+                base.risk_free_derivative_value_v0,
+                base.negative_exposure_ene0,
+                base.counterparty_hazard_rate_lambda_c,
+                base.bank_hazard_rate_lambda_b,
+                base.loss_given_default_lgd,
+                base.own_bond_recovery_r_b,
+                base.semi_replication_hedge_weight_alpha,
+                base.ois_discount_rate_r,
+            ];
+            let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BurgardKjaerSemiReplicationFundingStrategyXvaSpec {
+                risk_free_derivative_value_v0: dual_in[0],
+                negative_exposure_ene0: dual_in[1],
+                counterparty_hazard_rate_lambda_c: dual_in[2],
+                bank_hazard_rate_lambda_b: dual_in[3],
+                loss_given_default_lgd: dual_in[4],
+                own_bond_recovery_r_b: dual_in[5],
+                semi_replication_hedge_weight_alpha: dual_in[6],
+                ois_discount_rate_r: dual_in[7],
+            };
+            let r_ad = evaluate_burgard_kjaer_semi_replication_funding_strategy_xva(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| BurgardKjaerSemiReplicationFundingStrategyXvaSpec {
+                    risk_free_derivative_value_v0: v[0],
+                    negative_exposure_ene0: v[1],
+                    counterparty_hazard_rate_lambda_c: v[2],
+                    bank_hazard_rate_lambda_b: v[3],
+                    loss_given_default_lgd: v[4],
+                    own_bond_recovery_r_b: v[5],
+                    semi_replication_hedge_weight_alpha: v[6],
+                    ois_discount_rate_r: v[7],
+                };
+                let rp = evaluate_burgard_kjaer_semi_replication_funding_strategy_xva(&mk(p));
+                let rm = evaluate_burgard_kjaer_semi_replication_funding_strategy_xva(&mk(m));
+                let fd = (rp.total_burgard_kjaer_xva_charge - rm.total_burgard_kjaer_xva_charge)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.total_burgard_kjaer_xva_charge.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.total_burgard_kjaer_xva_charge.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use burgard_kjaer_semi_replication_xva_mod::*;

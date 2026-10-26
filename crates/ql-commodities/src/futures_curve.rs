@@ -1292,3 +1292,182 @@ pub mod cortazar_schwartz_three_factor_oil_mod {
     }
 }
 pub use cortazar_schwartz_three_factor_oil_mod::*;
+
+// ============================================================================
+// Benth & Saltyte-Benth (2007, 2012) Seasonal Ornstein-Uhlenbeck HDD/CDD Weather Swap
+// ============================================================================
+
+pub mod benth_seasonal_temperature_hdd_cdd_swap_mod {
+    use ql_ad::Real;
+    use ql_math::distributions::{norm_cdf, norm_pdf};
+
+    /// Specification for the Benth & Šaltytė-Benth (2007, *JBF* 31(7); 2012, Ch. 5)
+    /// seasonal Ornstein–Uhlenbeck temperature process and HDD/CDD weather derivative swap.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct BenthSeasonalTemperatureHddCddSpec<T: Real> {
+        /// Initial observed daily average temperature $T_0$ (°C).
+        pub initial_temperature_t0: T,
+        /// Annual long-run mean temperature level $a_0$ (°C).
+        pub seasonal_mean_level_a0: T,
+        /// Seasonal cosine wave amplitude $b_1$ (°C).
+        pub seasonal_amplitude_b1: T,
+        /// Ornstein-Uhlenbeck temperature mean-reversion speed $\kappa > 0$ (annualized).
+        pub mean_reversion_speed_kappa: T,
+        /// Ornstein-Uhlenbeck temperature volatility $\sigma_T > 0$ (°C / $\sqrt{\text{year}}$).
+        pub temperature_volatility_sigma: T,
+        /// Degree-day reference threshold temperature $K_{\text{base}}$ (e.g., $18.0^\circ\text{C}$).
+        pub degree_day_threshold_k_base: T,
+        /// Girsanov / Esscher market price of weather risk $\theta_W$.
+        pub market_price_of_weather_risk_theta: T,
+        /// Risk-free discount rate $r > 0$.
+        pub discount_rate_r: T,
+    }
+
+    /// Analytical outputs for the Benth seasonal OU HDD/CDD weather swap engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct BenthSeasonalTemperatureHddCddAnalytics<T: Real> {
+        /// Accumulated risk-neutral expected Heating Degree Days $\mathbb{E}^\theta[\text{HDD}]$.
+        pub expected_cumulative_hdd: T,
+        /// Accumulated risk-neutral expected Cooling Degree Days $\mathbb{E}^\theta[\text{CDD}]$.
+        pub expected_cumulative_cdd: T,
+        /// Terminal seasonal risk-neutral mean temperature $\mu_Q(T)$ (°C).
+        pub terminal_risk_neutral_mean_temperature: T,
+        /// Discounted Heating Degree Day (HDD) swap present value $e^{-r T}\mathbb{E}^\theta[\text{HDD}]$.
+        pub discounted_hdd_swap_present_value: T,
+    }
+
+    /// Evaluates the Benth & Šaltytė-Benth (2012, Proposition 5.1 & Theorem 5.2) analytical
+    /// Bachelier HDD and CDD expectations across a 4-month winter/shoulder season.
+    pub fn evaluate_benth_cartea_saltyte_benth_seasonal_temperature_hdd_cdd_swap<T: Real>(
+        spec: &BenthSeasonalTemperatureHddCddSpec<T>,
+    ) -> BenthSeasonalTemperatureHddCddAnalytics<T> {
+        const PERIODS: usize = 4;
+        let t_contract = T::from_f64(0.5);
+        let dt = t_contract / T::from_f64(PERIODS as f64);
+        let days_per_period = T::from_f64(30.0);
+
+        let kappa = spec.mean_reversion_speed_kappa.max_val(T::from_f64(1e-3));
+        let sig_t = spec.temperature_volatility_sigma.max_val(T::from_f64(1e-3));
+        let two_pi = T::from_f64(std::f64::consts::TAU);
+
+        let lambda_0 = spec.seasonal_mean_level_a0 - spec.seasonal_amplitude_b1;
+        let mut cum_hdd = T::zero();
+        let mut cum_cdd = T::zero();
+        let mut last_mu_q = lambda_0;
+
+        for m in 1..=PERIODS {
+            let tm = (T::from_f64(m as f64) - T::from_f64(0.5)) * dt;
+            let e_kt = (-kappa * tm).exp();
+            let lambda_t =
+                spec.seasonal_mean_level_a0 - spec.seasonal_amplitude_b1 * (two_pi * tm).cos();
+
+            // Risk-neutral OU mean under market price of weather risk theta_W
+            let mu_q = lambda_t
+                + (spec.initial_temperature_t0 - lambda_0) * e_kt
+                + (spec.market_price_of_weather_risk_theta * sig_t / kappa) * (T::one() - e_kt);
+            last_mu_q = mu_q;
+
+            let var_q = (sig_t * sig_t / (T::from_f64(2.0) * kappa)) * (T::one() - e_kt * e_kt);
+            let sd_q = var_q.max_val(T::from_f64(1e-6)).sqrt();
+
+            let diff = spec.degree_day_threshold_k_base - mu_q;
+            let d = diff / sd_q;
+            let hdd_day = diff * norm_cdf(d) + sd_q * norm_pdf(d);
+            let cdd_day = -diff * norm_cdf(-d) + sd_q * norm_pdf(d);
+
+            cum_hdd += days_per_period * hdd_day;
+            cum_cdd += days_per_period * cdd_day;
+        }
+
+        let df = (-spec.discount_rate_r * t_contract).exp();
+        let pv_hdd = df * cum_hdd;
+
+        BenthSeasonalTemperatureHddCddAnalytics {
+            expected_cumulative_hdd: cum_hdd,
+            expected_cumulative_cdd: cum_cdd,
+            terminal_risk_neutral_mean_temperature: last_mu_q,
+            discounted_hdd_swap_present_value: pv_hdd,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn benth_seasonal_hdd_cdd_swap_invariants_and_ad_parity() {
+            let base = BenthSeasonalTemperatureHddCddSpec {
+                initial_temperature_t0: 12.5_f64,
+                seasonal_mean_level_a0: 15.0,
+                seasonal_amplitude_b1: 11.0,
+                mean_reversion_speed_kappa: 6.5,
+                temperature_volatility_sigma: 8.0,
+                degree_day_threshold_k_base: 18.0,
+                market_price_of_weather_risk_theta: -0.18,
+                discount_rate_r: 0.04,
+            };
+            let r0 = evaluate_benth_cartea_saltyte_benth_seasonal_temperature_hdd_cdd_swap(&base);
+            assert!(r0.expected_cumulative_hdd > 0.0);
+            assert!(r0.expected_cumulative_cdd > 0.0);
+            assert!(r0.discounted_hdd_swap_present_value > 0.0);
+
+            let inputs = [
+                base.initial_temperature_t0,
+                base.seasonal_mean_level_a0,
+                base.seasonal_amplitude_b1,
+                base.mean_reversion_speed_kappa,
+                base.temperature_volatility_sigma,
+                base.degree_day_threshold_k_base,
+                base.market_price_of_weather_risk_theta,
+                base.discount_rate_r,
+            ];
+            let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BenthSeasonalTemperatureHddCddSpec {
+                initial_temperature_t0: dual_in[0],
+                seasonal_mean_level_a0: dual_in[1],
+                seasonal_amplitude_b1: dual_in[2],
+                mean_reversion_speed_kappa: dual_in[3],
+                temperature_volatility_sigma: dual_in[4],
+                degree_day_threshold_k_base: dual_in[5],
+                market_price_of_weather_risk_theta: dual_in[6],
+                discount_rate_r: dual_in[7],
+            };
+            let r_ad =
+                evaluate_benth_cartea_saltyte_benth_seasonal_temperature_hdd_cdd_swap(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| BenthSeasonalTemperatureHddCddSpec {
+                    initial_temperature_t0: v[0],
+                    seasonal_mean_level_a0: v[1],
+                    seasonal_amplitude_b1: v[2],
+                    mean_reversion_speed_kappa: v[3],
+                    temperature_volatility_sigma: v[4],
+                    degree_day_threshold_k_base: v[5],
+                    market_price_of_weather_risk_theta: v[6],
+                    discount_rate_r: v[7],
+                };
+                let rp =
+                    evaluate_benth_cartea_saltyte_benth_seasonal_temperature_hdd_cdd_swap(&mk(p));
+                let rm =
+                    evaluate_benth_cartea_saltyte_benth_seasonal_temperature_hdd_cdd_swap(&mk(m));
+                let fd = (rp.discounted_hdd_swap_present_value
+                    - rm.discounted_hdd_swap_present_value)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.discounted_hdd_swap_present_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.discounted_hdd_swap_present_value.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use benth_seasonal_temperature_hdd_cdd_swap_mod::*;

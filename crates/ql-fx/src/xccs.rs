@@ -1527,3 +1527,146 @@ pub mod fujii_shimada_takahashi_collateralized_xccs_mod {
     }
 }
 pub use fujii_shimada_takahashi_collateralized_xccs_mod::*;
+
+// ============================================================================
+// Baba, Packer & Nagano (2008) & Du, Tepper & Verdelhan (2018) FX Swap Dollar Funding Basis
+// ============================================================================
+
+pub mod baba_packer_fx_swap_dollar_basis_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Baba, Packer & Nagano (2008, *BIS*) and Du, Tepper & Verdelhan
+    /// (2018, *J. Finance* 73(3)) FX-swap-implied synthetic USD funding rate and CIP basis engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct BabaPackerFxSwapDollarBasisSpec<T: Real> {
+        /// Spot FX rate $S_0 > 0$ (USD per unit of foreign currency).
+        pub spot_fx_s0: T,
+        /// Outright forward FX rate $F_{0,T} > 0$ at maturity $T$.
+        pub outright_forward_fx_f: T,
+        /// Direct USD OIS/SOFR rate $r_{\text{USD}}$.
+        pub usd_ois_rate_r_usd: T,
+        /// Foreign currency OIS rate $r_{\text{FOR}}$.
+        pub foreign_ois_rate_r_for: T,
+        /// Intermediary G-SIB balance-sheet leverage ratio shadow cost $\lambda_{\text{BS}} \ge 0$.
+        pub dealer_balance_sheet_leverage_cost_lambda_bs: T,
+        /// Global non-US bank dollar funding demand pressure parameter $d_{\text{USD}} \ge 0$.
+        pub foreign_dollar_funding_demand_pressure_d_usd: T,
+        /// FX swap tenor $T > 0$ (years).
+        pub swap_tenor_years_t: T,
+    }
+
+    /// Analytical outputs for the Baba-Packer-Du-Tepper-Verdelhan FX swap dollar basis engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct BabaPackerFxSwapDollarBasisAnalytics<T: Real> {
+        /// Synthetic FX-swap-implied USD funding rate $r_{\text{USD}}^{\text{FX-imp}}$.
+        pub synthetic_fx_swap_implied_usd_rate: T,
+        /// Market Covered Interest Parity (CIP) basis spread $x_{\text{CIP}}^{\text{mkt}} = r_{\text{USD}} - r_{\text{USD}}^{\text{FX-imp}}$.
+        pub market_cip_cross_currency_basis: T,
+        /// Intermediary balance-sheet and funding-demand equilibrium basis wedge.
+        pub structural_intermediary_basis_wedge: T,
+        /// Discounted all-in dollar funding basis swap present value per unit notional.
+        pub balance_sheet_adjusted_dollar_funding_pv: T,
+    }
+
+    /// Evaluates the Baba, Packer & Nagano (2008) / Du, Tepper & Verdelhan (2018) synthetic
+    /// USD funding cost via FX swaps and intermediary balance-sheet CIP basis wedge.
+    pub fn evaluate_baba_packer_nagano_fx_swap_implied_dollar_funding_basis<T: Real>(
+        spec: &BabaPackerFxSwapDollarBasisSpec<T>,
+    ) -> BabaPackerFxSwapDollarBasisAnalytics<T> {
+        let s0 = spec.spot_fx_s0.max_val(T::from_f64(1e-4));
+        let fwd = spec.outright_forward_fx_f.max_val(T::from_f64(1e-4));
+        let t = spec.swap_tenor_years_t.max_val(T::from_f64(1e-4));
+
+        // Synthetic USD funding rate implied by borrowing foreign currency and swapping into USD
+        let r_usd_fx_imp = spec.foreign_ois_rate_r_for + (fwd / s0).ln() / t;
+        let cip_basis_mkt = spec.usd_ois_rate_r_usd - r_usd_fx_imp;
+
+        // Du, Tepper & Verdelhan (2018) intermediary balance-sheet leverage + dollar demand wedge
+        let structural_wedge = spec.dealer_balance_sheet_leverage_cost_lambda_bs
+            + spec.foreign_dollar_funding_demand_pressure_d_usd * t.sqrt();
+
+        let df_usd = (-spec.usd_ois_rate_r_usd * t).exp();
+        let funding_pv = df_usd * t * (r_usd_fx_imp - spec.usd_ois_rate_r_usd + structural_wedge);
+
+        BabaPackerFxSwapDollarBasisAnalytics {
+            synthetic_fx_swap_implied_usd_rate: r_usd_fx_imp,
+            market_cip_cross_currency_basis: cip_basis_mkt,
+            structural_intermediary_basis_wedge: structural_wedge,
+            balance_sheet_adjusted_dollar_funding_pv: funding_pv,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn baba_packer_fx_swap_dollar_basis_invariants_and_ad_parity() {
+            let base = BabaPackerFxSwapDollarBasisSpec {
+                spot_fx_s0: 1.085_f64,
+                outright_forward_fx_f: 1.096,
+                usd_ois_rate_r_usd: 0.048,
+                foreign_ois_rate_r_for: 0.032,
+                dealer_balance_sheet_leverage_cost_lambda_bs: 0.0022,
+                foreign_dollar_funding_demand_pressure_d_usd: 0.0035,
+                swap_tenor_years_t: 0.50,
+            };
+            let r0 = evaluate_baba_packer_nagano_fx_swap_implied_dollar_funding_basis(&base);
+            assert!(r0.synthetic_fx_swap_implied_usd_rate > base.foreign_ois_rate_r_for);
+            assert!(r0.structural_intermediary_basis_wedge > 0.0);
+            assert!(r0.balance_sheet_adjusted_dollar_funding_pv.abs() > 0.0);
+
+            let inputs = [
+                base.spot_fx_s0,
+                base.outright_forward_fx_f,
+                base.usd_ois_rate_r_usd,
+                base.foreign_ois_rate_r_for,
+                base.dealer_balance_sheet_leverage_cost_lambda_bs,
+                base.foreign_dollar_funding_demand_pressure_d_usd,
+                base.swap_tenor_years_t,
+            ];
+            let mut dual_in = [Dual::<7>::from_f64(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BabaPackerFxSwapDollarBasisSpec {
+                spot_fx_s0: dual_in[0],
+                outright_forward_fx_f: dual_in[1],
+                usd_ois_rate_r_usd: dual_in[2],
+                foreign_ois_rate_r_for: dual_in[3],
+                dealer_balance_sheet_leverage_cost_lambda_bs: dual_in[4],
+                foreign_dollar_funding_demand_pressure_d_usd: dual_in[5],
+                swap_tenor_years_t: dual_in[6],
+            };
+            let r_ad = evaluate_baba_packer_nagano_fx_swap_implied_dollar_funding_basis(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| BabaPackerFxSwapDollarBasisSpec {
+                    spot_fx_s0: v[0],
+                    outright_forward_fx_f: v[1],
+                    usd_ois_rate_r_usd: v[2],
+                    foreign_ois_rate_r_for: v[3],
+                    dealer_balance_sheet_leverage_cost_lambda_bs: v[4],
+                    foreign_dollar_funding_demand_pressure_d_usd: v[5],
+                    swap_tenor_years_t: v[6],
+                };
+                let rp = evaluate_baba_packer_nagano_fx_swap_implied_dollar_funding_basis(&mk(p));
+                let rm = evaluate_baba_packer_nagano_fx_swap_implied_dollar_funding_basis(&mk(m));
+                let fd = (rp.balance_sheet_adjusted_dollar_funding_pv
+                    - rm.balance_sheet_adjusted_dollar_funding_pv)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.balance_sheet_adjusted_dollar_funding_pv.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.balance_sheet_adjusted_dollar_funding_pv.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use baba_packer_fx_swap_dollar_basis_mod::*;

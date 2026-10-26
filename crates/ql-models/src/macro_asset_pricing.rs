@@ -2729,3 +2729,185 @@ pub mod diamond_dybvig_goldstein_pauzner_bank_run_mod {
     }
 }
 pub use diamond_dybvig_goldstein_pauzner_bank_run_mod::*;
+
+// ============================================================================
+// Barro (2006) & Gabaix (2012) Variable Rare Disasters & Resilience Equity Premium
+// ============================================================================
+
+pub mod gabaix_rare_disasters_resilience_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Barro (2006, *QJE* 121(3)) and Gabaix (2012, *QJE* 127(2))
+    /// variable rare-disasters macro-finance model with time-varying asset resilience $H_t$.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct GabaixRareDisastersResilienceSpec<T: Real> {
+        /// Representative agent subjective time-preference discount rate $\rho_{\text{pref}} > 0$.
+        pub subjective_discount_rate_rho: T,
+        /// Coefficient of relative risk aversion $\gamma > 1$.
+        pub relative_risk_aversion_gamma: T,
+        /// Normal-times consumption and dividend growth rate $g_C > 0$.
+        pub normal_consumption_growth_g_c: T,
+        /// Normal-times diffusive consumption volatility $\sigma_C > 0$.
+        pub normal_consumption_volatility_sigma_c: T,
+        /// Annual arrival probability of a rare macroeconomic disaster $p_{\text{dis}} > 0$.
+        pub disaster_probability_p: T,
+        /// Consumption recovery fraction in a disaster $B_C \in (0, 1)$ ($C_{t+}/C_{t-} = B_C$).
+        pub consumption_recovery_fraction_b_c: T,
+        /// Equity dividend recovery fraction in a disaster $B_D \in (0, 1)$ ($D_{t+}/D_{t-} = B_D$).
+        pub dividend_recovery_fraction_b_d: T,
+        /// Mean-reversion speed of variable equity resilience $\phi_H > 0$.
+        pub resilience_mean_reversion_phi_h: T,
+    }
+
+    /// Analytical outputs for the Barro-Gabaix variable rare-disasters asset-pricing engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct GabaixRareDisastersResilienceAnalytics<T: Real> {
+        /// Equilibrium real risk-free rate $r_f$ including Barro precautionary disaster savings.
+        pub equilibrium_real_risk_free_rate: T,
+        /// Steady-state asset resilience $H_* = p_{\text{dis}}(B_C^{-\gamma} B_D - 1)$.
+        pub baseline_asset_resilience_h_star: T,
+        /// Gabaix variable-resilience equity risk premium $\text{ERP}_{\text{Gabaix}}$.
+        pub rare_disaster_equity_risk_premium: T,
+        /// Closed-form linearity-generating price-dividend ratio $P_0 / D_0$.
+        pub gabaix_equilibrium_price_dividend_ratio: T,
+    }
+
+    /// Evaluates the Barro (2006) / Gabaix (2012, Theorem 1 & Proposition 1) rare-disasters
+    /// real risk-free rate, asset resilience $H_*$, equity risk premium, and price-dividend ratio.
+    pub fn evaluate_gabaix_rare_disasters_time_varying_resilience_equity_premium<T: Real>(
+        spec: &GabaixRareDisastersResilienceSpec<T>,
+    ) -> GabaixRareDisastersResilienceAnalytics<T> {
+        let gamma = spec.relative_risk_aversion_gamma.max_val(T::from_f64(1.05));
+        let p_dis = spec.disaster_probability_p.max_val(T::from_f64(1e-4));
+        let b_c = spec
+            .consumption_recovery_fraction_b_c
+            .max_val(T::from_f64(0.20))
+            .min_val(T::from_f64(0.98));
+        let b_d = spec
+            .dividend_recovery_fraction_b_d
+            .max_val(T::from_f64(0.10))
+            .min_val(T::from_f64(0.98));
+        let phi_h = spec
+            .resilience_mean_reversion_phi_h
+            .max_val(T::from_f64(1e-3));
+        let sig_c = spec
+            .normal_consumption_volatility_sigma_c
+            .max_val(T::from_f64(1e-4));
+
+        let bc_neg_gamma = b_c.pow(-gamma);
+
+        // Barro (2006) / Gabaix (2012, Eq. 8) real risk-free rate
+        let rf = spec.subjective_discount_rate_rho + gamma * spec.normal_consumption_growth_g_c
+            - T::from_f64(0.5) * gamma * (gamma + T::one()) * sig_c * sig_c
+            - p_dis * (bc_neg_gamma - T::one());
+
+        // Gabaix (2012, Eq. 9) baseline asset resilience H_*
+        let h_star = p_dis * (bc_neg_gamma * b_d - T::one());
+
+        // Effective steady-state equity discount spread r_eq - g_C (Gabaix 2012, Eq. 11)
+        let req_minus_g = (spec.subjective_discount_rate_rho
+            + (gamma - T::one()) * spec.normal_consumption_growth_g_c
+            - T::from_f64(0.5) * (gamma - T::one()) * gamma * sig_c * sig_c
+            - h_star)
+            .max_val(T::from_f64(0.005));
+
+        // Active resilience deviation \hat{H}_0 = 0.25 * |H_*| in Gabaix's linearity-generating process
+        let h_hat0 = T::from_f64(0.25) * (h_star * h_star + T::from_f64(1e-8)).sqrt();
+
+        // Gabaix (2012, Theorem 1, Eq. 12) exact price-dividend ratio
+        let pd_ratio = (T::one() + h_hat0 / (req_minus_g + phi_h)) / req_minus_g;
+
+        // Gabaix (2012, Proposition 1, Eq. 14) equity risk premium
+        let erp = gamma * sig_c * sig_c
+            + p_dis * bc_neg_gamma * (T::one() - b_d)
+            + (phi_h * h_hat0) / (req_minus_g + phi_h);
+
+        GabaixRareDisastersResilienceAnalytics {
+            equilibrium_real_risk_free_rate: rf,
+            baseline_asset_resilience_h_star: h_star,
+            rare_disaster_equity_risk_premium: erp,
+            gabaix_equilibrium_price_dividend_ratio: pd_ratio,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn gabaix_rare_disasters_invariants_and_ad_parity() {
+            let base = GabaixRareDisastersResilienceSpec {
+                subjective_discount_rate_rho: 0.032_f64,
+                relative_risk_aversion_gamma: 4.0,
+                normal_consumption_growth_g_c: 0.020,
+                normal_consumption_volatility_sigma_c: 0.018,
+                disaster_probability_p: 0.017,
+                consumption_recovery_fraction_b_c: 0.72,
+                dividend_recovery_fraction_b_d: 0.18,
+                resilience_mean_reversion_phi_h: 0.18,
+            };
+            let r0 = evaluate_gabaix_rare_disasters_time_varying_resilience_equity_premium(&base);
+            assert!(r0.baseline_asset_resilience_h_star < 0.0);
+            assert!(r0.rare_disaster_equity_risk_premium > 0.02);
+            assert!(r0.gabaix_equilibrium_price_dividend_ratio > 5.0);
+
+            let inputs = [
+                base.subjective_discount_rate_rho,
+                base.relative_risk_aversion_gamma,
+                base.normal_consumption_growth_g_c,
+                base.normal_consumption_volatility_sigma_c,
+                base.disaster_probability_p,
+                base.consumption_recovery_fraction_b_c,
+                base.dividend_recovery_fraction_b_d,
+                base.resilience_mean_reversion_phi_h,
+            ];
+            let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = GabaixRareDisastersResilienceSpec {
+                subjective_discount_rate_rho: dual_in[0],
+                relative_risk_aversion_gamma: dual_in[1],
+                normal_consumption_growth_g_c: dual_in[2],
+                normal_consumption_volatility_sigma_c: dual_in[3],
+                disaster_probability_p: dual_in[4],
+                consumption_recovery_fraction_b_c: dual_in[5],
+                dividend_recovery_fraction_b_d: dual_in[6],
+                resilience_mean_reversion_phi_h: dual_in[7],
+            };
+            let r_ad =
+                evaluate_gabaix_rare_disasters_time_varying_resilience_equity_premium(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| GabaixRareDisastersResilienceSpec {
+                    subjective_discount_rate_rho: v[0],
+                    relative_risk_aversion_gamma: v[1],
+                    normal_consumption_growth_g_c: v[2],
+                    normal_consumption_volatility_sigma_c: v[3],
+                    disaster_probability_p: v[4],
+                    consumption_recovery_fraction_b_c: v[5],
+                    dividend_recovery_fraction_b_d: v[6],
+                    resilience_mean_reversion_phi_h: v[7],
+                };
+                let rp =
+                    evaluate_gabaix_rare_disasters_time_varying_resilience_equity_premium(&mk(p));
+                let rm =
+                    evaluate_gabaix_rare_disasters_time_varying_resilience_equity_premium(&mk(m));
+                let fd = (rp.gabaix_equilibrium_price_dividend_ratio
+                    - rm.gabaix_equilibrium_price_dividend_ratio)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.gabaix_equilibrium_price_dividend_ratio.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.gabaix_equilibrium_price_dividend_ratio.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use gabaix_rare_disasters_resilience_mod::*;

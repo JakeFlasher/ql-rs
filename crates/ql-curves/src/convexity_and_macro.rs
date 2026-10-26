@@ -1649,3 +1649,186 @@ pub mod andersen_piterbarg_lsrm_cms_spread_mod {
     }
 }
 pub use andersen_piterbarg_lsrm_cms_spread_mod::*;
+
+// ============================================================================
+// Mercurio (2010, 2013) & Henrard (2014) Post-Crisis Multi-Curve FVA-Adjusted Swap Rate
+// ============================================================================
+
+pub mod mercurio_post_crisis_fva_multi_curve_swap_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Mercurio (2010, 2013) / Henrard (2014) post-crisis multi-curve
+    /// swap valuation with multiplicative IBOR-OIS basis and uncollateralized FVA spread tilt.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct MercurioFvaMultiCurveSwapSpec<T: Real> {
+        /// Initial instantaneous OIS short rate $r_0^{\text{OIS}}$.
+        pub ois_short_rate_r0: T,
+        /// OIS term-structure slope parameter $\theta_{\text{OIS}}$.
+        pub ois_curve_slope_theta: T,
+        /// Initial multiplicative IBOR-OIS basis spread $b_0 > 0$.
+        pub initial_multiplicative_ibor_basis_b0: T,
+        /// Exponential decay speed of the IBOR-OIS term basis $\kappa_b > 0$.
+        pub basis_term_decay_kappa_b: T,
+        /// Unsecured bank funding borrowing spread $s_f > 0$ over OIS.
+        pub funding_borrowing_spread_s_f: T,
+        /// Bachelier swap-rate volatility $\sigma_s > 0$ driving uncollateralized EPE.
+        pub swap_rate_volatility_sigma_s: T,
+        /// Swap maturity $T > 0$ (years).
+        pub swap_maturity_years_t: T,
+    }
+
+    /// Analytical outputs for the Mercurio-Henrard multi-curve and FVA-adjusted swap engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct MercurioFvaMultiCurveSwapAnalytics<T: Real> {
+        /// OIS-discounted multi-curve swap annuity $A_{\text{OIS}}(0, T)$.
+        pub ois_swap_annuity_pv01: T,
+        /// Collateralized (CSA) multi-curve par swap rate $S_{\text{CSA}}(0, T)$.
+        pub collateralized_multi_curve_swap_rate: T,
+        /// Asymmetric Funding Valuation Adjustment charge $\text{FVA}$ per unit notional.
+        pub uncollateralized_fva_charge: T,
+        /// FVA-adjusted uncollateralized breakeven swap rate $S_{\text{FVA}}(0, T)$.
+        pub fva_adjusted_uncollateralized_swap_rate: T,
+    }
+
+    /// Evaluates the Mercurio (2010, *Risk* 23(3); 2013) and Henrard (2014, Ch. 2 & 5)
+    /// post-crisis multi-curve forward-IBOR vs. OIS swap rate and FVA spread adjustment.
+    pub fn evaluate_mercurio_post_crisis_fva_adjusted_multi_curve_swap_rate<T: Real>(
+        spec: &MercurioFvaMultiCurveSwapSpec<T>,
+    ) -> MercurioFvaMultiCurveSwapAnalytics<T> {
+        const PERIODS: usize = 4;
+        let t_mat = spec.swap_maturity_years_t.max_val(T::from_f64(1e-4));
+        let tau = t_mat / T::from_f64(PERIODS as f64);
+        let kappa_b = spec.basis_term_decay_kappa_b.max_val(T::from_f64(1e-4));
+        let sig_s = spec.swap_rate_volatility_sigma_s.max_val(T::from_f64(1e-5));
+        let sf = spec.funding_borrowing_spread_s_f.max_val(T::from_f64(1e-5));
+
+        let mut p_ois = [T::one(); PERIODS + 1];
+        for (m, p) in p_ois.iter_mut().enumerate().skip(1) {
+            let tm = T::from_f64(m as f64) * tau;
+            let slope_factor = (T::one() - (-T::from_f64(0.5) * tm).exp()) / T::from_f64(0.5);
+            let y_ois = spec.ois_short_rate_r0 + spec.ois_curve_slope_theta * slope_factor;
+            *p = (-y_ois * tm).exp();
+        }
+
+        let mut annuity = T::zero();
+        let mut float_leg_pv = T::zero();
+        let mut l_fwd = [T::zero(); PERIODS];
+
+        for m in 1..=PERIODS {
+            let tm = T::from_f64(m as f64) * tau;
+            let f_ois_m = (p_ois[m - 1] / p_ois[m] - T::one()) / tau;
+            let b_m = spec.initial_multiplicative_ibor_basis_b0 * (-kappa_b * tm).exp();
+            // Henrard (2014, Eq. 2.11) multiplicative basis: 1 + tau * L_m = (1 + tau * b_m) * (1 + tau * F_m^OIS)
+            let l_m = f_ois_m + b_m * (T::one() + tau * f_ois_m);
+            l_fwd[m - 1] = l_m;
+            annuity += tau * p_ois[m];
+            float_leg_pv += tau * p_ois[m] * l_m;
+        }
+
+        let s_csa = float_leg_pv / annuity;
+        let inv_sqrt_2pi = T::from_f64(0.398_942_280_401_432_7);
+
+        let mut fva = T::zero();
+        for m in 1..=PERIODS {
+            let t_exp = (T::from_f64(m as f64) - T::from_f64(0.5)) * tau;
+            let mut rem_ann = T::zero();
+            for p in p_ois.iter().skip(m) {
+                rem_ann += tau * *p;
+            }
+            let epe_disc = rem_ann
+                * (inv_sqrt_2pi * sig_s * t_exp.sqrt()
+                    + T::from_f64(0.25) * tau * (l_fwd[m - 1] - s_csa));
+            fva += tau * sf * epe_disc;
+        }
+
+        let s_fva = s_csa + fva / annuity;
+
+        MercurioFvaMultiCurveSwapAnalytics {
+            ois_swap_annuity_pv01: annuity,
+            collateralized_multi_curve_swap_rate: s_csa,
+            uncollateralized_fva_charge: fva,
+            fva_adjusted_uncollateralized_swap_rate: s_fva,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn mercurio_fva_multi_curve_swap_invariants_and_ad_parity() {
+            let base = MercurioFvaMultiCurveSwapSpec {
+                ois_short_rate_r0: 0.038_f64,
+                ois_curve_slope_theta: 0.004,
+                initial_multiplicative_ibor_basis_b0: 0.0025,
+                basis_term_decay_kappa_b: 0.25,
+                funding_borrowing_spread_s_f: 0.0065,
+                swap_rate_volatility_sigma_s: 0.0085,
+                swap_maturity_years_t: 4.0,
+            };
+            let r0 = evaluate_mercurio_post_crisis_fva_adjusted_multi_curve_swap_rate(&base);
+            assert!(r0.ois_swap_annuity_pv01 > 0.0);
+            assert!(r0.collateralized_multi_curve_swap_rate > base.ois_short_rate_r0);
+            assert!(r0.uncollateralized_fva_charge > 0.0);
+            assert!(
+                r0.fva_adjusted_uncollateralized_swap_rate
+                    > r0.collateralized_multi_curve_swap_rate
+            );
+
+            let inputs = [
+                base.ois_short_rate_r0,
+                base.ois_curve_slope_theta,
+                base.initial_multiplicative_ibor_basis_b0,
+                base.basis_term_decay_kappa_b,
+                base.funding_borrowing_spread_s_f,
+                base.swap_rate_volatility_sigma_s,
+                base.swap_maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<7>::from_f64(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = MercurioFvaMultiCurveSwapSpec {
+                ois_short_rate_r0: dual_in[0],
+                ois_curve_slope_theta: dual_in[1],
+                initial_multiplicative_ibor_basis_b0: dual_in[2],
+                basis_term_decay_kappa_b: dual_in[3],
+                funding_borrowing_spread_s_f: dual_in[4],
+                swap_rate_volatility_sigma_s: dual_in[5],
+                swap_maturity_years_t: dual_in[6],
+            };
+            let r_ad = evaluate_mercurio_post_crisis_fva_adjusted_multi_curve_swap_rate(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| MercurioFvaMultiCurveSwapSpec {
+                    ois_short_rate_r0: v[0],
+                    ois_curve_slope_theta: v[1],
+                    initial_multiplicative_ibor_basis_b0: v[2],
+                    basis_term_decay_kappa_b: v[3],
+                    funding_borrowing_spread_s_f: v[4],
+                    swap_rate_volatility_sigma_s: v[5],
+                    swap_maturity_years_t: v[6],
+                };
+                let rp = evaluate_mercurio_post_crisis_fva_adjusted_multi_curve_swap_rate(&mk(p));
+                let rm = evaluate_mercurio_post_crisis_fva_adjusted_multi_curve_swap_rate(&mk(m));
+                let fd = (rp.fva_adjusted_uncollateralized_swap_rate
+                    - rm.fva_adjusted_uncollateralized_swap_rate)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.fva_adjusted_uncollateralized_swap_rate.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!(
+                    (r_ad.fva_adjusted_uncollateralized_swap_rate.d[i] - fd).abs() < 1e-5,
+                    "mismatch at {i}"
+                );
+            }
+        }
+    }
+}
+pub use mercurio_post_crisis_fva_multi_curve_swap_mod::*;

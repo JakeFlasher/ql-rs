@@ -5106,3 +5106,186 @@ pub mod boudt_cornish_fisher_mvar_allocation_mod {
     }
 }
 pub use boudt_cornish_fisher_mvar_allocation_mod::*;
+
+// ============================================================================
+// He & Litterman (1999) & Meucci (2005, 2010) Posterior Black-Litterman Optimal Tilt
+// ============================================================================
+
+pub mod he_litterman_black_litterman_tilt_mod {
+    use ql_ad::Real;
+
+    /// Specification for the He & Litterman (1999) / Meucci (2005, Ch. 9; 2010) institutional
+    /// Black-Litterman posterior equilibrium expected return and optimal portfolio tilt engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct HeLittermanBlackLittermanTiltSpec<T: Real> {
+        /// Market risk-aversion coefficient $\delta > 0$.
+        pub risk_aversion_delta: T,
+        /// Market-capitalization benchmark weight of asset 1 $w_{\text{mkt}, 1} \in (0, 1)$.
+        pub market_cap_weight_asset1_w1: T,
+        /// Annualized return volatility of asset 1 $\sigma_1 > 0$.
+        pub asset1_volatility_sigma1: T,
+        /// Annualized return volatility of asset 2 $\sigma_2 > 0$.
+        pub asset2_volatility_sigma2: T,
+        /// Return correlation between asset 1 and asset 2 $\rho \in (-1, 1)$.
+        pub asset_correlation_rho: T,
+        /// Prior covariance uncertainty scalar $\tau > 0$.
+        pub prior_uncertainty_scalar_tau: T,
+        /// Investor relative-view expected outperformance $q = \mathbb{E}[R_1 - R_2]$.
+        pub relative_view_outperformance_q: T,
+        /// View error volatility $\sigma_\omega > 0$ ($\Omega = \sigma_\omega^2$).
+        pub view_error_volatility_sigma_omega: T,
+    }
+
+    /// Analytical outputs for the He-Litterman Black-Litterman posterior tilt engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct HeLittermanBlackLittermanTiltAnalytics<T: Real> {
+        /// Implied equilibrium prior excess return of asset 1 $\pi_1 = (\delta \Sigma w_{\text{mkt}})_1$.
+        pub equilibrium_prior_return_asset1: T,
+        /// Black-Litterman posterior expected excess return of asset 1 $\mu_{\text{BL}, 1}$.
+        pub posterior_expected_return_asset1: T,
+        /// Active view tilt intensity $\Lambda_{\text{view}}$ applied to the relative view portfolio $p = (1, -1)^\top$.
+        pub active_relative_view_tilt_intensity: T,
+        /// He-Litterman optimal posterior weight of asset 1 $w_{\text{BL}, 1}^*$.
+        pub posterior_optimal_weight_asset1: T,
+    }
+
+    /// Evaluates the He & Litterman (1999, Eqs. 8–12) / Meucci (2010) closed-form Bayesian
+    /// posterior expected return and optimal portfolio weight under a relative outperformance view.
+    pub fn evaluate_litterman_he_institutional_equilibrium_posterior_black_litterman_tilt<
+        T: Real,
+    >(
+        spec: &HeLittermanBlackLittermanTiltSpec<T>,
+    ) -> HeLittermanBlackLittermanTiltAnalytics<T> {
+        let delta = spec.risk_aversion_delta.max_val(T::from_f64(0.1));
+        let w1 = spec
+            .market_cap_weight_asset1_w1
+            .max_val(T::from_f64(0.01))
+            .min_val(T::from_f64(0.99));
+        let w2 = T::one() - w1;
+
+        let sig1 = spec.asset1_volatility_sigma1.max_val(T::from_f64(1e-4));
+        let sig2 = spec.asset2_volatility_sigma2.max_val(T::from_f64(1e-4));
+        let rho = spec
+            .asset_correlation_rho
+            .max_val(T::from_f64(-0.98))
+            .min_val(T::from_f64(0.98));
+
+        let c11 = sig1 * sig1;
+        let c22 = sig2 * sig2;
+        let c12 = rho * sig1 * sig2;
+
+        // Reverse-optimized CAPM equilibrium returns pi = delta * Sigma * w_mkt
+        let pi1 = delta * (c11 * w1 + c12 * w2);
+        let pi2 = delta * (c12 * w1 + c22 * w2);
+
+        // Relative view P = [1, -1]: (Sigma * P)_1 = c11 - c12, P * Sigma * P^T = c11 + c22 - 2*c12
+        let tau = spec.prior_uncertainty_scalar_tau.max_val(T::from_f64(1e-5));
+        let omega = spec.view_error_volatility_sigma_omega * spec.view_error_volatility_sigma_omega;
+        let p_sig_p = (c11 + c22 - T::from_f64(2.0) * c12).max_val(T::from_f64(1e-6));
+        let total_view_var = tau * p_sig_p + omega.max_val(T::from_f64(1e-6));
+
+        let view_surprise = spec.relative_view_outperformance_q - (pi1 - pi2);
+        let mu_bl_1 = pi1 + (tau * (c11 - c12) / total_view_var) * view_surprise;
+
+        // He & Litterman (1999, Eq. 12) exact posterior optimal weight w_BL* = (1 / delta) * Sigma_BL^{-1} * mu_BL
+        let view_tilt = (tau / (delta * total_view_var)) * view_surprise;
+        let w_bl_1 = (w1 + view_tilt) / (T::one() + tau);
+
+        HeLittermanBlackLittermanTiltAnalytics {
+            equilibrium_prior_return_asset1: pi1,
+            posterior_expected_return_asset1: mu_bl_1,
+            active_relative_view_tilt_intensity: view_tilt,
+            posterior_optimal_weight_asset1: w_bl_1,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn he_litterman_black_litterman_invariants_and_ad_parity() {
+            let base = HeLittermanBlackLittermanTiltSpec {
+                risk_aversion_delta: 2.5_f64,
+                market_cap_weight_asset1_w1: 0.60,
+                asset1_volatility_sigma1: 0.16,
+                asset2_volatility_sigma2: 0.22,
+                asset_correlation_rho: 0.35,
+                prior_uncertainty_scalar_tau: 0.05,
+                relative_view_outperformance_q: 0.035,
+                view_error_volatility_sigma_omega: 0.04,
+            };
+            let r0 = evaluate_litterman_he_institutional_equilibrium_posterior_black_litterman_tilt(
+                &base,
+            );
+            assert!(r0.equilibrium_prior_return_asset1 > 0.0);
+            assert!(r0.posterior_expected_return_asset1 > r0.equilibrium_prior_return_asset1);
+            assert!(r0.active_relative_view_tilt_intensity > 0.0);
+            assert!(r0.posterior_optimal_weight_asset1 > 0.0);
+
+            let inputs = [
+                base.risk_aversion_delta,
+                base.market_cap_weight_asset1_w1,
+                base.asset1_volatility_sigma1,
+                base.asset2_volatility_sigma2,
+                base.asset_correlation_rho,
+                base.prior_uncertainty_scalar_tau,
+                base.relative_view_outperformance_q,
+                base.view_error_volatility_sigma_omega,
+            ];
+            let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = HeLittermanBlackLittermanTiltSpec {
+                risk_aversion_delta: dual_in[0],
+                market_cap_weight_asset1_w1: dual_in[1],
+                asset1_volatility_sigma1: dual_in[2],
+                asset2_volatility_sigma2: dual_in[3],
+                asset_correlation_rho: dual_in[4],
+                prior_uncertainty_scalar_tau: dual_in[5],
+                relative_view_outperformance_q: dual_in[6],
+                view_error_volatility_sigma_omega: dual_in[7],
+            };
+            let r_ad =
+                evaluate_litterman_he_institutional_equilibrium_posterior_black_litterman_tilt(
+                    &spec_ad,
+                );
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| HeLittermanBlackLittermanTiltSpec {
+                    risk_aversion_delta: v[0],
+                    market_cap_weight_asset1_w1: v[1],
+                    asset1_volatility_sigma1: v[2],
+                    asset2_volatility_sigma2: v[3],
+                    asset_correlation_rho: v[4],
+                    prior_uncertainty_scalar_tau: v[5],
+                    relative_view_outperformance_q: v[6],
+                    view_error_volatility_sigma_omega: v[7],
+                };
+                let rp =
+                    evaluate_litterman_he_institutional_equilibrium_posterior_black_litterman_tilt(
+                        &mk(p),
+                    );
+                let rm =
+                    evaluate_litterman_he_institutional_equilibrium_posterior_black_litterman_tilt(
+                        &mk(m),
+                    );
+                let fd = (rp.posterior_expected_return_asset1
+                    - rm.posterior_expected_return_asset1)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.posterior_expected_return_asset1.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.posterior_expected_return_asset1.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use he_litterman_black_litterman_tilt_mod::*;
