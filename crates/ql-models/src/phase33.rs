@@ -154,29 +154,14 @@ pub fn evaluate_mascolell_cochrane_arrow_debreu_sdf<T: Real>(
         sdf_volatility_to_mean_ratio: vm / p,
         equity_sharpe_ratio: sharpe,
         hansen_jagannathan_bound_slack: vm / p - sharpe,
-        q_measure_conservation_error: (q.iter().copied().fold(T::zero(), |a, x| a + x) - T::one())
-            .abs(),
+        q_measure_conservation_error: {
+            let q_err = q.iter().copied().fold(T::zero(), |a, x| a + x) - T::one();
+            (q_err * q_err + T::from_f64(1e-30)).sqrt()
+        },
     }
 }
 #[cfg(test)]
 mod phase33_tests {
-    use super::*;
-    #[test]
-    fn phase33_models_smoke() {
-        let s = MasColellCochraneArrowDebreuSdfSpec {
-            state_probabilities: [0.3, 0.4, 0.3],
-            consumption_growth_ratios: [0.98, 1.02, 1.05],
-            equity_payoff_states: [0.8, 1.1, 1.4],
-            subjective_discount_beta: 0.99,
-            crra_risk_aversion_gamma: 2.0,
-        };
-        assert!(
-            evaluate_mascolell_cochrane_arrow_debreu_sdf(&s).q_measure_conservation_error < 1e-12
-        );
-    }
-}
-#[cfg(test)]
-mod phase33_tests_ad {
     use super::*;
     use ql_ad::Dual;
     fn s<T: Real>(x: T) -> DamodaranRdCapitalizationRealOptionSpec<T> {
@@ -194,8 +179,24 @@ mod phase33_tests_ad {
             abandonment_salvage_value: T::from_f64(8.),
         }
     }
+    fn sdf_spec<T: Real>(x: T) -> MasColellCochraneArrowDebreuSdfSpec<T> {
+        MasColellCochraneArrowDebreuSdfSpec {
+            state_probabilities: [T::from_f64(0.3), T::from_f64(0.4), T::from_f64(0.3)],
+            consumption_growth_ratios: [
+                T::from_f64(0.98),
+                T::from_f64(1.02) + x,
+                T::from_f64(1.05),
+            ],
+            equity_payoff_states: [T::from_f64(0.8), T::from_f64(1.1), T::from_f64(1.4)],
+            subjective_discount_beta: T::from_f64(0.99),
+            crra_risk_aversion_gamma: T::from_f64(2.0),
+        }
+    }
     #[test]
-    fn dual_fd() {
+    fn phase33_models_smoke_and_dual_fd() {
+        let s0 = evaluate_mascolell_cochrane_arrow_debreu_sdf(&sdf_spec(0.0));
+        assert!(s0.q_measure_conservation_error < 1e-12);
+        assert!(s0.hansen_jagannathan_bound_slack >= -1e-12 && s0.ccapm_equity_risk_premium > 0.0);
         let h = 1e-6;
         let fd = (evaluate_damodaran_rd_capitalization_and_patent_real_option(&s(h))
             .rd_adjusted_after_tax_roic
@@ -207,5 +208,14 @@ mod phase33_tests_ad {
         ))
         .rd_adjusted_after_tax_roic;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+
+        let fd_sdf = (evaluate_mascolell_cochrane_arrow_debreu_sdf(&sdf_spec(h))
+            .equilibrium_equity_price
+            - evaluate_mascolell_cochrane_arrow_debreu_sdf(&sdf_spec(-h)).equilibrium_equity_price)
+            / (2. * h);
+        let ad_sdf =
+            evaluate_mascolell_cochrane_arrow_debreu_sdf(&sdf_spec(Dual::<1>::variable(0., 0)))
+                .equilibrium_equity_price;
+        assert!((ad_sdf.d[0] - fd_sdf).abs() < 1e-5);
     }
 }

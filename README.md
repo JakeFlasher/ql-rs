@@ -144,7 +144,7 @@ Phase 29 adds twelve book-backed SOTA quantitative finance engines, Benchmark Su
 ## Phase 30 status
 Phase 30 adds twelve book-backed SOTA engines (Taylor macro curve, Damodaran CRP/debt modification, Christoffersen cumulant VaR, Foucault LVaR, Barberis prospect theory, Hart regret matching, Beneish/HKAS 32, Campisi attribution, Heckman/GMM, elastic net, resettable convertible bonds, and FSB bail-in). Benchmark Suite 42 and workstation Tab 40 are live with `BOTTOM_ROWS = 37`.
 
-Phase 31 adds twelve book-backed SOTA engines (KRD/LSC, CMO-PAC, Asquith/Sîrbu CB, ASU 2024-04/CPDI, ASC 470 modification, ColVA/CTD, Hill/Pickands EVT, Bouchaud–Potters TLF, Karnosky–Singer, DGTW/Treynor–Mazuy, Brock–Hommes, and Penman/ReOI). Benchmark Suite 45 and workstation Tab 43 are live with `BOTTOM_ROWS = 40`.
+Phase 31 adds twelve book-backed SOTA engines (KRD/LSC, CMO-PAC, Asquith/Sîrbu CB, ASU 2024-04/CPDI, ASC 470 modification, ColVA/CTD, Hill/Pickands EVT, Bouchaud–Potters TLF, Karnosky–Singer, DGTW/Treynor–Mazuy, Brock–Hommes, and Penman/ReOI). Benchmark Suite 43 and workstation Tab 41 are live with `BOTTOM_ROWS = 38`.
 
 ### Phase 32 current release
 

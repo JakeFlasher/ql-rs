@@ -7561,16 +7561,20 @@ pub fn benchmark_phase32_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cm
 }
 
 pub fn phase33_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+    let dx0 = x[0] * T::from_f64(0.01);
+    let dx1 = x[1] * T::from_f64(0.01);
+    let dx2 = x[2] * T::from_f64(0.01);
+    let dx3 = x[3] * T::from_f64(0.01);
     let c = ql_curves::evaluate_brigo_mercurio_rebonato_swaption_and_cms(
         &ql_curves::BrigoMercurioRebonatoCmsSpec {
             fixing_tenors: vec![T::one(), T::from_f64(2.0)],
             accrual_taus: vec![T::one(), T::one()],
-            forward_rates: vec![T::from_f64(0.03) + x[0], T::from_f64(0.035) + x[1]],
+            forward_rates: vec![T::from_f64(0.03) + dx0, T::from_f64(0.035) + dx1],
             discount_factors: vec![T::from_f64(0.98), T::from_f64(0.95)],
             forward_vols: vec![T::from_f64(0.2), T::from_f64(0.21)],
             corr_decay_beta: T::from_f64(0.1),
             option_expiry: T::one(),
-            swaption_strike: T::from_f64(0.03) + x[2],
+            swaption_strike: T::from_f64(0.03) + dx2,
         },
     );
     let l = ql_credit::evaluate_duffie_singleton_leland_toft_capital_structure(
@@ -7582,8 +7586,8 @@ pub fn phase33_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
             corporate_tax_rate: T::from_f64(0.25),
             bankruptcy_cost_alpha: T::from_f64(0.2),
             asset_payout_rate: T::from_f64(0.02),
-            risk_free_rate: T::from_f64(0.03) + x[2],
-            asset_volatility: T::from_f64(0.2) + x[3],
+            risk_free_rate: T::from_f64(0.03) + dx2,
+            asset_volatility: T::from_f64(0.2) + dx3,
         },
     );
     let a = ql_fixed_income::evaluate_calamos_despiegeleer_ascot_and_gamma_scalp(
@@ -7593,7 +7597,7 @@ pub fn phase33_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
             bond_par: T::from_f64(100.0),
             coupon_rate: T::from_f64(0.04),
             conversion_ratio: T::one(),
-            implied_vol: T::from_f64(0.25) + x[1] * 0.01,
+            implied_vol: T::from_f64(0.25) + dx1,
             realized_vol: T::from_f64(0.3),
             risk_free_rate: T::from_f64(0.03),
             dividend_yield: T::from_f64(0.01),
@@ -7606,7 +7610,7 @@ pub fn phase33_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     );
     let p = ql_fixed_income::evaluate_tuckman_specified_pool_payup_and_dollar_roll(
         &ql_fixed_income::TuckmanSpecifiedPoolDollarRollSpec {
-            net_coupon_rate: T::from_f64(0.03),
+            net_coupon_rate: T::from_f64(0.04) + dx1,
             discount_yield: T::from_f64(0.025),
             effective_maturity_years: T::from_f64(5.0),
             ctd_tba_cpr: T::from_f64(0.08),
@@ -7620,19 +7624,19 @@ pub fn phase33_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
         &ql_portfolio::OharaGlostenMilgromSequentialSpec {
             low_value_vl: T::from_f64(90.0),
             high_value_vh: T::from_f64(110.0),
-            initial_prior_p0: T::from_f64(0.5) + x[0] * 0.01,
+            initial_prior_p0: T::from_f64(0.5) + dx0,
             informed_trader_fraction_mu: T::from_f64(0.3),
             informed_signal_accuracy_theta: T::from_f64(0.8),
             dealer_inventory_gamma: T::from_f64(0.01),
-            signed_order_flow: vec![T::from_f64(0.2) + x[1], T::from_f64(-0.1), T::from_f64(0.3)],
+            signed_order_flow: vec![T::from_f64(0.2) + dx1, T::from_f64(-0.1), T::from_f64(0.3)],
         },
     );
     let r = ql_portfolio::evaluate_potters_bouchaud_stieltjes_rie_shrinkage(
         &ql_portfolio::PottersBouchaudStieltjesRieSpec {
             sample_eigenvalues: vec![
-                T::from_f64(0.5) + x[0],
-                T::one() + x[1],
-                T::from_f64(2.0) + x[2],
+                T::from_f64(0.5) + dx0,
+                T::one() + dx1,
+                T::from_f64(2.0) + dx2,
             ],
             aspect_ratio_q: T::from_f64(0.5),
             stieltjes_bandwidth_eta: T::from_f64(0.1),
@@ -7641,9 +7645,9 @@ pub fn phase33_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     let e = ql_portfolio::evaluate_tsay_egarch_and_hamilton_markov_switching(
         &ql_portfolio::TsayEgarchHamiltonRegimeSpec {
             returns: vec![
-                T::from_f64(0.01) + x[0] * 0.01,
-                T::from_f64(-0.02) + x[1] * 0.01,
-                T::from_f64(0.015) + x[2] * 0.01,
+                T::from_f64(0.01) + dx0,
+                T::from_f64(-0.02) + dx1,
+                T::from_f64(0.015) + dx2,
             ],
             initial_variance: T::from_f64(0.04),
             egarch_omega: T::from_f64(-0.1),
@@ -7730,7 +7734,7 @@ pub fn phase33_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
             state_probabilities: [T::from_f64(0.3), T::from_f64(0.4), T::from_f64(0.3)],
             consumption_growth_ratios: [
                 T::from_f64(0.98),
-                T::from_f64(1.02) + x[2] * 0.01,
+                T::from_f64(1.02) + dx2,
                 T::from_f64(1.05),
             ],
             equity_payoff_states: [T::from_f64(0.8), T::from_f64(1.1), T::from_f64(1.4) + x[3]],
@@ -7738,20 +7742,19 @@ pub fn phase33_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
             crra_risk_aversion_gamma: T::from_f64(2.0),
         },
     );
-    let _ = (c, l, a, p, o, r, e, w, m, b, d, ad);
     [
-        x[0] + T::from_f64(1.0),
-        x[1] + T::from_f64(2.0),
-        x[2] + T::from_f64(3.0),
-        x[3] + T::from_f64(4.0),
-        x[0] * x[0] + T::from_f64(5.0),
-        x[1] * x[1] + T::from_f64(6.0),
-        x[2] * x[2] + T::from_f64(7.0),
-        x[3] * x[3] + T::from_f64(8.0),
-        x[0] * x[1] + T::from_f64(9.0),
-        x[1] * x[2] + T::from_f64(10.0),
-        x[2] * x[3] + T::from_f64(11.0),
-        x[0] * x[3] + T::from_f64(12.0),
+        c.convexity_adjusted_cms_rate,
+        l.risky_debt_fair_value,
+        a.convertible_bond_fair_value,
+        p.specified_pool_payup_32nds + p.dollar_roll_implied_repo_rate,
+        o.inventory_skewed_reservation_mid,
+        r.rie_condition_number,
+        e.terminal_egarch_volatility,
+        w.two_stage_ls_iv_beta,
+        m.total_portfolio_es,
+        b.keating_shadwick_omega_ratio,
+        d.total_strategic_expanded_npv,
+        ad.equilibrium_equity_price,
     ]
 }
 

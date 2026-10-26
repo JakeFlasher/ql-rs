@@ -114,7 +114,9 @@ pub fn evaluate_tuckman_specified_pool_payup_and_dollar_roll<T: Real>(
     );
     let pay = sp - tba;
     let drop = s.tba_front_month_price - s.tba_back_month_price;
-    let carry = s.net_coupon_rate * T::from_f64(100.0) / T::from_f64(12.0);
+    let smm = T::one() - (T::one() - s.ctd_tba_cpr).powf(1.0 / 12.0);
+    let carry = s.net_coupon_rate * T::from_f64(100.0) / T::from_f64(12.0)
+        + smm * (T::from_f64(100.0) - s.tba_back_month_price);
     let imp = T::from_f64(12.0) / s.tba_front_month_price * (carry - drop);
     TuckmanSpecifiedPoolDollarRollReport {
         ctd_tba_present_value: tba,
@@ -177,5 +179,14 @@ mod phase33_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
         let p = evaluate_tuckman_specified_pool_payup_and_dollar_roll(&r(0.));
         assert!(p.specified_pool_payup_32nds > 0.);
+        let fd_r = (evaluate_tuckman_specified_pool_payup_and_dollar_roll(&r(h))
+            .specified_pool_payup_32nds
+            - evaluate_tuckman_specified_pool_payup_and_dollar_roll(&r(-h))
+                .specified_pool_payup_32nds)
+            / (2. * h);
+        let ad_r =
+            evaluate_tuckman_specified_pool_payup_and_dollar_roll(&r(Dual::<1>::variable(0., 0)))
+                .specified_pool_payup_32nds;
+        assert!((ad_r.d[0] - fd_r).abs() < 1e-5);
     }
 }

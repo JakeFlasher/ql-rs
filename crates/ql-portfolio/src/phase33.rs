@@ -107,6 +107,7 @@ pub fn evaluate_potters_bouchaud_stieltjes_rie_shrinkage<T: Real>(
     let sums = shr.iter().copied().fold(T::zero(), |a, x| a + x);
     for x in &mut shr {
         *x *= suml / sums;
+        *x = (*x + suml / T::from_f64(n as f64)) * T::from_f64(0.5);
     }
     let min_s = s
         .sample_eigenvalues
@@ -128,7 +129,10 @@ pub fn evaluate_potters_bouchaud_stieltjes_rie_shrinkage<T: Real>(
         rie_min_eigenvalue: min_r,
         sample_condition_number: max_s / min_s,
         rie_condition_number: max_r / min_r,
-        trace_conservation_error: (shr.iter().copied().fold(T::zero(), |a, x| a + x) - suml).abs(),
+        trace_conservation_error: {
+            let t_err = shr.iter().copied().fold(T::zero(), |a, x| a + x) - suml;
+            (t_err * t_err + T::from_f64(1e-30)).sqrt()
+        },
         markowitz_oos_variance_inflation_factor: T::one() / (T::one() - s.aspect_ratio_q),
         inverse_variance_portfolio_risk_reduction: T::one()
             - min_s / min_r.max_val(T::from_f64(1e-12)),
@@ -277,7 +281,10 @@ pub fn evaluate_mcneil_frey_copula_tail_and_euler_allocation<T: Real>(
         standalone_es_sum: stand,
         euler_desk_allocations: rc,
         portfolio_diversification_benefit: stand - es,
-        euler_additivity_error: (es - sum_rc).abs(),
+        euler_additivity_error: {
+            let e_err = es - sum_rc;
+            (e_err * e_err + T::from_f64(1e-30)).sqrt()
+        },
     }
 }
 #[derive(Clone, Debug)]
@@ -337,10 +344,14 @@ pub fn evaluate_bacon_omega_sortino_and_burke_drawdown<T: Real>(
         upside_potential_lpm1: up,
         downside_shortfall_lpm1: dn,
         keating_shadwick_omega_ratio: up / dn,
-        omega_put_call_parity_error: (up - dn - (mean - s.mar_threshold)).abs(),
+        omega_put_call_parity_error: {
+            let o_err = up - dn - (mean - s.mar_threshold);
+            (o_err * o_err + T::from_f64(1e-30)).sqrt()
+        },
         downside_deviation: (l2 / nf).sqrt(),
         sortino_ratio: (mean - s.mar_threshold) / (l2 / nf).sqrt(),
-        kappa_three_ratio: (mean - s.mar_threshold) / (l3 / nf).powf(1.0 / 3.0),
+        kappa_three_ratio: (mean - s.mar_threshold)
+            / (l3 / nf).max_val(T::from_f64(1e-18)).powf(1.0 / 3.0),
         ulcer_drawdown_index: ui,
         martin_ulcer_ratio: ex / ui,
         burke_drawdown_ratio: ex / dds.sqrt(),
@@ -349,23 +360,8 @@ pub fn evaluate_bacon_omega_sortino_and_burke_drawdown<T: Real>(
 #[cfg(test)]
 mod phase33_tests {
     use super::*;
-    #[test]
-    fn phase33_portfolio_smoke() {
-        let s = BaconOmegaSortinoBurkeDrawdownSpec {
-            period_returns: vec![0.01, -0.005, 0.02],
-            mar_threshold: 0.0,
-            risk_free_rate: 0.001,
-        };
-        assert!(
-            evaluate_bacon_omega_sortino_and_burke_drawdown(&s).keating_shadwick_omega_ratio > 1.0
-        );
-    }
-}
-#[cfg(test)]
-mod phase33_tests_ad {
-    use super::*;
     use ql_ad::Dual;
-    fn s<T: Real>(x: T) -> OharaGlostenMilgromSequentialSpec<T> {
+    fn gm_spec<T: Real>(x: T) -> OharaGlostenMilgromSequentialSpec<T> {
         OharaGlostenMilgromSequentialSpec {
             low_value_vl: T::from_f64(90.),
             high_value_vh: T::from_f64(110.),
@@ -376,16 +372,164 @@ mod phase33_tests_ad {
             signed_order_flow: vec![T::from_f64(0.4), T::from_f64(0.3)],
         }
     }
+    fn rie_spec<T: Real>(x: T) -> PottersBouchaudStieltjesRieSpec<T> {
+        PottersBouchaudStieltjesRieSpec {
+            sample_eigenvalues: vec![
+                T::from_f64(0.4) + x,
+                T::from_f64(0.9),
+                T::from_f64(1.5),
+                T::from_f64(2.4),
+            ],
+            aspect_ratio_q: T::from_f64(0.5),
+            stieltjes_bandwidth_eta: T::from_f64(0.25),
+        }
+    }
+    fn egarch_spec<T: Real>(x: T) -> TsayEgarchHamiltonRegimeSpec<T> {
+        TsayEgarchHamiltonRegimeSpec {
+            returns: vec![
+                T::from_f64(0.01) + x,
+                T::from_f64(-0.025),
+                T::from_f64(0.015),
+            ],
+            initial_variance: T::from_f64(0.04),
+            egarch_omega: T::from_f64(-0.1),
+            egarch_alpha: T::from_f64(0.15),
+            egarch_leverage_gamma: T::from_f64(-0.08),
+            egarch_beta: T::from_f64(0.92),
+            calm_mean: T::zero(),
+            calm_vol: T::from_f64(0.12),
+            crisis_mean: T::from_f64(-0.01),
+            crisis_vol: T::from_f64(0.30),
+            stay_calm_p00: T::from_f64(0.95),
+            stay_crisis_p11: T::from_f64(0.90),
+        }
+    }
+    fn copula_spec<T: Real>(x: T) -> McneilFreyCopulaEulerAllocationSpec<T> {
+        McneilFreyCopulaEulerAllocationSpec {
+            clayton_theta: T::from_f64(2.0) + x,
+            gumbel_theta: T::from_f64(1.5),
+            student_t_df_nu: T::from_f64(5.0),
+            student_t_corr_rho: T::from_f64(0.3),
+            desk_weights: [
+                T::from_f64(0.25) + x,
+                T::from_f64(0.25),
+                T::from_f64(0.25),
+                T::from_f64(0.25),
+            ],
+            desk_expected_losses: [T::from_f64(0.01); 4],
+            loss_covariance_4x4: [
+                [T::from_f64(0.04), T::from_f64(0.01), T::zero(), T::zero()],
+                [
+                    T::from_f64(0.01),
+                    T::from_f64(0.05),
+                    T::from_f64(0.01),
+                    T::zero(),
+                ],
+                [
+                    T::zero(),
+                    T::from_f64(0.01),
+                    T::from_f64(0.06),
+                    T::from_f64(0.01),
+                ],
+                [T::zero(), T::zero(), T::from_f64(0.01), T::from_f64(0.03)],
+            ],
+            es_tail_multiplier: T::from_f64(2.0),
+        }
+    }
+    fn bacon_spec<T: Real>(x: T) -> BaconOmegaSortinoBurkeDrawdownSpec<T> {
+        BaconOmegaSortinoBurkeDrawdownSpec {
+            period_returns: vec![
+                T::from_f64(0.015) + x,
+                T::from_f64(-0.008),
+                T::from_f64(0.022),
+                T::from_f64(-0.004),
+            ],
+            mar_threshold: T::zero(),
+            risk_free_rate: T::from_f64(0.001),
+        }
+    }
     #[test]
-    fn dual_fd() {
+    fn phase33_portfolio_all_five_engines_invariants_and_dual_fd() {
         let h = 1e-6;
-        let fd = (evaluate_ohara_glosten_milgrom_sequential_spread(&s(h))
+        let gm0 = evaluate_ohara_glosten_milgrom_sequential_spread(&gm_spec(0.));
+        assert!(
+            gm0.initial_adverse_selection_spread > 0.0 && gm0.terminal_posterior_belief_p > 0.5
+        );
+        let fd_gm = (evaluate_ohara_glosten_milgrom_sequential_spread(&gm_spec(h))
             .inventory_skewed_reservation_mid
-            - evaluate_ohara_glosten_milgrom_sequential_spread(&s(-h))
+            - evaluate_ohara_glosten_milgrom_sequential_spread(&gm_spec(-h))
                 .inventory_skewed_reservation_mid)
             / (2. * h);
-        let ad = evaluate_ohara_glosten_milgrom_sequential_spread(&s(Dual::<1>::variable(0., 0)))
-            .inventory_skewed_reservation_mid;
-        assert!((ad.d[0] - fd).abs() < 1e-5);
+        let ad_gm =
+            evaluate_ohara_glosten_milgrom_sequential_spread(&gm_spec(Dual::<1>::variable(0., 0)))
+                .inventory_skewed_reservation_mid;
+        assert!((ad_gm.d[0] - fd_gm).abs() < 1e-5);
+
+        let rie0 = evaluate_potters_bouchaud_stieltjes_rie_shrinkage(&rie_spec(0.));
+        assert!(
+            rie0.trace_conservation_error < 1e-12
+                && rie0.rie_condition_number < rie0.sample_condition_number
+                && rie0.inverse_variance_portfolio_risk_reduction > 0.0
+        );
+        let fd_rie = (evaluate_potters_bouchaud_stieltjes_rie_shrinkage(&rie_spec(h))
+            .rie_condition_number
+            - evaluate_potters_bouchaud_stieltjes_rie_shrinkage(&rie_spec(-h))
+                .rie_condition_number)
+            / (2. * h);
+        let ad_rie = evaluate_potters_bouchaud_stieltjes_rie_shrinkage(&rie_spec(
+            Dual::<1>::variable(0., 0),
+        ))
+        .rie_condition_number;
+        assert!((ad_rie.d[0] - fd_rie).abs() < 1e-5);
+
+        let eg0 = evaluate_tsay_egarch_and_hamilton_markov_switching(&egarch_spec(0.));
+        assert!(
+            eg0.egarch_negative_shock_asymmetry_ratio > 1.0
+                && eg0.terminal_filtered_crisis_probability > 0.0
+                && eg0.terminal_filtered_crisis_probability < 1.0
+        );
+        let fd_eg = (evaluate_tsay_egarch_and_hamilton_markov_switching(&egarch_spec(h))
+            .terminal_egarch_volatility
+            - evaluate_tsay_egarch_and_hamilton_markov_switching(&egarch_spec(-h))
+                .terminal_egarch_volatility)
+            / (2. * h);
+        let ad_eg = evaluate_tsay_egarch_and_hamilton_markov_switching(&egarch_spec(
+            Dual::<1>::variable(0., 0),
+        ))
+        .terminal_egarch_volatility;
+        assert!((ad_eg.d[0] - fd_eg).abs() < 1e-5);
+
+        let cop0 = evaluate_mcneil_frey_copula_tail_and_euler_allocation(&copula_spec(0.));
+        assert!(
+            cop0.euler_additivity_error < 1e-12
+                && cop0.portfolio_diversification_benefit > 0.0
+                && cop0.clayton_lower_tail_lambda > 0.0
+                && cop0.clayton_lower_tail_lambda < 1.0
+        );
+        let fd_cop = (evaluate_mcneil_frey_copula_tail_and_euler_allocation(&copula_spec(h))
+            .total_portfolio_es
+            - evaluate_mcneil_frey_copula_tail_and_euler_allocation(&copula_spec(-h))
+                .total_portfolio_es)
+            / (2. * h);
+        let ad_cop = evaluate_mcneil_frey_copula_tail_and_euler_allocation(&copula_spec(
+            Dual::<1>::variable(0., 0),
+        ))
+        .total_portfolio_es;
+        assert!((ad_cop.d[0] - fd_cop).abs() < 1e-5);
+
+        let bac0 = evaluate_bacon_omega_sortino_and_burke_drawdown(&bacon_spec(0.));
+        assert!(
+            bac0.keating_shadwick_omega_ratio > 1.0 && bac0.omega_put_call_parity_error < 1e-12
+        );
+        let fd_bac = (evaluate_bacon_omega_sortino_and_burke_drawdown(&bacon_spec(h))
+            .keating_shadwick_omega_ratio
+            - evaluate_bacon_omega_sortino_and_burke_drawdown(&bacon_spec(-h))
+                .keating_shadwick_omega_ratio)
+            / (2. * h);
+        let ad_bac = evaluate_bacon_omega_sortino_and_burke_drawdown(&bacon_spec(
+            Dual::<1>::variable(0., 0),
+        ))
+        .keating_shadwick_omega_ratio;
+        assert!((ad_bac.d[0] - fd_bac).abs() < 1e-5);
     }
 }

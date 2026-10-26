@@ -73,6 +73,12 @@ mod phase33_tests {
     fn phase33_credit_smoke() {
         let r = evaluate_duffie_singleton_leland_toft_capital_structure(&spec(0.));
         assert!(r.endogenous_default_boundary_vb < 100.);
+        assert!(
+            (r.total_levered_firm_value - (r.risky_debt_fair_value + r.endogenous_equity_value))
+                .abs()
+                < 1e-10
+                && r.structural_credit_spread_bps > 0.0
+        );
         let h = 1e-6;
         let fd = (evaluate_duffie_singleton_leland_toft_capital_structure(&spec(h))
             .risky_debt_fair_value

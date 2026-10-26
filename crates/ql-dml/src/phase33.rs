@@ -64,7 +64,7 @@ pub fn evaluate_wooldridge_greene_2sls_iv_and_did<T: Real>(
         first_stage_instrument_pi1: pi,
         first_stage_f_statistic: f,
         two_stage_ls_iv_beta: iv,
-        hausman_endogeneity_wedge: cf,
+        hausman_endogeneity_wedge: ols - iv,
         control_function_residual_coef: cf,
         did_parallel_trend_counterfactual: counter,
         did_treatment_effect_att: att,
@@ -76,15 +76,22 @@ mod phase33_tests {
     #[test]
     fn phase33_dml_smoke() {
         let s = WooldridgeGreene2slsDidSpec {
-            endogenous_x: vec![1.0, 2.0, 3.0],
-            instrument_z: vec![1.0, 2.1, 2.9],
-            outcome_y: vec![1.2, 2.1, 3.2],
+            endogenous_x: vec![1.0, 2.0, 3.0, 4.0],
+            instrument_z: vec![1.0, 2.1, 2.9, 4.1],
+            outcome_y: vec![1.2, 2.1, 3.2, 4.2],
             treated_pre_mean: 1.0,
             treated_post_mean: 1.2,
             control_pre_mean: 1.0,
             control_post_mean: 1.1,
         };
-        assert!(evaluate_wooldridge_greene_2sls_iv_and_did(&s).first_stage_f_statistic > 0.0);
+        let r = evaluate_wooldridge_greene_2sls_iv_and_did(&s);
+        assert!(r.first_stage_f_statistic > 10.0);
+        assert!(
+            (r.did_treatment_effect_att
+                - (s.treated_post_mean - r.did_parallel_trend_counterfactual))
+                .abs()
+                < 1e-12
+        );
     }
 }
 #[cfg(test)]
