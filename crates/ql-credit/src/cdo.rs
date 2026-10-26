@@ -6,6 +6,7 @@
 //! for both ordinary pricing and forward/reverse automatic differentiation.
 
 use ql_ad::Real;
+use ql_math::norm_cdf;
 use std::sync::LazyLock;
 
 /// Standard-normal inverse evaluated in the AD domain using two Newton steps.
@@ -2256,3 +2257,244 @@ mod evaluate_hull_white_nth_to_default_basket_cds_spread_module {
     }
 }
 pub use evaluate_hull_white_nth_to_default_basket_cds_spread_module::*;
+
+/// Specification for the Andersen–Sidenius–Basu (2003) / Laurent–Gregory (2005) exact recursive
+/// heterogeneous loss distribution synthetic CDO tranche pricer.
+///
+/// Reference: Laurent & Gregory (2005, *Journal of Derivatives* 12(4), "Basket Default Swaps, CDOs
+/// and Factor Copulas"), Andersen, Sidenius & Basu (2003, *Risk*), O'Kane (2008, Ch. 16).
+#[derive(Debug, Clone, Copy)]
+pub struct LaurentGregoryRecursiveCdoSpec<T: Real> {
+    /// Tranche attachment point $K_A \in [0, 1)$.
+    pub attachment_point_ka: T,
+    /// Tranche detachment point $K_D \in (K_A, 1]$.
+    pub detachment_point_kd: T,
+    /// Recovery rate $R \in [0, 1)$ across the 12 reference entities.
+    pub recovery_rate_rec: T,
+    /// Hazard rates $(\lambda_{\text{IG}}, \lambda_{\text{XO}}, \lambda_{\text{HY}})$ for the three 4-name risk tiers.
+    pub tier_hazard_rates_lambda: [T; 3],
+    /// One-factor Gaussian copula correlations $(\rho_{\text{IG}}, \rho_{\text{XO}}, \rho_{\text{HY}})$ for the 3 tiers.
+    pub tier_factor_correlations_rho: [T; 3],
+    /// Risk-free OIS discount rate $r$.
+    pub risk_free_rate_r: T,
+    /// Tranche maturity $T$ (in years).
+    pub maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_laurent_gregory_fft_recursion_synthetic_cdo_tranche`].
+#[derive(Debug, Clone, Copy)]
+pub struct LaurentGregoryRecursiveCdoAnalytics<T: Real> {
+    /// Expected normalized tranche loss fraction $\mathbb{E}[\mathcal{L}_{K_A, K_D}(T)]$ at maturity.
+    pub terminal_expected_tranche_loss_fraction: T,
+    /// Present value of the tranche protection leg per unit tranche notional.
+    pub tranche_protection_leg_pv: T,
+    /// Risky tranche premium annuity (RPV01) per unit tranche notional.
+    pub risky_tranche_annuity_pv01: T,
+    /// Fair running tranche spread in basis points.
+    pub fair_tranche_running_spread_bps: T,
+}
+
+/// Evaluates a heterogeneous 12-name synthetic CDO tranche via the exact Andersen–Sidenius–Basu (2003) /
+/// Laurent–Gregory (2005) discrete probability recursion inside 5-point Gauss–Hermite factor quadrature
+/// across a 4-step midpoint time integration grid.
+pub fn evaluate_laurent_gregory_fft_recursion_synthetic_cdo_tranche<T: Real>(
+    spec: &LaurentGregoryRecursiveCdoSpec<T>,
+) -> LaurentGregoryRecursiveCdoAnalytics<T> {
+    let ka = spec.attachment_point_ka;
+    let kd = spec.detachment_point_kd;
+    let width = (kd - ka).max_val(T::from_f64(1e-4));
+    let lgd_per_name = (T::one() - spec.recovery_rate_rec) / T::from_f64(12.0);
+    let t_mat = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+
+    // 5-point Gauss-Hermite nodes and weights for standard normal M ~ N(0, 1)
+    let gh_z = [
+        -2.8569700138728,
+        -1.3556261799743,
+        0.0,
+        1.3556261799743,
+        2.8569700138728,
+    ];
+    let gh_w = [
+        0.0112574113277,
+        0.2220759220056,
+        0.5333333333333,
+        0.2220759220056,
+        0.0112574113277,
+    ];
+
+    // Smooth tranche payoff helper: smooth_max(x, 0) = 0.5 * (x + sqrt(x^2 + eps^2))
+    let smooth_pos = |x: T| -> T {
+        let eps = T::from_f64(0.015);
+        T::from_f64(0.5) * (x + (x * x + eps * eps).sqrt())
+    };
+    let base_zero = smooth_pos(-ka) - smooth_pos(-kd);
+
+    // Helper: compute unconditional expected normalized tranche loss at horizon tau
+    let expected_tranche_loss_at = |tau: T| -> T {
+        // Rational Acklam-style smooth inverse normal for marginal default probability q_tier(tau)
+        let mut tier_c = [T::zero(); 3];
+        let mut tier_omr2_sqrt = [T::zero(); 3];
+        for tier in 0..3 {
+            let lam = spec.tier_hazard_rates_lambda[tier].max_val(T::from_f64(1e-5));
+            let q = (T::one() - (-lam * tau).exp())
+                .max_val(T::from_f64(1e-6))
+                .min_val(T::from_f64(1.0 - 1e-6));
+            tier_c[tier] = inv_norm_cdf_ad(q);
+            let rho = spec.tier_factor_correlations_rho[tier];
+            tier_omr2_sqrt[tier] = (T::one() - rho * rho).max_val(T::from_f64(1e-4)).sqrt();
+        }
+
+        let mut unconditional_loss = T::zero();
+        for g in 0..5 {
+            let m_val = T::from_f64(gh_z[g]);
+            let w_val = T::from_f64(gh_w[g]);
+
+            // Exact ASB / Laurent-Gregory probability recursion over N = 12 credits (3 tiers x 4 names)
+            let mut dist = [T::zero(); 13];
+            dist[0] = T::one();
+            let mut active_len = 1usize;
+
+            for tier in 0..3 {
+                let rho = spec.tier_factor_correlations_rho[tier];
+                let z_cond = (tier_c[tier] - rho * m_val) / tier_omr2_sqrt[tier];
+                let p_cond = norm_cdf(z_cond);
+                let q_cond = T::one() - p_cond;
+
+                for _name in 0..4 {
+                    for k in (1..=active_len).rev() {
+                        dist[k] = dist[k] * q_cond + dist[k - 1] * p_cond;
+                    }
+                    dist[0] *= q_cond;
+                    active_len += 1;
+                }
+            }
+
+            let mut cond_tranche_loss = T::zero();
+            for (k, prob_k) in dist.iter().enumerate() {
+                let port_loss = T::from_f64(k as f64) * lgd_per_name;
+                let tr_raw =
+                    (smooth_pos(port_loss - ka) - smooth_pos(port_loss - kd) - base_zero) / width;
+                cond_tranche_loss += (*prob_k) * tr_raw;
+            }
+            unconditional_loss += w_val * cond_tranche_loss;
+        }
+        unconditional_loss
+    };
+
+    const STEPS: usize = 4;
+    let dt = t_mat / T::from_f64(STEPS as f64);
+    let mut prev_loss = T::zero();
+    let mut prot_pv = T::zero();
+    let mut rpv01 = T::zero();
+
+    for m in 1..=STEPS {
+        let t_end = T::from_f64(m as f64) * dt;
+        let t_mid = (T::from_f64(m as f64) - T::from_f64(0.5)) * dt;
+        let curr_loss = expected_tranche_loss_at(t_end);
+        let d_loss = curr_loss - prev_loss;
+        let avg_surv = T::one() - T::from_f64(0.5) * (prev_loss + curr_loss);
+        let df_mid = (-spec.risk_free_rate_r * t_mid).exp();
+
+        prot_pv += df_mid * d_loss;
+        rpv01 += dt * df_mid * avg_surv;
+        prev_loss = curr_loss;
+    }
+
+    let spread_bps = (prot_pv / rpv01.max_val(T::from_f64(1e-6))) * T::from_f64(10_000.0);
+
+    LaurentGregoryRecursiveCdoAnalytics {
+        terminal_expected_tranche_loss_fraction: prev_loss,
+        tranche_protection_leg_pv: prot_pv,
+        risky_tranche_annuity_pv01: rpv01,
+        fair_tranche_running_spread_bps: spread_bps,
+    }
+}
+
+#[cfg(test)]
+mod laurent_gregory_cdo_suite64_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn laurent_gregory_recursive_cdo_invariants_and_ad_parity() {
+        let base = LaurentGregoryRecursiveCdoSpec {
+            attachment_point_ka: 0.03_f64,
+            detachment_point_kd: 0.07,
+            recovery_rate_rec: 0.40,
+            tier_hazard_rates_lambda: [0.008, 0.020, 0.045],
+            tier_factor_correlations_rho: [0.25, 0.35, 0.45],
+            risk_free_rate_r: 0.04,
+            maturity_years_t: 5.0,
+        };
+        let r0 = evaluate_laurent_gregory_fft_recursion_synthetic_cdo_tranche(&base);
+        assert!(r0.terminal_expected_tranche_loss_fraction > 0.0);
+        assert!(r0.tranche_protection_leg_pv > 0.0);
+        assert!(r0.risky_tranche_annuity_pv01 > 2.0);
+        assert!(r0.fair_tranche_running_spread_bps > 50.0);
+
+        let inputs = [
+            base.attachment_point_ka,
+            base.detachment_point_kd,
+            base.recovery_rate_rec,
+            base.tier_hazard_rates_lambda[0],
+            base.tier_factor_correlations_rho[0],
+            base.risk_free_rate_r,
+            base.maturity_years_t,
+        ];
+        let mut dual_in = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            dual_in[i] = Dual::variable(inputs[i], i);
+        }
+        let spec_ad = LaurentGregoryRecursiveCdoSpec {
+            attachment_point_ka: dual_in[0],
+            detachment_point_kd: dual_in[1],
+            recovery_rate_rec: dual_in[2],
+            tier_hazard_rates_lambda: [
+                dual_in[3],
+                Dual::from_f64(base.tier_hazard_rates_lambda[1]),
+                Dual::from_f64(base.tier_hazard_rates_lambda[2]),
+            ],
+            tier_factor_correlations_rho: [
+                dual_in[4],
+                Dual::from_f64(base.tier_factor_correlations_rho[1]),
+                Dual::from_f64(base.tier_factor_correlations_rho[2]),
+            ],
+            risk_free_rate_r: dual_in[5],
+            maturity_years_t: dual_in[6],
+        };
+        let r_ad = evaluate_laurent_gregory_fft_recursion_synthetic_cdo_tranche(&spec_ad);
+        let eps = 1e-6;
+        for i in 0..7 {
+            let mut p = inputs;
+            let mut m = inputs;
+            p[i] += eps;
+            m[i] -= eps;
+            let mk = |v: [f64; 7]| LaurentGregoryRecursiveCdoSpec {
+                attachment_point_ka: v[0],
+                detachment_point_kd: v[1],
+                recovery_rate_rec: v[2],
+                tier_hazard_rates_lambda: [
+                    v[3],
+                    base.tier_hazard_rates_lambda[1],
+                    base.tier_hazard_rates_lambda[2],
+                ],
+                tier_factor_correlations_rho: [
+                    v[4],
+                    base.tier_factor_correlations_rho[1],
+                    base.tier_factor_correlations_rho[2],
+                ],
+                risk_free_rate_r: v[5],
+                maturity_years_t: v[6],
+            };
+            let rp = evaluate_laurent_gregory_fft_recursion_synthetic_cdo_tranche(&mk(p));
+            let rm = evaluate_laurent_gregory_fft_recursion_synthetic_cdo_tranche(&mk(m));
+            let fd = (rp.fair_tranche_running_spread_bps - rm.fair_tranche_running_spread_bps)
+                / (2.0 * eps);
+            assert!(
+                r_ad.fair_tranche_running_spread_bps.d[i].abs() > 1e-6,
+                "zero derivative at {i}"
+            );
+            assert!((r_ad.fair_tranche_running_spread_bps.d[i] - fd).abs() < 1e-3);
+        }
+    }
+}

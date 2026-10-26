@@ -1254,3 +1254,194 @@ mod evaluate_joslin_priebsch_singleton_unspanned_macro_term_structure_module {
     }
 }
 pub use evaluate_joslin_priebsch_singleton_unspanned_macro_term_structure_module::*;
+
+use ql_ad::Real;
+
+/// Specification for the Joslin–Singleton–Zhu (2011) canonical Gaussian Dynamic Term Structure Model (GDTSM).
+///
+/// Reference: Joslin, Singleton & Zhu (2011, *Review of Financial Studies* 24(3), "A New Perspective on
+/// Gaussian Dynamic Term Structure Models"), Piazzesi (2010), Duffie & Kan (1996).
+#[derive(Debug, Clone, Copy)]
+pub struct JoslinSingletonZhuGdtsmSpec<T: Real> {
+    /// Long-run risk-neutral short-rate mean $r_\infty^{\mathbb{Q}}$.
+    pub risk_neutral_long_run_mean_r_inf_q: T,
+    /// Long-run physical short-rate mean $r_\infty^{\mathbb{P}}$.
+    pub physical_long_run_mean_r_inf_p: T,
+    /// Three risk-neutral mean-reversion decay speeds $(\kappa_1^{\mathbb{Q}}, \kappa_2^{\mathbb{Q}}, \kappa_3^{\mathbb{Q}})$.
+    pub risk_neutral_decay_speeds_kappa_q: [T; 3],
+    /// Three physical mean-reversion decay speeds $(\kappa_1^{\mathbb{P}}, \kappa_2^{\mathbb{P}}, \kappa_3^{\mathbb{P}})$.
+    pub physical_decay_speeds_kappa_p: [T; 3],
+    /// Three canonical pricing factors (level, slope, curvature states) $(x_1, x_2, x_3)$.
+    pub canonical_factor_states_x: [T; 3],
+    /// Three factor innovation volatilities $(\sigma_1, \sigma_2, \sigma_3)$.
+    pub factor_volatilities_sigma: [T; 3],
+    /// Target bond maturity $\tau$ (in years).
+    pub bond_maturity_years_tau: T,
+}
+
+/// Analytics returned by [`evaluate_joslin_singleton_zhu_canonical_gdtsm_term_premium`].
+#[derive(Debug, Clone, Copy)]
+pub struct JoslinSingletonZhuGdtsmAnalytics<T: Real> {
+    /// Model-implied affine zero-coupon bond yield $y^{\mathbb{Q}}(\tau)$ including convexity.
+    pub canonical_zero_coupon_yield_q: T,
+    /// Expectations-hypothesis average physical short rate $y^{\mathbb{P},\text{EH}}(\tau)$.
+    pub expectations_hypothesis_yield_p: T,
+    /// Canonical yield term premium $TP(\tau) = y^{\mathbb{Q}}(\tau) - y^{\mathbb{P},\text{EH}}(\tau)$.
+    pub canonical_yield_term_premium: T,
+    /// Instantaneous maximum Sharpe ratio (market price of risk norm) $\|\Lambda_t\|_2$.
+    pub instantaneous_market_price_of_risk_norm: T,
+}
+
+/// Evaluates the Joslin–Singleton–Zhu (2011) canonical 3-factor GDTSM yield, expectations-hypothesis path,
+/// and term premium decomposition.
+pub fn evaluate_joslin_singleton_zhu_canonical_gdtsm_term_premium<T: Real>(
+    spec: &JoslinSingletonZhuGdtsmSpec<T>,
+) -> JoslinSingletonZhuGdtsmAnalytics<T> {
+    let tau = spec.bond_maturity_years_tau.max_val(T::from_f64(1e-4));
+    let r_inf_q_third = spec.risk_neutral_long_run_mean_r_inf_q / T::from_f64(3.0);
+    let r_inf_p_third = spec.physical_long_run_mean_r_inf_p / T::from_f64(3.0);
+
+    let mut log_bond_price_q = T::zero();
+    let mut eh_yield_p = T::zero();
+    let mut lambda_sq_sum = T::zero();
+
+    for i in 0..3 {
+        let kq = spec.risk_neutral_decay_speeds_kappa_q[i].max_val(T::from_f64(1e-4));
+        let kp = spec.physical_decay_speeds_kappa_p[i].max_val(T::from_f64(1e-4));
+        let xi = spec.canonical_factor_states_x[i];
+        let sig = spec.factor_volatilities_sigma[i].max_val(T::from_f64(1e-6));
+        let sig2 = sig * sig;
+
+        // Exact Vasicek / JSZ risk-neutral factor loading B_i^Q(tau) = (1 - exp(-kappa_i^Q * tau)) / kappa_i^Q
+        let b_q = (T::one() - (-kq * tau).exp()) / kq;
+        // Exact affine intercept A_i^Q(tau) including Jensen convexity
+        let a_q = (r_inf_q_third - sig2 / (T::from_f64(2.0) * kq * kq)) * (b_q - tau)
+            - sig2 * b_q * b_q / (T::from_f64(4.0) * kq);
+        log_bond_price_q = log_bond_price_q + a_q - b_q * xi;
+
+        // Physical expectations-hypothesis average short rate over [0, tau]
+        let b_p = (T::one() - (-kp * tau).exp()) / kp;
+        eh_yield_p = eh_yield_p + r_inf_p_third + (b_p / tau) * (xi - r_inf_p_third);
+
+        // Instantaneous market price of risk Lambda_i(x_i) = (drift_P - drift_Q) / sigma_i
+        let drift_p = kp * (r_inf_p_third - xi);
+        let drift_q = kq * (r_inf_q_third - xi);
+        let lam_i = (drift_p - drift_q) / sig;
+        lambda_sq_sum += lam_i * lam_i;
+    }
+
+    let y_q = -log_bond_price_q / tau;
+    let tp = y_q - eh_yield_p;
+    let mpr_norm = lambda_sq_sum.sqrt();
+
+    JoslinSingletonZhuGdtsmAnalytics {
+        canonical_zero_coupon_yield_q: y_q,
+        expectations_hypothesis_yield_p: eh_yield_p,
+        canonical_yield_term_premium: tp,
+        instantaneous_market_price_of_risk_norm: mpr_norm,
+    }
+}
+
+#[cfg(test)]
+mod jsz_gdtsm_suite64_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn jsz_canonical_gdtsm_invariants_and_ad_parity() {
+        let base = JoslinSingletonZhuGdtsmSpec {
+            risk_neutral_long_run_mean_r_inf_q: 0.045_f64,
+            physical_long_run_mean_r_inf_p: 0.032,
+            risk_neutral_decay_speeds_kappa_q: [0.06, 0.45, 1.20],
+            physical_decay_speeds_kappa_p: [0.18, 0.65, 1.45],
+            canonical_factor_states_x: [0.015, 0.008, 0.012],
+            factor_volatilities_sigma: [0.0065, 0.0080, 0.0095],
+            bond_maturity_years_tau: 10.0,
+        };
+        let r0 = evaluate_joslin_singleton_zhu_canonical_gdtsm_term_premium(&base);
+        assert!(r0.canonical_zero_coupon_yield_q > 0.02 && r0.canonical_zero_coupon_yield_q < 0.08);
+        assert!(r0.expectations_hypothesis_yield_p > 0.01);
+        assert!(r0.instantaneous_market_price_of_risk_norm > 0.0);
+
+        let inputs = [
+            base.risk_neutral_long_run_mean_r_inf_q,
+            base.physical_long_run_mean_r_inf_p,
+            base.risk_neutral_decay_speeds_kappa_q[0],
+            base.physical_decay_speeds_kappa_p[0],
+            base.canonical_factor_states_x[0],
+            base.factor_volatilities_sigma[0],
+            base.bond_maturity_years_tau,
+        ];
+        let mut dual_in = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            dual_in[i] = Dual::variable(inputs[i], i);
+        }
+        let spec_ad = JoslinSingletonZhuGdtsmSpec {
+            risk_neutral_long_run_mean_r_inf_q: dual_in[0],
+            physical_long_run_mean_r_inf_p: dual_in[1],
+            risk_neutral_decay_speeds_kappa_q: [
+                dual_in[2],
+                Dual::from_f64(base.risk_neutral_decay_speeds_kappa_q[1]),
+                Dual::from_f64(base.risk_neutral_decay_speeds_kappa_q[2]),
+            ],
+            physical_decay_speeds_kappa_p: [
+                dual_in[3],
+                Dual::from_f64(base.physical_decay_speeds_kappa_p[1]),
+                Dual::from_f64(base.physical_decay_speeds_kappa_p[2]),
+            ],
+            canonical_factor_states_x: [
+                dual_in[4],
+                Dual::from_f64(base.canonical_factor_states_x[1]),
+                Dual::from_f64(base.canonical_factor_states_x[2]),
+            ],
+            factor_volatilities_sigma: [
+                dual_in[5],
+                Dual::from_f64(base.factor_volatilities_sigma[1]),
+                Dual::from_f64(base.factor_volatilities_sigma[2]),
+            ],
+            bond_maturity_years_tau: dual_in[6],
+        };
+        let r_ad = evaluate_joslin_singleton_zhu_canonical_gdtsm_term_premium(&spec_ad);
+        let eps = 1e-6;
+        for i in 0..7 {
+            let mut p = inputs;
+            let mut m = inputs;
+            p[i] += eps;
+            m[i] -= eps;
+            let mk = |v: [f64; 7]| JoslinSingletonZhuGdtsmSpec {
+                risk_neutral_long_run_mean_r_inf_q: v[0],
+                physical_long_run_mean_r_inf_p: v[1],
+                risk_neutral_decay_speeds_kappa_q: [
+                    v[2],
+                    base.risk_neutral_decay_speeds_kappa_q[1],
+                    base.risk_neutral_decay_speeds_kappa_q[2],
+                ],
+                physical_decay_speeds_kappa_p: [
+                    v[3],
+                    base.physical_decay_speeds_kappa_p[1],
+                    base.physical_decay_speeds_kappa_p[2],
+                ],
+                canonical_factor_states_x: [
+                    v[4],
+                    base.canonical_factor_states_x[1],
+                    base.canonical_factor_states_x[2],
+                ],
+                factor_volatilities_sigma: [
+                    v[5],
+                    base.factor_volatilities_sigma[1],
+                    base.factor_volatilities_sigma[2],
+                ],
+                bond_maturity_years_tau: v[6],
+            };
+            let rp = evaluate_joslin_singleton_zhu_canonical_gdtsm_term_premium(&mk(p));
+            let rm = evaluate_joslin_singleton_zhu_canonical_gdtsm_term_premium(&mk(m));
+            let fd =
+                (rp.canonical_yield_term_premium - rm.canonical_yield_term_premium) / (2.0 * eps);
+            assert!(
+                r_ad.canonical_yield_term_premium.d[i].abs() > 1e-7,
+                "zero derivative at {i}"
+            );
+            assert!((r_ad.canonical_yield_term_premium.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

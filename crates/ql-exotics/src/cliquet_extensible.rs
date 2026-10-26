@@ -1,6 +1,6 @@
 use crate::barrier::{BarrierOptionSpec, MonitoringFrequency, price_barrier_option};
 use ql_ad::Real;
-use ql_math::bivariate_normal_cdf;
+use ql_math::{bivariate_normal_cdf, norm_cdf};
 use ql_vol::black_scholes_price;
 
 #[derive(Clone, Copy, Debug)]
@@ -2087,3 +2087,205 @@ mod evaluate_turnbull_wakeman_edgeworth_arithmetic_asian_option_module {
     }
 }
 pub use evaluate_turnbull_wakeman_edgeworth_arithmetic_asian_option_module::*;
+
+/// Specification for the Wilmott (2002) / Gatheral (2006) globally floored, locally capped/floored
+/// multi-reset cliquet option with forward volatility skew sensitivity.
+///
+/// Reference: Wilmott (2002, *IJTAF* 5(6), "Cliquet Options and Volatility Models"),
+/// Gatheral (2006, *The Volatility Surface*, Ch. 10), Carr & Lee (2009).
+#[derive(Debug, Clone, Copy)]
+pub struct WilmottCarrCliquetSpec<T: Real> {
+    /// Contract notional $N$.
+    pub notional_n: T,
+    /// Local period return floor $F_{\text{loc}}$ (e.g. $0.0$).
+    pub local_return_floor_f_loc: T,
+    /// Local period return cap $C_{\text{loc}}$ (e.g. $0.08$).
+    pub local_return_cap_c_loc: T,
+    /// Global cumulative return floor $F_{\text{glob}}$ across all reset periods.
+    pub global_cumulative_floor_f_glob: T,
+    /// Risk-free interest rate $r$.
+    pub risk_free_rate_r: T,
+    /// Dividend yield $q$.
+    pub dividend_yield_q: T,
+    /// Forward-starting ATM volatility $\sigma_{\text{ATM}}$.
+    pub forward_atm_volatility_sigma: T,
+    /// Forward smile skew slope $\eta_{\text{skew}}$ per unit moneyness.
+    pub forward_skew_slope_eta: T,
+    /// Total maturity $T$ across $N_{\text{reset}} = 4$ reset periods.
+    pub maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_wilmott_carr_globally_floored_locally_capped_cliquet`].
+#[derive(Debug, Clone, Copy)]
+pub struct WilmottCarrCliquetAnalytics<T: Real> {
+    /// Expected locally capped/floored single-period return $\mathbb{E}^{\mathbb{Q}}[Y_i]$.
+    pub expected_single_period_collared_return: T,
+    /// Discounted value of the global floor protection $\mathbb{E}^{\mathbb{Q}}[(F_{\text{glob}} - \sum Y_i)^+]$.
+    pub embedded_global_floor_option_value: T,
+    /// Forward-skew convexity adjustment relative to flat Black–Scholes valuation.
+    pub forward_skew_valuation_wedge: T,
+    /// Present value of the globally floored, locally capped cliquet structure.
+    pub total_cliquet_present_value: T,
+}
+
+/// Evaluates a 4-period globally floored, locally capped/floored cliquet via exact truncated lognormal
+/// local collar moments and Bachelier/Gaussian global floor aggregation with forward-skew adjustment.
+pub fn evaluate_wilmott_carr_globally_floored_locally_capped_cliquet<T: Real>(
+    spec: &WilmottCarrCliquetSpec<T>,
+) -> WilmottCarrCliquetAnalytics<T> {
+    const N_PERIODS: usize = 4;
+    let n_f = T::from_f64(N_PERIODS as f64);
+    let t_mat = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+    let dt = t_mat / n_f;
+    let sqrt_dt = dt.sqrt();
+    let carry = spec.risk_free_rate_r - spec.dividend_yield_q;
+    let fwd_gross = (carry * dt).exp();
+
+    let k_floor = (T::one() + spec.local_return_floor_f_loc).max_val(T::from_f64(0.1));
+    let k_cap = (T::one() + spec.local_return_cap_c_loc).max_val(k_floor + T::from_f64(1e-4));
+
+    // Helper: undiscounted expected call E[(S_dt / S_0 - K)^+] and second moment contribution under vol_k
+    let bs_undisc_call = |k_gross: T, vol: T| -> T {
+        let v = vol.max_val(T::from_f64(1e-4));
+        let v_sqrt = v * sqrt_dt;
+        let d1 = ((fwd_gross / k_gross).ln() + T::from_f64(0.5) * v * v * dt) / v_sqrt;
+        let d2 = d1 - v_sqrt;
+        fwd_gross * norm_cdf(d1) - k_gross * norm_cdf(d2)
+    };
+
+    let sig_atm = spec.forward_atm_volatility_sigma.max_val(T::from_f64(1e-4));
+    let sig_floor = sig_atm + spec.forward_skew_slope_eta * (k_floor - T::one());
+    let sig_cap = sig_atm + spec.forward_skew_slope_eta * (k_cap - T::one());
+
+    // Locally collared return Y_i = F_loc + (1 + R_i - k_floor)^+ - (1 + R_i - k_cap)^+
+    let call_floor_skew = bs_undisc_call(k_floor, sig_floor);
+    let call_cap_skew = bs_undisc_call(k_cap, sig_cap);
+    let mu_y_skew = spec.local_return_floor_f_loc + call_floor_skew - call_cap_skew;
+
+    let call_floor_flat = bs_undisc_call(k_floor, sig_atm);
+    let call_cap_flat = bs_undisc_call(k_cap, sig_atm);
+    let mu_y_flat = spec.local_return_floor_f_loc + call_floor_flat - call_cap_flat;
+
+    // Exact second moment E[(Y_i - F_loc)^2] of the locally collared return via
+    // Z^2 = ((X - k_floor)^+)^2 - ((X - k_cap)^+)^2 - 2*(k_cap - k_floor)*(X - k_cap)^+
+    let bs_undisc_sq_call = |k_gross: T, vol: T| -> T {
+        let v = vol.max_val(T::from_f64(1e-4));
+        let v_sqrt = v * sqrt_dt;
+        let d1 = ((fwd_gross / k_gross).ln() + T::from_f64(0.5) * v * v * dt) / v_sqrt;
+        let d2 = d1 - v_sqrt;
+        let d3 = d1 + v_sqrt;
+        fwd_gross * fwd_gross * (v * v * dt).exp() * norm_cdf(d3)
+            - T::from_f64(2.0) * k_gross * fwd_gross * norm_cdf(d1)
+            + k_gross * k_gross * norm_cdf(d2)
+    };
+    let width = k_cap - k_floor;
+    let ez = call_floor_flat - call_cap_flat;
+    let ez2 = bs_undisc_sq_call(k_floor, sig_atm)
+        - bs_undisc_sq_call(k_cap, sig_atm)
+        - T::from_f64(2.0) * width * call_cap_flat;
+    let var_y = (ez2 - ez * ez).max_val(T::from_f64(1e-8));
+    let std_y = var_y.sqrt();
+
+    // Sum S_N = sum_{i=1}^N Y_i has mean M_sum = N * mu_y_skew and std Sigma_sum = sqrt(N) * std_y
+    let m_sum = n_f * mu_y_skew;
+    let sig_sum = n_f.sqrt() * std_y;
+    let z_glob = (spec.global_cumulative_floor_f_glob - m_sum) / sig_sum;
+    let inv_sqrt_2pi = T::from_f64(0.3989422804014327);
+    let phi_z = inv_sqrt_2pi * (-T::from_f64(0.5) * z_glob * z_glob).exp();
+
+    let df_t = (-spec.risk_free_rate_r * t_mat).exp();
+    let global_floor_put = spec.notional_n * df_t * sig_sum * (z_glob * norm_cdf(z_glob) + phi_z);
+    let skew_wedge = spec.notional_n * df_t * n_f * (mu_y_skew - mu_y_flat);
+    let total_pv = spec.notional_n * df_t * m_sum + global_floor_put;
+
+    WilmottCarrCliquetAnalytics {
+        expected_single_period_collared_return: mu_y_skew,
+        embedded_global_floor_option_value: global_floor_put,
+        forward_skew_valuation_wedge: skew_wedge,
+        total_cliquet_present_value: total_pv,
+    }
+}
+
+#[cfg(test)]
+mod wilmott_carr_cliquet_suite64_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn wilmott_carr_cliquet_invariants_and_ad_parity() {
+        let base = WilmottCarrCliquetSpec {
+            notional_n: 100.0_f64,
+            local_return_floor_f_loc: 0.00,
+            local_return_cap_c_loc: 0.08,
+            global_cumulative_floor_f_glob: 0.10,
+            risk_free_rate_r: 0.04,
+            dividend_yield_q: 0.015,
+            forward_atm_volatility_sigma: 0.22,
+            forward_skew_slope_eta: -0.25,
+            maturity_years_t: 2.0,
+        };
+        let r0 = evaluate_wilmott_carr_globally_floored_locally_capped_cliquet(&base);
+        assert!(
+            r0.expected_single_period_collared_return > 0.0
+                && r0.expected_single_period_collared_return < 0.08
+        );
+        assert!(r0.embedded_global_floor_option_value > 0.0);
+        assert!(r0.forward_skew_valuation_wedge > 0.0);
+        assert!(r0.total_cliquet_present_value > r0.embedded_global_floor_option_value);
+
+        let inputs = [
+            base.notional_n,
+            base.local_return_floor_f_loc,
+            base.local_return_cap_c_loc,
+            base.global_cumulative_floor_f_glob,
+            base.risk_free_rate_r,
+            base.dividend_yield_q,
+            base.forward_atm_volatility_sigma,
+            base.forward_skew_slope_eta,
+            base.maturity_years_t,
+        ];
+        let mut dual_in = [Dual::<9>::from_f64(0.0); 9];
+        for i in 0..9 {
+            dual_in[i] = Dual::variable(inputs[i], i);
+        }
+        let spec_ad = WilmottCarrCliquetSpec {
+            notional_n: dual_in[0],
+            local_return_floor_f_loc: dual_in[1],
+            local_return_cap_c_loc: dual_in[2],
+            global_cumulative_floor_f_glob: dual_in[3],
+            risk_free_rate_r: dual_in[4],
+            dividend_yield_q: dual_in[5],
+            forward_atm_volatility_sigma: dual_in[6],
+            forward_skew_slope_eta: dual_in[7],
+            maturity_years_t: dual_in[8],
+        };
+        let r_ad = evaluate_wilmott_carr_globally_floored_locally_capped_cliquet(&spec_ad);
+        let eps = 1e-6;
+        for i in 0..9 {
+            let mut p = inputs;
+            let mut m = inputs;
+            p[i] += eps;
+            m[i] -= eps;
+            let mk = |v: [f64; 9]| WilmottCarrCliquetSpec {
+                notional_n: v[0],
+                local_return_floor_f_loc: v[1],
+                local_return_cap_c_loc: v[2],
+                global_cumulative_floor_f_glob: v[3],
+                risk_free_rate_r: v[4],
+                dividend_yield_q: v[5],
+                forward_atm_volatility_sigma: v[6],
+                forward_skew_slope_eta: v[7],
+                maturity_years_t: v[8],
+            };
+            let rp = evaluate_wilmott_carr_globally_floored_locally_capped_cliquet(&mk(p));
+            let rm = evaluate_wilmott_carr_globally_floored_locally_capped_cliquet(&mk(m));
+            let fd =
+                (rp.total_cliquet_present_value - rm.total_cliquet_present_value) / (2.0 * eps);
+            assert!(
+                r_ad.total_cliquet_present_value.d[i].abs() > 1e-6,
+                "zero derivative at {i}"
+            );
+            assert!((r_ad.total_cliquet_present_value.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

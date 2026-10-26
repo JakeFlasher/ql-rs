@@ -1887,3 +1887,173 @@ mod evaluate_fukasawa_neuberger_gamma_skewness_swap_strip_module {
     }
 }
 pub use evaluate_fukasawa_neuberger_gamma_skewness_swap_strip_module::*;
+
+use ql_ad::Real;
+
+/// Specification for the Broadie–Jain (2008) discrete-sampling and Merton jump-diffusion variance
+/// and volatility swap engine.
+///
+/// Reference: Broadie & Jain (2008, *Journal of Derivatives* 15(3), "The Effect of Jumps and Discrete
+/// Sampling on Volatility and Variance Swaps"), Gatheral (2006), Carr & Wu (2009).
+#[derive(Debug, Clone, Copy)]
+pub struct BroadieJainVarianceSwapSpec<T: Real> {
+    /// Diffusive volatility $\sigma$.
+    pub diffusive_volatility_sigma: T,
+    /// Poisson jump arrival intensity $\lambda_J$ (per year).
+    pub jump_intensity_lambda_j: T,
+    /// Mean log-jump size $\mu_J$.
+    pub mean_log_jump_mu_j: T,
+    /// Standard deviation of log-jump size $\delta_J$.
+    pub std_log_jump_delta_j: T,
+    /// Risk-free interest rate $r$.
+    pub risk_free_rate_r: T,
+    /// Dividend yield $q$.
+    pub dividend_yield_q: T,
+    /// Number of discrete monitoring periods $n$ over $[0, T]$.
+    pub discrete_sampling_periods_n: T,
+    /// Swap maturity $T$ (in years).
+    pub maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_broadie_jain_discrete_sampling_jump_variance_swap`].
+#[derive(Debug, Clone, Copy)]
+pub struct BroadieJainVarianceSwapAnalytics<T: Real> {
+    /// Continuously sampled jump-diffusion fair variance swap strike $K_{\text{var}}^{\text{cont}}$.
+    pub continuous_variance_swap_strike: T,
+    /// Discretely sampled fair variance swap strike $K_{\text{var}}^{\text{disc}}(n)$.
+    pub discrete_variance_swap_strike: T,
+    /// Total jump + discrete-sampling variance strike bias in variance points ($\times 10^4$).
+    pub jump_and_discretization_bias_bps: T,
+    /// Convexity-adjusted fair volatility swap strike $K_{\text{vol}}^{\text{disc}}(n)$.
+    pub convexity_adjusted_vol_swap_strike: T,
+}
+
+/// Evaluates the Broadie–Jain (2008) exact discrete-sampling and jump-diffusion variance swap strike
+/// and second-order Taylor convexity-adjusted volatility swap strike.
+pub fn evaluate_broadie_jain_discrete_sampling_jump_variance_swap<T: Real>(
+    spec: &BroadieJainVarianceSwapSpec<T>,
+) -> BroadieJainVarianceSwapAnalytics<T> {
+    let sig = spec.diffusive_volatility_sigma;
+    let sig2 = sig * sig;
+    let lam = spec.jump_intensity_lambda_j;
+    let mu_j = spec.mean_log_jump_mu_j;
+    let del_j = spec.std_log_jump_delta_j;
+    let del_j2 = del_j * del_j;
+    let n = spec.discrete_sampling_periods_n.max_val(T::from_f64(1.0));
+    let t = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+    let dt = t / n;
+
+    // Compensator kappa_J = E[e^J - 1] = exp(mu_J + 0.5 * delta_J^2) - 1
+    let kappa_j = (mu_j + T::from_f64(0.5) * del_j2).exp() - T::one();
+
+    // Broadie & Jain (2008, Eq. 9): continuous variance strike K_var^cont = sigma^2 + lambda_J * (mu_J^2 + delta_J^2)
+    let jump_second_moment = mu_j * mu_j + del_j2;
+    let k_var_cont = sig2 + lam * jump_second_moment;
+
+    // Broadie & Jain (2008, Eq. 14): exact discrete-sampling log-return mean per unit time
+    // m_log = r - q - 0.5 * sigma^2 - lambda_J * kappa_J + lambda_J * mu_J
+    // E[(Delta ln S)^2] = K_var^cont * dt + (m_log * dt)^2  => K_var^disc(n) = K_var^cont + (T / n) * m_log^2
+    let m_log =
+        spec.risk_free_rate_r - spec.dividend_yield_q - T::from_f64(0.5) * sig2 - lam * kappa_j
+            + lam * mu_j;
+    let disc_correction = dt * m_log * m_log;
+    let k_var_disc = k_var_cont + disc_correction;
+
+    let bias_bps = (k_var_disc - sig2) * T::from_f64(10_000.0);
+
+    // Broadie & Jain (2008, Section 4): variance of realized variance Var(RV_n) under jump-diffusion
+    let jump_fourth_moment = mu_j * mu_j * mu_j * mu_j
+        + T::from_f64(6.0) * mu_j * mu_j * del_j2
+        + T::from_f64(3.0) * del_j2 * del_j2;
+    let var_rv = (T::from_f64(2.0) * k_var_cont * k_var_cont) / n + (lam * jump_fourth_moment) / t;
+
+    let sqrt_k_var = k_var_disc.max_val(T::from_f64(1e-8)).sqrt();
+    let k_vol_disc = sqrt_k_var - var_rv / (T::from_f64(8.0) * sqrt_k_var * k_var_disc);
+
+    BroadieJainVarianceSwapAnalytics {
+        continuous_variance_swap_strike: k_var_cont,
+        discrete_variance_swap_strike: k_var_disc,
+        jump_and_discretization_bias_bps: bias_bps,
+        convexity_adjusted_vol_swap_strike: k_vol_disc,
+    }
+}
+
+#[cfg(test)]
+mod broadie_jain_varswap_suite64_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn broadie_jain_variance_swap_invariants_and_ad_parity() {
+        let base = BroadieJainVarianceSwapSpec {
+            diffusive_volatility_sigma: 0.18_f64,
+            jump_intensity_lambda_j: 0.60,
+            mean_log_jump_mu_j: -0.08,
+            std_log_jump_delta_j: 0.12,
+            risk_free_rate_r: 0.045,
+            dividend_yield_q: 0.015,
+            discrete_sampling_periods_n: 52.0,
+            maturity_years_t: 1.0,
+        };
+        let r0 = evaluate_broadie_jain_discrete_sampling_jump_variance_swap(&base);
+        assert!(
+            r0.continuous_variance_swap_strike
+                > base.diffusive_volatility_sigma * base.diffusive_volatility_sigma
+        );
+        assert!(r0.discrete_variance_swap_strike > r0.continuous_variance_swap_strike);
+        assert!(r0.convexity_adjusted_vol_swap_strike < r0.discrete_variance_swap_strike.sqrt());
+
+        let inputs = [
+            base.diffusive_volatility_sigma,
+            base.jump_intensity_lambda_j,
+            base.mean_log_jump_mu_j,
+            base.std_log_jump_delta_j,
+            base.risk_free_rate_r,
+            base.dividend_yield_q,
+            base.discrete_sampling_periods_n,
+            base.maturity_years_t,
+        ];
+        let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            dual_in[i] = Dual::variable(inputs[i], i);
+        }
+        let spec_ad = BroadieJainVarianceSwapSpec {
+            diffusive_volatility_sigma: dual_in[0],
+            jump_intensity_lambda_j: dual_in[1],
+            mean_log_jump_mu_j: dual_in[2],
+            std_log_jump_delta_j: dual_in[3],
+            risk_free_rate_r: dual_in[4],
+            dividend_yield_q: dual_in[5],
+            discrete_sampling_periods_n: dual_in[6],
+            maturity_years_t: dual_in[7],
+        };
+        let r_ad = evaluate_broadie_jain_discrete_sampling_jump_variance_swap(&spec_ad);
+        let eps = 1e-6;
+        for i in 0..8 {
+            let mut p = inputs;
+            let mut m = inputs;
+            p[i] += eps;
+            m[i] -= eps;
+            let mk = |v: [f64; 8]| BroadieJainVarianceSwapSpec {
+                diffusive_volatility_sigma: v[0],
+                jump_intensity_lambda_j: v[1],
+                mean_log_jump_mu_j: v[2],
+                std_log_jump_delta_j: v[3],
+                risk_free_rate_r: v[4],
+                dividend_yield_q: v[5],
+                discrete_sampling_periods_n: v[6],
+                maturity_years_t: v[7],
+            };
+            let rp = evaluate_broadie_jain_discrete_sampling_jump_variance_swap(&mk(p));
+            let rm = evaluate_broadie_jain_discrete_sampling_jump_variance_swap(&mk(m));
+            let fd = (rp.convexity_adjusted_vol_swap_strike
+                - rm.convexity_adjusted_vol_swap_strike)
+                / (2.0 * eps);
+            assert!(
+                r_ad.convexity_adjusted_vol_swap_strike.d[i].abs() > 1e-7,
+                "zero derivative at {i}"
+            );
+            assert!((r_ad.convexity_adjusted_vol_swap_strike.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

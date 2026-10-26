@@ -1192,3 +1192,162 @@ mod evaluate_reiner_wystup_quanto_fx_correlation_convexity_module {
     }
 }
 pub use evaluate_reiner_wystup_quanto_fx_correlation_convexity_module::*;
+
+/// Specification for the Du–Tepper–Verdelhan (2018) / Andersen–Duffie–Song (2019) Covered Interest
+/// Rate Parity (CIP) deviation, synthetic USD Treasury basis, and dealer balance-sheet SLR bound engine.
+///
+/// Reference: Du, Tepper & Verdelhan (2018, *Journal of Finance* 73(3), "Deviations from Covered
+/// Interest Rate Parity"), Andersen, Duffie & Song (2019, *Journal of Finance* 74(1)).
+#[derive(Debug, Clone, Copy)]
+pub struct DuTepperVerdelhanCipBasisSpec<T: Real> {
+    /// Spot FX rate $S_0$ (USD per unit of foreign currency).
+    pub spot_fx_s0: T,
+    /// Outright FX forward rate $F_{0,\tau}$ at maturity $\tau$.
+    pub outright_forward_fx_f0: T,
+    /// Domestic (USD) OIS risk-free rate $r_d$.
+    pub domestic_usd_ois_rate_rd: T,
+    /// Foreign OIS risk-free rate $r_f$.
+    pub foreign_ois_rate_rf: T,
+    /// Domestic US Treasury yield $y_{\text{UST}}$.
+    pub domestic_ust_yield: T,
+    /// Foreign government bond yield $y_{\text{ForeignGov}}$.
+    pub foreign_gov_yield: T,
+    /// Dealer Supplementary Leverage Ratio (SLR) capital charge $\chi_{\text{SLR}} \cdot c_{\text{eq}}$.
+    pub dealer_slr_balance_sheet_cost: T,
+    /// Dealer unsecured wholesale funding spread $\Delta s_{\text{fund}}$ (Andersen–Duffie–Song FVA wedge).
+    pub dealer_funding_spread_delta_s: T,
+    /// Horizon $\tau$ (in years).
+    pub maturity_years_tau: T,
+}
+
+/// Analytics returned by [`evaluate_du_tepper_verdelhan_cip_treasury_basis_arb`].
+#[derive(Debug, Clone, Copy)]
+pub struct DuTepperVerdelhanCipBasisAnalytics<T: Real> {
+    /// Implied OIS cross-currency CIP basis $b_{\text{CIP}}(\tau)$ in basis points.
+    pub implied_cip_cross_currency_basis_bps: T,
+    /// Du–Tepper–Verdelhan swapped foreign government minus US Treasury convenience premium in bps.
+    pub swapped_treasury_convenience_premium_bps: T,
+    /// Andersen–Duffie–Song dealer balance-sheet + FVA no-arbitrage hurdle bound in bps.
+    pub dealer_slr_fva_no_arb_hurdle_bps: T,
+    /// Net actionable CIP arbitrage alpha (basis magnitude minus balance-sheet/funding hurdle) in bps.
+    pub net_actionable_cip_arbitrage_alpha_bps: T,
+}
+
+/// Evaluates the Du–Tepper–Verdelhan (2018) CIP cross-currency basis, swapped US Treasury convenience
+/// yield premium, and Andersen–Duffie–Song (2019) dealer balance-sheet/funding arbitrage bound.
+pub fn evaluate_du_tepper_verdelhan_cip_treasury_basis_arb<T: Real>(
+    spec: &DuTepperVerdelhanCipBasisSpec<T>,
+) -> DuTepperVerdelhanCipBasisAnalytics<T> {
+    let tau = spec.maturity_years_tau.max_val(T::from_f64(1e-4));
+    let s0 = spec.spot_fx_s0.max_val(T::from_f64(1e-6));
+    let f0 = spec.outright_forward_fx_f0.max_val(T::from_f64(1e-6));
+
+    // Annualized FX forward premium rho_fx = (1 / tau) * ln(F_{0,tau} / S_0)
+    let fwd_prem = (f0 / s0).ln() / tau;
+
+    // Du, Tepper & Verdelhan (2018, Eq. 2): b_CIP = r_d - (r_f + fwd_prem)
+    let b_cip = spec.domestic_usd_ois_rate_rd - (spec.foreign_ois_rate_rf + fwd_prem);
+    let b_cip_bps = b_cip * T::from_f64(10_000.0);
+
+    // Synthetic USD yield of swapped foreign sovereign bond: y_gov^synth_USD = y_ForeignGov + fwd_prem
+    // US Treasury convenience yield premium Phi_UST = y_ForeignGov + fwd_prem - y_UST = (y_ForeignGov - r_f) - (y_UST - r_d) - b_CIP
+    let synth_usd_gov_yield = spec.foreign_gov_yield + fwd_prem;
+    let ust_conv_prem_bps = (synth_usd_gov_yield - spec.domestic_ust_yield) * T::from_f64(10_000.0);
+
+    // Andersen, Duffie & Song (2019): dealer balance-sheet SLR cost + funding spread + horizon term charge
+    let hurdle = spec.dealer_slr_balance_sheet_cost
+        + spec.dealer_funding_spread_delta_s * (T::one() + T::from_f64(0.10) * tau.sqrt());
+    let hurdle_bps = hurdle * T::from_f64(10_000.0);
+
+    // Smooth absolute CIP basis magnitude minus dealer hurdle + treasury convenience contribution
+    let abs_b_cip_bps = (b_cip_bps * b_cip_bps + T::from_f64(0.25)).sqrt();
+    let net_alpha_bps = abs_b_cip_bps + T::from_f64(0.20) * ust_conv_prem_bps - hurdle_bps;
+
+    DuTepperVerdelhanCipBasisAnalytics {
+        implied_cip_cross_currency_basis_bps: b_cip_bps,
+        swapped_treasury_convenience_premium_bps: ust_conv_prem_bps,
+        dealer_slr_fva_no_arb_hurdle_bps: hurdle_bps,
+        net_actionable_cip_arbitrage_alpha_bps: net_alpha_bps,
+    }
+}
+
+#[cfg(test)]
+mod du_tepper_verdelhan_cip_suite64_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn du_tepper_verdelhan_cip_invariants_and_ad_parity() {
+        let base = DuTepperVerdelhanCipBasisSpec {
+            spot_fx_s0: 1.0800_f64,
+            outright_forward_fx_f0: 1.1015,
+            domestic_usd_ois_rate_rd: 0.0480,
+            foreign_ois_rate_rf: 0.0310,
+            domestic_ust_yield: 0.0465,
+            foreign_gov_yield: 0.0325,
+            dealer_slr_balance_sheet_cost: 0.0018,
+            dealer_funding_spread_delta_s: 0.0012,
+            maturity_years_tau: 1.0,
+        };
+        let r0 = evaluate_du_tepper_verdelhan_cip_treasury_basis_arb(&base);
+        assert!(r0.implied_cip_cross_currency_basis_bps.is_finite());
+        assert!(r0.swapped_treasury_convenience_premium_bps > 0.0);
+        assert!(r0.dealer_slr_fva_no_arb_hurdle_bps > 20.0);
+
+        let inputs = [
+            base.spot_fx_s0,
+            base.outright_forward_fx_f0,
+            base.domestic_usd_ois_rate_rd,
+            base.foreign_ois_rate_rf,
+            base.domestic_ust_yield,
+            base.foreign_gov_yield,
+            base.dealer_slr_balance_sheet_cost,
+            base.dealer_funding_spread_delta_s,
+            base.maturity_years_tau,
+        ];
+        let mut dual_in = [Dual::<9>::from_f64(0.0); 9];
+        for i in 0..9 {
+            dual_in[i] = Dual::variable(inputs[i], i);
+        }
+        let spec_ad = DuTepperVerdelhanCipBasisSpec {
+            spot_fx_s0: dual_in[0],
+            outright_forward_fx_f0: dual_in[1],
+            domestic_usd_ois_rate_rd: dual_in[2],
+            foreign_ois_rate_rf: dual_in[3],
+            domestic_ust_yield: dual_in[4],
+            foreign_gov_yield: dual_in[5],
+            dealer_slr_balance_sheet_cost: dual_in[6],
+            dealer_funding_spread_delta_s: dual_in[7],
+            maturity_years_tau: dual_in[8],
+        };
+        let r_ad = evaluate_du_tepper_verdelhan_cip_treasury_basis_arb(&spec_ad);
+        let eps = 1e-6;
+        for i in 0..9 {
+            let mut p = inputs;
+            let mut m = inputs;
+            p[i] += eps;
+            m[i] -= eps;
+            let mk = |v: [f64; 9]| DuTepperVerdelhanCipBasisSpec {
+                spot_fx_s0: v[0],
+                outright_forward_fx_f0: v[1],
+                domestic_usd_ois_rate_rd: v[2],
+                foreign_ois_rate_rf: v[3],
+                domestic_ust_yield: v[4],
+                foreign_gov_yield: v[5],
+                dealer_slr_balance_sheet_cost: v[6],
+                dealer_funding_spread_delta_s: v[7],
+                maturity_years_tau: v[8],
+            };
+            let rp = evaluate_du_tepper_verdelhan_cip_treasury_basis_arb(&mk(p));
+            let rm = evaluate_du_tepper_verdelhan_cip_treasury_basis_arb(&mk(m));
+            let fd = (rp.net_actionable_cip_arbitrage_alpha_bps
+                - rm.net_actionable_cip_arbitrage_alpha_bps)
+                / (2.0 * eps);
+            assert!(
+                r_ad.net_actionable_cip_arbitrage_alpha_bps.d[i].abs() > 1e-5,
+                "zero derivative at {i}"
+            );
+            assert!((r_ad.net_actionable_cip_arbitrage_alpha_bps.d[i] - fd).abs() < 1e-3);
+        }
+    }
+}

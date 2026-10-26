@@ -4743,3 +4743,156 @@ mod domain_suite_41_tests {
         assert!(ad_ic.d[0].abs() > 1e-6 && (ad_ic.d[0] - fd_ic).abs() < 1e-5);
     }
 }
+
+/// Specification for the Brandt–Santa-Clara–Valkanov (2009) Parametric Portfolio Policy (PPP) engine.
+///
+/// Reference: Brandt, Santa-Clara & Valkanov (2009, *Review of Financial Studies* 22(9),
+/// "Parametric Portfolio Policies: Exploiting Characteristics in the Cross-Section of Equity Returns").
+#[derive(Debug, Clone, Copy)]
+pub struct BrandtSantaClaraValkanovPppSpec<T: Real> {
+    /// Expected return of the value characteristic tilt portfolio $\mu_{\text{val}}$.
+    pub value_characteristic_mean_return: T,
+    /// Expected return of the momentum characteristic tilt portfolio $\mu_{\text{mom}}$.
+    pub momentum_characteristic_mean_return: T,
+    /// Variance of the value characteristic tilt portfolio $\sigma_{\text{val}}^2$.
+    pub value_characteristic_variance: T,
+    /// Variance of the momentum characteristic tilt portfolio $\sigma_{\text{mom}}^2$.
+    pub momentum_characteristic_variance: T,
+    /// Covariance between value and momentum characteristic portfolios $\sigma_{\text{val,mom}}$.
+    pub value_momentum_covariance: T,
+    /// Covariance of the value characteristic portfolio with the benchmark $\sigma_{b,\text{val}}$.
+    pub benchmark_value_covariance: T,
+    /// Covariance of the momentum characteristic portfolio with the benchmark $\sigma_{b,\text{mom}}$.
+    pub benchmark_momentum_covariance: T,
+    /// Investor relative risk aversion coefficient $\gamma$.
+    pub relative_risk_aversion_gamma: T,
+}
+
+/// Analytics returned by [`evaluate_brandt_santa_clara_valkanov_parametric_portfolio_policy`].
+#[derive(Debug, Clone, Copy)]
+pub struct BrandtSantaClaraValkanovPppAnalytics<T: Real> {
+    /// Optimal characteristic loading $\theta_{\text{val}}^*$ on cross-sectional value.
+    pub optimal_value_characteristic_theta: T,
+    /// Optimal characteristic loading $\theta_{\text{mom}}^*$ on cross-sectional momentum.
+    pub optimal_momentum_characteristic_theta: T,
+    /// Active characteristic tilt expected return $\theta^{*\top} \mu_c$.
+    pub active_characteristic_tilt_return: T,
+    /// Certainty-equivalent utility gain over the passive benchmark in basis points.
+    pub certainty_equivalent_utility_gain_bps: T,
+}
+
+/// Evaluates the Brandt–Santa-Clara–Valkanov (2009, Eq. 11) closed-form optimal characteristic
+/// portfolio policy $\theta^* = \Sigma_c^{-1} (\frac{1}{\gamma} \mu_c - \sigma_{b,c})$ and certainty-equivalent
+/// utility gain over the benchmark.
+pub fn evaluate_brandt_santa_clara_valkanov_parametric_portfolio_policy<T: Real>(
+    spec: &BrandtSantaClaraValkanovPppSpec<T>,
+) -> BrandtSantaClaraValkanovPppAnalytics<T> {
+    let gamma = spec.relative_risk_aversion_gamma.max_val(T::from_f64(1e-4));
+    let v_val = spec
+        .value_characteristic_variance
+        .max_val(T::from_f64(1e-6));
+    let v_mom = spec
+        .momentum_characteristic_variance
+        .max_val(T::from_f64(1e-6));
+    let cov_vm = spec.value_momentum_covariance;
+
+    let det = (v_val * v_mom - cov_vm * cov_vm).max_val(T::from_f64(1e-10));
+    let rhs_val = spec.value_characteristic_mean_return / gamma - spec.benchmark_value_covariance;
+    let rhs_mom =
+        spec.momentum_characteristic_mean_return / gamma - spec.benchmark_momentum_covariance;
+
+    // Exact 2x2 inverse of Sigma_c applied to (mu_c / gamma - sigma_{b,c})
+    let theta_val = (v_mom * rhs_val - cov_vm * rhs_mom) / det;
+    let theta_mom = (-cov_vm * rhs_val + v_val * rhs_mom) / det;
+
+    let active_ret = theta_val * spec.value_characteristic_mean_return
+        + theta_mom * spec.momentum_characteristic_mean_return;
+
+    // Certainty-equivalent utility gain: Delta CE = (gamma / 2) * rhs^T Sigma_c^{-1} rhs = 0.5 * gamma * (theta_val * rhs_val + theta_mom * rhs_mom)
+    let ce_gain = T::from_f64(0.5) * gamma * (theta_val * rhs_val + theta_mom * rhs_mom);
+    let ce_gain_bps = ce_gain * T::from_f64(10_000.0);
+
+    BrandtSantaClaraValkanovPppAnalytics {
+        optimal_value_characteristic_theta: theta_val,
+        optimal_momentum_characteristic_theta: theta_mom,
+        active_characteristic_tilt_return: active_ret,
+        certainty_equivalent_utility_gain_bps: ce_gain_bps,
+    }
+}
+
+#[cfg(test)]
+mod bsv_ppp_suite64_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn bsv_parametric_portfolio_policy_invariants_and_ad_parity() {
+        let base = BrandtSantaClaraValkanovPppSpec {
+            value_characteristic_mean_return: 0.045_f64,
+            momentum_characteristic_mean_return: 0.062,
+            value_characteristic_variance: 0.018,
+            momentum_characteristic_variance: 0.024,
+            value_momentum_covariance: -0.008,
+            benchmark_value_covariance: 0.002,
+            benchmark_momentum_covariance: -0.001,
+            relative_risk_aversion_gamma: 5.0,
+        };
+        let r0 = evaluate_brandt_santa_clara_valkanov_parametric_portfolio_policy(&base);
+        assert!(r0.optimal_value_characteristic_theta > 0.0);
+        assert!(r0.optimal_momentum_characteristic_theta > 0.0);
+        assert!(r0.certainty_equivalent_utility_gain_bps > 50.0);
+
+        let inputs = [
+            base.value_characteristic_mean_return,
+            base.momentum_characteristic_mean_return,
+            base.value_characteristic_variance,
+            base.momentum_characteristic_variance,
+            base.value_momentum_covariance,
+            base.benchmark_value_covariance,
+            base.benchmark_momentum_covariance,
+            base.relative_risk_aversion_gamma,
+        ];
+        let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            dual_in[i] = Dual::variable(inputs[i], i);
+        }
+        let spec_ad = BrandtSantaClaraValkanovPppSpec {
+            value_characteristic_mean_return: dual_in[0],
+            momentum_characteristic_mean_return: dual_in[1],
+            value_characteristic_variance: dual_in[2],
+            momentum_characteristic_variance: dual_in[3],
+            value_momentum_covariance: dual_in[4],
+            benchmark_value_covariance: dual_in[5],
+            benchmark_momentum_covariance: dual_in[6],
+            relative_risk_aversion_gamma: dual_in[7],
+        };
+        let r_ad = evaluate_brandt_santa_clara_valkanov_parametric_portfolio_policy(&spec_ad);
+        let eps = 1e-6;
+        for i in 0..8 {
+            let mut p = inputs;
+            let mut m = inputs;
+            p[i] += eps;
+            m[i] -= eps;
+            let mk = |v: [f64; 8]| BrandtSantaClaraValkanovPppSpec {
+                value_characteristic_mean_return: v[0],
+                momentum_characteristic_mean_return: v[1],
+                value_characteristic_variance: v[2],
+                momentum_characteristic_variance: v[3],
+                value_momentum_covariance: v[4],
+                benchmark_value_covariance: v[5],
+                benchmark_momentum_covariance: v[6],
+                relative_risk_aversion_gamma: v[7],
+            };
+            let rp = evaluate_brandt_santa_clara_valkanov_parametric_portfolio_policy(&mk(p));
+            let rm = evaluate_brandt_santa_clara_valkanov_parametric_portfolio_policy(&mk(m));
+            let fd = (rp.certainty_equivalent_utility_gain_bps
+                - rm.certainty_equivalent_utility_gain_bps)
+                / (2.0 * eps);
+            assert!(
+                r_ad.certainty_equivalent_utility_gain_bps.d[i].abs() > 1e-5,
+                "zero derivative at {i}"
+            );
+            assert!((r_ad.certainty_equivalent_utility_gain_bps.d[i] - fd).abs() < 1e-3);
+        }
+    }
+}

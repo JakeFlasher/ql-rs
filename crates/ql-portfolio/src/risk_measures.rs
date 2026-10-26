@@ -5474,3 +5474,163 @@ mod evaluate_bellini_cont_expectile_evar_influence_sensitivity_module {
     }
 }
 pub use evaluate_bellini_cont_expectile_evar_influence_sensitivity_module::*;
+
+/// Specification for the Ahmadi-Javid (2012) / Föllmer–Schied (2002) Entropic Value-at-Risk ($\text{EVaR}_{1-\alpha}$)
+/// coherent risk measure under compound Poisson-Gaussian jump losses.
+///
+/// Reference: Ahmadi-Javid (2012, *Journal of Optimization Theory and Applications* 155(3),
+/// "Entropic Value-at-Risk: A New Coherent Risk Measure"), Föllmer & Schied (2002, *Finance & Stochastics* 6(4)).
+#[derive(Debug, Clone, Copy)]
+pub struct AhmadiJavidEntropicVarSpec<T: Real> {
+    /// Expected diffusive loss $\mu_L$.
+    pub mean_diffusive_loss_mu: T,
+    /// Diffusive loss standard deviation $\sigma_L$.
+    pub diffusive_loss_volatility_sigma: T,
+    /// Poisson tail jump intensity $\lambda_J$.
+    pub jump_loss_intensity_lambda: T,
+    /// Mean jump loss severity $\mu_J$.
+    pub mean_jump_loss_mu_j: T,
+    /// Jump loss severity standard deviation $\delta_J$.
+    pub jump_loss_volatility_delta_j: T,
+    /// Tail significance level $\alpha \in (0, 1)$ (e.g. $\alpha = 0.01$ for $99\%$ EVaR).
+    pub tail_significance_alpha: T,
+}
+
+/// Analytics returned by [`evaluate_ahmadi_javid_follmer_schied_entropic_var_evar`].
+#[derive(Debug, Clone, Copy)]
+pub struct AhmadiJavidEntropicVarAnalytics<T: Real> {
+    /// Pure Gaussian Entropic Value-at-Risk benchmark $\mu_L + \sigma_L \sqrt{-2 \ln \alpha}$.
+    pub gaussian_benchmark_evar: T,
+    /// Optimal Chernoff / Esscher risk-aversion saddlepoint parameter $z^* > 0$.
+    pub optimal_chernoff_saddlepoint_z: T,
+    /// Exact Jump-Diffusion Entropic Value-at-Risk $\text{EVaR}_{1-\alpha}(L) = \inf_{z>0} \frac{\psi_L(z) - \ln \alpha}{z}$.
+    pub jump_diffusion_entropic_var: T,
+    /// Föllmer–Schied worst-case Esscher-tilted jump arrival intensity $\lambda_J^* = \lambda_J e^{\mu_J z^* + \frac{1}{2}\delta_J^2 (z^*)^2}$.
+    pub worst_case_tilted_jump_intensity: T,
+}
+
+/// Evaluates the Ahmadi-Javid (2012) / Föllmer–Schied (2002) Entropic Value-at-Risk ($\text{EVaR}_{1-\alpha}$)
+/// via 5 Newton–Raphson steps on the cumulant-generating saddlepoint equation $z \psi_L'(z) - \psi_L(z) + \ln \alpha = 0$.
+pub fn evaluate_ahmadi_javid_follmer_schied_entropic_var_evar<T: Real>(
+    spec: &AhmadiJavidEntropicVarSpec<T>,
+) -> AhmadiJavidEntropicVarAnalytics<T> {
+    let alpha = spec
+        .tail_significance_alpha
+        .max_val(T::from_f64(1e-5))
+        .min_val(T::from_f64(0.5));
+    let neg_ln_alpha = -alpha.ln();
+    let sig = spec
+        .diffusive_loss_volatility_sigma
+        .max_val(T::from_f64(1e-4));
+    let sig2 = sig * sig;
+    let lam = spec.jump_loss_intensity_lambda;
+    let mu_j = spec.mean_jump_loss_mu_j;
+    let del_j = spec.jump_loss_volatility_delta_j;
+    let del_j2 = del_j * del_j;
+
+    let gauss_evar = spec.mean_diffusive_loss_mu + sig * (T::from_f64(2.0) * neg_ln_alpha).sqrt();
+
+    // Initial guess from total second cumulant var_total = sig^2 + lam * (mu_j^2 + del_j^2)
+    let var_total = sig2 + lam * (mu_j * mu_j + del_j2);
+    let mut z = ((T::from_f64(2.0) * neg_ln_alpha) / var_total.max_val(T::from_f64(1e-6))).sqrt();
+
+    // 5 exact Newton steps on g(z) = z * psi'(z) - psi(z) - (-ln alpha) = 0, where g'(z) = z * psi''(z)
+    for _ in 0..5 {
+        let j_exp_arg = (mu_j * z + T::from_f64(0.5) * del_j2 * z * z).min_val(T::from_f64(8.0));
+        let j_mgf = j_exp_arg.exp();
+        let j_d1 = mu_j + del_j2 * z;
+        let psi = spec.mean_diffusive_loss_mu * z
+            + T::from_f64(0.5) * sig2 * z * z
+            + lam * (j_mgf - T::one());
+        let psi_p = spec.mean_diffusive_loss_mu + sig2 * z + lam * j_mgf * j_d1;
+        let psi_pp = sig2 + lam * j_mgf * (j_d1 * j_d1 + del_j2);
+
+        let g = z * psi_p - psi - neg_ln_alpha;
+        let gp = (z * psi_pp).max_val(T::from_f64(1e-6));
+        z = (z - g / gp).max_val(T::from_f64(1e-4));
+    }
+
+    let j_exp_arg = (mu_j * z + T::from_f64(0.5) * del_j2 * z * z).min_val(T::from_f64(8.0));
+    let j_mgf = j_exp_arg.exp();
+    let psi_star = spec.mean_diffusive_loss_mu * z
+        + T::from_f64(0.5) * sig2 * z * z
+        + lam * (j_mgf - T::one());
+    let evar = (psi_star + neg_ln_alpha) / z;
+    let tilted_lambda = lam * j_mgf;
+
+    AhmadiJavidEntropicVarAnalytics {
+        gaussian_benchmark_evar: gauss_evar,
+        optimal_chernoff_saddlepoint_z: z,
+        jump_diffusion_entropic_var: evar,
+        worst_case_tilted_jump_intensity: tilted_lambda,
+    }
+}
+
+#[cfg(test)]
+mod ahmadi_javid_evar_suite64_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn ahmadi_javid_entropic_var_invariants_and_ad_parity() {
+        let base = AhmadiJavidEntropicVarSpec {
+            mean_diffusive_loss_mu: 0.25_f64,
+            diffusive_loss_volatility_sigma: 1.50,
+            jump_loss_intensity_lambda: 0.15,
+            mean_jump_loss_mu_j: 2.20,
+            jump_loss_volatility_delta_j: 0.85,
+            tail_significance_alpha: 0.025,
+        };
+        let r0 = evaluate_ahmadi_javid_follmer_schied_entropic_var_evar(&base);
+        assert!(r0.gaussian_benchmark_evar > base.mean_diffusive_loss_mu);
+        assert!(r0.jump_diffusion_entropic_var > r0.gaussian_benchmark_evar);
+        assert!(r0.optimal_chernoff_saddlepoint_z > 0.0);
+        assert!(r0.worst_case_tilted_jump_intensity > base.jump_loss_intensity_lambda);
+
+        let inputs = [
+            base.mean_diffusive_loss_mu,
+            base.diffusive_loss_volatility_sigma,
+            base.jump_loss_intensity_lambda,
+            base.mean_jump_loss_mu_j,
+            base.jump_loss_volatility_delta_j,
+            base.tail_significance_alpha,
+        ];
+        let mut dual_in = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            dual_in[i] = Dual::variable(inputs[i], i);
+        }
+        let spec_ad = AhmadiJavidEntropicVarSpec {
+            mean_diffusive_loss_mu: dual_in[0],
+            diffusive_loss_volatility_sigma: dual_in[1],
+            jump_loss_intensity_lambda: dual_in[2],
+            mean_jump_loss_mu_j: dual_in[3],
+            jump_loss_volatility_delta_j: dual_in[4],
+            tail_significance_alpha: dual_in[5],
+        };
+        let r_ad = evaluate_ahmadi_javid_follmer_schied_entropic_var_evar(&spec_ad);
+        let eps = 1e-6;
+        for i in 0..6 {
+            let mut p = inputs;
+            let mut m = inputs;
+            p[i] += eps;
+            m[i] -= eps;
+            let mk = |v: [f64; 6]| AhmadiJavidEntropicVarSpec {
+                mean_diffusive_loss_mu: v[0],
+                diffusive_loss_volatility_sigma: v[1],
+                jump_loss_intensity_lambda: v[2],
+                mean_jump_loss_mu_j: v[3],
+                jump_loss_volatility_delta_j: v[4],
+                tail_significance_alpha: v[5],
+            };
+            let rp = evaluate_ahmadi_javid_follmer_schied_entropic_var_evar(&mk(p));
+            let rm = evaluate_ahmadi_javid_follmer_schied_entropic_var_evar(&mk(m));
+            let fd =
+                (rp.jump_diffusion_entropic_var - rm.jump_diffusion_entropic_var) / (2.0 * eps);
+            assert!(
+                r_ad.jump_diffusion_entropic_var.d[i].abs() > 1e-6,
+                "zero derivative at {i}"
+            );
+            assert!((r_ad.jump_diffusion_entropic_var.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

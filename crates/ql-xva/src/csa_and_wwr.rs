@@ -2330,3 +2330,176 @@ mod evaluate_gregory_albanese_bilateral_cva_dva_first_to_default_survival_module
     }
 }
 pub use evaluate_gregory_albanese_bilateral_cva_dva_first_to_default_survival_module::*;
+
+use ql_ad::Real;
+
+/// Specification for the Albanese–Caenazzo–Crépey (2017) / Green (2015) Basel III SA-CCR
+/// Exposure-at-Default and Capital Valuation Adjustment (KVA) engine.
+///
+/// Reference: Albanese, Caenazzo & Crépey (2017, *Risk*, "Credit, Funding, Margin, and Capital
+/// Valuation Adjustments"), Green (2015, *XVA*, Ch. 16), Gregory (2020, Ch. 18).
+#[derive(Debug, Clone, Copy)]
+pub struct AlbaneseCrepeySaCcrKvaSpec<T: Real> {
+    /// Trade notional $N_{\text{notional}}$.
+    pub trade_notional: T,
+    /// Current mark-to-market value $V_0$.
+    pub current_mtm_value_v0: T,
+    /// Posted variation/initial collateral balance $C_0$.
+    pub collateral_balance_c0: T,
+    /// Supervisory risk weight $w_{\text{CCR}}$ for counterparty default risk capital.
+    pub counterparty_risk_weight_w: T,
+    /// Shareholder capital hurdle rate $h_{\text{KVA}}$.
+    pub capital_hurdle_rate_h: T,
+    /// OIS risk-free discount rate $r$.
+    pub ois_discount_rate_r: T,
+    /// Joint survival hazard rate $\lambda_{\text{joint}} = \lambda_C + \lambda_B$.
+    pub joint_hazard_rate_lambda: T,
+    /// Portfolio maturity $T$ (in years).
+    pub maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_albanese_crepey_sa_ccr_kadd_capital_xva`].
+#[derive(Debug, Clone, Copy)]
+pub struct AlbaneseCrepeySaCcrKvaAnalytics<T: Real> {
+    /// Initial SA-CCR Replacement Cost $RC_0$ plus Potential Future Exposure $PFE_0$.
+    pub initial_sa_ccr_exposure_at_default: T,
+    /// Initial SA-CCR over-collateralization multiplier $m_0 \in [0.05, 1]$.
+    pub sa_ccr_pfe_multiplier: T,
+    /// Initial Pillar 1 CCR regulatory capital requirement $K_{\text{reg}}(0)$.
+    pub initial_regulatory_capital_k0: T,
+    /// Lifetime discounted Capital Valuation Adjustment $KVA$.
+    pub lifetime_sa_ccr_kva: T,
+}
+
+/// Evaluates Basel III SA-CCR Exposure-at-Default ($EAD = 1.4 \cdot (RC + m \cdot \text{AddOn})$)
+/// and integrates Capital Valuation Adjustment ($KVA$) across a 4-point midpoint grid over $[0, T]$.
+pub fn evaluate_albanese_crepey_sa_ccr_kadd_capital_xva<T: Real>(
+    spec: &AlbaneseCrepeySaCcrKvaSpec<T>,
+) -> AlbaneseCrepeySaCcrKvaAnalytics<T> {
+    let alpha_saccr = T::from_f64(1.4);
+    let sf_ir = T::from_f64(0.005);
+    let floor_f = T::from_f64(0.05);
+    let tier1_ratio = T::from_f64(0.105);
+    let t_mat = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+
+    let smooth_pos = |x: T| -> T {
+        let eps = T::from_f64(0.05);
+        T::from_f64(0.5) * (x + (x * x + eps * eps).sqrt())
+    };
+
+    let eval_saccr_at = |rem_tau: T, scale_v: T| -> (T, T, T) {
+        // Supervisory duration SD(tau) = (1 - exp(-0.05 * tau)) / 0.05
+        let sd = (T::one() - (-T::from_f64(0.05) * rem_tau).exp()) / T::from_f64(0.05);
+        let addon = (sf_ir * spec.trade_notional * sd).max_val(T::from_f64(1e-6));
+        let net_v = spec.current_mtm_value_v0 * scale_v - spec.collateral_balance_c0;
+        let rc = smooth_pos(net_v);
+        // SA-CCR multiplier m = min(1, f + (1 - f) * exp(net_v / (2*(1-f)*AddOn)))
+        // Smooth saturation below 1.0 when net_v < 0
+        let neg_net_v = -smooth_pos(-net_v);
+        let mult = floor_f
+            + (T::one() - floor_f)
+                * (neg_net_v / (T::from_f64(2.0) * (T::one() - floor_f) * addon)).exp();
+        let pfe = mult * addon;
+        let ead = alpha_saccr * (rc + pfe);
+        let k_reg = ead * spec.counterparty_risk_weight_w * tier1_ratio;
+        (ead, mult, k_reg)
+    };
+
+    let (ead0, mult0, k0) = eval_saccr_at(t_mat, T::one());
+
+    const STEPS: usize = 4;
+    let dt = t_mat / T::from_f64(STEPS as f64);
+    let disc_rate = spec.ois_discount_rate_r + spec.joint_hazard_rate_lambda;
+    let mut kva = T::zero();
+
+    for m in 0..STEPS {
+        let t_mid = (T::from_f64(m as f64) + T::from_f64(0.5)) * dt;
+        let rem_tau = (t_mat - t_mid).max_val(T::from_f64(1e-4));
+        let scale_v = (rem_tau / t_mat).sqrt();
+        let (_ead_t, _mult_t, k_reg_t) = eval_saccr_at(rem_tau, scale_v);
+        let df = (-disc_rate * t_mid).exp();
+        kva += dt * df * spec.capital_hurdle_rate_h * k_reg_t;
+    }
+
+    AlbaneseCrepeySaCcrKvaAnalytics {
+        initial_sa_ccr_exposure_at_default: ead0,
+        sa_ccr_pfe_multiplier: mult0,
+        initial_regulatory_capital_k0: k0,
+        lifetime_sa_ccr_kva: kva,
+    }
+}
+
+#[cfg(test)]
+mod albanese_crepey_saccr_kva_suite64_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn albanese_crepey_sa_ccr_kva_invariants_and_ad_parity() {
+        let base = AlbaneseCrepeySaCcrKvaSpec {
+            trade_notional: 1_000.0_f64,
+            current_mtm_value_v0: 8.0,
+            collateral_balance_c0: 12.0,
+            counterparty_risk_weight_w: 0.50,
+            capital_hurdle_rate_h: 0.10,
+            ois_discount_rate_r: 0.038,
+            joint_hazard_rate_lambda: 0.025,
+            maturity_years_t: 5.0,
+        };
+        let r0 = evaluate_albanese_crepey_sa_ccr_kadd_capital_xva(&base);
+        assert!(r0.initial_sa_ccr_exposure_at_default > 0.0);
+        assert!(r0.sa_ccr_pfe_multiplier > 0.05 && r0.sa_ccr_pfe_multiplier < 1.0);
+        assert!(r0.lifetime_sa_ccr_kva > 0.0);
+
+        let inputs = [
+            base.trade_notional,
+            base.current_mtm_value_v0,
+            base.collateral_balance_c0,
+            base.counterparty_risk_weight_w,
+            base.capital_hurdle_rate_h,
+            base.ois_discount_rate_r,
+            base.joint_hazard_rate_lambda,
+            base.maturity_years_t,
+        ];
+        let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            dual_in[i] = Dual::variable(inputs[i], i);
+        }
+        let spec_ad = AlbaneseCrepeySaCcrKvaSpec {
+            trade_notional: dual_in[0],
+            current_mtm_value_v0: dual_in[1],
+            collateral_balance_c0: dual_in[2],
+            counterparty_risk_weight_w: dual_in[3],
+            capital_hurdle_rate_h: dual_in[4],
+            ois_discount_rate_r: dual_in[5],
+            joint_hazard_rate_lambda: dual_in[6],
+            maturity_years_t: dual_in[7],
+        };
+        let r_ad = evaluate_albanese_crepey_sa_ccr_kadd_capital_xva(&spec_ad);
+        let eps = 1e-6;
+        for i in 0..8 {
+            let mut p = inputs;
+            let mut m = inputs;
+            p[i] += eps;
+            m[i] -= eps;
+            let mk = |v: [f64; 8]| AlbaneseCrepeySaCcrKvaSpec {
+                trade_notional: v[0],
+                current_mtm_value_v0: v[1],
+                collateral_balance_c0: v[2],
+                counterparty_risk_weight_w: v[3],
+                capital_hurdle_rate_h: v[4],
+                ois_discount_rate_r: v[5],
+                joint_hazard_rate_lambda: v[6],
+                maturity_years_t: v[7],
+            };
+            let rp = evaluate_albanese_crepey_sa_ccr_kadd_capital_xva(&mk(p));
+            let rm = evaluate_albanese_crepey_sa_ccr_kadd_capital_xva(&mk(m));
+            let fd = (rp.lifetime_sa_ccr_kva - rm.lifetime_sa_ccr_kva) / (2.0 * eps);
+            assert!(
+                r_ad.lifetime_sa_ccr_kva.d[i].abs() > 1e-7,
+                "zero derivative at {i}"
+            );
+            assert!((r_ad.lifetime_sa_ccr_kva.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

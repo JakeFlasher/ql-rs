@@ -1,4 +1,5 @@
 use ql_ad::{Dual, Real, TapeScope, TapeVar};
+use ql_math::norm_cdf;
 
 #[derive(Clone, Copy, Debug)]
 pub struct SeasonalParams<T: Real> {
@@ -940,3 +941,161 @@ mod evaluate_gibson_schwartz_two_factor_futures_samuelson_vol_module {
     }
 }
 pub use evaluate_gibson_schwartz_two_factor_futures_samuelson_vol_module::*;
+
+/// Specification for the Routledge–Seppi–Spatt (2000) competitive storage and stockout backwardation
+/// equilibrium commodity forward curve engine.
+///
+/// Reference: Routledge, Seppi & Spatt (2000, *Journal of Finance* 55(3), "Equilibrium Forward Curves
+/// for Commodities"), Deaton & Laroque (1992), Pirrong (2012, *Commodity Price Dynamics*).
+#[derive(Debug, Clone, Copy)]
+pub struct RoutledgeSeppiSpattStorageSpec<T: Real> {
+    /// Current commodity spot price $S_0$.
+    pub spot_price_s0: T,
+    /// Normalized physical inventory buffer $I_0$.
+    pub physical_inventory_buffer_i0: T,
+    /// Net transient demand shock state $x_0$.
+    pub net_demand_shock_x0: T,
+    /// Mean-reversion speed of net demand shocks $\kappa_x$.
+    pub demand_mean_reversion_kappa_x: T,
+    /// Volatility of net demand shocks $\sigma_x$.
+    pub demand_shock_volatility_sigma_x: T,
+    /// Proportional physical storage cost rate $c_s$.
+    pub storage_cost_rate_cs: T,
+    /// Risk-free interest rate $r$.
+    pub risk_free_rate_r: T,
+    /// Forward contract maturity $\tau$ (in years).
+    pub forward_maturity_years_tau: T,
+}
+
+/// Analytics returned by [`evaluate_routledge_seppi_spatt_equilibrium_storage_forward_curve`].
+#[derive(Debug, Clone, Copy)]
+pub struct RoutledgeSeppiSpattStorageAnalytics<T: Real> {
+    /// Probability of inventory stockout $p_{\text{stockout}}(\tau)$ over $[0, \tau]$.
+    pub inventory_stockout_probability: T,
+    /// Equilibrium commodity forward price $F(0, \tau)$.
+    pub equilibrium_forward_price: T,
+    /// Endogenous stockout-implied convenience yield $\delta_{\text{imp}}(\tau)$.
+    pub endogenous_convenience_yield: T,
+    /// Inventory-dependent forward volatility $\sigma_F(\tau, I_0)$ (Samuelson + stockout amplification).
+    pub stockout_amplified_forward_volatility: T,
+}
+
+/// Evaluates the Routledge–Seppi–Spatt (2000) competitive storage equilibrium forward price, stockout
+/// probability, endogenous convenience yield, and inventory-dependent forward return volatility.
+pub fn evaluate_routledge_seppi_spatt_equilibrium_storage_forward_curve<T: Real>(
+    spec: &RoutledgeSeppiSpattStorageSpec<T>,
+) -> RoutledgeSeppiSpattStorageAnalytics<T> {
+    let tau = spec.forward_maturity_years_tau.max_val(T::from_f64(1e-4));
+    let kx = spec
+        .demand_mean_reversion_kappa_x
+        .max_val(T::from_f64(1e-4));
+    let sig_x = spec
+        .demand_shock_volatility_sigma_x
+        .max_val(T::from_f64(1e-4));
+
+    // Conditional standard deviation of OU net demand shock over [0, tau]
+    let ou_std = sig_x
+        * ((T::one() - (-T::from_f64(2.0) * kx * tau).exp()) / (T::from_f64(2.0) * kx)).sqrt();
+    let expected_net_shortfall =
+        spec.net_demand_shock_x0 * (-kx * tau).exp() - spec.physical_inventory_buffer_i0;
+    let z_so = expected_net_shortfall / ou_std;
+
+    let p_stockout = norm_cdf(z_so);
+    let inv_sqrt_2pi = T::from_f64(0.3989422804014327);
+    let phi_z = inv_sqrt_2pi * (-T::from_f64(0.5) * z_so * z_so).exp();
+
+    // Expected truncated normal stockout scarcity rent decaying over [0, tau]
+    let current_scarcity = sig_x * (z_so * p_stockout + phi_z);
+    let attenuation = (T::one() - (-kx * tau).exp()) / (kx * tau);
+    let delta_endog = current_scarcity * (T::from_f64(0.5) + T::from_f64(0.5) * attenuation);
+
+    // Competitive storage carry cost r + c_s minus endogenous stockout convenience yield delta_endog
+    let net_carry = spec.risk_free_rate_r + spec.storage_cost_rate_cs - delta_endog;
+    let f_0_tau = spec.spot_price_s0 * (net_carry * tau).exp();
+
+    // Samuelson forward volatility attenuated by exp(-kx * tau) but amplified by stockout probability
+    let sig_f = sig_x * (-kx * tau).exp() * (T::one() + T::from_f64(0.65) * p_stockout);
+
+    RoutledgeSeppiSpattStorageAnalytics {
+        inventory_stockout_probability: p_stockout,
+        equilibrium_forward_price: f_0_tau,
+        endogenous_convenience_yield: delta_endog,
+        stockout_amplified_forward_volatility: sig_f,
+    }
+}
+
+#[cfg(test)]
+mod rss_storage_suite64_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn routledge_seppi_spatt_storage_invariants_and_ad_parity() {
+        let base = RoutledgeSeppiSpattStorageSpec {
+            spot_price_s0: 78.0_f64,
+            physical_inventory_buffer_i0: 0.12,
+            net_demand_shock_x0: 0.18,
+            demand_mean_reversion_kappa_x: 1.40,
+            demand_shock_volatility_sigma_x: 0.26,
+            storage_cost_rate_cs: 0.035,
+            risk_free_rate_r: 0.045,
+            forward_maturity_years_tau: 0.75,
+        };
+        let r0 = evaluate_routledge_seppi_spatt_equilibrium_storage_forward_curve(&base);
+        assert!(r0.inventory_stockout_probability > 0.0 && r0.inventory_stockout_probability < 1.0);
+        assert!(r0.equilibrium_forward_price > 50.0);
+        assert!(r0.endogenous_convenience_yield > 0.0);
+        assert!(r0.stockout_amplified_forward_volatility > 0.0);
+
+        let inputs = [
+            base.spot_price_s0,
+            base.physical_inventory_buffer_i0,
+            base.net_demand_shock_x0,
+            base.demand_mean_reversion_kappa_x,
+            base.demand_shock_volatility_sigma_x,
+            base.storage_cost_rate_cs,
+            base.risk_free_rate_r,
+            base.forward_maturity_years_tau,
+        ];
+        let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            dual_in[i] = Dual::variable(inputs[i], i);
+        }
+        let spec_ad = RoutledgeSeppiSpattStorageSpec {
+            spot_price_s0: dual_in[0],
+            physical_inventory_buffer_i0: dual_in[1],
+            net_demand_shock_x0: dual_in[2],
+            demand_mean_reversion_kappa_x: dual_in[3],
+            demand_shock_volatility_sigma_x: dual_in[4],
+            storage_cost_rate_cs: dual_in[5],
+            risk_free_rate_r: dual_in[6],
+            forward_maturity_years_tau: dual_in[7],
+        };
+        let r_ad = evaluate_routledge_seppi_spatt_equilibrium_storage_forward_curve(&spec_ad);
+        let eps = 1e-6;
+        for i in 0..8 {
+            let mut p = inputs;
+            let mut m = inputs;
+            p[i] += eps;
+            m[i] -= eps;
+            let mk = |v: [f64; 8]| RoutledgeSeppiSpattStorageSpec {
+                spot_price_s0: v[0],
+                physical_inventory_buffer_i0: v[1],
+                net_demand_shock_x0: v[2],
+                demand_mean_reversion_kappa_x: v[3],
+                demand_shock_volatility_sigma_x: v[4],
+                storage_cost_rate_cs: v[5],
+                risk_free_rate_r: v[6],
+                forward_maturity_years_tau: v[7],
+            };
+            let rp = evaluate_routledge_seppi_spatt_equilibrium_storage_forward_curve(&mk(p));
+            let rm = evaluate_routledge_seppi_spatt_equilibrium_storage_forward_curve(&mk(m));
+            let fd = (rp.equilibrium_forward_price - rm.equilibrium_forward_price) / (2.0 * eps);
+            assert!(
+                r_ad.equilibrium_forward_price.d[i].abs() > 1e-6,
+                "zero derivative at {i}"
+            );
+            assert!((r_ad.equilibrium_forward_price.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

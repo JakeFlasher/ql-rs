@@ -1805,3 +1805,207 @@ mod evaluate_brennan_schwartz_callable_puttable_convertible_game_module {
     }
 }
 pub use evaluate_brennan_schwartz_callable_puttable_convertible_game_module::*;
+
+/// Specification for the Tsiveriotis–Fernandes (1998) convertible bond Cash-Only vs. Equity credit split engine.
+///
+/// Reference: Tsiveriotis & Fernandes (1998, *Journal of Fixed Income* 8(2), "Valuing Convertible Bonds
+/// with Credit Risk"), Ayache, Forsyth & Vetzal (2003), Tuckman & Serrat (2022).
+#[derive(Debug, Clone, Copy)]
+pub struct TsiveriotisFernandesConvertibleSpec<T: Real> {
+    /// Current underlying stock price $S_0$.
+    pub spot_price_s0: T,
+    /// Conversion ratio $\gamma_{\text{conv}}$ (shares per bond).
+    pub conversion_ratio_gamma: T,
+    /// Bond redemption par value $F_{\text{par}}$.
+    pub par_value: T,
+    /// Annualized coupon rate $c$.
+    pub coupon_rate_c: T,
+    /// Risk-free interest rate $r$.
+    pub risk_free_rate_r: T,
+    /// Issuer credit spread $s_c$ applied to the Cash-Only Convertible Bond (COCB) component $U$.
+    pub credit_spread_sc: T,
+    /// Underlying stock dividend yield $q$.
+    pub dividend_yield_q: T,
+    /// Stock return volatility $\sigma$.
+    pub equity_volatility_sigma: T,
+    /// Issuer call price $K_{\text{call}}$.
+    pub call_price_k: T,
+    /// Maturity $T$ (in years).
+    pub maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_tsiveriotis_fernandes_convertible_bond_credit_split`].
+#[derive(Debug, Clone, Copy)]
+pub struct TsiveriotisFernandesConvertibleAnalytics<T: Real> {
+    /// Total convertible bond value $V_0 = U_0 + E_0$.
+    pub convertible_bond_value: T,
+    /// Cash-Only Convertible Bond (COCB) credit-risky component $U_0$.
+    pub cash_only_cocb_component: T,
+    /// Credit-risk-free equity conversion component $E_0 = V_0 - U_0$.
+    pub equity_conversion_component: T,
+    /// Effective blended credit discount spread $s_{\text{eff}} = s_c \cdot (U_0 / V_0)$.
+    pub effective_blended_credit_spread: T,
+}
+
+/// Evaluates the Tsiveriotis–Fernandes (1998) coupled two-component $(V, U)$ backward induction on a
+/// 4-step binomial lattice with smooth conversion and call exercise boundaries.
+pub fn evaluate_tsiveriotis_fernandes_convertible_bond_credit_split<T: Real>(
+    spec: &TsiveriotisFernandesConvertibleSpec<T>,
+) -> TsiveriotisFernandesConvertibleAnalytics<T> {
+    const STEPS: usize = 4;
+    let t = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+    let dt = t / T::from_f64(STEPS as f64);
+    let sig = spec.equity_volatility_sigma.max_val(T::from_f64(1e-4));
+    let u_mult = (sig * dt.sqrt()).exp();
+    let d_mult = T::one() / u_mult;
+    let growth = ((spec.risk_free_rate_r - spec.dividend_yield_q) * dt).exp();
+    let p_up = (growth - d_mult) / (u_mult - d_mult);
+    let p_dn = T::one() - p_up;
+
+    let df_rf = (-spec.risk_free_rate_r * dt).exp();
+    let df_risky = (-(spec.risk_free_rate_r + spec.credit_spread_sc) * dt).exp();
+    let step_coupon = spec.par_value * spec.coupon_rate_c * dt;
+    let final_redemption = spec.par_value;
+    let temp = spec.par_value * T::from_f64(0.06);
+
+    let mut v_nodes = [T::zero(); STEPS + 1];
+    let mut u_nodes = [T::zero(); STEPS + 1];
+
+    // Terminal payoff at step N
+    for j in 0..=STEPS {
+        let up_pow = (2 * j as isize - STEPS as isize) as f64;
+        let s_nj = spec.spot_price_s0 * (sig * dt.sqrt() * T::from_f64(up_pow)).exp();
+        let cv_nj = spec.conversion_ratio_gamma * s_nj;
+        let pi_conv = T::one() / (T::one() + (-(cv_nj - final_redemption) / temp).exp());
+        v_nodes[j] = pi_conv * cv_nj + (T::one() - pi_conv) * final_redemption;
+        u_nodes[j] = (T::one() - pi_conv) * final_redemption;
+    }
+
+    // Backward induction across steps n = STEPS-1 ..= 0
+    for n in (0..STEPS).rev() {
+        for j in 0..=n {
+            let up_pow = (2 * j as isize - n as isize) as f64;
+            let s_nj = spec.spot_price_s0 * (sig * dt.sqrt() * T::from_f64(up_pow)).exp();
+            let cv_nj = spec.conversion_ratio_gamma * s_nj;
+
+            // Cash-only part + period coupon discounted at risky rate r + s_c
+            let u_cont = df_risky * (p_up * u_nodes[j + 1] + p_dn * u_nodes[j] + step_coupon);
+            // Equity part E = V - U discounted at risk-free rate r
+            let e_up = v_nodes[j + 1] - u_nodes[j + 1];
+            let e_dn = v_nodes[j] - u_nodes[j];
+            let e_cont = df_rf * (p_up * e_up + p_dn * e_dn);
+            let v_cont = u_cont + e_cont;
+
+            // Smooth issuer call at K_call and smooth holder conversion at cv_nj
+            let pi_call = T::one() / (T::one() + (-(v_cont - spec.call_price_k) / temp).exp());
+            let v_after_call = (T::one() - pi_call) * v_cont + pi_call * spec.call_price_k;
+            let u_after_call = (T::one() - pi_call) * u_cont + pi_call * spec.call_price_k;
+
+            let pi_conv = T::one() / (T::one() + (-(cv_nj - v_after_call) / temp).exp());
+            v_nodes[j] = pi_conv * cv_nj + (T::one() - pi_conv) * v_after_call;
+            u_nodes[j] = (T::one() - pi_conv) * u_after_call;
+        }
+    }
+
+    let v0 = v_nodes[0];
+    let u0 = u_nodes[0];
+    let e0 = v0 - u0;
+    let s_eff = spec.credit_spread_sc * (u0 / v0.max_val(T::from_f64(1e-6)));
+
+    TsiveriotisFernandesConvertibleAnalytics {
+        convertible_bond_value: v0,
+        cash_only_cocb_component: u0,
+        equity_conversion_component: e0,
+        effective_blended_credit_spread: s_eff,
+    }
+}
+
+#[cfg(test)]
+mod tsiveriotis_fernandes_suite64_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn tsiveriotis_fernandes_convertible_invariants_and_ad_parity() {
+        let base = TsiveriotisFernandesConvertibleSpec {
+            spot_price_s0: 98.0_f64,
+            conversion_ratio_gamma: 1.0,
+            par_value: 100.0,
+            coupon_rate_c: 0.035,
+            risk_free_rate_r: 0.04,
+            credit_spread_sc: 0.025,
+            dividend_yield_q: 0.015,
+            equity_volatility_sigma: 0.28,
+            call_price_k: 112.0,
+            maturity_years_t: 2.0,
+        };
+        let r0 = evaluate_tsiveriotis_fernandes_convertible_bond_credit_split(&base);
+        assert!(r0.convertible_bond_value > 95.0);
+        assert!(
+            r0.cash_only_cocb_component > 0.0
+                && r0.cash_only_cocb_component < r0.convertible_bond_value
+        );
+        assert!(r0.equity_conversion_component > 0.0);
+        assert!(
+            r0.effective_blended_credit_spread > 0.0
+                && r0.effective_blended_credit_spread < base.credit_spread_sc
+        );
+
+        let inputs = [
+            base.spot_price_s0,
+            base.conversion_ratio_gamma,
+            base.par_value,
+            base.coupon_rate_c,
+            base.risk_free_rate_r,
+            base.credit_spread_sc,
+            base.dividend_yield_q,
+            base.equity_volatility_sigma,
+            base.call_price_k,
+            base.maturity_years_t,
+        ];
+        let mut dual_in = [Dual::<10>::from_f64(0.0); 10];
+        for i in 0..10 {
+            dual_in[i] = Dual::variable(inputs[i], i);
+        }
+        let spec_ad = TsiveriotisFernandesConvertibleSpec {
+            spot_price_s0: dual_in[0],
+            conversion_ratio_gamma: dual_in[1],
+            par_value: dual_in[2],
+            coupon_rate_c: dual_in[3],
+            risk_free_rate_r: dual_in[4],
+            credit_spread_sc: dual_in[5],
+            dividend_yield_q: dual_in[6],
+            equity_volatility_sigma: dual_in[7],
+            call_price_k: dual_in[8],
+            maturity_years_t: dual_in[9],
+        };
+        let r_ad = evaluate_tsiveriotis_fernandes_convertible_bond_credit_split(&spec_ad);
+        let eps = 1e-6;
+        for i in 0..10 {
+            let mut p = inputs;
+            let mut m = inputs;
+            p[i] += eps;
+            m[i] -= eps;
+            let mk = |v: [f64; 10]| TsiveriotisFernandesConvertibleSpec {
+                spot_price_s0: v[0],
+                conversion_ratio_gamma: v[1],
+                par_value: v[2],
+                coupon_rate_c: v[3],
+                risk_free_rate_r: v[4],
+                credit_spread_sc: v[5],
+                dividend_yield_q: v[6],
+                equity_volatility_sigma: v[7],
+                call_price_k: v[8],
+                maturity_years_t: v[9],
+            };
+            let rp = evaluate_tsiveriotis_fernandes_convertible_bond_credit_split(&mk(p));
+            let rm = evaluate_tsiveriotis_fernandes_convertible_bond_credit_split(&mk(m));
+            let fd = (rp.convertible_bond_value - rm.convertible_bond_value) / (2.0 * eps);
+            assert!(
+                r_ad.convertible_bond_value.d[i].abs() > 1e-7,
+                "zero derivative at {i}"
+            );
+            assert!((r_ad.convertible_bond_value.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

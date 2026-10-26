@@ -2004,3 +2004,174 @@ mod evaluate_barndorff_nielsen_shephard_realized_quarticity_iv_ci_module {
     }
 }
 pub use evaluate_barndorff_nielsen_shephard_realized_quarticity_iv_ci_module::*;
+
+use ql_ad::Real;
+
+/// Specification for the Engle–Kroner (1995) positive-definite bivariate BEKK(1,1,1) multivariate GARCH
+/// covariance and volatility spillover engine.
+///
+/// Reference: Engle & Kroner (1995, *Econometric Theory* 11(1), "Multivariate Simultaneous
+/// Generalized ARCH"), Bollerslev, Engle & Wooldridge (1988, *JPE*), Tsay (2010, Ch. 10).
+#[derive(Debug, Clone, Copy)]
+pub struct EngleKronerBekkGarchSpec<T: Real> {
+    /// Upper-triangular intercept entries $(c_{11}, c_{12}, c_{22})$ of $C$.
+    pub cholesky_intercept_c: [T; 3],
+    /// ARCH shock matrix $A = [[a_{11}, a_{12}], [a_{21}, a_{22}]]$ including cross-market spillover $a_{12}, a_{21}$.
+    pub arch_spillover_matrix_a: [T; 4],
+    /// Diagonal GARCH persistence parameters $(b_{11}, b_{22})$ of $B$.
+    pub garch_persistence_diag_b: [T; 2],
+    /// Lagged bivariate return innovations $(\varepsilon_{1,t-1}, \varepsilon_{2,t-1})$.
+    pub lagged_innovations_eps: [T; 2],
+    /// Lagged conditional covariance entries $(h_{11,t-1}, h_{12,t-1}, h_{22,t-1})$.
+    pub lagged_covariance_h: [T; 3],
+}
+
+/// Analytics returned by [`evaluate_engle_kroner_bekk_bivariate_garch_covariance`].
+#[derive(Debug, Clone, Copy)]
+pub struct EngleKronerBekkGarchAnalytics<T: Real> {
+    /// Updated conditional variance of asset 1, $h_{11,t}$.
+    pub conditional_variance_h11: T,
+    /// Updated conditional covariance $h_{12,t}$.
+    pub conditional_covariance_h12: T,
+    /// Updated conditional correlation $\rho_{12,t} = h_{12,t} / \sqrt{h_{11,t} h_{22,t}}$.
+    pub conditional_correlation_rho12: T,
+    /// Conditional time-varying beta $\beta_{1|2,t} = h_{12,t} / h_{22,t}$ plus persistence trace.
+    pub conditional_beta_and_persistence_metric: T,
+}
+
+/// Evaluates the Engle–Kroner (1995) symmetric positive-definite BEKK(1,1,1) recursion
+/// $H_t = C^\top C + A^\top \varepsilon_{t-1} \varepsilon_{t-1}^\top A + B^\top H_{t-1} B$.
+pub fn evaluate_engle_kroner_bekk_bivariate_garch_covariance<T: Real>(
+    spec: &EngleKronerBekkGarchSpec<T>,
+) -> EngleKronerBekkGarchAnalytics<T> {
+    let c11 = spec.cholesky_intercept_c[0];
+    let c12 = spec.cholesky_intercept_c[1];
+    let c22 = spec.cholesky_intercept_c[2];
+
+    // C^T C where C = [[c11, c12], [0, c22]]
+    let cc11 = c11 * c11;
+    let cc12 = c11 * c12;
+    let cc22 = c12 * c12 + c22 * c22;
+
+    // v = A^T eps_{t-1}, so A^T eps eps^T A = v v^T
+    let a11 = spec.arch_spillover_matrix_a[0];
+    let a12 = spec.arch_spillover_matrix_a[1];
+    let a21 = spec.arch_spillover_matrix_a[2];
+    let a22 = spec.arch_spillover_matrix_a[3];
+    let e1 = spec.lagged_innovations_eps[0];
+    let e2 = spec.lagged_innovations_eps[1];
+
+    let v1 = a11 * e1 + a21 * e2;
+    let v2 = a12 * e1 + a22 * e2;
+
+    // B^T H_{t-1} B for diagonal B = diag(b11, b22)
+    let b11 = spec.garch_persistence_diag_b[0];
+    let b22 = spec.garch_persistence_diag_b[1];
+    let h11_prev = spec.lagged_covariance_h[0];
+    let h12_prev = spec.lagged_covariance_h[1];
+    let h22_prev = spec.lagged_covariance_h[2];
+
+    let h11 = cc11 + v1 * v1 + b11 * b11 * h11_prev;
+    let h12 = cc12 + v1 * v2 + b11 * b22 * h12_prev;
+    let h22 = cc22 + v2 * v2 + b22 * b22 * h22_prev;
+
+    let denom = (h11 * h22).max_val(T::from_f64(1e-12)).sqrt();
+    let rho12 = h12 / denom;
+    let beta_1_on_2 = h12 / h22.max_val(T::from_f64(1e-8));
+    let persistence_trace = a11 * a11 + a12 * a12 + a21 * a21 + a22 * a22 + b11 * b11 + b22 * b22;
+
+    EngleKronerBekkGarchAnalytics {
+        conditional_variance_h11: h11,
+        conditional_covariance_h12: h12,
+        conditional_correlation_rho12: rho12,
+        conditional_beta_and_persistence_metric: beta_1_on_2 + T::from_f64(0.1) * persistence_trace,
+    }
+}
+
+#[cfg(test)]
+mod engle_kroner_bekk_suite64_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn engle_kroner_bekk_invariants_and_ad_parity() {
+        let base = EngleKronerBekkGarchSpec {
+            cholesky_intercept_c: [0.04_f64, 0.015, 0.035],
+            arch_spillover_matrix_a: [0.28, 0.08, 0.06, 0.25],
+            garch_persistence_diag_b: [0.92, 0.90],
+            lagged_innovations_eps: [-0.025, -0.018],
+            lagged_covariance_h: [0.032, 0.018, 0.028],
+        };
+        let r0 = evaluate_engle_kroner_bekk_bivariate_garch_covariance(&base);
+        assert!(r0.conditional_variance_h11 > 0.0);
+        assert!(r0.conditional_correlation_rho12 > -1.0 && r0.conditional_correlation_rho12 < 1.0);
+        assert!(r0.conditional_beta_and_persistence_metric > 0.0);
+
+        let inputs = [
+            base.cholesky_intercept_c[0],
+            base.cholesky_intercept_c[1],
+            base.cholesky_intercept_c[2],
+            base.arch_spillover_matrix_a[0],
+            base.arch_spillover_matrix_a[1],
+            base.garch_persistence_diag_b[0],
+            base.lagged_innovations_eps[0],
+            base.lagged_covariance_h[1],
+        ];
+        let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            dual_in[i] = Dual::variable(inputs[i], i);
+        }
+        let spec_ad = EngleKronerBekkGarchSpec {
+            cholesky_intercept_c: [dual_in[0], dual_in[1], dual_in[2]],
+            arch_spillover_matrix_a: [
+                dual_in[3],
+                dual_in[4],
+                Dual::from_f64(base.arch_spillover_matrix_a[2]),
+                Dual::from_f64(base.arch_spillover_matrix_a[3]),
+            ],
+            garch_persistence_diag_b: [
+                dual_in[5],
+                Dual::from_f64(base.garch_persistence_diag_b[1]),
+            ],
+            lagged_innovations_eps: [dual_in[6], Dual::from_f64(base.lagged_innovations_eps[1])],
+            lagged_covariance_h: [
+                Dual::from_f64(base.lagged_covariance_h[0]),
+                dual_in[7],
+                Dual::from_f64(base.lagged_covariance_h[2]),
+            ],
+        };
+        let r_ad = evaluate_engle_kroner_bekk_bivariate_garch_covariance(&spec_ad);
+        let eps = 1e-6;
+        for i in 0..8 {
+            let mut p = inputs;
+            let mut m = inputs;
+            p[i] += eps;
+            m[i] -= eps;
+            let mk = |v: [f64; 8]| EngleKronerBekkGarchSpec {
+                cholesky_intercept_c: [v[0], v[1], v[2]],
+                arch_spillover_matrix_a: [
+                    v[3],
+                    v[4],
+                    base.arch_spillover_matrix_a[2],
+                    base.arch_spillover_matrix_a[3],
+                ],
+                garch_persistence_diag_b: [v[5], base.garch_persistence_diag_b[1]],
+                lagged_innovations_eps: [v[6], base.lagged_innovations_eps[1]],
+                lagged_covariance_h: [
+                    base.lagged_covariance_h[0],
+                    v[7],
+                    base.lagged_covariance_h[2],
+                ],
+            };
+            let rp = evaluate_engle_kroner_bekk_bivariate_garch_covariance(&mk(p));
+            let rm = evaluate_engle_kroner_bekk_bivariate_garch_covariance(&mk(m));
+            let fd =
+                (rp.conditional_correlation_rho12 - rm.conditional_correlation_rho12) / (2.0 * eps);
+            assert!(
+                r_ad.conditional_correlation_rho12.d[i].abs() > 1e-5,
+                "zero derivative at {i}"
+            );
+            assert!((r_ad.conditional_correlation_rho12.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}
