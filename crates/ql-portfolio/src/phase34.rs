@@ -510,8 +510,9 @@ pub fn evaluate_wakker_prelec_rdu_and_choquet_ambiguity<T: Real>(
 mod phase34_tests {
     use super::*;
     use ql_ad::Dual;
-    fn spec<T: Real>(x: T) -> FoucaultKyleEkopPinSpec<T> {
-        FoucaultKyleEkopPinSpec {
+    fn eval_all<T: Real>(x: T) -> [T; 7] {
+        let dx = x * T::from_f64(0.01);
+        let kyle = evaluate_foucault_kyle_lambda_and_ekop_pin(&FoucaultKyleEkopPinSpec {
             prior_price_p0: T::from_f64(100.0),
             insider_valuation_v: T::from_f64(105.0) + x,
             fundamental_std_sigma_v: T::from_f64(2.0),
@@ -522,16 +523,118 @@ mod phase34_tests {
             uninformed_buy_eps_b: T::from_f64(50.0),
             uninformed_sell_eps_s: T::from_f64(50.0),
             observed_buys_b: T::from_f64(75.0),
-            observed_sells_s: T::from_f64(45.0),
-        }
+            observed_sells_s: T::from_f64(48.0),
+        });
+        let gp =
+            evaluate_garleanu_pedersen_dynamic_aim_portfolio(&GarleanuPedersenDynamicAimSpec {
+                current_weights: [T::from_f64(0.2), T::from_f64(0.1)],
+                fast_alpha_signal: [T::from_f64(0.04) + dx, T::from_f64(0.02)],
+                slow_alpha_signal: [T::from_f64(0.03), T::from_f64(0.025)],
+                fast_decay_phi: T::from_f64(0.5),
+                slow_decay_phi: T::from_f64(0.1),
+                covariance_2x2: [
+                    [T::from_f64(0.04), T::from_f64(0.01)],
+                    [T::from_f64(0.01), T::from_f64(0.05)],
+                ],
+                risk_aversion_gamma: T::from_f64(2.0),
+                transaction_cost_lambda: T::from_f64(0.5),
+                discount_rate_rho: T::from_f64(0.05),
+            });
+        let gjr = evaluate_tsay_gjr_and_dcc_garch_dynamic_correlation(&TsayGjrDccGarchSpec {
+            bivariate_returns: vec![
+                [T::from_f64(-0.02) + dx, T::from_f64(-0.015)],
+                [T::from_f64(0.012), T::from_f64(-0.01)],
+                [T::from_f64(-0.018), T::from_f64(-0.022)],
+            ],
+            omega: [T::from_f64(0.00002), T::from_f64(0.00003)],
+            alpha: [T::from_f64(0.05), T::from_f64(0.06)],
+            gjr_gamma: [T::from_f64(0.08), T::from_f64(0.07)],
+            beta: [T::from_f64(0.85), T::from_f64(0.84)],
+            unconditional_corr: T::from_f64(0.5),
+            dcc_a: T::from_f64(0.05),
+            dcc_b: T::from_f64(0.90),
+        });
+        let lppl = evaluate_sornette_jls_lppl_crash_hazard(&SornetteJlsLpplCrashHazardSpec {
+            current_time_t: T::from_f64(1.0),
+            critical_time_tc: T::from_f64(1.5) + dx,
+            horizon_dt: T::from_f64(0.1),
+            peak_log_price_a: T::from_f64(5.0),
+            power_law_slope_b: T::from_f64(-0.4),
+            log_periodic_amp_c: T::from_f64(0.03),
+            critical_exponent_m: T::from_f64(0.5),
+            log_periodic_omega: T::from_f64(6.5),
+            phase_phi: T::from_f64(1.0),
+            crash_loss_kappa: T::from_f64(0.2),
+        });
+        let spec = evaluate_follmer_schied_entropic_and_spectral_risk(
+            &FollmerSchiedEntropicSpectralRiskSpec {
+                ordered_losses: vec![
+                    T::from_f64(0.5),
+                    T::from_f64(1.2),
+                    T::from_f64(2.5),
+                    T::from_f64(4.0) + dx,
+                ],
+                entropic_theta: T::from_f64(0.5),
+                spectral_power_gamma: T::from_f64(2.5),
+            },
+        );
+        let brin =
+            evaluate_bacon_brinson_fachler_and_carino_linking(&BaconBrinsonFachlerCarinoSpec {
+                portfolio_sector_weights: vec![T::from_f64(0.6), T::from_f64(0.4)],
+                benchmark_sector_weights: vec![T::from_f64(0.5), T::from_f64(0.5)],
+                portfolio_sector_returns: vec![T::from_f64(0.08) + dx, T::from_f64(0.03)],
+                benchmark_sector_returns: vec![T::from_f64(0.06), T::from_f64(0.02)],
+                multi_period_port_returns: vec![
+                    T::from_f64(0.04) + dx,
+                    T::from_f64(0.03),
+                    T::from_f64(-0.01),
+                ],
+                multi_period_bench_returns: vec![
+                    T::from_f64(0.03),
+                    T::from_f64(0.02),
+                    T::from_f64(-0.015),
+                ],
+            });
+        let prel =
+            evaluate_wakker_prelec_rdu_and_choquet_ambiguity(&WakkerPrelecChoquetProspectSpec {
+                sorted_outcomes: [
+                    T::from_f64(-10.0),
+                    T::from_f64(-2.0),
+                    T::from_f64(8.0),
+                    T::from_f64(20.0) + x,
+                ],
+                state_probabilities: [
+                    T::from_f64(0.1),
+                    T::from_f64(0.3),
+                    T::from_f64(0.4),
+                    T::from_f64(0.2),
+                ],
+                reference_point: T::zero(),
+                prelec_curvature_alpha: T::from_f64(0.65),
+                prelec_elevation_beta: T::from_f64(1.0),
+                tk_value_exponent: T::from_f64(0.88),
+                loss_aversion_lambda: T::from_f64(2.25),
+                ambiguity_aversion_delta: T::from_f64(0.15),
+            });
+        [
+            kyle.expected_insider_profit,
+            gp.expected_net_utility_gain,
+            gjr.terminal_equal_weight_portfolio_vol,
+            lppl.lppl_fitted_price,
+            spec.entropic_convex_risk_measure + spec.kusuoka_power_spectral_risk_measure,
+            brin.carino_smoothed_active_return,
+            prel.prospect_certainty_equivalent,
+        ]
     }
     #[test]
     fn phase34_portfolio_invariants_and_dual_fd() {
         let h = 1e-6;
-        let p = evaluate_foucault_kyle_lambda_and_ekop_pin(&spec(h)).expected_insider_profit;
-        let m = evaluate_foucault_kyle_lambda_and_ekop_pin(&spec(-h)).expected_insider_profit;
-        let ad = evaluate_foucault_kyle_lambda_and_ekop_pin(&spec(Dual::<1>::variable(0.0, 0)))
-            .expected_insider_profit;
-        assert!((ad.d[0] - (p - m) / (2.0 * h)).abs() < 1e-5);
+        let up = eval_all(h);
+        let dn = eval_all(-h);
+        let ad = eval_all(Dual::<1>::variable(0.0, 0));
+        for i in 0..7 {
+            let fd = (up[i] - dn[i]) / (2.0 * h);
+            assert!(ad[i].d[0].abs() > 1e-7 && (ad[i].d[0] - fd).abs() < 1e-4);
+        }
     }
 }
