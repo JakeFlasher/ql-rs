@@ -6,7 +6,7 @@ A fair quantitative benchmark must measure complete domain work, not a micro-ker
 
 The harness in `crates/ql-benches/src/harness.rs` performs warmups, repeated fixed-size iterations, sorting, median/IQR calculation, and `black_box` barriers. `run_comparison` records the final values and fails if the absolute parity difference exceeds the suite tolerance. `scale` changes only repetitions, so `ns/op` retains the same workload definition in tests and release runs.
 
-Current release scope: **44 benchmark suites** and **42 workstation tabs**.
+Current release scope: **44 benchmark suites** and **43 workstation tabs**.
 
 ## 2. Mathematical interpretation
 
@@ -125,4 +125,8 @@ Phase 31 adds twelve book-backed SOTA quantitative-finance engines, Benchmark Su
 
 ### Phase 32 current release
 
-Phase 32 adds 12 book-backed SOTA engines, Benchmark Suite 44, and Workstation Tab 42 (BOTTOM_ROWS = 39).
+Phase 32 adds 12 book-backed SOTA engines, Benchmark Suite 45, and Workstation Tab 43 (BOTTOM_ROWS = 40).
+
+
+### Phase 33 current release
+Phase 33 adds twelve book-backed SOTA quantitative finance engines, Benchmark Suite 45, and Workstation Tab 43 (BOTTOM_ROWS = 40).

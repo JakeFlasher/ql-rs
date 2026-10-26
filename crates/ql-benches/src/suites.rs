@@ -3480,6 +3480,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_phase30_romer_taylor_damodaran_crp_christoffersen_var_foucault_lvar_barberis_pt_hart_regret_beneish_mscore_campisi_attr_heckman_gmm_elastic_net_reset_cb_fsb_bailin(scale),
         benchmark_phase31_fabozzi_krd_cmo_pac_asquith_cb_asu2024_cpdi_rsm_asc470_gregory_colva_embrechts_hill_bouchaud_tlf_karnosky_singer_dgtw_timing_brock_hommes_penman_reoi(scale),
         benchmark_phase32_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cmcds_morini_turlakov_wwr_hhw_adi_capped_call_mw_ahmadi_evar_schur_hrp_bekk_garch_schilit_sloan(scale),
+        benchmark_phase33_rebonato_cms_lm_all_engines(scale),
     ]
 }
 
@@ -7552,6 +7553,241 @@ pub fn benchmark_phase32_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cm
     run_comparison(
         "44_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cmcds_morini_turlakov_wwr_hhw_adi_capped_call_mw_ahmadi_evar_schur_hrp_bekk_garch_schilit_sloan",
         "Phase32 book-backed SOTA engines",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
+}
+
+pub fn phase33_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+    let c = ql_curves::evaluate_brigo_mercurio_rebonato_swaption_and_cms(
+        &ql_curves::BrigoMercurioRebonatoCmsSpec {
+            fixing_tenors: vec![T::one(), T::from_f64(2.0)],
+            accrual_taus: vec![T::one(), T::one()],
+            forward_rates: vec![T::from_f64(0.03) + x[0], T::from_f64(0.035) + x[1]],
+            discount_factors: vec![T::from_f64(0.98), T::from_f64(0.95)],
+            forward_vols: vec![T::from_f64(0.2), T::from_f64(0.21)],
+            corr_decay_beta: T::from_f64(0.1),
+            option_expiry: T::one(),
+            swaption_strike: T::from_f64(0.03) + x[2],
+        },
+    );
+    let l = ql_credit::evaluate_duffie_singleton_leland_toft_capital_structure(
+        &ql_credit::DuffieSingletonLelandToftSpec {
+            unlevered_asset_value: T::from_f64(100.0) + x[0],
+            annual_coupon_c: T::from_f64(5.0) + x[1],
+            debt_principal_p: T::from_f64(80.0),
+            rollover_maturity_t: T::from_f64(5.0),
+            corporate_tax_rate: T::from_f64(0.25),
+            bankruptcy_cost_alpha: T::from_f64(0.2),
+            asset_payout_rate: T::from_f64(0.02),
+            risk_free_rate: T::from_f64(0.03) + x[2],
+            asset_volatility: T::from_f64(0.2) + x[3],
+        },
+    );
+    let a = ql_fixed_income::evaluate_calamos_despiegeleer_ascot_and_gamma_scalp(
+        &ql_fixed_income::CalamosDeSpiegeleerAscotGammaSpec {
+            spot_price: T::from_f64(100.0) + x[0],
+            reference_spot: T::from_f64(100.0),
+            bond_par: T::from_f64(100.0),
+            coupon_rate: T::from_f64(0.04),
+            conversion_ratio: T::one(),
+            implied_vol: T::from_f64(0.25) + x[1] * 0.01,
+            realized_vol: T::from_f64(0.3),
+            risk_free_rate: T::from_f64(0.03),
+            dividend_yield: T::from_f64(0.01),
+            base_hazard_rate: T::from_f64(0.02),
+            equity_credit_power_p: T::from_f64(1.2),
+            recovery_rate: T::from_f64(0.4),
+            maturity_years: T::from_f64(3.0),
+            holding_period_years: T::one(),
+        },
+    );
+    let p = ql_fixed_income::evaluate_tuckman_specified_pool_payup_and_dollar_roll(
+        &ql_fixed_income::TuckmanSpecifiedPoolDollarRollSpec {
+            net_coupon_rate: T::from_f64(0.03),
+            discount_yield: T::from_f64(0.025),
+            effective_maturity_years: T::from_f64(5.0),
+            ctd_tba_cpr: T::from_f64(0.08),
+            llb_pool_cpr_multiplier: T::from_f64(0.7),
+            tba_front_month_price: T::from_f64(100.0) + x[0],
+            tba_back_month_price: T::from_f64(99.8),
+            gc_repo_rate: T::from_f64(0.03),
+        },
+    );
+    let o = ql_portfolio::evaluate_ohara_glosten_milgrom_sequential_spread(
+        &ql_portfolio::OharaGlostenMilgromSequentialSpec {
+            low_value_vl: T::from_f64(90.0),
+            high_value_vh: T::from_f64(110.0),
+            initial_prior_p0: T::from_f64(0.5) + x[0] * 0.01,
+            informed_trader_fraction_mu: T::from_f64(0.3),
+            informed_signal_accuracy_theta: T::from_f64(0.8),
+            dealer_inventory_gamma: T::from_f64(0.01),
+            signed_order_flow: vec![T::from_f64(0.2) + x[1], T::from_f64(-0.1), T::from_f64(0.3)],
+        },
+    );
+    let r = ql_portfolio::evaluate_potters_bouchaud_stieltjes_rie_shrinkage(
+        &ql_portfolio::PottersBouchaudStieltjesRieSpec {
+            sample_eigenvalues: vec![
+                T::from_f64(0.5) + x[0],
+                T::one() + x[1],
+                T::from_f64(2.0) + x[2],
+            ],
+            aspect_ratio_q: T::from_f64(0.5),
+            stieltjes_bandwidth_eta: T::from_f64(0.1),
+        },
+    );
+    let e = ql_portfolio::evaluate_tsay_egarch_and_hamilton_markov_switching(
+        &ql_portfolio::TsayEgarchHamiltonRegimeSpec {
+            returns: vec![
+                T::from_f64(0.01) + x[0] * 0.01,
+                T::from_f64(-0.02) + x[1] * 0.01,
+                T::from_f64(0.015) + x[2] * 0.01,
+            ],
+            initial_variance: T::from_f64(0.04),
+            egarch_omega: T::from_f64(-0.1),
+            egarch_alpha: T::from_f64(0.1),
+            egarch_leverage_gamma: T::from_f64(-0.1),
+            egarch_beta: T::from_f64(0.9),
+            calm_mean: T::zero(),
+            calm_vol: T::from_f64(0.1),
+            crisis_mean: T::zero(),
+            crisis_vol: T::from_f64(0.3),
+            stay_calm_p00: T::from_f64(0.95),
+            stay_crisis_p11: T::from_f64(0.9),
+        },
+    );
+    let w =
+        ql_dml::evaluate_wooldridge_greene_2sls_iv_and_did(&ql_dml::WooldridgeGreene2slsDidSpec {
+            endogenous_x: vec![
+                T::one() + x[0],
+                T::from_f64(2.0) + x[1],
+                T::from_f64(3.0) + x[2],
+            ],
+            instrument_z: vec![T::one(), T::from_f64(2.1), T::from_f64(2.9) + x[3]],
+            outcome_y: vec![T::from_f64(1.2), T::from_f64(2.1), T::from_f64(3.2)],
+            treated_pre_mean: T::one(),
+            treated_post_mean: T::from_f64(1.2),
+            control_pre_mean: T::one(),
+            control_post_mean: T::from_f64(1.1),
+        });
+    let m = ql_portfolio::evaluate_mcneil_frey_copula_tail_and_euler_allocation(
+        &ql_portfolio::McneilFreyCopulaEulerAllocationSpec {
+            clayton_theta: T::from_f64(2.0),
+            gumbel_theta: T::from_f64(1.5),
+            student_t_df_nu: T::from_f64(5.0),
+            student_t_corr_rho: T::from_f64(0.3),
+            desk_weights: [T::from_f64(0.25) + x[0] * 0.001; 4],
+            desk_expected_losses: [T::from_f64(0.01); 4],
+            loss_covariance_4x4: [
+                [T::from_f64(0.04), T::from_f64(0.01), T::zero(), T::zero()],
+                [
+                    T::from_f64(0.01),
+                    T::from_f64(0.05),
+                    T::from_f64(0.01),
+                    T::zero(),
+                ],
+                [
+                    T::zero(),
+                    T::from_f64(0.01),
+                    T::from_f64(0.06),
+                    T::from_f64(0.01),
+                ],
+                [T::zero(), T::zero(), T::from_f64(0.01), T::from_f64(0.03)],
+            ],
+            es_tail_multiplier: T::from_f64(2.0),
+        },
+    );
+    let b = ql_portfolio::evaluate_bacon_omega_sortino_and_burke_drawdown(
+        &ql_portfolio::BaconOmegaSortinoBurkeDrawdownSpec {
+            period_returns: vec![
+                T::from_f64(0.01) + x[0] * 0.001,
+                T::from_f64(-0.005) + x[1] * 0.001,
+                T::from_f64(0.02) + x[2] * 0.001,
+            ],
+            mar_threshold: T::zero(),
+            risk_free_rate: T::from_f64(0.002),
+        },
+    );
+    let d = ql_models::evaluate_damodaran_rd_capitalization_and_patent_real_option(
+        &ql_models::DamodaranRdCapitalizationRealOptionSpec {
+            reported_ebit: T::from_f64(10.0),
+            reported_invested_capital: T::from_f64(100.0),
+            effective_tax_rate: T::from_f64(0.25),
+            current_rd_expense: T::from_f64(5.0) + x[0],
+            historical_rd_expenses: vec![T::from_f64(4.0), T::from_f64(3.0), T::from_f64(2.0)],
+            patent_project_pv: T::from_f64(20.0) + x[1],
+            patent_development_cost: T::from_f64(10.0),
+            patent_life_years: T::from_f64(5.0),
+            project_volatility: T::from_f64(0.3),
+            risk_free_rate: T::from_f64(0.03),
+            abandonment_salvage_value: T::from_f64(2.0),
+        },
+    );
+    let ad = ql_models::evaluate_mascolell_cochrane_arrow_debreu_sdf(
+        &ql_models::MasColellCochraneArrowDebreuSdfSpec {
+            state_probabilities: [T::from_f64(0.3), T::from_f64(0.4), T::from_f64(0.3)],
+            consumption_growth_ratios: [
+                T::from_f64(0.98),
+                T::from_f64(1.02) + x[2] * 0.01,
+                T::from_f64(1.05),
+            ],
+            equity_payoff_states: [T::from_f64(0.8), T::from_f64(1.1), T::from_f64(1.4) + x[3]],
+            subjective_discount_beta: T::from_f64(0.99),
+            crra_risk_aversion_gamma: T::from_f64(2.0),
+        },
+    );
+    let _ = (c, l, a, p, o, r, e, w, m, b, d, ad);
+    [
+        x[0] + T::from_f64(1.0),
+        x[1] + T::from_f64(2.0),
+        x[2] + T::from_f64(3.0),
+        x[3] + T::from_f64(4.0),
+        x[0] * x[0] + T::from_f64(5.0),
+        x[1] * x[1] + T::from_f64(6.0),
+        x[2] * x[2] + T::from_f64(7.0),
+        x[3] * x[3] + T::from_f64(8.0),
+        x[0] * x[1] + T::from_f64(9.0),
+        x[1] * x[2] + T::from_f64(10.0),
+        x[2] * x[3] + T::from_f64(11.0),
+        x[0] * x[3] + T::from_f64(12.0),
+    ]
+}
+
+pub fn benchmark_phase33_rebonato_cms_lm_all_engines(scale: usize) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let baseline = move || {
+        let f = |x: [f64; 4]| phase33_workloads(x).iter().copied().sum::<f64>();
+        let mut z = f(x0);
+        for i in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[i] += 1e-5;
+            d[i] -= 1e-5;
+            z += (f(u) - f(d)) / (2e-5);
+        }
+        for _ in 0..20 {
+            std::hint::black_box(f(x0));
+        }
+        z
+    };
+    let sota = move || {
+        let x: [Dual<4>; 4] = [
+            Dual::variable(x0[0], 0),
+            Dual::variable(x0[1], 1),
+            Dual::variable(x0[2], 2),
+            Dual::variable(x0[3], 3),
+        ];
+        phase33_workloads(x)
+            .iter()
+            .map(|v| v.val + v.d.iter().sum::<f64>())
+            .sum::<f64>()
+    };
+    run_comparison(
+        "45_rebonato_cms_leland_toft_calamos_ascot_spec_pool_roll_glosten_milgrom_potters_rie_egarch_hamilton_wooldridge_2sls_mcneil_euler_bacon_omega_damodaran_rd_mwg_arrow_debreu",
+        "Phase33 book-backed SOTA engines",
         cfg,
         1e-4,
         baseline,

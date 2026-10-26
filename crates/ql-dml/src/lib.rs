@@ -1,3 +1,5 @@
+pub mod phase33;
+pub use phase33::*;
 pub mod cholesky_aad;
 pub mod pca;
 pub mod regression;

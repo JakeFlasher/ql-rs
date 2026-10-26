@@ -35,8 +35,8 @@
 | `ql-commodities` | `crates/ql-commodities` | Asset classes | Futures curves, Schwartz–Smith, Clewlow–Strickland strip swaptions, weather HDD/CDD, clean spark/dark spreads, 3-leg spreads, Average Price Options (APO), take-or-pay and BESS arbitrage DP |
 | `ql-levy` | `crates/ql-levy` | Models | Merton, Kou, VG, CGMY COS, Lewis/Carr–Madan FFT |
 | `ql-fixed-income` | `crates/ql-fixed-income` | Rates | NSS, callable/OAS, CoCo AT1 bonds, convertibles, AFV default-coupled PDE, CPI/MBS burnout/OAS, specified pools, TBA rolls, Treasury futures CTD, Agency CMO waterfalls, ASW and IFT z-spreads |
-| `ql-benches` | `crates/ql-benches` | Delivery | 44-suite parity/timing harness |
-| `ql-terminal` | `crates/ql-terminal` | Delivery | Unified SDK, 42-tab Braille/ANSI workstation |
+| `ql-benches` | `crates/ql-benches` | Delivery | 45-suite parity/timing harness |
+| `ql-terminal` | `crates/ql-terminal` | Delivery | Unified SDK, 43-tab Braille/ANSI workstation |
 
 ## Numerical capabilities
 
@@ -46,7 +46,7 @@ The workspace includes multi-curve OIS/IBOR bootstrapping, Black/Bachelier and a
 
 The offline benchmark harness checks numerical parity against independent baselines. Results below are generated from the current release tree; run the benchmark command on your hardware for fresh timings.
 
-**Benchmark summary:** 44 suites and 42 workstation tabs.
+**Benchmark summary:** 45 suites and 43 workstation tabs.
 
 
 
@@ -143,8 +143,12 @@ Phase 29 adds twelve book-backed SOTA quantitative finance engines, Benchmark Su
 ## Phase 30 status
 Phase 30 adds twelve book-backed SOTA engines (Taylor macro curve, Damodaran CRP/debt modification, Christoffersen cumulant VaR, Foucault LVaR, Barberis prospect theory, Hart regret matching, Beneish/HKAS 32, Campisi attribution, Heckman/GMM, elastic net, resettable convertible bonds, and FSB bail-in). Benchmark Suite 42 and workstation Tab 40 are live with `BOTTOM_ROWS = 37`.
 
-Phase 31 adds twelve book-backed SOTA engines (KRD/LSC, CMO-PAC, Asquith/Sîrbu CB, ASU 2024-04/CPDI, ASC 470 modification, ColVA/CTD, Hill/Pickands EVT, Bouchaud–Potters TLF, Karnosky–Singer, DGTW/Treynor–Mazuy, Brock–Hommes, and Penman/ReOI). Benchmark Suite 44 and workstation Tab 42 are live with `BOTTOM_ROWS = 39`.
+Phase 31 adds twelve book-backed SOTA engines (KRD/LSC, CMO-PAC, Asquith/Sîrbu CB, ASU 2024-04/CPDI, ASC 470 modification, ColVA/CTD, Hill/Pickands EVT, Bouchaud–Potters TLF, Karnosky–Singer, DGTW/Treynor–Mazuy, Brock–Hommes, and Penman/ReOI). Benchmark Suite 45 and workstation Tab 43 are live with `BOTTOM_ROWS = 40`.
 
 ### Phase 32 current release
 
-Phase 32 adds 12 book-backed SOTA engines, Benchmark Suite 44, and Workstation Tab 42 (BOTTOM_ROWS = 39).
+Phase 32 adds 12 book-backed SOTA engines, Benchmark Suite 45, and Workstation Tab 43 (BOTTOM_ROWS = 40).
+
+
+### Phase 33 current release
+Phase 33 adds twelve book-backed SOTA quantitative finance engines, Benchmark Suite 45, and Workstation Tab 43 (BOTTOM_ROWS = 40).

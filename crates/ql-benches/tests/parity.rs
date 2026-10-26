@@ -13,7 +13,7 @@ use ql_benches::{
 #[test]
 fn phase21_suite33_and_invariants() {
     let rows = with_config_override(1, 3, || run_all_benchmarks(1));
-    assert_eq!(rows.len(), 44);
+    assert_eq!(rows.len(), 45);
     let row = with_config_override(1, 3, || {
         benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(1)
     });
@@ -139,4 +139,19 @@ fn phase32_suite44_and_invariants() {
     }
     let row = ql_benches::benchmark_phase32_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cmcds_morini_turlakov_wwr_hhw_adi_capped_call_mw_ahmadi_evar_schur_hrp_bekk_garch_schilit_sloan(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-4 && row.speedup > 1.0);
+}
+
+#[test]
+fn phase33_suite45_and_invariants() {
+    use ql_ad::Dual;
+    let x: [Dual<4>; 4] = [
+        Dual::variable(0.2, 0),
+        Dual::variable(-0.1, 1),
+        Dual::variable(0.3, 2),
+        Dual::variable(-0.2, 3),
+    ];
+    for y in ql_benches::phase33_workloads(x) {
+        assert!(y.d.iter().map(|v| v.abs()).sum::<f64>() > 1e-9);
+    }
+    assert_eq!(ql_benches::SUITE_COUNT, 45);
 }
