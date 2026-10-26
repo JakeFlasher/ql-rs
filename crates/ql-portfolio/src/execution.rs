@@ -6,6 +6,7 @@ pub use crate::phase33::{
     OharaGlostenMilgromSequentialReport, OharaGlostenMilgromSequentialSpec,
     evaluate_ohara_glosten_milgrom_sequential_spread,
 };
+pub use crate::phase34::*;
 use ql_ad::Real;
 
 #[derive(Clone, Debug)]
@@ -2110,4 +2111,3 @@ mod phase29_tests {
         assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
     }
 }
-pub use crate::phase34::*;

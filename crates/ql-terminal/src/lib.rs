@@ -1,4 +1,3 @@
-#![allow(ambiguous_glob_reexports)]
 //! A dependency-free terminal dashboard and umbrella SDK for ql-rs.
 
 pub mod prelude {
@@ -36,7 +35,6 @@ pub mod prelude {
         RsmAsc470DebtModificationReport, RsmAsc470DebtModificationSpec,
         evaluate_rsm_asc470_debt_modification_and_restructuring,
     };
-    pub use ql_curves::*;
     pub use ql_curves::{
         AdbRbiNdirsAssetSwapReport, AdbRbiNdirsAssetSwapSpec,
         evaluate_adb_rbi_ndirs_and_asset_swap_basis,
@@ -53,7 +51,6 @@ pub mod prelude {
         RomerVeronesiTaylorRuleMacroCurveReport, RomerVeronesiTaylorRuleMacroCurveSpec,
         evaluate_romer_veronesi_taylor_rule_macro_yield_curve,
     };
-    pub use ql_dml::*;
     pub use ql_dml::{
         AgrawalBoydDifferentiableQpReport, AgrawalBoydDifferentiableQpSpec,
         solve_agrawal_boyd_differentiable_qp_layer,
@@ -85,7 +82,6 @@ pub mod prelude {
         SheppShiryaevShrevePerpetualRussianReport, SheppShiryaevShrevePerpetualRussianSpec,
         price_shepp_shiryaev_shreve_perpetual_russian_and_mckean,
     };
-    pub use ql_fixed_income::*;
     pub use ql_fixed_income::{
         AcharyaFedsBankRunAndCocoReport, AcharyaFedsBankRunAndCocoSpec,
         analyze_acharya_feds_bank_run_and_optimal_coco,
@@ -191,7 +187,6 @@ pub mod prelude {
         HaentjensInthoutHhwAdiReport, HaentjensInthoutHhwAdiSpec,
         evaluate_haentjens_inthout_heston_hull_white_adi,
     };
-    pub use ql_portfolio::*;
     pub use ql_portfolio::{
         AhmadiJavidEntropicVarPortfolioReport, AhmadiJavidEntropicVarPortfolioSpec,
         CottonSchurHrpRmtNcoReport, CottonSchurHrpRmtNcoSpec, TsayBekkGarchSpilloverReport,
@@ -1114,6 +1109,7 @@ pub struct WorkstationFrameData {
     pub phase31_sota_metric: f64,
     pub phase32_sota_metric: f64,
     pub phase33_sota_metric: f64,
+    pub phase34_sota_metric: f64,
     pub blotter_rows: Vec<(String, f64, String)>,
 }
 
@@ -3120,6 +3116,35 @@ impl DeskWorkstation {
             + hhw.hhw_adi_call_price.val()
             + qual.schilit_shenanigan_composite_z.val()
     }
+    pub fn phase34_live_metric_from_market(m: &MarketSnapshot, credit_bump: f64) -> f64 {
+        let r = m.ois_quotes.first().copied().unwrap_or(0.03) + credit_bump;
+        let f = m.eq_spot.max(1.0);
+        let p = ql_portfolio::evaluate_foucault_kyle_lambda_and_ekop_pin(
+            &ql_portfolio::FoucaultKyleEkopPinSpec {
+                prior_price_p0: f,
+                insider_valuation_v: f * 1.02,
+                fundamental_std_sigma_v: m.eq_vol.max(0.1),
+                noise_order_std_sigma_u: 1.0,
+                event_prob_alpha: 0.2,
+                bad_news_prob_delta: 0.5,
+                informed_arrival_mu: 0.3,
+                uninformed_buy_eps_b: 0.4,
+                uninformed_sell_eps_s: 0.4,
+                observed_buys_b: 1.0 + r,
+                observed_sells_s: 1.0,
+            },
+        );
+        p.ekop_pin_probability + p.posterior_event_probability + r
+    }
+    pub fn phase34_live_metric(&self) -> f64 {
+        let bump = match self.scenario {
+            ScenarioKind::CreditWideningPlus100Bp => 0.01,
+            ScenarioKind::StagflationPlus150Bp => 0.005,
+            _ => 0.0,
+        };
+        Self::phase34_live_metric_from_market(&self.scenario_market(), bump)
+    }
+
     pub fn phase33_live_metric_from_market(m: &MarketSnapshot, credit_bump: f64) -> f64 {
         let inflation = m.inflation_quotes.first().map(|(_, v)| *v).unwrap_or(0.02);
         let r = m.ois_quotes.first().copied().unwrap_or(0.03) + credit_bump + inflation * 0.01;
@@ -6080,6 +6105,7 @@ impl DeskWorkstation {
             phase31_sota_metric: Self::phase31_live_metric_from_market(&market, credit_bump),
             phase32_sota_metric: Self::phase32_live_metric_from_market(&market, credit_bump),
             phase33_sota_metric: Self::phase33_live_metric_from_market(&market, credit_bump),
+            phase34_sota_metric: Self::phase34_live_metric_from_market(&market, credit_bump),
             phase28_sota_metric: Self::phase28_live_metric_from_market_with_bump(
                 &market,
                 if self.scenario == ScenarioKind::CreditWideningPlus100Bp {
@@ -6360,6 +6386,7 @@ impl DeskWorkstation {
             format!("41 KRD-LSC/CMO-PAC/Asquith-CB/ASU2024/ASC470/ColVA/Hill/Bouchaud/Karnosky/DGTW/Brock/Penman: {:.2}", frame.phase31_sota_metric),
             format!("42 Cheyette/NDIRS/ZABR/QRH/CMCDS/WWR/HHW/CB/EVaR/Schur/BEKK/Quality: {:.2}", frame.phase32_sota_metric),
             format!("43 Rebonato-CMS/Leland-Toft/Calamos/RIE/Arrow-Debreu: {:.2}", frame.phase33_sota_metric),
+            format!("44 Tuckman-Repo/BK-FVA/DECS/MBS-IO-PO/Kyle-PIN/GP-Aim/GJR-DCC/LPPL/Spectral-Risk/Brinson-Carino/Prelec-CPT/Path-Sig: {:.2}", frame.phase34_sota_metric),
             format!(
                 "DAG recomputed: {}/{}",
                 frame.dag_recomputed_trades, frame.dag_total_trades
@@ -6412,6 +6439,7 @@ impl DeskWorkstation {
             "43 Rebonato-CMS/Leland-Toft/Calamos/RIE/Arrow-Debreu: {:.4}",
             self.phase33_live_metric()
         ));
+        right_bottom.push(format!("44 Tuckman-Repo/BK-FVA/DECS/MBS-IO-PO/Kyle-PIN/GP-Aim/GJR-DCC/LPPL/Spectral-Risk/Brinson-Carino/Prelec-CPT/Path-Sig: {:.4}", self.phase34_live_metric()));
         while right_bottom.len() < BOTTOM_ROWS {
             right_bottom.push(String::new());
         }

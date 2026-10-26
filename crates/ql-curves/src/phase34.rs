@@ -42,7 +42,10 @@ pub fn evaluate_tuckman_repo_specialness_and_oftr_basis<T: Real>(
         total_oftr_otr_yield_spread_bps: total,
         repo_specialness_yield_equiv_bps: repo,
         structural_liquidity_yield_spread_bps: liq,
-        spread_decomposition_conservation_error: (total - repo - liq).abs(),
+        spread_decomposition_conservation_error: {
+            let diff = total - repo - liq;
+            (diff * diff + T::from_f64(1e-30)).sqrt()
+        },
         levered_basis_net_carry_bps: carry * T::from_f64(1e4),
         haircut_funded_levered_roe: roe,
     }

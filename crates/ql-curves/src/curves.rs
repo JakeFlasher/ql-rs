@@ -7,6 +7,7 @@ pub use crate::phase31::{
 };
 pub use crate::phase32::*;
 pub use crate::phase33::*;
+pub use crate::phase34::*;
 use ql_ad::Real;
 use ql_math::{Interpolator1D, MonotoneCubicInterpolator};
 use ql_time::{Date, DayCounter};
@@ -1488,4 +1489,3 @@ mod phase28_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
-pub use crate::phase34::*;

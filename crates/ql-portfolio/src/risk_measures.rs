@@ -16,6 +16,7 @@ pub use crate::phase33::{
     evaluate_bacon_omega_sortino_and_burke_drawdown,
     evaluate_mcneil_frey_copula_tail_and_euler_allocation,
 };
+pub use crate::phase34::*;
 
 use ql_ad::{Real, TapeScope, TapeVar};
 
@@ -2282,4 +2283,3 @@ mod phase28_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
-pub use crate::phase34::*;

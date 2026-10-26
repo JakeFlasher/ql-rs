@@ -46,11 +46,12 @@ pub fn evaluate_foucault_kyle_lambda_and_ekop_pin<T: Real>(
     let p0 = (ll0 - m).exp();
     let pb = (llb - m).exp();
     let pg = (llg - m).exp();
-    let pin = s.event_prob_alpha * pb
-        / (s.event_prob_alpha * pb
-            + s.event_prob_alpha * pg
-            + (T::one() - s.event_prob_alpha) * p0)
-            .max_val(T::from_f64(1e-12));
+    let pin =
+        (s.event_prob_alpha * mu) / (s.event_prob_alpha * mu + eb + es).max_val(T::from_f64(1e-12));
+    let num_ev =
+        s.event_prob_alpha * (s.bad_news_prob_delta * pb + (T::one() - s.bad_news_prob_delta) * pg);
+    let den_ev = ((T::one() - s.event_prob_alpha) * p0 + num_ev).max_val(T::from_f64(1e-12));
+    let post_ev = num_ev / den_ev;
     FoucaultKyleEkopPinReport {
         kyle_insider_intensity_beta: b,
         kyle_illiquidity_lambda: l,
@@ -60,7 +61,7 @@ pub fn evaluate_foucault_kyle_lambda_and_ekop_pin<T: Real>(
         post_trade_fundamental_variance: s.fundamental_std_sigma_v * s.fundamental_std_sigma_v
             / T::from_f64(2.0),
         ekop_pin_probability: pin,
-        posterior_event_probability: pin,
+        posterior_event_probability: post_ev,
     }
 }
 #[derive(Clone, Copy, Debug)]
@@ -133,7 +134,22 @@ pub fn evaluate_garleanu_pedersen_dynamic_aim_portfolio<T: Real>(
                 * s.transaction_cost_lambda
                 * (a11 * d0 * d0 + T::from_f64(2.0) * a12 * d0 * d1 + a22 * d1 * d1)
         },
-        expected_net_utility_gain: a,
+        expected_net_utility_gain: {
+            let al0 = s.fast_alpha_signal[0] + s.slow_alpha_signal[0];
+            let al1 = s.fast_alpha_signal[1] + s.slow_alpha_signal[1];
+            let quad = |w0: T, w1: T| {
+                al0 * w0 + al1 * w1
+                    - T::from_f64(0.5)
+                        * s.risk_aversion_gamma
+                        * (a11 * w0 * w0 + T::from_f64(2.0) * a12 * w0 * w1 + a22 * w1 * w1)
+            };
+            let d0 = next[0] - s.current_weights[0];
+            let d1 = next[1] - s.current_weights[1];
+            let tc = T::from_f64(0.5)
+                * s.transaction_cost_lambda
+                * (a11 * d0 * d0 + T::from_f64(2.0) * a12 * d0 * d1 + a22 * d1 * d1);
+            (quad(next[0], next[1]) - tc) - quad(s.current_weights[0], s.current_weights[1])
+        },
     }
 }
 #[derive(Clone, Debug)]
@@ -178,26 +194,26 @@ pub fn evaluate_tsay_gjr_and_dcc_garch_dynamic_correlation<T: Real>(
         q[1][1] = (T::one() - s.dcc_a - s.dcc_b) + s.dcc_a * z[1] * z[1] + s.dcc_b * q[1][1];
         h[0] = s.omega[0]
             + (s.alpha[0]
-                + if r[0] < T::zero() {
-                    s.gjr_gamma[0]
-                } else {
-                    T::zero()
-                })
+                + T::from_f64(0.5)
+                    * ((r[0] * r[0] + T::from_f64(1e-16)).sqrt() - r[0])
+                    * s.gjr_gamma[0]
+                    / r[0].max_val(T::from_f64(1e-12)))
                 * r[0]
                 * r[0]
             + s.beta[0] * h[0];
         h[1] = s.omega[1]
             + (s.alpha[1]
-                + if r[1] < T::zero() {
-                    s.gjr_gamma[1]
-                } else {
-                    T::zero()
-                })
+                + T::from_f64(0.5)
+                    * ((r[1] * r[1] + T::from_f64(1e-16)).sqrt() - r[1])
+                    * s.gjr_gamma[1]
+                    / r[1].max_val(T::from_f64(1e-12)))
                 * r[1]
                 * r[1]
             + s.beta[1] * h[1];
     }
-    let corr = q[0][1] / (q[0][0] * q[1][1]).sqrt();
+    let corr = (q[0][1] / (q[0][0] * q[1][1]).sqrt())
+        .max_val(T::from_f64(-0.999))
+        .min_val(T::from_f64(0.999));
     TsayGjrDccGarchReport {
         unconditional_var_asset1: h0,
         unconditional_var_asset2: h1,
@@ -256,11 +272,23 @@ pub fn evaluate_sornette_jls_lppl_crash_hazard<T: Real>(
         lppl_fitted_price: lp.exp(),
         instantaneous_crash_hazard: h,
         horizon_cumulative_crash_prob: (-h * s.horizon_dt).exp().neg() + T::one(),
-        jls_damping_validity_ratio: s.critical_exponent_m * s.power_law_slope_b.abs()
-            / (s.log_periodic_omega * s.log_periodic_amp_c.abs()).max_val(T::from_f64(1e-12)),
+        jls_damping_validity_ratio: {
+            let b_abs = (s.power_law_slope_b * s.power_law_slope_b + T::from_f64(1e-30)).sqrt();
+            let c_abs = (s.log_periodic_amp_c * s.log_periodic_amp_c + T::from_f64(1e-30)).sqrt();
+            let mw = (s.critical_exponent_m * s.critical_exponent_m
+                + s.log_periodic_omega * s.log_periodic_omega)
+                .sqrt();
+            s.critical_exponent_m * b_abs / (c_abs * mw).max_val(T::from_f64(1e-12))
+        },
         log_periodic_oscillation_term: osc,
         rational_bubble_excess_return: s.crash_loss_kappa * h,
-        expected_crash_adjusted_return: T::zero(),
+        expected_crash_adjusted_return: {
+            let mu_lppl = -(-s.power_law_slope_b * s.critical_exponent_m * tau_m1
+                - s.log_periodic_amp_c
+                    * tau_m1
+                    * (s.critical_exponent_m * ph.cos() - s.log_periodic_omega * ph.sin()));
+            mu_lppl - s.crash_loss_kappa * h
+        },
     }
 }
 #[derive(Clone, Debug)]
@@ -295,6 +323,7 @@ pub fn evaluate_follmer_schied_entropic_and_spectral_risk<T: Real>(
     }
     let rho = (zsum / n).ln() / s.entropic_theta.max_val(T::from_f64(1e-12));
     let mut sp = T::zero();
+    let mut w_sum = T::zero();
     let mut qmean = T::zero();
     let mut kl = T::zero();
     for &x in &s.ordered_losses {
@@ -305,7 +334,9 @@ pub fn evaluate_follmer_schied_entropic_and_spectral_risk<T: Real>(
     for (i, &x) in s.ordered_losses.iter().enumerate() {
         let a = T::from_f64((i + 1) as f64) / n;
         let b = T::from_f64(i as f64) / n;
-        sp += (a.powf(2.0) - b.powf(2.0)) * x;
+        let wi = a.pow(s.spectral_power_gamma) - b.pow(s.spectral_power_gamma);
+        sp += wi * x;
+        w_sum += wi;
     }
     FollmerSchiedEntropicSpectralRiskReport {
         expected_loss: e,
@@ -316,7 +347,8 @@ pub fn evaluate_follmer_schied_entropic_and_spectral_risk<T: Real>(
             - (qmean - kl / s.entropic_theta.max_val(T::from_f64(1e-12))))
         .abs(),
         kusuoka_power_spectral_risk_measure: sp,
-        spectral_weights_sum_error: T::zero(),
+        spectral_weights_sum_error: ((w_sum - T::one()) * (w_sum - T::one()) + T::from_f64(1e-30))
+            .sqrt(),
         spectral_risk_loading_over_mean: sp / e.max_val(T::from_f64(1e-12)),
     }
 }
@@ -373,7 +405,23 @@ pub fn evaluate_bacon_brinson_fachler_and_carino_linking<T: Real>(
     }
     let cp = cp - T::one();
     let cb = cb - T::one();
-    let k = ((T::one() + cp).ln() - (T::one() + cb).ln()) / (cp - cb).max_val(T::from_f64(1e-12));
+    let log_link_ratio = |rp: T, rb: T| {
+        let diff = rp - rb;
+        if diff.val().abs() < 1e-10 {
+            T::one() / (T::one() + T::from_f64(0.5) * (rp + rb))
+        } else {
+            ((T::one() + rp).ln() - (T::one() + rb).ln()) / diff
+        }
+    };
+    let k = log_link_ratio(cp, cb);
+    let mut carino_sum = T::zero();
+    for (rpt, rbt) in s
+        .multi_period_port_returns
+        .iter()
+        .zip(s.multi_period_bench_returns.iter())
+    {
+        carino_sum += (log_link_ratio(*rpt, *rbt) / k) * (*rpt - *rbt);
+    }
     BaconBrinsonFachlerCarinoReport {
         brinson_fachler_allocation: a,
         brinson_fachler_selection: se,
@@ -383,10 +431,11 @@ pub fn evaluate_bacon_brinson_fachler_and_carino_linking<T: Real>(
         cumulative_portfolio_return: cp,
         cumulative_benchmark_return: cb,
         carino_total_linking_factor: k,
-        carino_smoothed_active_return: k * (cp - cb),
-        carino_linking_conservation_error: (k * (cp - cb)
-            - ((T::one() + cp).ln() - (T::one() + cb).ln()))
-        .abs(),
+        carino_smoothed_active_return: carino_sum,
+        carino_linking_conservation_error: {
+            let d = carino_sum - (cp - cb);
+            (d * d + T::from_f64(1e-30)).sqrt()
+        },
     }
 }
 #[derive(Clone, Copy, Debug)]
@@ -434,13 +483,22 @@ pub fn evaluate_wakker_prelec_rdu_and_choquet_ambiguity<T: Real>(
         wt += w;
     }
     WakkerPrelecChoquetProspectReport {
-        prelec_inflection_fixed_point: (-s.prelec_elevation_beta).exp(),
+        prelec_inflection_fixed_point: (-s
+            .prelec_elevation_beta
+            .max_val(T::from_f64(1e-12))
+            .pow(T::one() / (T::one() - s.prelec_curvature_alpha).max_val(T::from_f64(1e-6))))
+        .exp(),
         prelec_weighted_tail_prob: wt,
         expected_value_objective: e,
         rank_dependent_cpt_value: cpt,
         choquet_ambiguity_adjusted_value: (T::one() - s.ambiguity_aversion_delta) * e
             + s.ambiguity_aversion_delta * s.sorted_outcomes[0],
-        ambiguity_valuation_discount: s.ambiguity_aversion_delta,
-        prospect_certainty_equivalent: s.reference_point + cpt.max_val(T::from_f64(1e-12)),
+        ambiguity_valuation_discount: e
+            - ((T::one() - s.ambiguity_aversion_delta) * e
+                + s.ambiguity_aversion_delta * s.sorted_outcomes[0]),
+        prospect_certainty_equivalent: s.reference_point
+            + cpt
+                .max_val(T::from_f64(1e-12))
+                .pow(T::one() / s.tk_value_exponent.max_val(T::from_f64(1e-6))),
     }
 }

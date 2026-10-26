@@ -10,6 +10,7 @@ pub use crate::phase33::{
     CalamosDeSpiegeleerAscotGammaReport, CalamosDeSpiegeleerAscotGammaSpec,
     evaluate_calamos_despiegeleer_ascot_and_gamma_scalp,
 };
+pub use crate::phase34::*;
 use ql_ad::{Dual, Real};
 use ql_vol::black_scholes_price;
 #[derive(Clone, Debug)]
@@ -785,4 +786,3 @@ mod phase19_tests {
         assert!((ad.d[0] - fd).abs() < 1e-4);
     }
 }
-pub use crate::phase34::*;

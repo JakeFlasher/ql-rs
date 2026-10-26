@@ -13,6 +13,7 @@ pub use crate::phase33::{
     evaluate_potters_bouchaud_stieltjes_rie_shrinkage,
     evaluate_tsay_egarch_and_hamilton_markov_switching,
 };
+pub use crate::phase34::*;
 use ql_ad::Real;
 
 #[derive(Clone, Debug)]
@@ -4757,4 +4758,3 @@ mod phase29_tests {
         assert!(ad_ic.d[0].abs() > 1e-6 && (ad_ic.d[0] - fd_ic).abs() < 1e-5);
     }
 }
-pub use crate::phase34::*;

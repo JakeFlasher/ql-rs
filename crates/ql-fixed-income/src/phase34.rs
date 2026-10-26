@@ -102,42 +102,62 @@ pub fn evaluate_davidson_levin_four_factor_prepayment_io_po<T: Real>(
     s: &DavidsonLevinFourFactorIoPoSpec<T>,
 ) -> DavidsonLevinFourFactorIoPoReport<T> {
     let mut bal = T::one();
+    let mut dbal_dr = T::zero();
     let mut io = T::zero();
     let mut po = T::zero();
-    for i in 1..=s.num_periods {
-        let age = T::from_f64(i as f64 / 30.).min_val(T::one());
-        let burnout = (bal.max_val(T::from_f64(1e-12)).ln() * s.burnout_sensitivity_beta).exp();
-        let refi = s.max_refi_cpr
-            * burnout
-            * (T::one()
-                + (T::from_f64(-40.0)
-                    * (s.gross_wac_rate - s.current_mortgage_rate - T::from_f64(0.005)))
-                .exp())
-            .powf(-1.0);
-        let cpr_annual = (s.base_turnover_cpr * age + refi)
-            * (T::one()
-                + s.seasonality_amplitude
-                    * (T::from_f64(i as f64) * T::from_f64(std::f64::consts::PI / 6.).sin()))
-            .min_val(T::from_f64(0.95));
-        let smm = T::one() - (T::one() - cpr_annual).powf(1.0 / 12.0);
-        let pre = bal * smm;
-        let disc = (-s.oas_discount_rate * T::from_f64(i as f64 / 12.)).exp();
-        io += bal * s.net_passthrough_coupon / T::from_f64(12.) * disc;
+    let mut dio_dr = T::zero();
+    let mut dpo_dr = T::zero();
+    let n_per = s.num_periods.max(1);
+    for i in 1..=n_per {
+        let t_yr = T::from_f64(i as f64 / 12.0);
+        let age = T::from_f64((i as f64 / 30.0).min(1.0));
+        let bal_safe = bal.max_val(T::from_f64(1e-12));
+        let burnout = (bal_safe.ln() * s.burnout_sensitivity_beta).exp();
+        let dburn_dbal = s.burnout_sensitivity_beta * burnout / bal_safe;
+        let exp_arg = (T::from_f64(-40.0)
+            * (s.gross_wac_rate - s.current_mortgage_rate - T::from_f64(0.005)))
+        .exp();
+        let sig = T::one() / (T::one() + exp_arg);
+        let dsig_drmtg = -T::from_f64(40.0) * exp_arg * sig * sig;
+        let refi = s.max_refi_cpr * burnout * sig;
+        let drefi_dr = s.max_refi_cpr * (dburn_dbal * dbal_dr * sig + burnout * dsig_drmtg);
+        let seas = T::one()
+            + s.seasonality_amplitude * T::from_f64((i as f64 * std::f64::consts::PI / 6.0).sin());
+        let cpr_annual = ((s.base_turnover_cpr * age + refi) * seas)
+            .min_val(T::from_f64(0.95))
+            .max_val(T::from_f64(1e-6));
+        let dcpr_dr = drefi_dr * seas;
+        let one_minus_cpr = (T::one() - cpr_annual).max_val(T::from_f64(1e-6));
+        let smm = T::one() - one_minus_cpr.powf(1.0 / 12.0);
+        let dsmm_dr = (T::one() - smm) / (T::from_f64(12.0) * one_minus_cpr) * dcpr_dr;
+        let disc = (-s.oas_discount_rate * t_yr).exp();
+        let c_m = s.net_passthrough_coupon / T::from_f64(12.0);
+        io += bal * c_m * disc;
+        dio_dr += dbal_dr * c_m * disc;
+        let pre = if i == n_per { bal } else { bal * smm };
+        let dpre_dr = if i == n_per {
+            dbal_dr
+        } else {
+            dbal_dr * smm + bal * dsmm_dr
+        };
         po += pre * disc;
-        bal *= T::one() - smm;
+        dpo_dr += dpre_dr * disc;
+        let next_bal = bal * (T::one() - smm);
+        dbal_dr = dbal_dr * (T::one() - smm) - bal * dsmm_dr;
+        bal = next_bal;
     }
     let pv = io + po;
     let avg = T::one()
-        - (bal.max_val(T::from_f64(1e-12)).ln() * (T::one() / T::from_f64(s.num_periods as f64)))
-            .exp();
+        - (bal.max_val(T::from_f64(1e-12)).ln() * T::from_f64(12.0 / (n_per as f64))).exp();
+    let err = (pv - io - po) * s.initial_balance;
     DavidsonLevinFourFactorIoPoReport {
         terminal_pool_factor: bal,
         average_realized_cpr: avg,
         passthrough_present_value: pv * s.initial_balance,
         io_strip_present_value: io * s.initial_balance,
         po_strip_present_value: po * s.initial_balance,
-        io_po_strip_conservation_error: (pv - io - po).abs(),
-        io_effective_rate_sensitivity: io * T::from_f64(1e-4),
-        po_effective_rate_sensitivity: -po * T::from_f64(1e-4),
+        io_po_strip_conservation_error: (err * err + T::from_f64(1e-30)).sqrt(),
+        io_effective_rate_sensitivity: dio_dr * s.initial_balance,
+        po_effective_rate_sensitivity: dpo_dr * s.initial_balance,
     }
 }

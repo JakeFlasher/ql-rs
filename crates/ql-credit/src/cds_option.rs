@@ -3,6 +3,7 @@
 
 use crate::SurvivalProbabilityCurve;
 pub use crate::phase33::*;
+pub use crate::phase34::*;
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
 
@@ -930,4 +931,3 @@ mod phase26_tests {
         assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }
-pub use crate::phase34::*;

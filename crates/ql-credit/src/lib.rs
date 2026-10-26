@@ -1,9 +1,9 @@
 #![allow(clippy::needless_range_loop)]
-pub mod phase34;
+mod phase34;
 pub use phase34::*;
 mod phase33;
 pub use phase33::*;
-pub mod phase32;
+mod phase32;
 use nalgebra::{DMatrix, DVector};
 pub use phase32::*;
 use ql_ad::{Real, TapeScope, TapeVar};

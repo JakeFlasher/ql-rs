@@ -575,14 +575,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ql-time-series"
-version = "0.2.0"
-dependencies = [
- "ql-ad",
- "ql-portfolio",
-]
-
-[[package]]
 name = "ql-vol"
 version = "0.2.0"
 dependencies = [
