@@ -3173,3 +3173,153 @@ mod andrews_ploberger_wald_break_mod {
     }
 }
 pub use andrews_ploberger_wald_break_mod::*;
+mod ait_sahalia_jacod_jump_test_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Aït-Sahalia & Jacod (2009, *Annals of Statistics* 37(1);
+    /// 2014, *High-Frequency Financial Econometrics*, Ch. 6 & Ch. 10) multi-scale power-variation
+    /// jump test and Blumenthal–Getoor jump activity index estimator.
+    #[derive(Debug, Clone, Copy)]
+    pub struct AitSahaliaJacodJumpTestSpec<T: Real> {
+        /// Fine-grid realized $p$-power variation $\hat{B}(p, \Delta_n)$ (e.g., $0.0085$).
+        pub fine_grid_power_variation_b_fine: T,
+        /// Coarse-grid ($k\Delta_n$) realized $p$-power variation $\hat{B}(p, k\Delta_n)$ (e.g., $0.0092$).
+        pub coarse_grid_power_variation_b_coarse: T,
+        /// Power exponent $p > 2$ (typically $p = 4.0$).
+        pub power_exponent_p: T,
+        /// Subsampling frequency multiplier $k \ge 2$ (typically $k = 2.0$).
+        pub subsampling_multiplier_k: T,
+        /// Integrated $2p$-power multipower variation $\hat{A}(2p, \Delta_n)$ for CLT standardization (e.g., $0.00018$).
+        pub multipower_quarticity_scale_a2p: T,
+        /// High-frequency observation count $n$ (e.g., $390.0$).
+        pub high_frequency_sample_size_n: T,
+    }
+
+    /// Analytics returned by [`evaluate_ait_sahalia_jacod_power_variation_jump_activity_test`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct AitSahaliaJacodJumpTestAnalytics<T: Real> {
+        /// Observed coarse-to-fine power variation ratio $\hat{S}(p, k, \Delta_n) = \hat{B}(p, k\Delta_n) / \hat{B}(p, \Delta_n)$.
+        pub power_variation_ratio_s_pk: T,
+        /// Null no-jump diffusive limit $k^{p/2 - 1}$ (equals $2.0$ for $p=4, k=2$).
+        pub diffusive_null_ratio_limit: T,
+        /// Implied Blumenthal–Getoor jump activity index $\hat{\beta}_{\text{BG}} = 2 - \frac{2 \ln \hat{S}(p, k)}{\ln k}$ when jumps are present.
+        pub implied_jump_activity_index_beta: T,
+        /// Standardized Aït-Sahalia & Jacod (2009, Theorem 2) jump test $Z$-statistic.
+        pub standardized_asj_jump_z_statistic: T,
+    }
+
+    /// Evaluates the Aït-Sahalia & Jacod (2009, Eqs. 8–15) coarse-to-fine power-variation ratio
+    /// $\hat{S}(p, k, \Delta_n) = \frac{\hat{B}(p, k\Delta_n)}{\hat{B}(p, \Delta_n)}$, which converges
+    /// to $1$ when jumps are present and to $k^{p/2 - 1}$ for continuous semimartingales, together
+    /// with its standardized CLT test statistic.
+    pub fn evaluate_ait_sahalia_jacod_power_variation_jump_activity_test<T: Real>(
+        spec: &AitSahaliaJacodJumpTestSpec<T>,
+    ) -> AitSahaliaJacodJumpTestAnalytics<T> {
+        let b_fine = spec.fine_grid_power_variation_b_fine;
+        let b_coarse = spec.coarse_grid_power_variation_b_coarse;
+        let p = spec.power_exponent_p;
+        let k = spec.subsampling_multiplier_k;
+        let half = T::from_f64(0.5);
+
+        let s_ratio = b_coarse / b_fine;
+        let null_diffusive = k.pow(half * p - T::one());
+
+        // Implied activity exponent from coarse/fine scaling
+        let beta_bg = T::from_f64(2.0) * (T::one() - s_ratio.ln() / k.ln());
+
+        // Asymptotic variance V_n(p, k) under the jump alternative (Ait-Sahalia & Jacod 2009, Theorem 2):
+        // M(p, k) = (1 + k^(p-1)) / k^(p-1)
+        let k_p_minus_1 = k.pow(p - T::one());
+        let m_pk = (T::one() + k_p_minus_1) / k_p_minus_1;
+        let asymp_var = m_pk * spec.multipower_quarticity_scale_a2p
+            / (b_fine * b_fine * spec.high_frequency_sample_size_n.sqrt());
+        let z_stat = (null_diffusive - s_ratio) / asymp_var.sqrt();
+
+        AitSahaliaJacodJumpTestAnalytics {
+            power_variation_ratio_s_pk: s_ratio,
+            diffusive_null_ratio_limit: null_diffusive,
+            implied_jump_activity_index_beta: beta_bg,
+            standardized_asj_jump_z_statistic: z_stat,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn ait_sahalia_jacod_jump_test_invariants_and_ad_parity() {
+            let base = AitSahaliaJacodJumpTestSpec {
+                fine_grid_power_variation_b_fine: 0.0085_f64,
+                coarse_grid_power_variation_b_coarse: 0.0092_f64,
+                power_exponent_p: 4.0_f64,
+                subsampling_multiplier_k: 2.0_f64,
+                multipower_quarticity_scale_a2p: 0.00018_f64,
+                high_frequency_sample_size_n: 390.0_f64,
+            };
+            let res = evaluate_ait_sahalia_jacod_power_variation_jump_test(&base);
+            assert!(res.power_variation_ratio_s_pk > 1.0 && res.power_variation_ratio_s_pk < 1.5);
+            assert!((res.diffusive_null_ratio_limit - 2.0).abs() < 1e-12);
+            assert!(
+                res.implied_jump_activity_index_beta > 1.0
+                    && res.implied_jump_activity_index_beta < 2.0
+            );
+            assert!(res.standardized_asj_jump_z_statistic > 1.96);
+
+            let inputs = [
+                base.fine_grid_power_variation_b_fine,
+                base.coarse_grid_power_variation_b_coarse,
+                base.power_exponent_p,
+                base.subsampling_multiplier_k,
+                base.multipower_quarticity_scale_a2p,
+                base.high_frequency_sample_size_n,
+            ];
+            let mut dual_in = [Dual::<6>::from_value(0.0); 6];
+            for i in 0..6 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = AitSahaliaJacodJumpTestSpec {
+                fine_grid_power_variation_b_fine: dual_in[0],
+                coarse_grid_power_variation_b_coarse: dual_in[1],
+                power_exponent_p: dual_in[2],
+                subsampling_multiplier_k: dual_in[3],
+                multipower_quarticity_scale_a2p: dual_in[4],
+                high_frequency_sample_size_n: dual_in[5],
+            };
+            let r_ad = evaluate_ait_sahalia_jacod_power_variation_jump_activity_test(&spec_ad);
+            let eps = 1e-8;
+            for i in 0..6 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 6]| AitSahaliaJacodJumpTestSpec {
+                    fine_grid_power_variation_b_fine: v[0],
+                    coarse_grid_power_variation_b_coarse: v[1],
+                    power_exponent_p: v[2],
+                    subsampling_multiplier_k: v[3],
+                    multipower_quarticity_scale_a2p: v[4],
+                    high_frequency_sample_size_n: v[5],
+                };
+                let rp = evaluate_ait_sahalia_jacod_power_variation_jump_activity_test(&mk(p));
+                let rm = evaluate_ait_sahalia_jacod_power_variation_jump_activity_test(&mk(m));
+                let fd = (rp.standardized_asj_jump_z_statistic
+                    - rm.standardized_asj_jump_z_statistic)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.standardized_asj_jump_z_statistic.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.standardized_asj_jump_z_statistic.d[i] - fd).abs() < 1e-4);
+            }
+        }
+
+        fn evaluate_ait_sahalia_jacod_power_variation_jump_test<T: Real>(
+            spec: &AitSahaliaJacodJumpTestSpec<T>,
+        ) -> AitSahaliaJacodJumpTestAnalytics<T> {
+            evaluate_ait_sahalia_jacod_power_variation_jump_activity_test(spec)
+        }
+    }
+}
+pub use ait_sahalia_jacod_jump_test_mod::*;

@@ -1387,3 +1387,182 @@ pub mod hart_ross_soft_barrier_mod {
     }
 }
 pub use hart_ross_soft_barrier_mod::*;
+mod hui_haug_binary_barrier_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Hui (1996, *Applied Financial Economics* 6(4)) /
+    /// Reiner & Rubinstein (1991, *Risk* 4(9)) / Haug (2007, §4.19.1–§4.19.4) binary barrier
+    /// options (down-and-in cash-at-hit One-Touch vs. down-and-out cash-at-expiry No-Touch).
+    #[derive(Debug, Clone, Copy)]
+    pub struct HuiHaugBinaryBarrierSpec<T: Real> {
+        /// Current spot price $S_0$ (e.g., $105.0$).
+        pub spot_price_s0: T,
+        /// Lower barrier $H < S_0$ (e.g., $92.0$).
+        pub down_barrier_h: T,
+        /// Cash rebate $K_{\text{cash}} > 0$ paid upon hit / survival (e.g., $10.0$).
+        pub cash_rebate_k: T,
+        /// Risk-free interest rate $r$ (e.g., $0.045$).
+        pub risk_free_rate_r: T,
+        /// Continuous dividend / foreign yield $q$ (e.g., $0.015$).
+        pub dividend_yield_q: T,
+        /// Volatility $\sigma$ (e.g., $0.22$).
+        pub volatility_sigma: T,
+        /// Option maturity $T$ in years (e.g., $1.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_hui_haug_one_touch_and_no_touch_binary_barrier`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct HuiHaugBinaryBarrierAnalytics<T: Real> {
+        /// Risk-neutral survival (no-touch) probability $P_{\text{NT}}(0, T)$ over $[0, T]$.
+        pub risk_neutral_no_touch_probability: T,
+        /// Down-and-out cash-at-expiry No-Touch value $K_{\text{cash}} e^{-r T} P_{\text{NT}}(0, T)$.
+        pub cash_at_expiry_no_touch_value: T,
+        /// Down-and-in cash-at-expiry One-Touch value $K_{\text{cash}} e^{-r T} (1 - P_{\text{NT}}(0, T))$.
+        pub cash_at_expiry_one_touch_value: T,
+        /// Down-and-in cash-at-hit One-Touch value $K_{\text{cash}} \mathbb{E}^{\mathbb{Q}}[e^{-r\tau_H}\mathbf{1}_{\{\tau_H \le T\}}]$.
+        pub cash_at_hit_one_touch_value: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    /// Evaluates the exact Reiner & Rubinstein (1991) / Hui (1996) / Haug (2007, §4.19.1–§4.19.4)
+    /// binary down-and-out No-Touch (cash-at-expiry), down-and-in One-Touch (cash-at-expiry), and
+    /// down-and-in One-Touch (cash-at-hit) options, satisfying exact discounted rebate conservation
+    /// $V_{\text{NT,exp}} + V_{\text{OT,exp}} \equiv K_{\text{cash}} e^{-r T}$ and early-hit discounting gain
+    /// $V_{\text{OT,hit}} > V_{\text{OT,exp}}$ for $r > 0$.
+    pub fn evaluate_hui_haug_one_touch_and_no_touch_binary_barrier<T: Real>(
+        spec: &HuiHaugBinaryBarrierSpec<T>,
+    ) -> HuiHaugBinaryBarrierAnalytics<T> {
+        let s = spec.spot_price_s0;
+        let h = spec.down_barrier_h;
+        let k_cash = spec.cash_rebate_k;
+        let r = spec.risk_free_rate_r;
+        let q = spec.dividend_yield_q;
+        let b = r - q;
+        let sig = spec.volatility_sigma;
+        let sig2 = sig * sig;
+        let t = spec.maturity_years_t;
+        let std_dev = sig * t.sqrt();
+
+        // Drift parameter mu = (b - 0.5*sig^2) / sig^2 (Haug 2007 §4.19 notation)
+        let mu = (b - T::from_f64(0.5) * sig2) / sig2;
+        let log_s_h = (s / h).ln();
+        let x2 = log_s_h / std_dev + (T::one() + mu) * std_dev;
+        let y2 = -log_s_h / std_dev + (T::one() + mu) * std_dev;
+
+        // Risk-neutral survival probability P(min_{0<=u<=T} S_u > H) = Phi(x2 - std_dev) - (H/S)^(2*mu) * Phi(y2 - std_dev)
+        let d2_x = x2 - std_dev;
+        let d2_y = y2 - std_dev;
+        let h_over_s = h / s;
+        let p_nt = std_norm_cdf(d2_x) - h_over_s.pow(T::from_f64(2.0) * mu) * std_norm_cdf(d2_y);
+
+        let df = (-r * t).exp();
+        let v_nt_exp = k_cash * df * p_nt;
+        let v_ot_exp = k_cash * df * (T::one() - p_nt);
+
+        // Cash-at-hit One-Touch (Haug §4.19.1, formula 1):
+        // lam_hit = sqrt(mu^2 + 2*r / sig^2)
+        // z = ln(H/S) / (sig*sqrt(T)) + lam_hit * sig * sqrt(T)
+        // V_OT_hit = K * [ (H/S)^(mu + lam_hit) * Phi(z) + (H/S)^(mu - lam_hit) * Phi(z - 2*lam_hit*sig*sqrt(T)) ]
+        let lam_hit = (mu * mu + T::from_f64(2.0) * r / sig2).sqrt();
+        let z_hit = -log_s_h / std_dev + lam_hit * std_dev;
+        let z_hit_minus = z_hit - T::from_f64(2.0) * lam_hit * std_dev;
+
+        let v_ot_hit = k_cash
+            * (h_over_s.pow(mu + lam_hit) * std_norm_cdf(z_hit)
+                + h_over_s.pow(mu - lam_hit) * std_norm_cdf(z_hit_minus));
+
+        HuiHaugBinaryBarrierAnalytics {
+            risk_neutral_no_touch_probability: p_nt,
+            cash_at_expiry_no_touch_value: v_nt_exp,
+            cash_at_expiry_one_touch_value: v_ot_exp,
+            cash_at_hit_one_touch_value: v_ot_hit,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn hui_haug_binary_barrier_invariants_and_ad_parity() {
+            let base = HuiHaugBinaryBarrierSpec {
+                spot_price_s0: 105.0_f64,
+                down_barrier_h: 92.0_f64,
+                cash_rebate_k: 10.0_f64,
+                risk_free_rate_r: 0.045_f64,
+                dividend_yield_q: 0.015_f64,
+                volatility_sigma: 0.22_f64,
+                maturity_years_t: 1.0_f64,
+            };
+            let res = evaluate_hui_haug_one_touch_and_no_touch_binary_barrier(&base);
+            assert!(
+                res.risk_neutral_no_touch_probability > 0.0
+                    && res.risk_neutral_no_touch_probability < 1.0
+            );
+            let df = (-base.risk_free_rate_r * base.maturity_years_t).exp();
+            assert!(
+                (res.cash_at_expiry_no_touch_value + res.cash_at_expiry_one_touch_value
+                    - base.cash_rebate_k * df)
+                    .abs()
+                    < 1e-12
+            );
+            assert!(res.cash_at_hit_one_touch_value > res.cash_at_expiry_one_touch_value);
+
+            let inputs = [
+                base.spot_price_s0,
+                base.down_barrier_h,
+                base.cash_rebate_k,
+                base.risk_free_rate_r,
+                base.dividend_yield_q,
+                base.volatility_sigma,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = HuiHaugBinaryBarrierSpec {
+                spot_price_s0: dual_in[0],
+                down_barrier_h: dual_in[1],
+                cash_rebate_k: dual_in[2],
+                risk_free_rate_r: dual_in[3],
+                dividend_yield_q: dual_in[4],
+                volatility_sigma: dual_in[5],
+                maturity_years_t: dual_in[6],
+            };
+            let r_ad = evaluate_hui_haug_one_touch_and_no_touch_binary_barrier(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| HuiHaugBinaryBarrierSpec {
+                    spot_price_s0: v[0],
+                    down_barrier_h: v[1],
+                    cash_rebate_k: v[2],
+                    risk_free_rate_r: v[3],
+                    dividend_yield_q: v[4],
+                    volatility_sigma: v[5],
+                    maturity_years_t: v[6],
+                };
+                let rp = evaluate_hui_haug_one_touch_and_no_touch_binary_barrier(&mk(p));
+                let rm = evaluate_hui_haug_one_touch_and_no_touch_binary_barrier(&mk(m));
+                let fd =
+                    (rp.cash_at_hit_one_touch_value - rm.cash_at_hit_one_touch_value) / (2.0 * eps);
+                assert!(
+                    r_ad.cash_at_hit_one_touch_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.cash_at_hit_one_touch_value.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use hui_haug_binary_barrier_mod::*;

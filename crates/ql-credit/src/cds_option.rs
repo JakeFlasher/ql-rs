@@ -2642,3 +2642,160 @@ pub mod hull_brigo_wwr_cds_mod {
     }
 }
 pub use hull_brigo_wwr_cds_mod::*;
+mod okane_brigo_recovery_lock_cds_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the O'Kane (2008, Ch. 6) / Brigo & Mercurio (2006, Ch. 21)
+    /// Digital Default Swap (DDS), Recovery Lock Swap, and stochastic-recovery CDS basis model.
+    #[derive(Debug, Clone, Copy)]
+    pub struct OkaneBrigoRecoveryLockCdsSpec<T: Real> {
+        ///Quoted conventional CDS par spread $S_{\text{mkt}}$ (e.g., $0.0180$).
+        pub market_cds_spread_s_mkt: T,
+        /// Conventional ISDA quoting recovery assumption $R_{\text{conv}}$ (e.g., $0.40$).
+        pub conventional_quoting_recovery_r_conv: T,
+        /// Expected physical recovery rate $\bar{R}_{\text{phys}}$ under default (e.g., $0.34$).
+        pub expected_physical_recovery_r_bar: T,
+        /// Contractual Recovery Lock strike $R_{\text{lock}}$ (e.g., $0.38$).
+        pub recovery_lock_strike_r_lock: T,
+        /// Hazard-recovery negative correlation $\rho_{\lambda, R} \in (-1, 0)$ (Altman et al. 2005, e.g., $-0.45$).
+        pub hazard_recovery_correlation_rho: T,
+        /// Recovery rate volatility $\sigma_R$ (e.g., $0.18$).
+        pub recovery_volatility_sigma_r: T,
+        /// Risk-free OIS discount rate $r$ (e.g., $0.035$).
+        pub risk_free_rate_r: T,
+        /// Contract maturity $T$ in years (e.g., $5.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_okane_brigo_recovery_lock_and_digital_default_swap`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct OkaneBrigoRecoveryLockCdsAnalytics<T: Real> {
+        /// Implied Digital Default Swap (DDS) 100%-LGD par spread $S_{\text{DDS}}$.
+        pub digital_default_swap_par_spread: T,
+        /// Default-measure expected recovery rate $\mathbb{E}^{\mathbb{Q}_{\tau}}[R_\tau]$.
+        pub default_measure_expected_recovery: T,
+        /// Recovery Lock Swap present value per unit notional $\text{PV}_{\text{RecLock}}$.
+        pub recovery_lock_swap_present_value: T,
+        /// Combined Digital Default Swap protection PV plus Recovery Lock adjustment.
+        pub recovery_adjusted_digital_protection_pv: T,
+    }
+
+    /// Evaluates the O'Kane (2008, Ch. 6) / Brigo & Mercurio (2006) Digital Default Swap (DDS)
+    /// par spread $S_{\text{DDS}} = S_{\text{mkt}} / (1 - \mathbb{E}^{\mathbb{Q}_\tau}[R_\tau])$
+    /// and Recovery Lock Swap PV $\text{DF}_{\text{def}}(0, T)\big(R_{\text{lock}} - \mathbb{E}^{\mathbb{Q}_\tau}[R_\tau]\big)$
+    /// under negatively correlated hazard and recovery rates (Altman, Brady, Resti & Sironi 2005).
+    pub fn evaluate_okane_brigo_recovery_lock_and_digital_default_swap<T: Real>(
+        spec: &OkaneBrigoRecoveryLockCdsSpec<T>,
+    ) -> OkaneBrigoRecoveryLockCdsAnalytics<T> {
+        let s_mkt = spec.market_cds_spread_s_mkt;
+        let lgd_conv = T::one() - spec.conventional_quoting_recovery_r_conv;
+        let lam_conv = s_mkt / lgd_conv;
+
+        // Default-time measure Girsanov shift on recovery due to hazard-recovery covariance
+        let t = spec.maturity_years_t;
+        let r_def = spec.expected_physical_recovery_r_bar
+            + spec.hazard_recovery_correlation_rho
+                * spec.recovery_volatility_sigma_r
+                * (lam_conv * t).sqrt();
+
+        let lgd_def = T::one() - r_def;
+        let lam_true = s_mkt / lgd_def;
+        let r = spec.risk_free_rate_r;
+        let total_rate = r + lam_true;
+
+        // Unit-loss Digital Default Swap protection PV = int_0^T lam_true * exp(-(r + lam_true)*u) du
+        let unit_def_pv = (lam_true / total_rate) * (T::one() - (-total_rate * t).exp());
+        let rpv01 = (T::one() - (-total_rate * t).exp()) / total_rate;
+        let s_dds = unit_def_pv / rpv01;
+
+        // Recovery Lock Swap PV: exchanges fixed recovery R_lock for realized recovery R_tau at default time tau <= T
+        let rec_lock_pv = unit_def_pv * (spec.recovery_lock_strike_r_lock - r_def);
+        let combined_pv = unit_def_pv + rec_lock_pv;
+
+        OkaneBrigoRecoveryLockCdsAnalytics {
+            digital_default_swap_par_spread: s_dds,
+            default_measure_expected_recovery: r_def,
+            recovery_lock_swap_present_value: rec_lock_pv,
+            recovery_adjusted_digital_protection_pv: combined_pv,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn okane_brigo_recovery_lock_cds_invariants_and_ad_parity() {
+            let base = OkaneBrigoRecoveryLockCdsSpec {
+                market_cds_spread_s_mkt: 0.0180_f64,
+                conventional_quoting_recovery_r_conv: 0.40_f64,
+                expected_physical_recovery_r_bar: 0.34_f64,
+                recovery_lock_strike_r_lock: 0.38_f64,
+                hazard_recovery_correlation_rho: -0.45_f64,
+                recovery_volatility_sigma_r: 0.18_f64,
+                risk_free_rate_r: 0.035_f64,
+                maturity_years_t: 5.0_f64,
+            };
+            let res = evaluate_okane_brigo_recovery_lock_and_digital_default_swap(&base);
+            assert!(res.digital_default_swap_par_spread > base.market_cds_spread_s_mkt);
+            assert!(res.default_measure_expected_recovery < base.expected_physical_recovery_r_bar);
+            assert!(res.recovery_lock_swap_present_value > 0.0);
+            assert!(res.recovery_adjusted_digital_protection_pv > 0.0);
+
+            let inputs = [
+                base.market_cds_spread_s_mkt,
+                base.conventional_quoting_recovery_r_conv,
+                base.expected_physical_recovery_r_bar,
+                base.recovery_lock_strike_r_lock,
+                base.hazard_recovery_correlation_rho,
+                base.recovery_volatility_sigma_r,
+                base.risk_free_rate_r,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = OkaneBrigoRecoveryLockCdsSpec {
+                market_cds_spread_s_mkt: dual_in[0],
+                conventional_quoting_recovery_r_conv: dual_in[1],
+                expected_physical_recovery_r_bar: dual_in[2],
+                recovery_lock_strike_r_lock: dual_in[3],
+                hazard_recovery_correlation_rho: dual_in[4],
+                recovery_volatility_sigma_r: dual_in[5],
+                risk_free_rate_r: dual_in[6],
+                maturity_years_t: dual_in[7],
+            };
+            let r_ad = evaluate_okane_brigo_recovery_lock_and_digital_default_swap(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| OkaneBrigoRecoveryLockCdsSpec {
+                    market_cds_spread_s_mkt: v[0],
+                    conventional_quoting_recovery_r_conv: v[1],
+                    expected_physical_recovery_r_bar: v[2],
+                    recovery_lock_strike_r_lock: v[3],
+                    hazard_recovery_correlation_rho: v[4],
+                    recovery_volatility_sigma_r: v[5],
+                    risk_free_rate_r: v[6],
+                    maturity_years_t: v[7],
+                };
+                let rp = evaluate_okane_brigo_recovery_lock_and_digital_default_swap(&mk(p));
+                let rm = evaluate_okane_brigo_recovery_lock_and_digital_default_swap(&mk(m));
+                let fd = (rp.recovery_adjusted_digital_protection_pv
+                    - rm.recovery_adjusted_digital_protection_pv)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.recovery_adjusted_digital_protection_pv.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.recovery_adjusted_digital_protection_pv.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use okane_brigo_recovery_lock_cds_mod::*;

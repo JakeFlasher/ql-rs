@@ -3596,3 +3596,164 @@ mod pykhtin_rosen_marginal_cva_mod {
     }
 }
 pub use pykhtin_rosen_marginal_cva_mod::*;
+mod kenyon_green_csa_lva_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Kenyon & Green (2014; 2015, *Risk*) / Green (2015, Ch. 9)
+    /// Asymmetric CSA Collateral & Liquidity Valuation Adjustment (LVA / COLVA) model.
+    #[derive(Debug, Clone, Copy)]
+    pub struct KenyonGreenCsaLvaSpec<T: Real> {
+        /// Expected MTM $\mu_V$ of the CSA portfolio (e.g., $6.0$).
+        pub expected_portfolio_mtm_mu: T,
+        /// Portfolio MTM volatility $\sigma_V$ (e.g., $24.0$).
+        pub portfolio_mtm_volatility_sigma: T,
+        /// Counterparty CSA threshold $H_{\text{rec}} \ge 0$ above which collateral is received (e.g., $5.0$).
+        pub csa_receive_threshold_h_rec: T,
+        /// Bank CSA posting threshold $H_{\text{post}} \ge 0$ below which collateral is posted (e.g., $2.0$).
+        pub csa_post_threshold_h_post: T,
+        /// Spread $s_{\text{post}} = r_{\text{liq}} - r_{\text{CSA,post}}$ paid on posted collateral (e.g., $0.0045$).
+        pub posted_collateral_liquidity_spread: T,
+        /// Spread $s_{\text{rec}} = r_{\text{CSA,rec}} - r_{\text{OIS}}$ lost on received collateral (e.g., $0.0020$).
+        pub received_collateral_remuneration_drag: T,
+        /// OIS discount rate $r_{\text{OIS}}$ (e.g., $0.035$).
+        pub ois_discount_rate_r: T,
+        /// Horizon $T$ in years (e.g., $5.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_kenyon_green_asymmetric_csa_collateral_liquidity_lva`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct KenyonGreenCsaLvaAnalytics<T: Real> {
+        /// Expected posted collateral balance $\mathbb{E}[\max(-V - H_{\text{post}}, 0)]$.
+        pub expected_posted_collateral_balance: T,
+        /// Expected received collateral balance $\mathbb{E}[\max(V - H_{\text{rec}}, 0)]$.
+        pub expected_received_collateral_balance: T,
+        /// Present value of posted-collateral liquidity cost.
+        pub posted_collateral_lva_cost: T,
+        /// Total asymmetric CSA Liquidity & Collateral Valuation Adjustment (LVA).
+        pub total_asymmetric_csa_lva_charge: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    #[inline]
+    fn std_norm_pdf<T: Real>(x: T) -> T {
+        T::from_f64(0.398_942_280_401_432_7) * (-T::from_f64(0.5) * x * x).exp()
+    }
+
+    #[inline]
+    fn bachelier_call<T: Real>(mean: T, strike: T, std_dev: T) -> T {
+        let diff = mean - strike;
+        let z = diff / std_dev;
+        diff * std_norm_cdf(z) + std_dev * std_norm_pdf(z)
+    }
+
+    /// Evaluates the Kenyon & Green (2014; 2015) / Green (2015, Ch. 9) asymmetric CSA
+    /// Collateral & Liquidity Valuation Adjustment:
+    /// $$\text{LVA} = \int_0^T D(0, t)\Big(s_{\text{post}}\mathbb{E}[(-V_t - H_{\text{post}})^+] + s_{\text{rec}}\mathbb{E}[(V_t - H_{\text{rec}})^+]\Big)dt.$$
+    pub fn evaluate_kenyon_green_asymmetric_csa_collateral_liquidity_lva<T: Real>(
+        spec: &KenyonGreenCsaLvaSpec<T>,
+    ) -> KenyonGreenCsaLvaAnalytics<T> {
+        let mu = spec.expected_portfolio_mtm_mu;
+        let sig = spec.portfolio_mtm_volatility_sigma;
+
+        // Expected received collateral E[(V - H_rec)^+] and posted collateral E[(-V - H_post)^+]
+        let exp_rec = bachelier_call(mu, spec.csa_receive_threshold_h_rec, sig);
+        let exp_post = bachelier_call(-mu, spec.csa_post_threshold_h_post, sig);
+
+        let r = spec.ois_discount_rate_r;
+        let t = spec.maturity_years_t;
+        let annuity = (T::one() - (-r * t).exp()) / r;
+
+        let post_lva = annuity * spec.posted_collateral_liquidity_spread * exp_post;
+        let rec_lva = annuity * spec.received_collateral_remuneration_drag * exp_rec;
+        let total_lva = post_lva + rec_lva;
+
+        KenyonGreenCsaLvaAnalytics {
+            expected_posted_collateral_balance: exp_post,
+            expected_received_collateral_balance: exp_rec,
+            posted_collateral_lva_cost: post_lva,
+            total_asymmetric_csa_lva_charge: total_lva,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn kenyon_green_csa_lva_invariants_and_ad_parity() {
+            let base = KenyonGreenCsaLvaSpec {
+                expected_portfolio_mtm_mu: 6.0_f64,
+                portfolio_mtm_volatility_sigma: 24.0_f64,
+                csa_receive_threshold_h_rec: 5.0_f64,
+                csa_post_threshold_h_post: 2.0_f64,
+                posted_collateral_liquidity_spread: 0.0045_f64,
+                received_collateral_remuneration_drag: 0.0020_f64,
+                ois_discount_rate_r: 0.035_f64,
+                maturity_years_t: 5.0_f64,
+            };
+            let res = evaluate_kenyon_green_asymmetric_csa_collateral_liquidity_lva(&base);
+            assert!(res.expected_posted_collateral_balance > 0.0);
+            assert!(res.expected_received_collateral_balance > 0.0);
+            assert!(res.total_asymmetric_csa_lva_charge > res.posted_collateral_lva_cost);
+
+            let inputs = [
+                base.expected_portfolio_mtm_mu,
+                base.portfolio_mtm_volatility_sigma,
+                base.csa_receive_threshold_h_rec,
+                base.csa_post_threshold_h_post,
+                base.posted_collateral_liquidity_spread,
+                base.received_collateral_remuneration_drag,
+                base.ois_discount_rate_r,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = KenyonGreenCsaLvaSpec {
+                expected_portfolio_mtm_mu: dual_in[0],
+                portfolio_mtm_volatility_sigma: dual_in[1],
+                csa_receive_threshold_h_rec: dual_in[2],
+                csa_post_threshold_h_post: dual_in[3],
+                posted_collateral_liquidity_spread: dual_in[4],
+                received_collateral_remuneration_drag: dual_in[5],
+                ois_discount_rate_r: dual_in[6],
+                maturity_years_t: dual_in[7],
+            };
+            let r_ad = evaluate_kenyon_green_asymmetric_csa_collateral_liquidity_lva(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| KenyonGreenCsaLvaSpec {
+                    expected_portfolio_mtm_mu: v[0],
+                    portfolio_mtm_volatility_sigma: v[1],
+                    csa_receive_threshold_h_rec: v[2],
+                    csa_post_threshold_h_post: v[3],
+                    posted_collateral_liquidity_spread: v[4],
+                    received_collateral_remuneration_drag: v[5],
+                    ois_discount_rate_r: v[6],
+                    maturity_years_t: v[7],
+                };
+                let rp = evaluate_kenyon_green_asymmetric_csa_collateral_liquidity_lva(&mk(p));
+                let rm = evaluate_kenyon_green_asymmetric_csa_collateral_liquidity_lva(&mk(m));
+                let fd = (rp.total_asymmetric_csa_lva_charge - rm.total_asymmetric_csa_lva_charge)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.total_asymmetric_csa_lva_charge.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.total_asymmetric_csa_lva_charge.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use kenyon_green_csa_lva_mod::*;

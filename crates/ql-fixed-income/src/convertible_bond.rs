@@ -2188,3 +2188,180 @@ pub mod ingersoll_contingent_call_convertible_bond_mod {
     }
 }
 pub use ingersoll_contingent_call_convertible_bond_mod::*;
+mod andersen_buffum_convertible_bond_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Andersen & Buffum (2004, *J. Computational Finance* 7(3)) /
+    /// Ayache, Forsyth & Vetzal (2003, *JCF* 7(1)) convertible bond model with equity-linked
+    /// default intensity $\lambda(S) = \lambda_0 (S_0 / S)^p$ and jump-to-default stock drop.
+    #[derive(Debug, Clone, Copy)]
+    pub struct AndersenBuffumConvertibleBondSpec<T: Real> {
+        /// Current stock price $S_0$ (e.g., $95.0$).
+        pub spot_price_s0: T,
+        /// Conversion ratio $\gamma_{\text{conv}}$ shares per $100$ par bond (e.g., $1.0$).
+        pub conversion_ratio: T,
+        /// Baseline credit hazard intensity $\lambda_0$ at $S_0$ (e.g., $0.028$).
+        pub baseline_hazard_lambda0: T,
+        /// Equity-hazard power elasticity $p > 0$ in $\lambda(S) = \lambda_0 (S_0 / S)^p$ (e.g., $1.25$).
+        pub hazard_power_elasticity_p: T,
+        /// Fractional bond recovery rate $R_{\text{bond}} \in (0, 1)$ on par $100$ upon default (e.g., $0.40$).
+        pub bond_recovery_rate_r: T,
+        /// Annual coupon rate $c$ on $100$ par (e.g., $0.045$).
+        pub coupon_rate_c: T,
+        /// Risk-free interest rate $r$ (e.g., $0.038$).
+        pub risk_free_rate_r: T,
+        /// Diffusive stock volatility $\sigma$ over period $\Delta t = 1$ year (e.g., $0.28$).
+        pub stock_volatility_sigma: T,
+    }
+
+    /// Analytics returned by [`evaluate_andersen_buffum_equity_linked_hazard_convertible_bond`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct AndersenBuffumConvertibleBondAnalytics<T: Real> {
+        /// Down-state equity-linked default hazard $\lambda(S_d) = \lambda_0 (S_0 / S_d)^p$.
+        pub down_state_hazard_intensity: T,
+        /// Default-adjusted risk-neutral up-branch stock probability $q_u$.
+        pub default_compensated_up_probability: T,
+        /// Straight corporate bond floor value per $100$ par under state-dependent hazard.
+        pub straight_bond_floor_value: T,
+        /// Total Andersen–Buffum convertible bond value per $100$ par.
+        pub convertible_bond_value: T,
+    }
+
+    /// Evaluates the Andersen & Buffum (2004) / Ayache, Forsyth & Vetzal (2003) convertible bond
+    /// under equity-linked default hazard $\lambda(S) = \lambda_0 (S_0 / S)^p$ where stock drops
+    /// to zero on default (requiring total-return drift compensation $r + \lambda(S)$ on surviving paths).
+    pub fn evaluate_andersen_buffum_equity_linked_hazard_convertible_bond<T: Real>(
+        spec: &AndersenBuffumConvertibleBondSpec<T>,
+    ) -> AndersenBuffumConvertibleBondAnalytics<T> {
+        let par = T::from_f64(100.0);
+        let s0 = spec.spot_price_s0;
+        let sig = spec.stock_volatility_sigma;
+        let r = spec.risk_free_rate_r;
+        let lam0 = spec.baseline_hazard_lambda0;
+        let p_el = spec.hazard_power_elasticity_p;
+        let half = T::from_f64(0.5);
+
+        // Surviving binomial stock nodes S_u, S_d over dt = 1.0 with jump-to-default drift r + lam0
+        let u = sig.exp();
+        let d = (-sig).exp();
+        let s_u = s0 * u;
+        let s_d = s0 * d;
+
+        // State-dependent hazard intensities lambda(S_u), lambda(S_d)
+        let lam_u = lam0 * (s0 / s_u).pow(p_el);
+        let lam_d = lam0 * (s0 / s_d).pow(p_el);
+        let lam_eff = half * (lam0 + half * (lam_u + lam_d));
+
+        let surv_prob = (-lam_eff).exp();
+        // Conditional on survival, E[S_1 | survive] = S_0 * exp(r + lam_eff)
+        let q_u = ((r + lam_eff).exp() - d) / (u - d);
+        let q_d = T::one() - q_u;
+
+        let cpn = par * spec.coupon_rate_c;
+        let straight_redemption = par + cpn;
+        let conv_u = spec.conversion_ratio * s_u + cpn;
+        let conv_d = spec.conversion_ratio * s_d + cpn;
+
+        // Smooth max(conversion, straight_redemption) at u and d
+        let eps_sm = T::from_f64(1e-6);
+        let diff_u = conv_u - straight_redemption;
+        let diff_d = conv_d - straight_redemption;
+        let payoff_u = straight_redemption + half * (diff_u + (diff_u * diff_u + eps_sm).sqrt());
+        let payoff_d = straight_redemption + half * (diff_d + (diff_d * diff_d + eps_sm).sqrt());
+
+        let df = (-r).exp();
+        let default_recovery_payoff = par * spec.bond_recovery_rate_r;
+
+        let straight_val = df
+            * (surv_prob * straight_redemption + (T::one() - surv_prob) * default_recovery_payoff);
+        let cb_val = df
+            * (surv_prob * (q_u * payoff_u + q_d * payoff_d)
+                + (T::one() - surv_prob) * default_recovery_payoff);
+
+        AndersenBuffumConvertibleBondAnalytics {
+            down_state_hazard_intensity: lam_d,
+            default_compensated_up_probability: q_u,
+            straight_bond_floor_value: straight_val,
+            convertible_bond_value: cb_val,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn andersen_buffum_convertible_bond_invariants_and_ad_parity() {
+            let base = AndersenBuffumConvertibleBondSpec {
+                spot_price_s0: 95.0_f64,
+                conversion_ratio: 1.05_f64,
+                baseline_hazard_lambda0: 0.028_f64,
+                hazard_power_elasticity_p: 1.25_f64,
+                bond_recovery_rate_r: 0.40_f64,
+                coupon_rate_c: 0.045_f64,
+                risk_free_rate_r: 0.038_f64,
+                stock_volatility_sigma: 0.28_f64,
+            };
+            let res = evaluate_andersen_buffum_equity_linked_hazard_convertible_bond(&base);
+            assert!(res.down_state_hazard_intensity > base.baseline_hazard_lambda0);
+            assert!(
+                res.default_compensated_up_probability > 0.0
+                    && res.default_compensated_up_probability < 1.0
+            );
+            assert!(res.convertible_bond_value > res.straight_bond_floor_value);
+
+            let inputs = [
+                base.spot_price_s0,
+                base.conversion_ratio,
+                base.baseline_hazard_lambda0,
+                base.hazard_power_elasticity_p,
+                base.bond_recovery_rate_r,
+                base.coupon_rate_c,
+                base.risk_free_rate_r,
+                base.stock_volatility_sigma,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = AndersenBuffumConvertibleBondSpec {
+                spot_price_s0: dual_in[0],
+                conversion_ratio: dual_in[1],
+                baseline_hazard_lambda0: dual_in[2],
+                hazard_power_elasticity_p: dual_in[3],
+                bond_recovery_rate_r: dual_in[4],
+                coupon_rate_c: dual_in[5],
+                risk_free_rate_r: dual_in[6],
+                stock_volatility_sigma: dual_in[7],
+            };
+            let r_ad = evaluate_andersen_buffum_equity_linked_hazard_convertible_bond(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| AndersenBuffumConvertibleBondSpec {
+                    spot_price_s0: v[0],
+                    conversion_ratio: v[1],
+                    baseline_hazard_lambda0: v[2],
+                    hazard_power_elasticity_p: v[3],
+                    bond_recovery_rate_r: v[4],
+                    coupon_rate_c: v[5],
+                    risk_free_rate_r: v[6],
+                    stock_volatility_sigma: v[7],
+                };
+                let rp = evaluate_andersen_buffum_equity_linked_hazard_convertible_bond(&mk(p));
+                let rm = evaluate_andersen_buffum_equity_linked_hazard_convertible_bond(&mk(m));
+                let fd = (rp.convertible_bond_value - rm.convertible_bond_value) / (2.0 * eps);
+                assert!(
+                    r_ad.convertible_bond_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.convertible_bond_value.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use andersen_buffum_convertible_bond_mod::*;

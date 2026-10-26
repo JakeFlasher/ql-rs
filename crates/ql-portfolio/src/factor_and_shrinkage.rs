@@ -3653,3 +3653,165 @@ pub mod pastor_stambaugh_alpha_shrinkage_mod {
     }
 }
 pub use pastor_stambaugh_alpha_shrinkage_mod::*;
+mod kan_robotti_hj_distance_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Kan & Robotti (2008, *J. Empirical Finance* 15(4); 2009, *RFS* 22(9))
+    /// & Hansen & Jagannathan (1997, *J. Finance* 52(2)) misspecification-robust Hansen–Jagannathan
+    /// (HJ) factor model distance and standard error engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct KanRobottiHjDistanceSpec<T: Real> {
+        /// Traded factor excess return mean $\mu_1$ (e.g., $0.068$).
+        pub traded_factor_mean_mu1: T,
+        /// Non-traded macro factor risk price $\lambda_2$ (e.g., $0.045$).
+        pub nontraded_factor_price_lambda2: T,
+        /// Pricing error $\alpha_1$ on test portfolio 1 (e.g., $0.018$).
+        pub test_asset_1_pricing_error_alpha1: T,
+        /// Pricing error $\alpha_2$ on test portfolio 2 (e.g., $-0.014$).
+        pub test_asset_2_pricing_error_alpha2: T,
+        /// Return variance $v_1$ of test portfolio 1 (e.g., $0.036$).
+        pub test_asset_1_variance_v1: T,
+        /// Return variance $v_2$ of test portfolio 2 (e.g., $0.044$).
+        pub test_asset_2_variance_v2: T,
+        /// Cross-asset return correlation $\rho_{12} \in (-1, 1)$ (e.g., $0.30$).
+        pub test_asset_correlation_rho12: T,
+        /// Sample length $T_{\text{obs}}$ in periods (e.g., $180.0$).
+        pub sample_observations_t_obs: T,
+    }
+
+    /// Analytics returned by [`evaluate_kan_robotti_misspecification_robust_hj_factor_distance`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct KanRobottiHjDistanceAnalytics<T: Real> {
+        /// Squared Hansen–Jagannathan distance $\delta_{\text{HJ}}^2 = \alpha^\top U^{-1} \alpha$.
+        pub squared_hj_distance: T,
+        /// Hansen–Jagannathan distance $\delta_{\text{HJ}} = \sqrt{\alpha^\top U^{-1} \alpha}$ (maximum pricing error per unit norm).
+        pub hj_distance_delta: T,
+        /// Kan & Robotti (2008, Prop. 2) misspecification-robust asymptotic standard error of $\hat{\delta}_{\text{HJ}}^2$.
+        pub misspecification_robust_se_delta2: T,
+        /// Misspecification-adjusted HJ $t$-ratio $\hat{\delta}_{\text{HJ}}^2 / \text{SE}_{\text{KR}}(\hat{\delta}_{\text{HJ}}^2)$.
+        pub kan_robotti_hj_t_statistic: T,
+    }
+
+    /// Evaluates the Hansen & Jagannathan (1997) distance $\delta_{\text{HJ}} = \sqrt{\alpha^\top U^{-1} \alpha}$
+    /// using the second-moment matrix $U = \Sigma + \mu\mu^\top$ of excess returns, together with the
+    /// Kan & Robotti (2008, Proposition 2) misspecification-robust asymptotic variance under potential
+    /// SDF model misspecification.
+    pub fn evaluate_kan_robotti_misspecification_robust_hj_factor_distance<T: Real>(
+        spec: &KanRobottiHjDistanceSpec<T>,
+    ) -> KanRobottiHjDistanceAnalytics<T> {
+        let a1 = spec.test_asset_1_pricing_error_alpha1;
+        let a2 = spec.test_asset_2_pricing_error_alpha2;
+        let v1 = spec.test_asset_1_variance_v1;
+        let v2 = spec.test_asset_2_variance_v2;
+        let rho = spec.test_asset_correlation_rho12;
+        let cov12 = rho * (v1 * v2).sqrt();
+
+        // Second-moment matrix U = Sigma + mu * mu^T of excess returns
+        let mu1 = spec.traded_factor_mean_mu1 + a1;
+        let mu2 = spec.nontraded_factor_price_lambda2 + a2;
+        let u11 = v1 + mu1 * mu1;
+        let u22 = v2 + mu2 * mu2;
+        let u12 = cov12 + mu1 * mu2;
+
+        let det_u = u11 * u22 - u12 * u12;
+        // Quadratic form delta_HJ^2 = alpha^T U^{-1} alpha
+        let delta2 = (u22 * a1 * a1 - T::from_f64(2.0) * u12 * a1 * a2 + u11 * a2 * a2) / det_u;
+        let delta = delta2.sqrt();
+
+        // Kan & Robotti (2008) misspecification-robust variance of delta_HJ^2:
+        // Scales with 4 * (1 + b^T V_f b) * delta_HJ^2 / T_obs + 2 * delta_HJ^4 / T_obs
+        let sdf_norm_sq = T::one()
+            + (spec.traded_factor_mean_mu1 * spec.traded_factor_mean_mu1) / v1
+            + (spec.nontraded_factor_price_lambda2 * spec.nontraded_factor_price_lambda2) / v2;
+        let var_delta2 = (T::from_f64(4.0) * sdf_norm_sq * delta2
+            + T::from_f64(2.0) * delta2 * delta2)
+            / spec.sample_observations_t_obs;
+        let se_delta2 = var_delta2.sqrt();
+        let t_stat = delta2 / se_delta2;
+
+        KanRobottiHjDistanceAnalytics {
+            squared_hj_distance: delta2,
+            hj_distance_delta: delta,
+            misspecification_robust_se_delta2: se_delta2,
+            kan_robotti_hj_t_statistic: t_stat,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn kan_robotti_hj_distance_invariants_and_ad_parity() {
+            let base = KanRobottiHjDistanceSpec {
+                traded_factor_mean_mu1: 0.068_f64,
+                nontraded_factor_price_lambda2: 0.045_f64,
+                test_asset_1_pricing_error_alpha1: 0.018_f64,
+                test_asset_2_pricing_error_alpha2: -0.014_f64,
+                test_asset_1_variance_v1: 0.036_f64,
+                test_asset_2_variance_v2: 0.044_f64,
+                test_asset_correlation_rho12: 0.30_f64,
+                sample_observations_t_obs: 180.0_f64,
+            };
+            let res = evaluate_kan_robotti_misspecification_robust_hj_factor_distance(&base);
+            assert!(res.squared_hj_distance > 0.0);
+            assert!(res.hj_distance_delta > 0.0);
+            assert!(res.misspecification_robust_se_delta2 > 0.0);
+            assert!(res.kan_robotti_hj_t_statistic > 0.0);
+
+            let inputs = [
+                base.traded_factor_mean_mu1,
+                base.nontraded_factor_price_lambda2,
+                base.test_asset_1_pricing_error_alpha1,
+                base.test_asset_2_pricing_error_alpha2,
+                base.test_asset_1_variance_v1,
+                base.test_asset_2_variance_v2,
+                base.test_asset_correlation_rho12,
+                base.sample_observations_t_obs,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = KanRobottiHjDistanceSpec {
+                traded_factor_mean_mu1: dual_in[0],
+                nontraded_factor_price_lambda2: dual_in[1],
+                test_asset_1_pricing_error_alpha1: dual_in[2],
+                test_asset_2_pricing_error_alpha2: dual_in[3],
+                test_asset_1_variance_v1: dual_in[4],
+                test_asset_2_variance_v2: dual_in[5],
+                test_asset_correlation_rho12: dual_in[6],
+                sample_observations_t_obs: dual_in[7],
+            };
+            let r_ad = evaluate_kan_robotti_misspecification_robust_hj_factor_distance(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| KanRobottiHjDistanceSpec {
+                    traded_factor_mean_mu1: v[0],
+                    nontraded_factor_price_lambda2: v[1],
+                    test_asset_1_pricing_error_alpha1: v[2],
+                    test_asset_2_pricing_error_alpha2: v[3],
+                    test_asset_1_variance_v1: v[4],
+                    test_asset_2_variance_v2: v[5],
+                    test_asset_correlation_rho12: v[6],
+                    sample_observations_t_obs: v[7],
+                };
+                let rp = evaluate_kan_robotti_misspecification_robust_hj_factor_distance(&mk(p));
+                let rm = evaluate_kan_robotti_misspecification_robust_hj_factor_distance(&mk(m));
+                let fd =
+                    (rp.kan_robotti_hj_t_statistic - rm.kan_robotti_hj_t_statistic) / (2.0 * eps);
+                assert!(
+                    r_ad.kan_robotti_hj_t_statistic.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.kan_robotti_hj_t_statistic.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use kan_robotti_hj_distance_mod::*;

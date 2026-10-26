@@ -2934,3 +2934,171 @@ pub mod carmona_clean_dark_spread_mod {
     }
 }
 pub use carmona_clean_dark_spread_mod::*;
+mod boogert_de_jong_gas_ratchet_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Boogert & de Jong (2008, *J. Energy Markets* 1(1)) /
+    /// Eydeland & Wolyniec (2003, Ch. 9) natural gas cavern storage ratchet option model.
+    #[derive(Debug, Clone, Copy)]
+    pub struct BoogertDeJongGasRatchetSpec<T: Real> {
+        /// Summer injection forward gas price $F_{\text{sum}}$ ($/MMBtu, e.g., $2.85$).
+        pub summer_injection_forward_f_sum: T,
+        /// Winter withdrawal forward gas price $F_{\text{win}}$ ($/MMBtu, e.g., $4.10$).
+        pub winter_withdrawal_forward_f_win: T,
+        /// Current working gas fill fraction $\phi_{\text{fill}} \in (0, 1)$ (e.g., $0.45$).
+        pub working_gas_fill_fraction: T,
+        /// Ratchet pressure attenuation coefficient $\alpha_{\text{ratchet}} > 0$ on injection rate as inventory rises (e.g., $0.35$).
+        pub ratchet_pressure_attenuation_alpha: T,
+        /// Variable compressor fuel loss & injection/withdrawal fee $c_{\text{var}}$ ($/MMBtu, e.g., $0.12$).
+        pub variable_injection_withdrawal_cost: T,
+        /// Seasonal calendar spread normal volatility $\sigma_{\text{cal}}$ ($/MMBtu, e.g., $0.85$).
+        pub calendar_spread_normal_volatility_sigma: T,
+        /// Risk-free discount rate $r$ (e.g., $0.038$).
+        pub risk_free_rate_r: T,
+    }
+
+    /// Analytics returned by [`evaluate_boogert_de_jong_gas_storage_ratchet_injection_withdrawal_spread`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct BoogertDeJongGasRatchetAnalytics<T: Real> {
+        /// Ratchet-constrained effective cycling capacity multiplier $M_{\text{ratchet}}(\phi_{\text{fill}})$.
+        pub ratchet_effective_capacity_multiplier: T,
+        /// Intrinsic seasonal cycling spread $(F_{\text{win}} - F_{\text{sum}} - c_{\text{var}})^+$.
+        pub intrinsic_seasonal_cycling_spread: T,
+        /// Extrinsic calendar-spread optionality value per unit capacity.
+        pub extrinsic_calendar_optionality_value: T,
+        /// Total ratchet-adjusted gas storage cycling option value per MMBtu of cavern capacity.
+        pub ratchet_adjusted_storage_option_value: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    #[inline]
+    fn std_norm_pdf<T: Real>(x: T) -> T {
+        T::from_f64(0.398_942_280_401_432_7) * (-T::from_f64(0.5) * x * x).exp()
+    }
+
+    /// Evaluates the Boogert & de Jong (2008) cavern pressure-ratchet storage cycling option,
+    /// where injection capacity decays with reservoir pressure $(1 - \alpha_{\text{ratchet}}\phi_{\text{fill}})$
+    /// and withdrawal deliverability scales with reservoir pressure $\sqrt{\phi_{\text{fill}}}$.
+    pub fn evaluate_boogert_de_jong_gas_storage_ratchet_injection_withdrawal_spread<T: Real>(
+        spec: &BoogertDeJongGasRatchetSpec<T>,
+    ) -> BoogertDeJongGasRatchetAnalytics<T> {
+        let phi = spec.working_gas_fill_fraction;
+        let alpha = spec.ratchet_pressure_attenuation_alpha;
+
+        // Effective reversible cycle capacity under cavern pressure ratchets:
+        // Injection limit scales with (1 - alpha * phi), withdrawal head scales with sqrt(phi)
+        let cap_mult =
+            (T::one() - alpha * phi) * (T::from_f64(0.5) + T::from_f64(0.5) * phi.sqrt());
+
+        let net_spread = spec.winter_withdrawal_forward_f_win
+            - spec.summer_injection_forward_f_sum
+            - spec.variable_injection_withdrawal_cost;
+
+        let sig = spec.calendar_spread_normal_volatility_sigma;
+        let z = net_spread / sig;
+        let bachelier_val = net_spread * std_norm_cdf(z) + sig * std_norm_pdf(z);
+
+        let half = T::from_f64(0.5);
+        let eps_sm = T::from_f64(1e-8);
+        let intrinsic = half * (net_spread + (net_spread * net_spread + eps_sm).sqrt());
+        let extrinsic = bachelier_val - intrinsic;
+
+        let df = (-spec.risk_free_rate_r * half).exp();
+        let total_val = df * cap_mult * bachelier_val;
+
+        BoogertDeJongGasRatchetAnalytics {
+            ratchet_effective_capacity_multiplier: cap_mult,
+            intrinsic_seasonal_cycling_spread: intrinsic,
+            extrinsic_calendar_optionality_value: extrinsic,
+            ratchet_adjusted_storage_option_value: total_val,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn boogert_de_jong_gas_ratchet_invariants_and_ad_parity() {
+            let base = BoogertDeJongGasRatchetSpec {
+                summer_injection_forward_f_sum: 2.85_f64,
+                winter_withdrawal_forward_f_win: 4.10_f64,
+                working_gas_fill_fraction: 0.45_f64,
+                ratchet_pressure_attenuation_alpha: 0.35_f64,
+                variable_injection_withdrawal_cost: 0.12_f64,
+                calendar_spread_normal_volatility_sigma: 0.85_f64,
+                risk_free_rate_r: 0.038_f64,
+            };
+            let res =
+                evaluate_boogert_de_jong_gas_storage_ratchet_injection_withdrawal_spread(&base);
+            assert!(
+                res.ratchet_effective_capacity_multiplier > 0.5
+                    && res.ratchet_effective_capacity_multiplier < 1.0
+            );
+            assert!(res.intrinsic_seasonal_cycling_spread > 1.0);
+            assert!(res.extrinsic_calendar_optionality_value > 0.0);
+            assert!(res.ratchet_adjusted_storage_option_value > 0.5);
+
+            let inputs = [
+                base.summer_injection_forward_f_sum,
+                base.winter_withdrawal_forward_f_win,
+                base.working_gas_fill_fraction,
+                base.ratchet_pressure_attenuation_alpha,
+                base.variable_injection_withdrawal_cost,
+                base.calendar_spread_normal_volatility_sigma,
+                base.risk_free_rate_r,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BoogertDeJongGasRatchetSpec {
+                summer_injection_forward_f_sum: dual_in[0],
+                winter_withdrawal_forward_f_win: dual_in[1],
+                working_gas_fill_fraction: dual_in[2],
+                ratchet_pressure_attenuation_alpha: dual_in[3],
+                variable_injection_withdrawal_cost: dual_in[4],
+                calendar_spread_normal_volatility_sigma: dual_in[5],
+                risk_free_rate_r: dual_in[6],
+            };
+            let r_ad =
+                evaluate_boogert_de_jong_gas_storage_ratchet_injection_withdrawal_spread(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| BoogertDeJongGasRatchetSpec {
+                    summer_injection_forward_f_sum: v[0],
+                    winter_withdrawal_forward_f_win: v[1],
+                    working_gas_fill_fraction: v[2],
+                    ratchet_pressure_attenuation_alpha: v[3],
+                    variable_injection_withdrawal_cost: v[4],
+                    calendar_spread_normal_volatility_sigma: v[5],
+                    risk_free_rate_r: v[6],
+                };
+                let rp = evaluate_boogert_de_jong_gas_storage_ratchet_injection_withdrawal_spread(
+                    &mk(p),
+                );
+                let rm = evaluate_boogert_de_jong_gas_storage_ratchet_injection_withdrawal_spread(
+                    &mk(m),
+                );
+                let fd = (rp.ratchet_adjusted_storage_option_value
+                    - rm.ratchet_adjusted_storage_option_value)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.ratchet_adjusted_storage_option_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.ratchet_adjusted_storage_option_value.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use boogert_de_jong_gas_ratchet_mod::*;

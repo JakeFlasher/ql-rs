@@ -1387,3 +1387,176 @@ pub mod bossens_vanna_volga_barrier_mod {
     }
 }
 pub use bossens_vanna_volga_barrier_mod::*;
+mod derman_kani_implied_tree_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Derman & Kani (1994, *Risk* 7(2); 1998, *IJTAF* 1(1))
+    /// implied binomial/trinomial tree step and Arrow–Debreu local volatility extraction.
+    #[derive(Debug, Clone, Copy)]
+    pub struct DermanKaniImpliedTreeSpec<T: Real> {
+        /// Central node stock price $S_i$ at time $t_n$ (e.g., $100.0$).
+        pub central_node_spot_si: T,
+        /// Arrow–Debreu state price $\lambda_i$ of node $(n, i)$ (e.g., $0.96$).
+        pub arrow_debreu_state_price_lambda: T,
+        /// Implied ATMF Black–Scholes volatility $\sigma_{\text{ATM}}$ at $t_{n+1}$ (e.g., $0.22$).
+        pub atm_implied_volatility_sigma: T,
+        /// Implied volatility skew slope $\beta_{\text{skew}} = \partial \sigma / \partial \ln K$ (e.g., $-0.15$).
+        pub smile_skew_slope_beta: T,
+        /// Risk-free interest rate $r$ (e.g., $0.04$).
+        pub risk_free_rate_r: T,
+        /// Continuous dividend yield $q$ (e.g., $0.015$).
+        pub dividend_yield_q: T,
+        /// Tree time step $\Delta t$ in years (e.g., $0.25$).
+        pub step_years_dt: T,
+    }
+
+    /// Analytics returned by [`evaluate_derman_kani_implied_tree_arrow_debreu_local_volatility`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct DermanKaniImpliedTreeAnalytics<T: Real> {
+        /// Implied up-node stock price $S_{i+1}$ at $t_{n+1}$.
+        pub implied_up_node_price: T,
+        /// Implied down-node stock price $S_i'$ at $t_{n+1}$ via the Derman–Kani centering relation $S_{i+1} S_i' = S_i^2$.
+        pub implied_down_node_price: T,
+        /// Risk-neutral transition probability $p_i$ to the up node $S_{i+1}$.
+        pub implied_up_transition_probability: T,
+        /// Extracted Derman–Kani node local volatility $\sigma_{\text{loc}}(S_i, t_n)$.
+        pub implied_node_local_volatility: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    /// Evaluates the Derman & Kani (1994, Eqs. 9–13) implied binomial tree forward-induction step
+    /// from node $(S_i, \lambda_i)$:
+    /// $$S_{i+1} = \frac{S_i\left(e^{(r-q)\Delta t}\lambda_i S_i + e^{r\Delta t}C(S_i, t_{n+1})\right)}{\lambda_i S_i e^{(r-q)\Delta t} - e^{r\Delta t}C(S_i, t_{n+1})}, \qquad S_i' = \frac{S_i^2}{S_{i+1}}$$
+    /// where the smile-adjusted target call price $C(S_i, t_{n+1})$ incorporates both $\sigma_{\text{ATM}}$
+    /// and the local skew slope $\beta_{\text{skew}}$, and extracts the implied transition probability
+    /// $p_i = \frac{F_i - S_i'}{S_{i+1} - S_i'}$ and node local volatility $\sigma_{\text{loc}}(S_i)$.
+    pub fn evaluate_derman_kani_implied_tree_arrow_debreu_local_volatility<T: Real>(
+        spec: &DermanKaniImpliedTreeSpec<T>,
+    ) -> DermanKaniImpliedTreeAnalytics<T> {
+        let si = spec.central_node_spot_si;
+        let lam = spec.arrow_debreu_state_price_lambda;
+        let dt = spec.step_years_dt;
+        let sqrt_dt = dt.sqrt();
+        let r = spec.risk_free_rate_r;
+        let q = spec.dividend_yield_q;
+        let half = T::from_f64(0.5);
+
+        // Effective smile-adjusted implied volatility at the forward-moneyness shift
+        let log_fwd_shift = (r - q) * dt + (si / T::from_f64(100.0)).ln();
+        let sigma_eff = spec.atm_implied_volatility_sigma
+            * (T::one() - half * spec.smile_skew_slope_beta * (log_fwd_shift + sqrt_dt));
+
+        let std_dev = sigma_eff * sqrt_dt;
+        let d1 = ((r - q) * dt + half * std_dev * std_dev) / std_dev;
+        let d2 = d1 - std_dev;
+        let c_target =
+            si * ((-q * dt).exp() * std_norm_cdf(d1) - (-r * dt).exp() * std_norm_cdf(d2));
+
+        let f_i = si * ((r - q) * dt).exp();
+        let e_r_c = (r * dt).exp() * c_target;
+        let lam_fi = lam * f_i;
+
+        // Derman & Kani (1994, Eq. 9) centered implied up and down nodes S_{i+1}, S_i' = S_i^2 / S_{i+1}
+        let s_up = si * (lam_fi + e_r_c) / (lam_fi - e_r_c);
+        let s_dn = (si * si) / s_up;
+
+        let p_up = (f_i - s_dn) / (s_up - s_dn);
+        let log_move = (s_up / si).ln();
+        let var_node = T::from_f64(4.0) * p_up * (T::one() - p_up) * log_move * log_move / dt;
+        let loc_vol = var_node.sqrt();
+
+        DermanKaniImpliedTreeAnalytics {
+            implied_up_node_price: s_up,
+            implied_down_node_price: s_dn,
+            implied_up_transition_probability: p_up,
+            implied_node_local_volatility: loc_vol,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn derman_kani_implied_tree_invariants_and_ad_parity() {
+            let base = DermanKaniImpliedTreeSpec {
+                central_node_spot_si: 100.0_f64,
+                arrow_debreu_state_price_lambda: 0.96_f64,
+                atm_implied_volatility_sigma: 0.22_f64,
+                smile_skew_slope_beta: -0.15_f64,
+                risk_free_rate_r: 0.04_f64,
+                dividend_yield_q: 0.015_f64,
+                step_years_dt: 0.25_f64,
+            };
+            let res = evaluate_derman_kani_implied_tree_arrow_debreu_local_volatility(&base);
+            assert!(res.implied_up_node_price > base.central_node_spot_si);
+            assert!(res.implied_down_node_price < base.central_node_spot_si);
+            assert!(
+                (res.implied_up_node_price * res.implied_down_node_price
+                    - base.central_node_spot_si * base.central_node_spot_si)
+                    .abs()
+                    < 1e-10
+            );
+            assert!(
+                res.implied_up_transition_probability > 0.0
+                    && res.implied_up_transition_probability < 1.0
+            );
+            assert!(res.implied_node_local_volatility > 0.10);
+
+            let inputs = [
+                base.central_node_spot_si,
+                base.arrow_debreu_state_price_lambda,
+                base.atm_implied_volatility_sigma,
+                base.smile_skew_slope_beta,
+                base.risk_free_rate_r,
+                base.dividend_yield_q,
+                base.step_years_dt,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = DermanKaniImpliedTreeSpec {
+                central_node_spot_si: dual_in[0],
+                arrow_debreu_state_price_lambda: dual_in[1],
+                atm_implied_volatility_sigma: dual_in[2],
+                smile_skew_slope_beta: dual_in[3],
+                risk_free_rate_r: dual_in[4],
+                dividend_yield_q: dual_in[5],
+                step_years_dt: dual_in[6],
+            };
+            let r_ad = evaluate_derman_kani_implied_tree_arrow_debreu_local_volatility(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| DermanKaniImpliedTreeSpec {
+                    central_node_spot_si: v[0],
+                    arrow_debreu_state_price_lambda: v[1],
+                    atm_implied_volatility_sigma: v[2],
+                    smile_skew_slope_beta: v[3],
+                    risk_free_rate_r: v[4],
+                    dividend_yield_q: v[5],
+                    step_years_dt: v[6],
+                };
+                let rp = evaluate_derman_kani_implied_tree_arrow_debreu_local_volatility(&mk(p));
+                let rm = evaluate_derman_kani_implied_tree_arrow_debreu_local_volatility(&mk(m));
+                let fd = (rp.implied_node_local_volatility - rm.implied_node_local_volatility)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.implied_node_local_volatility.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.implied_node_local_volatility.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use derman_kani_implied_tree_mod::*;

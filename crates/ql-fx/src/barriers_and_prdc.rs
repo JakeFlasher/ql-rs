@@ -1853,3 +1853,165 @@ pub mod reiner_haug_quanto_call_mod {
     }
 }
 pub use reiner_haug_quanto_call_mod::*;
+mod garman_kohlhagen_baw_fx_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Garman & Kohlhagen (1983, *JIMF* 2(3)), Biger & Hull (1983),
+    /// and Barone-Adesi & Whaley (1987, *J. Finance* 42(2)) European vs. American FX option
+    /// quadratic early-exercise premium engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct GarmanKohlhagenBawFxSpec<T: Real> {
+        /// Spot FX rate $S_0$ (domestic per unit foreign currency, e.g., $1.10$).
+        pub spot_fx_s0: T,
+        /// Option strike $K$ (e.g., $1.08$).
+        pub strike_k: T,
+        /// Domestic risk-free rate $r_d$ (e.g., $0.032$).
+        pub domestic_rate_rd: T,
+        /// Foreign risk-free rate $r_f > r_d$ (positive foreign carry motivating early call exercise, e.g., $0.055$).
+        pub foreign_rate_rf: T,
+        /// FX volatility $\sigma$ (e.g., $0.12$).
+        pub fx_volatility_sigma: T,
+        /// Option maturity $T$ in years (e.g., $1.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_garman_kohlhagen_biger_hull_fx_early_exercise_premium`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct GarmanKohlhagenBawFxAnalytics<T: Real> {
+        /// European Garman–Kohlhagen FX call value $c_{\text{GK}}(S_0, K, T)$.
+        pub european_garman_kohlhagen_call: T,
+        /// Barone-Adesi & Whaley (1987) positive quadratic root $q_2 > 1$.
+        pub baw_quadratic_exponent_q2: T,
+        /// Early-exercise foreign-interest carry premium $C_{\text{Am}} - c_{\text{GK}}$.
+        pub american_early_exercise_premium: T,
+        /// Total American FX call value $C_{\text{Am}}(S_0, K, T)$.
+        pub american_fx_call_value: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    #[inline]
+    fn gk_call<T: Real>(s: T, k: T, rd: T, rf: T, sig: T, t: T) -> T {
+        let std_dev = sig * t.sqrt();
+        let d1 = ((s / k).ln() + (rd - rf + T::from_f64(0.5) * sig * sig) * t) / std_dev;
+        let d2 = d1 - std_dev;
+        s * (-rf * t).exp() * std_norm_cdf(d1) - k * (-rd * t).exp() * std_norm_cdf(d2)
+    }
+
+    /// Evaluates the Garman & Kohlhagen (1983) European FX call and the Barone-Adesi & Whaley
+    /// (1987, Eqs. 11–16) quadratic American early-exercise premium when foreign interest rate $r_f > 0$.
+    pub fn evaluate_garman_kohlhagen_biger_hull_fx_early_exercise_premium<T: Real>(
+        spec: &GarmanKohlhagenBawFxSpec<T>,
+    ) -> GarmanKohlhagenBawFxAnalytics<T> {
+        let s0 = spec.spot_fx_s0;
+        let k = spec.strike_k;
+        let rd = spec.domestic_rate_rd;
+        let rf = spec.foreign_rate_rf;
+        let sig = spec.fx_volatility_sigma;
+        let t = spec.maturity_years_t;
+        let sig2 = sig * sig;
+        let half = T::from_f64(0.5);
+
+        let euro_call = gk_call(s0, k, rd, rf, sig, t);
+
+        // Barone-Adesi & Whaley (1987) quadratic approximation parameters M = 2*r_d/sigma^2, N = 2*(r_d - r_f)/sigma^2
+        let m_baw = T::from_f64(2.0) * rd / sig2;
+        let n_baw = T::from_f64(2.0) * (rd - rf) / sig2;
+        let k_baw = T::one() - (-rd * t).exp();
+
+        let b_minus_1 = -(n_baw - T::one());
+        let q2 =
+            half * (b_minus_1 + (b_minus_1 * b_minus_1 + T::from_f64(4.0) * m_baw / k_baw).sqrt());
+
+        // Seed critical exercise boundary S^* via BAW (1987, Eq. 19) + 1 Newton step on S^* - K = c(S^*) + (S^*/q2)*(1 - exp(-r_f*T)*Phi(d1(S^*)))
+        let s_inf = k / (T::one() - T::one() / q2);
+        let h2 = -((rd - rf) * t + T::from_f64(2.0) * sig * t.sqrt()) * (k / (s_inf - k));
+        let s_star = k + (s_inf - k) * (T::one() - h2.exp());
+
+        let std_dev = sig * t.sqrt();
+        let d1_star = ((s_star / k).ln() + (rd - rf + half * sig2) * t) / std_dev;
+        let a2 = (s_star / q2) * (T::one() - (-rf * t).exp() * std_norm_cdf(d1_star));
+
+        let ee_premium = a2 * (s0 / s_star).pow(q2);
+        let am_call = euro_call + ee_premium;
+
+        GarmanKohlhagenBawFxAnalytics {
+            european_garman_kohlhagen_call: euro_call,
+            baw_quadratic_exponent_q2: q2,
+            american_early_exercise_premium: ee_premium,
+            american_fx_call_value: am_call,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn garman_kohlhagen_baw_fx_invariants_and_ad_parity() {
+            let base = GarmanKohlhagenBawFxSpec {
+                spot_fx_s0: 1.10_f64,
+                strike_k: 1.08_f64,
+                domestic_rate_rd: 0.032_f64,
+                foreign_rate_rf: 0.055_f64,
+                fx_volatility_sigma: 0.12_f64,
+                maturity_years_t: 1.0_f64,
+            };
+            let res = evaluate_garman_kohlhagen_biger_hull_fx_early_exercise_premium(&base);
+            assert!(res.european_garman_kohlhagen_call > 0.0);
+            assert!(res.baw_quadratic_exponent_q2 > 1.0);
+            assert!(res.american_early_exercise_premium > 0.0);
+            assert!(res.american_fx_call_value > res.european_garman_kohlhagen_call);
+
+            let inputs = [
+                base.spot_fx_s0,
+                base.strike_k,
+                base.domestic_rate_rd,
+                base.foreign_rate_rf,
+                base.fx_volatility_sigma,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<6>::from_value(0.0); 6];
+            for i in 0..6 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = GarmanKohlhagenBawFxSpec {
+                spot_fx_s0: dual_in[0],
+                strike_k: dual_in[1],
+                domestic_rate_rd: dual_in[2],
+                foreign_rate_rf: dual_in[3],
+                fx_volatility_sigma: dual_in[4],
+                maturity_years_t: dual_in[5],
+            };
+            let r_ad = evaluate_garman_kohlhagen_biger_hull_fx_early_exercise_premium(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..6 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 6]| GarmanKohlhagenBawFxSpec {
+                    spot_fx_s0: v[0],
+                    strike_k: v[1],
+                    domestic_rate_rd: v[2],
+                    foreign_rate_rf: v[3],
+                    fx_volatility_sigma: v[4],
+                    maturity_years_t: v[5],
+                };
+                let rp = evaluate_garman_kohlhagen_biger_hull_fx_early_exercise_premium(&mk(p));
+                let rm = evaluate_garman_kohlhagen_biger_hull_fx_early_exercise_premium(&mk(m));
+                let fd = (rp.american_fx_call_value - rm.american_fx_call_value) / (2.0 * eps);
+                assert!(
+                    r_ad.american_fx_call_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.american_fx_call_value.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use garman_kohlhagen_baw_fx_mod::*;

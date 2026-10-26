@@ -4356,7 +4356,7 @@ pub mod obizhaeva_wang_impulse_execution_mod {
             };
             let r_ad =
                 evaluate_obizhaeva_wang_transient_resilience_impulse_block_execution(&spec_ad);
-            let eps = 1e-6;
+            let eps = 1e-7;
             for i in 0..7 {
                 let mut p = inputs;
                 let mut m = inputs;
@@ -4388,3 +4388,157 @@ pub mod obizhaeva_wang_impulse_execution_mod {
     }
 }
 pub use obizhaeva_wang_impulse_execution_mod::*;
+mod cartea_jaimungal_order_flow_liquidation_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Cartea, Jaimungal & Penalva (2015, *Algorithmic and
+    /// High-Frequency Trading*, Cambridge University Press, Ch. 6, §6.5) optimal liquidation
+    /// with mean-reverting order-flow imbalance alpha $\mu_t$.
+    #[derive(Debug, Clone, Copy)]
+    pub struct CarteaJaimungalOrderFlowLiquidationSpec<T: Real> {
+        /// Initial inventory $q_0$ to liquidate (e.g., $100.0$).
+        pub initial_inventory_q0: T,
+        /// Initial order-flow imbalance drift signal $\mu_0$ (e.g., $0.35$).
+        pub order_flow_signal_mu0: T,
+        /// Order-flow signal mean-reversion speed $\kappa_\mu > 0$ (e.g., $2.50$).
+        pub signal_mean_reversion_kappa: T,
+        /// Temporary market impact parameter $k_{\text{temp}} > 0$ (e.g., $0.0040$).
+        pub temporary_impact_k: T,
+        /// Running inventory urgency penalty $\phi_{\text{inv}} > 0$ (e.g., $0.012$).
+        pub running_inventory_penalty_phi: T,
+        /// Terminal liquidation penalty $a_{\text{term}} > \sqrt{k_{\text{temp}} \phi_{\text{inv}}}$ (e.g., $0.080$).
+        pub terminal_liquidation_penalty_a: T,
+        /// Execution horizon $T$ in hours/days (e.g., $1.0$).
+        pub horizon_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_cartea_jaimungal_order_flow_alpha_optimal_liquidation`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct CarteaJaimungalOrderFlowLiquidationAnalytics<T: Real> {
+        /// Characteristic Riccati urgency rate $\gamma = \sqrt{\phi_{\text{inv}} / k_{\text{temp}}}$.
+        pub riccati_urgency_rate_gamma: T,
+        /// Initial baseline feedback liquidation speed $\nu_0^{\text{base}}(q_0)$ without order-flow alpha.
+        pub baseline_initial_liquidation_rate: T,
+        /// Initial order-flow alpha speculative adjustment $-\frac{\bar{h}_1(0)}{2 k_{\text{temp}}}\mu_0$.
+        pub order_flow_alpha_rate_adjustment: T,
+        /// Initial optimal trading speed $\nu_0^* = \nu_0^{\text{base}}(q_0) - \frac{\bar{h}_1(0)}{2 k_{\text{temp}}}\mu_0$.
+        pub optimal_initial_trading_speed: T,
+    }
+
+    /// Evaluates the Cartea, Jaimungal & Penalva (2015, §6.5, Eqs. 6.32–6.39) HJB optimal
+    /// liquidation control with exponential order-flow imbalance alpha $\mathbb{E}_t[\mu_s] = \mu_t e^{-\kappa_\mu(s-t)}$:
+    /// $$\nu_0^* = \gamma \frac{\zeta e^{\gamma T} + e^{-\gamma T}}{\zeta e^{\gamma T} - e^{-\gamma T}} q_0 - \frac{I_\alpha(0, T)}{2 k_{\text{temp}}}\mu_0, \qquad \zeta = \frac{a_{\text{term}} + \sqrt{k_{\text{temp}}\phi_{\text{inv}}}}{a_{\text{term}} - \sqrt{k_{\text{temp}}\phi_{\text{inv}}}}.$$
+    pub fn evaluate_cartea_jaimungal_order_flow_alpha_optimal_liquidation<T: Real>(
+        spec: &CarteaJaimungalOrderFlowLiquidationSpec<T>,
+    ) -> CarteaJaimungalOrderFlowLiquidationAnalytics<T> {
+        let q0 = spec.initial_inventory_q0;
+        let mu0 = spec.order_flow_signal_mu0;
+        let kappa = spec.signal_mean_reversion_kappa;
+        let k_temp = spec.temporary_impact_k;
+        let phi = spec.running_inventory_penalty_phi;
+        let a_term = spec.terminal_liquidation_penalty_a;
+        let t = spec.horizon_t;
+
+        let gamma = (phi / k_temp).sqrt();
+        let sqrt_k_phi = (k_temp * phi).sqrt();
+        let zeta = (a_term + sqrt_k_phi) / (a_term - sqrt_k_phi);
+
+        let e_pos = (gamma * t).exp();
+        let e_neg = (-gamma * t).exp();
+        let denom = zeta * e_pos - e_neg;
+
+        let nu_base = gamma * ((zeta * e_pos + e_neg) / denom) * q0;
+
+        // Forward-looking order-flow alpha integral h_1(0) across [0, T] under hyperbolic Riccati kernel:
+        // int_0^T (zeta * e^{gamma*(T-s)} - e^{-gamma*(T-s)}) * e^{-kappa*s} ds (Cartea et al. 2015, Eq. 6.37)
+        let e_kap = (-kappa * t).exp();
+        let int_pos = zeta * (e_pos - e_kap) / (gamma + kappa);
+        let int_neg = (e_neg - e_kap) / (kappa - gamma);
+        let h1_0 = (int_pos - int_neg) / denom;
+
+        let alpha_adj = -(h1_0 / (T::from_f64(2.0) * k_temp)) * mu0;
+        let nu_opt = nu_base + alpha_adj;
+
+        CarteaJaimungalOrderFlowLiquidationAnalytics {
+            riccati_urgency_rate_gamma: gamma,
+            baseline_initial_liquidation_rate: nu_base,
+            order_flow_alpha_rate_adjustment: alpha_adj,
+            optimal_initial_trading_speed: nu_opt,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn cartea_jaimungal_order_flow_liquidation_invariants_and_ad_parity() {
+            let base = CarteaJaimungalOrderFlowLiquidationSpec {
+                initial_inventory_q0: 100.0_f64,
+                order_flow_signal_mu0: 0.35_f64,
+                signal_mean_reversion_kappa: 2.50_f64,
+                temporary_impact_k: 0.0040_f64,
+                running_inventory_penalty_phi: 0.012_f64,
+                terminal_liquidation_penalty_a: 0.080_f64,
+                horizon_t: 1.0_f64,
+            };
+            let res = evaluate_cartea_jaimungal_order_flow_alpha_optimal_liquidation(&base);
+            assert!(res.riccati_urgency_rate_gamma > 0.0);
+            assert!(res.baseline_initial_liquidation_rate > 0.0);
+            // Positive buy-order-flow alpha slows down selling speed (alpha_adj < 0)
+            assert!(res.order_flow_alpha_rate_adjustment < 0.0);
+            assert!(res.optimal_initial_trading_speed < res.baseline_initial_liquidation_rate);
+
+            let inputs = [
+                base.initial_inventory_q0,
+                base.order_flow_signal_mu0,
+                base.signal_mean_reversion_kappa,
+                base.temporary_impact_k,
+                base.running_inventory_penalty_phi,
+                base.terminal_liquidation_penalty_a,
+                base.horizon_t,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = CarteaJaimungalOrderFlowLiquidationSpec {
+                initial_inventory_q0: dual_in[0],
+                order_flow_signal_mu0: dual_in[1],
+                signal_mean_reversion_kappa: dual_in[2],
+                temporary_impact_k: dual_in[3],
+                running_inventory_penalty_phi: dual_in[4],
+                terminal_liquidation_penalty_a: dual_in[5],
+                horizon_t: dual_in[6],
+            };
+            let r_ad = evaluate_cartea_jaimungal_order_flow_alpha_optimal_liquidation(&spec_ad);
+            let eps = 1e-7;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| CarteaJaimungalOrderFlowLiquidationSpec {
+                    initial_inventory_q0: v[0],
+                    order_flow_signal_mu0: v[1],
+                    signal_mean_reversion_kappa: v[2],
+                    temporary_impact_k: v[3],
+                    running_inventory_penalty_phi: v[4],
+                    terminal_liquidation_penalty_a: v[5],
+                    horizon_t: v[6],
+                };
+                let rp = evaluate_cartea_jaimungal_order_flow_alpha_optimal_liquidation(&mk(p));
+                let rm = evaluate_cartea_jaimungal_order_flow_alpha_optimal_liquidation(&mk(m));
+                let fd = (rp.optimal_initial_trading_speed - rm.optimal_initial_trading_speed)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.optimal_initial_trading_speed.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.optimal_initial_trading_speed.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use cartea_jaimungal_order_flow_liquidation_mod::*;

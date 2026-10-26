@@ -3265,3 +3265,173 @@ mod jermann_quadrini_financial_shock_mod {
     }
 }
 pub use jermann_quadrini_financial_shock_mod::*;
+mod wachter_disaster_volatility_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Wachter (2013, *Journal of Finance* 68(3))
+    /// continuous-time CIR rare-disaster intensity model of aggregate stock market volatility
+    /// and the equity risk premium.
+    #[derive(Debug, Clone, Copy)]
+    pub struct WachterDisasterVolatilitySpec<T: Real> {
+        /// Current rare-disaster arrival intensity $\lambda_t > 0$ (e.g., $0.0355$).
+        pub current_disaster_intensity_lambda: T,
+        /// Long-run mean disaster intensity $\bar{\lambda} > 0$ (e.g., $0.0355$).
+        pub long_run_disaster_intensity_lambda_bar: T,
+        /// Disaster intensity mean-reversion speed $\kappa_\lambda > 0$ (e.g., $0.080$).
+        pub intensity_mean_reversion_kappa: T,
+        /// Square-root volatility of disaster intensity $\sigma_\lambda > 0$ (e.g., $0.067$).
+        pub intensity_volatility_sigma_lambda: T,
+        /// Normal-times diffusive dividend growth volatility $\sigma_c$ (e.g., $0.020$).
+        pub diffusive_consumption_volatility_sigma_c: T,
+        /// Relative risk aversion $\gamma > 1$ under unit EIS ($\psi = 1$) (e.g., $3.0$).
+        pub relative_risk_aversion_gamma: T,
+        /// Fractional consumption/dividend contraction in a disaster $b_{\text{dis}} \in (0, 1)$ (e.g., $0.22$).
+        pub disaster_contraction_fraction_b: T,
+        /// Equity dividend leverage parameter $\phi_{\text{lev}} > 1$ (e.g., $2.6$).
+        pub dividend_leverage_phi: T,
+    }
+
+    /// Analytics returned by [`evaluate_wachter_time_varying_disaster_intensity_equity_volatility`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct WachterDisasterVolatilityAnalytics<T: Real> {
+        /// Positive SDF/marginal-utility sensitivity $b_\lambda > 0$ to disaster intensity $\lambda_t$ when $\gamma > 1$.
+        pub wealth_intensity_loading_b_lambda: T,
+        /// Negative levered equity valuation loading $b_{\text{eq}} < 0$ on disaster intensity $\lambda_t$.
+        pub equity_intensity_loading_b_eq: T,
+        /// Equilibrium instantaneous stock return volatility $\sigma_R(\lambda_t)$.
+        pub equilibrium_equity_return_volatility: T,
+        /// Equilibrium conditional equity risk premium $\text{ERP}(\lambda_t)$ (including normal + disaster-intensity + jump premia).
+        pub equilibrium_equity_risk_premium: T,
+    }
+
+    /// Evaluates the Wachter (2013, *Journal of Finance* 68(3), Eqs. 12–23) rare-disaster model
+    /// with time-varying CIR intensity $d\lambda_t = \kappa_\lambda(\bar{\lambda} - \lambda_t)dt + \sigma_\lambda\sqrt{\lambda_t}dW_{\lambda,t}$:
+    /// - Under unit EIS ($\psi = 1$), the SDF jump multiplier is $(1 - b_{\text{dis}})^{-\gamma}$ and marginal utility rises with $\lambda_t$ ($b_\lambda > 0$),
+    /// - The levered equity dividend strip loading is $b_{\text{eq}} < 0$ (stock prices fall when disaster intensity rises),
+    /// - Return variance is $\sigma_R^2(\lambda_t) = \phi_{\text{lev}}^2 \sigma_c^2 + b_{\text{eq}}^2 \sigma_\lambda^2 \lambda_t + \lambda_t \big((1 - b_{\text{dis}})^{\phi_{\text{lev}}} - 1\big)^2$, and
+    /// - The conditional equity risk premium is $\text{ERP}(\lambda_t) = \gamma \phi_{\text{lev}} \sigma_c^2 + (-b_{\text{eq}}) b_\lambda \sigma_\lambda^2 \lambda_t + \lambda_t \big((1 - b_{\text{dis}})^{-\gamma} - 1\big)\big(1 - (1 - b_{\text{dis}})^{\phi_{\text{lev}}}\big)$.
+    pub fn evaluate_wachter_time_varying_disaster_intensity_equity_volatility<T: Real>(
+        spec: &WachterDisasterVolatilitySpec<T>,
+    ) -> WachterDisasterVolatilityAnalytics<T> {
+        let lam = spec.current_disaster_intensity_lambda;
+        let lam_bar = spec.long_run_disaster_intensity_lambda_bar;
+        let kappa = spec.intensity_mean_reversion_kappa;
+        let sig_l = spec.intensity_volatility_sigma_lambda;
+        let sig_c = spec.diffusive_consumption_volatility_sigma_c;
+        let gamma = spec.relative_risk_aversion_gamma;
+        let one_minus_b = T::one() - spec.disaster_contraction_fraction_b;
+        let phi = spec.dividend_leverage_phi;
+
+        // SDF jump factor (1 - b)^(-gamma) - 1 and wealth/marginal-utility intensity sensitivity b_lambda > 0 (Wachter Eq. 12)
+        let sdf_jump = one_minus_b.pow(-gamma) - T::one();
+        let wealth_jump = one_minus_b.pow(T::one() - gamma) - T::one();
+        let disc_anchor = kappa + T::from_f64(0.025) + T::from_f64(0.2) * lam_bar;
+
+        // Quadratic Riccati solution for b_lambda > 0: 0.5*sig_l^2 * b_l^2 - kappa * b_l + wealth_jump = 0
+        let disc_ric = (kappa * kappa - T::from_f64(2.0) * sig_l * sig_l * wealth_jump).sqrt();
+        // Select the non-explosive positive Riccati branch (Wachter 2013, Eq. 13):
+        let b_lambda = (kappa - disc_ric) / (sig_l * sig_l);
+
+        // Equity dividend jump factor (1 - b)^phi - 1 < 0 and equity loading b_eq < 0
+        let div_jump = one_minus_b.pow(phi) - T::one();
+        let b_eq = (div_jump - wealth_jump) / (disc_anchor + b_lambda * sig_l * sig_l);
+
+        // Total instantaneous equity return volatility (diffusive + disaster-intensity + physical jump variance)
+        let eq_var = phi * phi * sig_c * sig_c
+            + b_eq * b_eq * sig_l * sig_l * lam
+            + lam * div_jump * div_jump;
+        let eq_vol = eq_var.sqrt();
+
+        // Conditional equity risk premium (Wachter 2013, Eq. 23):
+        // 1. Normal times diffusive premium: gamma * phi * sig_c^2
+        // 2. Disaster intensity risk premium: (-b_eq) * b_lambda * sig_l^2 * lam > 0
+        // 3. Disaster jump covariance premium: lam * ((1 - b)^(-gamma) - 1) * (1 - (1 - b)^phi) > 0
+        let erp = gamma * phi * sig_c * sig_c - b_eq * b_lambda * sig_l * sig_l * lam
+            + lam * sdf_jump * (-div_jump);
+
+        WachterDisasterVolatilityAnalytics {
+            wealth_intensity_loading_b_lambda: b_lambda,
+            equity_intensity_loading_b_eq: b_eq,
+            equilibrium_equity_return_volatility: eq_vol,
+            equilibrium_equity_risk_premium: erp,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn wachter_disaster_volatility_invariants_and_ad_parity() {
+            let base = WachterDisasterVolatilitySpec {
+                current_disaster_intensity_lambda: 0.0355_f64,
+                long_run_disaster_intensity_lambda_bar: 0.0355_f64,
+                intensity_mean_reversion_kappa: 0.080_f64,
+                intensity_volatility_sigma_lambda: 0.067_f64,
+                diffusive_consumption_volatility_sigma_c: 0.020_f64,
+                relative_risk_aversion_gamma: 3.0_f64,
+                disaster_contraction_fraction_b: 0.22_f64,
+                dividend_leverage_phi: 2.6_f64,
+            };
+            let res = evaluate_wachter_time_varying_disaster_intensity_equity_volatility(&base);
+            assert!(res.wealth_intensity_loading_b_lambda > 0.0);
+            assert!(res.equity_intensity_loading_b_eq < 0.0);
+            assert!(res.equilibrium_equity_return_volatility > 0.12);
+            assert!(res.equilibrium_equity_risk_premium > 0.03);
+
+            let inputs = [
+                base.current_disaster_intensity_lambda,
+                base.long_run_disaster_intensity_lambda_bar,
+                base.intensity_mean_reversion_kappa,
+                base.intensity_volatility_sigma_lambda,
+                base.diffusive_consumption_volatility_sigma_c,
+                base.relative_risk_aversion_gamma,
+                base.disaster_contraction_fraction_b,
+                base.dividend_leverage_phi,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = WachterDisasterVolatilitySpec {
+                current_disaster_intensity_lambda: dual_in[0],
+                long_run_disaster_intensity_lambda_bar: dual_in[1],
+                intensity_mean_reversion_kappa: dual_in[2],
+                intensity_volatility_sigma_lambda: dual_in[3],
+                diffusive_consumption_volatility_sigma_c: dual_in[4],
+                relative_risk_aversion_gamma: dual_in[5],
+                disaster_contraction_fraction_b: dual_in[6],
+                dividend_leverage_phi: dual_in[7],
+            };
+            let r_ad = evaluate_wachter_time_varying_disaster_intensity_equity_volatility(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| WachterDisasterVolatilitySpec {
+                    current_disaster_intensity_lambda: v[0],
+                    long_run_disaster_intensity_lambda_bar: v[1],
+                    intensity_mean_reversion_kappa: v[2],
+                    intensity_volatility_sigma_lambda: v[3],
+                    diffusive_consumption_volatility_sigma_c: v[4],
+                    relative_risk_aversion_gamma: v[5],
+                    disaster_contraction_fraction_b: v[6],
+                    dividend_leverage_phi: v[7],
+                };
+                let rp = evaluate_wachter_time_varying_disaster_intensity_equity_volatility(&mk(p));
+                let rm = evaluate_wachter_time_varying_disaster_intensity_equity_volatility(&mk(m));
+                let fd = (rp.equilibrium_equity_risk_premium - rm.equilibrium_equity_risk_premium)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.equilibrium_equity_risk_premium.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.equilibrium_equity_risk_premium.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use wachter_disaster_volatility_mod::*;

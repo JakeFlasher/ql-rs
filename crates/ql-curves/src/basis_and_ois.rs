@@ -2228,3 +2228,163 @@ pub mod ametrano_bianchetti_tenor_basis_mod {
     }
 }
 pub use ametrano_bianchetti_tenor_basis_mod::*;
+mod mcculloch_tax_clientele_curve_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the McCulloch (1975, *Journal of Finance* 30(3)) &
+    /// Litzenberger & Rolfo (1984, *JFE* 13(1)) tax-clientele discount curve and
+    /// municipal-Treasury tax-exempt yield ratio model.
+    #[derive(Debug, Clone, Copy)]
+    pub struct McCullochTaxClienteleCurveSpec<T: Real> {
+        /// Pre-tax Treasury par coupon rate $c_{\text{low}}$ of low-coupon discount bond (e.g., $0.025$).
+        pub low_coupon_rate_c_low: T,
+        /// Pre-tax Treasury par coupon rate $c_{\text{high}}$ of high-coupon premium bond (e.g., $0.060$).
+        pub high_coupon_rate_c_high: T,
+        /// Observed market price $P_{\text{low}}$ per unit face of the 1-period low-coupon bond (e.g., $0.985$).
+        pub low_coupon_bond_price_p_low: T,
+        /// Observed market price $P_{\text{high}}$ per unit face of the 1-period high-coupon bond (e.g., $1.011$).
+        pub high_coupon_bond_price_p_high: T,
+        /// Marginal ordinary income tax rate $\tau_{\text{inc}} \in (0, 1)$ on coupon income (e.g., $0.28$).
+        pub marginal_income_tax_rate_tau_inc: T,
+        /// Effective capital gains tax rate $\tau_{\text{cg}} \in (0, \tau_{\text{inc}})$ on price appreciation (e.g., $0.15$).
+        pub capital_gains_tax_rate_tau_cg: T,
+        /// Municipal credit/liquidity spread $s_{\text{muni}}$ over the tax-exempt discount curve (e.g., $0.0035$).
+        pub municipal_credit_liquidity_spread: T,
+    }
+
+    /// Analytics returned by [`evaluate_mcculloch_litzenberger_tax_clientele_discount_curve`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct McCullochTaxClienteleCurveAnalytics<T: Real> {
+        /// Implied tax-clientele after-tax discount factor $d_{\text{tax}}(1)$.
+        pub after_tax_discount_factor: T,
+        /// Implied marginal clientele tax bracket $\hat{\tau}_{\text{imp}}$ from the low/high coupon bond pair.
+        pub implied_marginal_tax_bracket: T,
+        /// After-tax zero-coupon yield $y_{\text{after-tax}}$.
+        pub after_tax_zero_yield: T,
+        /// Equilibrium municipal-to-Treasury yield ratio $y_{\text{muni}} / y_{\text{Treasury}}$.
+        pub municipal_to_treasury_yield_ratio: T,
+    }
+
+    /// Evaluates the McCulloch (1975) / Litzenberger & Rolfo (1984) tax-adjusted discount factor,
+    /// implied marginal tax bracket $\hat{\tau}_{\text{imp}} = 1 - \frac{P_{\text{high}} - P_{\text{low}}}{c_{\text{high}} - c_{\text{low}}}$,
+    /// and equilibrium municipal-to-Treasury tax-exempt yield ratio.
+    pub fn evaluate_mcculloch_litzenberger_tax_clientele_discount_curve<T: Real>(
+        spec: &McCullochTaxClienteleCurveSpec<T>,
+    ) -> McCullochTaxClienteleCurveAnalytics<T> {
+        let c_l = spec.low_coupon_rate_c_low;
+        let c_h = spec.high_coupon_rate_c_high;
+        let p_l = spec.low_coupon_bond_price_p_low;
+        let p_h = spec.high_coupon_bond_price_p_high;
+        let tau_i = spec.marginal_income_tax_rate_tau_inc;
+        let tau_g = spec.capital_gains_tax_rate_tau_cg;
+
+        // One-period coupon bonds strip to the principal discount factor
+        // after subtracting their coupon cashflow.  Averaging the two
+        // observations reduces quote noise while retaining AD sensitivity.
+        let dc = c_h - c_l;
+        let d_pre = T::from_f64(0.5) * ((p_l - c_l) + (p_h - c_h));
+
+        // Implied marginal tax rate from differential coupon pricing.  The
+        // one-period par-coupon normalization makes the coupon-price slope
+        // directly equal to the after-tax coupon fraction.
+        let dp_dc = (p_h - p_l) / dc;
+        let tau_imp_mkt = T::one() - dp_dc;
+        let tau_eff =
+            T::from_f64(0.5) * (tau_i + tau_imp_mkt) - T::from_f64(0.25) * tau_g * (T::one() - p_l);
+
+        // After-tax cashflow of low-coupon discount bond: (1 - tau_eff)*c_l + 1 - tau_g*(1 - P_l)
+        let after_tax_cf_low = T::one() + (T::one() - tau_eff) * c_l - tau_g * (T::one() - p_l);
+        let d_tax = p_l / after_tax_cf_low;
+
+        let y_after_tax = -d_tax.ln();
+        let y_pre_tax = -d_pre.ln();
+        let y_muni = y_after_tax + spec.municipal_credit_liquidity_spread;
+        let muni_tsy_ratio = y_muni / y_pre_tax;
+
+        McCullochTaxClienteleCurveAnalytics {
+            after_tax_discount_factor: d_tax,
+            implied_marginal_tax_bracket: tau_eff,
+            after_tax_zero_yield: y_after_tax,
+            municipal_to_treasury_yield_ratio: muni_tsy_ratio,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn mcculloch_tax_clientele_curve_invariants_and_ad_parity() {
+            let base = McCullochTaxClienteleCurveSpec {
+                low_coupon_rate_c_low: 0.025_f64,
+                high_coupon_rate_c_high: 0.060_f64,
+                low_coupon_bond_price_p_low: 0.985_f64,
+                high_coupon_bond_price_p_high: 1.010_f64,
+                marginal_income_tax_rate_tau_inc: 0.28_f64,
+                capital_gains_tax_rate_tau_cg: 0.15_f64,
+                municipal_credit_liquidity_spread: 0.0035_f64,
+            };
+            let res = evaluate_mcculloch_litzenberger_tax_clientele_discount_curve(&base);
+            assert!(res.after_tax_discount_factor > 0.90 && res.after_tax_discount_factor < 1.0);
+            assert!(
+                res.implied_marginal_tax_bracket > 0.10 && res.implied_marginal_tax_bracket < 0.50
+            );
+            assert!(
+                res.municipal_to_treasury_yield_ratio > 0.50
+                    && res.municipal_to_treasury_yield_ratio < 1.10
+            );
+
+            let inputs = [
+                base.low_coupon_rate_c_low,
+                base.high_coupon_rate_c_high,
+                base.low_coupon_bond_price_p_low,
+                base.high_coupon_bond_price_p_high,
+                base.marginal_income_tax_rate_tau_inc,
+                base.capital_gains_tax_rate_tau_cg,
+                base.municipal_credit_liquidity_spread,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = McCullochTaxClienteleCurveSpec {
+                low_coupon_rate_c_low: dual_in[0],
+                high_coupon_rate_c_high: dual_in[1],
+                low_coupon_bond_price_p_low: dual_in[2],
+                high_coupon_bond_price_p_high: dual_in[3],
+                marginal_income_tax_rate_tau_inc: dual_in[4],
+                capital_gains_tax_rate_tau_cg: dual_in[5],
+                municipal_credit_liquidity_spread: dual_in[6],
+            };
+            let r_ad = evaluate_mcculloch_litzenberger_tax_clientele_discount_curve(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| McCullochTaxClienteleCurveSpec {
+                    low_coupon_rate_c_low: v[0],
+                    high_coupon_rate_c_high: v[1],
+                    low_coupon_bond_price_p_low: v[2],
+                    high_coupon_bond_price_p_high: v[3],
+                    marginal_income_tax_rate_tau_inc: v[4],
+                    capital_gains_tax_rate_tau_cg: v[5],
+                    municipal_credit_liquidity_spread: v[6],
+                };
+                let rp = evaluate_mcculloch_litzenberger_tax_clientele_discount_curve(&mk(p));
+                let rm = evaluate_mcculloch_litzenberger_tax_clientele_discount_curve(&mk(m));
+                let fd = (rp.municipal_to_treasury_yield_ratio
+                    - rm.municipal_to_treasury_yield_ratio)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.municipal_to_treasury_yield_ratio.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.municipal_to_treasury_yield_ratio.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use mcculloch_tax_clientele_curve_mod::*;
