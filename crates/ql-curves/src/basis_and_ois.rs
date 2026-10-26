@@ -2388,3 +2388,141 @@ mod mcculloch_tax_clientele_curve_mod {
     }
 }
 pub use mcculloch_tax_clientele_curve_mod::*;
+mod mercurio_russo_ibor_ois_basis_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Mercurio (2018, *Risk*) & Russo & Torricelli (2019,
+    /// *European Journal of Operational Research* 273(2)) multi-curve IBOR–OIS credit
+    /// vs. funding-liquidity tenor basis decomposition engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct MercurioRussoIborOisCreditLiquiditySpec<T: Real> {
+        /// Overnight RFR / OIS continuously compounded rate $r_{\text{OIS}}$ (e.g., $0.034$).
+        pub ois_rate_r: T,
+        /// Interbank panel credit hazard intensity $\lambda_{\text{bank}}$ (e.g., $0.0045$).
+        pub interbank_credit_hazard_lambda: T,
+        /// Interbank panel Loss Given Default $\text{LGD}_{\text{bank}} \in (0, 1)$ (e.g., $0.60$).
+        pub interbank_loss_given_default: T,
+        /// Term funding-liquidity spread $\ell_{\text{liq}}(0, \tau)$ (e.g., $0.0018$).
+        pub term_liquidity_spread_l: T,
+        /// Credit-liquidity covariance intensity $\sigma_c \sigma_\ell \rho_{c\ell}$ (e.g., $0.0008$).
+        pub credit_liquidity_covariance_gamma: T,
+        /// Tenor accrual fraction $\tau$ in years (e.g., $0.50$ for 6M).
+        pub accrual_tenor_tau: T,
+    }
+
+    /// Analytics returned by [`evaluate_mercurio_russo_ibor_ois_credit_liquidity_basis`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct MercurioRussoIborOisCreditLiquidityAnalytics<T: Real> {
+        /// Simple compounded OIS forward rate $F_{\text{OIS}}(0; 0, \tau) = \frac{e^{r_{\text{OIS}}\tau} - 1}{\tau}$.
+        pub ois_simple_forward_rate: T,
+        /// Multiplicative credit-liquidity spread factor $\beta_{\text{mult}}(\tau) > 1$.
+        pub multiplicative_basis_factor: T,
+        /// Pure credit-default component of the additive IBOR–OIS spread.
+        pub credit_default_spread_component: T,
+        /// Total equilibrium IBOR–OIS additive basis spread $L_{\text{IBOR}}(0, \tau) - F_{\text{OIS}}(0, \tau)$.
+        pub total_ibor_ois_additive_basis: T,
+    }
+
+    /// Evaluates the Mercurio (2018) / Russo & Torricelli (2019, Eqs. 9–17) multiplicative
+    /// and additive IBOR–OIS basis decomposition:
+    /// $$1 + \tau L(0, \tau) = e^{r_{\text{OIS}}\tau} \exp\!\Big(\big(\text{LGD}_{\text{bank}}\lambda_{\text{bank}} + \ell_{\text{liq}} + \tfrac{1}{2}\gamma_{c\ell}\tau\big)\tau\Big),$$
+    /// separating pure panel default compensation from term funding-liquidity and covariance convexity.
+    pub fn evaluate_mercurio_russo_ibor_ois_credit_liquidity_basis<T: Real>(
+        spec: &MercurioRussoIborOisCreditLiquiditySpec<T>,
+    ) -> MercurioRussoIborOisCreditLiquidityAnalytics<T> {
+        let tau = spec.accrual_tenor_tau;
+        let r_ois = spec.ois_rate_r;
+        let s_cred = spec.interbank_loss_given_default * spec.interbank_credit_hazard_lambda;
+        let s_liq = spec.term_liquidity_spread_l;
+        let cov_adj = T::from_f64(0.5) * spec.credit_liquidity_covariance_gamma * tau;
+
+        let e_ois = (r_ois * tau).exp();
+        let f_ois = (e_ois - T::one()) / tau;
+
+        let mult_factor = ((s_cred + s_liq + cov_adj) * tau).exp();
+        let mult_cred_only = (s_cred * tau).exp();
+
+        let l_ibor = (e_ois * mult_factor - T::one()) / tau;
+        let l_cred_only = (e_ois * mult_cred_only - T::one()) / tau;
+
+        let cred_comp = l_cred_only - f_ois;
+        let total_basis = l_ibor - f_ois;
+
+        MercurioRussoIborOisCreditLiquidityAnalytics {
+            ois_simple_forward_rate: f_ois,
+            multiplicative_basis_factor: mult_factor,
+            credit_default_spread_component: cred_comp,
+            total_ibor_ois_additive_basis: total_basis,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn mercurio_russo_ibor_ois_basis_invariants_and_ad_parity() {
+            let base = MercurioRussoIborOisCreditLiquiditySpec {
+                ois_rate_r: 0.034_f64,
+                interbank_credit_hazard_lambda: 0.0045_f64,
+                interbank_loss_given_default: 0.60_f64,
+                term_liquidity_spread_l: 0.0018_f64,
+                credit_liquidity_covariance_gamma: 0.0008_f64,
+                accrual_tenor_tau: 0.50_f64,
+            };
+            let res = evaluate_mercurio_russo_ibor_ois_credit_liquidity_basis(&base);
+            assert!(res.ois_simple_forward_rate > base.ois_rate_r);
+            assert!(res.multiplicative_basis_factor > 1.0);
+            assert!(res.credit_default_spread_component > 0.0);
+            assert!(res.total_ibor_ois_additive_basis > res.credit_default_spread_component);
+
+            let inputs = [
+                base.ois_rate_r,
+                base.interbank_credit_hazard_lambda,
+                base.interbank_loss_given_default,
+                base.term_liquidity_spread_l,
+                base.credit_liquidity_covariance_gamma,
+                base.accrual_tenor_tau,
+            ];
+            let mut dual_in = [Dual::<6>::from_value(0.0); 6];
+            for i in 0..6 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = MercurioRussoIborOisCreditLiquiditySpec {
+                ois_rate_r: dual_in[0],
+                interbank_credit_hazard_lambda: dual_in[1],
+                interbank_loss_given_default: dual_in[2],
+                term_liquidity_spread_l: dual_in[3],
+                credit_liquidity_covariance_gamma: dual_in[4],
+                accrual_tenor_tau: dual_in[5],
+            };
+            let r_ad = evaluate_mercurio_russo_ibor_ois_credit_liquidity_basis(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..6 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 6]| MercurioRussoIborOisCreditLiquiditySpec {
+                    ois_rate_r: v[0],
+                    interbank_credit_hazard_lambda: v[1],
+                    interbank_loss_given_default: v[2],
+                    term_liquidity_spread_l: v[3],
+                    credit_liquidity_covariance_gamma: v[4],
+                    accrual_tenor_tau: v[5],
+                };
+                let rp = evaluate_mercurio_russo_ibor_ois_credit_liquidity_basis(&mk(p));
+                let rm = evaluate_mercurio_russo_ibor_ois_credit_liquidity_basis(&mk(m));
+                let fd = (rp.total_ibor_ois_additive_basis - rm.total_ibor_ois_additive_basis)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.total_ibor_ois_additive_basis.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.total_ibor_ois_additive_basis.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use mercurio_russo_ibor_ois_basis_mod::*;

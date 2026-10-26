@@ -2799,3 +2799,166 @@ mod okane_brigo_recovery_lock_cds_mod {
     }
 }
 pub use okane_brigo_recovery_lock_cds_mod::*;
+mod duffie_lando_das_sundaram_cds_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Duffie & Lando (2001, *Econometrica* 69(3)) &
+    /// Das & Sundaram (2007, *JFQA* 42(1)) imperfect accounting information and
+    /// equity-linked jump-to-default short-maturity CDS spread engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct DuffieLandoDasSundaramHybridCdsSpec<T: Real> {
+        /// Reported log-distance to default $x_0 = \ln(V_0 / V_B)$ (e.g., $0.55$).
+        pub reported_log_distance_to_default: T,
+        /// Asset diffusive volatility $\sigma_V$ (e.g., $0.25$).
+        pub asset_volatility_sigma_v: T,
+        /// Accounting report noise standard deviation $a_{\text{noise}} > 0$ (Duffie–Lando 2001, e.g., $0.18$).
+        pub accounting_noise_std_a: T,
+        /// Exogenous surprise default jump intensity $\lambda_0$ at $x_0 = 0$ (Das–Sundaram 2007, e.g., $0.032$).
+        pub surprise_jump_hazard_lambda0: T,
+        /// Leverage sensitivity $\eta_{\text{lev}} > 0$ of jump intensity $\lambda(x) = \lambda_0 e^{-\eta_{\text{lev}} x}$ (e.g., $1.40$).
+        pub jump_leverage_sensitivity_eta: T,
+        /// Recovery rate $R \in (0, 1)$ on defaulted debt (e.g., $0.40$).
+        pub recovery_rate_r: T,
+        /// Short-horizon CDS maturity $T$ in years (e.g., $1.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_duffie_lando_das_sundaram_imperfect_information_cds_spread`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct DuffieLandoDasSundaramHybridCdsAnalytics<T: Real> {
+        /// Duffie–Lando (2001) imperfect-information filtering hazard component $\lambda_{\text{DL}}$.
+        pub duffie_lando_filtering_hazard: T,
+        /// Das–Sundaram (2007) state-dependent jump-to-default hazard component $\lambda_{\text{DS}}$.
+        pub das_sundaram_jump_hazard: T,
+        /// Total short-horizon default intensity $\lambda_{\text{tot}} = \lambda_{\text{DL}} + \lambda_{\text{DS}}$.
+        pub total_hybrid_default_intensity: T,
+        /// Fair short-maturity CDS par spread $S_{\text{CDS}}(T)$ (annualized).
+        pub fair_short_maturity_cds_spread: T,
+    }
+
+    #[inline]
+    fn std_norm_pdf<T: Real>(x: T) -> T {
+        T::from_f64(0.398_942_280_401_432_7) * (-T::from_f64(0.5) * x * x).exp()
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    /// Evaluates the Duffie & Lando (2001, Proposition 2) imperfect-accounting boundary hazard
+    /// $$\lambda_{\text{DL}}(x_0, T) = \frac{1}{2}\sigma_V^2 \frac{x_0}{\sigma_{\text{tot}}^2} \frac{\phi(x_0 / \sigma_{\text{tot}})}{\Phi(x_0 / \sigma_{\text{tot}})}, \qquad \sigma_{\text{tot}} = \sqrt{\sigma_V^2 T + a_{\text{noise}}^2},$$
+    /// combined with the Das & Sundaram (2007) equity-linked jump-to-default intensity, explaining
+    /// strictly positive short-maturity CDS spreads as $T \downarrow 0$.
+    pub fn evaluate_duffie_lando_das_sundaram_imperfect_information_cds_spread<T: Real>(
+        spec: &DuffieLandoDasSundaramHybridCdsSpec<T>,
+    ) -> DuffieLandoDasSundaramHybridCdsAnalytics<T> {
+        let x0 = spec.reported_log_distance_to_default;
+        let sig_v = spec.asset_volatility_sigma_v;
+        let a_n = spec.accounting_noise_std_a;
+        let t = spec.maturity_years_t;
+        let half = T::from_f64(0.5);
+
+        // Total uncertainty variance combining diffusive asset variance sig_v^2 * T and noisy accounting variance a^2
+        let var_tot = sig_v * sig_v * t + a_n * a_n;
+        let sig_tot = var_tot.sqrt();
+        let z = x0 / sig_tot;
+
+        // Duffie & Lando (2001) conditional boundary hazard rate
+        let lam_dl = half * sig_v * sig_v * (x0 / var_tot) * (std_norm_pdf(z) / std_norm_cdf(z));
+
+        // Das & Sundaram (2007) state-dependent surprise jump intensity averaged over noisy state filter
+        let eta = spec.jump_leverage_sensitivity_eta;
+        let lam_ds =
+            spec.surprise_jump_hazard_lambda0 * (-eta * x0 + half * eta * eta * var_tot).exp();
+
+        let lam_tot = lam_dl + lam_ds;
+        let lgd = T::one() - spec.recovery_rate_r;
+        let surv_t = (-lam_tot * t).exp();
+        let par_spread = lgd * lam_tot * (T::one() + half * lam_tot * (T::one() - surv_t));
+
+        DuffieLandoDasSundaramHybridCdsAnalytics {
+            duffie_lando_filtering_hazard: lam_dl,
+            das_sundaram_jump_hazard: lam_ds,
+            total_hybrid_default_intensity: lam_tot,
+            fair_short_maturity_cds_spread: par_spread,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn duffie_lando_das_sundaram_cds_invariants_and_ad_parity() {
+            let base = DuffieLandoDasSundaramHybridCdsSpec {
+                reported_log_distance_to_default: 0.55_f64,
+                asset_volatility_sigma_v: 0.25_f64,
+                accounting_noise_std_a: 0.18_f64,
+                surprise_jump_hazard_lambda0: 0.032_f64,
+                jump_leverage_sensitivity_eta: 1.40_f64,
+                recovery_rate_r: 0.40_f64,
+                maturity_years_t: 1.0_f64,
+            };
+            let res = evaluate_duffie_lando_das_sundaram_imperfect_information_cds_spread(&base);
+            assert!(res.duffie_lando_filtering_hazard > 0.0);
+            assert!(res.das_sundaram_jump_hazard > 0.0);
+            assert!(res.total_hybrid_default_intensity > res.duffie_lando_filtering_hazard);
+            assert!(res.fair_short_maturity_cds_spread > 0.005);
+
+            let inputs = [
+                base.reported_log_distance_to_default,
+                base.asset_volatility_sigma_v,
+                base.accounting_noise_std_a,
+                base.surprise_jump_hazard_lambda0,
+                base.jump_leverage_sensitivity_eta,
+                base.recovery_rate_r,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = DuffieLandoDasSundaramHybridCdsSpec {
+                reported_log_distance_to_default: dual_in[0],
+                asset_volatility_sigma_v: dual_in[1],
+                accounting_noise_std_a: dual_in[2],
+                surprise_jump_hazard_lambda0: dual_in[3],
+                jump_leverage_sensitivity_eta: dual_in[4],
+                recovery_rate_r: dual_in[5],
+                maturity_years_t: dual_in[6],
+            };
+            let r_ad =
+                evaluate_duffie_lando_das_sundaram_imperfect_information_cds_spread(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| DuffieLandoDasSundaramHybridCdsSpec {
+                    reported_log_distance_to_default: v[0],
+                    asset_volatility_sigma_v: v[1],
+                    accounting_noise_std_a: v[2],
+                    surprise_jump_hazard_lambda0: v[3],
+                    jump_leverage_sensitivity_eta: v[4],
+                    recovery_rate_r: v[5],
+                    maturity_years_t: v[6],
+                };
+                let rp =
+                    evaluate_duffie_lando_das_sundaram_imperfect_information_cds_spread(&mk(p));
+                let rm =
+                    evaluate_duffie_lando_das_sundaram_imperfect_information_cds_spread(&mk(m));
+                let fd = (rp.fair_short_maturity_cds_spread - rm.fair_short_maturity_cds_spread)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.fair_short_maturity_cds_spread.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.fair_short_maturity_cds_spread.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use duffie_lando_das_sundaram_cds_mod::*;

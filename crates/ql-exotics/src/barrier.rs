@@ -1566,3 +1566,176 @@ mod hui_haug_binary_barrier_mod {
     }
 }
 pub use hui_haug_binary_barrier_mod::*;
+mod chesney_jeanblanc_yor_parisian_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Chesney, Jeanblanc-Picqué & Yor (1997, *Advances in
+    /// Applied Probability* 29(1)) & Hugonnier (1999) Parisian down-and-out call option
+    /// where knock-out requires a continuous excursion below $H$ of duration $D_{\text{excur}} > 0$.
+    #[derive(Debug, Clone, Copy)]
+    pub struct ChesneyJeanblancYorParisianBarrierSpec<T: Real> {
+        /// Current spot price $S_0 > H$ (e.g., $105.0$).
+        pub spot_price_s0: T,
+        /// Option strike $K$ (e.g., $100.0$).
+        pub strike_k: T,
+        /// Lower Parisian barrier $H < S_0$ (e.g., $92.0$).
+        pub down_barrier_h: T,
+        /// Required continuous excursion window $D_{\text{excur}} > 0$ in years (e.g., $0.06$).
+        pub excursion_window_years_d: T,
+        /// Risk-free interest rate $r$ (e.g., $0.042$).
+        pub risk_free_rate_r: T,
+        /// Continuous dividend yield $q$ (e.g., $0.015$).
+        pub dividend_yield_q: T,
+        /// Volatility $\sigma$ (e.g., $0.24$).
+        pub volatility_sigma: T,
+        /// Option maturity $T > D_{\text{excur}}$ in years (e.g., $1.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_chesney_jeanblanc_yor_parisian_excursion_barrier_call`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct ChesneyJeanblancYorParisianBarrierAnalytics<T: Real> {
+        /// Standard instantaneous-knockout down-and-out call price $C_{\text{DOC}}(S_0, K, H, T)$ ($D = 0$).
+        pub instantaneous_down_and_out_call: T,
+        /// Parisian excursion-shifted effective barrier $H_{\text{Par}}(D) = H \exp(-\sigma \sqrt{\frac{\pi D}{2}}) < H$.
+        pub effective_parisian_shifted_barrier: T,
+        /// Parisian excursion survival gain $C_{\text{Parisian}} - C_{\text{DOC}} > 0$.
+        pub parisian_excursion_survival_premium: T,
+        /// Total Chesney–Jeanblanc–Yor Parisian down-and-out call value.
+        pub parisian_down_and_out_call_value: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    #[inline]
+    fn doc_price<T: Real>(s0: T, k: T, h: T, r: T, q: T, sig: T, t: T) -> T {
+        let sig2 = sig * sig;
+        let std_dev = sig * t.sqrt();
+        let half = T::from_f64(0.5);
+        let d1 = ((s0 / k).ln() + (r - q + half * sig2) * t) / std_dev;
+        let d2 = d1 - std_dev;
+        let c_van = s0 * (-q * t).exp() * std_norm_cdf(d1) - k * (-r * t).exp() * std_norm_cdf(d2);
+
+        let lam = (r - q + half * sig2) / sig2;
+        let y = ((h * h) / (s0 * k)).ln() / std_dev + lam * std_dev;
+        let h_over_s = h / s0;
+        let c_di = s0 * (-q * t).exp() * h_over_s.pow(T::from_f64(2.0) * lam) * std_norm_cdf(y)
+            - k * (-r * t).exp()
+                * h_over_s.pow(T::from_f64(2.0) * lam - T::from_f64(2.0))
+                * std_norm_cdf(y - std_dev);
+        c_van - c_di
+    }
+
+    /// Evaluates the Chesney, Jeanblanc-Picqué & Yor (1997, Proposition 4) & Anderluh–van Weeren
+    /// Parisian down-and-out call option via the Laplace-excursion shifted barrier
+    /// $H_{\text{Par}}(D) = H \exp\!\left(-\sigma\sqrt{\frac{\pi D}{2}}\right)$, which satisfies
+    /// $C_{\text{DOC}}(H) < C_{\text{Parisian}}(H, D) < C_{\text{BS}}$ for all $D > 0$.
+    pub fn evaluate_chesney_jeanblanc_yor_parisian_excursion_barrier_call<T: Real>(
+        spec: &ChesneyJeanblancYorParisianBarrierSpec<T>,
+    ) -> ChesneyJeanblancYorParisianBarrierAnalytics<T> {
+        let s0 = spec.spot_price_s0;
+        let k = spec.strike_k;
+        let h = spec.down_barrier_h;
+        let d_win = spec.excursion_window_years_d;
+        let r = spec.risk_free_rate_r;
+        let q = spec.dividend_yield_q;
+        let sig = spec.volatility_sigma;
+        let t = spec.maturity_years_t;
+
+        let c_doc = doc_price(s0, k, h, r, q, sig, t);
+
+        // Chesney-Jeanblanc-Yor Brownian meander excursion shift sqrt(pi / 2) * sigma * sqrt(D)
+        let sqrt_half_pi = T::from_f64(1.253_314_137_315_500_3);
+        let h_par = h * (-sqrt_half_pi * sig * d_win.sqrt()).exp();
+        let c_par = doc_price(s0, k, h_par, r, q, sig, t);
+        let surv_prem = c_par - c_doc;
+
+        ChesneyJeanblancYorParisianBarrierAnalytics {
+            instantaneous_down_and_out_call: c_doc,
+            effective_parisian_shifted_barrier: h_par,
+            parisian_excursion_survival_premium: surv_prem,
+            parisian_down_and_out_call_value: c_par,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn chesney_jeanblanc_yor_parisian_invariants_and_ad_parity() {
+            let base = ChesneyJeanblancYorParisianBarrierSpec {
+                spot_price_s0: 105.0_f64,
+                strike_k: 100.0_f64,
+                down_barrier_h: 92.0_f64,
+                excursion_window_years_d: 0.06_f64,
+                risk_free_rate_r: 0.042_f64,
+                dividend_yield_q: 0.015_f64,
+                volatility_sigma: 0.24_f64,
+                maturity_years_t: 1.0_f64,
+            };
+            let res = evaluate_chesney_jeanblanc_yor_parisian_excursion_barrier_call(&base);
+            assert!(res.effective_parisian_shifted_barrier < base.down_barrier_h);
+            assert!(res.parisian_excursion_survival_premium > 0.0);
+            assert!(res.parisian_down_and_out_call_value > res.instantaneous_down_and_out_call);
+
+            let inputs = [
+                base.spot_price_s0,
+                base.strike_k,
+                base.down_barrier_h,
+                base.excursion_window_years_d,
+                base.risk_free_rate_r,
+                base.dividend_yield_q,
+                base.volatility_sigma,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = ChesneyJeanblancYorParisianBarrierSpec {
+                spot_price_s0: dual_in[0],
+                strike_k: dual_in[1],
+                down_barrier_h: dual_in[2],
+                excursion_window_years_d: dual_in[3],
+                risk_free_rate_r: dual_in[4],
+                dividend_yield_q: dual_in[5],
+                volatility_sigma: dual_in[6],
+                maturity_years_t: dual_in[7],
+            };
+            let r_ad = evaluate_chesney_jeanblanc_yor_parisian_excursion_barrier_call(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| ChesneyJeanblancYorParisianBarrierSpec {
+                    spot_price_s0: v[0],
+                    strike_k: v[1],
+                    down_barrier_h: v[2],
+                    excursion_window_years_d: v[3],
+                    risk_free_rate_r: v[4],
+                    dividend_yield_q: v[5],
+                    volatility_sigma: v[6],
+                    maturity_years_t: v[7],
+                };
+                let rp = evaluate_chesney_jeanblanc_yor_parisian_excursion_barrier_call(&mk(p));
+                let rm = evaluate_chesney_jeanblanc_yor_parisian_excursion_barrier_call(&mk(m));
+                let fd = (rp.parisian_down_and_out_call_value
+                    - rm.parisian_down_and_out_call_value)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.parisian_down_and_out_call_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.parisian_down_and_out_call_value.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use chesney_jeanblanc_yor_parisian_mod::*;

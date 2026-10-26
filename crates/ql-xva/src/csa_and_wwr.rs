@@ -3914,3 +3914,158 @@ mod gregory_brigo_bilateral_cva_dva_mod {
     }
 }
 pub use gregory_brigo_bilateral_cva_dva_mod::*;
+mod andersen_pykhtin_sokol_mpor_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Andersen, Pykhtin & Sokol (2017, *Risk* 30(7),
+    /// *"Rethinking Margin Period of Risk"*) Classical vs. Sticky vs. Unpaid-Cashflow
+    /// MPoR exposure spike and collateral dispute CVA engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct AndersenPykhtinSokolMporDisputeSpec<T: Real> {
+        /// Annualized portfolio MTM diffusive volatility $\sigma_V$ (e.g., $42.0$).
+        pub portfolio_mtm_volatility_sigma: T,
+        /// Base Margin Period of Risk $\delta_{\text{MPoR}}$ in years (e.g., $10.0 / 252.0 \approx 0.0397$).
+        pub base_mpor_years_delta: T,
+        /// Scheduled net trade cashflow spike $\Delta C_{\text{paid}}$ paid to counterparty during MPoR (e.g., $3.20$).
+        pub unpaid_cashflow_spike_c: T,
+        /// Collateral call dispute attenuation factor $\alpha_{\text{disp}} \in (0, 1)$ (fraction of variation margin received during MPoR, e.g., $0.25$).
+        pub variation_margin_receipt_fraction_alpha: T,
+        /// Independent Amount / Initial Margin cushion $I_0 \ge 0$ (e.g., $4.50$).
+        pub initial_margin_cushion_i0: T,
+        /// Counterparty credit hazard rate $\lambda_C$ (e.g., $0.024$).
+        pub counterparty_hazard_lambda: T,
+        /// Counterparty Loss Given Default $\text{LGD}_C \in (0, 1)$ (e.g., $0.60$).
+        pub counterparty_lgd: T,
+        /// OIS discount rate $r$ (e.g., $0.035$).
+        pub ois_discount_rate_r: T,
+    }
+
+    /// Analytics returned by [`evaluate_andersen_pykhtin_sokol_mpor_dispute_spike_cva`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct AndersenPykhtinSokolMporDisputeAnalytics<T: Real> {
+        /// Classical MPoR standard deviation $\sigma_{\text{MPoR}}^{\text{class}} = \sigma_V \sqrt{\delta_{\text{MPoR}}}$.
+        pub classical_mpor_volatility: T,
+        /// Effective Andersen–Pykhtin–Sokol partially margined MPoR volatility $\sigma_{\text{MPoR}}^{\text{APS}}$.
+        pub effective_aps_mpor_volatility: T,
+        /// Expected Positive Exposure $\text{EPE}_{\text{MPoR}}$ including cashflow spike and IM cushion.
+        pub mpor_spike_expected_positive_exposure: T,
+        /// Total 5-year Andersen–Pykhtin–Sokol MPoR-adjusted CVA charge.
+        pub aps_mpor_adjusted_cva: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    #[inline]
+    fn std_norm_pdf<T: Real>(x: T) -> T {
+        T::from_f64(0.398_942_280_401_432_7) * (-T::from_f64(0.5) * x * x).exp()
+    }
+
+    /// Evaluates the Andersen, Pykhtin & Sokol (2017) MPoR exposure and CVA under partial
+    /// variation-margin pass-through $\alpha_{\text{disp}}$ and unpaid trade cashflow spikes $\Delta C_{\text{paid}}$.
+    pub fn evaluate_andersen_pykhtin_sokol_mpor_dispute_spike_cva<T: Real>(
+        spec: &AndersenPykhtinSokolMporDisputeSpec<T>,
+    ) -> AndersenPykhtinSokolMporDisputeAnalytics<T> {
+        let sig_class = spec.portfolio_mtm_volatility_sigma * spec.base_mpor_years_delta.sqrt();
+        // Partial margining during disputed MPoR reduces exposure volatility by sqrt(1 - 0.5 * alpha_disp)
+        let damp =
+            (T::one() - T::from_f64(0.5) * spec.variation_margin_receipt_fraction_alpha).sqrt();
+        let sig_aps = sig_class * damp;
+
+        // Net drift over MPoR from unpaid trade cashflows minus Initial Margin cushion
+        let mean_exposure = spec.unpaid_cashflow_spike_c - spec.initial_margin_cushion_i0;
+        let z = mean_exposure / sig_aps;
+        let epe_mpor = mean_exposure * std_norm_cdf(z) + sig_aps * std_norm_pdf(z);
+
+        let eff_rate = spec.ois_discount_rate_r + spec.counterparty_hazard_lambda;
+        let horizon = T::from_f64(5.0);
+        let risky_annuity = (T::one() - (-eff_rate * horizon).exp()) / eff_rate;
+        let cva_aps =
+            spec.counterparty_lgd * spec.counterparty_hazard_lambda * epe_mpor * risky_annuity;
+
+        AndersenPykhtinSokolMporDisputeAnalytics {
+            classical_mpor_volatility: sig_class,
+            effective_aps_mpor_volatility: sig_aps,
+            mpor_spike_expected_positive_exposure: epe_mpor,
+            aps_mpor_adjusted_cva: cva_aps,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn andersen_pykhtin_sokol_mpor_invariants_and_ad_parity() {
+            let base = AndersenPykhtinSokolMporDisputeSpec {
+                portfolio_mtm_volatility_sigma: 42.0_f64,
+                base_mpor_years_delta: 0.040_f64,
+                unpaid_cashflow_spike_c: 3.20_f64,
+                variation_margin_receipt_fraction_alpha: 0.25_f64,
+                initial_margin_cushion_i0: 4.50_f64,
+                counterparty_hazard_lambda: 0.024_f64,
+                counterparty_lgd: 0.60_f64,
+                ois_discount_rate_r: 0.035_f64,
+            };
+            let res = evaluate_andersen_pykhtin_sokol_mpor_dispute_spike_cva(&base);
+            assert!(res.effective_aps_mpor_volatility < res.classical_mpor_volatility);
+            assert!(res.mpor_spike_expected_positive_exposure > 0.0);
+            assert!(res.aps_mpor_adjusted_cva > 0.0);
+
+            let inputs = [
+                base.portfolio_mtm_volatility_sigma,
+                base.base_mpor_years_delta,
+                base.unpaid_cashflow_spike_c,
+                base.variation_margin_receipt_fraction_alpha,
+                base.initial_margin_cushion_i0,
+                base.counterparty_hazard_lambda,
+                base.counterparty_lgd,
+                base.ois_discount_rate_r,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = AndersenPykhtinSokolMporDisputeSpec {
+                portfolio_mtm_volatility_sigma: dual_in[0],
+                base_mpor_years_delta: dual_in[1],
+                unpaid_cashflow_spike_c: dual_in[2],
+                variation_margin_receipt_fraction_alpha: dual_in[3],
+                initial_margin_cushion_i0: dual_in[4],
+                counterparty_hazard_lambda: dual_in[5],
+                counterparty_lgd: dual_in[6],
+                ois_discount_rate_r: dual_in[7],
+            };
+            let r_ad = evaluate_andersen_pykhtin_sokol_mpor_dispute_spike_cva(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| AndersenPykhtinSokolMporDisputeSpec {
+                    portfolio_mtm_volatility_sigma: v[0],
+                    base_mpor_years_delta: v[1],
+                    unpaid_cashflow_spike_c: v[2],
+                    variation_margin_receipt_fraction_alpha: v[3],
+                    initial_margin_cushion_i0: v[4],
+                    counterparty_hazard_lambda: v[5],
+                    counterparty_lgd: v[6],
+                    ois_discount_rate_r: v[7],
+                };
+                let rp = evaluate_andersen_pykhtin_sokol_mpor_dispute_spike_cva(&mk(p));
+                let rm = evaluate_andersen_pykhtin_sokol_mpor_dispute_spike_cva(&mk(m));
+                let fd = (rp.aps_mpor_adjusted_cva - rm.aps_mpor_adjusted_cva) / (2.0 * eps);
+                assert!(
+                    r_ad.aps_mpor_adjusted_cva.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.aps_mpor_adjusted_cva.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use andersen_pykhtin_sokol_mpor_mod::*;

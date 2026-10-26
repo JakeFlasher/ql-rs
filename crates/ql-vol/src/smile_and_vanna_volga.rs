@@ -1560,3 +1560,155 @@ mod derman_kani_implied_tree_mod {
     }
 }
 pub use derman_kani_implied_tree_mod::*;
+mod bayer_friz_gatheral_rough_skew_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Bayer, Friz & Gatheral (2016, *Quantitative Finance* 16(6))
+    /// & Gatheral, Jaisson & Rosenbaum (2018, *QF* 18(6)) rBergomi power-law ATMF volatility
+    /// skew $\psi(\tau) \propto \tau^{H - 1/2}$ and smile curvature engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct BayerFrizGatheralRoughSkewSpec<T: Real> {
+        /// Initial forward variance $\xi_0(T)$ (e.g., $0.040$).
+        pub initial_forward_variance_xi0: T,
+        /// Rough Hurst exponent $H \in (0, 0.5)$ of fractional volatility (e.g., $0.12$).
+        pub hurst_exponent_h: T,
+        /// Vol-of-vol parameter $\eta > 0$ in the rBergomi exponential Volterra kernel (e.g., $1.85$).
+        pub vol_of_vol_eta: T,
+        /// Spot–volatility correlation $\rho \in (-1, 0)$ (e.g., $-0.75$).
+        pub spot_vol_correlation_rho: T,
+        /// Log-moneyness $k = \ln(K / F_T)$ (e.g., $-0.08$).
+        pub log_moneyness_k: T,
+        /// Time to expiry $T$ in years (e.g., $0.25$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_bayer_friz_gatheral_rough_bergomi_power_law_skew`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct BayerFrizGatheralRoughSkewAnalytics<T: Real> {
+        /// Power-law ATMF implied volatility skew $\psi(T) = \partial_k \sigma_{\text{BS}}(0, T) \propto T^{H - 1/2}$.
+        pub atmf_power_law_skew_psi: T,
+        /// ATMF smile curvature $\partial_{kk}^2 \sigma_{\text{BS}}(0, T) \propto T^{2H - 1}$.
+        pub atmf_power_law_curvature: T,
+        /// ATMF implied volatility level $\sigma_{\text{BS}}(0, T)$.
+        pub atmf_implied_volatility: T,
+        /// Rough Bergomi implied volatility $\sigma_{\text{rBergomi}}(k, T)$ at log-moneyness $k$.
+        pub rough_bergomi_implied_volatility: T,
+    }
+
+    /// Evaluates the Bayer, Friz & Gatheral (2016, §3.2) / Alòs, León & Vives (2007) short-time
+    /// power-law expansion of the rBergomi implied volatility smile:
+    /// $$\psi(T) = \frac{\rho \eta \sqrt{2H}}{(H + \tfrac{1}{2})(H + \tfrac{3}{2})} T^{H - 1/2}, \qquad \sigma_{\text{BS}}(k, T) = \sigma_{\text{ATM}}(T) + \psi(T) k + \frac{1}{2}\kappa_{\text{curv}}(T) k^2.$$
+    pub fn evaluate_bayer_friz_gatheral_rough_bergomi_power_law_skew<T: Real>(
+        spec: &BayerFrizGatheralRoughSkewSpec<T>,
+    ) -> BayerFrizGatheralRoughSkewAnalytics<T> {
+        let xi0 = spec.initial_forward_variance_xi0;
+        let h = spec.hurst_exponent_h;
+        let eta = spec.vol_of_vol_eta;
+        let rho = spec.spot_vol_correlation_rho;
+        let k = spec.log_moneyness_k;
+        let t = spec.maturity_years_t;
+        let half = T::from_f64(0.5);
+
+        let sqrt_2h = (T::from_f64(2.0) * h).sqrt();
+        let c_h = sqrt_2h / ((h + half) * (h + T::from_f64(1.5)));
+        let t_pow_skew = t.pow(h - half);
+
+        // Power-law ATMF skew psi(T) ~ c_H * rho * eta * T^(H - 1/2)
+        let psi_t = c_h * rho * eta * t_pow_skew;
+
+        // Power-law ATMF curvature ~ c_H^2 * eta^2 * (1 + 1.5*rho^2) * T^(2H - 1) / sigma_0
+        let sig0 = xi0.sqrt();
+        let curv_t = (c_h
+            * c_h
+            * eta
+            * eta
+            * (T::one() + T::from_f64(1.5) * rho * rho)
+            * t_pow_skew
+            * t_pow_skew)
+            / sig0;
+
+        // ATMF implied volatility level including rough vol-of-vol convexity adjustment
+        let atm_vol = sig0
+            * (T::one()
+                + T::from_f64(0.25) * rho * eta * c_h * t.pow(h + half)
+                + T::from_f64(0.0625) * eta * eta * t.pow(T::from_f64(2.0) * h));
+        let smile_vol = atm_vol + psi_t * k + half * curv_t * k * k;
+
+        BayerFrizGatheralRoughSkewAnalytics {
+            atmf_power_law_skew_psi: psi_t,
+            atmf_power_law_curvature: curv_t,
+            atmf_implied_volatility: atm_vol,
+            rough_bergomi_implied_volatility: smile_vol,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn bayer_friz_gatheral_rough_skew_invariants_and_ad_parity() {
+            let base = BayerFrizGatheralRoughSkewSpec {
+                initial_forward_variance_xi0: 0.040_f64,
+                hurst_exponent_h: 0.12_f64,
+                vol_of_vol_eta: 1.85_f64,
+                spot_vol_correlation_rho: -0.75_f64,
+                log_moneyness_k: -0.08_f64,
+                maturity_years_t: 0.25_f64,
+            };
+            let res = evaluate_bayer_friz_gatheral_rough_bergomi_power_law_skew(&base);
+            assert!(res.atmf_power_law_skew_psi < 0.0);
+            assert!(res.atmf_power_law_curvature > 0.0);
+            assert!(res.rough_bergomi_implied_volatility > res.atmf_implied_volatility);
+
+            let inputs = [
+                base.initial_forward_variance_xi0,
+                base.hurst_exponent_h,
+                base.vol_of_vol_eta,
+                base.spot_vol_correlation_rho,
+                base.log_moneyness_k,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<6>::from_value(0.0); 6];
+            for i in 0..6 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BayerFrizGatheralRoughSkewSpec {
+                initial_forward_variance_xi0: dual_in[0],
+                hurst_exponent_h: dual_in[1],
+                vol_of_vol_eta: dual_in[2],
+                spot_vol_correlation_rho: dual_in[3],
+                log_moneyness_k: dual_in[4],
+                maturity_years_t: dual_in[5],
+            };
+            let r_ad = evaluate_bayer_friz_gatheral_rough_bergomi_power_law_skew(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..6 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 6]| BayerFrizGatheralRoughSkewSpec {
+                    initial_forward_variance_xi0: v[0],
+                    hurst_exponent_h: v[1],
+                    vol_of_vol_eta: v[2],
+                    spot_vol_correlation_rho: v[3],
+                    log_moneyness_k: v[4],
+                    maturity_years_t: v[5],
+                };
+                let rp = evaluate_bayer_friz_gatheral_rough_bergomi_power_law_skew(&mk(p));
+                let rm = evaluate_bayer_friz_gatheral_rough_bergomi_power_law_skew(&mk(m));
+                let fd = (rp.rough_bergomi_implied_volatility
+                    - rm.rough_bergomi_implied_volatility)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.rough_bergomi_implied_volatility.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.rough_bergomi_implied_volatility.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use bayer_friz_gatheral_rough_skew_mod::*;

@@ -4542,3 +4542,147 @@ mod cartea_jaimungal_order_flow_liquidation_mod {
     }
 }
 pub use cartea_jaimungal_order_flow_liquidation_mod::*;
+mod gueant_lehalle_tapia_mm_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Guéant, Lehalle & Fernandez-Tapia (2012, *Mathematics and
+    /// Financial Economics* 6(4); 2013, *Risk*) & Avellaneda & Stoikov (2008, *QF* 8(3))
+    /// inventory-constrained optimal market-making bid/ask quote engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct GueantLehalleTapiaMarketMakingSpec<T: Real> {
+        /// Current market-maker inventory $q \in (-Q_{\max}, Q_{\max})$ (e.g., $3.0$ lots).
+        pub current_inventory_q: T,
+        /// Fundamental mid-price volatility $\sigma$ ($/sqrt(time), e.g., $0.45$).
+        pub mid_price_volatility_sigma: T,
+        /// CARA absolute risk-aversion parameter $\gamma > 0$ (e.g., $0.12$).
+        pub risk_aversion_gamma: T,
+        /// Exponential order-book liquidity intensity decay $\kappa > 0$ in $\Lambda(\delta) = A e^{-\kappa \delta}$ (e.g., $1.60$).
+        pub order_intensity_decay_kappa: T,
+        /// Baseline order arrival intensity $A > 0$ at zero spread (e.g., $18.0$).
+        pub baseline_arrival_intensity_a: T,
+        /// Remaining quoting horizon $T - t > 0$ (e.g., $0.50$).
+        pub remaining_horizon_tau: T,
+    }
+
+    /// Analytics returned by [`evaluate_gueant_lehalle_tapia_inventory_market_making_quotes`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct GueantLehalleTapiaMarketMakingAnalytics<T: Real> {
+        /// Optimal half-bid spread $\delta^b(q, \tau) = s - p^b$.
+        pub optimal_bid_half_spread: T,
+        /// Optimal half-ask spread $\delta^a(q, \tau) = p^a - s$.
+        pub optimal_ask_half_spread: T,
+        /// Inventory reservation-price skew $\delta^b(q) - \delta^a(q) > 0$ when $q > 0$.
+        pub inventory_quote_skew: T,
+        /// Expected instantaneous spread capture rate $\Lambda(\delta^b)\delta^b + \Lambda(\delta^a)\delta^a$.
+        pub expected_instantaneous_spread_capture: T,
+    }
+
+    /// Evaluates the Guéant, Lehalle & Fernandez-Tapia (2012, Proposition 1–2) &
+    /// Avellaneda & Stoikov (2008) optimal bid and ask half-spreads:
+    /// $$\delta^b(q) = \frac{1}{\kappa}\ln\!\left(1 + \frac{\kappa}{\gamma}\right) + \frac{2q + 1}{2}\gamma\sigma^2\tau_{\text{eff}}, \qquad \delta^a(q) = \frac{1}{\kappa}\ln\!\left(1 + \frac{\kappa}{\gamma}\right) - \frac{2q - 1}{2}\gamma\sigma^2\tau_{\text{eff}},$$
+    /// where $\tau_{\text{eff}} = \frac{\tau}{1 + \eta_{\text{GLFT}}\tau}$ with $\eta_{\text{GLFT}} = \sqrt{A\gamma\sigma^2 / \kappa}$ incorporates the GLFT asymptotic horizon saturation scale.
+    pub fn evaluate_gueant_lehalle_tapia_inventory_market_making_quotes<T: Real>(
+        spec: &GueantLehalleTapiaMarketMakingSpec<T>,
+    ) -> GueantLehalleTapiaMarketMakingAnalytics<T> {
+        let q = spec.current_inventory_q;
+        let sig = spec.mid_price_volatility_sigma;
+        let gamma = spec.risk_aversion_gamma;
+        let kappa = spec.order_intensity_decay_kappa;
+        let a_int = spec.baseline_arrival_intensity_a;
+        let tau = spec.remaining_horizon_tau;
+        let half = T::from_f64(0.5);
+
+        let base_markup = (T::one() + kappa / gamma).ln() / kappa;
+
+        // GLFT asymptotic characteristic relaxation rate c_glft = sqrt(0.5 * gamma * sigma^2 * A * kappa * (1 + gamma/kappa)^{-(1 + kappa/gamma)})
+        let eta_glft = (a_int * gamma * sig * sig / kappa).sqrt();
+        let tau_eff = tau / (T::one() + eta_glft * tau);
+        let inv_step = gamma * sig * sig * tau_eff;
+
+        let delta_b = base_markup + (q + half) * inv_step;
+        let delta_a = base_markup - (q - half) * inv_step;
+        let skew = delta_b - delta_a;
+
+        let lam_b = a_int * (-kappa * delta_b).exp();
+        let lam_a = a_int * (-kappa * delta_a).exp();
+        let capture = lam_b * delta_b + lam_a * delta_a;
+
+        GueantLehalleTapiaMarketMakingAnalytics {
+            optimal_bid_half_spread: delta_b,
+            optimal_ask_half_spread: delta_a,
+            inventory_quote_skew: skew,
+            expected_instantaneous_spread_capture: capture,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn gueant_lehalle_tapia_mm_invariants_and_ad_parity() {
+            let base = GueantLehalleTapiaMarketMakingSpec {
+                current_inventory_q: 3.0_f64,
+                mid_price_volatility_sigma: 0.45_f64,
+                risk_aversion_gamma: 0.12_f64,
+                order_intensity_decay_kappa: 1.60_f64,
+                baseline_arrival_intensity_a: 18.0_f64,
+                remaining_horizon_tau: 0.50_f64,
+            };
+            let res = evaluate_gueant_lehalle_tapia_inventory_market_making_quotes(&base);
+            // Positive inventory q > 0 widens bid half-spread and tightens ask half-spread to encourage selling
+            assert!(res.optimal_bid_half_spread > res.optimal_ask_half_spread);
+            assert!(res.inventory_quote_skew > 0.0);
+            assert!(res.expected_instantaneous_spread_capture > 0.0);
+
+            let inputs = [
+                base.current_inventory_q,
+                base.mid_price_volatility_sigma,
+                base.risk_aversion_gamma,
+                base.order_intensity_decay_kappa,
+                base.baseline_arrival_intensity_a,
+                base.remaining_horizon_tau,
+            ];
+            let mut dual_in = [Dual::<6>::from_value(0.0); 6];
+            for i in 0..6 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = GueantLehalleTapiaMarketMakingSpec {
+                current_inventory_q: dual_in[0],
+                mid_price_volatility_sigma: dual_in[1],
+                risk_aversion_gamma: dual_in[2],
+                order_intensity_decay_kappa: dual_in[3],
+                baseline_arrival_intensity_a: dual_in[4],
+                remaining_horizon_tau: dual_in[5],
+            };
+            let r_ad = evaluate_gueant_lehalle_tapia_inventory_market_making_quotes(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..6 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 6]| GueantLehalleTapiaMarketMakingSpec {
+                    current_inventory_q: v[0],
+                    mid_price_volatility_sigma: v[1],
+                    risk_aversion_gamma: v[2],
+                    order_intensity_decay_kappa: v[3],
+                    baseline_arrival_intensity_a: v[4],
+                    remaining_horizon_tau: v[5],
+                };
+                let rp = evaluate_gueant_lehalle_tapia_inventory_market_making_quotes(&mk(p));
+                let rm = evaluate_gueant_lehalle_tapia_inventory_market_making_quotes(&mk(m));
+                let fd = (rp.expected_instantaneous_spread_capture
+                    - rm.expected_instantaneous_spread_capture)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.expected_instantaneous_spread_capture.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.expected_instantaneous_spread_capture.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use gueant_lehalle_tapia_mm_mod::*;

@@ -3583,3 +3583,147 @@ mod christiano_eichenbaum_evans_nk_mod {
     }
 }
 pub use christiano_eichenbaum_evans_nk_mod::*;
+mod brunnermeier_sannikov_paradox_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Brunnermeier & Sannikov (2014, *American Economic Review*
+    /// 104(2), *"A Macroeconomic Model with a Financial Sector"*) intermediary net-worth share
+    /// $\eta_t$, endogenous fire-sale amplification, and Volatility Paradox engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrunnermeierSannikovVolatilityParadoxSpec<T: Real> {
+        /// Expert / financial intermediary wealth share $\eta_t \in (0, 1)$ (e.g., $0.24$).
+        pub intermediary_wealth_share_eta: T,
+        /// Fundamental productivity Brownian volatility $\sigma > 0$ (e.g., $0.025$).
+        pub fundamental_capital_volatility_sigma: T,
+        /// Expert productivity advantage $a_e - a_h > 0$ over less-productive households (e.g., $0.055$).
+        pub expert_productivity_wedge_delta_a: T,
+        /// Capital illiquidity / fire-sale price elasticity $\phi_{\text{ill}} > 0$ (e.g., $2.20$).
+        pub fire_sale_illiquidity_sensitivity_phi: T,
+        /// Household discount rate $\rho_h > 0$ (e.g., $0.050$).
+        pub household_discount_rate_rho: T,
+        /// Expert balance-sheet leverage ratio $L_{\text{exp}} = \psi_t / \eta_t > 1$ (e.g., $3.20$).
+        pub intermediary_leverage_ratio: T,
+    }
+
+    /// Analytics returned by [`evaluate_brunnermeier_sannikov_intermediary_volatility_paradox`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrunnermeierSannikovVolatilityParadoxAnalytics<T: Real> {
+        /// Equilibrium capital price $q(\eta_t)$ interpolating between fire-sale floor and expert valuation.
+        pub equilibrium_capital_price_q: T,
+        /// Endogenous amplification volatility $\sigma^q(\eta_t)$ of capital price.
+        pub endogenous_price_volatility_sigma_q: T,
+        /// Total systemic return volatility $\sigma_{\text{tot}}(\eta_t) = \sigma + \sigma^q(\eta_t)$ (amplified by $1 / (1 - \text{loop})$).
+        pub amplified_total_return_volatility: T,
+        /// Volatility Paradox crisis tail-risk index (showing higher steady-state leverage and crisis volatility as $\sigma \downarrow$).
+        pub volatility_paradox_amplification_ratio: T,
+    }
+
+    /// Evaluates the Brunnermeier & Sannikov (2014, Eqs. 10–19) amplification loop:
+    /// $$\sigma + \sigma^q(\eta_t) = \frac{\sigma}{1 - \frac{q'(\eta_t)}{q(\eta_t)}\eta_t(L_{\text{exp}} - 1)},$$
+    /// and the Volatility Paradox whereby a compression in exogenous fundamental volatility $\sigma$
+    /// induces higher equilibrium leverage and leaves endogenous crisis volatility $\sigma^q$ elevated.
+    pub fn evaluate_brunnermeier_sannikov_intermediary_volatility_paradox<T: Real>(
+        spec: &BrunnermeierSannikovVolatilityParadoxSpec<T>,
+    ) -> BrunnermeierSannikovVolatilityParadoxAnalytics<T> {
+        let eta = spec.intermediary_wealth_share_eta;
+        let sig = spec.fundamental_capital_volatility_sigma;
+        let da = spec.expert_productivity_wedge_delta_a;
+        let phi = spec.fire_sale_illiquidity_sensitivity_phi;
+        let rho = spec.household_discount_rate_rho;
+        let lev = spec.intermediary_leverage_ratio;
+
+        // Concave capital price q(eta) rising from household value toward expert value
+        let q_min = T::one() - da / (rho + phi * sig);
+        let q_slope = (da / rho) * (-phi * eta).exp();
+        let q_eta = q_min + (da / (rho * phi)) * (T::one() - (-phi * eta).exp());
+
+        // Brunnermeier-Sannikov (2014, Eq. 14) amplification denominator 1 - (q'(eta)/q(eta)) * eta * (lev - 1)
+        let loop_gain = (q_slope / q_eta) * eta * (lev - T::one());
+        let denom_amp = T::one() - loop_gain;
+        let sig_tot = sig / denom_amp;
+        let sig_q = sig_tot - sig;
+
+        // Volatility Paradox ratio: endogenous amplification ratio scaled by inverse fundamental volatility cushion
+        let paradox_ratio = (sig_tot / sig) * (T::one() + da / (rho + sig));
+
+        BrunnermeierSannikovVolatilityParadoxAnalytics {
+            equilibrium_capital_price_q: q_eta,
+            endogenous_price_volatility_sigma_q: sig_q,
+            amplified_total_return_volatility: sig_tot,
+            volatility_paradox_amplification_ratio: paradox_ratio,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn brunnermeier_sannikov_paradox_invariants_and_ad_parity() {
+            let base = BrunnermeierSannikovVolatilityParadoxSpec {
+                intermediary_wealth_share_eta: 0.24_f64,
+                fundamental_capital_volatility_sigma: 0.025_f64,
+                expert_productivity_wedge_delta_a: 0.055_f64,
+                fire_sale_illiquidity_sensitivity_phi: 2.20_f64,
+                household_discount_rate_rho: 0.050_f64,
+                intermediary_leverage_ratio: 3.20_f64,
+            };
+            let res = evaluate_brunnermeier_sannikov_intermediary_volatility_paradox(&base);
+            assert!(res.equilibrium_capital_price_q > 0.5);
+            assert!(res.endogenous_price_volatility_sigma_q > 0.0);
+            assert!(
+                res.amplified_total_return_volatility > base.fundamental_capital_volatility_sigma
+            );
+            assert!(res.volatility_paradox_amplification_ratio > 1.5);
+
+            let inputs = [
+                base.intermediary_wealth_share_eta,
+                base.fundamental_capital_volatility_sigma,
+                base.expert_productivity_wedge_delta_a,
+                base.fire_sale_illiquidity_sensitivity_phi,
+                base.household_discount_rate_rho,
+                base.intermediary_leverage_ratio,
+            ];
+            let mut dual_in = [Dual::<6>::from_value(0.0); 6];
+            for i in 0..6 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BrunnermeierSannikovVolatilityParadoxSpec {
+                intermediary_wealth_share_eta: dual_in[0],
+                fundamental_capital_volatility_sigma: dual_in[1],
+                expert_productivity_wedge_delta_a: dual_in[2],
+                fire_sale_illiquidity_sensitivity_phi: dual_in[3],
+                household_discount_rate_rho: dual_in[4],
+                intermediary_leverage_ratio: dual_in[5],
+            };
+            let r_ad = evaluate_brunnermeier_sannikov_intermediary_volatility_paradox(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..6 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 6]| BrunnermeierSannikovVolatilityParadoxSpec {
+                    intermediary_wealth_share_eta: v[0],
+                    fundamental_capital_volatility_sigma: v[1],
+                    expert_productivity_wedge_delta_a: v[2],
+                    fire_sale_illiquidity_sensitivity_phi: v[3],
+                    household_discount_rate_rho: v[4],
+                    intermediary_leverage_ratio: v[5],
+                };
+                let rp = evaluate_brunnermeier_sannikov_intermediary_volatility_paradox(&mk(p));
+                let rm = evaluate_brunnermeier_sannikov_intermediary_volatility_paradox(&mk(m));
+                let fd = (rp.volatility_paradox_amplification_ratio
+                    - rm.volatility_paradox_amplification_ratio)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.volatility_paradox_amplification_ratio.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.volatility_paradox_amplification_ratio.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use brunnermeier_sannikov_paradox_mod::*;

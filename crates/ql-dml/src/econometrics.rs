@@ -3480,3 +3480,155 @@ mod pesaran_shin_smith_ardl_bounds_mod {
     }
 }
 pub use pesaran_shin_smith_ardl_bounds_mod::*;
+mod hansen_white_spa_test_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Hansen (2005, *Journal of Business & Economic Statistics*
+    /// 23(4)) Test for Superior Predictive Ability ($\text{SPA}$) & White (2000, *Econometrica*
+    /// 68(5)) Reality Check across competing forecasting models.
+    #[derive(Debug, Clone, Copy)]
+    pub struct HansenWhiteSuperiorPredictiveAbilitySpec<T: Real> {
+        /// Sample mean loss differential $\bar{d}_1 > 0$ of candidate model 1 vs. benchmark (e.g., $0.018$).
+        pub model_1_mean_loss_reduction_d1: T,
+        /// Sample mean loss differential $\bar{d}_2 < 0$ of clearly inferior model 2 vs. benchmark (e.g., $-0.024$).
+        pub model_2_mean_loss_reduction_d2: T,
+        /// HAC long-run variance $\hat{\omega}_1^2$ of model 1 loss differentials (e.g., $0.065$).
+        pub model_1_hac_variance_w1: T,
+        /// HAC long-run variance $\hat{\omega}_2^2$ of model 2 loss differentials (e.g., $0.080$).
+        pub model_2_hac_variance_w2: T,
+        /// Cross-model loss differential correlation $\rho_{12} \in (-1, 1)$ (e.g., $0.35$).
+        pub cross_model_correlation_rho12: T,
+        /// Out-of-sample evaluation length $n$ (e.g., $150.0$).
+        pub out_of_sample_observations_n: T,
+    }
+
+    /// Analytics returned by [`evaluate_hansen_white_superior_predictive_ability_test`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct HansenWhiteSuperiorPredictiveAbilityAnalytics<T: Real> {
+        /// Studentized $t$-statistic $t_1 = \sqrt{n}\bar{d}_1 / \hat{\omega}_1$ of candidate model 1.
+        pub model_1_studentized_t_statistic: T,
+        /// Hansen (2005) recentered mean $\hat{\mu}_2^c \le 0$ for the poor alternative model 2.
+        pub model_2_recentered_null_mean: T,
+        /// Smooth Hansen $\text{SPA}$ studentized max statistic $T_n^{\text{SPA}}$.
+        pub hansen_spa_test_statistic: T,
+        /// Multiplicity-adjusted Hansen $\text{SPA}$ asymptotic $p$-value.
+        pub hansen_spa_adjusted_p_value: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    /// Evaluates the Hansen (2005, Eqs. 5–9) studentized $\text{SPA}$ test statistic and
+    /// recentered null distribution, which eliminates the conservative bias of White's (2000)
+    /// Reality Check when poor/irrelevant models ($\sqrt{n}\bar{d}_k / \hat{\omega}_k < -\sqrt{2\ln\ln n}$)
+    /// are included in the model universe.
+    pub fn evaluate_hansen_white_superior_predictive_ability_test<T: Real>(
+        spec: &HansenWhiteSuperiorPredictiveAbilitySpec<T>,
+    ) -> HansenWhiteSuperiorPredictiveAbilityAnalytics<T> {
+        let n = spec.out_of_sample_observations_n;
+        let sqrt_n = n.sqrt();
+        let w1 = spec.model_1_hac_variance_w1.sqrt();
+        let w2 = spec.model_2_hac_variance_w2.sqrt();
+
+        let t1 = sqrt_n * spec.model_1_mean_loss_reduction_d1 / w1;
+        let t2 = sqrt_n * spec.model_2_mean_loss_reduction_d2 / w2;
+
+        // Hansen (2005, Eq. 7) threshold -sqrt(2 * ln(ln(n))) for recentering negative mean alternatives
+        let thresh = -(T::from_f64(2.0) * n.ln().ln()).sqrt();
+        // Smooth indicator for t2 <= thresh
+        let weight_recenter = std_norm_cdf((thresh - t2) * T::from_f64(2.0));
+        let mu2_c = spec.model_2_mean_loss_reduction_d2 * weight_recenter;
+
+        // Smooth studentized SPA statistic max(t1, t2, 0) via log-sum-exp with temperature beta = 8.0
+        let beta = T::from_f64(8.0);
+        let t_spa = t1 + ((T::one() + (beta * (t2 - t1)).exp() + (-beta * t1).exp()).ln()) / beta;
+
+        // Effective number of independent tests under correlation rho12 and Hansen recentering
+        let rho = spec.cross_model_correlation_rho12;
+        let m_eff =
+            T::one() + (T::one() - weight_recenter * T::from_f64(0.5)) * (T::one() - rho * rho);
+        let p_single = T::one() - std_norm_cdf(t_spa);
+        let p_spa = T::one() - (T::one() - p_single).pow(m_eff);
+
+        HansenWhiteSuperiorPredictiveAbilityAnalytics {
+            model_1_studentized_t_statistic: t1,
+            model_2_recentered_null_mean: mu2_c,
+            hansen_spa_test_statistic: t_spa,
+            hansen_spa_adjusted_p_value: p_spa,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn hansen_white_spa_test_invariants_and_ad_parity() {
+            let base = HansenWhiteSuperiorPredictiveAbilitySpec {
+                model_1_mean_loss_reduction_d1: 0.045_f64,
+                model_2_mean_loss_reduction_d2: -0.024_f64,
+                model_1_hac_variance_w1: 0.065_f64,
+                model_2_hac_variance_w2: 0.080_f64,
+                cross_model_correlation_rho12: 0.35_f64,
+                out_of_sample_observations_n: 150.0_f64,
+            };
+            let res = evaluate_hansen_white_superior_predictive_ability_test(&base);
+            assert!(res.model_1_studentized_t_statistic > 1.96);
+            assert!(res.model_2_recentered_null_mean < 0.0);
+            assert!(res.hansen_spa_test_statistic >= res.model_1_studentized_t_statistic);
+            assert!(
+                res.hansen_spa_adjusted_p_value > 0.0 && res.hansen_spa_adjusted_p_value < 0.05
+            );
+
+            let inputs = [
+                base.model_1_mean_loss_reduction_d1,
+                base.model_2_mean_loss_reduction_d2,
+                base.model_1_hac_variance_w1,
+                base.model_2_hac_variance_w2,
+                base.cross_model_correlation_rho12,
+                base.out_of_sample_observations_n,
+            ];
+            let mut dual_in = [Dual::<6>::from_value(0.0); 6];
+            for i in 0..6 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = HansenWhiteSuperiorPredictiveAbilitySpec {
+                model_1_mean_loss_reduction_d1: dual_in[0],
+                model_2_mean_loss_reduction_d2: dual_in[1],
+                model_1_hac_variance_w1: dual_in[2],
+                model_2_hac_variance_w2: dual_in[3],
+                cross_model_correlation_rho12: dual_in[4],
+                out_of_sample_observations_n: dual_in[5],
+            };
+            let r_ad = evaluate_hansen_white_superior_predictive_ability_test(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..6 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 6]| HansenWhiteSuperiorPredictiveAbilitySpec {
+                    model_1_mean_loss_reduction_d1: v[0],
+                    model_2_mean_loss_reduction_d2: v[1],
+                    model_1_hac_variance_w1: v[2],
+                    model_2_hac_variance_w2: v[3],
+                    cross_model_correlation_rho12: v[4],
+                    out_of_sample_observations_n: v[5],
+                };
+                let rp = evaluate_hansen_white_superior_predictive_ability_test(&mk(p));
+                let rm = evaluate_hansen_white_superior_predictive_ability_test(&mk(m));
+                let fd =
+                    (rp.hansen_spa_adjusted_p_value - rm.hansen_spa_adjusted_p_value) / (2.0 * eps);
+                assert!(
+                    r_ad.hansen_spa_adjusted_p_value.d[i].abs() > 1e-7,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.hansen_spa_adjusted_p_value.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use hansen_white_spa_test_mod::*;

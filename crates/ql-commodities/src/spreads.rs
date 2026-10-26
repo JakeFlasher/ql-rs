@@ -3102,3 +3102,161 @@ mod boogert_de_jong_gas_ratchet_mod {
     }
 }
 pub use boogert_de_jong_gas_ratchet_mod::*;
+mod bjerksund_stensland_321_crack_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Bjerksund & Stensland (2011, *Quantitative Finance* 11(4))
+    /// & Kirk (1995) closed-form 3-2-1 refinery crack spread option engine
+    /// ($\frac{2}{3}F_{\text{gas}} + \frac{1}{3}F_{\text{heat}} - F_{\text{crude}} - K_{\text{refine}}$).
+    #[derive(Debug, Clone, Copy)]
+    pub struct BjerksundStenslandRefineryCrack321Spec<T: Real> {
+        /// Crude oil futures price $F_{\text{crude}}$ ($/bbl, e.g., $76.0$).
+        pub crude_futures_price_f_c: T,
+        /// RBOB gasoline futures price $F_{\text{gas}}$ ($/bbl equivalent, e.g., $94.0$).
+        pub gasoline_futures_price_f_g: T,
+        /// ULSD heating oil / distillate futures price $F_{\text{heat}}$ ($/bbl equivalent, e.g., $98.0$).
+        pub distillate_futures_price_f_h: T,
+        /// Fixed refining margin strike $K_{\text{refine}}$ ($/bbl, e.g., $16.0$).
+        pub refining_strike_k: T,
+        /// Refined product basket volatility $\sigma_{\text{prod}}$ (e.g., $0.29$).
+        pub refined_basket_volatility_sigma_p: T,
+        /// Crude oil futures volatility $\sigma_{\text{crude}}$ (e.g., $0.27$).
+        pub crude_volatility_sigma_c: T,
+        /// Correlation $\rho_{\text{prod,crude}} \in (-1, 1)$ between refined basket and crude oil (e.g., $0.86$).
+        pub basket_crude_correlation_rho: T,
+        /// Risk-free discount rate $r$ over 1-year horizon (e.g., $0.038$).
+        pub risk_free_rate_r: T,
+    }
+
+    /// Analytics returned by [`evaluate_bjerksund_stensland_three_asset_321_refinery_crack_option`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct BjerksundStenslandRefineryCrack321Analytics<T: Real> {
+        /// 3-2-1 refined product basket forward value $F_{\text{basket}} = \frac{2}{3}F_{\text{gas}} + \frac{1}{3}F_{\text{heat}}$.
+        pub refined_product_basket_forward: T,
+        /// Forward 3-2-1 crack margin $F_{\text{basket}} - F_{\text{crude}}$.
+        pub forward_321_crack_margin: T,
+        /// Bjerksund–Stensland composite lognormal volatility $\sigma_{\text{BS}}$.
+        pub bjerksund_stensland_composite_volatility: T,
+        /// Discounted 3-2-1 refinery crack call option value ($/bbl).
+        pub refinery_321_crack_call_value: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    /// Evaluates the Bjerksund & Stensland (2011) closed-form spread option approximation applied
+    /// to a 3-2-1 refinery crack spread $\max\big(\frac{2}{3}F_{\text{gas}} + \frac{1}{3}F_{\text{heat}} - F_{\text{crude}} - K_{\text{refine}}, 0\big)$.
+    pub fn evaluate_bjerksund_stensland_three_asset_321_refinery_crack_option<T: Real>(
+        spec: &BjerksundStenslandRefineryCrack321Spec<T>,
+    ) -> BjerksundStenslandRefineryCrack321Analytics<T> {
+        let two_thirds = T::from_f64(2.0 / 3.0);
+        let one_third = T::from_f64(1.0 / 3.0);
+        let f_basket = two_thirds * spec.gasoline_futures_price_f_g
+            + one_third * spec.distillate_futures_price_f_h;
+        let f_c = spec.crude_futures_price_f_c;
+        let k = spec.refining_strike_k;
+        let a_denom = f_c + k;
+        let w_c = f_c / a_denom;
+
+        let sig_p = spec.refined_basket_volatility_sigma_p;
+        let sig_c = spec.crude_volatility_sigma_c;
+        let rho = spec.basket_crude_correlation_rho;
+
+        // Bjerksund-Stensland / Kirk composite volatility
+        let var_comp = sig_p * sig_p - T::from_f64(2.0) * w_c * rho * sig_p * sig_c
+            + w_c * w_c * sig_c * sig_c;
+        let sig_comp = var_comp.sqrt();
+
+        let d1 = ((f_basket / a_denom).ln() + T::from_f64(0.5) * var_comp) / sig_comp;
+        let d2 = d1 - sig_comp;
+        let df = (-spec.risk_free_rate_r).exp();
+        let call_val = df * (f_basket * std_norm_cdf(d1) - a_denom * std_norm_cdf(d2));
+
+        BjerksundStenslandRefineryCrack321Analytics {
+            refined_product_basket_forward: f_basket,
+            forward_321_crack_margin: f_basket - f_c,
+            bjerksund_stensland_composite_volatility: sig_comp,
+            refinery_321_crack_call_value: call_val,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn bjerksund_stensland_321_crack_invariants_and_ad_parity() {
+            let base = BjerksundStenslandRefineryCrack321Spec {
+                crude_futures_price_f_c: 76.0_f64,
+                gasoline_futures_price_f_g: 94.0_f64,
+                distillate_futures_price_f_h: 98.0_f64,
+                refining_strike_k: 16.0_f64,
+                refined_basket_volatility_sigma_p: 0.29_f64,
+                crude_volatility_sigma_c: 0.27_f64,
+                basket_crude_correlation_rho: 0.86_f64,
+                risk_free_rate_r: 0.038_f64,
+            };
+            let res = evaluate_bjerksund_stensland_three_asset_321_refinery_crack_option(&base);
+            assert!(res.refined_product_basket_forward > base.crude_futures_price_f_c);
+            assert!(res.forward_321_crack_margin > base.refining_strike_k);
+            assert!(res.bjerksund_stensland_composite_volatility > 0.05);
+            assert!(res.refinery_321_crack_call_value > 2.0);
+
+            let inputs = [
+                base.crude_futures_price_f_c,
+                base.gasoline_futures_price_f_g,
+                base.distillate_futures_price_f_h,
+                base.refining_strike_k,
+                base.refined_basket_volatility_sigma_p,
+                base.crude_volatility_sigma_c,
+                base.basket_crude_correlation_rho,
+                base.risk_free_rate_r,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BjerksundStenslandRefineryCrack321Spec {
+                crude_futures_price_f_c: dual_in[0],
+                gasoline_futures_price_f_g: dual_in[1],
+                distillate_futures_price_f_h: dual_in[2],
+                refining_strike_k: dual_in[3],
+                refined_basket_volatility_sigma_p: dual_in[4],
+                crude_volatility_sigma_c: dual_in[5],
+                basket_crude_correlation_rho: dual_in[6],
+                risk_free_rate_r: dual_in[7],
+            };
+            let r_ad = evaluate_bjerksund_stensland_three_asset_321_refinery_crack_option(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| BjerksundStenslandRefineryCrack321Spec {
+                    crude_futures_price_f_c: v[0],
+                    gasoline_futures_price_f_g: v[1],
+                    distillate_futures_price_f_h: v[2],
+                    refining_strike_k: v[3],
+                    refined_basket_volatility_sigma_p: v[4],
+                    crude_volatility_sigma_c: v[5],
+                    basket_crude_correlation_rho: v[6],
+                    risk_free_rate_r: v[7],
+                };
+                let rp = evaluate_bjerksund_stensland_three_asset_321_refinery_crack_option(&mk(p));
+                let rm = evaluate_bjerksund_stensland_three_asset_321_refinery_crack_option(&mk(m));
+                let fd = (rp.refinery_321_crack_call_value - rm.refinery_321_crack_call_value)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.refinery_321_crack_call_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.refinery_321_crack_call_value.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use bjerksund_stensland_321_crack_mod::*;

@@ -2015,3 +2015,177 @@ mod garman_kohlhagen_baw_fx_mod {
     }
 }
 pub use garman_kohlhagen_baw_fx_mod::*;
+mod carr_chou_symmetry_barrier_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Carr & Chou (1997, *Journal of Finance* 52(2)) &
+    /// Bowie & Carr (1994) Put-Call Symmetry (PCS) static replication of a down-and-out
+    /// FX call option using a vanilla call and a reflected geometric-strike put.
+    #[derive(Debug, Clone, Copy)]
+    pub struct CarrChouSymmetryBarrierReplicationSpec<T: Real> {
+        /// Spot FX rate $S_0 > H$ (e.g., $1.12$).
+        pub spot_fx_s0: T,
+        /// Call strike $K > H$ (e.g., $1.10$).
+        pub strike_k: T,
+        /// Lower knock-out barrier $H < \min(S_0, K)$ (e.g., $1.02$).
+        pub down_barrier_h: T,
+        /// Domestic risk-free rate $r_d$ (e.g., $0.034$).
+        pub domestic_rate_rd: T,
+        /// Foreign risk-free rate $r_f$ (e.g., $0.028$).
+        pub foreign_rate_rf: T,
+        /// Implied volatility $\sigma_K$ at the primary strike $K$ (e.g., $0.115$).
+        pub call_strike_volatility_sigma_k: T,
+        /// Implied volatility $\sigma_{K^*}$ at the reflected put strike $K^* = H^2 / K$ (e.g., $0.132$).
+        pub reflected_put_volatility_sigma_star: T,
+        /// Option maturity $T$ in years (e.g., $1.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_carr_chou_put_call_symmetry_static_barrier_replication`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct CarrChouSymmetryBarrierReplicationAnalytics<T: Real> {
+        /// Geometric reflected put strike $K^* = H^2 / K < H$.
+        pub reflected_put_strike_k_star: T,
+        /// Static replication put notional ratio $(K / H) \cdot (H / S_0)^{2(r_d - r_f)/\bar{\sigma}^2}$.
+        pub reflected_put_hedge_weight: T,
+        /// Primary vanilla Garman–Kohlhagen call value $C(S_0, K, \sigma_K)$.
+        pub primary_vanilla_call_value: T,
+        /// Smile-consistent Carr–Chou static-replication down-and-out call value.
+        pub static_replicated_down_and_out_call: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    /// Evaluates the Carr & Chou (1997, Eqs. 6–12) static barrier replication identity:
+    /// Under zero carry ($r_d = r_f$), Put-Call Symmetry $C(H, K) = \frac{K}{H}P(H, \frac{H^2}{K})$
+    /// matches the knock-out boundary condition on $S_t = H$ using a static short position of
+    /// $\frac{K}{H}$ puts struck at $K^* = \frac{H^2}{K}$ priced at the market OTM put volatility $\sigma_{K^*}$,
+    /// plus the nonzero-carry drift adjustment exponent $\mu = \frac{r_d - r_f - \frac{1}{2}\bar{\sigma}^2}{\bar{\sigma}^2}$.
+    pub fn evaluate_carr_chou_put_call_symmetry_static_barrier_replication<T: Real>(
+        spec: &CarrChouSymmetryBarrierReplicationSpec<T>,
+    ) -> CarrChouSymmetryBarrierReplicationAnalytics<T> {
+        let s0 = spec.spot_fx_s0;
+        let k = spec.strike_k;
+        let h = spec.down_barrier_h;
+        let rd = spec.domestic_rate_rd;
+        let rf = spec.foreign_rate_rf;
+        let sig_k = spec.call_strike_volatility_sigma_k;
+        let sig_star = spec.reflected_put_volatility_sigma_star;
+        let t = spec.maturity_years_t;
+        let sqrt_t = t.sqrt();
+        let half = T::from_f64(0.5);
+
+        // Reflected geometric strike K^* = H^2 / K
+        let k_star = (h * h) / k;
+
+        // Primary vanilla call C(S_0, K, sig_K)
+        let std_k = sig_k * sqrt_t;
+        let d1_c = ((s0 / k).ln() + (rd - rf + half * sig_k * sig_k) * t) / std_k;
+        let d2_c = d1_c - std_k;
+        let call_val =
+            s0 * (-rf * t).exp() * std_norm_cdf(d1_c) - k * (-rd * t).exp() * std_norm_cdf(d2_c);
+
+        // Reflected OTM put P(S_0, K^*, sig_star)
+        let std_s = sig_star * sqrt_t;
+        let d1_p = ((s0 / k_star).ln() + (rd - rf + half * sig_star * sig_star) * t) / std_s;
+        let d2_p = d1_p - std_s;
+        let put_star = k_star * (-rd * t).exp() * std_norm_cdf(-d2_p)
+            - s0 * (-rf * t).exp() * std_norm_cdf(-d1_p);
+
+        // Drift-adjusted PCS weight w_PCS = (K / H) * (H / S_0)^(2*(r_d - r_f)/sig_bar^2)
+        let sig_bar2 = half * (sig_k * sig_k + sig_star * sig_star);
+        let carry_exp = T::from_f64(2.0) * (rd - rf) / sig_bar2;
+        let w_put = (k / h) * (h / s0).pow(carry_exp);
+
+        let doc_val = call_val - w_put * put_star;
+
+        CarrChouSymmetryBarrierReplicationAnalytics {
+            reflected_put_strike_k_star: k_star,
+            reflected_put_hedge_weight: w_put,
+            primary_vanilla_call_value: call_val,
+            static_replicated_down_and_out_call: doc_val,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn carr_chou_symmetry_barrier_invariants_and_ad_parity() {
+            let base = CarrChouSymmetryBarrierReplicationSpec {
+                spot_fx_s0: 1.12_f64,
+                strike_k: 1.10_f64,
+                down_barrier_h: 1.02_f64,
+                domestic_rate_rd: 0.034_f64,
+                foreign_rate_rf: 0.028_f64,
+                call_strike_volatility_sigma_k: 0.115_f64,
+                reflected_put_volatility_sigma_star: 0.132_f64,
+                maturity_years_t: 1.0_f64,
+            };
+            let res = evaluate_carr_chou_put_call_symmetry_static_barrier_replication(&base);
+            assert!(res.reflected_put_strike_k_star < base.down_barrier_h);
+            assert!(res.reflected_put_hedge_weight > 0.8);
+            assert!(res.static_replicated_down_and_out_call > 0.0);
+            assert!(res.static_replicated_down_and_out_call < res.primary_vanilla_call_value);
+
+            let inputs = [
+                base.spot_fx_s0,
+                base.strike_k,
+                base.down_barrier_h,
+                base.domestic_rate_rd,
+                base.foreign_rate_rf,
+                base.call_strike_volatility_sigma_k,
+                base.reflected_put_volatility_sigma_star,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = CarrChouSymmetryBarrierReplicationSpec {
+                spot_fx_s0: dual_in[0],
+                strike_k: dual_in[1],
+                down_barrier_h: dual_in[2],
+                domestic_rate_rd: dual_in[3],
+                foreign_rate_rf: dual_in[4],
+                call_strike_volatility_sigma_k: dual_in[5],
+                reflected_put_volatility_sigma_star: dual_in[6],
+                maturity_years_t: dual_in[7],
+            };
+            let r_ad = evaluate_carr_chou_put_call_symmetry_static_barrier_replication(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| CarrChouSymmetryBarrierReplicationSpec {
+                    spot_fx_s0: v[0],
+                    strike_k: v[1],
+                    down_barrier_h: v[2],
+                    domestic_rate_rd: v[3],
+                    foreign_rate_rf: v[4],
+                    call_strike_volatility_sigma_k: v[5],
+                    reflected_put_volatility_sigma_star: v[6],
+                    maturity_years_t: v[7],
+                };
+                let rp = evaluate_carr_chou_put_call_symmetry_static_barrier_replication(&mk(p));
+                let rm = evaluate_carr_chou_put_call_symmetry_static_barrier_replication(&mk(m));
+                let fd = (rp.static_replicated_down_and_out_call
+                    - rm.static_replicated_down_and_out_call)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.static_replicated_down_and_out_call.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.static_replicated_down_and_out_call.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use carr_chou_symmetry_barrier_mod::*;

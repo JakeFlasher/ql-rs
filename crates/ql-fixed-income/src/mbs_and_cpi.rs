@@ -3884,3 +3884,160 @@ pub mod fabozzi_hayre_io_po_strip_mod {
     }
 }
 pub use fabozzi_hayre_io_po_strip_mod::*;
+mod jarrow_yildirim_yoy_inflation_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Jarrow & Yildirim (2003, *JFQA* 38(2)) &
+    /// Brigo & Mercurio (2006, *Interest Rate Models — Theory and Practice*, Ch. 16, §16.4)
+    /// Year-on-Year (YoY) inflation swap convexity adjustment engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct JarrowYildirimYoyInflationConvexitySpec<T: Real> {
+        /// Forward nominal rate $f_n(0; T_{i-1}, T_i)$ over $[T_{i-1}, T_i]$ (e.g., $0.041$).
+        pub nominal_forward_rate_f_n: T,
+        /// Forward real TIPS rate $f_r(0; T_{i-1}, T_i)$ over $[T_{i-1}, T_i]$ (e.g., $0.017$).
+        pub real_forward_rate_f_r: T,
+        /// Nominal Hull–White short-rate volatility $\sigma_n$ (e.g., $0.0085$).
+        pub nominal_rate_volatility_sigma_n: T,
+        /// Real Hull–White short-rate volatility $\sigma_r$ (e.g., $0.0065$).
+        pub real_rate_volatility_sigma_r: T,
+        /// CPI index volatility $\sigma_I$ (e.g., $0.012$).
+        pub cpi_index_volatility_sigma_i: T,
+        /// Correlation $\rho_{n,r}$ between nominal and real rates (e.g., $0.55$).
+        pub nominal_real_correlation_rho_nr: T,
+        /// Correlation $\rho_{r,I}$ between real rate and CPI index (e.g., $-0.25$).
+        pub real_cpi_correlation_rho_ri: T,
+        /// Measurement start date $T_{i-1}$ in years (e.g., $4.0$, with $\tau = 1$ year to $T_i = T_{i-1} + 1$).
+        pub period_start_years_t_prev: T,
+    }
+
+    /// Analytics returned by [`evaluate_jarrow_yildirim_yoy_inflation_swap_convexity_adjustment`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct JarrowYildirimYoyInflationConvexityAnalytics<T: Real> {
+        /// Unadjusted Fisher breakeven inflation rate $\frac{1 + f_n}{1 + f_r} - 1$.
+        pub unadjusted_breakeven_inflation_rate: T,
+        /// Jarrow–Yildirim (2003) / Brigo–Mercurio (2006, Eq. 16.21) multiplicative convexity correction $C_{\text{YoY}}$.
+        pub yoy_convexity_adjustment_bps: T,
+        /// Convexity-adjusted expected Year-on-Year inflation rate $\mathbb{E}^{T_i}[I(T_i)/I(T_{i-1}) - 1]$.
+        pub convexity_adjusted_yoy_inflation_rate: T,
+        /// Present value of a 1-period YoY inflation swaplet per $100$ notional.
+        pub discounted_yoy_swaplet_value: T,
+    }
+
+    /// Evaluates the Jarrow & Yildirim (2003) / Brigo & Mercurio (2006, Ch. 16, Eq. 16.21)
+    /// Year-on-Year inflation swaplet rate under the $T_i$-forward measure:
+    /// $$\mathbb{E}^{T_i}\!\left[\frac{I(T_i)}{I(T_{i-1})} - 1\right] = \frac{1 + f_n}{1 + f_r} e^{\mathcal{C}_{\text{JY}}(T_{i-1}, T_i)} - 1,$$
+    /// where $\mathcal{C}_{\text{JY}}(T_{i-1}, T_i) = T_{i-1}\big(\sigma_r^2 - \rho_{n,r}\sigma_n\sigma_r - \rho_{r,I}\sigma_r\sigma_I\big)$ over a 1-year accrual period.
+    pub fn evaluate_jarrow_yildirim_yoy_inflation_swap_convexity_adjustment<T: Real>(
+        spec: &JarrowYildirimYoyInflationConvexitySpec<T>,
+    ) -> JarrowYildirimYoyInflationConvexityAnalytics<T> {
+        let one_plus_fn = T::one() + spec.nominal_forward_rate_f_n;
+        let one_plus_fr = T::one() + spec.real_forward_rate_f_r;
+        let fisher_ratio = one_plus_fn / one_plus_fr;
+        let breakeven = fisher_ratio - T::one();
+
+        let sig_n = spec.nominal_rate_volatility_sigma_n;
+        let sig_r = spec.real_rate_volatility_sigma_r;
+        let sig_i = spec.cpi_index_volatility_sigma_i;
+        let t_prev = spec.period_start_years_t_prev;
+
+        // Brigo & Mercurio (2006, Eq. 16.21) YoY measure-change covariance exponent over tau = 1.0 yr
+        let cov_term = sig_r * sig_r
+            - spec.nominal_real_correlation_rho_nr * sig_n * sig_r
+            - spec.real_cpi_correlation_rho_ri * sig_r * sig_i;
+        let c_exp = t_prev * cov_term;
+
+        let adj_ratio = fisher_ratio * c_exp.exp();
+        let adj_yoy = adj_ratio - T::one();
+        let conv_bps = (adj_yoy - breakeven) * T::from_f64(10_000.0);
+
+        let df_ti = (-spec.nominal_forward_rate_f_n * (t_prev + T::one())).exp();
+        let swaplet_pv = T::from_f64(100.0) * df_ti * adj_yoy;
+
+        JarrowYildirimYoyInflationConvexityAnalytics {
+            unadjusted_breakeven_inflation_rate: breakeven,
+            yoy_convexity_adjustment_bps: conv_bps,
+            convexity_adjusted_yoy_inflation_rate: adj_yoy,
+            discounted_yoy_swaplet_value: swaplet_pv,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn jarrow_yildirim_yoy_inflation_invariants_and_ad_parity() {
+            let base = JarrowYildirimYoyInflationConvexitySpec {
+                nominal_forward_rate_f_n: 0.041_f64,
+                real_forward_rate_f_r: 0.017_f64,
+                nominal_rate_volatility_sigma_n: 0.0085_f64,
+                real_rate_volatility_sigma_r: 0.0065_f64,
+                cpi_index_volatility_sigma_i: 0.012_f64,
+                nominal_real_correlation_rho_nr: 0.55_f64,
+                real_cpi_correlation_rho_ri: -0.25_f64,
+                period_start_years_t_prev: 4.0_f64,
+            };
+            let res = evaluate_jarrow_yildirim_yoy_inflation_swap_convexity_adjustment(&base);
+            assert!(res.unadjusted_breakeven_inflation_rate > 0.02);
+            assert!(res.yoy_convexity_adjustment_bps > 0.0);
+            assert!(
+                res.convexity_adjusted_yoy_inflation_rate > res.unadjusted_breakeven_inflation_rate
+            );
+            assert!(res.discounted_yoy_swaplet_value > 1.5);
+
+            let inputs = [
+                base.nominal_forward_rate_f_n,
+                base.real_forward_rate_f_r,
+                base.nominal_rate_volatility_sigma_n,
+                base.real_rate_volatility_sigma_r,
+                base.cpi_index_volatility_sigma_i,
+                base.nominal_real_correlation_rho_nr,
+                base.real_cpi_correlation_rho_ri,
+                base.period_start_years_t_prev,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = JarrowYildirimYoyInflationConvexitySpec {
+                nominal_forward_rate_f_n: dual_in[0],
+                real_forward_rate_f_r: dual_in[1],
+                nominal_rate_volatility_sigma_n: dual_in[2],
+                real_rate_volatility_sigma_r: dual_in[3],
+                cpi_index_volatility_sigma_i: dual_in[4],
+                nominal_real_correlation_rho_nr: dual_in[5],
+                real_cpi_correlation_rho_ri: dual_in[6],
+                period_start_years_t_prev: dual_in[7],
+            };
+            let r_ad = evaluate_jarrow_yildirim_yoy_inflation_swap_convexity_adjustment(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| JarrowYildirimYoyInflationConvexitySpec {
+                    nominal_forward_rate_f_n: v[0],
+                    real_forward_rate_f_r: v[1],
+                    nominal_rate_volatility_sigma_n: v[2],
+                    real_rate_volatility_sigma_r: v[3],
+                    cpi_index_volatility_sigma_i: v[4],
+                    nominal_real_correlation_rho_nr: v[5],
+                    real_cpi_correlation_rho_ri: v[6],
+                    period_start_years_t_prev: v[7],
+                };
+                let rp = evaluate_jarrow_yildirim_yoy_inflation_swap_convexity_adjustment(&mk(p));
+                let rm = evaluate_jarrow_yildirim_yoy_inflation_swap_convexity_adjustment(&mk(m));
+                let fd = (rp.discounted_yoy_swaplet_value - rm.discounted_yoy_swaplet_value)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.discounted_yoy_swaplet_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.discounted_yoy_swaplet_value.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use jarrow_yildirim_yoy_inflation_mod::*;

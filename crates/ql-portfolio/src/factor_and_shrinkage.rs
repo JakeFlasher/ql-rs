@@ -3815,3 +3815,163 @@ mod kan_robotti_hj_distance_mod {
     }
 }
 pub use kan_robotti_hj_distance_mod::*;
+mod demiguel_brodie_norm_shrinkage_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the DeMiguel, Garlappi, Nogales & Uppal (2009, *Management Science*
+    /// 55(5)) & Brodie, Daubechies, De Mol, Giannone & Loris (2009, *PNAS* 106(30))
+    /// norm-constrained minimum-variance portfolio shrinkage engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct DeMiguelBrodieNormConstrainedPortfolioSpec<T: Real> {
+        /// Return variance $\sigma_1^2$ of asset 1 (e.g., $0.055$).
+        pub asset_1_variance_v1: T,
+        /// Return variance $\sigma_2^2$ of asset 2 (e.g., $0.028$).
+        pub asset_2_variance_v2: T,
+        /// Return correlation $\rho_{12} \in (-1, 1)$ between assets 1 and 2 (e.g., $0.25$).
+        pub asset_correlation_rho12: T,
+        /// $\ell_2$ ridge penalty multiplier $\lambda_2 > 0$ shrinking toward the $1/N$ equal-weight portfolio (e.g., $0.018$).
+        pub ridge_norm_penalty_lambda2: T,
+        /// Smooth $\ell_1$ gross-exposure penalty multiplier $\lambda_1 > 0$ curbing short leverage (e.g., $0.008$).
+        pub gross_exposure_penalty_lambda1: T,
+        /// Expected excess return $\mu_1$ of asset 1 (e.g., $0.075$).
+        pub asset_1_expected_return_mu1: T,
+        /// Expected excess return $\mu_2$ of asset 2 (e.g., $0.052$).
+        pub asset_2_expected_return_mu2: T,
+    }
+
+    /// Analytics returned by [`evaluate_demiguel_brodie_norm_constrained_minimum_variance_shrinkage`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct DeMiguelBrodieNormConstrainedPortfolioAnalytics<T: Real> {
+        /// Unconstrained sample minimum-variance weight $w_1^{\text{GMV}}$ on asset 1.
+        pub unconstrained_gmv_weight_asset1: T,
+        /// Norm-shrunk optimal weight $w_1^*(\lambda_1, \lambda_2)$ on asset 1.
+        pub norm_constrained_weight_asset1: T,
+        /// Out-of-sample regularized portfolio variance $w^{*\top} \Sigma w^*$.
+        pub regularized_portfolio_variance: T,
+        /// Regularized out-of-sample portfolio Sharpe ratio.
+        pub regularized_portfolio_sharpe_ratio: T,
+    }
+
+    /// Evaluates the DeMiguel et al. (2009, Proposition 1–2) & Brodie et al. (2009)
+    /// norm-constrained minimum-variance portfolio, showing that $\ell_2/\ell_1$ norm penalties
+    /// shrink the sample GMV weights $w^{\text{GMV}}$ continuously toward the $1/N$ equal-weight
+    /// benchmark $w_{\text{EW}} = (1/2, 1/2)^\top$.
+    pub fn evaluate_demiguel_brodie_norm_constrained_minimum_variance_shrinkage<T: Real>(
+        spec: &DeMiguelBrodieNormConstrainedPortfolioSpec<T>,
+    ) -> DeMiguelBrodieNormConstrainedPortfolioAnalytics<T> {
+        let v1 = spec.asset_1_variance_v1;
+        let v2 = spec.asset_2_variance_v2;
+        let cov12 = spec.asset_correlation_rho12 * (v1 * v2).sqrt();
+        let half = T::from_f64(0.5);
+
+        // Unconstrained 2-asset GMV weight w1_gmv = (v2 - cov12) / (v1 + v2 - 2*cov12)
+        let denom_gmv = v1 + v2 - T::from_f64(2.0) * cov12;
+        let w1_gmv = (v2 - cov12) / denom_gmv;
+
+        // Norm-penalized shrinkage toward w_EW = 0.5 (DeMiguel et al. 2009, Prop. 2):
+        // Effective ridge + smooth L1 penalty adds 2*(lambda2 + lambda1 / sqrt((w1_gmv - 0.5)^2 + 0.01)) to denominator
+        let dev_ew = w1_gmv - half;
+        let eff_pen = T::from_f64(2.0)
+            * (spec.ridge_norm_penalty_lambda2
+                + spec.gross_exposure_penalty_lambda1
+                    / (dev_ew * dev_ew + T::from_f64(0.01)).sqrt());
+        let w1_shrunk = half + (v2 - v1) / (T::from_f64(2.0) * (denom_gmv + eff_pen));
+        let w2_shrunk = T::one() - w1_shrunk;
+
+        let port_var = w1_shrunk * w1_shrunk * v1
+            + T::from_f64(2.0) * w1_shrunk * w2_shrunk * cov12
+            + w2_shrunk * w2_shrunk * v2;
+        let port_ret = w1_shrunk * spec.asset_1_expected_return_mu1
+            + w2_shrunk * spec.asset_2_expected_return_mu2;
+        let sharpe = port_ret / port_var.sqrt();
+
+        DeMiguelBrodieNormConstrainedPortfolioAnalytics {
+            unconstrained_gmv_weight_asset1: w1_gmv,
+            norm_constrained_weight_asset1: w1_shrunk,
+            regularized_portfolio_variance: port_var,
+            regularized_portfolio_sharpe_ratio: sharpe,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn demiguel_brodie_norm_shrinkage_invariants_and_ad_parity() {
+            let base = DeMiguelBrodieNormConstrainedPortfolioSpec {
+                asset_1_variance_v1: 0.055_f64,
+                asset_2_variance_v2: 0.028_f64,
+                asset_correlation_rho12: 0.25_f64,
+                ridge_norm_penalty_lambda2: 0.018_f64,
+                gross_exposure_penalty_lambda1: 0.008_f64,
+                asset_1_expected_return_mu1: 0.075_f64,
+                asset_2_expected_return_mu2: 0.052_f64,
+            };
+            let res = evaluate_demiguel_brodie_norm_constrained_minimum_variance_shrinkage(&base);
+            assert!(res.unconstrained_gmv_weight_asset1 < 0.5);
+            // Norm shrinkage pulls w1 closer to 0.5 than unconstrained GMV
+            assert!(
+                res.norm_constrained_weight_asset1 > res.unconstrained_gmv_weight_asset1
+                    && res.norm_constrained_weight_asset1 < 0.5
+            );
+            assert!(res.regularized_portfolio_variance > 0.0);
+            assert!(res.regularized_portfolio_sharpe_ratio > 0.0);
+
+            let inputs = [
+                base.asset_1_variance_v1,
+                base.asset_2_variance_v2,
+                base.asset_correlation_rho12,
+                base.ridge_norm_penalty_lambda2,
+                base.gross_exposure_penalty_lambda1,
+                base.asset_1_expected_return_mu1,
+                base.asset_2_expected_return_mu2,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = DeMiguelBrodieNormConstrainedPortfolioSpec {
+                asset_1_variance_v1: dual_in[0],
+                asset_2_variance_v2: dual_in[1],
+                asset_correlation_rho12: dual_in[2],
+                ridge_norm_penalty_lambda2: dual_in[3],
+                gross_exposure_penalty_lambda1: dual_in[4],
+                asset_1_expected_return_mu1: dual_in[5],
+                asset_2_expected_return_mu2: dual_in[6],
+            };
+            let r_ad =
+                evaluate_demiguel_brodie_norm_constrained_minimum_variance_shrinkage(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| DeMiguelBrodieNormConstrainedPortfolioSpec {
+                    asset_1_variance_v1: v[0],
+                    asset_2_variance_v2: v[1],
+                    asset_correlation_rho12: v[2],
+                    ridge_norm_penalty_lambda2: v[3],
+                    gross_exposure_penalty_lambda1: v[4],
+                    asset_1_expected_return_mu1: v[5],
+                    asset_2_expected_return_mu2: v[6],
+                };
+                let rp =
+                    evaluate_demiguel_brodie_norm_constrained_minimum_variance_shrinkage(&mk(p));
+                let rm =
+                    evaluate_demiguel_brodie_norm_constrained_minimum_variance_shrinkage(&mk(m));
+                let fd = (rp.regularized_portfolio_sharpe_ratio
+                    - rm.regularized_portfolio_sharpe_ratio)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.regularized_portfolio_sharpe_ratio.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.regularized_portfolio_sharpe_ratio.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use demiguel_brodie_norm_shrinkage_mod::*;
