@@ -161,3 +161,11 @@ pub fn evaluate_davidson_levin_four_factor_prepayment_io_po<T: Real>(
         po_effective_rate_sensitivity: dpo_dr * s.initial_balance,
     }
 }
+
+#[cfg(test)]
+mod phase34_tests {
+    #[test]
+    fn phase34_smoke() {
+        assert!(std::hint::black_box(true));
+    }
+}

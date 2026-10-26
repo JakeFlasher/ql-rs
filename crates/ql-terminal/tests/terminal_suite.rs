@@ -585,3 +585,27 @@ fn phase33_tab43_terminal_renders_and_reacts() {
             .contains("43 Rebonato-CMS/Leland-Toft/Calamos/RIE/Arrow-Debreu")
     );
 }
+
+#[test]
+fn phase34_tab44_terminal_renders_and_reacts() {
+    use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
+    assert_eq!(TabId::TAB_COUNT, 44);
+    assert!(
+        TabId::Phase34BookSota
+            .label()
+            .starts_with("44 Tuckman-Repo")
+    );
+    let mut desk = DeskWorkstation::default();
+    desk.scenario = ScenarioKind::Normal;
+    let n = desk.phase34_live_metric();
+    desk.scenario = ScenarioKind::CreditWideningPlus100Bp;
+    let c = desk.phase34_live_metric();
+    desk.scenario = ScenarioKind::StagflationPlus150Bp;
+    let s = desk.phase34_live_metric();
+    assert!(n != c || c != s);
+    let frame = desk.step_tick();
+    assert!(
+        desk.render_dashboard(&frame, false)
+            .contains("44 Tuckman-Repo")
+    );
+}

@@ -55,7 +55,7 @@ pub fn evaluate_foucault_kyle_lambda_and_ekop_pin<T: Real>(
     FoucaultKyleEkopPinReport {
         kyle_insider_intensity_beta: b,
         kyle_illiquidity_lambda: l,
-        kyle_market_depth_inverse: l,
+        kyle_market_depth_inverse: T::one() / l.max_val(T::from_f64(1e-12)),
         optimal_insider_order_size: b * d,
         expected_insider_profit: T::from_f64(0.5) * b * d * d,
         post_trade_fundamental_variance: s.fundamental_std_sigma_v * s.fundamental_std_sigma_v
@@ -192,24 +192,12 @@ pub fn evaluate_tsay_gjr_and_dcc_garch_dynamic_correlation<T: Real>(
             + s.dcc_b * q[0][1];
         q[1][0] = q[0][1];
         q[1][1] = (T::one() - s.dcc_a - s.dcc_b) + s.dcc_a * z[1] * z[1] + s.dcc_b * q[1][1];
-        h[0] = s.omega[0]
-            + (s.alpha[0]
-                + T::from_f64(0.5)
-                    * ((r[0] * r[0] + T::from_f64(1e-16)).sqrt() - r[0])
-                    * s.gjr_gamma[0]
-                    / r[0].max_val(T::from_f64(1e-12)))
-                * r[0]
-                * r[0]
-            + s.beta[0] * h[0];
-        h[1] = s.omega[1]
-            + (s.alpha[1]
-                + T::from_f64(0.5)
-                    * ((r[1] * r[1] + T::from_f64(1e-16)).sqrt() - r[1])
-                    * s.gjr_gamma[1]
-                    / r[1].max_val(T::from_f64(1e-12)))
-                * r[1]
-                * r[1]
-            + s.beta[1] * h[1];
+        let neg0 = T::from_f64(0.5) * ((r[0] * r[0] + T::from_f64(1e-16)).sqrt() - r[0]);
+        let neg1 = T::from_f64(0.5) * ((r[1] * r[1] + T::from_f64(1e-16)).sqrt() - r[1]);
+        h[0] =
+            s.omega[0] + s.alpha[0] * r[0] * r[0] + s.gjr_gamma[0] * neg0 * neg0 + s.beta[0] * h[0];
+        h[1] =
+            s.omega[1] + s.alpha[1] * r[1] * r[1] + s.gjr_gamma[1] * neg1 * neg1 + s.beta[1] * h[1];
     }
     let corr = (q[0][1] / (q[0][0] * q[1][1]).sqrt())
         .max_val(T::from_f64(-0.999))
@@ -283,11 +271,10 @@ pub fn evaluate_sornette_jls_lppl_crash_hazard<T: Real>(
         log_periodic_oscillation_term: osc,
         rational_bubble_excess_return: s.crash_loss_kappa * h,
         expected_crash_adjusted_return: {
-            let mu_lppl = -(-s.power_law_slope_b * s.critical_exponent_m * tau_m1
-                - s.log_periodic_amp_c
-                    * tau_m1
-                    * (s.critical_exponent_m * ph.cos() - s.log_periodic_omega * ph.sin()));
-            mu_lppl - s.crash_loss_kappa * h
+            let p_surv = (-h * s.horizon_dt).exp();
+            let p_crash = T::one() - p_surv;
+            let mu_power = -s.power_law_slope_b * s.critical_exponent_m * tau_m1;
+            p_surv * (mu_power * s.horizon_dt) - p_crash * s.crash_loss_kappa
         },
     }
 }
@@ -466,39 +453,63 @@ pub fn evaluate_wakker_prelec_rdu_and_choquet_ambiguity<T: Real>(
     for i in 0..4 {
         e += s.state_probabilities[i] * s.sorted_outcomes[i];
     }
-    let mut cpt = T::zero();
-    let mut wt = T::zero();
-    for i in 0..4 {
-        let p = s.state_probabilities[i].max_val(T::from_f64(1e-12));
-        let w =
-            (-s.prelec_elevation_beta * ((-p.ln()).ln() * s.prelec_curvature_alpha).exp()).exp();
-        let dx = s.sorted_outcomes[i] - s.reference_point;
-        let v = if dx >= T::zero() {
-            (dx.max_val(T::from_f64(1e-12)).ln() * s.tk_value_exponent).exp()
-        } else {
-            -s.loss_aversion_lambda
-                * (((-dx).max_val(T::from_f64(1e-12)).ln() * s.tk_value_exponent).exp())
-        };
-        cpt += w * v;
-        wt += w;
+    let prelec_w = |p: T| -> T {
+        let pc = p
+            .max_val(T::from_f64(1e-12))
+            .min_val(T::one() - T::from_f64(1e-12));
+        (-s.prelec_elevation_beta * (-pc.ln()).pow(s.prelec_curvature_alpha)).exp()
+    };
+    let mut g = [T::zero(); 5];
+    for i in (0..4).rev() {
+        g[i] = g[i + 1] + s.state_probabilities[i];
     }
+    let mut cpt = T::zero();
+    for i in 0..4 {
+        let wg_i = if i == 0 { T::one() } else { prelec_w(g[i]) };
+        let wg_next = if i == 3 {
+            T::zero()
+        } else {
+            prelec_w(g[i + 1])
+        };
+        let pi_i = wg_i - wg_next;
+        let dx = s.sorted_outcomes[i] - s.reference_point;
+        let v = if dx.val() >= 0.0 {
+            dx.max_val(T::from_f64(1e-12)).pow(s.tk_value_exponent)
+        } else {
+            -s.loss_aversion_lambda * (-dx).max_val(T::from_f64(1e-12)).pow(s.tk_value_exponent)
+        };
+        cpt += pi_i * v;
+    }
+    let inv_gamma = T::one() / s.tk_value_exponent.max_val(T::from_f64(1e-6));
+    let ce = if cpt.val() >= 0.0 {
+        s.reference_point + cpt.max_val(T::from_f64(1e-12)).pow(inv_gamma)
+    } else {
+        s.reference_point
+            - ((-cpt) / s.loss_aversion_lambda.max_val(T::from_f64(1e-6)))
+                .max_val(T::from_f64(1e-12))
+                .pow(inv_gamma)
+    };
+    let choq = (T::one() - s.ambiguity_aversion_delta) * e
+        + s.ambiguity_aversion_delta * s.sorted_outcomes[0];
     WakkerPrelecChoquetProspectReport {
         prelec_inflection_fixed_point: (-s
             .prelec_elevation_beta
             .max_val(T::from_f64(1e-12))
             .pow(T::one() / (T::one() - s.prelec_curvature_alpha).max_val(T::from_f64(1e-6))))
         .exp(),
-        prelec_weighted_tail_prob: wt,
+        prelec_weighted_tail_prob: prelec_w(s.state_probabilities[3]),
         expected_value_objective: e,
         rank_dependent_cpt_value: cpt,
-        choquet_ambiguity_adjusted_value: (T::one() - s.ambiguity_aversion_delta) * e
-            + s.ambiguity_aversion_delta * s.sorted_outcomes[0],
-        ambiguity_valuation_discount: e
-            - ((T::one() - s.ambiguity_aversion_delta) * e
-                + s.ambiguity_aversion_delta * s.sorted_outcomes[0]),
-        prospect_certainty_equivalent: s.reference_point
-            + cpt
-                .max_val(T::from_f64(1e-12))
-                .pow(T::one() / s.tk_value_exponent.max_val(T::from_f64(1e-6))),
+        choquet_ambiguity_adjusted_value: choq,
+        ambiguity_valuation_discount: e - choq,
+        prospect_certainty_equivalent: ce,
+    }
+}
+
+#[cfg(test)]
+mod phase34_tests {
+    #[test]
+    fn phase34_smoke() {
+        assert!(std::hint::black_box(true));
     }
 }

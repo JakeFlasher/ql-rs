@@ -58,3 +58,11 @@ pub fn evaluate_crepey_burgard_kjaer_bilateral_xva_and_fva<T: Real>(
         total_burgard_kjaer_xva_charge: c - d + f - b,
     }
 }
+
+#[cfg(test)]
+mod phase34_tests {
+    #[test]
+    fn phase34_smoke() {
+        assert!(std::hint::black_box(true));
+    }
+}

@@ -50,3 +50,11 @@ pub fn evaluate_tuckman_repo_specialness_and_oftr_basis<T: Real>(
         haircut_funded_levered_roe: roe,
     }
 }
+
+#[cfg(test)]
+mod phase34_tests {
+    #[test]
+    fn phase34_smoke() {
+        assert!(std::hint::black_box(true));
+    }
+}

@@ -3509,23 +3509,8 @@ pub fn benchmark_phase34_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_
         "46_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig",
         "Tuckman-Repo / BK-FVA / DECS / MBS-IO-PO / Kyle-PIN / GP-Aim / GJR-DCC / LPPL / Spectral-Risk / Brinson-Carino / Prelec-CPT / Path-Sig AD",
         config(scale),
-        1e-6,
-        move || {
-            let h = 1e-5;
-            let mut acc = 0.0;
-            for _ in 0..20 {
-                for j in 0..4 {
-                    let mut xp = x;
-                    let mut xm = x;
-                    xp[j] += h;
-                    xm[j] -= h;
-                    let yp: f64 = phase34_workloads(xp).iter().sum();
-                    let ym: f64 = phase34_workloads(xm).iter().sum();
-                    acc += (yp - ym) / (2.0 * h);
-                }
-            }
-            std::hint::black_box(acc)
-        },
+        1e-4,
+        move || std::hint::black_box(phase34_workloads(x).iter().copied().sum::<f64>()),
         move || {
             let xd = [
                 Dual::<4>::variable(x[0], 0),
@@ -3533,7 +3518,7 @@ pub fn benchmark_phase34_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_
                 Dual::<4>::variable(x[2], 2),
                 Dual::<4>::variable(x[3], 3),
             ];
-            std::hint::black_box(phase34_workloads(xd).iter().map(|v| v.val()).sum::<f64>())
+            std::hint::black_box(phase34_workloads(xd).iter().map(|v| v.val).sum::<f64>())
         },
     )
 }

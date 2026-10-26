@@ -35,6 +35,7 @@ pub mod prelude {
         RsmAsc470DebtModificationReport, RsmAsc470DebtModificationSpec,
         evaluate_rsm_asc470_debt_modification_and_restructuring,
     };
+    pub use ql_curves::*;
     pub use ql_curves::{
         AdbRbiNdirsAssetSwapReport, AdbRbiNdirsAssetSwapSpec,
         evaluate_adb_rbi_ndirs_and_asset_swap_basis,
@@ -51,6 +52,7 @@ pub mod prelude {
         RomerVeronesiTaylorRuleMacroCurveReport, RomerVeronesiTaylorRuleMacroCurveSpec,
         evaluate_romer_veronesi_taylor_rule_macro_yield_curve,
     };
+    pub use ql_dml::*;
     pub use ql_dml::{
         AgrawalBoydDifferentiableQpReport, AgrawalBoydDifferentiableQpSpec,
         solve_agrawal_boyd_differentiable_qp_layer,
@@ -82,6 +84,7 @@ pub mod prelude {
         SheppShiryaevShrevePerpetualRussianReport, SheppShiryaevShrevePerpetualRussianSpec,
         price_shepp_shiryaev_shreve_perpetual_russian_and_mckean,
     };
+    pub use ql_fixed_income::*;
     pub use ql_fixed_income::{
         AcharyaFedsBankRunAndCocoReport, AcharyaFedsBankRunAndCocoSpec,
         analyze_acharya_feds_bank_run_and_optimal_coco,
@@ -187,6 +190,7 @@ pub mod prelude {
         HaentjensInthoutHhwAdiReport, HaentjensInthoutHhwAdiSpec,
         evaluate_haentjens_inthout_heston_hull_white_adi,
     };
+    pub use ql_portfolio::*;
     pub use ql_portfolio::{
         AhmadiJavidEntropicVarPortfolioReport, AhmadiJavidEntropicVarPortfolioSpec,
         CottonSchurHrpRmtNcoReport, CottonSchurHrpRmtNcoSpec, TsayBekkGarchSpilloverReport,
@@ -3117,7 +3121,8 @@ impl DeskWorkstation {
             + qual.schilit_shenanigan_composite_z.val()
     }
     pub fn phase34_live_metric_from_market(m: &MarketSnapshot, credit_bump: f64) -> f64 {
-        let r = m.ois_quotes.first().copied().unwrap_or(0.03) + credit_bump;
+        let inflation = m.inflation_quotes.first().map(|(_, v)| *v).unwrap_or(0.02);
+        let r = m.ois_quotes.first().copied().unwrap_or(0.03) + credit_bump + inflation * 0.01;
         let f = m.eq_spot.max(1.0);
         let p = ql_portfolio::evaluate_foucault_kyle_lambda_and_ekop_pin(
             &ql_portfolio::FoucaultKyleEkopPinSpec {
@@ -3134,7 +3139,7 @@ impl DeskWorkstation {
                 observed_sells_s: 1.0,
             },
         );
-        p.ekop_pin_probability + p.posterior_event_probability + r
+        p.ekop_pin_probability + p.posterior_event_probability + r + inflation
     }
     pub fn phase34_live_metric(&self) -> f64 {
         let bump = match self.scenario {
@@ -6941,7 +6946,7 @@ mod phase26_tests {
         assert!(ws.render_dashboard(&stressed, false).contains(
             "36 MF-Rates/Wildcard/TARF/Bergomi/Schönbucher/FRTB-CVA/Lookback/VTA/FLAM/ACD/HLZ/MLMC"
         ));
-        assert_eq!(TabId::TAB_COUNT, 44);
+        assert_eq!(crate::TabId::TAB_COUNT, 44);
         assert_eq!(TabId::ALL.len(), 44);
         assert!(TabId::ALL.contains(&TabId::Phase26Sota));
     }
@@ -6964,7 +6969,7 @@ mod phase27_tests {
                 "37 FTPL/G2/eSSVI/CB/CoCo/MPOR/Double-Heston/Curran/Warin/Roll/Busseti/KKT"
             )
         );
-        assert_eq!(TabId::TAB_COUNT, 44);
+        assert_eq!(crate::TabId::TAB_COUNT, 44);
         assert_eq!(TabId::ALL.len(), 44);
         assert!(TabId::ALL.contains(&TabId::Phase27Sota));
     }
@@ -7038,7 +7043,7 @@ mod phase29_tests {
     use super::*;
     #[test]
     fn phase29_tab39_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 44);
+        assert_eq!(crate::TabId::TAB_COUNT, 44);
         assert!(TabId::Phase29Sota.label().starts_with("39 Veronesi / Lando-Log / Corridor-Var / Russian / Bates-SVJ / Koziol-CB / MFG / BCBS-Floor / CJP-LOB / ETF-AP / IC-Decay / Glasserman-IS"));
         let mut ws = DeskWorkstation::default();
         let a = ws.step_tick();
@@ -7058,7 +7063,7 @@ mod phase30_tests {
 
     #[test]
     fn phase30_tab40_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 44);
+        assert_eq!(crate::TabId::TAB_COUNT, 44);
         assert_eq!(TabId::ALL.len(), 44);
         assert!(
             TabId::Phase30BookSota
@@ -7085,7 +7090,7 @@ mod phase31_tests {
 
     #[test]
     fn phase31_tab41_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 44);
+        assert_eq!(crate::TabId::TAB_COUNT, 44);
         assert_eq!(TabId::ALL.len(), 44);
         assert!(
             TabId::Phase31BookSota
@@ -7114,7 +7119,7 @@ mod phase32_tests {
     use super::*;
     #[test]
     fn phase32_tab42_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 44);
+        assert_eq!(crate::TabId::TAB_COUNT, 44);
         assert_eq!(TabId::ALL.len(), 44);
         assert!(
             TabId::Phase32BookSota
@@ -7145,7 +7150,7 @@ mod phase33_tests {
     use super::*;
     #[test]
     fn phase33_tab43_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 44);
+        assert_eq!(crate::TabId::TAB_COUNT, 44);
         assert_eq!(TabId::ALL.len(), 44);
         assert!(
             TabId::Phase33BookSota
@@ -7166,5 +7171,13 @@ mod phase33_tests {
             ws.render_dashboard(&frame, false)
                 .contains("43 Rebonato-CMS/Leland-Toft/Calamos/RIE/Arrow-Debreu")
         );
+    }
+}
+
+#[cfg(test)]
+mod phase34_tests {
+    #[test]
+    fn phase34_smoke() {
+        assert_eq!(crate::TabId::TAB_COUNT, 44);
     }
 }
