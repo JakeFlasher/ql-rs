@@ -1,5 +1,9 @@
 //! Coherent empirical and parametric risk measures plus Euler allocations.
 #![allow(clippy::needless_range_loop)]
+pub use crate::phase35::{
+    MeucciEntropyPoolingViewReport, MeucciEntropyPoolingViewSpec,
+    evaluate_meucci_relative_entropy_view_pooling,
+};
 
 pub use crate::phase30::*;
 pub use crate::phase31::{

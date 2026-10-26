@@ -9,6 +9,10 @@ pub use crate::phase33::{
     evaluate_tuckman_specified_pool_payup_and_dollar_roll,
 };
 pub use crate::phase34::*;
+pub use crate::phase35::{
+    FabozziTreasuryFuturesCtdSwitchReport, FabozziTreasuryFuturesCtdSwitchSpec,
+    evaluate_fabozzi_treasury_futures_ctd_and_switch_option,
+};
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
 use ql_inflation::ZeroInflationCurve;

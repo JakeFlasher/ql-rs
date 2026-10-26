@@ -1,4 +1,8 @@
 #![allow(clippy::needless_range_loop)]
+pub use crate::phase35::{
+    AyacheForsythVetzalConvertibleReport, AyacheForsythVetzalConvertibleSpec,
+    evaluate_ayache_forsyth_vetzal_default_coupled_cb,
+};
 
 pub use crate::phase30::*;
 pub use crate::phase31::{

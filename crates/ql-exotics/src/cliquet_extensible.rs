@@ -1,67 +1,8 @@
 use crate::barrier::{BarrierOptionSpec, MonitoringFrequency, price_barrier_option};
+pub use crate::phase35::*;
 use ql_ad::Real;
 use ql_math::bivariate_normal_cdf;
 use ql_vol::black_scholes_price;
-#[cfg(test)]
-mod phase23_tests {
-    use super::*;
-    use ql_ad::Dual;
-    #[test]
-    fn parisian_order() {
-        let s = ChesneyYorCumulativeParisianRainbowSpec {
-            spot_1: 100.0,
-            spot_2: 102.0,
-            strike: 100.0,
-            par_barrier: 120.0,
-            excursion_window_d: 0.1,
-            vol_1: 0.2,
-            vol_2: 0.2,
-            div_1: 0.0,
-            div_2: 0.0,
-            correlation: 0.5,
-            risk_free_rate: 0.02,
-            expiry: 1.0,
-            is_up_and_out: true,
-        };
-        let r = price_chesney_yor_cumulative_parisian_and_rainbow(&s);
-        assert!(r.instant_ko_barrier_price <= r.consecutive_parisian_ko_price);
-        assert!(r.stulz_rainbow_parity_error < 1e-12);
-        assert!(r.rainbow_put_on_min > 0.0);
-    }
-
-    #[test]
-    fn dual_fd_parity() {
-        fn mk<T: Real>(x: T) -> ChesneyYorCumulativeParisianRainbowSpec<T> {
-            ChesneyYorCumulativeParisianRainbowSpec {
-                spot_1: T::from_f64(100.0),
-                spot_2: x,
-                strike: T::from_f64(100.0),
-                par_barrier: T::from_f64(120.0),
-                excursion_window_d: T::from_f64(0.1),
-                vol_1: T::from_f64(0.2),
-                vol_2: T::from_f64(0.2),
-                div_1: T::zero(),
-                div_2: T::zero(),
-                correlation: T::from_f64(0.5),
-                risk_free_rate: T::from_f64(0.02),
-                expiry: T::one(),
-                is_up_and_out: true,
-            }
-        }
-        let h = 1e-5;
-        let fd = (price_chesney_yor_cumulative_parisian_and_rainbow(&mk(102.0 + h))
-            .rainbow_call_on_max
-            .val()
-            - price_chesney_yor_cumulative_parisian_and_rainbow(&mk(102.0 - h))
-                .rainbow_call_on_max
-                .val())
-            / (2.0 * h);
-        let ad =
-            price_chesney_yor_cumulative_parisian_and_rainbow(&mk(Dual::<1>::variable(102.0, 0)))
-                .rainbow_call_on_max;
-        assert!((ad.d[0] - fd).abs() < 1e-5);
-    }
-}
 
 #[derive(Clone, Copy, Debug)]
 pub struct ChesneyYorCumulativeParisianRainbowSpec<T: Real = f64> {
@@ -1070,5 +1011,66 @@ mod phase21_tests {
         let r = price_bouzoubaa_reverse_and_global_cliquet(&s);
         assert!(r.total_return_std.val() >= 0.0);
         assert!(r.forward_skew_adjustment_pv.val().is_finite());
+    }
+}
+
+#[cfg(test)]
+mod phase23_tests {
+    use super::*;
+    use ql_ad::Dual;
+    #[test]
+    fn parisian_order() {
+        let s = ChesneyYorCumulativeParisianRainbowSpec {
+            spot_1: 100.0,
+            spot_2: 102.0,
+            strike: 100.0,
+            par_barrier: 120.0,
+            excursion_window_d: 0.1,
+            vol_1: 0.2,
+            vol_2: 0.2,
+            div_1: 0.0,
+            div_2: 0.0,
+            correlation: 0.5,
+            risk_free_rate: 0.02,
+            expiry: 1.0,
+            is_up_and_out: true,
+        };
+        let r = price_chesney_yor_cumulative_parisian_and_rainbow(&s);
+        assert!(r.instant_ko_barrier_price <= r.consecutive_parisian_ko_price);
+        assert!(r.stulz_rainbow_parity_error < 1e-12);
+        assert!(r.rainbow_put_on_min > 0.0);
+    }
+
+    #[test]
+    fn dual_fd_parity() {
+        fn mk<T: Real>(x: T) -> ChesneyYorCumulativeParisianRainbowSpec<T> {
+            ChesneyYorCumulativeParisianRainbowSpec {
+                spot_1: T::from_f64(100.0),
+                spot_2: x,
+                strike: T::from_f64(100.0),
+                par_barrier: T::from_f64(120.0),
+                excursion_window_d: T::from_f64(0.1),
+                vol_1: T::from_f64(0.2),
+                vol_2: T::from_f64(0.2),
+                div_1: T::zero(),
+                div_2: T::zero(),
+                correlation: T::from_f64(0.5),
+                risk_free_rate: T::from_f64(0.02),
+                expiry: T::one(),
+                is_up_and_out: true,
+            }
+        }
+        let h = 1e-5;
+        let fd = (price_chesney_yor_cumulative_parisian_and_rainbow(&mk(102.0 + h))
+            .rainbow_call_on_max
+            .val()
+            - price_chesney_yor_cumulative_parisian_and_rainbow(&mk(102.0 - h))
+                .rainbow_call_on_max
+                .val())
+            / (2.0 * h);
+        let ad =
+            price_chesney_yor_cumulative_parisian_and_rainbow(&mk(Dual::<1>::variable(102.0, 0)))
+                .rainbow_call_on_max;
+        assert!((ad.d[0] - fd).abs() < 1e-5);
     }
 }

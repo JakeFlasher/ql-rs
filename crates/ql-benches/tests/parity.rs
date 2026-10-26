@@ -13,7 +13,7 @@ use ql_benches::{
 #[test]
 fn phase21_suite33_and_invariants() {
     let rows = with_config_override(1, 3, || run_all_benchmarks(1));
-    assert_eq!(rows.len(), 46);
+    assert_eq!(rows.len(), 47);
     let row = with_config_override(1, 3, || {
         benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(1)
     });
@@ -153,7 +153,7 @@ fn phase33_suite45_and_invariants() {
     for y in ql_benches::phase33_workloads(x) {
         assert!(y.d.iter().map(|v| v.abs()).sum::<f64>() > 1e-9);
     }
-    assert_eq!(ql_benches::SUITE_COUNT, 46);
+    assert_eq!(ql_benches::SUITE_COUNT, 47);
     let row = ql_benches::benchmark_phase33_rebonato_cms_lm_all_engines(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-4 && row.speedup > 1.0);
 }
@@ -170,7 +170,24 @@ fn phase34_suite46_and_invariants() {
     for y in ql_benches::phase34_workloads(x) {
         assert!(y.d.iter().map(|v| v.abs()).sum::<f64>() > 1e-9);
     }
-    assert_eq!(ql_benches::SUITE_COUNT, 46);
+    assert_eq!(ql_benches::SUITE_COUNT, 47);
     let row = ql_benches::benchmark_phase34_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig(1);
+    assert!(row.parity_ok && row.max_abs_diff < 1e-4 && row.speedup > 1.0);
+}
+
+#[test]
+fn phase35_suite47_and_invariants() {
+    use ql_ad::Dual;
+    let x: [Dual<4>; 4] = [
+        Dual::variable(0.2, 0),
+        Dual::variable(-0.1, 1),
+        Dual::variable(0.3, 2),
+        Dual::variable(-0.2, 3),
+    ];
+    for y in ql_benches::phase35_workloads(x) {
+        assert!(y.d.iter().map(|v| v.abs()).sum::<f64>() > 1e-9);
+    }
+    assert_eq!(ql_benches::SUITE_COUNT, 47);
+    let row = ql_benches::benchmark_phase35_hagan_west_ctd_afv_kth_sacva_gs_kirk_fx_vv_napoleon_tc_meucci_krr_eva(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-4 && row.speedup > 1.0);
 }

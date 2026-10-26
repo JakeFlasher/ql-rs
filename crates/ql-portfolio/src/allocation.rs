@@ -14,6 +14,10 @@ pub use crate::phase33::{
     evaluate_tsay_egarch_and_hamilton_markov_switching,
 };
 pub use crate::phase34::*;
+pub use crate::phase35::{
+    GrinoldQianTransferCoefficientFlAmReport, GrinoldQianTransferCoefficientFlAmSpec,
+    evaluate_grinold_qian_transfer_coefficient_and_flam,
+};
 use ql_ad::Real;
 
 #[derive(Clone, Debug)]

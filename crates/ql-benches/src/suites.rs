@@ -3482,6 +3482,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_phase32_cheyette_caplet_adb_ndirs_andreasen_zabr_qrh_zumbach_cmcds_morini_turlakov_wwr_hhw_adi_capped_call_mw_ahmadi_evar_schur_hrp_bekk_garch_schilit_sloan(scale),
         benchmark_phase33_rebonato_cms_lm_all_engines(scale),
         benchmark_phase34_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig(scale),
+        benchmark_phase35_hagan_west_ctd_afv_kth_sacva_gs_kirk_fx_vv_napoleon_tc_meucci_krr_eva(scale),
     ]
 }
 
@@ -8043,6 +8044,252 @@ pub fn benchmark_phase33_rebonato_cms_lm_all_engines(scale: usize) -> Comparison
     run_comparison(
         "45_rebonato_cms_leland_toft_calamos_ascot_spec_pool_roll_glosten_milgrom_potters_rie_egarch_hamilton_wooldridge_2sls_mcneil_euler_bacon_omega_damodaran_rd_mwg_arrow_debreu",
         "Rebonato-CMS / Leland-Toft / Calamos-Ascot / SpecPool-Roll / Glosten-Milgrom / Potters-RIE / EGARCH-Hamilton / Wooldridge-2SLS / McNeil-Euler / Bacon-Omega / Damodaran-RD / Arrow-Debreu AD",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
+}
+
+pub fn phase35_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+    let dx0 = x[0] * T::from_f64(0.005);
+    let dx1 = x[1] * T::from_f64(0.005);
+    let dx2 = x[2] * T::from_f64(0.005);
+    let dx3 = x[3] * T::from_f64(0.005);
+    let hw = ql_curves::evaluate_hagan_west_monotone_convex_forward_curve(
+        &ql_curves::HaganWestMonotoneConvexCurveSpec {
+            knot_tenors: [T::zero(), T::one(), T::from_f64(2.0), T::from_f64(3.0)],
+            discrete_forwards: [
+                T::from_f64(0.03) + dx0,
+                T::from_f64(0.04) + dx1,
+                T::from_f64(0.045) + dx2,
+            ],
+            eval_tenor: T::from_f64(1.4) + dx3,
+        },
+    );
+    let ctd = ql_fixed_income::evaluate_fabozzi_treasury_futures_ctd_and_switch_option(
+        &ql_fixed_income::FabozziTreasuryFuturesCtdSwitchSpec {
+            bond_coupons: [T::from_f64(0.06), T::from_f64(0.045)],
+            bond_maturities: [T::from_f64(7.0), T::from_f64(9.5)],
+            bond_clean_prices: [T::from_f64(101.0) + x[0], T::from_f64(94.5) + x[1]],
+            bond_modified_durations: [T::from_f64(5.8), T::from_f64(7.6)],
+            futures_price: T::from_f64(100.2) + x[2],
+            delivery_horizon_years: T::from_f64(0.25),
+            repo_rate: T::from_f64(0.04) + dx3,
+            yield_volatility: T::from_f64(0.01),
+        },
+    );
+    let afv = ql_fixed_income::evaluate_ayache_forsyth_vetzal_default_coupled_cb(
+        &ql_fixed_income::AyacheForsythVetzalConvertibleSpec {
+            spot_price: T::from_f64(100.0) + x[0],
+            bond_par: T::from_f64(100.0),
+            coupon_rate: T::from_f64(0.04),
+            conversion_ratio: T::one(),
+            maturity_years: T::from_f64(3.0),
+            risk_free_rate: T::from_f64(0.03) + dx1,
+            dividend_yield: T::from_f64(0.015),
+            equity_volatility: T::from_f64(0.25) + dx2,
+            hazard_rate: T::from_f64(0.025) + dx3,
+            bond_recovery_rate: T::from_f64(0.4),
+            equity_default_jump_loss_eta: T::from_f64(0.7),
+        },
+    );
+    let kth = ql_credit::evaluate_lando_schonbucher_kth_to_default_basket(
+        &ql_credit::LandoSchonbucherBasketDefaultSpec {
+            obligor_hazard_rates: [
+                T::from_f64(0.015) + dx0,
+                T::from_f64(0.02) + dx1,
+                T::from_f64(0.025) + dx2,
+                T::from_f64(0.03) + dx3,
+            ],
+            factor_loading_beta: T::from_f64(0.5),
+            recovery_rate: T::from_f64(0.4),
+            risk_free_rate: T::from_f64(0.03),
+            maturity_years: T::from_f64(5.0),
+        },
+    );
+    let sacva = ql_xva::evaluate_gregory_sa_cva_and_euler_netting_allocation(
+        &ql_xva::GregorySaCvaEulerNettingSpec {
+            cva_delta_sensitivities: [T::from_f64(10.0) + x[0], T::from_f64(8.0) + x[1]],
+            cva_hedge_sensitivities: [T::from_f64(6.0), T::from_f64(5.0)],
+            delta_risk_weights: [T::from_f64(0.05), T::from_f64(0.06)],
+            intra_bucket_corr_rho: T::from_f64(0.5),
+            cva_vega_sensitivity: T::from_f64(4.0) + x[2],
+            vega_risk_weight: T::from_f64(0.1),
+            subportfolio_exposures: [
+                T::from_f64(20.0) + x[3],
+                T::from_f64(15.0),
+                T::from_f64(10.0),
+            ],
+            exposure_corr_3x3: [
+                [T::one(), T::from_f64(0.3), T::from_f64(0.1)],
+                [T::from_f64(0.3), T::one(), T::from_f64(0.2)],
+                [T::from_f64(0.1), T::from_f64(0.2), T::one()],
+            ],
+            cpty_hazard_rate: T::from_f64(0.02),
+            cpty_lgd: T::from_f64(0.6),
+            horizon_years: T::from_f64(3.0),
+        },
+    );
+    let kirk = ql_commodities::evaluate_eydeland_gibson_schwartz_and_kirk_spread(
+        &ql_commodities::EydelandGibsonSchwartzKirkSpreadSpec {
+            spot_price: T::from_f64(55.0) + x[0],
+            initial_convenience_yield: T::from_f64(0.06) + dx1,
+            mean_reversion_kappa: T::from_f64(1.2),
+            long_run_convenience_yield: T::from_f64(0.05),
+            spot_volatility: T::from_f64(0.32) + dx2,
+            convenience_yield_vol: T::from_f64(0.20),
+            spot_cy_correlation: T::from_f64(0.4),
+            risk_free_rate: T::from_f64(0.03),
+            maturity_years: T::from_f64(1.0),
+            fuel_futures_price: T::from_f64(6.0) + dx3,
+            heat_rate_multiplier: T::from_f64(7.5),
+            fixed_strike_cost: T::from_f64(5.0),
+            fuel_volatility: T::from_f64(0.28),
+            power_fuel_correlation: T::from_f64(0.6),
+        },
+    );
+    let fx = ql_fx::evaluate_clark_wystup_fx_vanna_volga_smile(
+        &ql_fx::ClarkWystupFxVannaVolgaSmileSpec {
+            spot_fx: T::from_f64(1.10) + dx0,
+            domestic_rate: T::from_f64(0.03) + dx1,
+            foreign_rate: T::from_f64(0.015),
+            expiry_years: T::from_f64(1.0),
+            atm_vol: T::from_f64(0.10) + dx2,
+            risk_reversal_25d: T::from_f64(0.012) + dx3,
+            butterfly_25d: T::from_f64(0.004),
+            target_strike: T::from_f64(1.14),
+        },
+    );
+    let nap = ql_exotics::evaluate_bouzoubaa_napoleon_and_reverse_cliquet(
+        &ql_exotics::BouzoubaaNapoleonReverseCliquetSpec {
+            period_returns: vec![
+                T::from_f64(0.03) + dx0,
+                T::from_f64(-0.04) + dx1,
+                T::from_f64(0.02) + dx2,
+                T::from_f64(-0.025) + dx3,
+            ],
+            napoleon_fixed_coupon: T::from_f64(0.08),
+            global_floor: T::zero(),
+            local_cap: T::from_f64(0.04),
+            local_floor: T::from_f64(-0.04),
+            forward_volatility: T::from_f64(0.20),
+            forward_skew: T::from_f64(-0.15),
+            risk_free_rate: T::from_f64(0.03),
+            maturity_years: T::from_f64(2.0),
+        },
+    );
+    let tc = ql_portfolio::evaluate_grinold_qian_transfer_coefficient_and_flam(
+        &ql_portfolio::GrinoldQianTransferCoefficientFlAmSpec {
+            information_coefficient_ic: T::from_f64(0.06) + dx0,
+            breadth_br: T::from_f64(100.0),
+            target_active_risk: T::from_f64(0.04) + dx1,
+            residual_volatilities: [T::from_f64(0.15), T::from_f64(0.20), T::from_f64(0.18)],
+            alpha_forecasts: [
+                T::from_f64(0.03) + dx2,
+                T::from_f64(0.02),
+                T::from_f64(-0.025) + dx3,
+            ],
+            constrained_active_weights: [T::from_f64(0.12), T::from_f64(0.05), T::from_f64(-0.08)],
+        },
+    );
+    let ep = ql_portfolio::evaluate_meucci_relative_entropy_view_pooling(
+        &ql_portfolio::MeucciEntropyPoolingViewSpec {
+            prior_probabilities: [
+                T::from_f64(0.25),
+                T::from_f64(0.25),
+                T::from_f64(0.25),
+                T::from_f64(0.25),
+            ],
+            scenario_returns: [
+                T::from_f64(-0.04) + dx0,
+                T::from_f64(0.01) + dx1,
+                T::from_f64(0.03) + dx2,
+                T::from_f64(0.08),
+            ],
+            target_view_return: T::from_f64(0.035) + dx3,
+            view_confidence: T::from_f64(0.75),
+        },
+    );
+    let krr =
+        ql_dml::evaluate_hastie_kernel_ridge_and_exact_loocv(&ql_dml::HastieKernelRidgeLoocvSpec {
+            feature_x: [
+                T::from_f64(-1.0),
+                T::from_f64(-0.3),
+                T::from_f64(0.4),
+                T::from_f64(1.1),
+            ],
+            target_y: [
+                T::from_f64(0.8) + dx0,
+                T::from_f64(0.2) + dx1,
+                T::from_f64(0.5) + dx2,
+                T::from_f64(1.3) + dx3,
+            ],
+            rbf_bandwidth_ell: T::from_f64(0.8),
+            ridge_penalty_lambda: T::from_f64(0.15),
+        });
+    let eva = ql_models::evaluate_koller_mckinsey_kvd_dcf_and_eva_valuation(
+        &ql_models::KollerMckinseyKvdEvaValuationSpec {
+            invested_capital_0: T::from_f64(500.0) + x[0],
+            noplat_1: T::from_f64(75.0) + x[1],
+            ronic: T::from_f64(0.16) + dx2,
+            wacc: T::from_f64(0.09) + dx3,
+            perpetual_growth_g: T::from_f64(0.04),
+            net_debt: T::from_f64(150.0),
+            diluted_shares: T::from_f64(50.0),
+        },
+    );
+    [
+        hw.eval_discount_factor + hw.eval_instantaneous_forward,
+        ctd.switch_adjusted_theoretical_futures,
+        afv.afv_convertible_fair_value,
+        kth.first_to_default_spread_bps,
+        sacva.total_sa_cva_capital + sacva.netted_portfolio_cva,
+        kirk.kirk_spark_spread_call_pv,
+        fx.vanna_volga_call_price,
+        nap.napoleon_capital_protected_note_pv,
+        tc.expected_constrained_alpha,
+        ep.posterior_expected_return + ep.effective_number_of_scenarios,
+        krr.loocv_shortcut_mse + krr.gcv_score,
+        eva.intrinsic_share_price,
+    ]
+}
+
+pub fn benchmark_phase35_hagan_west_ctd_afv_kth_sacva_gs_kirk_fx_vv_napoleon_tc_meucci_krr_eva(
+    scale: usize,
+) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let baseline = move || {
+        let f = |x: [f64; 4]| phase35_workloads(x).iter().copied().sum::<f64>();
+        let mut z = f(x0);
+        for i in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[i] += 1e-5;
+            d[i] -= 1e-5;
+            z += (f(u) - f(d)) / (2e-5);
+        }
+        for _ in 0..20 {
+            std::hint::black_box(f(x0));
+        }
+        z
+    };
+    let sota = move || {
+        let x: [Dual<4>; 4] = [
+            Dual::variable(x0[0], 0),
+            Dual::variable(x0[1], 1),
+            Dual::variable(x0[2], 2),
+            Dual::variable(x0[3], 3),
+        ];
+        phase35_workloads(x)
+            .iter()
+            .map(|v| v.val + v.d.iter().sum::<f64>())
+            .sum::<f64>()
+    };
+    run_comparison(
+        "47_hagan_west_mc_fabozzi_ctd_switch_afv_default_cb_lando_kth_default_gregory_sa_cva_gibson_schwartz_kirk_clark_fx_vv_bouzoubaa_napoleon_grinold_tc_flam_meucci_entropy_hastie_krr_loocv_koller_mckinsey_eva",
+        "Hagan-West-MC / CTD-Switch / AFV-CB / Kth-Default / SA-CVA-Euler / GS-Kirk-Spread / FX-Vanna-Volga / Napoleon-Cliquet / Transfer-Coef / Meucci-Entropy / KRR-LOOCV / McKinsey-EVA AD",
         cfg,
         1e-4,
         baseline,
