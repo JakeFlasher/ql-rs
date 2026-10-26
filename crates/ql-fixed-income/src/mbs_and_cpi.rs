@@ -13,6 +13,10 @@ pub use crate::phase35::{
     FabozziTreasuryFuturesCtdSwitchReport, FabozziTreasuryFuturesCtdSwitchSpec,
     evaluate_fabozzi_treasury_futures_ctd_and_switch_option,
 };
+pub use crate::phase36::{
+    FabozziCallablePutableOasReport, FabozziCallablePutableOasSpec,
+    evaluate_fabozzi_callable_putable_oas_and_convexity,
+};
 use ql_ad::Real;
 use ql_curves::YieldTermStructure;
 use ql_inflation::ZeroInflationCurve;

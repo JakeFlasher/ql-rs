@@ -102,7 +102,7 @@ fn dashboard_renders_all_quadrants_and_chart_modes() {
 
 #[test]
 fn phase11_tabs_and_live_telemetry_are_present() {
-    assert_eq!(TabId::ALL.len(), 45);
+    assert_eq!(TabId::ALL.len(), 46);
     assert_eq!(TabId::ALL[18], TabId::BermudanVolIft);
     assert_eq!(TabId::ALL[19], TabId::SaCcrSwingQp);
     assert_eq!(TabId::ALL[22], TabId::MonotoneConvexVixParisianRobust);
@@ -125,7 +125,7 @@ fn phase11_tabs_and_live_telemetry_are_present() {
 
 #[test]
 fn phase17_tab_metric_and_rates_scenario_are_live() {
-    assert_eq!(TabId::ALL.len(), 45);
+    assert_eq!(TabId::ALL.len(), 46);
     assert!(TabId::ALL.contains(&TabId::Phase17Sota));
     let mut ws = DeskWorkstation::new();
     let frame = ws.step_tick();
@@ -180,7 +180,7 @@ fn phase18_tab28_terminal_renders_and_ticks_cleanly() {
 
 #[test]
 fn phase19_tab29_terminal_renders_and_ticks_cleanly() {
-    assert_eq!(TabId::ALL.len(), 45);
+    assert_eq!(TabId::ALL.len(), 46);
     assert_eq!(
         TabId::Phase19Sota.label(),
         "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP"
@@ -213,7 +213,7 @@ fn phase19_tab29_terminal_renders_and_ticks_cleanly() {
 
 #[test]
 fn phase20_tab30_terminal_renders_and_ticks_cleanly() {
-    assert_eq!(TabId::ALL.len(), 45);
+    assert_eq!(TabId::ALL.len(), 46);
     assert_eq!(
         TabId::Phase20Sota.label(),
         "30 Sinh-OU / BK-FRN / Morini-Brigo / WWM-XVA / mrBergomi / Choi / AFS-LOB / EXVaR"
@@ -246,7 +246,7 @@ fn phase20_tab30_terminal_renders_and_ticks_cleanly() {
 
 #[test]
 fn phase21_tab31_terminal_renders_and_ticks_cleanly() {
-    assert_eq!(TabId::ALL.len(), 45);
+    assert_eq!(TabId::ALL.len(), 46);
     assert_eq!(
         TabId::Phase21Sota.label(),
         "31 HW-MC / Clark-FX / SA-CCR-KVA / BFG-rVol / Cartea-Alpha / Paleologo"
@@ -289,7 +289,7 @@ fn phase21_tab31_terminal_renders_and_ticks_cleanly() {
 
 #[test]
 fn phase22_tab32_terminal_renders_and_ticks_cleanly() {
-    assert_eq!(TabId::ALL.len(), 45);
+    assert_eq!(TabId::ALL.len(), 46);
     assert_eq!(
         TabId::Phase22Sota.label(),
         "32 KRD / LPI / CoCo / Bergomi / CGMY / AAD"
@@ -331,7 +331,7 @@ fn phase22_tab32_terminal_renders_and_ticks_cleanly() {
 
 #[test]
 fn phase23_tab33_terminal_renders_and_reacts() {
-    assert_eq!(TabId::ALL.len(), 45);
+    assert_eq!(TabId::ALL.len(), 46);
     assert!(TabId::ALL.contains(&TabId::Phase23Sota));
     assert_eq!(
         TabId::Phase23Sota.label(),
@@ -400,7 +400,7 @@ fn phase24_tab34_terminal_renders_and_reacts() {
 #[test]
 fn phase25_tab35_terminal_renders_and_reacts() {
     let mut ws = DeskWorkstation::new();
-    assert_eq!(TabId::ALL.len(), 45);
+    assert_eq!(TabId::ALL.len(), 46);
     assert!(TabId::Phase25Sota.label().starts_with("35 Kalman-RTS / VECM / HJ-SDF / IFRS9 / CPT / Hasbrouck / FV / Lando / LPPL / CB-Arb / Causal / Malliavin"));
     let mut values = Vec::new();
     for scenario in [
@@ -434,7 +434,7 @@ fn phase26_tab36_terminal_renders_and_reacts() {
     assert!(ws.render_dashboard(&stress, false).contains(
         "36 MF-Rates/Wildcard/TARF/Bergomi/Schönbucher/FRTB-CVA/Lookback/VTA/FLAM/ACD/HLZ/MLMC"
     ));
-    assert_eq!(TabId::TAB_COUNT, 45);
+    assert_eq!(TabId::TAB_COUNT, 46);
     assert!(TabId::ALL.contains(&TabId::Phase26Sota));
 }
 
@@ -450,7 +450,7 @@ fn phase27_tab37_terminal_renders_and_reacts() {
         ws.render_dashboard(&stressed, false)
             .contains("37 FTPL/G2/eSSVI/CB/CoCo/MPOR/Double-Heston/Curran/Warin/Roll/Busseti/KKT")
     );
-    assert_eq!(TabId::TAB_COUNT, 45);
+    assert_eq!(TabId::TAB_COUNT, 46);
 }
 
 #[test]
@@ -461,7 +461,7 @@ fn phase28_tab38_terminal_renders_and_reacts() {
     ws.scenario = ScenarioKind::StagflationPlus150Bp;
     let fb = ws.step_tick();
     let b = ws.render_dashboard(&fb, false);
-    assert_eq!(TabId::ALL.len(), 45);
+    assert_eq!(TabId::ALL.len(), 46);
     assert!(
         a.contains("38 IRRBB/RFR/XCCY/BG/CoCo/SIMM/rBergomi/Spread/BESS/Dark/Risk/Diff-PCA")
             && b.contains("38 IRRBB/RFR/XCCY/BG/CoCo/SIMM/rBergomi/Spread/BESS/Dark/Risk/Diff-PCA")
@@ -474,7 +474,7 @@ fn phase29_tab39_terminal_renders_and_reacts() {
     let mut ws = DeskWorkstation::default();
     let frame = ws.step_tick();
     let dashboard = ws.render_dashboard(&frame, false);
-    assert_eq!(TabId::ALL.len(), 45);
+    assert_eq!(TabId::ALL.len(), 46);
     assert!(
         dashboard
             .contains("39 Veronesi/Lando/Corridor/Russian/Bates/Koziol/MFG/BCBS/CJP/ETF/IC/IS")
@@ -496,8 +496,8 @@ fn phase30_tab40_terminal_renders_and_reacts() {
     let normal = ws.step_tick();
     ws.set_scenario(ScenarioKind::CreditWideningPlus100Bp);
     let stressed = ws.step_tick();
-    assert_eq!(TabId::TAB_COUNT, 45);
-    assert_eq!(TabId::ALL.len(), 45);
+    assert_eq!(TabId::TAB_COUNT, 46);
+    assert_eq!(TabId::ALL.len(), 46);
     assert!(
         TabId::Phase30BookSota
             .label()
@@ -518,8 +518,8 @@ fn phase31_tab41_terminal_renders_and_reacts() {
     let normal = ws.step_tick();
     ws.set_scenario(ScenarioKind::CreditWideningPlus100Bp);
     let stressed = ws.step_tick();
-    assert_eq!(TabId::TAB_COUNT, 45);
-    assert_eq!(TabId::ALL.len(), 45);
+    assert_eq!(TabId::TAB_COUNT, 46);
+    assert_eq!(TabId::ALL.len(), 46);
     assert!(TabId::ALL.contains(&TabId::Phase31BookSota));
     assert!(
         TabId::Phase31BookSota
@@ -540,8 +540,8 @@ fn phase31_tab41_terminal_renders_and_reacts() {
 #[test]
 fn phase32_tab42_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 45);
-    assert_eq!(TabId::ALL.len(), 45);
+    assert_eq!(TabId::TAB_COUNT, 46);
+    assert_eq!(TabId::ALL.len(), 46);
     assert!(
         TabId::Phase32BookSota
             .label()
@@ -564,8 +564,8 @@ fn phase32_tab42_terminal_renders_and_reacts() {
 
 #[test]
 fn phase33_tab43_terminal_renders_and_reacts() {
-    assert_eq!(ql_terminal::TabId::TAB_COUNT, 45);
-    assert_eq!(ql_terminal::TabId::ALL.len(), 45);
+    assert_eq!(ql_terminal::TabId::TAB_COUNT, 46);
+    assert_eq!(ql_terminal::TabId::ALL.len(), 46);
     assert!(
         ql_terminal::TabId::Phase33BookSota
             .label()
@@ -589,7 +589,7 @@ fn phase33_tab43_terminal_renders_and_reacts() {
 #[test]
 fn phase34_tab44_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 45);
+    assert_eq!(TabId::TAB_COUNT, 46);
     assert!(
         TabId::Phase34BookSota
             .label()
@@ -613,7 +613,7 @@ fn phase34_tab44_terminal_renders_and_reacts() {
 #[test]
 fn phase35_tab45_terminal_renders_and_reacts() {
     use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
-    assert_eq!(TabId::TAB_COUNT, 45);
+    assert_eq!(TabId::TAB_COUNT, 46);
     assert!(
         TabId::Phase35BookSota
             .label()
@@ -631,5 +631,29 @@ fn phase35_tab45_terminal_renders_and_reacts() {
     assert!(
         desk.render_dashboard(&frame, false)
             .contains("45 Hagan-West-MC")
+    );
+}
+
+#[test]
+fn phase36_tab46_terminal_renders_and_reacts() {
+    use ql_terminal::{DeskWorkstation, ScenarioKind, TabId};
+    assert_eq!(TabId::TAB_COUNT, 46);
+    assert!(
+        TabId::Phase36BookSota
+            .label()
+            .starts_with("46 Multi-CSA-CTD")
+    );
+    let mut desk = DeskWorkstation::default();
+    desk.scenario = ScenarioKind::Normal;
+    let n = desk.phase36_live_metric();
+    desk.scenario = ScenarioKind::CreditWideningPlus100Bp;
+    let c = desk.phase36_live_metric();
+    desk.scenario = ScenarioKind::StagflationPlus150Bp;
+    let s = desk.phase36_live_metric();
+    assert!((n - c).abs() > 1e-12 && (c - s).abs() > 1e-12);
+    let frame = desk.step_tick();
+    assert!(
+        desk.render_dashboard(&frame, false)
+            .contains("46 Multi-CSA-CTD")
     );
 }

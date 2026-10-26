@@ -1,3 +1,5 @@
+mod phase36;
+pub use phase36::*;
 pub mod bachelier;
 mod phase32;
 pub use phase32::*;

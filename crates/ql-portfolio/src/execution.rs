@@ -1,4 +1,8 @@
 #![allow(clippy::needless_range_loop)]
+pub use crate::phase36::{
+    CarteaJaimungalLobMarketMakingReport, CarteaJaimungalLobMarketMakingSpec,
+    evaluate_cartea_jaimungal_lob_market_making,
+};
 
 use super::allocation::AllocationError;
 pub use crate::phase30::*;

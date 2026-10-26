@@ -1,7 +1,7 @@
 pub mod harness;
 pub mod suites;
 /// Number of registered benchmark suites in the current release.
-pub const SUITE_COUNT: usize = 47;
+pub const SUITE_COUNT: usize = 48;
 pub const SUITE_NAMES: [&str; SUITE_COUNT] = [
     "01_calendar_popcnt",
     "02_leg_simd_soa",
@@ -50,6 +50,7 @@ pub const SUITE_NAMES: [&str; SUITE_COUNT] = [
     "45_rebonato_cms_leland_toft_calamos_ascot_spec_pool_roll_glosten_milgrom_potters_rie_egarch_hamilton_wooldridge_2sls_mcneil_euler_bacon_omega_damodaran_rd_mwg_arrow_debreu",
     "46_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig",
     "47_hagan_west_mc_fabozzi_ctd_switch_afv_default_cb_lando_kth_default_gregory_sa_cva_gibson_schwartz_kirk_clark_fx_vv_bouzoubaa_napoleon_grinold_tc_flam_meucci_entropy_hastie_krr_loocv_koller_mckinsey_eva",
+    "48_brigo_csa_ctd_fabozzi_callable_oas_lando_jlt_migration_gatheral_corridor_varswap_glasserman_lsm_rogers_dual_cartea_lob_mm_lo_mackinlay_vr_lopez_dsr_purged_cv_roncalli_spinu_erc_ilmanen_vmc_penman_reoi_mccall_bellman",
 ];
 /// Stable alias used by benchmark orchestration and documentation.
 pub const ALL_SUITES: [&str; SUITE_COUNT] = SUITE_NAMES;
@@ -68,9 +69,10 @@ pub use suites::{
     benchmark_phase33_rebonato_cms_lm_all_engines,
     benchmark_phase34_tuckman_repo_bk_fva_decs_mbs_io_po_kyle_pin_gp_aim_gjr_dcc_lppl_spectral_brinson_carino_prelec_path_sig,
     benchmark_phase35_hagan_west_ctd_afv_kth_sacva_gs_kirk_fx_vv_napoleon_tc_meucci_krr_eva,
+    benchmark_phase36_brigo_csa_ctd_fabozzi_callable_oas_lando_jlt_migration_gatheral_corridor_varswap_glasserman_lsm_rogers_dual_cartea_lob_mm_lo_mackinlay_vr_lopez_dsr_purged_cv_roncalli_spinu_erc_ilmanen_vmc_penman_reoi_mccall_bellman,
     benchmark_rkhs_fmm_vv_lsv_jlt_ctd_qrh_parisian_aid_propagator_nco_dml, phase24_workloads,
     phase25_workloads, phase26_workloads, phase27_workloads, phase28_workloads, phase29_workloads,
     phase30_workloads, phase31_workloads, phase32_workloads, phase33_workloads, phase34_workloads,
-    phase35_workloads, run_all_benchmark_suites_with_Config, run_all_benchmark_suites_with_config,
-    run_all_benchmarks, run_all_suites,
+    phase35_workloads, phase36_workloads, run_all_benchmark_suites_with_Config,
+    run_all_benchmark_suites_with_config, run_all_benchmarks, run_all_suites,
 };

@@ -4,6 +4,13 @@ pub use crate::phase35::{
     MeucciEntropyPoolingViewReport, MeucciEntropyPoolingViewSpec,
     evaluate_meucci_relative_entropy_view_pooling,
 };
+pub use crate::phase36::{
+    CampbellLoMackinlayVrPresentValueReport, CampbellLoMackinlayVrPresentValueSpec,
+    IlmanenCarryRolldownVmcFactorReport, IlmanenCarryRolldownVmcFactorSpec,
+    RoncalliSpinuErcRiskParityReport, RoncalliSpinuErcRiskParitySpec,
+    evaluate_campbell_lo_mackinlay_vr_and_campbell_shiller,
+    evaluate_ilmanen_carry_rolldown_and_vmc_factors, evaluate_roncalli_spinu_erc_risk_parity,
+};
 
 pub use crate::phase30::*;
 pub use crate::phase31::{
