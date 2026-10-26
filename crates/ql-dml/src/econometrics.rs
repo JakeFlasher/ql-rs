@@ -2839,3 +2839,163 @@ pub mod engle_granger_johansen_cointegration_mod {
     }
 }
 pub use engle_granger_johansen_cointegration_mod::*;
+
+// ============================================================================
+// Diebold & Mariano (1995), West (1996) & Harvey-Leybourne-Newbold (1997) Forecast Test
+// ============================================================================
+
+pub mod diebold_mariano_west_hln_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Diebold & Mariano (1995, *JBES* 13(3)), West (1996, *Econometrica*
+    /// 64(5)), and Harvey, Leybourne & Newbold (1997, *IJF* 13(2)) forecast evaluation test.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct DieboldMarianoWestForecastSpec<T: Real> {
+        /// Out-of-sample mean loss differential $\bar{d} = \frac{1}{P}\sum (L_{1,t} - L_{2,t})$.
+        pub mean_loss_differential_d_bar: T,
+        /// Lag-0 sample variance of the loss differential $\hat{\gamma}_0 > 0$.
+        pub lag0_loss_diff_variance_gamma0: T,
+        /// Lag-1 sample autocovariance of the loss differential $\hat{\gamma}_1$.
+        pub lag1_loss_diff_autocovariance_gamma1: T,
+        /// Multi-step forecast horizon $h \ge 1$.
+        pub forecast_horizon_steps_h: T,
+        /// Out-of-sample evaluation sample size $P > h$.
+        pub out_of_sample_observations_p: T,
+        /// In-sample estimation sample size $R > 0$ for West's (1996) parameter uncertainty factor.
+        pub in_sample_estimation_observations_r: T,
+        /// Asymptotic parameter-estimation uncertainty contribution $V_\theta \ge 0$.
+        pub parameter_estimation_variance_v_theta: T,
+    }
+
+    /// Analytical outputs for the Diebold-Mariano-West-HLN forecast accuracy test engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct DieboldMarianoWestForecastAnalytics<T: Real> {
+        /// Newey-West / Bartlett + West (1996) long-run loss-differential variance $\hat{\Omega}_{\text{DMW}}$.
+        pub dmw_long_run_loss_differential_variance: T,
+        /// Standard asymptotic Diebold-Mariano-West statistic $\text{DMW}$.
+        pub asymptotic_dmw_t_statistic: T,
+        /// Harvey-Leybourne-Newbold (1997) finite-sample bias correction factor $\kappa_{\text{HLN}}$.
+        pub harvey_leybourne_newbold_correction_factor: T,
+        /// Small-sample corrected HLN-DMW test statistic $\text{DMW}_{\text{HLN}}$.
+        pub hln_adjusted_dmw_t_statistic: T,
+    }
+
+    /// Evaluates the Diebold & Mariano (1995), West (1996), and Harvey, Leybourne & Newbold (1997)
+    /// out-of-sample predictive accuracy test statistic.
+    pub fn evaluate_diebold_mariano_west_hln_forecast_comparison_test<T: Real>(
+        spec: &DieboldMarianoWestForecastSpec<T>,
+    ) -> DieboldMarianoWestForecastAnalytics<T> {
+        let g0 = spec
+            .lag0_loss_diff_variance_gamma0
+            .max_val(T::from_f64(1e-6));
+        let h = spec.forecast_horizon_steps_h.max_val(T::one());
+        let p_obs = spec
+            .out_of_sample_observations_p
+            .max_val(h + T::from_f64(5.0));
+        let r_obs = spec.in_sample_estimation_observations_r.max_val(T::one());
+
+        // Bartlett kernel weight at lag 1 and West (1996, Table I) recursive estimation multiplier
+        let w_bartlett = T::one() - T::one() / (h + T::one());
+        let pi_ratio = p_obs / r_obs;
+        let west_mult = T::from_f64(2.0) * (T::one() - (T::one() + pi_ratio).ln() / pi_ratio);
+
+        let omega_dmw = (g0
+            + T::from_f64(2.0) * w_bartlett * spec.lag1_loss_diff_autocovariance_gamma1
+            + west_mult * spec.parameter_estimation_variance_v_theta)
+            .max_val(T::from_f64(1e-6));
+
+        let dmw_stat = spec.mean_loss_differential_d_bar / (omega_dmw / p_obs).sqrt();
+
+        // Harvey, Leybourne & Newbold (1997, Eq. 5) small-sample degrees-of-freedom factor
+        let hln_num = (p_obs + T::one() - T::from_f64(2.0) * h + h * (h - T::one()) / p_obs)
+            .max_val(T::one());
+        let kappa_hln = (hln_num / p_obs).sqrt();
+        let hln_stat = kappa_hln * dmw_stat;
+
+        DieboldMarianoWestForecastAnalytics {
+            dmw_long_run_loss_differential_variance: omega_dmw,
+            asymptotic_dmw_t_statistic: dmw_stat,
+            harvey_leybourne_newbold_correction_factor: kappa_hln,
+            hln_adjusted_dmw_t_statistic: hln_stat,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn diebold_mariano_west_hln_invariants_and_ad_parity() {
+            let base = DieboldMarianoWestForecastSpec {
+                mean_loss_differential_d_bar: 0.028_f64,
+                lag0_loss_diff_variance_gamma0: 0.045,
+                lag1_loss_diff_autocovariance_gamma1: 0.014,
+                forecast_horizon_steps_h: 3.0,
+                out_of_sample_observations_p: 120.0,
+                in_sample_estimation_observations_r: 240.0,
+                parameter_estimation_variance_v_theta: 0.008,
+            };
+            let r0 = evaluate_diebold_mariano_west_hln_forecast_comparison_test(&base);
+            assert!(
+                r0.dmw_long_run_loss_differential_variance > base.lag0_loss_diff_variance_gamma0
+            );
+            assert!(r0.asymptotic_dmw_t_statistic > 0.0);
+            assert!(
+                r0.harvey_leybourne_newbold_correction_factor > 0.0
+                    && r0.harvey_leybourne_newbold_correction_factor < 1.0
+            );
+            assert!(r0.hln_adjusted_dmw_t_statistic > 0.0);
+
+            let inputs = [
+                base.mean_loss_differential_d_bar,
+                base.lag0_loss_diff_variance_gamma0,
+                base.lag1_loss_diff_autocovariance_gamma1,
+                base.forecast_horizon_steps_h,
+                base.out_of_sample_observations_p,
+                base.in_sample_estimation_observations_r,
+                base.parameter_estimation_variance_v_theta,
+            ];
+            let mut dual_in = [Dual::<7>::from_f64(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = DieboldMarianoWestForecastSpec {
+                mean_loss_differential_d_bar: dual_in[0],
+                lag0_loss_diff_variance_gamma0: dual_in[1],
+                lag1_loss_diff_autocovariance_gamma1: dual_in[2],
+                forecast_horizon_steps_h: dual_in[3],
+                out_of_sample_observations_p: dual_in[4],
+                in_sample_estimation_observations_r: dual_in[5],
+                parameter_estimation_variance_v_theta: dual_in[6],
+            };
+            let r_ad = evaluate_diebold_mariano_west_hln_forecast_comparison_test(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| DieboldMarianoWestForecastSpec {
+                    mean_loss_differential_d_bar: v[0],
+                    lag0_loss_diff_variance_gamma0: v[1],
+                    lag1_loss_diff_autocovariance_gamma1: v[2],
+                    forecast_horizon_steps_h: v[3],
+                    out_of_sample_observations_p: v[4],
+                    in_sample_estimation_observations_r: v[5],
+                    parameter_estimation_variance_v_theta: v[6],
+                };
+                let rp = evaluate_diebold_mariano_west_hln_forecast_comparison_test(&mk(p));
+                let rm = evaluate_diebold_mariano_west_hln_forecast_comparison_test(&mk(m));
+                let fd = (rp.hln_adjusted_dmw_t_statistic - rm.hln_adjusted_dmw_t_statistic)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.hln_adjusted_dmw_t_statistic.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.hln_adjusted_dmw_t_statistic.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use diebold_mariano_west_hln_mod::*;

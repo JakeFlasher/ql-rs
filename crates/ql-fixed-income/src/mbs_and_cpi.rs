@@ -3702,3 +3702,185 @@ pub mod fabozzi_cmo_accrual_z_bond_mod {
     }
 }
 pub use fabozzi_cmo_accrual_z_bond_mod::*;
+
+// ============================================================================
+// Fabozzi (2021) & Hayre (2001) Stripped MBS (IO / PO) Refinancing S-Curve Convexity
+// ============================================================================
+
+pub mod fabozzi_hayre_io_po_strip_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Fabozzi (2021, Ch. 25–26) / Hayre (2001, Ch. 4) Interest-Only (IO)
+    /// and Principal-Only (PO) stripped MBS valuation under an S-curve refinancing CPR model.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct FabozziHayreIoPoStripSpec<T: Real> {
+        /// Initial mortgage pool principal balance $B_0 > 0$.
+        pub pool_principal_balance: T,
+        /// Underlying mortgage Weighted Average Coupon $c_{\text{WAC}} > 0$.
+        pub weighted_average_coupon_wac: T,
+        /// Net pass-through coupon paid to the IO strip $c_{\text{net}} \in (0, c_{\text{WAC}}]$.
+        pub net_passthrough_coupon_c_net: T,
+        /// Current primary mortgage market rate $r_{\text{mkt}} > 0$.
+        pub current_mortgage_market_rate_r_mkt: T,
+        /// Baseline housing-turnover floor prepayment rate $\text{CPR}_{\min} \in (0, 1)$.
+        pub baseline_cpr_min: T,
+        /// Peak refinancing ceiling prepayment rate $\text{CPR}_{\max} \in (\text{CPR}_{\min}, 1)$.
+        pub peak_refi_cpr_max: T,
+        /// Refinancing S-curve steepness $\beta_{\text{refi}} > 0$.
+        pub refi_s_curve_steepness_beta: T,
+        /// Option-Adjusted Spread $\text{OAS}$ over the primary rate.
+        pub option_adjusted_spread_oas: T,
+    }
+
+    /// Analytical outputs for the Fabozzi-Hayre IO/PO stripped MBS engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct FabozziHayreIoPoStripAnalytics<T: Real> {
+        /// S-curve Conditional Prepayment Rate $\text{CPR}(c_{\text{WAC}} - r_{\text{mkt}})$.
+        pub logistic_refinancing_cpr: T,
+        /// Principal-Only (PO) strip present value $V_{\text{PO}}$.
+        pub po_strip_present_value: T,
+        /// Combined Pass-Through MBS value $V_{\text{PT}} = V_{\text{IO}} + V_{\text{PO}}$.
+        pub combined_passthrough_mbs_value: T,
+        /// Interest-Only (IO) strip present value $V_{\text{IO}}$.
+        pub io_strip_present_value: T,
+    }
+
+    /// Evaluates the Fabozzi (2021, Ch. 25–26) / Hayre (2001, Ch. 4) IO and PO strip prices
+    /// across a 6-period mortgage pool with exact principal conservation $\sum \text{Prin}_n = B_0$.
+    pub fn evaluate_fabozzi_hayre_io_po_stripped_mbs_prepayment_convexity<T: Real>(
+        spec: &FabozziHayreIoPoStripSpec<T>,
+    ) -> FabozziHayreIoPoStripAnalytics<T> {
+        const PERIODS: usize = 6;
+        let b0 = spec.pool_principal_balance.max_val(T::from_f64(1.0));
+        let wac = spec.weighted_average_coupon_wac.max_val(T::from_f64(1e-4));
+        let c_net = spec.net_passthrough_coupon_c_net.max_val(T::from_f64(1e-4));
+        let cpr_min = spec
+            .baseline_cpr_min
+            .max_val(T::from_f64(0.005))
+            .min_val(T::from_f64(0.80));
+        let cpr_max = spec
+            .peak_refi_cpr_max
+            .max_val(cpr_min + T::from_f64(0.01))
+            .min_val(T::from_f64(0.95));
+
+        let refi_incentive = wac - spec.current_mortgage_market_rate_r_mkt;
+        let logistic =
+            T::one() / (T::one() + (-spec.refi_s_curve_steepness_beta * refi_incentive).exp());
+        let cpr = cpr_min + (cpr_max - cpr_min) * logistic;
+
+        let y_disc = (spec.current_mortgage_market_rate_r_mkt + spec.option_adjusted_spread_oas)
+            .max_val(T::from_f64(1e-4));
+
+        let mut bal = b0;
+        let mut io_pv = T::zero();
+        let mut po_pv = T::zero();
+
+        for n in 1..=PERIODS {
+            let rem_periods = (PERIODS - n + 1) as i32;
+            let io_cf = bal * c_net;
+
+            let po_cf = if n < PERIODS {
+                let factor = (T::one() + wac).powf(rem_periods as f64);
+                let sched_prin = bal * wac / (factor - T::one());
+                let prepay = (bal - sched_prin) * cpr;
+                sched_prin + prepay
+            } else {
+                bal
+            };
+
+            bal -= po_cf;
+            let df = (T::one() + y_disc).powf(-(n as i32) as f64);
+            io_pv += df * io_cf;
+            po_pv += df * po_cf;
+        }
+
+        FabozziHayreIoPoStripAnalytics {
+            logistic_refinancing_cpr: cpr,
+            po_strip_present_value: po_pv,
+            combined_passthrough_mbs_value: io_pv + po_pv,
+            io_strip_present_value: io_pv,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn fabozzi_hayre_io_po_strip_invariants_and_ad_parity() {
+            let base = FabozziHayreIoPoStripSpec {
+                pool_principal_balance: 100.0_f64,
+                weighted_average_coupon_wac: 0.065,
+                net_passthrough_coupon_c_net: 0.060,
+                current_mortgage_market_rate_r_mkt: 0.052,
+                baseline_cpr_min: 0.06,
+                peak_refi_cpr_max: 0.42,
+                refi_s_curve_steepness_beta: 35.0,
+                option_adjusted_spread_oas: 0.008,
+            };
+            let r0 = evaluate_fabozzi_hayre_io_po_stripped_mbs_prepayment_convexity(&base);
+            assert!(r0.logistic_refinancing_cpr > base.baseline_cpr_min);
+            assert!(r0.po_strip_present_value > 0.0 && r0.po_strip_present_value < 100.0);
+            assert!(r0.io_strip_present_value > 0.0);
+            assert!(
+                (r0.combined_passthrough_mbs_value
+                    - (r0.io_strip_present_value + r0.po_strip_present_value))
+                    .abs()
+                    < 1e-12
+            );
+
+            let inputs = [
+                base.pool_principal_balance,
+                base.weighted_average_coupon_wac,
+                base.net_passthrough_coupon_c_net,
+                base.current_mortgage_market_rate_r_mkt,
+                base.baseline_cpr_min,
+                base.peak_refi_cpr_max,
+                base.refi_s_curve_steepness_beta,
+                base.option_adjusted_spread_oas,
+            ];
+            let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = FabozziHayreIoPoStripSpec {
+                pool_principal_balance: dual_in[0],
+                weighted_average_coupon_wac: dual_in[1],
+                net_passthrough_coupon_c_net: dual_in[2],
+                current_mortgage_market_rate_r_mkt: dual_in[3],
+                baseline_cpr_min: dual_in[4],
+                peak_refi_cpr_max: dual_in[5],
+                refi_s_curve_steepness_beta: dual_in[6],
+                option_adjusted_spread_oas: dual_in[7],
+            };
+            let r_ad = evaluate_fabozzi_hayre_io_po_stripped_mbs_prepayment_convexity(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| FabozziHayreIoPoStripSpec {
+                    pool_principal_balance: v[0],
+                    weighted_average_coupon_wac: v[1],
+                    net_passthrough_coupon_c_net: v[2],
+                    current_mortgage_market_rate_r_mkt: v[3],
+                    baseline_cpr_min: v[4],
+                    peak_refi_cpr_max: v[5],
+                    refi_s_curve_steepness_beta: v[6],
+                    option_adjusted_spread_oas: v[7],
+                };
+                let rp = evaluate_fabozzi_hayre_io_po_stripped_mbs_prepayment_convexity(&mk(p));
+                let rm = evaluate_fabozzi_hayre_io_po_stripped_mbs_prepayment_convexity(&mk(m));
+                let fd = (rp.io_strip_present_value - rm.io_strip_present_value) / (2.0 * eps);
+                assert!(
+                    r_ad.io_strip_present_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.io_strip_present_value.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use fabozzi_hayre_io_po_strip_mod::*;

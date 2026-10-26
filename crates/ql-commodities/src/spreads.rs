@@ -2766,3 +2766,171 @@ pub mod eydeland_wolyniec_interconnector_spread_mod {
     }
 }
 pub use eydeland_wolyniec_interconnector_spread_mod::*;
+
+// ============================================================================
+// Carmona & Durrleman (2003) & Eydeland-Wolyniec (2003) Clean Dark Spread Option
+// ============================================================================
+
+pub mod carmona_clean_dark_spread_mod {
+    use ql_ad::Real;
+    use ql_math::distributions::norm_cdf;
+
+    /// Specification for the Carmona & Durrleman (2003, *SIAM Review* 45(4)) and
+    /// Eydeland & Wolyniec (2003, Ch. 7) Clean Dark Spread (power vs. coal + carbon) option.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct CarmonaCleanDarkSpreadSpec<T: Real> {
+        /// Baseload electricity forward price $F_P > 0$ (EUR/MWh).
+        pub electricity_forward_f_power: T,
+        /// Thermal coal forward price $F_C > 0$ (EUR/tonne).
+        pub coal_forward_f_coal: T,
+        /// EU ETS carbon emission allowance forward price $F_{\text{EUA}} > 0$ (EUR/tCO2).
+        pub carbon_allowance_forward_f_eua: T,
+        /// Plant thermal heat-rate conversion factor $h_C > 0$ (tonnes coal / MWh).
+        pub coal_heat_rate_h_coal: T,
+        /// Plant carbon emission intensity $e_{\text{CO2}} > 0$ (tCO2 / MWh).
+        pub carbon_emission_intensity_e_co2: T,
+        /// Fixed non-fuel O&M generation strike $K_{\text{O\&M}} > 0$ (EUR/MWh).
+        pub fixed_om_strike_k: T,
+        /// Electricity forward volatility $\sigma_P > 0$.
+        pub power_volatility_sigma_p: T,
+        /// Coal-and-carbon input basket volatility $\sigma_{FC} > 0$.
+        pub fuel_carbon_basket_volatility_sigma_fc: T,
+        /// Correlation between electricity and the coal-carbon input basket $\rho \in (-1, 1)$.
+        pub power_fuel_correlation_rho: T,
+    }
+
+    /// Analytical outputs for the Carmona-Durrleman Clean Dark Spread option engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct CarmonaCleanDarkSpreadAnalytics<T: Real> {
+        /// Forward Clean Dark Spread $F_{\text{CDS}} = F_P - h_C F_C - e_{\text{CO2}} F_{\text{EUA}} - K_{\text{O\&M}}$.
+        pub forward_clean_dark_spread: T,
+        /// Effective Kirk composite spread volatility $\sigma_{\text{CDS}}$.
+        pub effective_kirk_spread_volatility: T,
+        /// Risk-neutral dispatch exercise probability $\Phi(d_2)$.
+        pub plant_dispatch_probability: T,
+        /// Discounted Clean Dark Spread call option value $V_{\text{CDS}}$ (EUR/MWh).
+        pub clean_dark_spread_call_option_value: T,
+    }
+
+    /// Evaluates the Carmona & Durrleman (2003) / Kirk (1995) Clean Dark Spread call option
+    /// for a coal-fired power plant subject to EU ETS carbon allowance costs.
+    pub fn evaluate_carmona_durrleman_clean_dark_spread_carbon_power_option<T: Real>(
+        spec: &CarmonaCleanDarkSpreadSpec<T>,
+    ) -> CarmonaCleanDarkSpreadAnalytics<T> {
+        let f_p = spec.electricity_forward_f_power.max_val(T::from_f64(1e-4));
+        let fuel_cost = spec.coal_heat_rate_h_coal * spec.coal_forward_f_coal
+            + spec.carbon_emission_intensity_e_co2 * spec.carbon_allowance_forward_f_eua;
+        let f_in = (fuel_cost + spec.fixed_om_strike_k).max_val(T::from_f64(1e-4));
+        let w_fuel = fuel_cost / f_in;
+
+        let sig_p = spec.power_volatility_sigma_p.max_val(T::from_f64(1e-4));
+        let sig_fc = spec
+            .fuel_carbon_basket_volatility_sigma_fc
+            .max_val(T::from_f64(1e-4));
+        let rho = spec
+            .power_fuel_correlation_rho
+            .max_val(T::from_f64(-0.98))
+            .min_val(T::from_f64(0.98));
+
+        let var_cds = (sig_p * sig_p - T::from_f64(2.0) * rho * w_fuel * sig_p * sig_fc
+            + w_fuel * w_fuel * sig_fc * sig_fc)
+            .max_val(T::from_f64(1e-6));
+        let sig_cds = var_cds.sqrt();
+
+        let d1 = (f_p / f_in).ln() / sig_cds + T::from_f64(0.5) * sig_cds;
+        let d2 = d1 - sig_cds;
+
+        let df = (-T::from_f64(0.04)).exp();
+        let dispatch_prob = norm_cdf(d2);
+        let call_val = df * (f_p * norm_cdf(d1) - f_in * dispatch_prob);
+
+        CarmonaCleanDarkSpreadAnalytics {
+            forward_clean_dark_spread: f_p - f_in,
+            effective_kirk_spread_volatility: sig_cds,
+            plant_dispatch_probability: dispatch_prob,
+            clean_dark_spread_call_option_value: call_val,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn carmona_clean_dark_spread_invariants_and_ad_parity() {
+            let base = CarmonaCleanDarkSpreadSpec {
+                electricity_forward_f_power: 95.0_f64,
+                coal_forward_f_coal: 110.0,
+                carbon_allowance_forward_f_eua: 68.0,
+                coal_heat_rate_h_coal: 0.38,
+                carbon_emission_intensity_e_co2: 0.92,
+                fixed_om_strike_k: 4.50,
+                power_volatility_sigma_p: 0.38,
+                fuel_carbon_basket_volatility_sigma_fc: 0.30,
+                power_fuel_correlation_rho: 0.72,
+            };
+            let r0 = evaluate_carmona_durrleman_clean_dark_spread_carbon_power_option(&base);
+            assert!(r0.effective_kirk_spread_volatility > 0.0);
+            assert!(r0.plant_dispatch_probability > 0.0 && r0.plant_dispatch_probability < 1.0);
+            assert!(r0.clean_dark_spread_call_option_value > 0.0);
+
+            let inputs = [
+                base.electricity_forward_f_power,
+                base.coal_forward_f_coal,
+                base.carbon_allowance_forward_f_eua,
+                base.coal_heat_rate_h_coal,
+                base.carbon_emission_intensity_e_co2,
+                base.fixed_om_strike_k,
+                base.power_volatility_sigma_p,
+                base.fuel_carbon_basket_volatility_sigma_fc,
+                base.power_fuel_correlation_rho,
+            ];
+            let mut dual_in = [Dual::<9>::from_f64(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = CarmonaCleanDarkSpreadSpec {
+                electricity_forward_f_power: dual_in[0],
+                coal_forward_f_coal: dual_in[1],
+                carbon_allowance_forward_f_eua: dual_in[2],
+                coal_heat_rate_h_coal: dual_in[3],
+                carbon_emission_intensity_e_co2: dual_in[4],
+                fixed_om_strike_k: dual_in[5],
+                power_volatility_sigma_p: dual_in[6],
+                fuel_carbon_basket_volatility_sigma_fc: dual_in[7],
+                power_fuel_correlation_rho: dual_in[8],
+            };
+            let r_ad = evaluate_carmona_durrleman_clean_dark_spread_carbon_power_option(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 9]| CarmonaCleanDarkSpreadSpec {
+                    electricity_forward_f_power: v[0],
+                    coal_forward_f_coal: v[1],
+                    carbon_allowance_forward_f_eua: v[2],
+                    coal_heat_rate_h_coal: v[3],
+                    carbon_emission_intensity_e_co2: v[4],
+                    fixed_om_strike_k: v[5],
+                    power_volatility_sigma_p: v[6],
+                    fuel_carbon_basket_volatility_sigma_fc: v[7],
+                    power_fuel_correlation_rho: v[8],
+                };
+                let rp = evaluate_carmona_durrleman_clean_dark_spread_carbon_power_option(&mk(p));
+                let rm = evaluate_carmona_durrleman_clean_dark_spread_carbon_power_option(&mk(m));
+                let fd = (rp.clean_dark_spread_call_option_value
+                    - rm.clean_dark_spread_call_option_value)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.clean_dark_spread_call_option_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.clean_dark_spread_call_option_value.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use carmona_clean_dark_spread_mod::*;

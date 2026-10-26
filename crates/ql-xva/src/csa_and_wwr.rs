@@ -3254,3 +3254,171 @@ pub mod burgard_kjaer_semi_replication_xva_mod {
     }
 }
 pub use burgard_kjaer_semi_replication_xva_mod::*;
+
+// ============================================================================
+// Gregory (2020, Ch. 15) & Andersen-Pykhtin-Sokol (2017) Dynamic ISDA SIMM MVA
+// ============================================================================
+
+pub mod gregory_isda_simm_mva_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Gregory (2020, *The xVA Challenge*, 4th ed., Ch. 15) and
+    /// Andersen, Pykhtin & Sokol (2017) dynamic ISDA SIMM Initial Margin and MVA engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct GregoryIsdaSimmMvaSpec<T: Real> {
+        /// Initial net SIMM delta-equivalent risk weight / DV01 exposure $W_0 > 0$.
+        pub trade_notional_dv01_w0: T,
+        /// ISDA SIMM stress-calibrated annualized volatility $\sigma_{\text{SIMM}} > 0$.
+        pub simm_calibrated_volatility_sigma_im: T,
+        /// Margin Period of Risk in business days $\text{MPOR}_{\text{days}} > 0$ (e.g., 10 days).
+        pub margin_period_of_risk_days_mpor: T,
+        /// Initial Margin funding spread over CSA remuneration rate $s_{\text{IM}} > 0$.
+        pub im_funding_spread_s_im: T,
+        /// Counterparty default hazard rate $\lambda_C > 0$.
+        pub counterparty_hazard_rate_lambda_c: T,
+        /// Bank (own) default hazard rate $\lambda_B > 0$.
+        pub bank_hazard_rate_lambda_b: T,
+        /// OIS risk-free discount rate $r > 0$.
+        pub ois_discount_rate_r: T,
+        /// Portfolio maturity $T > 0$ (years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytical outputs for the Gregory ISDA SIMM Margin Valuation Adjustment (MVA) engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct GregoryIsdaSimmMvaAnalytics<T: Real> {
+        /// Inception 99% ISDA SIMM Initial Margin requirement $\text{IM}_0$.
+        pub inception_simm_initial_margin: T,
+        /// Time-averaged expected forward Initial Margin $\overline{\text{IM}}$.
+        pub expected_average_forward_im: T,
+        /// Survival-discounted expected IM integral $\int_0^T D_{\text{surv}}(0, t)\mathbb{E}[\text{IM}(t)]\,dt$.
+        pub discounted_im_exposure_integral: T,
+        /// Lifetime Margin Valuation Adjustment charge $\text{MVA}$.
+        pub lifetime_simm_mva_charge: T,
+    }
+
+    /// Evaluates the Gregory (2020, Ch. 15) / Green (2015, Ch. 13) lifetime Margin Valuation
+    /// Adjustment (MVA) across a 4-period amortizing ISDA SIMM profile.
+    pub fn evaluate_gregory_isda_simm_dynamic_initial_margin_mva<T: Real>(
+        spec: &GregoryIsdaSimmMvaSpec<T>,
+    ) -> GregoryIsdaSimmMvaAnalytics<T> {
+        const PERIODS: usize = 4;
+        let w0 = spec.trade_notional_dv01_w0.max_val(T::from_f64(1e-4));
+        let sig_im = spec
+            .simm_calibrated_volatility_sigma_im
+            .max_val(T::from_f64(1e-5));
+        let mpor_years =
+            spec.margin_period_of_risk_days_mpor.max_val(T::one()) / T::from_f64(250.0);
+        let s_im = spec.im_funding_spread_s_im.max_val(T::from_f64(1e-5));
+        let t_mat = spec.maturity_years_t.max_val(T::from_f64(0.25));
+        let dt = t_mat / T::from_f64(PERIODS as f64);
+
+        // 99% one-tailed normal quantile z_0.99 = 2.3263478740408408
+        let z99 = T::from_f64(2.326_347_874_040_840_8);
+        let im0 = z99 * w0 * sig_im * mpor_years.sqrt();
+
+        let r_tot = spec.ois_discount_rate_r
+            + spec.counterparty_hazard_rate_lambda_c
+            + spec.bank_hazard_rate_lambda_b;
+
+        let mut sum_im = T::zero();
+        let mut disc_im_int = T::zero();
+
+        for m in 1..=PERIODS {
+            let tm = (T::from_f64(m as f64) - T::from_f64(0.5)) * dt;
+            let rem_fraction = T::one() - tm / t_mat;
+            let disp_factor = T::one() + T::from_f64(2.5) * sig_im * tm;
+            let e_im_m = im0 * rem_fraction * disp_factor;
+
+            sum_im += e_im_m;
+            disc_im_int += dt * (-r_tot * tm).exp() * e_im_m;
+        }
+
+        let avg_im = sum_im / T::from_f64(PERIODS as f64);
+        let mva = s_im * disc_im_int;
+
+        GregoryIsdaSimmMvaAnalytics {
+            inception_simm_initial_margin: im0,
+            expected_average_forward_im: avg_im,
+            discounted_im_exposure_integral: disc_im_int,
+            lifetime_simm_mva_charge: mva,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn gregory_isda_simm_mva_invariants_and_ad_parity() {
+            let base = GregoryIsdaSimmMvaSpec {
+                trade_notional_dv01_w0: 120.0_f64,
+                simm_calibrated_volatility_sigma_im: 0.011,
+                margin_period_of_risk_days_mpor: 10.0,
+                im_funding_spread_s_im: 0.0085,
+                counterparty_hazard_rate_lambda_c: 0.018,
+                bank_hazard_rate_lambda_b: 0.012,
+                ois_discount_rate_r: 0.035,
+                maturity_years_t: 5.0,
+            };
+            let r0 = evaluate_gregory_isda_simm_dynamic_initial_margin_mva(&base);
+            assert!(r0.inception_simm_initial_margin > 0.0);
+            assert!(r0.expected_average_forward_im > 0.0);
+            assert!(r0.discounted_im_exposure_integral > 0.0);
+            assert!(r0.lifetime_simm_mva_charge > 0.0);
+
+            let inputs = [
+                base.trade_notional_dv01_w0,
+                base.simm_calibrated_volatility_sigma_im,
+                base.margin_period_of_risk_days_mpor,
+                base.im_funding_spread_s_im,
+                base.counterparty_hazard_rate_lambda_c,
+                base.bank_hazard_rate_lambda_b,
+                base.ois_discount_rate_r,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = GregoryIsdaSimmMvaSpec {
+                trade_notional_dv01_w0: dual_in[0],
+                simm_calibrated_volatility_sigma_im: dual_in[1],
+                margin_period_of_risk_days_mpor: dual_in[2],
+                im_funding_spread_s_im: dual_in[3],
+                counterparty_hazard_rate_lambda_c: dual_in[4],
+                bank_hazard_rate_lambda_b: dual_in[5],
+                ois_discount_rate_r: dual_in[6],
+                maturity_years_t: dual_in[7],
+            };
+            let r_ad = evaluate_gregory_isda_simm_dynamic_initial_margin_mva(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| GregoryIsdaSimmMvaSpec {
+                    trade_notional_dv01_w0: v[0],
+                    simm_calibrated_volatility_sigma_im: v[1],
+                    margin_period_of_risk_days_mpor: v[2],
+                    im_funding_spread_s_im: v[3],
+                    counterparty_hazard_rate_lambda_c: v[4],
+                    bank_hazard_rate_lambda_b: v[5],
+                    ois_discount_rate_r: v[6],
+                    maturity_years_t: v[7],
+                };
+                let rp = evaluate_gregory_isda_simm_dynamic_initial_margin_mva(&mk(p));
+                let rm = evaluate_gregory_isda_simm_dynamic_initial_margin_mva(&mk(m));
+                let fd = (rp.lifetime_simm_mva_charge - rm.lifetime_simm_mva_charge) / (2.0 * eps);
+                assert!(
+                    r_ad.lifetime_simm_mva_charge.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.lifetime_simm_mva_charge.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use gregory_isda_simm_mva_mod::*;

@@ -1198,3 +1198,192 @@ pub mod hagan_shifted_sabr_negative_rate_mod {
     }
 }
 pub use hagan_shifted_sabr_negative_rate_mod::*;
+
+// ============================================================================
+// Bossens, Rayee, Skovmand & Verplancke (2010) & Wystup (2017) Vanna-Volga Barrier Overhedge
+// ============================================================================
+
+pub mod bossens_vanna_volga_barrier_mod {
+    use ql_ad::Real;
+    use ql_math::distributions::{norm_cdf, norm_pdf};
+
+    /// Specification for the Bossens, Rayée, Skovmand & Verplancke (2010, *IJTAF* 13(8)) and
+    /// Wystup (2017, Ch. 3) Vanna–Volga down-and-out barrier option with survival attenuation.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct BossensVannaVolgaBarrierSpec<T: Real> {
+        /// Current spot FX rate $S_0 > 0$.
+        pub spot_fx_s0: T,
+        /// Option call strike $K > 0$.
+        pub strike_k: T,
+        /// Down-and-out barrier level $H < S_0$.
+        pub down_and_out_barrier_h: T,
+        /// ATM Black-Scholes volatility $\sigma_{\text{ATM}} > 0$.
+        pub atm_volatility_sigma_atm: T,
+        /// 25-delta Risk Reversal quote $\text{RR}_{25} = \sigma_{25C} - \sigma_{25P}$.
+        pub risk_reversal_25d_rr: T,
+        /// 25-delta Butterfly quote $\text{BF}_{25} = \frac{1}{2}(\sigma_{25C} + \sigma_{25P}) - \sigma_{\text{ATM}}$.
+        pub butterfly_25d_bf: T,
+        /// Domestic minus foreign interest rate carry $\mu = r_d - r_f$.
+        pub domestic_foreign_rate_diff_mu: T,
+        /// Option expiry $T > 0$ (years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytical outputs for the Bossens-Rayee-Skovmand Vanna-Volga barrier engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct BossensVannaVolgaBarrierAnalytics<T: Real> {
+        /// Flat-volatility Black-Scholes down-and-out call price $V_{\text{BS}}^{\text{DO}}(\sigma_{\text{ATM}})$.
+        pub flat_vol_down_and_out_call_price: T,
+        /// Risk-neutral no-touch survival probability $p_{\text{surv}} \in (0, 1)$.
+        pub no_touch_survival_probability: T,
+        /// Survival-attenuated Vanna-Volga smile overhedge adjustment $\Delta V_{\text{VV}}^{\text{DO}}$.
+        pub vanna_volga_survival_overhedge: T,
+        /// Total Vanna-Volga down-and-out barrier call price $V_{\text{VV}}^{\text{DO}}$.
+        pub vanna_volga_barrier_call_price: T,
+    }
+
+    /// Evaluates the Bossens, Rayée, Skovmand & Verplancke (2010) survival-weighted Vanna–Volga
+    /// down-and-out barrier call price.
+    pub fn evaluate_bossens_rayee_skovmand_vanna_volga_barrier_survival_overhedge<T: Real>(
+        spec: &BossensVannaVolgaBarrierSpec<T>,
+    ) -> BossensVannaVolgaBarrierAnalytics<T> {
+        let s0 = spec.spot_fx_s0.max_val(T::from_f64(1e-4));
+        let k = spec.strike_k.max_val(T::from_f64(1e-4));
+        let h = spec
+            .down_and_out_barrier_h
+            .max_val(T::from_f64(1e-4))
+            .min_val(s0 * T::from_f64(0.99));
+        let sig = spec.atm_volatility_sigma_atm.max_val(T::from_f64(1e-4));
+        let sig2 = sig * sig;
+        let t = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+        let sqrt_t = t.sqrt();
+        let v_sqrt = sig * sqrt_t;
+        let mu = spec.domestic_foreign_rate_diff_mu;
+
+        // Flat-vol Black-Scholes down-and-out call (funded in domestic currency with carry mu)
+        let d1 = ((s0 / k).ln() + (mu + T::from_f64(0.5) * sig2) * t) / v_sqrt;
+        let d2 = d1 - v_sqrt;
+        let y1 = ((h * h / (s0 * k)).ln() + (mu + T::from_f64(0.5) * sig2) * t) / v_sqrt;
+        let y2 = y1 - v_sqrt;
+
+        let lam = mu / sig2 - T::from_f64(0.5);
+        let ratio = h / s0;
+        let pow_s = ratio.pow(T::from_f64(2.0) * (lam + T::one()));
+        let pow_k = ratio.pow(T::from_f64(2.0) * lam);
+
+        let df_carry = (mu * t).exp();
+        let vanilla = s0 * df_carry * norm_cdf(d1) - k * norm_cdf(d2);
+        let reflection = s0 * df_carry * pow_s * norm_cdf(y1) - k * pow_k * norm_cdf(y2);
+        let raw_bs_do = vanilla - reflection;
+        let bs_do =
+            T::from_f64(0.5) * (raw_bs_do + (raw_bs_do * raw_bs_do + T::from_f64(1e-12)).sqrt());
+
+        // Risk-neutral no-touch survival probability p_surv
+        let d_nt1 = ((s0 / h).ln() + (mu - T::from_f64(0.5) * sig2) * t) / v_sqrt;
+        let d_nt2 = ((h / s0).ln() + (mu - T::from_f64(0.5) * sig2) * t) / v_sqrt;
+        let p_surv = (norm_cdf(d_nt1) - pow_k * norm_cdf(d_nt2))
+            .max_val(T::from_f64(1e-4))
+            .min_val(T::one());
+
+        // Bossens et al. (2010) survival-weighted Vanna + Volga overhedge cost
+        let fwd = s0 * df_carry;
+        let x_k = (k / fwd).ln() / v_sqrt;
+        let x_h = (fwd / h).ln() / v_sqrt;
+        let barrier_vega = s0 * sqrt_t * norm_pdf(d1) * (T::one() - pow_s);
+        let overhedge = p_surv.pow(T::from_f64(0.75))
+            * barrier_vega
+            * (T::from_f64(0.5) * spec.risk_reversal_25d_rr * (x_k - T::from_f64(0.35) * x_h)
+                + spec.butterfly_25d_bf * (x_k * x_k + T::from_f64(0.25) * x_h * x_h));
+
+        let vv_price = bs_do + overhedge;
+
+        BossensVannaVolgaBarrierAnalytics {
+            flat_vol_down_and_out_call_price: bs_do,
+            no_touch_survival_probability: p_surv,
+            vanna_volga_survival_overhedge: overhedge,
+            vanna_volga_barrier_call_price: vv_price,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn bossens_vanna_volga_barrier_invariants_and_ad_parity() {
+            let base = BossensVannaVolgaBarrierSpec {
+                spot_fx_s0: 1.10_f64,
+                strike_k: 1.12,
+                down_and_out_barrier_h: 1.02,
+                atm_volatility_sigma_atm: 0.10,
+                risk_reversal_25d_rr: -0.018,
+                butterfly_25d_bf: 0.0045,
+                domestic_foreign_rate_diff_mu: 0.015,
+                maturity_years_t: 1.0,
+            };
+            let r0 = evaluate_bossens_rayee_skovmand_vanna_volga_barrier_survival_overhedge(&base);
+            assert!(r0.flat_vol_down_and_out_call_price > 0.0);
+            assert!(
+                r0.no_touch_survival_probability > 0.0 && r0.no_touch_survival_probability < 1.0
+            );
+            assert!(r0.vanna_volga_barrier_call_price > 0.0);
+
+            let inputs = [
+                base.spot_fx_s0,
+                base.strike_k,
+                base.down_and_out_barrier_h,
+                base.atm_volatility_sigma_atm,
+                base.risk_reversal_25d_rr,
+                base.butterfly_25d_bf,
+                base.domestic_foreign_rate_diff_mu,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BossensVannaVolgaBarrierSpec {
+                spot_fx_s0: dual_in[0],
+                strike_k: dual_in[1],
+                down_and_out_barrier_h: dual_in[2],
+                atm_volatility_sigma_atm: dual_in[3],
+                risk_reversal_25d_rr: dual_in[4],
+                butterfly_25d_bf: dual_in[5],
+                domestic_foreign_rate_diff_mu: dual_in[6],
+                maturity_years_t: dual_in[7],
+            };
+            let r_ad =
+                evaluate_bossens_rayee_skovmand_vanna_volga_barrier_survival_overhedge(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| BossensVannaVolgaBarrierSpec {
+                    spot_fx_s0: v[0],
+                    strike_k: v[1],
+                    down_and_out_barrier_h: v[2],
+                    atm_volatility_sigma_atm: v[3],
+                    risk_reversal_25d_rr: v[4],
+                    butterfly_25d_bf: v[5],
+                    domestic_foreign_rate_diff_mu: v[6],
+                    maturity_years_t: v[7],
+                };
+                let rp =
+                    evaluate_bossens_rayee_skovmand_vanna_volga_barrier_survival_overhedge(&mk(p));
+                let rm =
+                    evaluate_bossens_rayee_skovmand_vanna_volga_barrier_survival_overhedge(&mk(m));
+                let fd = (rp.vanna_volga_barrier_call_price - rm.vanna_volga_barrier_call_price)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.vanna_volga_barrier_call_price.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.vanna_volga_barrier_call_price.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use bossens_vanna_volga_barrier_mod::*;

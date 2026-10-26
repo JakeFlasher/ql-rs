@@ -2046,3 +2046,185 @@ pub mod piterbarg_multi_currency_ctd_collateral_mod {
     }
 }
 pub use piterbarg_multi_currency_ctd_collateral_mod::*;
+
+// ============================================================================
+// Ametrano & Bianchetti (2009, 2013) & Henrard (2014) Dual-Curve 3M-vs-6M Tenor Basis Bootstrap
+// ============================================================================
+
+pub mod ametrano_bianchetti_tenor_basis_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Ametrano & Bianchetti (2009; 2013, Ch. 2) / Henrard (2014, Ch. 2)
+    /// OIS-discounted 3M-vs-6M IBOR tenor basis swap curve bootstrap engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct AmetranoBianchettiTenorBasisSpec<T: Real> {
+        /// Initial instantaneous OIS short rate $r_{\text{OIS}}$.
+        pub ois_discount_rate_r_ois: T,
+        /// OIS term-structure slope parameter $\theta_{\text{OIS}}$.
+        pub ois_slope_theta_ois: T,
+        /// 3M IBOR credit/liquidity spread over OIS $s_{3\text{M}} > 0$.
+        pub ibor_3m_spread_over_ois_s3: T,
+        /// Base 3M-vs-6M tenor basis swap spread $b_{3\text{v}6} > 0$.
+        pub tenor_basis_3m_vs_6m_spread_b36: T,
+        /// Term-structure steepening slope of the 3M-vs-6M tenor basis $\gamma_{3\text{v}6}$.
+        pub tenor_basis_term_steepening_gamma: T,
+        /// 3M forward rate volatility $\sigma_{3\text{M}} > 0$ driving intra-period compounding convexity.
+        pub compounding_convexity_vol_sigma3: T,
+        /// Swap maturity $T > 0$ (years).
+        pub swap_maturity_years_t: T,
+    }
+
+    /// Analytical outputs for the Ametrano-Bianchetti dual-curve tenor basis bootstrap engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct AmetranoBianchettiTenorBasisAnalytics<T: Real> {
+        /// Terminal bootstrapped 6M pseudo-discount factor $P^{6\text{M}}(0, T)$.
+        pub terminal_6m_pseudo_discount_factor: T,
+        /// OIS-discounted 3M IBOR par swap rate $S_{3\text{M}}(0, T)$.
+        pub ois_discounted_3m_par_swap_rate: T,
+        /// Implied 6M-over-3M effective par swap spread $S_{6\text{M}}(0, T) - S_{3\text{M}}(0, T)$.
+        pub implied_6m_over_3m_swap_spread: T,
+        /// Bootstrapped OIS-discounted 6M IBOR par swap rate $S_{6\text{M}}(0, T)$.
+        pub bootstrapped_6m_ibor_par_swap_rate: T,
+    }
+
+    /// Evaluates the Ametrano & Bianchetti (2009, 2013) / Henrard (2014, Section 2.4)
+    /// dual-curve 3M-into-6M tenor basis swap bootstrap across $K = 4$ semi-annual periods.
+    pub fn evaluate_ametrano_bianchetti_dual_curve_tenor_basis_swap_bootstrap<T: Real>(
+        spec: &AmetranoBianchettiTenorBasisSpec<T>,
+    ) -> AmetranoBianchettiTenorBasisAnalytics<T> {
+        const SEMI_PERIODS: usize = 4;
+        let t_mat = spec.swap_maturity_years_t.max_val(T::from_f64(0.25));
+        let tau6 = t_mat / T::from_f64(SEMI_PERIODS as f64);
+        let tau3 = T::from_f64(0.5) * tau6;
+        let sig3 = spec
+            .compounding_convexity_vol_sigma3
+            .max_val(T::from_f64(1e-5));
+
+        let ois_df = |t: T| -> T {
+            let slope = (T::one() - (-T::from_f64(0.5) * t).exp()) / T::from_f64(0.5);
+            let y = spec.ois_discount_rate_r_ois + spec.ois_slope_theta_ois * slope;
+            (-y * t).exp()
+        };
+
+        let mut p6_term = T::one();
+        let mut ann6_ois = T::zero();
+        let mut float3_pv = T::zero();
+        let mut float6_pv = T::zero();
+
+        for k in 1..=SEMI_PERIODS {
+            let t_start = T::from_f64((k - 1) as f64) * tau6;
+            let t_mid = t_start + tau3;
+            let t_end = T::from_f64(k as f64) * tau6;
+
+            let p0 = ois_df(t_start);
+            let p_mid = ois_df(t_mid);
+            let p_end = ois_df(t_end);
+
+            let f_ois_1 = (p0 / p_mid - T::one()) / tau3;
+            let f_ois_2 = (p_mid / p_end - T::one()) / tau3;
+
+            let l3_1 = f_ois_1 + spec.ibor_3m_spread_over_ois_s3;
+            let l3_2 = f_ois_2 + spec.ibor_3m_spread_over_ois_s3;
+
+            let b_k = spec.tenor_basis_3m_vs_6m_spread_b36
+                + spec.tenor_basis_term_steepening_gamma * t_end;
+            let conv_adj =
+                (tau3 * tau3 / tau6) * sig3 * sig3 * (t_start + T::from_f64(0.25) * tau6);
+            let compounded_3m =
+                ((T::one() + tau3 * l3_1) * (T::one() + tau3 * l3_2) - T::one()) / tau6;
+            let l6_k = compounded_3m + conv_adj + b_k;
+
+            p6_term /= T::one() + tau6 * l6_k;
+            ann6_ois += tau6 * p_end;
+            float3_pv += tau3 * p_mid * l3_1 + tau3 * p_end * l3_2;
+            float6_pv += tau6 * p_end * l6_k;
+        }
+
+        let s3_par = float3_pv / ann6_ois;
+        let s6_par = float6_pv / ann6_ois;
+
+        AmetranoBianchettiTenorBasisAnalytics {
+            terminal_6m_pseudo_discount_factor: p6_term,
+            ois_discounted_3m_par_swap_rate: s3_par,
+            implied_6m_over_3m_swap_spread: s6_par - s3_par,
+            bootstrapped_6m_ibor_par_swap_rate: s6_par,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn ametrano_bianchetti_tenor_basis_invariants_and_ad_parity() {
+            let base = AmetranoBianchettiTenorBasisSpec {
+                ois_discount_rate_r_ois: 0.036_f64,
+                ois_slope_theta_ois: 0.004,
+                ibor_3m_spread_over_ois_s3: 0.0018,
+                tenor_basis_3m_vs_6m_spread_b36: 0.0014,
+                tenor_basis_term_steepening_gamma: 0.0005,
+                compounding_convexity_vol_sigma3: 0.0075,
+                swap_maturity_years_t: 2.0,
+            };
+            let r0 = evaluate_ametrano_bianchetti_dual_curve_tenor_basis_swap_bootstrap(&base);
+            assert!(
+                r0.terminal_6m_pseudo_discount_factor > 0.0
+                    && r0.terminal_6m_pseudo_discount_factor < 1.0
+            );
+            assert!(r0.bootstrapped_6m_ibor_par_swap_rate > r0.ois_discounted_3m_par_swap_rate);
+            assert!(r0.implied_6m_over_3m_swap_spread > base.tenor_basis_3m_vs_6m_spread_b36);
+
+            let inputs = [
+                base.ois_discount_rate_r_ois,
+                base.ois_slope_theta_ois,
+                base.ibor_3m_spread_over_ois_s3,
+                base.tenor_basis_3m_vs_6m_spread_b36,
+                base.tenor_basis_term_steepening_gamma,
+                base.compounding_convexity_vol_sigma3,
+                base.swap_maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<7>::from_f64(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = AmetranoBianchettiTenorBasisSpec {
+                ois_discount_rate_r_ois: dual_in[0],
+                ois_slope_theta_ois: dual_in[1],
+                ibor_3m_spread_over_ois_s3: dual_in[2],
+                tenor_basis_3m_vs_6m_spread_b36: dual_in[3],
+                tenor_basis_term_steepening_gamma: dual_in[4],
+                compounding_convexity_vol_sigma3: dual_in[5],
+                swap_maturity_years_t: dual_in[6],
+            };
+            let r_ad = evaluate_ametrano_bianchetti_dual_curve_tenor_basis_swap_bootstrap(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| AmetranoBianchettiTenorBasisSpec {
+                    ois_discount_rate_r_ois: v[0],
+                    ois_slope_theta_ois: v[1],
+                    ibor_3m_spread_over_ois_s3: v[2],
+                    tenor_basis_3m_vs_6m_spread_b36: v[3],
+                    tenor_basis_term_steepening_gamma: v[4],
+                    compounding_convexity_vol_sigma3: v[5],
+                    swap_maturity_years_t: v[6],
+                };
+                let rp = evaluate_ametrano_bianchetti_dual_curve_tenor_basis_swap_bootstrap(&mk(p));
+                let rm = evaluate_ametrano_bianchetti_dual_curve_tenor_basis_swap_bootstrap(&mk(m));
+                let fd = (rp.bootstrapped_6m_ibor_par_swap_rate
+                    - rm.bootstrapped_6m_ibor_par_swap_rate)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.bootstrapped_6m_ibor_par_swap_rate.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.bootstrapped_6m_ibor_par_swap_rate.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use ametrano_bianchetti_tenor_basis_mod::*;

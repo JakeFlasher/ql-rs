@@ -1678,3 +1678,178 @@ pub mod wystup_clark_fx_smile_strangle_mod {
     }
 }
 pub use wystup_clark_fx_smile_strangle_mod::*;
+
+// ============================================================================
+// Reiner (1992) & Haug (2007, Ch. 4.13) Foreign Equity Domestic-Strike & Quanto Call
+// ============================================================================
+
+pub mod reiner_haug_quanto_call_mod {
+    use ql_ad::Real;
+    use ql_math::distributions::norm_cdf;
+
+    /// Specification for the Reiner (1992, *Risk* 5(3)) and Haug (2007, Ch. 4.13.1 & 4.13.4)
+    /// foreign equity call struck in domestic currency vs. fixed-exchange-rate quanto call.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct ReinerHaugQuantoEquityCallSpec<T: Real> {
+        /// Foreign equity spot price $S_0 > 0$ (in foreign currency).
+        pub foreign_equity_spot_s0: T,
+        /// Spot exchange rate $E_0 > 0$ (domestic currency per unit of foreign currency).
+        pub fx_spot_e0: T,
+        /// Option strike $K_{\text{for}} > 0$ (in foreign currency units).
+        pub foreign_strike_k_for: T,
+        /// Domestic risk-free rate $r_d > 0$.
+        pub domestic_rate_rd: T,
+        /// Foreign risk-free rate $r_f > 0$.
+        pub foreign_rate_rf: T,
+        /// Foreign equity continuous dividend yield $q \ge 0$.
+        pub equity_dividend_yield_q: T,
+        /// Foreign equity volatility $\sigma_S > 0$.
+        pub equity_volatility_sigma_s: T,
+        /// Exchange-rate volatility $\sigma_E > 0$.
+        pub fx_volatility_sigma_e: T,
+        /// Correlation between foreign equity and exchange rate $\rho_{SE} \in (-1, 1)$.
+        pub equity_fx_correlation_rho: T,
+    }
+
+    /// Analytical outputs for the Reiner-Haug quanto and composite equity option engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct ReinerHaugQuantoEquityCallAnalytics<T: Real> {
+        /// Quanto covariance drift adjustment $-\rho_{SE}\sigma_S\sigma_E$.
+        pub quanto_covariance_drift_adjustment: T,
+        /// Composite domestic-currency equity volatility $\sigma_{\text{comp}} = \sqrt{\sigma_S^2 + \sigma_E^2 + 2\rho_{SE}\sigma_S\sigma_E}$.
+        pub composite_domestic_volatility: T,
+        /// Foreign equity call struck in domestic currency $K_{\text{dom}} = E_0 K_{\text{for}}$.
+        pub domestic_strike_composite_call_value: T,
+        /// Fixed-exchange-rate quanto call value in domestic currency $C_{\text{quanto}}$.
+        pub fixed_fx_quanto_call_present_value: T,
+    }
+
+    /// Evaluates the Reiner (1992) / Haug (2007, Section 4.13.1 & 4.13.4) fixed-FX quanto call
+    /// and domestic-strike composite foreign equity call.
+    pub fn evaluate_reiner_haug_foreign_equity_domestic_strike_and_quanto_call<T: Real>(
+        spec: &ReinerHaugQuantoEquityCallSpec<T>,
+    ) -> ReinerHaugQuantoEquityCallAnalytics<T> {
+        let s0 = spec.foreign_equity_spot_s0.max_val(T::from_f64(1e-4));
+        let e0 = spec.fx_spot_e0.max_val(T::from_f64(1e-4));
+        let k_for = spec.foreign_strike_k_for.max_val(T::from_f64(1e-4));
+        let sig_s = spec.equity_volatility_sigma_s.max_val(T::from_f64(1e-4));
+        let sig_e = spec.fx_volatility_sigma_e.max_val(T::from_f64(1e-4));
+        let rho = spec
+            .equity_fx_correlation_rho
+            .max_val(T::from_f64(-0.98))
+            .min_val(T::from_f64(0.98));
+
+        // 1. Fixed-exchange-rate Quanto Call (Haug 2007, Section 4.13.4)
+        let quanto_adj = -rho * sig_s * sig_e;
+        let b_quanto = spec.foreign_rate_rf - spec.equity_dividend_yield_q + quanto_adj;
+        let d1_q = ((s0 / k_for).ln() + b_quanto + T::from_f64(0.5) * sig_s * sig_s) / sig_s;
+        let d2_q = d1_q - sig_s;
+        let df_d = (-spec.domestic_rate_rd).exp();
+        let c_quanto = e0 * df_d * (s0 * b_quanto.exp() * norm_cdf(d1_q) - k_for * norm_cdf(d2_q));
+
+        // 2. Foreign Equity Call Struck in Domestic Currency K_dom = E_0 * K_for (Haug 2007, Section 4.13.1)
+        let var_comp = (sig_s * sig_s + sig_e * sig_e + T::from_f64(2.0) * rho * sig_s * sig_e)
+            .max_val(T::from_f64(1e-6));
+        let sig_comp = var_comp.sqrt();
+        let d1_d = ((s0 / k_for).ln()
+            + (spec.domestic_rate_rd - spec.equity_dividend_yield_q + T::from_f64(0.5) * var_comp))
+            / sig_comp;
+        let d2_d = d1_d - sig_comp;
+        let c_dom = e0
+            * (s0 * (-spec.equity_dividend_yield_q).exp() * norm_cdf(d1_d)
+                - k_for * df_d * norm_cdf(d2_d));
+
+        ReinerHaugQuantoEquityCallAnalytics {
+            quanto_covariance_drift_adjustment: quanto_adj,
+            composite_domestic_volatility: sig_comp,
+            domestic_strike_composite_call_value: c_dom,
+            fixed_fx_quanto_call_present_value: c_quanto,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn reiner_haug_quanto_call_invariants_and_ad_parity() {
+            let base = ReinerHaugQuantoEquityCallSpec {
+                foreign_equity_spot_s0: 100.0_f64,
+                fx_spot_e0: 1.10,
+                foreign_strike_k_for: 102.0,
+                domestic_rate_rd: 0.045,
+                foreign_rate_rf: 0.025,
+                equity_dividend_yield_q: 0.015,
+                equity_volatility_sigma_s: 0.22,
+                fx_volatility_sigma_e: 0.12,
+                equity_fx_correlation_rho: -0.35,
+            };
+            let r0 = evaluate_reiner_haug_foreign_equity_domestic_strike_and_quanto_call(&base);
+            assert!(r0.quanto_covariance_drift_adjustment > 0.0);
+            assert!(r0.composite_domestic_volatility > 0.0);
+            assert!(r0.domestic_strike_composite_call_value > 0.0);
+            assert!(r0.fixed_fx_quanto_call_present_value > 0.0);
+
+            let inputs = [
+                base.foreign_equity_spot_s0,
+                base.fx_spot_e0,
+                base.foreign_strike_k_for,
+                base.domestic_rate_rd,
+                base.foreign_rate_rf,
+                base.equity_dividend_yield_q,
+                base.equity_volatility_sigma_s,
+                base.fx_volatility_sigma_e,
+                base.equity_fx_correlation_rho,
+            ];
+            let mut dual_in = [Dual::<9>::from_f64(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = ReinerHaugQuantoEquityCallSpec {
+                foreign_equity_spot_s0: dual_in[0],
+                fx_spot_e0: dual_in[1],
+                foreign_strike_k_for: dual_in[2],
+                domestic_rate_rd: dual_in[3],
+                foreign_rate_rf: dual_in[4],
+                equity_dividend_yield_q: dual_in[5],
+                equity_volatility_sigma_s: dual_in[6],
+                fx_volatility_sigma_e: dual_in[7],
+                equity_fx_correlation_rho: dual_in[8],
+            };
+            let r_ad =
+                evaluate_reiner_haug_foreign_equity_domestic_strike_and_quanto_call(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 9]| ReinerHaugQuantoEquityCallSpec {
+                    foreign_equity_spot_s0: v[0],
+                    fx_spot_e0: v[1],
+                    foreign_strike_k_for: v[2],
+                    domestic_rate_rd: v[3],
+                    foreign_rate_rf: v[4],
+                    equity_dividend_yield_q: v[5],
+                    equity_volatility_sigma_s: v[6],
+                    fx_volatility_sigma_e: v[7],
+                    equity_fx_correlation_rho: v[8],
+                };
+                let rp =
+                    evaluate_reiner_haug_foreign_equity_domestic_strike_and_quanto_call(&mk(p));
+                let rm =
+                    evaluate_reiner_haug_foreign_equity_domestic_strike_and_quanto_call(&mk(m));
+                let fd = (rp.fixed_fx_quanto_call_present_value
+                    - rm.fixed_fx_quanto_call_present_value)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.fixed_fx_quanto_call_present_value.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.fixed_fx_quanto_call_present_value.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use reiner_haug_quanto_call_mod::*;

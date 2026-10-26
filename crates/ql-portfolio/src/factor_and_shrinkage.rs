@@ -3499,3 +3499,157 @@ pub mod campbell_lettau_malkiel_xu_variance_mod {
     }
 }
 pub use campbell_lettau_malkiel_xu_variance_mod::*;
+
+// ============================================================================
+// Pastor & Stambaugh (1999, 2000) Bayesian Mispricing Alpha Shrinkage
+// ============================================================================
+
+pub mod pastor_stambaugh_alpha_shrinkage_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Pástor & Stambaugh (1999, *J. Finance* 54(1); 2000, *J. Finance* 55(1))
+    /// Bayesian shrinkage of sample Jensen alpha toward an asset-pricing factor model prior.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct PastorStambaughAlphaShrinkageSpec<T: Real> {
+        /// OLS sample regression intercept / alpha $\hat{\alpha}$ (annualized).
+        pub ols_sample_alpha_hat: T,
+        /// Prior standard deviation of pricing-model mispricing $\sigma_\alpha > 0$.
+        pub prior_mispricing_uncertainty_sigma_alpha: T,
+        /// Regression residual idiosyncratic volatility $\sigma_\varepsilon > 0$.
+        pub residual_idiosyncratic_volatility_sigma_eps: T,
+        /// Estimation sample length $T_{\text{obs}} > 0$ (years).
+        pub sample_history_years_t_obs: T,
+        /// Benchmark factor tangency portfolio Sharpe ratio $\text{SR}_F$.
+        pub benchmark_factor_sharpe_ratio_sr_f: T,
+        /// Asset factor beta loading $\beta_F$.
+        pub asset_factor_beta: T,
+        /// Benchmark factor expected excess return $\mu_F > 0$.
+        pub benchmark_expected_excess_return_mu_f: T,
+    }
+
+    /// Analytical outputs for the Pastor-Stambaugh Bayesian alpha shrinkage engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct PastorStambaughAlphaShrinkageAnalytics<T: Real> {
+        /// Precision-weighted Bayesian shrinkage factor toward the sample estimate $\omega_{\text{PS}} \in (0, 1)$.
+        pub bayesian_data_shrinkage_weight: T,
+        /// Posterior shrunk Jensen alpha $\alpha_{\text{post}} = \omega_{\text{PS}} \hat{\alpha}$.
+        pub posterior_shrunk_alpha: T,
+        /// Posterior expected excess return $\mu_{\text{post}} = \beta_F \mu_F + \alpha_{\text{post}}$.
+        pub posterior_expected_excess_return: T,
+        /// Posterior predictive appraisal / information ratio $I_{\text{PS}}$.
+        pub posterior_predictive_information_ratio: T,
+    }
+
+    /// Evaluates the Pástor & Stambaugh (1999, Eq. 14; 2000, Eq. 11) Bayesian shrinkage weight,
+    /// posterior alpha, posterior expected excess return, and predictive appraisal ratio.
+    pub fn evaluate_pastor_stambaugh_bayesian_mispricing_alpha_shrinkage<T: Real>(
+        spec: &PastorStambaughAlphaShrinkageSpec<T>,
+    ) -> PastorStambaughAlphaShrinkageAnalytics<T> {
+        let sig_a = spec
+            .prior_mispricing_uncertainty_sigma_alpha
+            .max_val(T::from_f64(1e-5));
+        let sig_e = spec
+            .residual_idiosyncratic_volatility_sigma_eps
+            .max_val(T::from_f64(1e-4));
+        let t_obs = spec.sample_history_years_t_obs.max_val(T::from_f64(0.25));
+        let sr_f = spec.benchmark_factor_sharpe_ratio_sr_f;
+
+        let prior_var = sig_a * sig_a;
+        let sample_alpha_var = (sig_e * sig_e / t_obs) * (T::one() + sr_f * sr_f);
+        let omega_ps = prior_var / (prior_var + sample_alpha_var);
+
+        let alpha_post = omega_ps * spec.ols_sample_alpha_hat;
+        let mu_post =
+            spec.asset_factor_beta * spec.benchmark_expected_excess_return_mu_f + alpha_post;
+
+        let pred_idio_var = sig_e * sig_e + omega_ps * sample_alpha_var;
+        let info_ratio = mu_post / pred_idio_var.sqrt();
+
+        PastorStambaughAlphaShrinkageAnalytics {
+            bayesian_data_shrinkage_weight: omega_ps,
+            posterior_shrunk_alpha: alpha_post,
+            posterior_expected_excess_return: mu_post,
+            posterior_predictive_information_ratio: info_ratio,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn pastor_stambaugh_alpha_shrinkage_invariants_and_ad_parity() {
+            let base = PastorStambaughAlphaShrinkageSpec {
+                ols_sample_alpha_hat: 0.042_f64,
+                prior_mispricing_uncertainty_sigma_alpha: 0.020,
+                residual_idiosyncratic_volatility_sigma_eps: 0.15,
+                sample_history_years_t_obs: 5.0,
+                benchmark_factor_sharpe_ratio_sr_f: 0.45,
+                asset_factor_beta: 1.10,
+                benchmark_expected_excess_return_mu_f: 0.065,
+            };
+            let r0 = evaluate_pastor_stambaugh_bayesian_mispricing_alpha_shrinkage(&base);
+            assert!(
+                r0.bayesian_data_shrinkage_weight > 0.0 && r0.bayesian_data_shrinkage_weight < 1.0
+            );
+            assert!(
+                r0.posterior_shrunk_alpha > 0.0
+                    && r0.posterior_shrunk_alpha < base.ols_sample_alpha_hat
+            );
+            assert!(r0.posterior_expected_excess_return > 0.0);
+            assert!(r0.posterior_predictive_information_ratio > 0.0);
+
+            let inputs = [
+                base.ols_sample_alpha_hat,
+                base.prior_mispricing_uncertainty_sigma_alpha,
+                base.residual_idiosyncratic_volatility_sigma_eps,
+                base.sample_history_years_t_obs,
+                base.benchmark_factor_sharpe_ratio_sr_f,
+                base.asset_factor_beta,
+                base.benchmark_expected_excess_return_mu_f,
+            ];
+            let mut dual_in = [Dual::<7>::from_f64(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = PastorStambaughAlphaShrinkageSpec {
+                ols_sample_alpha_hat: dual_in[0],
+                prior_mispricing_uncertainty_sigma_alpha: dual_in[1],
+                residual_idiosyncratic_volatility_sigma_eps: dual_in[2],
+                sample_history_years_t_obs: dual_in[3],
+                benchmark_factor_sharpe_ratio_sr_f: dual_in[4],
+                asset_factor_beta: dual_in[5],
+                benchmark_expected_excess_return_mu_f: dual_in[6],
+            };
+            let r_ad = evaluate_pastor_stambaugh_bayesian_mispricing_alpha_shrinkage(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| PastorStambaughAlphaShrinkageSpec {
+                    ols_sample_alpha_hat: v[0],
+                    prior_mispricing_uncertainty_sigma_alpha: v[1],
+                    residual_idiosyncratic_volatility_sigma_eps: v[2],
+                    sample_history_years_t_obs: v[3],
+                    benchmark_factor_sharpe_ratio_sr_f: v[4],
+                    asset_factor_beta: v[5],
+                    benchmark_expected_excess_return_mu_f: v[6],
+                };
+                let rp = evaluate_pastor_stambaugh_bayesian_mispricing_alpha_shrinkage(&mk(p));
+                let rm = evaluate_pastor_stambaugh_bayesian_mispricing_alpha_shrinkage(&mk(m));
+                let fd = (rp.posterior_predictive_information_ratio
+                    - rm.posterior_predictive_information_ratio)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.posterior_predictive_information_ratio.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.posterior_predictive_information_ratio.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use pastor_stambaugh_alpha_shrinkage_mod::*;

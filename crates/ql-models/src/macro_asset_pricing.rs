@@ -2911,3 +2911,177 @@ pub mod gabaix_rare_disasters_resilience_mod {
     }
 }
 pub use gabaix_rare_disasters_resilience_mod::*;
+
+// ============================================================================
+// Piazzesi & Schneider (2007) & Bansal-Shaliastovich (2013) Stagflation Nominal Term Premium
+// ============================================================================
+
+pub mod piazzesi_schneider_nominal_tp_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Piazzesi & Schneider (2007, *NBER Macro Annual* 21) and
+    /// Bansal & Shaliastovich (2013, *RFS* 26(1)) Epstein-Zin nominal bond yield and
+    /// stagflation inflation risk premium engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct PiazzesiSchneiderNominalBondSpec<T: Real> {
+        /// Baseline real short interest rate $r_{\text{real}}$.
+        pub real_short_rate_r_real: T,
+        /// Current expected inflation rate $\pi_0$.
+        pub expected_inflation_pi0: T,
+        /// Epstein-Zin relative risk aversion $\gamma > 1$.
+        pub relative_risk_aversion_gamma: T,
+        /// Persistence of expected real consumption growth $\phi_x \in (0, 1)$.
+        pub real_growth_persistence_phi_x: T,
+        /// Persistence of expected inflation $\phi_\pi \in (0, 1)$.
+        pub inflation_persistence_phi_pi: T,
+        /// Conditional volatility of expected real growth news $\sigma_x > 0$.
+        pub real_growth_volatility_sigma_x: T,
+        /// Conditional volatility of expected inflation news $\sigma_\pi > 0$.
+        pub inflation_volatility_sigma_pi: T,
+        /// Correlation between real growth news and inflation news $\rho_{x,\pi} \in (-1, 1)$
+        /// (negative in stagflation regimes where inflation spikes coincide with low growth).
+        pub growth_inflation_correlation_rho_x_pi: T,
+    }
+
+    /// Analytical outputs for the Piazzesi-Schneider nominal bond term premium engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct PiazzesiSchneiderNominalBondAnalytics<T: Real> {
+        /// Real bond risk premium $\text{RP}_{\text{real}}(10\text{Y})$.
+        pub real_bond_term_premium: T,
+        /// Stagflation-induced inflation risk premium $\text{IRP}_{\text{stag}}(10\text{Y})$.
+        pub stagflation_inflation_risk_premium: T,
+        /// Total 10-year nominal bond term premium $\text{TP}_{\text{nom}}(10\text{Y})$.
+        pub nominal_bond_term_premium: T,
+        /// Equilibrium 10-year nominal zero-coupon bond yield $y_{\text{nom}}(10\text{Y})$.
+        pub equilibrium_long_nominal_bond_yield: T,
+    }
+
+    /// Evaluates the Piazzesi & Schneider (2007) / Bansal & Shaliastovich (2013) 10-year
+    /// real bond risk premium, stagflation inflation risk premium, and nominal yield.
+    pub fn evaluate_piazzesi_schneider_stagflation_nominal_bond_term_premium<T: Real>(
+        spec: &PiazzesiSchneiderNominalBondSpec<T>,
+    ) -> PiazzesiSchneiderNominalBondAnalytics<T> {
+        let gamma = spec.relative_risk_aversion_gamma.max_val(T::from_f64(1.05));
+        let phi_x = spec
+            .real_growth_persistence_phi_x
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.99));
+        let phi_pi = spec
+            .inflation_persistence_phi_pi
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.99));
+        let sig_x = spec
+            .real_growth_volatility_sigma_x
+            .max_val(T::from_f64(1e-5));
+        let sig_pi = spec
+            .inflation_volatility_sigma_pi
+            .max_val(T::from_f64(1e-5));
+        let rho = spec
+            .growth_inflation_correlation_rho_x_pi
+            .max_val(T::from_f64(-0.98))
+            .min_val(T::from_f64(0.98));
+
+        let n_years = T::from_f64(10.0);
+        let b_x_wealth = (T::one() - phi_x.powf(5.0)) / (T::one() - phi_x);
+        let b_x_10 = (T::one() - phi_x.powf(10.0)) / (T::one() - phi_x);
+        let b_pi_10 = (T::one() - phi_pi.powf(10.0)) / (T::one() - phi_pi);
+
+        // Real growth news market price of risk Lambda_x = gamma * B_x(5) * sigma_x
+        let real_tp = (gamma * b_x_wealth * b_x_10 * sig_x * sig_x) / n_years;
+
+        // Stagflation inflation risk premium: positive when rho_{x,pi} < 0 (bad consumption hedge)
+        let irp_stag = (-gamma * b_x_wealth * b_pi_10 * rho * sig_x * sig_pi
+            - T::from_f64(0.5) * b_pi_10 * b_pi_10 * sig_pi * sig_pi)
+            / n_years;
+
+        let nom_tp = real_tp + irp_stag;
+        let expected_avg_inf = (b_pi_10 / n_years) * spec.expected_inflation_pi0;
+        let y_nom_10 = spec.real_short_rate_r_real + expected_avg_inf + nom_tp;
+
+        PiazzesiSchneiderNominalBondAnalytics {
+            real_bond_term_premium: real_tp,
+            stagflation_inflation_risk_premium: irp_stag,
+            nominal_bond_term_premium: nom_tp,
+            equilibrium_long_nominal_bond_yield: y_nom_10,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn piazzesi_schneider_nominal_tp_invariants_and_ad_parity() {
+            let base = PiazzesiSchneiderNominalBondSpec {
+                real_short_rate_r_real: 0.015_f64,
+                expected_inflation_pi0: 0.025,
+                relative_risk_aversion_gamma: 8.5,
+                real_growth_persistence_phi_x: 0.92,
+                inflation_persistence_phi_pi: 0.94,
+                real_growth_volatility_sigma_x: 0.006,
+                inflation_volatility_sigma_pi: 0.008,
+                growth_inflation_correlation_rho_x_pi: -0.55,
+            };
+            let r0 = evaluate_piazzesi_schneider_stagflation_nominal_bond_term_premium(&base);
+            assert!(r0.real_bond_term_premium > 0.0);
+            assert!(r0.stagflation_inflation_risk_premium > 0.0);
+            assert!(r0.nominal_bond_term_premium > 0.0);
+            assert!(r0.equilibrium_long_nominal_bond_yield > base.real_short_rate_r_real);
+
+            let inputs = [
+                base.real_short_rate_r_real,
+                base.expected_inflation_pi0,
+                base.relative_risk_aversion_gamma,
+                base.real_growth_persistence_phi_x,
+                base.inflation_persistence_phi_pi,
+                base.real_growth_volatility_sigma_x,
+                base.inflation_volatility_sigma_pi,
+                base.growth_inflation_correlation_rho_x_pi,
+            ];
+            let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = PiazzesiSchneiderNominalBondSpec {
+                real_short_rate_r_real: dual_in[0],
+                expected_inflation_pi0: dual_in[1],
+                relative_risk_aversion_gamma: dual_in[2],
+                real_growth_persistence_phi_x: dual_in[3],
+                inflation_persistence_phi_pi: dual_in[4],
+                real_growth_volatility_sigma_x: dual_in[5],
+                inflation_volatility_sigma_pi: dual_in[6],
+                growth_inflation_correlation_rho_x_pi: dual_in[7],
+            };
+            let r_ad = evaluate_piazzesi_schneider_stagflation_nominal_bond_term_premium(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| PiazzesiSchneiderNominalBondSpec {
+                    real_short_rate_r_real: v[0],
+                    expected_inflation_pi0: v[1],
+                    relative_risk_aversion_gamma: v[2],
+                    real_growth_persistence_phi_x: v[3],
+                    inflation_persistence_phi_pi: v[4],
+                    real_growth_volatility_sigma_x: v[5],
+                    inflation_volatility_sigma_pi: v[6],
+                    growth_inflation_correlation_rho_x_pi: v[7],
+                };
+                let rp = evaluate_piazzesi_schneider_stagflation_nominal_bond_term_premium(&mk(p));
+                let rm = evaluate_piazzesi_schneider_stagflation_nominal_bond_term_premium(&mk(m));
+                let fd = (rp.equilibrium_long_nominal_bond_yield
+                    - rm.equilibrium_long_nominal_bond_yield)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.equilibrium_long_nominal_bond_yield.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.equilibrium_long_nominal_bond_yield.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use piazzesi_schneider_nominal_tp_mod::*;

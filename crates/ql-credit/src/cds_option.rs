@@ -2455,3 +2455,190 @@ pub mod brigo_morini_constant_maturity_cds_mod {
     }
 }
 pub use brigo_morini_constant_maturity_cds_mod::*;
+
+// ============================================================================
+// Hull & White (2001) & Brigo-Chourdakis (2009) Wrong-Way Counterparty CDS Spread
+// ============================================================================
+
+pub mod hull_brigo_wwr_cds_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Hull & White (2001, *J. Derivatives* 8(3)) and Brigo & Chourdakis
+    /// (2009, *IJTAF* 12(7)) CDS valuation with protection-seller wrong-way default correlation.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct HullBrigoWwrCdsSpec<T: Real> {
+        /// Reference entity standalone default hazard rate $\lambda_{\text{ref}} > 0$.
+        pub reference_entity_hazard_lambda_ref: T,
+        /// Protection seller standalone default hazard rate $\lambda_{\text{cp}} > 0$.
+        pub protection_seller_hazard_lambda_cp: T,
+        /// Wrong-way default correlation $\rho_{\text{WWR}} \in [0, 0.95)$ between reference and seller.
+        pub default_correlation_rho_wwr: T,
+        /// Reference entity recovery rate $R_{\text{ref}} \in (0, 1)$.
+        pub reference_recovery_rate_r_ref: T,
+        /// Protection seller recovery rate on unpaid default claim $R_{\text{cp}} \in (0, 1)$.
+        pub counterparty_recovery_rate_r_cp: T,
+        /// CDS spread volatility $\sigma_s > 0$ driving replacement-cost CVA upon seller pre-default.
+        pub cds_spread_volatility_sigma_s: T,
+        /// Risk-free discount rate $r > 0$.
+        pub risk_free_rate_r: T,
+        /// CDS maturity $T > 0$ (years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytical outputs for the Hull-White / Brigo-Chourdakis WWR CDS engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct HullBrigoWwrCdsAnalytics<T: Real> {
+        /// Clean counterparty-risk-free CDS par spread $S_{\text{clean}} = (1 - R_{\text{ref}})\lambda_{\text{ref}}$.
+        pub clean_risk_free_cds_spread: T,
+        /// Marshall-Olkin systemic joint default hazard intensity $\lambda_{\text{sys}}$.
+        pub systemic_joint_default_intensity: T,
+        /// Wrong-way CVA spread haircut $S_{\text{clean}} - S_{\text{WWR}} > 0$.
+        pub wrong_way_cva_spread_haircut: T,
+        /// Counterparty-risk-adjusted fair CDS par spread $S_{\text{WWR}}$.
+        pub wrong_way_adjusted_cds_par_spread: T,
+    }
+
+    /// Evaluates the Hull & White (2001) / Brigo & Chourdakis (2009) counterparty-risk-adjusted
+    /// CDS par spread under correlated protection-seller default and replacement-cost CVA.
+    pub fn evaluate_hull_white_brigo_cds_counterparty_wrong_way_spread<T: Real>(
+        spec: &HullBrigoWwrCdsSpec<T>,
+    ) -> HullBrigoWwrCdsAnalytics<T> {
+        let lam_ref = spec
+            .reference_entity_hazard_lambda_ref
+            .max_val(T::from_f64(1e-4));
+        let lam_cp = spec
+            .protection_seller_hazard_lambda_cp
+            .max_val(T::from_f64(1e-4));
+        let rho = spec
+            .default_correlation_rho_wwr
+            .max_val(T::zero())
+            .min_val(T::from_f64(0.95));
+        let lgd_ref = (T::one() - spec.reference_recovery_rate_r_ref)
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.95));
+        let r_cp = spec
+            .counterparty_recovery_rate_r_cp
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(0.95));
+        let sig_s = spec
+            .cds_spread_volatility_sigma_s
+            .max_val(T::from_f64(1e-4));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.25));
+
+        // Systemic joint default shock intensity under Marshall-Olkin / Hull-White correlation
+        let lam_sys = rho * (lam_ref * lam_cp).sqrt();
+        let lam_ref_only = (lam_ref - lam_sys).max_val(T::from_f64(1e-5));
+        let lam_cp_only = (lam_cp - lam_sys).max_val(T::from_f64(1e-5));
+        let lam_tot = lam_ref + lam_cp - lam_sys;
+
+        let s_clean = lgd_ref * lam_ref;
+
+        // Effective protection payout intensity:
+        // 1. Reference defaults prior to seller (rate lam_ref_only): full payout lgd_ref
+        // 2. Simultaneous systemic default (rate lam_sys): fractional recovery r_cp * lgd_ref
+        // 3. Seller defaults prior to reference (rate lam_cp_only): loss of positive MTM replacement value
+        let inv_sqrt_2pi = T::from_f64(0.398_942_280_401_432_7);
+        let half_t = T::from_f64(0.5) * t;
+        let replacement_epe_rate = (T::one() - r_cp)
+            * lam_cp_only
+            * inv_sqrt_2pi
+            * sig_s
+            * s_clean
+            * half_t.sqrt()
+            * half_t;
+
+        let effective_prot_intensity = (lgd_ref * (lam_ref_only + r_cp * lam_sys)
+            - replacement_epe_rate)
+            .max_val(T::from_f64(1e-5));
+
+        let dt_accrual = t / T::from_f64(20.0);
+        let accrual_adj =
+            T::one() + T::from_f64(0.5) * (spec.risk_free_rate_r + lam_tot) * dt_accrual;
+        let s_wwr = effective_prot_intensity / accrual_adj;
+
+        HullBrigoWwrCdsAnalytics {
+            clean_risk_free_cds_spread: s_clean,
+            systemic_joint_default_intensity: lam_sys,
+            wrong_way_cva_spread_haircut: s_clean - s_wwr,
+            wrong_way_adjusted_cds_par_spread: s_wwr,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn hull_brigo_wwr_cds_invariants_and_ad_parity() {
+            let base = HullBrigoWwrCdsSpec {
+                reference_entity_hazard_lambda_ref: 0.024_f64,
+                protection_seller_hazard_lambda_cp: 0.016,
+                default_correlation_rho_wwr: 0.45,
+                reference_recovery_rate_r_ref: 0.40,
+                counterparty_recovery_rate_r_cp: 0.35,
+                cds_spread_volatility_sigma_s: 0.42,
+                risk_free_rate_r: 0.035,
+                maturity_years_t: 5.0,
+            };
+            let r0 = evaluate_hull_white_brigo_cds_counterparty_wrong_way_spread(&base);
+            assert!(r0.clean_risk_free_cds_spread > r0.wrong_way_adjusted_cds_par_spread);
+            assert!(r0.wrong_way_cva_spread_haircut > 0.0);
+            assert!(r0.wrong_way_adjusted_cds_par_spread > 0.0);
+
+            let inputs = [
+                base.reference_entity_hazard_lambda_ref,
+                base.protection_seller_hazard_lambda_cp,
+                base.default_correlation_rho_wwr,
+                base.reference_recovery_rate_r_ref,
+                base.counterparty_recovery_rate_r_cp,
+                base.cds_spread_volatility_sigma_s,
+                base.risk_free_rate_r,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = HullBrigoWwrCdsSpec {
+                reference_entity_hazard_lambda_ref: dual_in[0],
+                protection_seller_hazard_lambda_cp: dual_in[1],
+                default_correlation_rho_wwr: dual_in[2],
+                reference_recovery_rate_r_ref: dual_in[3],
+                counterparty_recovery_rate_r_cp: dual_in[4],
+                cds_spread_volatility_sigma_s: dual_in[5],
+                risk_free_rate_r: dual_in[6],
+                maturity_years_t: dual_in[7],
+            };
+            let r_ad = evaluate_hull_white_brigo_cds_counterparty_wrong_way_spread(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| HullBrigoWwrCdsSpec {
+                    reference_entity_hazard_lambda_ref: v[0],
+                    protection_seller_hazard_lambda_cp: v[1],
+                    default_correlation_rho_wwr: v[2],
+                    reference_recovery_rate_r_ref: v[3],
+                    counterparty_recovery_rate_r_cp: v[4],
+                    cds_spread_volatility_sigma_s: v[5],
+                    risk_free_rate_r: v[6],
+                    maturity_years_t: v[7],
+                };
+                let rp = evaluate_hull_white_brigo_cds_counterparty_wrong_way_spread(&mk(p));
+                let rm = evaluate_hull_white_brigo_cds_counterparty_wrong_way_spread(&mk(m));
+                let fd = (rp.wrong_way_adjusted_cds_par_spread
+                    - rm.wrong_way_adjusted_cds_par_spread)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.wrong_way_adjusted_cds_par_spread.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.wrong_way_adjusted_cds_par_spread.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use hull_brigo_wwr_cds_mod::*;

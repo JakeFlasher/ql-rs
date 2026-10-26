@@ -4231,3 +4231,160 @@ pub mod kyle_multi_period_insider_equilibrium_mod {
     }
 }
 pub use kyle_multi_period_insider_equilibrium_mod::*;
+
+// ============================================================================
+// Obizhaeva & Wang (2013) & Gatheral (2010) Transient Resilience Block Execution
+// ============================================================================
+
+pub mod obizhaeva_wang_impulse_execution_mod {
+    use ql_ad::Real;
+
+    /// Specification for the Obizhaeva & Wang (2013, *J. Financial Markets* 16(1)) and
+    /// Gatheral (2010) limit-order-book transient exponential resilience optimal execution engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct ObizhaevaWangImpulseExecutionSpec<T: Real> {
+        /// Total parent block order size $X_0 > 0$ (shares/units).
+        pub order_size_shares_x0: T,
+        /// Permanent price impact coefficient $\lambda_{\text{perm}} > 0$.
+        pub permanent_price_impact_lambda: T,
+        /// Transient LOB depth displacement coefficient $\kappa_{\text{tr}} > 0$.
+        pub transient_lob_impact_kappa: T,
+        /// Exponential order-book resilience recovery rate $\rho_{\text{res}} > 0$.
+        pub lob_resilience_speed_rho: T,
+        /// Execution horizon $T > 0$ (days/hours).
+        pub execution_horizon_t: T,
+        /// Fundamental price volatility $\sigma > 0$.
+        pub asset_volatility_sigma: T,
+        /// Trader CARA inventory risk-aversion coefficient $\gamma_{\text{risk}} > 0$.
+        pub inventory_risk_aversion_gamma: T,
+    }
+
+    /// Analytical outputs for the Obizhaeva-Wang transient resilience impulse execution engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct ObizhaevaWangImpulseExecutionAnalytics<T: Real> {
+        /// Optimal initial and terminal block impulse trade size $\Delta X_0 = \Delta X_T = \frac{X_0}{2 + \rho_{\text{res}} T}$.
+        pub endpoint_impulse_block_trade: T,
+        /// Optimal interior continuous trading rate $v_{\text{cont}} = \frac{\rho_{\text{res}} X_0}{2 + \rho_{\text{res}} T}$.
+        pub interior_continuous_trading_rate: T,
+        /// Expected permanent + transient LOB impact cost $C_{\text{impact}}$.
+        pub expected_lob_impact_cost: T,
+        /// Total risk-adjusted expected execution cost $C_{\text{total}}$.
+        pub risk_adjusted_total_execution_cost: T,
+    }
+
+    /// Evaluates the Obizhaeva & Wang (2013, Proposition 1, Eqs. 21–25) endpoint block impulses,
+    /// continuous interior trading rate, LOB impact cost, and inventory-risk-adjusted cost.
+    pub fn evaluate_obizhaeva_wang_transient_resilience_impulse_block_execution<T: Real>(
+        spec: &ObizhaevaWangImpulseExecutionSpec<T>,
+    ) -> ObizhaevaWangImpulseExecutionAnalytics<T> {
+        let x0 = spec.order_size_shares_x0;
+        let lam = spec
+            .permanent_price_impact_lambda
+            .max_val(T::from_f64(1e-6));
+        let kap = spec.transient_lob_impact_kappa.max_val(T::from_f64(1e-6));
+        let rho = spec.lob_resilience_speed_rho.max_val(T::from_f64(1e-4));
+        let t = spec.execution_horizon_t.max_val(T::from_f64(1e-4));
+        let sig = spec.asset_volatility_sigma.max_val(T::from_f64(1e-4));
+        let gam = spec
+            .inventory_risk_aversion_gamma
+            .max_val(T::from_f64(1e-6));
+
+        let denom = T::from_f64(2.0) + rho * t;
+        let impulse = x0 / denom;
+        let cont_rate = (rho * x0) / denom;
+
+        let impact_cost = (T::from_f64(0.5) * lam + kap / denom) * x0 * x0;
+
+        // Exact integral int_0^T q(t)^2 dt for q(t) = X_0 * (1 + rho*(T - t)) / (2 + rho*T)
+        let rt = rho * t;
+        let inv_integral =
+            x0 * x0 * t * (T::one() + rt + (rt * rt) / T::from_f64(3.0)) / (denom * denom);
+        let risk_cost = T::from_f64(0.5) * gam * sig * sig * inv_integral;
+
+        ObizhaevaWangImpulseExecutionAnalytics {
+            endpoint_impulse_block_trade: impulse,
+            interior_continuous_trading_rate: cont_rate,
+            expected_lob_impact_cost: impact_cost,
+            risk_adjusted_total_execution_cost: impact_cost + risk_cost,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn obizhaeva_wang_impulse_execution_invariants_and_ad_parity() {
+            let base = ObizhaevaWangImpulseExecutionSpec {
+                order_size_shares_x0: 100.0_f64,
+                permanent_price_impact_lambda: 0.0015,
+                transient_lob_impact_kappa: 0.0045,
+                lob_resilience_speed_rho: 2.20,
+                execution_horizon_t: 1.0,
+                asset_volatility_sigma: 0.25,
+                inventory_risk_aversion_gamma: 0.02,
+            };
+            let r0 = evaluate_obizhaeva_wang_transient_resilience_impulse_block_execution(&base);
+            let total_traded = 2.0 * r0.endpoint_impulse_block_trade
+                + r0.interior_continuous_trading_rate * base.execution_horizon_t;
+            assert!((total_traded - base.order_size_shares_x0).abs() < 1e-12);
+            assert!(r0.expected_lob_impact_cost > 0.0);
+            assert!(r0.risk_adjusted_total_execution_cost > r0.expected_lob_impact_cost);
+
+            let inputs = [
+                base.order_size_shares_x0,
+                base.permanent_price_impact_lambda,
+                base.transient_lob_impact_kappa,
+                base.lob_resilience_speed_rho,
+                base.execution_horizon_t,
+                base.asset_volatility_sigma,
+                base.inventory_risk_aversion_gamma,
+            ];
+            let mut dual_in = [Dual::<7>::from_f64(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = ObizhaevaWangImpulseExecutionSpec {
+                order_size_shares_x0: dual_in[0],
+                permanent_price_impact_lambda: dual_in[1],
+                transient_lob_impact_kappa: dual_in[2],
+                lob_resilience_speed_rho: dual_in[3],
+                execution_horizon_t: dual_in[4],
+                asset_volatility_sigma: dual_in[5],
+                inventory_risk_aversion_gamma: dual_in[6],
+            };
+            let r_ad =
+                evaluate_obizhaeva_wang_transient_resilience_impulse_block_execution(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| ObizhaevaWangImpulseExecutionSpec {
+                    order_size_shares_x0: v[0],
+                    permanent_price_impact_lambda: v[1],
+                    transient_lob_impact_kappa: v[2],
+                    lob_resilience_speed_rho: v[3],
+                    execution_horizon_t: v[4],
+                    asset_volatility_sigma: v[5],
+                    inventory_risk_aversion_gamma: v[6],
+                };
+                let rp =
+                    evaluate_obizhaeva_wang_transient_resilience_impulse_block_execution(&mk(p));
+                let rm =
+                    evaluate_obizhaeva_wang_transient_resilience_impulse_block_execution(&mk(m));
+                let fd = (rp.risk_adjusted_total_execution_cost
+                    - rm.risk_adjusted_total_execution_cost)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.risk_adjusted_total_execution_cost.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.risk_adjusted_total_execution_cost.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use obizhaeva_wang_impulse_execution_mod::*;

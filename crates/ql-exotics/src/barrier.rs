@@ -1197,3 +1197,193 @@ pub mod kunitomo_ikeda_curved_barrier_mod {
     }
 }
 pub use kunitomo_ikeda_curved_barrier_mod::*;
+
+// ============================================================================
+// Hart & Ross (1994) & Haug (2007, Ch. 4.17.3) Soft Proportional Band Barrier Option
+// ============================================================================
+
+pub mod hart_ross_soft_barrier_mod {
+    use ql_ad::Real;
+    use ql_math::distributions::norm_cdf;
+
+    /// Specification for the Hart & Ross (1994, *Risk* 7(5)) / Haug (2007, Section 4.17.3)
+    /// soft down-and-out call option knocking out proportionally across $[L, U]$.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct HartRossSoftBarrierSpec<T: Real> {
+        /// Current spot price $S_0 > 0$.
+        pub spot_price_s0: T,
+        /// Option strike price $K > 0$.
+        pub strike_price_k: T,
+        /// Lower soft-barrier edge $L > 0$ (100% knocked out below $L$).
+        pub lower_soft_barrier_l: T,
+        /// Upper soft-barrier edge $U \in (L, S_0)$ (knock-out begins below $U$).
+        pub upper_soft_barrier_u: T,
+        /// Risk-free interest rate $r > 0$.
+        pub risk_free_rate_r: T,
+        /// Continuous dividend yield $q \ge 0$.
+        pub dividend_yield_q: T,
+        /// Volatility $\sigma > 0$.
+        pub volatility_sigma: T,
+        /// Option maturity $T > 0$ (years).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytical outputs for the Hart-Ross soft proportional band barrier option engine.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct HartRossSoftBarrierAnalytics<T: Real> {
+        /// European Black-Scholes vanilla call price $C_{\text{BS}}$.
+        pub european_vanilla_call_price: T,
+        /// Soft down-and-in call value $C_{\text{soft-DI}}(L, U)$.
+        pub soft_down_and_in_call_value: T,
+        /// Effective midpoint barrier level $H_{\text{mid}} = \frac{1}{2}(L + U)$.
+        pub effective_band_midpoint_barrier: T,
+        /// Soft down-and-out call price $C_{\text{soft-DO}}(L, U) = C_{\text{BS}} - C_{\text{soft-DI}}(L, U)$.
+        pub soft_down_and_out_call_price: T,
+    }
+
+    /// Evaluates the Hart & Ross (1994) / Haug (2007, Ch. 4.17.3) soft down-and-out call price
+    /// by integrating the down-and-in reflection formula across the proportional knock-out band $[L, U]$.
+    pub fn evaluate_hart_ross_haug_soft_proportional_band_barrier_option<T: Real>(
+        spec: &HartRossSoftBarrierSpec<T>,
+    ) -> HartRossSoftBarrierAnalytics<T> {
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(1e-4));
+        let k = spec.strike_price_k.max_val(T::from_f64(1e-4));
+        let l_bar = spec
+            .lower_soft_barrier_l
+            .max_val(T::from_f64(1e-4))
+            .min_val(s0 * T::from_f64(0.95));
+        let u_bar = spec
+            .upper_soft_barrier_u
+            .max_val(l_bar + T::from_f64(0.5))
+            .min_val(s0 * T::from_f64(0.99));
+
+        let sig = spec.volatility_sigma.max_val(T::from_f64(1e-4));
+        let sig2 = sig * sig;
+        let t = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+        let v_sqrt = sig * t.sqrt();
+        let b = spec.risk_free_rate_r - spec.dividend_yield_q;
+        let mu = (b + T::from_f64(0.5) * sig2) / sig2;
+
+        let d1 = ((s0 / k).ln() + (b + T::from_f64(0.5) * sig2) * t) / v_sqrt;
+        let d2 = d1 - v_sqrt;
+        let df_r = (-spec.risk_free_rate_r * t).exp();
+        let df_q = (-spec.dividend_yield_q * t).exp();
+        let vanilla = s0 * df_q * norm_cdf(d1) - k * df_r * norm_cdf(d2);
+
+        // 4-point Gauss-Legendre integration of C_DI(H) over H in [L, U]
+        let gl_nodes = [
+            0.069_431_844_202_973_71,
+            0.330_009_478_207_571_87,
+            0.669_990_521_792_428_1,
+            0.930_568_155_797_026_2,
+        ];
+        let gl_weights = [
+            0.173_927_422_568_726_92,
+            0.326_072_577_431_273_1,
+            0.326_072_577_431_273_1,
+            0.173_927_422_568_726_92,
+        ];
+
+        let mut soft_di = T::zero();
+        for (&node_f64, &w_f64) in gl_nodes.iter().zip(gl_weights.iter()) {
+            let s = T::from_f64(node_f64);
+            let w = T::from_f64(w_f64);
+            let h = l_bar + s * (u_bar - l_bar);
+
+            let y1 = ((h * h / (s0 * k)).ln() + (b + T::from_f64(0.5) * sig2) * t) / v_sqrt;
+            let y2 = y1 - v_sqrt;
+            let ratio = h / s0;
+            let pow_s = ratio.pow(T::from_f64(2.0) * mu);
+            let pow_k = ratio.pow(T::from_f64(2.0) * (mu - T::one()));
+            let di_h = s0 * df_q * pow_s * norm_cdf(y1) - k * df_r * pow_k * norm_cdf(y2);
+            soft_di += w * di_h;
+        }
+
+        let raw_do = vanilla - soft_di;
+        let soft_do = T::from_f64(0.5) * (raw_do + (raw_do * raw_do + T::from_f64(1e-12)).sqrt());
+
+        HartRossSoftBarrierAnalytics {
+            european_vanilla_call_price: vanilla,
+            soft_down_and_in_call_value: soft_di,
+            effective_band_midpoint_barrier: T::from_f64(0.5) * (l_bar + u_bar),
+            soft_down_and_out_call_price: soft_do,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn hart_ross_soft_barrier_invariants_and_ad_parity() {
+            let base = HartRossSoftBarrierSpec {
+                spot_price_s0: 100.0_f64,
+                strike_price_k: 100.0,
+                lower_soft_barrier_l: 80.0,
+                upper_soft_barrier_u: 90.0,
+                risk_free_rate_r: 0.05,
+                dividend_yield_q: 0.015,
+                volatility_sigma: 0.24,
+                maturity_years_t: 1.0,
+            };
+            let r0 = evaluate_hart_ross_haug_soft_proportional_band_barrier_option(&base);
+            assert!(r0.soft_down_and_in_call_value > 0.0);
+            assert!(r0.soft_down_and_out_call_price > 0.0);
+            assert!(r0.soft_down_and_out_call_price < r0.european_vanilla_call_price);
+
+            let inputs = [
+                base.spot_price_s0,
+                base.strike_price_k,
+                base.lower_soft_barrier_l,
+                base.upper_soft_barrier_u,
+                base.risk_free_rate_r,
+                base.dividend_yield_q,
+                base.volatility_sigma,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<8>::from_f64(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = HartRossSoftBarrierSpec {
+                spot_price_s0: dual_in[0],
+                strike_price_k: dual_in[1],
+                lower_soft_barrier_l: dual_in[2],
+                upper_soft_barrier_u: dual_in[3],
+                risk_free_rate_r: dual_in[4],
+                dividend_yield_q: dual_in[5],
+                volatility_sigma: dual_in[6],
+                maturity_years_t: dual_in[7],
+            };
+            let r_ad = evaluate_hart_ross_haug_soft_proportional_band_barrier_option(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| HartRossSoftBarrierSpec {
+                    spot_price_s0: v[0],
+                    strike_price_k: v[1],
+                    lower_soft_barrier_l: v[2],
+                    upper_soft_barrier_u: v[3],
+                    risk_free_rate_r: v[4],
+                    dividend_yield_q: v[5],
+                    volatility_sigma: v[6],
+                    maturity_years_t: v[7],
+                };
+                let rp = evaluate_hart_ross_haug_soft_proportional_band_barrier_option(&mk(p));
+                let rm = evaluate_hart_ross_haug_soft_proportional_band_barrier_option(&mk(m));
+                let fd = (rp.soft_down_and_out_call_price - rm.soft_down_and_out_call_price)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.soft_down_and_out_call_price.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.soft_down_and_out_call_price.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use hart_ross_soft_barrier_mod::*;
