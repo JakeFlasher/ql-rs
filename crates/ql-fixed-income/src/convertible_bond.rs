@@ -329,7 +329,7 @@ pub fn evaluate_koziol_asquith_fasb_strategic_convertible<T: Real>(
     let pre = coop
         * (alpha1_joint / alpha1_solo.max_val(T::from_f64(1e-10)))
             .max_val(T::from_f64(1e-10))
-            .powf((T::one() / beta.max_val(T::from_f64(1e-10))).val());
+            .pow(T::one() / beta.max_val(T::from_f64(1e-10)));
     let wedge = (coop - pre).abs();
     let annuity = (T::one() - (-s.risk_free_rate * s.maturity).exp())
         / s.risk_free_rate.max_val(T::from_f64(1e-10));
@@ -351,8 +351,11 @@ pub fn evaluate_koziol_asquith_fasb_strategic_convertible<T: Real>(
         s.dividend_yield,
         true,
     );
-    let floor = s.debt_face_value * (-s.risk_free_rate * s.maturity).exp()
-        + s.coupon_rate * s.debt_face_value * annuity;
+    let leverage_adj =
+        (s.debt_face_value / s.firm_value.max_val(T::from_f64(1e-10))).min_val(T::one());
+    let floor = (s.debt_face_value * (-s.risk_free_rate * s.maturity).exp()
+        + s.coupon_rate * s.debt_face_value * annuity)
+        * (T::one() - T::from_f64(0.01) * leverage_adj);
     let fair = floor + option + expense.max_val(T::zero());
     KoziolAsquithFasbStrategicConvertibleReport {
         blockholder1_dilution_factor: d1,

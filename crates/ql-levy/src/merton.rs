@@ -203,7 +203,7 @@ fn bates_cf<T: Real>(s: &ContTankovBatesSvjPideSpec<T>, u: Cx<T>, lambda: T) -> 
     let one = Cx::new(T::one(), T::zero());
     let c_log = one.sub(g.mul(ed)).div(one.sub(g)).ln();
     let c = iu
-        .scale((s.risk_free_rate - s.dividend_yield - omega) * t)
+        .scale(s.spot.ln() + (s.risk_free_rate - s.dividend_yield - omega) * t)
         .add(
             ku.sub(d)
                 .scale(t)
@@ -225,7 +225,7 @@ fn bates_cf<T: Real>(s: &ContTankovBatesSvjPideSpec<T>, u: Cx<T>, lambda: T) -> 
     let exponent = c
         .add(big_d.scale(s.v0))
         .add(Cx::new(lambda * t, T::zero()).mul(jump_arg.sub(one)));
-    exponent.exp().mul(Cx::new(s.spot.ln().exp(), T::zero()))
+    exponent.exp()
 }
 pub fn evaluate_cont_tankov_bates_svj_characteristic_and_pide<T: Real>(
     s: &ContTankovBatesSvjPideSpec<T>,
@@ -272,9 +272,13 @@ pub fn evaluate_cont_tankov_bates_svj_characteristic_and_pide<T: Real>(
         let phi_mi = bates_cf(s, Cx::new(T::zero(), T::from_f64(-1.0)), lambda);
         let mut p1 = T::from_f64(0.5);
         let mut p2 = T::from_f64(0.5);
-        let nseg = 64usize;
+        let nseg = 4usize;
         for seg in 0..nseg {
-            let lo = T::from_f64(seg as f64 * 80.0 / nseg as f64 + 1e-6);
+            let lo = if seg == 0 {
+                T::from_f64(1e-8)
+            } else {
+                T::from_f64(seg as f64 * 80.0 / nseg as f64)
+            };
             let hi = T::from_f64((seg + 1) as f64 * 80.0 / nseg as f64);
             let mid = (lo + hi) / T::from_f64(2.0);
             let half = (hi - lo) / T::from_f64(2.0);
@@ -298,13 +302,8 @@ pub fn evaluate_cont_tankov_bates_svj_characteristic_and_pide<T: Real>(
             disc_k * (T::one() - p2) - disc_s * (T::one() - p1),
         )
     };
-    let (raw_call, _raw_put) = price(s.jump_intensity_lambda);
+    let (call, put) = price(s.jump_intensity_lambda);
     let (pure_call, _) = price(T::zero());
-    let call = if s.jump_intensity_lambda.val() > 0.0 {
-        raw_call.max_val(pure_call + T::from_f64(1e-10))
-    } else {
-        raw_call
-    };
     let omega = s.jump_intensity_lambda
         * ((s.jump_mean_mu_j + s.jump_std_sigma_j * s.jump_std_sigma_j * 0.5).exp() - 1.0);
     let kappa = s.kappa.max_val(T::from_f64(1e-8));
@@ -334,7 +333,6 @@ pub fn evaluate_cont_tankov_bates_svj_characteristic_and_pide<T: Real>(
         * t;
     let disc_k = s.strike * (-s.risk_free_rate * t).exp();
     let disc_s = s.spot * (-s.dividend_yield * t).exp();
-    let put = call - disc_s + disc_k;
     ContTankovBatesSvjPideReport {
         martingale_jump_compensator_omega: omega,
         cumulant_c1_mean: c1,
@@ -373,7 +371,8 @@ mod phase29_tests {
             }
         }
         let r = evaluate_cont_tankov_bates_svj_characteristic_and_pide(&mk(100.0));
-        assert!(r.jump_wing_convexity_uplift > 0.0);
+        assert!(r.bates_svj_call_price > 5.0 && r.bates_svj_call_price < 100.0);
+        assert!(r.jump_wing_convexity_uplift > 0.1);
         assert!(r.put_call_parity_abs_error < 1e-11);
         let h = 1e-5;
         let fd = (evaluate_cont_tankov_bates_svj_characteristic_and_pide(&mk(100.0 + h))
