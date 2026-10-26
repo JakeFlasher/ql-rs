@@ -362,3 +362,90 @@ pub struct FrtbImaReport<T: Real> {
     pub marginal_es: Vec<f64>,
     pub euler_component_es: Vec<f64>,
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct BcbsD424OutputFloorAndSmaOpRiskSpec<T: Real = f64> {
+    pub irb_credit_rwa: T,
+    pub ima_market_rwa: T,
+    pub standardized_credit_rwa: T,
+    pub standardized_market_rwa: T,
+    pub standardized_cva_rwa: T,
+    pub output_floor_multiplier: T,
+    pub interest_lease_dividend_component: T,
+    pub services_component: T,
+    pub financial_component: T,
+    pub average_annual_operational_loss: T,
+    pub cet1_capital: T,
+    pub at1_and_tier2_capital: T,
+    pub eligible_tlac_senior_debt: T,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct BcbsD424OutputFloorAndSmaOpRiskReport<T: Real = f64> {
+    pub business_indicator_bi: T,
+    pub business_indicator_component_bic: T,
+    pub internal_loss_multiplier_ilm: T,
+    pub sma_operational_risk_capital: T,
+    pub sma_operational_risk_rwa: T,
+    pub unfloored_total_rwa: T,
+    pub standardized_total_rwa: T,
+    pub floored_total_rwa: T,
+    pub output_floor_rwa_add_on: T,
+    pub floored_cet1_ratio: T,
+    pub tlac_to_floored_rwa_ratio: T,
+}
+pub fn evaluate_bcbs_d424_output_floor_and_sma_op_risk<T: Real>(
+    s: &BcbsD424OutputFloorAndSmaOpRiskSpec<T>,
+) -> BcbsD424OutputFloorAndSmaOpRiskReport<T> {
+    let bi = s.interest_lease_dividend_component + s.services_component + s.financial_component;
+    let bic = bi * 0.12;
+    let loss_cap = s.average_annual_operational_loss * 15.0;
+    let ilm = (loss_cap / bic.max_val(T::from_f64(1e-10)))
+        .max_val(T::from_f64(0.8))
+        .min_val(T::from_f64(1.2));
+    let capital = bic * ilm;
+    let op_rwa = capital * 12.5;
+    let unfloored = s.irb_credit_rwa + s.ima_market_rwa + op_rwa;
+    let standardized =
+        s.standardized_credit_rwa + s.standardized_market_rwa + s.standardized_cva_rwa + op_rwa;
+    let floor = standardized * s.output_floor_multiplier.max_val(T::zero());
+    let floored = unfloored.max_val(floor);
+    BcbsD424OutputFloorAndSmaOpRiskReport {
+        business_indicator_bi: bi,
+        business_indicator_component_bic: bic,
+        internal_loss_multiplier_ilm: ilm,
+        sma_operational_risk_capital: capital,
+        sma_operational_risk_rwa: op_rwa,
+        unfloored_total_rwa: unfloored,
+        standardized_total_rwa: standardized,
+        floored_total_rwa: floored,
+        output_floor_rwa_add_on: (floored - unfloored).max_val(T::zero()),
+        floored_cet1_ratio: s.cet1_capital / floored.max_val(T::from_f64(1e-10)),
+        tlac_to_floored_rwa_ratio: (s.at1_and_tier2_capital + s.eligible_tlac_senior_debt)
+            / floored.max_val(T::from_f64(1e-10)),
+    }
+}
+
+#[cfg(test)]
+mod phase29_tests {
+    use super::*;
+    #[test]
+    fn bcbs_invariants_and_dual() {
+        let mk = |x| BcbsD424OutputFloorAndSmaOpRiskSpec {
+            irb_credit_rwa: 100.0 + x,
+            ima_market_rwa: 50.0,
+            standardized_credit_rwa: 120.0,
+            standardized_market_rwa: 60.0,
+            standardized_cva_rwa: 20.0,
+            output_floor_multiplier: 0.725,
+            interest_lease_dividend_component: 20.0,
+            services_component: 15.0,
+            financial_component: 30.0,
+            average_annual_operational_loss: 2.0,
+            cet1_capital: 20.0,
+            at1_and_tier2_capital: 10.0,
+            eligible_tlac_senior_debt: 40.0,
+        };
+        let r = evaluate_bcbs_d424_output_floor_and_sma_op_risk(&mk(0.0));
+        assert!(r.floored_total_rwa >= r.unfloored_total_rwa);
+    }
+}

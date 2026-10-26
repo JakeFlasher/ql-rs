@@ -3743,6 +3743,128 @@ pub fn evaluate_lopez_de_prado_causal_backdoor_vs_collider_bias<T: Real>(
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct MadhavanAbnerHillEtfApArbitrageSpec<T: Real = f64> {
+    pub etf_market_price: T,
+    pub reported_inav: T,
+    pub futures_beta_return: T,
+    pub stale_underlying_weight: T,
+    pub ap_creation_fee_bps: T,
+    pub basket_bid_ask_spread_bps: T,
+    pub creation_unit_volatility_bps: T,
+    pub ap_risk_aversion: T,
+    pub embedded_unrealized_gain_fraction: T,
+    pub annual_redemption_turnover: T,
+    pub capital_gains_tax_rate: T,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct MadhavanAbnerHillEtfApArbitrageReport<T: Real = f64> {
+    pub synchronous_economic_nav: T,
+    pub illusionary_inav_premium_bps: T,
+    pub true_arbitrage_basis_bps: T,
+    pub ap_no_arbitrage_half_band_bps: T,
+    pub net_ap_creation_redemption_profit_bps: T,
+    pub optimal_ap_creation_intensity: T,
+    pub annual_in_kind_heartbeat_tax_alpha_bps: T,
+    pub etf_vs_mutual_fund_after_tax_advantage_bps: T,
+}
+pub fn evaluate_madhavan_abner_hill_etf_ap_arbitrage_and_tax_alpha<T: Real>(
+    s: &MadhavanAbnerHillEtfApArbitrageSpec<T>,
+) -> MadhavanAbnerHillEtfApArbitrageReport<T> {
+    let sync = s.reported_inav * (T::one() - s.stale_underlying_weight)
+        + s.reported_inav * (T::one() + s.futures_beta_return) * s.stale_underlying_weight;
+    let illusion =
+        (s.etf_market_price / s.reported_inav.max_val(T::from_f64(1e-10)) - T::one()) * 10000.0;
+    let basis = (s.etf_market_price / sync.max_val(T::from_f64(1e-10)) - T::one()) * 10000.0;
+    let band = s.ap_creation_fee_bps
+        + s.basket_bid_ask_spread_bps / 2.0
+        + s.creation_unit_volatility_bps * s.ap_risk_aversion;
+    let profit = (basis.abs() - band).max_val(T::zero());
+    let intensity = (profit / band.max_val(T::from_f64(1e-8))).tanh();
+    let tax = s.embedded_unrealized_gain_fraction
+        * s.annual_redemption_turnover
+        * s.capital_gains_tax_rate
+        * 10000.0;
+    MadhavanAbnerHillEtfApArbitrageReport {
+        synchronous_economic_nav: sync,
+        illusionary_inav_premium_bps: illusion,
+        true_arbitrage_basis_bps: basis,
+        ap_no_arbitrage_half_band_bps: band,
+        net_ap_creation_redemption_profit_bps: profit,
+        optimal_ap_creation_intensity: intensity,
+        annual_in_kind_heartbeat_tax_alpha_bps: tax.max_val(T::zero()),
+        etf_vs_mutual_fund_after_tax_advantage_bps: tax - s.ap_creation_fee_bps,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct GrinoldQianChristophersonAlphaDecaySpec<T: Real = f64> {
+    pub fast_signal_ic0: T,
+    pub fast_signal_half_life_months: T,
+    pub slow_signal_ic0: T,
+    pub slow_signal_half_life_months: T,
+    pub signal_correlation: T,
+    pub rebalance_horizon_months: T,
+    pub transaction_cost_penalty: T,
+    pub factor_active_exposures: Vec<T>,
+    pub factor_benchmark_returns: Vec<T>,
+    pub normal_factor_exposures: Vec<T>,
+}
+#[derive(Clone, Debug)]
+pub struct GrinoldQianChristophersonAlphaDecayReport<T: Real = f64> {
+    pub fast_decayed_ic: T,
+    pub slow_decayed_ic: T,
+    pub optimal_fast_signal_weight: T,
+    pub optimal_slow_signal_weight: T,
+    pub composite_blended_ic: T,
+    pub turnover_adjusted_information_ratio: T,
+    pub christopherson_policy_return: T,
+    pub christopherson_factor_timing_return: T,
+    pub total_factor_contribution: T,
+}
+pub fn evaluate_grinold_qian_christopherson_ic_decay_and_timing<T: Real>(
+    s: &GrinoldQianChristophersonAlphaDecaySpec<T>,
+) -> GrinoldQianChristophersonAlphaDecayReport<T> {
+    let fd = s.fast_signal_ic0
+        * (-(T::from_f64(2.0).ln()) * s.rebalance_horizon_months
+            / s.fast_signal_half_life_months.max_val(T::from_f64(1e-8)))
+        .exp();
+    let sd = s.slow_signal_ic0
+        * (-(T::from_f64(2.0).ln()) * s.rebalance_horizon_months
+            / s.slow_signal_half_life_months.max_val(T::from_f64(1e-8)))
+        .exp();
+    let wf = (fd / (fd.abs() + sd.abs() + s.transaction_cost_penalty.abs() + T::from_f64(1e-8)))
+        .max_val(T::zero())
+        .min_val(T::one());
+    let ws = T::one() - wf;
+    let blend = (wf * fd + ws * sd) * (T::one() + s.signal_correlation) / 2.0;
+    let ir = blend / (T::one() + s.transaction_cost_penalty.abs());
+    let mut policy = T::zero();
+    let mut timing = T::zero();
+    for i in 0..s
+        .factor_active_exposures
+        .len()
+        .min(s.factor_benchmark_returns.len())
+        .min(s.normal_factor_exposures.len())
+    {
+        policy += s.normal_factor_exposures[i] * s.factor_benchmark_returns[i];
+        timing += (s.factor_active_exposures[i] - s.normal_factor_exposures[i])
+            * s.factor_benchmark_returns[i];
+    }
+    let total = policy + timing;
+    GrinoldQianChristophersonAlphaDecayReport {
+        fast_decayed_ic: fd,
+        slow_decayed_ic: sd,
+        optimal_fast_signal_weight: wf,
+        optimal_slow_signal_weight: ws,
+        composite_blended_ic: blend,
+        turnover_adjusted_information_ratio: ir,
+        christopherson_policy_return: policy,
+        christopherson_factor_timing_return: timing,
+        total_factor_contribution: total,
+    }
+}
+
 #[cfg(test)]
 mod phase23_tests {
     use super::*;
@@ -4519,5 +4641,48 @@ mod phase27_tests {
         let r = solve_busseti_boyd_risk_constrained_kelly(&make(0.05));
         assert!(r.kelly_fraction_kappa > 0.0 && r.kelly_fraction_kappa <= 1.0);
         assert!(r.horizon_fire_sale_discount_bps < r.initial_fire_sale_dislocation_bps);
+    }
+}
+
+#[cfg(test)]
+mod phase29_tests {
+    use super::*;
+    #[test]
+    fn etf_and_ic_invariants_and_dual() {
+        let mk = |x| MadhavanAbnerHillEtfApArbitrageSpec {
+            etf_market_price: x,
+            reported_inav: 100.0,
+            futures_beta_return: 0.01,
+            stale_underlying_weight: 0.4,
+            ap_creation_fee_bps: 5.0,
+            basket_bid_ask_spread_bps: 8.0,
+            creation_unit_volatility_bps: 10.0,
+            ap_risk_aversion: 0.5,
+            embedded_unrealized_gain_fraction: 0.3,
+            annual_redemption_turnover: 0.2,
+            capital_gains_tax_rate: 0.25,
+        };
+        let r = evaluate_madhavan_abner_hill_etf_ap_arbitrage_and_tax_alpha(&mk(101.0));
+        assert!(r.annual_in_kind_heartbeat_tax_alpha_bps > 0.0);
+        let s = GrinoldQianChristophersonAlphaDecaySpec {
+            fast_signal_ic0: 0.1,
+            fast_signal_half_life_months: 3.0,
+            slow_signal_ic0: 0.08,
+            slow_signal_half_life_months: 12.0,
+            signal_correlation: 0.2,
+            rebalance_horizon_months: 1.0,
+            transaction_cost_penalty: 0.01,
+            factor_active_exposures: vec![0.1],
+            factor_benchmark_returns: vec![0.02],
+            normal_factor_exposures: vec![0.05],
+        };
+        let q = evaluate_grinold_qian_christopherson_ic_decay_and_timing(&s);
+        assert!(
+            (q.optimal_fast_signal_weight + q.optimal_slow_signal_weight - 1.0).abs() < 1e-12
+                && (q.christopherson_policy_return + q.christopherson_factor_timing_return
+                    - q.total_factor_contribution)
+                    .abs()
+                    < 1e-12
+        );
     }
 }

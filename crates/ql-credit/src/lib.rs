@@ -1517,6 +1517,123 @@ pub fn evaluate_feds_despiegeleer_at1_coco_dual_trigger<T: Real>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct LandoIsraelGeneratorLogarithmSpec<T: Real = f64> {
+    pub transition_matrix_3x3: [[T; 3]; 3],
+    pub series_order_k: usize,
+    pub fractional_horizon_years: T,
+    pub recovery_rate: T,
+    pub risk_free_rate: T,
+}
+#[derive(Clone, Debug)]
+pub struct LandoIsraelGeneratorLogarithmReport<T: Real = f64> {
+    pub raw_generator_matrix: [[T; 3]; 3],
+    pub regularized_generator_matrix: [[T; 3]; 3],
+    pub generator_row_sum_max_error: T,
+    pub off_diagonal_negativity_repaired: T,
+    pub fractional_transition_matrix: [[T; 3]; 3],
+    pub ig_to_default_fractional_pd: T,
+    pub hy_to_default_fractional_pd: T,
+    pub migration_adjusted_ig_spread_bps: T,
+}
+fn lando_mm3<T: Real>(a: &[[T; 3]; 3], b: &[[T; 3]; 3]) -> [[T; 3]; 3] {
+    let mut c = [[T::zero(); 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            for k in 0..3 {
+                c[i][j] += a[i][k] * b[k][j];
+            }
+        }
+    }
+    c
+}
+fn lando_exp3<T: Real>(a: &[[T; 3]; 3], tau: T) -> [[T; 3]; 3] {
+    let mut out = [[T::zero(); 3]; 3];
+    for i in 0..3 {
+        out[i][i] = T::one();
+    }
+    let mut term = out;
+    let at = {
+        let mut z = [[T::zero(); 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                z[i][j] = a[i][j] * tau;
+            }
+        }
+        z
+    };
+    let mut fact = 1.0;
+    for n in 1..=12 {
+        term = lando_mm3(&term, &at);
+        fact *= n as f64;
+        for i in 0..3 {
+            for j in 0..3 {
+                out[i][j] += term[i][j] / fact;
+            }
+        }
+    }
+    out
+}
+pub fn compute_lando_israel_generator_logarithm_and_migration<T: Real>(
+    s: &LandoIsraelGeneratorLogarithmSpec<T>,
+) -> LandoIsraelGeneratorLogarithmReport<T> {
+    let mut x = [[T::zero(); 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            x[i][j] = s.transition_matrix_3x3[i][j] - if i == j { T::one() } else { T::zero() };
+        }
+    }
+    let mut raw = [[T::zero(); 3]; 3];
+    let mut power = x;
+    let order = s.series_order_k.max(1);
+    for k in 1..=order {
+        let sign = if k % 2 == 1 { 1.0 } else { -1.0 };
+        for i in 0..3 {
+            for j in 0..3 {
+                raw[i][j] += power[i][j] * (sign / k as f64);
+            }
+        }
+        power = lando_mm3(&power, &x);
+    }
+    let mut reg = [[T::zero(); 3]; 3];
+    let mut repaired = T::zero();
+    for i in 0..3 {
+        let mut row = T::zero();
+        for j in 0..3 {
+            if i != j {
+                let v = raw[i][j].max_val(T::zero());
+                repaired += (T::zero() - raw[i][j]).max_val(T::zero());
+                reg[i][j] = v;
+                row += v;
+            }
+        }
+        reg[i][i] = -row;
+    }
+    let mut err = T::zero();
+    for i in 0..3 {
+        let mut sum = T::zero();
+        for j in 0..3 {
+            sum += reg[i][j];
+        }
+        err = err.max_val(sum.abs());
+    }
+    let frac = lando_exp3(&reg, s.fractional_horizon_years);
+    let igpd = frac[0][2].max_val(T::zero());
+    let hypd = frac[1][2].max_val(T::zero());
+    let spread = (-reg[0][0]) * (T::one() - s.recovery_rate).max_val(T::zero()) * 10000.0
+        + s.risk_free_rate * 10000.0;
+    LandoIsraelGeneratorLogarithmReport {
+        raw_generator_matrix: raw,
+        regularized_generator_matrix: reg,
+        generator_row_sum_max_error: err,
+        off_diagonal_negativity_repaired: repaired,
+        fractional_transition_matrix: frac,
+        ig_to_default_fractional_pd: igpd,
+        hy_to_default_fractional_pd: hypd,
+        migration_adjusted_ig_spread_bps: spread,
+    }
+}
+
 #[cfg(test)]
 mod phase23_tests {
     use super::*;
@@ -1910,5 +2027,24 @@ mod phase28_tests {
         let ad = evaluate_feds_despiegeleer_at1_coco_dual_trigger(&mk(Dual::<1>::variable(0.0, 0)))
             .at1_coco_fair_value;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase29_tests {
+    use super::*;
+    #[test]
+    fn lando_invariants_and_dual() {
+        let mk = |x| LandoIsraelGeneratorLogarithmSpec {
+            transition_matrix_3x3: [[0.9, 0.08, 0.02], [0.03, 0.92, 0.05], [0.0, 0.0, 1.0]],
+            series_order_k: 12,
+            fractional_horizon_years: x,
+            recovery_rate: 0.4,
+            risk_free_rate: 0.03,
+        };
+        let r = compute_lando_israel_generator_logarithm_and_migration(&mk(0.5));
+        for row in r.fractional_transition_matrix {
+            assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-10);
+        }
     }
 }

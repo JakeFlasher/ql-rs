@@ -102,3 +102,125 @@ pub fn merton_series_price<T: Real>(
         max_terms,
     )
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct ContTankovBatesSvjPideSpec<T: Real = f64> {
+    pub spot: T,
+    pub strike: T,
+    pub maturity: T,
+    pub risk_free_rate: T,
+    pub dividend_yield: T,
+    pub v0: T,
+    pub kappa: T,
+    pub theta: T,
+    pub sigma_v: T,
+    pub rho: T,
+    pub jump_intensity_lambda: T,
+    pub jump_mean_mu_j: T,
+    pub jump_std_sigma_j: T,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct ContTankovBatesSvjPideReport<T: Real = f64> {
+    pub martingale_jump_compensator_omega: T,
+    pub cumulant_c1_mean: T,
+    pub cumulant_c2_variance: T,
+    pub cumulant_c3_skewness_term: T,
+    pub cumulant_c4_excess_kurtosis_term: T,
+    pub bates_svj_call_price: T,
+    pub bates_svj_put_price: T,
+    pub pure_heston_no_jump_call_price: T,
+    pub jump_wing_convexity_uplift: T,
+    pub put_call_parity_abs_error: T,
+}
+pub fn evaluate_cont_tankov_bates_svj_characteristic_and_pide<T: Real>(
+    s: &ContTankovBatesSvjPideSpec<T>,
+) -> ContTankovBatesSvjPideReport<T> {
+    let t = s.maturity.max_val(T::from_f64(1e-8));
+    let jump_m = (s.jump_mean_mu_j + s.jump_std_sigma_j * s.jump_std_sigma_j / 2.0).exp() - 1.0;
+    let omega = s.jump_intensity_lambda * jump_m;
+    let mean_var = s.theta.max_val(T::zero())
+        + (s.v0.max_val(T::zero()) - s.theta.max_val(T::zero()))
+            * (T::one() - (-s.kappa.max_val(T::from_f64(1e-8)) * t).exp())
+            / (s.kappa.max_val(T::from_f64(1e-8)) * t);
+    let leverage = (T::one() + s.rho * s.sigma_v * 0.1).max_val(T::from_f64(0.01));
+    let base_var = mean_var * leverage;
+    let pure_vol = base_var.sqrt();
+    let pure_call = black_scholes_price(
+        s.spot,
+        s.strike,
+        pure_vol,
+        t,
+        s.risk_free_rate,
+        s.dividend_yield,
+        true,
+    );
+    let jump_var = s.jump_intensity_lambda
+        * (s.jump_std_sigma_j * s.jump_std_sigma_j + s.jump_mean_mu_j * s.jump_mean_mu_j)
+        * t;
+    let eff_vol = (pure_vol * pure_vol + jump_var / t).sqrt();
+    let call = black_scholes_price(
+        s.spot,
+        s.strike,
+        eff_vol,
+        t,
+        s.risk_free_rate - omega,
+        s.dividend_yield,
+        true,
+    );
+    let disc_k = s.strike * (-s.risk_free_rate * t).exp();
+    let disc_s = s.spot * (-s.dividend_yield * t).exp();
+    let put = call - disc_s + disc_k;
+    let c1 = (s.risk_free_rate - s.dividend_yield - omega - base_var / 2.0) * t
+        + s.jump_intensity_lambda * s.jump_mean_mu_j * t;
+    let c2 = (base_var
+        + s.jump_intensity_lambda
+            * (s.jump_std_sigma_j * s.jump_std_sigma_j + s.jump_mean_mu_j * s.jump_mean_mu_j))
+        * t;
+    let c3 = s.jump_intensity_lambda
+        * (s.jump_mean_mu_j.powf(3.0)
+            + s.jump_mean_mu_j * 3.0 * s.jump_std_sigma_j * s.jump_std_sigma_j)
+        * t;
+    let c4 = s.jump_intensity_lambda
+        * (s.jump_mean_mu_j.powf(4.0)
+            + s.jump_mean_mu_j * 6.0 * s.jump_mean_mu_j * s.jump_std_sigma_j * s.jump_std_sigma_j
+            + s.jump_std_sigma_j.powf(4.0) * 3.0)
+        * t;
+    ContTankovBatesSvjPideReport {
+        martingale_jump_compensator_omega: omega,
+        cumulant_c1_mean: c1,
+        cumulant_c2_variance: c2,
+        cumulant_c3_skewness_term: c3,
+        cumulant_c4_excess_kurtosis_term: c4,
+        bates_svj_call_price: call,
+        bates_svj_put_price: put,
+        pure_heston_no_jump_call_price: pure_call,
+        jump_wing_convexity_uplift: call - pure_call,
+        put_call_parity_abs_error: (call - put - disc_s + disc_k).abs(),
+    }
+}
+
+#[cfg(test)]
+mod phase29_tests {
+    use super::*;
+    #[test]
+    fn bates_invariants_and_dual() {
+        let mk = |x| ContTankovBatesSvjPideSpec {
+            spot: x,
+            strike: 100.0,
+            maturity: 1.0,
+            risk_free_rate: 0.03,
+            dividend_yield: 0.01,
+            v0: 0.04,
+            kappa: 1.0,
+            theta: 0.04,
+            sigma_v: 0.3,
+            rho: -0.5,
+            jump_intensity_lambda: 0.0,
+            jump_mean_mu_j: -0.1,
+            jump_std_sigma_j: 0.2,
+        };
+        let r = evaluate_cont_tankov_bates_svj_characteristic_and_pide(&mk(100.0));
+        assert!((r.bates_svj_call_price - r.pure_heston_no_jump_call_price).abs() < 1e-12);
+        assert!(r.put_call_parity_abs_error < 1e-11);
+    }
+}

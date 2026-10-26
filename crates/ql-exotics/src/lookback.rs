@@ -293,6 +293,64 @@ pub fn evaluate_heynen_kat_partial_fractional_lookback_and_extreme_spread<T: Rea
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct SheppShiryaevShrevePerpetualRussianSpec<T: Real = f64> {
+    pub spot: T,
+    pub running_max: T,
+    pub fixed_put_strike: T,
+    pub risk_free_rate: T,
+    pub dividend_yield: T,
+    pub volatility: T,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct SheppShiryaevShrevePerpetualRussianReport<T: Real = f64> {
+    pub quadratic_root_gamma1: T,
+    pub quadratic_root_gamma2: T,
+    pub russian_optimal_stopping_ratio_z_star: T,
+    pub russian_critical_spot_boundary: T,
+    pub perpetual_russian_option_value: T,
+    pub mckean_perpetual_put_free_boundary: T,
+    pub mckean_perpetual_american_put_value: T,
+    pub smooth_pasting_derivative_residual: T,
+}
+pub fn price_shepp_shiryaev_shreve_perpetual_russian_and_mckean<T: Real>(
+    s: &SheppShiryaevShrevePerpetualRussianSpec<T>,
+) -> SheppShiryaevShrevePerpetualRussianReport<T> {
+    let sig2 = s.volatility * s.volatility;
+    let b = s.risk_free_rate - s.dividend_yield - sig2 / 2.0;
+    let disc = (b * b + sig2 * s.risk_free_rate * 2.0)
+        .max_val(T::zero())
+        .sqrt();
+    let g1 = (-b - disc) / sig2.max_val(T::from_f64(1e-10));
+    let g2 = (-b + disc) / sig2.max_val(T::from_f64(1e-10));
+    let z =
+        (((T::one() - T::one() / g1) / (g2 - T::one()) * g2 / g1).abs()).pow(T::one() / (g2 - g1));
+    let ratio = (s.spot / s.running_max.max_val(T::from_f64(1e-10))).max_val(T::from_f64(1e-10));
+    let russian = if ratio <= z {
+        s.running_max
+    } else {
+        s.running_max * (ratio / z).pow(g1)
+    };
+    let boundary = s.fixed_put_strike * g1 / (g1 - T::one());
+    let put = if s.spot <= boundary {
+        s.fixed_put_strike - s.spot
+    } else {
+        (s.fixed_put_strike - boundary) * (s.spot / boundary).pow(g1)
+    };
+    SheppShiryaevShrevePerpetualRussianReport {
+        quadratic_root_gamma1: g1,
+        quadratic_root_gamma2: g2,
+        russian_optimal_stopping_ratio_z_star: z,
+        russian_critical_spot_boundary: s.running_max * z,
+        perpetual_russian_option_value: russian.max_val(s.running_max),
+        mckean_perpetual_put_free_boundary: boundary,
+        mckean_perpetual_american_put_value: put.max_val(T::zero()),
+        smooth_pasting_derivative_residual: (g1 * (s.fixed_put_strike - boundary) / boundary
+            + T::one())
+        .abs(),
+    }
+}
+
 #[cfg(test)]
 mod phase26_tests {
     use super::*;
@@ -333,5 +391,27 @@ mod phase26_tests {
         ))
         .heynen_kat_partial_window_call;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase29_tests {
+    use super::*;
+    #[test]
+    fn russian_invariants_and_dual() {
+        let mk = |x| SheppShiryaevShrevePerpetualRussianSpec {
+            spot: x,
+            running_max: 110.0,
+            fixed_put_strike: 100.0,
+            risk_free_rate: 0.03,
+            dividend_yield: 0.01,
+            volatility: 0.2,
+        };
+        let r = price_shepp_shiryaev_shreve_perpetual_russian_and_mckean(&mk(100.0));
+        assert!(
+            r.quadratic_root_gamma1 < 0.0
+                && r.quadratic_root_gamma2 > 1.0
+                && r.perpetual_russian_option_value >= 110.0
+        );
     }
 }

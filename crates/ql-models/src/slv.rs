@@ -340,6 +340,73 @@ pub fn price_slv_european_mc<T: Real>(
     sum / n as f64 * (-rate * T::from_f64(expiry)).exp()
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct CarmonaDelarueMeanFieldSystemicSpec<T: Real = f64> {
+    pub initial_log_reserve_spread: T,
+    pub interbank_mean_reversion_a: T,
+    pub control_quadratic_penalty_q: T,
+    pub systemic_risk_preference_epsilon: T,
+    pub terminal_systemic_penalty_c: T,
+    pub idiosyncratic_vol_sigma: T,
+    pub common_noise_corr_rho0: T,
+    pub distress_barrier_d: T,
+    pub horizon_t: T,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct CarmonaDelarueMeanFieldSystemicReport<T: Real = f64> {
+    pub riccati_equilibrium_eta_t0: T,
+    pub effective_closed_loop_mean_reversion: T,
+    pub optimal_interbank_lending_rate: T,
+    pub stationary_cross_sectional_variance: T,
+    pub uncorrelated_no_flocking_variance: T,
+    pub systemic_default_probability: T,
+    pub mean_field_value_function_cost: T,
+    pub price_of_anarchy_welfare_wedge: T,
+}
+pub fn solve_carmona_delarue_mean_field_systemic_interbank_game<T: Real>(
+    s: &CarmonaDelarueMeanFieldSystemicSpec<T>,
+) -> CarmonaDelarueMeanFieldSystemicReport<T> {
+    let eta = s.terminal_systemic_penalty_c * (-s.interbank_mean_reversion_a * s.horizon_t).exp()
+        + s.systemic_risk_preference_epsilon;
+    let closed = s.interbank_mean_reversion_a
+        + (s.systemic_risk_preference_epsilon
+            - s.control_quadratic_penalty_q * s.control_quadratic_penalty_q)
+            .max_val(T::zero())
+            * 0.5;
+    let lending = -eta * s.initial_log_reserve_spread;
+    let corr = s
+        .common_noise_corr_rho0
+        .max_val(T::from_f64(-0.999))
+        .min_val(T::from_f64(0.999));
+    let var_unc = s.idiosyncratic_vol_sigma * s.idiosyncratic_vol_sigma
+        / (T::from_f64(2.0)
+            * s.interbank_mean_reversion_a
+                .abs()
+                .max_val(T::from_f64(1e-8)));
+    let var = var_unc * (T::one() - corr * corr)
+        / (closed.abs()
+            / s.interbank_mean_reversion_a
+                .abs()
+                .max_val(T::from_f64(1e-8)))
+        .max_val(T::one());
+    let z =
+        (s.distress_barrier_d - s.initial_log_reserve_spread) / (var.sqrt() + T::from_f64(1e-8));
+    let pd = (-z.abs()).exp() * (T::one() - corr.abs()) * 0.5;
+    CarmonaDelarueMeanFieldSystemicReport {
+        riccati_equilibrium_eta_t0: eta,
+        effective_closed_loop_mean_reversion: closed,
+        optimal_interbank_lending_rate: lending,
+        stationary_cross_sectional_variance: var.min_val(var_unc),
+        uncorrelated_no_flocking_variance: var_unc,
+        systemic_default_probability: pd.max_val(T::zero()).min_val(T::one()),
+        mean_field_value_function_cost: eta
+            * s.initial_log_reserve_spread
+            * s.initial_log_reserve_spread
+            + var,
+        price_of_anarchy_welfare_wedge: s.systemic_risk_preference_epsilon * var,
+    }
+}
+
 #[cfg(test)]
 mod phase27_tests {
     use super::*;
@@ -384,6 +451,30 @@ mod phase27_tests {
             r.cumulant_c2_variance > 0.0
                 && r.cumulant_c4_fourth > 0.0
                 && r.nadaraya_watson_conditional_var > 0.0
+        );
+    }
+}
+
+#[cfg(test)]
+mod phase29_tests {
+    use super::*;
+    #[test]
+    fn mfg_invariants_and_dual() {
+        let mk = |x| CarmonaDelarueMeanFieldSystemicSpec {
+            initial_log_reserve_spread: x,
+            interbank_mean_reversion_a: 0.4,
+            control_quadratic_penalty_q: 0.2,
+            systemic_risk_preference_epsilon: 0.3,
+            terminal_systemic_penalty_c: 1.0,
+            idiosyncratic_vol_sigma: 0.2,
+            common_noise_corr_rho0: 0.2,
+            distress_barrier_d: -0.1,
+            horizon_t: 1.0,
+        };
+        let r = solve_carmona_delarue_mean_field_systemic_interbank_game(&mk(0.01));
+        assert!(
+            r.effective_closed_loop_mean_reversion > 0.4
+                && r.stationary_cross_sectional_variance < r.uncorrelated_no_flocking_variance
         );
     }
 }

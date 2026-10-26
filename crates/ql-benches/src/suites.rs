@@ -3425,7 +3425,7 @@ pub fn benchmark_asw_mf1f_ah_bess_ep_aad(scale: usize) -> ComparisonRow {
 }
 
 pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
-    // Keep all quantitative engine dependencies linked into the 40-suite
+    // Keep all quantitative engine dependencies linked into the 41-suite
     // benchmark binary, including engines used by the parity harness.
     let _ = ql_math::inv_norm_cdf(0.5);
     let _ = std::mem::size_of::<ql_pde::Fd2dHestonEngine>();
@@ -3476,6 +3476,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_phase26_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_frtb_cva_lookback_vta_flam_acd_hlz_mlmc(scale),
         benchmark_phase27_cochrane_ftpl_g2_twist_mingone_essvi_offshore_cb_acharya_coco_albanese_mpor_double_heston_curran_asian_warin_storage_roll_corwin_busseti_kelly_agrawal_kkt(scale),
         benchmark_phase28_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_zeron_simm_jacquier_rbergomi_choi_spread_bess_sdp_kratz_dark_follmer_diag_diff_pca(scale),
+        benchmark_phase29_veronesi_conv_lando_gen_gatheral_corridor_russian_stop_bates_svj_koziol_cb_mckean_mfg_bcbs_floor_cjp_lob_madhavan_etf_qian_ic_glasserman_is(scale),
     ]
 }
 
@@ -6492,6 +6493,235 @@ pub fn benchmark_phase28_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_ze
     run_comparison(
         "40_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_zeron_simm_jacquier_rbergomi_choi_spread_bess_sdp_kratz_dark_follmer_diag_diff_pca",
         "Phase28 BCBS/IRRBB/Turfus-RFR/Baran-MtM/Bourgey-BG/FEDS-PONV/Zeron-SIMM/Jacquier-rBergomi/Choi-Spread/BESS-SDP/Kratz-Dark/Föllmer/Diff-PCA",
+        cfg,
+        1e-4,
+        baseline,
+        sota,
+    )
+}
+
+pub fn phase29_workloads<T: Real>(x: [T; 4]) -> T {
+    let a = ql_fixed_income::evaluate_veronesi_fabozzi_futures_convexity_and_prepayment(
+        &ql_fixed_income::VeronesiFabozziConvexityPrepaymentSpec {
+            forward_rate: T::from_f64(0.03) + x[0] * 0.01,
+            short_rate_vol: T::from_f64(0.2) + x[1] * 0.01,
+            mean_reversion_kappa: T::from_f64(0.1),
+            fixing_time_t1: T::one(),
+            maturity_time_t2: T::from_f64(2.0),
+            wac_coupon: T::from_f64(0.05),
+            current_mortgage_rate: T::from_f64(0.04) + x[2] * 0.01,
+            min_cpr_turnover: T::from_f64(0.02),
+            max_cpr_refi: T::from_f64(0.3),
+            refi_steepness_gamma: T::from_f64(8.0),
+            refi_incentive_threshold: T::zero(),
+            pool_age_months: T::from_f64(24.0) + x[3],
+            psa_ramp_months: T::from_f64(30.0),
+        },
+    );
+    let b = ql_credit::compute_lando_israel_generator_logarithm_and_migration(
+        &ql_credit::LandoIsraelGeneratorLogarithmSpec {
+            transition_matrix_3x3: [
+                [T::from_f64(0.9), T::from_f64(0.08), T::from_f64(0.02)],
+                [T::from_f64(0.03), T::from_f64(0.92), T::from_f64(0.05)],
+                [T::zero(), T::zero(), T::one()],
+            ],
+            series_order_k: 12,
+            fractional_horizon_years: T::from_f64(0.5) + x[0],
+            recovery_rate: T::from_f64(0.4),
+            risk_free_rate: T::from_f64(0.03) + x[1] * 0.01,
+        },
+    );
+    let c = ql_vol::evaluate_gatheral_demeterfi_corridor_variance_and_skew(
+        &ql_vol::GatheralDemeterfiCorridorVarianceSkewSpec {
+            forward: T::from_f64(100.0) + x[0],
+            maturity: T::one(),
+            atm_vol: T::from_f64(0.2) + x[1] * 0.01,
+            atm_skew: T::from_f64(-0.2),
+            smile_curvature: T::from_f64(0.1) + x[2] * 0.01,
+            corridor_lower_strike: T::from_f64(90.0),
+            corridor_upper_strike: T::from_f64(110.0),
+            sampling_steps_n: 12,
+            vol_of_vol_eta: T::from_f64(0.5),
+            lsv_mixing_weight: T::from_f64(0.3),
+        },
+    );
+    let d = ql_exotics::price_shepp_shiryaev_shreve_perpetual_russian_and_mckean(
+        &ql_exotics::SheppShiryaevShrevePerpetualRussianSpec {
+            spot: T::from_f64(100.0) + x[0],
+            running_max: T::from_f64(110.0),
+            fixed_put_strike: T::from_f64(100.0),
+            risk_free_rate: T::from_f64(0.03),
+            dividend_yield: T::from_f64(0.01) + x[1] * 0.01,
+            volatility: T::from_f64(0.2) + x[2] * 0.01,
+        },
+    );
+    let e = ql_levy::evaluate_cont_tankov_bates_svj_characteristic_and_pide(
+        &ql_levy::ContTankovBatesSvjPideSpec {
+            spot: T::from_f64(100.0) + x[0],
+            strike: T::from_f64(110.0),
+            maturity: T::one(),
+            risk_free_rate: T::from_f64(0.03),
+            dividend_yield: T::from_f64(0.01),
+            v0: T::from_f64(0.04) + x[1] * 0.01,
+            kappa: T::one(),
+            theta: T::from_f64(0.04),
+            sigma_v: T::from_f64(0.3),
+            rho: T::from_f64(-0.5),
+            jump_intensity_lambda: T::from_f64(0.2) + x[2] * 0.01,
+            jump_mean_mu_j: T::from_f64(-0.1),
+            jump_std_sigma_j: T::from_f64(0.2),
+        },
+    );
+    let f = ql_fixed_income::evaluate_koziol_asquith_fasb_strategic_convertible(
+        &ql_fixed_income::KoziolAsquithFasbStrategicConvertibleSpec {
+            firm_value: T::from_f64(10000.0),
+            debt_face_value: T::from_f64(8000.0),
+            existing_shares: T::from_f64(100.0),
+            new_shares_blockholder1: T::from_f64(10.0) + x[0],
+            new_shares_blockholder2: T::from_f64(8.0),
+            coupon_rate: T::from_f64(0.04),
+            corporate_tax_rate: T::from_f64(0.25),
+            dividend_yield: T::from_f64(0.01),
+            stock_price: T::from_f64(100.0) + x[1],
+            base_conversion_ratio: T::one(),
+            induced_sweetened_conversion_ratio: T::from_f64(1.1),
+            cash_sweetener_amount: T::one(),
+            call_price: T::from_f64(120.0),
+            firm_volatility: T::from_f64(0.2),
+            risk_free_rate: T::from_f64(0.03),
+            maturity: T::from_f64(5.0),
+        },
+    );
+    let g = ql_models::solve_carmona_delarue_mean_field_systemic_interbank_game(
+        &ql_models::CarmonaDelarueMeanFieldSystemicSpec {
+            initial_log_reserve_spread: x[0],
+            interbank_mean_reversion_a: T::from_f64(0.4),
+            control_quadratic_penalty_q: T::from_f64(0.2),
+            systemic_risk_preference_epsilon: T::from_f64(0.3) + x[1],
+            terminal_systemic_penalty_c: T::one(),
+            idiosyncratic_vol_sigma: T::from_f64(0.2),
+            common_noise_corr_rho0: T::from_f64(0.2),
+            distress_barrier_d: T::from_f64(-0.1),
+            horizon_t: T::one(),
+        },
+    );
+    let h = ql_xva::evaluate_bcbs_d424_output_floor_and_sma_op_risk(
+        &ql_xva::BcbsD424OutputFloorAndSmaOpRiskSpec {
+            irb_credit_rwa: T::from_f64(100.0) + x[0],
+            ima_market_rwa: T::from_f64(50.0),
+            standardized_credit_rwa: T::from_f64(120.0),
+            standardized_market_rwa: T::from_f64(60.0),
+            standardized_cva_rwa: T::from_f64(20.0),
+            output_floor_multiplier: T::from_f64(0.725),
+            interest_lease_dividend_component: T::from_f64(20.0),
+            services_component: T::from_f64(15.0),
+            financial_component: T::from_f64(30.0),
+            average_annual_operational_loss: T::from_f64(2.0) + x[1],
+            cet1_capital: T::from_f64(20.0),
+            at1_and_tier2_capital: T::from_f64(10.0),
+            eligible_tlac_senior_debt: T::from_f64(40.0),
+        },
+    );
+    let i = ql_portfolio::solve_cartea_jaimungal_penalva_lob_fill_hjb(
+        &ql_portfolio::CarteaJaimungalPenalvaLobFillHjbSpec {
+            initial_inventory: 10,
+            horizon_seconds: T::from_f64(60.0),
+            base_arrival_rate_lambda: T::from_f64(0.5) + x[2],
+            fill_decay_kappa: T::one(),
+            running_inventory_penalty_phi: T::from_f64(0.01),
+            terminal_liquidation_penalty_alpha: T::from_f64(0.1),
+            ofi_short_term_drift: T::from_f64(0.02),
+            adverse_selection_cost: T::from_f64(0.01),
+        },
+    );
+    let j = ql_portfolio::evaluate_madhavan_abner_hill_etf_ap_arbitrage_and_tax_alpha(
+        &ql_portfolio::MadhavanAbnerHillEtfApArbitrageSpec {
+            etf_market_price: T::from_f64(101.0) + x[0],
+            reported_inav: T::from_f64(100.0),
+            futures_beta_return: T::from_f64(0.01) + x[1],
+            stale_underlying_weight: T::from_f64(0.4),
+            ap_creation_fee_bps: T::from_f64(5.0),
+            basket_bid_ask_spread_bps: T::from_f64(8.0),
+            creation_unit_volatility_bps: T::from_f64(10.0),
+            ap_risk_aversion: T::from_f64(0.5),
+            embedded_unrealized_gain_fraction: T::from_f64(0.3),
+            annual_redemption_turnover: T::from_f64(0.2),
+            capital_gains_tax_rate: T::from_f64(0.25),
+        },
+    );
+    let k = ql_portfolio::evaluate_grinold_qian_christopherson_ic_decay_and_timing(
+        &ql_portfolio::GrinoldQianChristophersonAlphaDecaySpec {
+            fast_signal_ic0: T::from_f64(0.1) + x[0] * 0.01,
+            fast_signal_half_life_months: T::from_f64(3.0),
+            slow_signal_ic0: T::from_f64(0.08),
+            slow_signal_half_life_months: T::from_f64(12.0),
+            signal_correlation: T::from_f64(0.2),
+            rebalance_horizon_months: T::one(),
+            transaction_cost_penalty: T::from_f64(0.01),
+            factor_active_exposures: vec![T::from_f64(0.1), T::from_f64(-0.05)],
+            factor_benchmark_returns: vec![T::from_f64(0.02), T::from_f64(0.01)],
+            normal_factor_exposures: vec![T::from_f64(0.05), T::from_f64(-0.02)],
+        },
+    );
+    let l = ql_dml::evaluate_glasserman_saddlepoint_is_and_stratified_lhs_aad(
+        &ql_dml::GlassermanSaddlepointIsStratifiedLhsSpec {
+            spot: T::from_f64(100.0) + x[0],
+            deep_otm_strike: T::from_f64(130.0),
+            risk_free_rate: T::from_f64(0.03),
+            volatility: T::from_f64(0.2) + x[1] * 0.01,
+            maturity: T::one(),
+            num_strata: 16,
+        },
+    );
+    a.implied_futures_rate
+        + b.ig_to_default_fractional_pd
+        + c.full_variance_swap_fair_vol
+        + d.perpetual_russian_option_value
+        + e.bates_svj_call_price
+        + f.strategic_convertible_fair_value * 0.001
+        + g.mean_field_value_function_cost
+        + h.floored_cet1_ratio
+        + i.expected_terminal_inventory * 0.001
+        + j.net_ap_creation_redemption_profit_bps * 0.001
+        + k.total_factor_contribution
+        + l.importance_sampled_call_price
+}
+
+pub fn benchmark_phase29_veronesi_conv_lando_gen_gatheral_corridor_russian_stop_bates_svj_koziol_cb_mckean_mfg_bcbs_floor_cjp_lob_madhavan_etf_qian_ic_glasserman_is(
+    scale: usize,
+) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let baseline = move || {
+        let f = |x: [f64; 4]| phase29_workloads(x).val();
+        let mut z = f(x0);
+        for i in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[i] += 1e-5;
+            d[i] -= 1e-5;
+            z += (f(u) - f(d)) / (2e-5);
+        }
+        for _ in 0..20 {
+            std::hint::black_box(f(x0));
+        }
+        z
+    };
+    let sota = move || {
+        let x: [Dual<4>; 4] = [
+            Dual::variable(x0[0], 0),
+            Dual::variable(x0[1], 1),
+            Dual::variable(x0[2], 2),
+            Dual::variable(x0[3], 3),
+        ];
+        {
+            let y = phase29_workloads(x);
+            y.val + y.d.iter().sum::<f64>()
+        }
+    };
+    run_comparison(
+        "41_veronesi_conv_lando_gen_gatheral_corridor_russian_stop_bates_svj_koziol_cb_mckean_mfg_bcbs_floor_cjp_lob_madhavan_etf_qian_ic_glasserman_is",
+        "Phase29 Veronesi/Lando/Gatheral/Russian/Bates/Koziol/MFG/BCBS/CJP/ETF/Qian/Glasserman",
         cfg,
         1e-4,
         baseline,

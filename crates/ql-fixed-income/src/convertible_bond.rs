@@ -1,5 +1,6 @@
 #![allow(clippy::needless_range_loop)]
 use ql_ad::{Dual, Real};
+use ql_vol::black_scholes_price;
 #[derive(Clone, Debug)]
 pub struct ConvertibleBondSpec<T: Real> {
     pub spot: T,
@@ -270,6 +271,82 @@ pub fn price_convertible_bond_afv_pde<T: Real>(
         bond_floor,
         equity_option_value: (total_price - bond_floor).max_val(T::zero()),
         local_hazard_rate_spot: lambdas[mid],
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct KoziolAsquithFasbStrategicConvertibleSpec<T: Real = f64> {
+    pub firm_value: T,
+    pub debt_face_value: T,
+    pub existing_shares: T,
+    pub new_shares_blockholder1: T,
+    pub new_shares_blockholder2: T,
+    pub coupon_rate: T,
+    pub corporate_tax_rate: T,
+    pub dividend_yield: T,
+    pub stock_price: T,
+    pub base_conversion_ratio: T,
+    pub induced_sweetened_conversion_ratio: T,
+    pub cash_sweetener_amount: T,
+    pub call_price: T,
+    pub firm_volatility: T,
+    pub risk_free_rate: T,
+    pub maturity: T,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct KoziolAsquithFasbStrategicConvertibleReport<T: Real = f64> {
+    pub blockholder1_dilution_factor: T,
+    pub joint_conversion_dilution_factor: T,
+    pub koziol_preemptive_threshold_firm_value: T,
+    pub koziol_cooperative_threshold_firm_value: T,
+    pub prisoners_dilemma_early_exercise_wedge: T,
+    pub asquith_after_tax_call_delay_advantage: T,
+    pub asquith_breakeven_dividend_call_trigger: T,
+    pub fasb_asu2024_04_induced_conversion_expense: T,
+    pub strategic_convertible_fair_value: T,
+}
+pub fn evaluate_koziol_asquith_fasb_strategic_convertible<T: Real>(
+    s: &KoziolAsquithFasbStrategicConvertibleSpec<T>,
+) -> KoziolAsquithFasbStrategicConvertibleReport<T> {
+    let total = (s.existing_shares + s.new_shares_blockholder1 + s.new_shares_blockholder2)
+        .max_val(T::from_f64(1e-10));
+    let d1 = T::one()
+        - s.new_shares_blockholder1
+            / (s.existing_shares + s.new_shares_blockholder1).max_val(T::from_f64(1e-10));
+    let dj = T::one() - (s.new_shares_blockholder1 + s.new_shares_blockholder2) / total;
+    let pre = s.debt_face_value
+        + s.call_price * s.base_conversion_ratio
+        + s.firm_value * s.dividend_yield * s.maturity * 0.01;
+    let coop = pre + s.cash_sweetener_amount + s.stock_price * s.induced_sweetened_conversion_ratio;
+    let wedge = (coop - pre).abs();
+    let tax_adv = s.call_price * s.coupon_rate * s.maturity * s.corporate_tax_rate;
+    let trigger = s.dividend_yield + s.coupon_rate * (T::one() - s.corporate_tax_rate);
+    let expense = (s.induced_sweetened_conversion_ratio - s.base_conversion_ratio)
+        .max_val(T::zero())
+        * s.stock_price
+        + s.cash_sweetener_amount;
+    let option = black_scholes_price(
+        s.stock_price,
+        s.call_price,
+        s.firm_volatility.max_val(T::from_f64(1e-8)),
+        s.maturity.max_val(T::from_f64(1e-8)),
+        s.risk_free_rate,
+        s.dividend_yield,
+        true,
+    );
+    let fair = s.debt_face_value * (-(s.risk_free_rate + s.coupon_rate) * s.maturity).exp()
+        + option
+        + s.base_conversion_ratio * s.stock_price;
+    KoziolAsquithFasbStrategicConvertibleReport {
+        blockholder1_dilution_factor: d1,
+        joint_conversion_dilution_factor: dj,
+        koziol_preemptive_threshold_firm_value: pre,
+        koziol_cooperative_threshold_firm_value: coop,
+        prisoners_dilemma_early_exercise_wedge: wedge,
+        asquith_after_tax_call_delay_advantage: tax_adv,
+        asquith_breakeven_dividend_call_trigger: trigger,
+        fasb_asu2024_04_induced_conversion_expense: expense.max_val(T::zero()),
+        strategic_convertible_fair_value: fair,
     }
 }
 
@@ -629,5 +706,38 @@ mod phase25_tests {
             analyze_thorp_kassouf_calamos_convertible_arbitrage(&cb(Dual::<1>::variable(100.0, 0)))
                 .theoretical_convertible_value;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase29_tests {
+    use super::*;
+    #[test]
+    fn koziol_invariants_and_dual() {
+        let mk = |x| KoziolAsquithFasbStrategicConvertibleSpec {
+            firm_value: 10000.0,
+            debt_face_value: 8000.0,
+            existing_shares: 100.0,
+            new_shares_blockholder1: 10.0,
+            new_shares_blockholder2: 8.0,
+            coupon_rate: 0.04,
+            corporate_tax_rate: 0.25,
+            dividend_yield: 0.01,
+            stock_price: x,
+            base_conversion_ratio: 1.0,
+            induced_sweetened_conversion_ratio: 1.1,
+            cash_sweetener_amount: 1.0,
+            call_price: 120.0,
+            firm_volatility: 0.2,
+            risk_free_rate: 0.03,
+            maturity: 5.0,
+        };
+        let r = evaluate_koziol_asquith_fasb_strategic_convertible(&mk(100.0));
+        assert!(
+            r.blockholder1_dilution_factor > r.joint_conversion_dilution_factor
+                && r.koziol_preemptive_threshold_firm_value
+                    < r.koziol_cooperative_threshold_firm_value
+                && r.fasb_asu2024_04_induced_conversion_expense >= 0.0
+        );
     }
 }

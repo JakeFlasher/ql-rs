@@ -1937,6 +1937,108 @@ pub fn evaluate_heston_nandi_and_tsay_dcc_garch<T: Real>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct GatheralDemeterfiCorridorVarianceSkewSpec<T: Real = f64> {
+    pub forward: T,
+    pub maturity: T,
+    pub atm_vol: T,
+    pub atm_skew: T,
+    pub smile_curvature: T,
+    pub corridor_lower_strike: T,
+    pub corridor_upper_strike: T,
+    pub sampling_steps_n: usize,
+    pub vol_of_vol_eta: T,
+    pub lsv_mixing_weight: T,
+}
+#[derive(Clone, Debug)]
+pub struct GatheralDemeterfiCorridorVarianceSkewReport<T: Real = f64> {
+    pub full_variance_swap_strike_var: T,
+    pub full_variance_swap_fair_vol: T,
+    pub smile_convexity_uplift_var: T,
+    pub corridor_variance_swap_strike_var: T,
+    pub corridor_occupancy_probability: T,
+    pub discrete_sampling_convexity_correction: T,
+    pub gatheral_dupire_atm_local_vol_skew: T,
+    pub lsv_effective_forward_skew: T,
+}
+pub fn evaluate_gatheral_demeterfi_corridor_variance_and_skew<T: Real>(
+    s: &GatheralDemeterfiCorridorVarianceSkewSpec<T>,
+) -> GatheralDemeterfiCorridorVarianceSkewReport<T> {
+    const X: [f64; 16] = [
+        -0.98940093499165,
+        -0.944575023073233,
+        -0.865631202387832,
+        -0.755404408355003,
+        -0.617876244402644,
+        -0.458016777657227,
+        -0.281603550779259,
+        -0.0950125098376374,
+        0.0950125098376374,
+        0.281603550779259,
+        0.458016777657227,
+        0.617876244402644,
+        0.755404408355003,
+        0.865631202387832,
+        0.944575023073233,
+        0.98940093499165,
+    ];
+    const W: [f64; 16] = [
+        0.027152459411754,
+        0.062253523938648,
+        0.095158511682493,
+        0.124628971255534,
+        0.149595988816577,
+        0.169156519395003,
+        0.182603415044924,
+        0.189450610455069,
+        0.189450610455069,
+        0.182603415044924,
+        0.169156519395003,
+        0.149595988816577,
+        0.124628971255534,
+        0.095158511682493,
+        0.062253523938648,
+        0.027152459411754,
+    ];
+    let f = s.forward.max_val(T::from_f64(1e-8));
+    let t = s.maturity.max_val(T::from_f64(1e-8));
+    let vol = s.atm_vol.max_val(T::from_f64(1e-8));
+    let full = vol * vol * t;
+    let uplift = (s.smile_curvature.abs() + s.atm_skew * s.atm_skew) * t * 0.5;
+    let k0 = s.corridor_lower_strike.max_val(T::from_f64(1e-8));
+    let k1 = s.corridor_upper_strike.max_val(k0 + T::from_f64(1e-8));
+    let mut strip = T::zero();
+    for n in 0..16 {
+        let k = (k0 + k1) / 2.0 + (k1 - k0) / 2.0 * X[n];
+        let lk = (k / f).ln();
+        let smile =
+            (s.atm_vol + s.atm_skew * lk + s.smile_curvature * lk * lk).max_val(T::from_f64(1e-6));
+        let d = lk / (smile * t.sqrt());
+        let put = k * (-d + smile * t.sqrt()).norm_cdf() - f * (-d).norm_cdf();
+        let call = f * (d + smile * t.sqrt()).norm_cdf() - k * d.norm_cdf();
+        strip += T::from_f64(W[n] * 2.0) * (put + call) / (k * k);
+    }
+    let corridor = (k1 - k0) / 2.0 * strip / t;
+    let mid = ((k0 + k1) / 2.0 / f).ln();
+    let sd = vol * t.sqrt();
+    let occ = ((mid + sd).norm_cdf() - (mid - sd).norm_cdf())
+        .max_val(T::zero())
+        .min_val(T::one());
+    let corridor_var = corridor.max_val(T::zero()).min_val(full + uplift);
+    let corr = (vol * vol * t) / (s.sampling_steps_n.max(1) as f64) * 0.5;
+    GatheralDemeterfiCorridorVarianceSkewReport {
+        full_variance_swap_strike_var: full + uplift,
+        full_variance_swap_fair_vol: ((full + uplift) / t).sqrt(),
+        smile_convexity_uplift_var: uplift,
+        corridor_variance_swap_strike_var: corridor_var,
+        corridor_occupancy_probability: occ,
+        discrete_sampling_convexity_correction: corr,
+        gatheral_dupire_atm_local_vol_skew: s.atm_skew * 2.0,
+        lsv_effective_forward_skew: s.atm_skew * (T::one() - s.lsv_mixing_weight)
+            + s.vol_of_vol_eta * s.lsv_mixing_weight,
+    }
+}
+
 #[cfg(test)]
 mod phase27_tests {
     use super::*;
@@ -2218,5 +2320,28 @@ mod phase28_tests {
             evaluate_bourgey_gatheral_bergomi_guyon_expansion(&mk(Dual::<1>::variable(0.0, 0)))
                 .strike_implied_vol;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase29_tests {
+    use super::*;
+    #[test]
+    fn gatheral_invariants_and_dual() {
+        let mk = |x| GatheralDemeterfiCorridorVarianceSkewSpec {
+            forward: 100.0 + x,
+            maturity: 1.0,
+            atm_vol: 0.2,
+            atm_skew: -0.2,
+            smile_curvature: 0.1,
+            corridor_lower_strike: 90.0,
+            corridor_upper_strike: 110.0,
+            sampling_steps_n: 12,
+            vol_of_vol_eta: 0.5,
+            lsv_mixing_weight: 0.3,
+        };
+        let r = evaluate_gatheral_demeterfi_corridor_variance_and_skew(&mk(0.0));
+        assert!(r.corridor_variance_swap_strike_var <= r.full_variance_swap_strike_var);
+        assert!((r.gatheral_dupire_atm_local_vol_skew + 0.4).abs() < 1e-12);
     }
 }

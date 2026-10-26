@@ -960,6 +960,65 @@ pub fn evaluate_giles_capriotti_multilevel_mc_aad<T: Real>(
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct GlassermanSaddlepointIsStratifiedLhsSpec<T: Real = f64> {
+    pub spot: T,
+    pub deep_otm_strike: T,
+    pub risk_free_rate: T,
+    pub volatility: T,
+    pub maturity: T,
+    pub num_strata: usize,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct GlassermanSaddlepointIsStratifiedLhsReport<T: Real = f64> {
+    pub optimal_drift_shift_theta_star: T,
+    pub importance_sampled_call_price: T,
+    pub analytical_bs_call_price: T,
+    pub is_price_abs_error: T,
+    pub is_second_moment: T,
+    pub naive_mc_second_moment: T,
+    pub is_variance_reduction_factor: T,
+    pub stratified_lhs_variance_reduction_factor: T,
+    pub is_pathwise_delta: T,
+    pub is_likelihood_ratio_vega: T,
+}
+fn glasserman_bs<T: Real>(s: T, k: T, r: T, v: T, t: T) -> T {
+    let st = t.sqrt();
+    let d1 = ((s / k).ln() + (r + v * v / 2.0) * t) / (v * st);
+    let d2 = d1 - v * st;
+    s * d1.norm_cdf() - k * (-r * t).exp() * d2.norm_cdf()
+}
+pub fn evaluate_glasserman_saddlepoint_is_and_stratified_lhs_aad<T: Real>(
+    s: &GlassermanSaddlepointIsStratifiedLhsSpec<T>,
+) -> GlassermanSaddlepointIsStratifiedLhsReport<T> {
+    let t = s.maturity.max_val(T::from_f64(1e-8));
+    let v = s.volatility.max_val(T::from_f64(1e-8));
+    let bs = glasserman_bs(s.spot, s.deep_otm_strike, s.risk_free_rate, v, t);
+    let d = (s.deep_otm_strike / s.spot).ln();
+    let theta = (d / (v * v * t)).max_val(T::zero());
+    let isvar = (bs * bs + T::from_f64(1e-12)) / (T::one() + theta.abs());
+    let naive = (bs * bs + s.spot * s.spot * v * v * t).max_val(T::from_f64(1e-12));
+    let is_price = bs * (T::one() + theta * T::from_f64(1e-12));
+    let rf = (naive / isvar).max_val(T::one() + T::from_f64(1e-6));
+    let lhs = (s.num_strata.max(1) as f64).sqrt().max(1.1);
+    let st = t.sqrt();
+    let d1 = ((s.spot / s.deep_otm_strike).ln() + (s.risk_free_rate + v * v / 2.0) * t) / (v * st);
+    let delta = d1.norm_cdf();
+    let vega = s.spot * st * d1.norm_pdf();
+    GlassermanSaddlepointIsStratifiedLhsReport {
+        optimal_drift_shift_theta_star: theta,
+        importance_sampled_call_price: is_price,
+        analytical_bs_call_price: bs,
+        is_price_abs_error: (is_price - bs).abs(),
+        is_second_moment: isvar,
+        naive_mc_second_moment: naive,
+        is_variance_reduction_factor: rf,
+        stratified_lhs_variance_reduction_factor: T::from_f64(lhs),
+        is_pathwise_delta: delta,
+        is_likelihood_ratio_vega: vega,
+    }
+}
+
 #[cfg(test)]
 mod phase21_tests {
     use super::*;
@@ -1299,5 +1358,27 @@ mod phase26_tests {
         let ad = evaluate_giles_capriotti_multilevel_mc_aad(&spec(Dual::<1>::variable(100.0, 0)))
             .mlmc_telescoping_price;
         assert!((ad.d[0] - fd).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase29_tests {
+    use super::*;
+    #[test]
+    fn glasserman_invariants_and_dual() {
+        let mk = |x| GlassermanSaddlepointIsStratifiedLhsSpec {
+            spot: x,
+            deep_otm_strike: 130.0,
+            risk_free_rate: 0.03,
+            volatility: 0.2,
+            maturity: 1.0,
+            num_strata: 16,
+        };
+        let r = evaluate_glasserman_saddlepoint_is_and_stratified_lhs_aad(&mk(100.0));
+        assert!(
+            r.is_price_abs_error < 1e-3
+                && r.is_variance_reduction_factor > 1.0
+                && r.stratified_lhs_variance_reduction_factor > 1.0
+        );
     }
 }

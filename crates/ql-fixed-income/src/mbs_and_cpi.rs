@@ -802,6 +802,74 @@ pub fn evaluate_tuckman_burghardt_treasury_wildcard_and_ctd_switch<T: Real>(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct VeronesiFabozziConvexityPrepaymentSpec<T: Real = f64> {
+    pub forward_rate: T,
+    pub short_rate_vol: T,
+    pub mean_reversion_kappa: T,
+    pub fixing_time_t1: T,
+    pub maturity_time_t2: T,
+    pub wac_coupon: T,
+    pub current_mortgage_rate: T,
+    pub min_cpr_turnover: T,
+    pub max_cpr_refi: T,
+    pub refi_steepness_gamma: T,
+    pub refi_incentive_threshold: T,
+    pub pool_age_months: T,
+    pub psa_ramp_months: T,
+}
+
+#[derive(Clone, Debug)]
+pub struct VeronesiFabozziConvexityPrepaymentReport<T: Real = f64> {
+    pub vasicek_b_t1_t2: T,
+    pub futures_forward_convexity_bias_bps: T,
+    pub implied_futures_rate: T,
+    pub psa_seasoning_multiplier: T,
+    pub refi_incentive_spread: T,
+    pub scurve_cpr: T,
+    pub single_monthly_mortality_smm: T,
+    pub effective_prepayment_duration: T,
+}
+
+pub fn evaluate_veronesi_fabozzi_futures_convexity_and_prepayment<T: Real>(
+    s: &VeronesiFabozziConvexityPrepaymentSpec<T>,
+) -> VeronesiFabozziConvexityPrepaymentReport<T> {
+    let k = s.mean_reversion_kappa.max_val(T::from_f64(1e-10));
+    let dt = (s.maturity_time_t2 - s.fixing_time_t1).max_val(T::from_f64(1e-10));
+    let e1 = (-k * dt).exp();
+    let e0 = (-k * s.fixing_time_t1).exp();
+    let b12 = (T::one() - e1) / k;
+    let b01 = (T::one() - e0) / k;
+    let e2 = (-T::from_f64(2.0) * k * s.fixing_time_t1).exp();
+    let bracket = b01 * b01 + b12 / (T::from_f64(2.0) * k) * (T::one() - e2);
+    let bias = s.short_rate_vol * s.short_rate_vol / 2.0 * b12 / dt * bracket;
+    let age = s.pool_age_months.max_val(T::zero());
+    let ramp = s.psa_ramp_months.max_val(T::from_f64(1e-10));
+    let u = age / ramp;
+    let psa = u
+        .smooth_heaviside(T::one(), 0.02)
+        .max_val(T::zero())
+        .min_val(T::one());
+    let incentive = s.wac_coupon - s.current_mortgage_rate;
+    let logistic = T::one()
+        / (T::one() + (-s.refi_steepness_gamma * (incentive - s.refi_incentive_threshold)).exp());
+    let cpr = psa
+        * (s.min_cpr_turnover + (s.max_cpr_refi - s.min_cpr_turnover) * logistic)
+            .max_val(T::zero())
+            .min_val(T::from_f64(0.999999));
+    let smm = T::one() - (T::one() - cpr).powf(1.0 / 12.0);
+    VeronesiFabozziConvexityPrepaymentReport {
+        vasicek_b_t1_t2: b12,
+        futures_forward_convexity_bias_bps: bias * 10000.0,
+        implied_futures_rate: s.forward_rate + bias,
+        psa_seasoning_multiplier: psa,
+        refi_incentive_spread: incentive,
+        scurve_cpr: cpr,
+        single_monthly_mortality_smm: smm,
+        effective_prepayment_duration: T::one() / (T::one() - smm),
+    }
+}
+
 #[cfg(test)]
 mod phase15_tests {
     use super::*;
@@ -1668,5 +1736,30 @@ mod phase26_tests {
             fd_q, ad_q.d[0], r.quality_switch_option_value
         );
         assert!(ad_q.d[0].abs() > 1e-4 && (ad_q.d[0] - fd_q).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
+mod phase29_tests {
+    use super::*;
+    #[test]
+    fn veronesi_invariants_and_dual() {
+        let mk = |x| VeronesiFabozziConvexityPrepaymentSpec {
+            forward_rate: x,
+            short_rate_vol: 0.2,
+            mean_reversion_kappa: 0.1,
+            fixing_time_t1: 1.0,
+            maturity_time_t2: 2.0,
+            wac_coupon: 0.05,
+            current_mortgage_rate: 0.04,
+            min_cpr_turnover: 0.02,
+            max_cpr_refi: 0.3,
+            refi_steepness_gamma: 8.0,
+            refi_incentive_threshold: 0.0,
+            pool_age_months: 24.0,
+            psa_ramp_months: 30.0,
+        };
+        let r = evaluate_veronesi_fabozzi_futures_convexity_and_prepayment(&mk(0.03));
+        assert!(r.futures_forward_convexity_bias_bps > 0.0);
     }
 }
