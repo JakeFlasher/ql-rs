@@ -1,5 +1,17 @@
 use ql_ad::Real;
 
+trait InvNormCdf: Real {
+    fn inv_norm_cdf(self) -> Self {
+        let target = self;
+        let mut q = Self::zero();
+        for _ in 0..8 {
+            q -= (q.norm_cdf() - target) / q.norm_pdf().max_val(Self::from_f64(1e-12));
+        }
+        q
+    }
+}
+impl<T: Real> InvNormCdf for T {}
+
 #[derive(Clone, Debug)]
 pub struct ChristoffersenBouchaudVarBacktestAndCumulantSpec<T: Real = f64> {
     pub total_days_t: usize,
@@ -53,7 +65,7 @@ pub fn evaluate_christoffersen_bouchaud_var_backtest_and_cumulant_es<T: Real>(
             + s.count_n10 * (T::one() - pi11).max_val(T::from_f64(1e-12)).ln()
             - loglik(hit));
     let cc = lr_uc + lr_ind;
-    let z = (-T::from_f64(2.0) * p.ln()).sqrt();
+    let z = (-p.inv_norm_cdf()).max_val(T::from_f64(1e-6));
     let gaussian = s.portfolio_mean_loss + s.portfolio_std_loss * z;
     let cf = gaussian
         + s.portfolio_std_loss
@@ -65,11 +77,14 @@ pub fn evaluate_christoffersen_bouchaud_var_backtest_and_cumulant_es<T: Real>(
                     * (T::from_f64(2.0) * z * z * z - T::from_f64(5.0) * z)
                     * s.loss_skewness_gamma1
                     * s.loss_skewness_gamma1);
-    let es = gaussian
+    let es = s.portfolio_mean_loss
         + s.portfolio_std_loss
-            * (s.loss_skewness_gamma1 * T::from_f64(0.2)
-                + s.loss_excess_kurtosis_gamma2 * T::from_f64(0.05))
-        + s.portfolio_mean_loss;
+            * (z.norm_pdf() / p)
+            * (T::one()
+                + T::from_f64(1.0 / 6.0) * (z * z - T::one()) * s.loss_skewness_gamma1
+                + T::from_f64(1.0 / 24.0)
+                    * (z * z * z - T::from_f64(3.0) * z)
+                    * s.loss_excess_kurtosis_gamma2);
     ChristoffersenBouchaudVarBacktestAndCumulantReport {
         empirical_hit_rate: hit,
         transition_prob_pi01: pi01,
@@ -114,29 +129,34 @@ pub struct FoucaultVanDerMerweLobLiquidityLvarReport<T: Real = f64> {
 pub fn evaluate_foucault_vandermerwe_lob_schedule_and_lvar<T: Real>(
     s: &FoucaultVanDerMerweLobLiquidityLvarSpec<T>,
 ) -> FoucaultVanDerMerweLobLiquidityLvarReport<T> {
-    let half =
-        s.mean_relative_bid_ask_spread * s.mid_price * T::from_f64(0.5) + s.order_processing_fee_c;
-    let slope = s.informed_trader_share_pi * s.fundamental_volatility
-        / s.exponential_order_size_rate_lambda
-            .abs()
-            .max_val(T::from_f64(1e-12));
-    let depth = (s.exponential_order_size_rate_lambda
-        * (T::one() - s.informed_trader_share_pi).max_val(T::zero()))
-    .max_val(T::from_f64(1e-12));
+    let pi_ratio = s.informed_trader_share_pi
+        / (T::one() - s.informed_trader_share_pi).max_val(T::from_f64(1e-6));
+    let lam = s
+        .exponential_order_size_rate_lambda
+        .abs()
+        .max_val(T::from_f64(1e-12));
+    let mid = s.mid_price.abs().max_val(T::from_f64(1e-12));
+    let half = s.mean_relative_bid_ask_spread * mid * T::from_f64(0.5)
+        + s.order_processing_fee_c * mid
+        + pi_ratio * s.fundamental_volatility * mid / lam * T::from_f64(0.1);
+    let slope = pi_ratio * s.fundamental_volatility * mid / lam;
+    let depth = (T::one() - s.informed_trader_share_pi).max_val(T::from_f64(1e-6)) / lam;
     let pure = s.position_notional
         * s.fundamental_volatility
         * s.confidence_z_alpha
         * (s.liquidation_horizon_days / T::from_f64(252.0)).sqrt();
     let exo = s.position_notional
-        * (s.mean_relative_bid_ask_spread
-            + s.spread_tail_scaling_a * s.std_relative_bid_ask_spread)
-        * (T::one() + s.order_processing_fee_c.abs())
-        + half;
+        * (T::from_f64(0.5)
+            * (s.mean_relative_bid_ask_spread
+                + s.spread_tail_scaling_a * s.std_relative_bid_ask_spread)
+            + s.order_processing_fee_c);
     let impact = s.permanent_impact_gamma
         * s.position_notional.abs()
-        * (s.position_notional.abs() / s.market_adv_notional.abs().max_val(T::from_f64(1e-12)))
-            .sqrt()
-        + slope * depth;
+        * (s.position_notional.abs()
+            / (s.market_adv_notional.abs() * s.liquidation_horizon_days.max_val(T::one()))
+                .max_val(T::from_f64(1e-12)))
+        .sqrt()
+        + s.position_notional.abs() * (slope * depth / mid) * T::from_f64(0.01);
     let total = pure + exo + impact;
     FoucaultVanDerMerweLobLiquidityLvarReport {
         glosten_sandas_small_trade_half_spread: half,
@@ -178,19 +198,19 @@ pub fn evaluate_barberis_jin_wang_prospect_overhang_and_skew_anomaly<T: Real>(
 ) -> BarberisJinWangProspectAnomalyReport<T> {
     let cgo = (s.current_price - s.reference_purchase_price)
         / s.reference_purchase_price.abs().max_val(T::from_f64(1e-12));
-    let gain = cgo.max_val(T::zero()).pow(
-        s.prospect_diminishing_sensitivity_alpha
-            .max_val(T::from_f64(0.01)),
-    );
-    let pain = s.prospect_loss_aversion_lambda
-        * (-cgo).max_val(T::zero()).pow(
-            s.prospect_diminishing_sensitivity_alpha
-                .max_val(T::from_f64(0.01)),
-        );
+    let alpha = s
+        .prospect_diminishing_sensitivity_alpha
+        .max_val(T::from_f64(0.01));
+    let eps = T::from_f64(1e-6);
+    let pos_cgo = (cgo + (cgo * cgo + eps * eps).sqrt()) * T::from_f64(0.5);
+    let neg_cgo = (-cgo + (cgo * cgo + eps * eps).sqrt()) * T::from_f64(0.5);
+    let gain = (pos_cgo + eps).pow(alpha) - eps.pow(alpha);
+    let pain = s.prospect_loss_aversion_lambda * ((neg_cgo + eps).pow(alpha) - eps.pow(alpha));
     let drag = -(s.return_skewness.max_val(T::zero())
         * (T::one() - s.prelec_probability_weighting_gamma).max_val(T::zero())
         * s.return_volatility);
-    let under = s.mental_accounting_integration_b0 * cgo / (T::one() + s.return_volatility.abs());
+    let under = s.mental_accounting_integration_b0 * (cgo + T::from_f64(0.25) * (gain - pain))
+        / (T::one() + s.return_volatility.abs());
     let expected = s.capm_beta * s.equity_risk_premium + under + drag;
     BarberisJinWangProspectAnomalyReport {
         capital_gains_overhang_cgo: cgo,
@@ -262,8 +282,9 @@ pub fn evaluate_hart_mascolell_regret_matching_allocation<T: Real>(
         positive_regret_potentials: pos,
         next_period_regret_matching_weights: w,
         weight_simplex_sum_error: w[0] + w[1] + w[2] - T::one(),
-        blackwell_approachability_distance: (reg[0] * reg[0] + reg[1] * reg[1] + reg[2] * reg[2])
-            .sqrt(),
+        blackwell_approachability_distance: (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2])
+            .sqrt()
+            / n_periods,
         hannan_external_regret_per_period: best
             / T::from_f64(s.strategy_payoff_history.len().max(1) as f64),
         theoretical_no_regret_upper_bound: bound,
@@ -313,7 +334,7 @@ pub fn evaluate_colin_bacon_campisi_fixed_income_attribution<T: Real>(
     let spread = -(s.portfolio_spread_duration * s.portfolio_credit_spread_change
         - s.benchmark_spread_duration * s.benchmark_credit_spread_change);
     let residual = active - income - treasury - twist - spread;
-    let carry = s.foreign_cash_rate - s.domestic_cash_rate;
+    let carry = s.domestic_cash_rate - s.foreign_cash_rate;
     let currency = s.fx_spot_return - carry;
     ColinBaconCampisiFixedIncomeAttributionReport {
         active_income_effect: income,
@@ -365,6 +386,20 @@ mod phase30_tests {
         ))
         .gaussian_var;
         assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
+        let mut vup = var_spec(0.1);
+        let mut vdn = var_spec(0.1);
+        vup.portfolio_mean_loss += h;
+        vdn.portfolio_mean_loss -= h;
+        let fd_var = (evaluate_christoffersen_bouchaud_var_backtest_and_cumulant_es(&vup)
+            .cornish_fisher_var
+            - evaluate_christoffersen_bouchaud_var_backtest_and_cumulant_es(&vdn)
+                .cornish_fisher_var)
+            / (2.0 * h);
+        let ad_var = evaluate_christoffersen_bouchaud_var_backtest_and_cumulant_es(&var_spec(
+            Dual::<1>::variable(0.1, 0),
+        ))
+        .cornish_fisher_var;
+        assert!(ad_var.d[0].abs() > 1e-6 && (ad_var.d[0] - fd_var).abs() < 1e-5);
         let l = evaluate_foucault_vandermerwe_lob_schedule_and_lvar(
             &FoucaultVanDerMerweLobLiquidityLvarSpec {
                 mid_price: 100.0,
@@ -390,6 +425,48 @@ mod phase30_tests {
                 .abs()
                 < 1e-12
         );
+        let mut lup = FoucaultVanDerMerweLobLiquidityLvarSpec {
+            mid_price: 100.0,
+            fundamental_volatility: 0.2,
+            informed_trader_share_pi: 0.2,
+            exponential_order_size_rate_lambda: 1.0,
+            order_processing_fee_c: 0.01,
+            position_notional: 100.0,
+            mean_relative_bid_ask_spread: 0.01,
+            std_relative_bid_ask_spread: 0.002,
+            spread_tail_scaling_a: 1.0,
+            confidence_z_alpha: 2.0,
+            liquidation_horizon_days: 1.0,
+            market_adv_notional: 1000.0,
+            permanent_impact_gamma: 0.1,
+        };
+        let mut ldn = lup;
+        lup.order_processing_fee_c += h;
+        ldn.order_processing_fee_c -= h;
+        let fd_l = (evaluate_foucault_vandermerwe_lob_schedule_and_lvar(&lup)
+            .total_liquidity_adjusted_var_lvar
+            - evaluate_foucault_vandermerwe_lob_schedule_and_lvar(&ldn)
+                .total_liquidity_adjusted_var_lvar)
+            / (2.0 * h);
+        let lad: FoucaultVanDerMerweLobLiquidityLvarSpec<Dual<1>> =
+            FoucaultVanDerMerweLobLiquidityLvarSpec {
+                mid_price: Dual::from_f64(100.0),
+                fundamental_volatility: Dual::from_f64(0.2),
+                informed_trader_share_pi: Dual::from_f64(0.2),
+                exponential_order_size_rate_lambda: Dual::from_f64(1.0),
+                order_processing_fee_c: Dual::<1>::variable(0.01, 0),
+                position_notional: Dual::from_f64(100.0),
+                mean_relative_bid_ask_spread: Dual::from_f64(0.01),
+                std_relative_bid_ask_spread: Dual::from_f64(0.002),
+                spread_tail_scaling_a: Dual::from_f64(1.0),
+                confidence_z_alpha: Dual::from_f64(2.0),
+                liquidation_horizon_days: Dual::from_f64(1.0),
+                market_adv_notional: Dual::from_f64(1000.0),
+                permanent_impact_gamma: Dual::from_f64(0.1),
+            };
+        let ad_l = evaluate_foucault_vandermerwe_lob_schedule_and_lvar(&lad)
+            .total_liquidity_adjusted_var_lvar;
+        assert!(ad_l.d[0].abs() > 1e-6 && (ad_l.d[0] - fd_l).abs() < 1e-5);
         let p = evaluate_barberis_jin_wang_prospect_overhang_and_skew_anomaly(
             &BarberisJinWangProspectAnomalySpec {
                 current_price: 110.0,
@@ -405,9 +482,44 @@ mod phase30_tests {
             },
         );
         assert!(p.capital_gains_overhang_cgo > 0.0 && p.lottery_skewness_overvaluation_drag < 0.0);
+        let mut pup = BarberisJinWangProspectAnomalySpec {
+            current_price: 110.0,
+            reference_purchase_price: 100.0,
+            return_volatility: 0.2,
+            return_skewness: 0.8,
+            prospect_loss_aversion_lambda: 2.0,
+            prospect_diminishing_sensitivity_alpha: 0.8,
+            prelec_probability_weighting_gamma: 0.7,
+            mental_accounting_integration_b0: 0.4,
+            capm_beta: 1.0,
+            equity_risk_premium: 0.05,
+        };
+        let mut pdn = pup;
+        pup.current_price += h;
+        pdn.current_price -= h;
+        let fd_p = (evaluate_barberis_jin_wang_prospect_overhang_and_skew_anomaly(&pup)
+            .bjw_equilibrium_expected_excess_return
+            - evaluate_barberis_jin_wang_prospect_overhang_and_skew_anomaly(&pdn)
+                .bjw_equilibrium_expected_excess_return)
+            / (2.0 * h);
+        let pad: BarberisJinWangProspectAnomalySpec<Dual<1>> = BarberisJinWangProspectAnomalySpec {
+            current_price: Dual::<1>::variable(110.0, 0),
+            reference_purchase_price: Dual::from_f64(100.0),
+            return_volatility: Dual::from_f64(0.2),
+            return_skewness: Dual::from_f64(0.8),
+            prospect_loss_aversion_lambda: Dual::from_f64(2.0),
+            prospect_diminishing_sensitivity_alpha: Dual::from_f64(0.8),
+            prelec_probability_weighting_gamma: Dual::from_f64(0.7),
+            mental_accounting_integration_b0: Dual::from_f64(0.4),
+            capm_beta: Dual::from_f64(1.0),
+            equity_risk_premium: Dual::from_f64(0.05),
+        };
+        let ad_p = evaluate_barberis_jin_wang_prospect_overhang_and_skew_anomaly(&pad)
+            .bjw_equilibrium_expected_excess_return;
+        assert!(ad_p.d[0].abs() > 1e-6 && (ad_p.d[0] - fd_p).abs() < 1e-5);
         let hrt = evaluate_hart_mascolell_regret_matching_allocation(
             &HartMasColellRegretMatchingPortfolioSpec {
-                strategy_payoff_history: vec![[0.1, 0.2, 0.0], [0.2, 0.1, 0.3]],
+                strategy_payoff_history: vec![[0.1, 0.2, 0.0], [0.4, 0.1, 0.3]],
                 realized_action_weights_history: vec![[0.3, 0.4, 0.3], [0.4, 0.3, 0.3]],
                 regret_inertia_mu: 1.0,
                 exploration_epsilon: 0.01,
@@ -419,6 +531,52 @@ mod phase30_tests {
                 .all(|x| *x >= 0.0)
                 && hrt.weight_simplex_sum_error.abs() < 1e-12
         );
+        let mut rup = HartMasColellRegretMatchingPortfolioSpec {
+            strategy_payoff_history: vec![[0.1, 0.2, 0.0], [0.4, 0.1, 0.3]],
+            realized_action_weights_history: vec![[0.3, 0.4, 0.3], [0.4, 0.3, 0.3]],
+            regret_inertia_mu: 1.0,
+            exploration_epsilon: 0.01,
+        };
+        let mut rdn = rup.clone();
+        rup.regret_inertia_mu += h;
+        rdn.regret_inertia_mu -= h;
+        let fd_r = (evaluate_hart_mascolell_regret_matching_allocation(&rup)
+            .blackwell_approachability_distance
+            - evaluate_hart_mascolell_regret_matching_allocation(&rdn)
+                .blackwell_approachability_distance)
+            / (2.0 * h);
+        let rad: HartMasColellRegretMatchingPortfolioSpec<Dual<1>> =
+            HartMasColellRegretMatchingPortfolioSpec {
+                strategy_payoff_history: vec![
+                    [
+                        Dual::from_f64(0.1),
+                        Dual::from_f64(0.2),
+                        Dual::from_f64(0.0),
+                    ],
+                    [
+                        Dual::from_f64(0.4),
+                        Dual::from_f64(0.1),
+                        Dual::from_f64(0.3),
+                    ],
+                ],
+                realized_action_weights_history: vec![
+                    [
+                        Dual::from_f64(0.3),
+                        Dual::from_f64(0.4),
+                        Dual::from_f64(0.3),
+                    ],
+                    [
+                        Dual::from_f64(0.4),
+                        Dual::from_f64(0.3),
+                        Dual::from_f64(0.3),
+                    ],
+                ],
+                regret_inertia_mu: Dual::<1>::variable(1.0, 0),
+                exploration_epsilon: Dual::from_f64(0.01),
+            };
+        let ad_r = evaluate_hart_mascolell_regret_matching_allocation(&rad)
+            .blackwell_approachability_distance;
+        assert!(ad_r.d[0].abs() > 1e-6 && (ad_r.d[0] - fd_r).abs() < 1e-5);
         let c = evaluate_colin_bacon_campisi_fixed_income_attribution(
             &ColinBaconCampisiFixedIncomeAttributionSpec {
                 portfolio_total_return: 0.04,
@@ -440,5 +598,53 @@ mod phase30_tests {
             },
         );
         assert!(c.campisi_identity_conservation_error.abs() < 1e-12);
+        let mut cup = ColinBaconCampisiFixedIncomeAttributionSpec {
+            portfolio_total_return: 0.04,
+            benchmark_total_return: 0.03,
+            portfolio_coupon_yield: 0.04,
+            benchmark_coupon_yield: 0.03,
+            portfolio_eff_duration: 5.0,
+            benchmark_eff_duration: 4.0,
+            portfolio_spread_duration: 3.0,
+            benchmark_spread_duration: 3.0,
+            parallel_treasury_shift: 0.01,
+            portfolio_key_rate_twist_shift: 0.001,
+            benchmark_key_rate_twist_shift: 0.002,
+            portfolio_credit_spread_change: 0.002,
+            benchmark_credit_spread_change: 0.001,
+            fx_spot_return: 0.01,
+            domestic_cash_rate: 0.02,
+            foreign_cash_rate: 0.03,
+        };
+        let mut cdn = cup;
+        cup.parallel_treasury_shift += h;
+        cdn.parallel_treasury_shift -= h;
+        let fd_c = (evaluate_colin_bacon_campisi_fixed_income_attribution(&cup)
+            .active_security_selection_residual
+            - evaluate_colin_bacon_campisi_fixed_income_attribution(&cdn)
+                .active_security_selection_residual)
+            / (2.0 * h);
+        let cad: ColinBaconCampisiFixedIncomeAttributionSpec<Dual<1>> =
+            ColinBaconCampisiFixedIncomeAttributionSpec {
+                portfolio_total_return: Dual::from_f64(0.04),
+                benchmark_total_return: Dual::from_f64(0.03),
+                portfolio_coupon_yield: Dual::from_f64(0.04),
+                benchmark_coupon_yield: Dual::from_f64(0.03),
+                portfolio_eff_duration: Dual::from_f64(5.0),
+                benchmark_eff_duration: Dual::from_f64(4.0),
+                portfolio_spread_duration: Dual::from_f64(3.0),
+                benchmark_spread_duration: Dual::from_f64(3.0),
+                parallel_treasury_shift: Dual::<1>::variable(0.01, 0),
+                portfolio_key_rate_twist_shift: Dual::from_f64(0.001),
+                benchmark_key_rate_twist_shift: Dual::from_f64(0.002),
+                portfolio_credit_spread_change: Dual::from_f64(0.002),
+                benchmark_credit_spread_change: Dual::from_f64(0.001),
+                fx_spot_return: Dual::from_f64(0.01),
+                domestic_cash_rate: Dual::from_f64(0.02),
+                foreign_cash_rate: Dual::from_f64(0.03),
+            };
+        let ad_c = evaluate_colin_bacon_campisi_fixed_income_attribution(&cad)
+            .active_security_selection_residual;
+        assert!(ad_c.d[0].abs() > 1e-6 && (ad_c.d[0] - fd_c).abs() < 1e-5);
     }
 }

@@ -49,17 +49,29 @@ pub fn evaluate_greene_wooldridge_heckman_survivorship_and_gmm<T: Real>(
     let den = (nf * sxx - sx * sx).abs().max_val(T::from_f64(1e-12));
     let beta = (nf * sxy - sx * sy) / den;
     let alpha = (sy - beta * sx) / nf;
-    let (mut sl, mut sxl, mut sy_l, mut sll) = (T::zero(), T::zero(), T::zero(), T::zero());
+    let mut sl = T::zero();
     for i in 0..n {
         sl += mills[i];
-        sxl += s.factor_exposures_x[i] * mills[i];
-        sy_l += s.observed_returns_y[i] * mills[i];
-        sll += mills[i] * mills[i];
     }
-    let det = (sxx * sll - sxl * sxl).abs().max_val(T::from_f64(1e-12));
-    let cbeta = (sxy * sll - sy_l * sxl) / det;
-    let clambda = (sy_l * sxx - sxy * sxl) / det;
-    let calpha = (sy - cbeta * sx - clambda * sl) / nf;
+    let mx = sx / nf;
+    let my = sy / nf;
+    let ml = sl / nf;
+    let (mut cxx, mut cll, mut cxl, mut cxy, mut cyl) =
+        (T::zero(), T::zero(), T::zero(), T::zero(), T::zero());
+    for i in 0..n {
+        let dx = s.factor_exposures_x[i] - mx;
+        let dy = s.observed_returns_y[i] - my;
+        let dl = mills[i] - ml;
+        cxx += dx * dx;
+        cll += dl * dl;
+        cxl += dx * dl;
+        cxy += dx * dy;
+        cyl += dl * dy;
+    }
+    let det = (cxx * cll - cxl * cxl).abs().max_val(T::from_f64(1e-12));
+    let cbeta = (cxy * cll - cyl * cxl) / det;
+    let clambda = (cyl * cxx - cxy * cxl) / det;
+    let calpha = my - cbeta * mx - clambda * ml;
     let mut j = T::zero();
     for i in 0..3 {
         j += s.gmm_moment_conditions_bar_g[i]
@@ -80,16 +92,20 @@ pub fn evaluate_greene_wooldridge_heckman_survivorship_and_gmm<T: Real>(
 }
 
 fn solve3<T: Real>(mut a: [[T; 4]; 3]) -> [T; 3] {
-    for i in 0..3 {
-        let d = a[i][i];
-        for j in i..4 {
-            a[i][j] /= d;
+    for col in 0..3 {
+        let piv = if a[col][col].val() >= 0.0 {
+            a[col][col].max_val(T::from_f64(1e-10))
+        } else {
+            a[col][col].min_val(T::from_f64(-1e-10))
+        };
+        for j in col..4 {
+            a[col][j] /= piv;
         }
         for k in 0..3 {
-            if k != i {
-                let f = a[k][i];
-                for j in i..4 {
-                    a[k][j] -= f * a[i][j];
+            if k != col {
+                let f = a[k][col];
+                for j in col..4 {
+                    a[k][j] -= f * a[col][j];
                 }
             }
         }
@@ -140,11 +156,12 @@ pub fn solve_hastie_tibshirani_elastic_net_and_gcv<T: Real>(
     let ridge = solve3(rg);
     let mut en = ridge;
     for _ in 0..8 {
+        let mut eng = rg;
         for j in 0..3 {
             let smooth = (en[j] * en[j] + s.smoothing_eps * s.smoothing_eps).sqrt();
-            en[j] =
-                ridge[j] / (T::one() + s.l1_penalty_lambda1 / smooth.max_val(T::from_f64(1e-12)));
+            eng[j][j] += s.l1_penalty_lambda1 / smooth.max_val(T::from_f64(1e-12));
         }
+        en = solve3(eng);
     }
     let mut mse = T::zero();
     for k in 0..n {
@@ -157,14 +174,19 @@ pub fn solve_hastie_tibshirani_elastic_net_and_gcv<T: Real>(
     mse /= T::from_f64(n.max(1) as f64);
     let mut df = T::zero();
     for j in 0..3 {
-        df += ridge[j] * ridge[j]
-            / (ridge[j] * ridge[j] + s.l2_penalty_lambda2 + s.l1_penalty_lambda1)
-                .max_val(T::from_f64(1e-12));
+        let smooth = (en[j] * en[j] + s.smoothing_eps * s.smoothing_eps).sqrt();
+        let pen = s.l2_penalty_lambda2 + s.l1_penalty_lambda1 / smooth.max_val(T::from_f64(1e-12));
+        df += gram[j][j] / (gram[j][j] + pen).max_val(T::from_f64(1e-12));
     }
     df = df.min_val(T::from_f64(3.0));
     let gcv = mse / (T::one() - df / T::from_f64(n.max(1) as f64)).powf(2.0);
-    let norm_en = (en[0] * en[0] + en[1] * en[1] + en[2] * en[2]).sqrt();
-    let norm_r = (ridge[0] * ridge[0] + ridge[1] * ridge[1] + ridge[2] * ridge[2]).sqrt();
+    let l1_en = (en[0] * en[0] + s.smoothing_eps * s.smoothing_eps).sqrt()
+        + (en[1] * en[1] + s.smoothing_eps * s.smoothing_eps).sqrt()
+        + (en[2] * en[2] + s.smoothing_eps * s.smoothing_eps).sqrt();
+    let l1_ols = (ols[0] * ols[0] + s.smoothing_eps * s.smoothing_eps).sqrt()
+        + (ols[1] * ols[1] + s.smoothing_eps * s.smoothing_eps).sqrt()
+        + (ols[2] * ols[2] + s.smoothing_eps * s.smoothing_eps).sqrt();
+    let shrink = (l1_en / l1_ols.max_val(T::from_f64(1e-12))).min_val(T::one());
     HastieTibshiraniElasticNetGcvReport {
         ols_weights: ols,
         ridge_weights: ridge,
@@ -172,7 +194,7 @@ pub fn solve_hastie_tibshirani_elastic_net_and_gcv<T: Real>(
         effective_degrees_of_freedom: df,
         in_sample_mse: mse,
         generalized_cross_validation_gcv: gcv,
-        l1_norm_shrinkage_ratio: (norm_en / norm_r.max_val(T::from_f64(1e-12))).min_val(T::one()),
+        l1_norm_shrinkage_ratio: shrink,
     }
 }
 
@@ -205,6 +227,31 @@ mod phase30_tests {
         }
     }
     #[test]
+    fn phase30_heckman_exact_synthetic_recovery() {
+        let z = [-1.0_f64, -0.25, 0.5, 1.25, 2.0];
+        let x = [0.2_f64, 0.7, 1.1, 1.8, 2.4];
+        let mills: Vec<f64> = z.iter().map(|v| v.norm_pdf() / v.norm_cdf()).collect();
+        let y: Vec<f64> = x
+            .iter()
+            .zip(mills.iter())
+            .map(|(x, m)| 0.01 + 0.02 * x + 0.03 * m)
+            .collect();
+        let r = evaluate_greene_wooldridge_heckman_survivorship_and_gmm(
+            &GreeneWooldridgeHeckmanSelectionGmmSpec {
+                selection_z_scores: z.to_vec(),
+                factor_exposures_x: x.to_vec(),
+                observed_returns_y: y,
+                gmm_moment_conditions_bar_g: [0.0; 3],
+                gmm_weighting_matrix_diag: [1.0; 3],
+                sample_size_n: 5.0,
+            },
+        );
+        assert!((r.heckman_corrected_alpha - 0.01).abs() < 1e-10);
+        assert!((r.heckman_corrected_beta - 0.02).abs() < 1e-10);
+        assert!((r.heckman_mills_lambda_coeff - 0.03).abs() < 1e-10);
+    }
+
+    #[test]
     fn phase30_dml_dual_fd_and_invariants() {
         let r = evaluate_greene_wooldridge_heckman_survivorship_and_gmm(&heck(0.0));
         assert_eq!(r.inverse_mills_ratios.len(), 4);
@@ -219,18 +266,61 @@ mod phase30_tests {
         ))
         .heckman_corrected_alpha;
         assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
-        let e = solve_hastie_tibshirani_elastic_net_and_gcv(&HastieTibshiraniElasticNetGcvSpec {
+        let mut ep = HastieTibshiraniElasticNetGcvSpec {
             design_matrix_x: vec![
                 [1.0, 0.2, 0.1],
-                [1.0, 0.4, 0.3],
-                [1.0, 0.6, 0.5],
-                [1.0, 0.8, 0.7],
+                [1.0, 0.4, 0.5],
+                [1.0, 0.6, 0.2],
+                [1.0, 0.8, 0.9],
             ],
             response_y: vec![0.1, 0.2, 0.3, 0.4],
             l1_penalty_lambda1: 0.05,
             l2_penalty_lambda2: 0.1,
             smoothing_eps: 1e-4,
-        });
+        };
+        let e = solve_hastie_tibshirani_elastic_net_and_gcv(&ep);
         assert!(e.l1_norm_shrinkage_ratio <= 1.0 && e.effective_degrees_of_freedom <= 3.0);
+        let h = 1e-6;
+        ep.l1_penalty_lambda1 += h;
+        let up = solve_hastie_tibshirani_elastic_net_and_gcv(&ep).elastic_net_weights[0];
+        ep.l1_penalty_lambda1 -= 2.0 * h;
+        let dn = solve_hastie_tibshirani_elastic_net_and_gcv(&ep).elastic_net_weights[0];
+        let fd_en = (up - dn) / (2.0 * h);
+        let ad_spec: HastieTibshiraniElasticNetGcvSpec<Dual<1>> =
+            HastieTibshiraniElasticNetGcvSpec {
+                design_matrix_x: vec![
+                    [
+                        Dual::from_f64(1.0),
+                        Dual::from_f64(0.2),
+                        Dual::from_f64(0.1),
+                    ],
+                    [
+                        Dual::from_f64(1.0),
+                        Dual::from_f64(0.4),
+                        Dual::from_f64(0.5),
+                    ],
+                    [
+                        Dual::from_f64(1.0),
+                        Dual::from_f64(0.6),
+                        Dual::from_f64(0.2),
+                    ],
+                    [
+                        Dual::from_f64(1.0),
+                        Dual::from_f64(0.8),
+                        Dual::from_f64(0.9),
+                    ],
+                ],
+                response_y: vec![
+                    Dual::from_f64(0.1),
+                    Dual::from_f64(0.2),
+                    Dual::from_f64(0.3),
+                    Dual::from_f64(0.4),
+                ],
+                l1_penalty_lambda1: Dual::<1>::variable(0.05, 0),
+                l2_penalty_lambda2: Dual::from_f64(0.1),
+                smoothing_eps: Dual::from_f64(1e-4),
+            };
+        let ad_en = solve_hastie_tibshirani_elastic_net_and_gcv(&ad_spec).elastic_net_weights[0];
+        assert!(ad_en.d[0].abs() > 1e-6 && (ad_en.d[0] - fd_en).abs() < 1e-5);
     }
 }

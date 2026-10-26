@@ -70,6 +70,7 @@ fn phase26_suite38_and_invariants() {
         ql_benches::benchmark_phase26_mf_rates_wildcard_ctd_pivot_tarf_bergomi_schonbucher_frtb_cva_lookback_vta_flam_acd_hlz_mlmc(1)
     });
     assert!(row.parity_ok);
+    assert!(row.parity_ok);
     assert!(row.max_abs_diff < 1e-4);
     assert!(row.speedup > 1.0);
 }
@@ -100,6 +101,7 @@ fn phase29_suite41_and_invariants() {
 #[test]
 fn phase30_suite42_and_invariants() {
     let row = ql_benches::benchmark_phase30_romer_taylor_damodaran_crp_christoffersen_var_foucault_lvar_barberis_pt_hart_regret_beneish_mscore_campisi_attr_heckman_gmm_elastic_net_reset_cb_fsb_bailin(1);
+    assert!(row.parity_ok);
     assert!(row.max_abs_diff < 1e-4);
     assert!(row.speedup > 1.0);
 }

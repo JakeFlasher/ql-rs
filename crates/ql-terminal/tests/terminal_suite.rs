@@ -499,6 +499,9 @@ fn phase30_tab40_terminal_renders_and_reacts() {
             .starts_with("40 Phase 30 SOTA")
     );
     assert_ne!(normal.phase30_sota_metric, stressed.phase30_sota_metric);
+    ws.set_scenario(ScenarioKind::StagflationPlus150Bp);
+    let stag = ws.step_tick();
+    assert!((stag.phase30_sota_metric - normal.phase30_sota_metric).abs() > 1e-12);
     assert!(
         ws.render_dashboard(&stressed, false)
             .contains("40 Phase30 SOTA")

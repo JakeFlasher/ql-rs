@@ -44,19 +44,20 @@ pub fn evaluate_beneish_wahlen_forensic_mscore_and_hkas32_bifurcation<T: Real>(
         - T::from_f64(0.172) * s.sgai
         + T::from_f64(4.679) * s.tata
         - T::from_f64(0.327) * s.lvgi;
-    let prob = T::one() / (T::one() + (-m).exp());
+    let prob = m.norm_cdf();
     let accrual = (s.net_income - s.operating_cash_flow)
         / s.average_total_assets.abs().max_val(T::from_f64(1e-12));
-    let n = s.maturity_years.max(1) as f64;
+    let n = s.maturity_years.max(1);
     let mut liability = T::zero();
-    for i in 1..=s.maturity_years.max(1) {
-        let t = T::from_f64(i as f64);
-        liability += s.convertible_face_value
-            * s.contractual_coupon_rate
-            * (-(s.comparable_straight_debt_yield) * t).exp();
+    let coupon = s.convertible_face_value * s.contractual_coupon_rate;
+    let one_plus_y = (T::one() + s.comparable_straight_debt_yield).max_val(T::from_f64(1e-6));
+    for i in 1..=n {
+        let df = one_plus_y.powf(-(i as f64));
+        liability += coupon * df;
+        if i == n {
+            liability += s.convertible_face_value * df;
+        }
     }
-    liability +=
-        s.convertible_face_value * (-(s.comparable_straight_debt_yield) * T::from_f64(n)).exp();
     let equity = s.convertible_issue_proceeds - liability;
     let net_liability = liability
         - s.direct_issuance_transaction_costs * liability
@@ -108,6 +109,18 @@ mod phase30_tests {
     fn phase30_beneish_hkas32_invariants_and_dual_fd() {
         let r = evaluate_beneish_wahlen_forensic_mscore_and_hkas32_bifurcation(&make(0.0));
         assert!(r.hkas32_proceeds_conservation_error.abs() < 1e-12);
+        let mut parity = make(0.0);
+        parity.contractual_coupon_rate = parity.comparable_straight_debt_yield;
+        let pr = evaluate_beneish_wahlen_forensic_mscore_and_hkas32_bifurcation(&parity);
+        assert!(
+            (pr.hkas32_gross_liability_component - parity.convertible_face_value).abs() < 1e-12
+        );
+        assert!(
+            (pr.hkas32_net_liability_carrying_amount + pr.hkas32_net_equity_carrying_amount
+                - (parity.convertible_issue_proceeds - parity.direct_issuance_transaction_costs))
+                .abs()
+                < 1e-12
+        );
         let h = 1e-6;
         let fd = (evaluate_beneish_wahlen_forensic_mscore_and_hkas32_bifurcation(&make(h))
             .beneish_8var_m_score

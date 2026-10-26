@@ -6759,7 +6759,7 @@ pub fn phase30_workloads<T: Real>(x: [T; 4]) -> T {
             sovereign_cds_spread: T::from_f64(0.012) + x[0],
             sovereign_default_drag_bps: T::from_f64(20.0),
             emerging_equity_vol: vol * T::from_f64(1.4),
-            emerging_govt_bond_vol: vol,
+            emerging_govt_bond_vol: T::from_f64(0.15),
             firm_domestic_revenue_share: T::from_f64(0.6),
             ebit_operating_income: T::from_f64(12.0) + x[1],
             annual_interest_expense: T::from_f64(3.0),
@@ -6874,14 +6874,14 @@ pub fn phase30_workloads<T: Real>(x: [T; 4]) -> T {
             benchmark_eff_duration: T::from_f64(5.0),
             portfolio_spread_duration: T::from_f64(4.0),
             benchmark_spread_duration: T::from_f64(4.2),
-            parallel_treasury_shift: T::from_f64(0.005),
+            parallel_treasury_shift: T::from_f64(0.005) + x[0] * T::from_f64(0.001),
             portfolio_key_rate_twist_shift: T::from_f64(0.001),
             benchmark_key_rate_twist_shift: T::from_f64(0.001),
             portfolio_credit_spread_change: T::from_f64(0.002),
             benchmark_credit_spread_change: T::from_f64(0.002),
             fx_spot_return: T::from_f64(0.01),
             domestic_cash_rate: r,
-            foreign_cash_rate: r + T::from_f64(0.002),
+            foreign_cash_rate: T::from_f64(0.032),
         },
     );
     let heck = ql_dml::evaluate_greene_wooldridge_heckman_survivorship_and_gmm(
@@ -6912,9 +6912,9 @@ pub fn phase30_workloads<T: Real>(x: [T; 4]) -> T {
         &ql_dml::HastieTibshiraniElasticNetGcvSpec {
             design_matrix_x: vec![
                 [T::one(), T::from_f64(0.2), T::from_f64(0.1)],
-                [T::one(), T::from_f64(0.4), T::from_f64(0.3)],
-                [T::one(), T::from_f64(0.6), T::from_f64(0.5)],
-                [T::one(), T::from_f64(0.8), T::from_f64(0.7)],
+                [T::one(), T::from_f64(0.4), T::from_f64(0.5)],
+                [T::one(), T::from_f64(0.6), T::from_f64(0.2)],
+                [T::one(), T::from_f64(0.8), T::from_f64(0.9)],
             ],
             response_y: vec![
                 T::from_f64(0.1) + x[0],
@@ -6953,11 +6953,11 @@ pub fn phase30_workloads<T: Real>(x: [T; 4]) -> T {
             at1_principal: T::from_f64(50.0),
             tier2_principal: T::from_f64(60.0),
             senior_tlac_principal: T::from_f64(100.0),
-            valuation_loss_shock: T::from_f64(0.08),
+            valuation_loss_shock: T::from_f64(0.08) + x[0] * T::from_f64(0.01),
             target_post_resolution_cet1_ratio: T::from_f64(0.1),
             liquidation_insolvency_haircut: T::from_f64(0.4),
             existing_share_count: T::from_f64(100.0),
-            bail_in_conversion_discount: T::from_f64(0.2),
+            bail_in_conversion_discount: T::from_f64(0.2) + x[1] * T::from_f64(0.01),
         },
     );
     taylor
@@ -6975,8 +6975,14 @@ pub fn phase30_workloads<T: Real>(x: [T; 4]) -> T {
         + heck.heckman_corrected_alpha
         + en.generalized_cross_validation_gcv
         + cb.three_line_duplex_fair_value * T::from_f64(1e-3)
-        + bail.waterfall_conservation_error
-        + inf
+        + bail.post_bail_in_creditor_ownership_share
+        + bail.ncwo_compensation_shortfall * T::from_f64(1e-3)
+        + dam.total_cost_of_equity_ke
+        + dam.extinguishment_gain_or_loss * T::from_f64(1e-3)
+        + forensic.manipulation_probit_probability
+        + forensic.year1_effective_interest_expense * T::from_f64(1e-2)
+        + camp.active_security_selection_residual
+        + camp.karnosky_singer_unhedged_currency_surprise
 }
 
 pub fn benchmark_phase30_romer_taylor_damodaran_crp_christoffersen_var_foucault_lvar_barberis_pt_hart_regret_beneish_mscore_campisi_attr_heckman_gmm_elastic_net_reset_cb_fsb_bailin(

@@ -6,6 +6,10 @@ use ql_math::brent_solve;
 use ql_time::Date;
 use thiserror::Error;
 
+mod phase30;
+#[allow(unused_imports)]
+pub use phase30::*;
+
 pub mod cdo;
 pub mod cds_option;
 pub use cdo::*;
@@ -2075,7 +2079,3 @@ mod phase29_tests {
         assert!(ad.d[0].abs() > 1e-6 && (ad.d[0] - fd).abs() < 1e-5);
     }
 }
-
-mod phase30;
-#[allow(unused_imports)]
-pub use phase30::*;

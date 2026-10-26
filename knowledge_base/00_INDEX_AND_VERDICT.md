@@ -40,7 +40,7 @@ The comparison in `03_CROSS_LANGUAGE_BENCHMARK_ARCHITECTURES.md` shows that the 
 | `05_BLUEPRINT_MODERN_RUST_QUANTLIB.md` | Detailed 23-crate software and mathematical blueprint. |
 | `06_LITERATURE_AND_REFERENCES.md` | Annotated 66-paper and repository bibliography. |
 | `07_BENCHMARK_METHODOLOGY_AND_STUDY.md` | Harness design, suite descriptions, and empirical interpretation. |
-| `08_BENCHMARK_RESULTS.md` | Reproducible 41-suite benchmark output. |
+| `08_BENCHMARK_RESULTS.md` | Reproducible 42-suite benchmark output. |
 
 ## Release verification
 

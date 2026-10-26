@@ -31,30 +31,29 @@ pub struct AnDaoquanCliffordChanceResettableCbReport<T: Real = f64> {
 pub fn evaluate_an_daoquan_clifford_chance_resettable_convertible<T: Real>(
     s: &AnDaoquanCliffordChanceResettableCbSpec<T>,
 ) -> AnDaoquanCliffordChanceResettableCbReport<T> {
-    let disc = (-(s.risk_free_rate + s.credit_spread) * s.maturity).exp();
-    let coupons = s.face_value * s.coupon_rate * s.maturity;
-    let floor = (s.redemption_maturity_price * disc + coupons * disc).max_val(T::zero());
-    let initial =
-        s.face_value * s.spot_price / s.initial_conversion_price.abs().max_val(T::from_f64(1e-12));
-    let candidate = s.avg_20day_price.min_val(s.initial_conversion_price);
-    let reset = candidate.max_val(s.book_value_per_share_bps);
-    let trigger = s.avg_20day_price
-        < s.initial_conversion_price * s.put_back_trigger_ratio.max_val(T::from_f64(0.01));
-    let post_price = if trigger {
-        reset
-    } else {
-        s.initial_conversion_price
-    };
-    let post = s.face_value * s.spot_price / post_price.abs().max_val(T::from_f64(1e-12));
+    let floor = s.face_value
+        * (-s.credit_spread * s.maturity).exp()
+        * (T::one() + s.coupon_rate * s.maturity * T::from_f64(0.5));
+    let init_price = s.initial_conversion_price.max_val(T::from_f64(1e-6));
+    let initial = s.face_value / init_price * s.spot_price;
+    let candidate = s.avg_20day_price.max_val(s.book_value_per_share_bps);
+    let post_price = init_price.min_val(candidate).max_val(T::from_f64(1e-6));
+    let post = s.face_value / post_price * s.spot_price;
+    let trigger_gap = s.initial_conversion_price * s.put_back_trigger_ratio - s.avg_20day_price;
+    let reset_weight = T::one() / (T::one() + (-trigger_gap * T::from_f64(0.2)).exp());
     let uplift = (post - initial).max_val(T::zero())
-        + s.stock_volatility * s.maturity.sqrt() * s.face_value * T::from_f64(0.01);
-    let put = (s.put_back_price * disc - post).max_val(T::zero()) * s.put_back_trigger_ratio;
-    let cap = (post - s.soft_call_price).max_val(T::zero()) * s.soft_call_trigger_ratio;
-    let fair = floor + post + uplift + put - cap;
+        * (T::from_f64(0.5) + T::from_f64(0.5) * reset_weight)
+        + s.stock_volatility * s.maturity.sqrt() * T::from_f64(4.0);
+    let put = (s.put_back_price - initial.min_val(floor)).max_val(T::zero())
+        * (-s.risk_free_rate * s.maturity).exp()
+        * (T::from_f64(0.25) + T::from_f64(0.5) * reset_weight);
+    let cap = (post - s.initial_conversion_price * s.soft_call_trigger_ratio).max_val(T::zero())
+        * T::from_f64(0.2);
+    let fair = floor.max_val(initial) + uplift + put - cap;
     AnDaoquanCliffordChanceResettableCbReport {
         straight_bond_floor: floor,
         initial_conversion_parity: initial,
-        legally_floored_reset_conversion_price: reset,
+        legally_floored_reset_conversion_price: post_price,
         post_reset_conversion_parity: post,
         downward_reset_option_uplift: uplift,
         conditional_put_back_protection_value: put,
@@ -90,6 +89,7 @@ mod phase30_tests {
     fn phase30_reset_cb_dual_fd() {
         let r = evaluate_an_daoquan_clifford_chance_resettable_convertible(&make(0.0));
         assert!(r.legally_floored_reset_conversion_price >= 80.0);
+        assert!(r.post_reset_conversion_parity > r.initial_conversion_parity);
         let h = 1e-6;
         let fd = (evaluate_an_daoquan_clifford_chance_resettable_convertible(&make(h))
             .post_reset_conversion_parity

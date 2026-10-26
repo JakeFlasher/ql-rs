@@ -124,5 +124,6 @@ fn phase30_suite42_workload_is_registered() {
         .iter()
         .find(|r| r.id.starts_with("42_"))
         .expect("suite 42");
+    assert!(row.parity_ok);
     assert!(row.max_abs_diff < 1e-4);
 }

@@ -2737,7 +2737,7 @@ impl DeskWorkstation {
                 benchmark_credit_spread_change: 0.002,
                 fx_spot_return: 0.01,
                 domestic_cash_rate: r,
-                foreign_cash_rate: r + 0.002,
+                foreign_cash_rate: 0.032,
             },
         );
         let heck = ql_dml::evaluate_greene_wooldridge_heckman_survivorship_and_gmm(
@@ -2754,9 +2754,9 @@ impl DeskWorkstation {
             &ql_dml::HastieTibshiraniElasticNetGcvSpec {
                 design_matrix_x: vec![
                     [1.0, 0.2, 0.1],
-                    [1.0, 0.4, 0.3],
-                    [1.0, 0.6, 0.5],
-                    [1.0, 0.8, 0.7],
+                    [1.0, 0.4, 0.5],
+                    [1.0, 0.6, 0.2],
+                    [1.0, 0.8, 0.9],
                 ],
                 response_y: vec![0.1, 0.2, 0.3, 0.4],
                 l1_penalty_lambda1: 0.05 + credit_bump,
@@ -2794,7 +2794,7 @@ impl DeskWorkstation {
                 target_post_resolution_cet1_ratio: 0.1,
                 liquidation_insolvency_haircut: 0.4,
                 existing_share_count: 100.0,
-                bail_in_conversion_discount: 0.2,
+                bail_in_conversion_discount: 0.2 + credit_bump * 0.01,
             },
         );
         taylor.macro_affine_zero_yields.iter().copied().sum::<f64>()
@@ -2808,9 +2808,14 @@ impl DeskWorkstation {
             + heck.heckman_corrected_alpha
             + en.generalized_cross_validation_gcv
             + cb.three_line_duplex_fair_value * 1e-3
-            + bail.waterfall_conservation_error
-            + credit_bump
-            + inf
+            + bail.post_bail_in_creditor_ownership_share
+            + bail.ncwo_compensation_shortfall * 1e-3
+            + dam.total_cost_of_equity_ke
+            + dam.extinguishment_gain_or_loss * 1e-3
+            + forensic.manipulation_probit_probability
+            + forensic.year1_effective_interest_expense * 1e-2
+            + camp.active_security_selection_residual
+            + camp.karnosky_singer_unhedged_currency_surprise
     }
     pub fn phase30_live_metric(&self) -> f64 {
         let bump = if self.scenario == ScenarioKind::CreditWideningPlus100Bp {
