@@ -126,8 +126,6 @@ pub mod prelude {
             interpolate_andreasen_huge_call, solve_andreasen_huge_step,
         },
         replicate_cboe_vix_index,
-        rough::*,
-        slv::*,
     };
     pub use ql_models::{
         CarmonaDelarueMeanFieldSystemicReport, CarmonaDelarueMeanFieldSystemicSpec,
@@ -140,6 +138,10 @@ pub mod prelude {
     pub use ql_models::{
         JacquierDeepRoughVolSurrogateReport, JacquierDeepRoughVolSurrogateSpec,
         evaluate_jacquier_chebyshev_rough_vol_surrogate,
+    };
+    pub use ql_models::{
+        PenmanReoiOhlsonJuettnerReport, PenmanReoiOhlsonJuettnerSpec,
+        evaluate_penman_reoi_and_ohlson_juettner_aeg_valuation,
     };
     pub use ql_pde::*;
     pub use ql_portfolio::*;
@@ -558,12 +560,13 @@ pub enum TabId {
     Phase28Sota,
     Phase29Sota,
     Phase30BookSota,
+    Phase31BookSota,
 }
 impl TabId {
     #[allow(non_upper_case_globals)]
     pub const Phase30Sota: Self = Self::Phase30BookSota;
-    pub const TAB_COUNT: usize = 40;
-    pub const ALL: [Self; 40] = [
+    pub const TAB_COUNT: usize = 41;
+    pub const ALL: [Self; 41] = [
         Self::Market,
         Self::Rates,
         Self::Credit,
@@ -604,6 +607,7 @@ impl TabId {
         Self::Phase28Sota,
         Self::Phase29Sota,
         Self::Phase30BookSota,
+        Self::Phase31BookSota,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -666,6 +670,9 @@ impl TabId {
             }
             Self::Phase30BookSota => {
                 "40 Phase 30 SOTA / Taylor-Curve / Damodaran-CRP / Cumulant-VaR / LOB-LVaR / Prospect-CGO / Regret-Match / Beneish-HKAS32 / Campisi-FI / Heckman-GMM / Elastic-Net / Reset-CB / FSB-BailIn"
+            }
+            Self::Phase31BookSota => {
+                "41 Phase 31 SOTA / KRD-LSC / CMO-PAC / Asquith-CB / ASU2024-CPDI / ASC470-Mod / ColVA-CTD / Hill-EVT / Bouchaud-TLF / Karnosky-FX / DGTW-Timing / Brock-Hommes / Penman-ReOI"
             }
         }
     }
@@ -1004,6 +1011,7 @@ pub struct WorkstationFrameData {
     pub phase28_sota_metric: f64,
     pub phase29_sota_metric: f64,
     pub phase30_sota_metric: f64,
+    pub phase31_sota_metric: f64,
     pub blotter_rows: Vec<(String, f64, String)>,
 }
 
@@ -2824,6 +2832,197 @@ impl DeskWorkstation {
             0.0
         };
         Self::phase30_live_metric_from_market(&self.scenario_market(), bump)
+    }
+
+    pub fn phase31_live_metric_from_market(m: &MarketSnapshot, credit_bump: f64) -> f64 {
+        let r = m.ois_quotes.first().copied().unwrap_or(0.03) + credit_bump;
+        let inf = m.inflation_quotes.first().map(|(_, v)| *v).unwrap_or(0.02);
+        let k = ql_curves::evaluate_fabozzi_tuckman_key_rate_and_lsc_immunization(
+            &ql_curves::FabozziKeyRateLscImmunizationSpec {
+                cashflow_tenors: vec![1.0, 3.0, 5.0, 10.0],
+                cashflows: vec![2.0, 2.0, 2.0, 102.0],
+                zero_rates: vec![r, r + 0.002, r + 0.004, r + 0.006],
+                key_rate_tenors: vec![1.0, 5.0, 10.0],
+                ns_decay_lambda: 0.5 + inf,
+                liability_horizon_years: 5.0,
+                barbell_short_tenor: 1.0,
+                barbell_long_tenor: 10.0,
+                twist_slope_shock_bps: 25.0,
+                butterfly_curvature_shock_bps: 15.0,
+            },
+        );
+        let cmo = ql_fixed_income::evaluate_davidson_levin_cmo_pac_companion_waterfall(
+            &ql_fixed_income::DavidsonLevinCmoPacCompanionSpec {
+                initial_pool_balance: 100.0,
+                gross_wac_rate: r + 0.03,
+                net_coupon_rate: r + 0.02,
+                num_periods: 24,
+                pac_lower_psa: 100.0,
+                pac_upper_psa: 300.0,
+                realized_psa: 180.0 + credit_bump * 100.0,
+                discount_yield: r,
+            },
+        );
+        let cb = ql_fixed_income::evaluate_asquith_sirbu_shreve_cb_call_delay_and_dynkin_game(
+            &ql_fixed_income::AsquithSirbuShreveCbGameSpec {
+                firm_value: 130.0,
+                stock_price: 100.0,
+                conversion_ratio: 1.0,
+                annual_coupon_amount: 3.0,
+                annual_dividend_per_share: 1.0,
+                corporate_tax_rate: 0.25,
+                effective_call_price: 105.0,
+                call_notice_period_years: 30.0 / 365.0,
+                firm_volatility: m.eq_vol.max(0.05),
+                risk_free_rate: r,
+                firm_payout_rate: 0.02,
+                dilution_gamma: 0.8,
+            },
+        );
+        let asu = ql_fixed_income::evaluate_fasb_asu2024_induced_conversion_and_cpdi_oid(
+            &ql_fixed_income::FasbAsu2024InducedConversionCpdiSpec {
+                net_income: 12.0,
+                basic_shares: 100.0,
+                bond_par: 100.0,
+                stated_coupon_rate: 0.03,
+                comparable_noncontingent_yield: r + 0.01,
+                tax_rate: 0.25,
+                original_conversion_shares: 1.0,
+                induced_sweetener_extra_shares: 0.05,
+                induced_sweetener_cash: 1.0,
+                stock_price_at_acceptance: m.eq_spot,
+                maturity_years: 5.0,
+            },
+        );
+        let modif = ql_credit::evaluate_rsm_asc470_debt_modification_and_restructuring(
+            &ql_credit::RsmAsc470DebtModificationSpec {
+                carrying_amount: 100.0,
+                original_par: 100.0,
+                original_coupon_rate: 0.03,
+                original_effective_rate: r,
+                modified_par: 100.0,
+                modified_coupon_rate: 0.025,
+                remaining_years: 5.0,
+                lender_fee_paid: 1.0,
+                conversion_option_fv_change: 0.5,
+                market_exit_yield: r + 0.01,
+            },
+        );
+        let colva = ql_xva::evaluate_gregory_csa_threshold_mta_and_ctd_colva(
+            &ql_xva::GregoryCsaThresholdMtaCtdColvaSpec {
+                time_grid: vec![1.0, 2.0, 3.0, 5.0],
+                expected_mtm_profile: vec![5.0, 8.0, 10.0, 12.0],
+                exposure_vol: 3.0 + m.eq_vol,
+                mpor_years: 10.0 / 252.0,
+                csa_threshold: 2.0,
+                minimum_transfer_amount: 1.0,
+                independent_amount: 0.5,
+                hazard_rate: 0.02 + credit_bump,
+                lgd: 0.6,
+                risk_free_rate: r,
+                ccy1_collateral_spread: 0.01,
+                ccy2_collateral_spread: 0.008,
+                collateral_spread_vol: 0.01,
+            },
+        );
+        let evt = ql_portfolio::evaluate_embrechts_hill_pickands_and_subexponential_tail(
+            &ql_portfolio::EmbrechtsHillPickandsSubexponentialSpec {
+                loss_samples: vec![
+                    120.0, 100.0, 90.0, 80.0, 70.0, 60.0, 50.0, 45.0, 40.0, 35.0, 30.0, 25.0,
+                ],
+                tail_order_k: 2,
+                extreme_tail_prob: 0.01,
+                portfolio_positions_count: 8,
+            },
+        );
+        let tlf = ql_portfolio::evaluate_bouchaud_potters_power_law_cumulant_and_smile_scaling(
+            &ql_portfolio::BouchaudPottersCumulantSmileSpec {
+                single_period_vol: m.eq_vol,
+                single_period_skewness: -0.2,
+                single_period_excess_kurtosis: 3.0,
+                vol_of_vol_kurtosis_component: 2.0,
+                vol_decorrelation_steps: 10.0,
+                horizon_steps_n: 20.0,
+                log_moneyness: 0.0,
+                confidence_z: 2.33,
+            },
+        );
+        let attr = ql_portfolio::evaluate_karnosky_singer_multicurrency_and_menchero_attribution(
+            &ql_portfolio::KarnoskySingerMencheroAttributionSpec {
+                portfolio_asset_weights: vec![0.6, 0.4],
+                benchmark_asset_weights: vec![0.5, 0.5],
+                portfolio_currency_weights: vec![0.6, 0.4],
+                benchmark_currency_weights: vec![0.5, 0.5],
+                local_portfolio_returns: vec![0.08, 0.03],
+                local_benchmark_returns: vec![0.06, 0.04],
+                local_eurodollar_rates: vec![0.02, 0.025],
+                base_eurodollar_rate: r,
+                spot_fx_returns: vec![0.01, -0.005],
+                multi_period_port_returns: vec![0.02, 0.03],
+                multi_period_bench_returns: vec![0.018, 0.025],
+            },
+        );
+        let tm = ql_portfolio::evaluate_dgtw_characteristic_and_treynor_mazuy_timing(
+            &ql_portfolio::DgtwTreynorMazuyTimingSpec {
+                current_weights: vec![0.6, 0.4],
+                lagged_weights: vec![0.5, 0.5],
+                stock_returns: vec![0.08, 0.03],
+                current_char_bench_returns: vec![0.06, 0.04],
+                lagged_char_bench_returns: vec![0.05, 0.04],
+                portfolio_excess_series: vec![0.01, 0.02, 0.04, 0.08],
+                market_excess_series: vec![0.0, 0.02, 0.04, 0.08],
+            },
+        );
+        let bh = ql_portfolio::evaluate_brock_hommes_adaptive_belief_switching(
+            &ql_portfolio::BrockHommesAdaptiveBeliefSpec {
+                initial_price_deviation: 0.1,
+                risk_free_rate: r,
+                fundamentalist_damping_v1: 0.8,
+                chartist_trend_extrapolation_g: 1.2,
+                fundamentalist_info_cost_c1: 0.1,
+                intensity_of_choice_beta: 8.0,
+                fitness_memory_eta: 0.8,
+                risk_aversion_sigma2: 1.0,
+                shock_innovations: vec![0.01, -0.005, 0.003],
+            },
+        );
+        let pen = ql_models::evaluate_penman_reoi_and_ohlson_juettner_aeg_valuation(
+            &ql_models::PenmanReoiOhlsonJuettnerSpec {
+                net_operating_assets_0: 100.0,
+                net_financial_obligations_0: 30.0,
+                operating_income_after_tax_1: 12.0,
+                operating_income_after_tax_2: 13.0,
+                net_financial_expense_after_tax_1: 2.0,
+                wacc: r + 0.02,
+                terminal_reoi_growth: 0.02,
+                current_share_price: m.eq_spot,
+                forward_eps_1: 5.0,
+                forward_eps_2: 5.5,
+                forward_dps_1: 2.0,
+                perpetual_aeg_growth: 0.03,
+            },
+        );
+        k.bond_present_value
+            + cmo.pac_present_value
+            + cb.perpetual_dynkin_cb_fair_value
+            + asu.basic_eps
+            + modif.pv_modified_cashflows_at_orig_eir
+            + colva.ctd_multi_currency_colva
+            + evt.weissman_extreme_var * 1e-3
+            + tlf.bouchaud_potters_non_gaussian_var
+            + attr.cumulative_active_return
+            + tm.treynor_mazuy_timing_gamma
+            + bh.terminal_price_deviation
+            + pen.reoi_intrinsic_equity_value * 1e-2
+    }
+
+    pub fn phase31_live_metric(&self) -> f64 {
+        let bump = if self.scenario == ScenarioKind::CreditWideningPlus100Bp {
+            0.01
+        } else {
+            0.0
+        };
+        Self::phase31_live_metric_from_market(&self.scenario_market(), bump)
     }
 
     pub fn phase29_live_metric_from_market(m: &MarketSnapshot) -> f64 {
@@ -5393,6 +5592,7 @@ impl DeskWorkstation {
                 &market,
                 credit_bump,
             ),
+            phase31_sota_metric: Self::phase31_live_metric_from_market(&market, credit_bump),
             phase28_sota_metric: Self::phase28_live_metric_from_market_with_bump(
                 &market,
                 if self.scenario == ScenarioKind::CreditWideningPlus100Bp {
@@ -5670,6 +5870,7 @@ impl DeskWorkstation {
             format!("38:P28-SOTA live: {:.2}", frame.phase28_sota_metric),
             format!("39 Phase29 SOTA live: {:.2}", frame.phase29_sota_metric),
             format!("40 Phase30 SOTA live: {:.2}", frame.phase30_sota_metric),
+            format!("41 Phase31 SOTA live: {:.2}", frame.phase31_sota_metric),
             format!(
                 "DAG recomputed: {}/{}",
                 frame.dag_recomputed_trades, frame.dag_total_trades
@@ -5681,7 +5882,7 @@ impl DeskWorkstation {
         // There are six IR buckets, five credit buckets and ten telemetry
         // lines (including Tab 23).  Render all 21 rows instead of silently
         // dropping the final BL/Risk-Parity line.
-        const BOTTOM_ROWS: usize = 37;
+        const BOTTOM_ROWS: usize = 38;
         while left_bottom.len() < BOTTOM_ROWS {
             left_bottom.push(String::new());
         }
@@ -5701,6 +5902,7 @@ impl DeskWorkstation {
         right_bottom.push(format!("38:P28-SOTA IRRBB/RFR/XCCY/BG/CoCo/SIMM/rBergomi/Spread/BESS/Dark/Risk/Diff-PCA: {:.4}", self.phase28_live_metric()));
         right_bottom.push(format!("39 Phase29 SOTA Veronesi/Lando/Corridor/Russian/Bates/Koziol/MFG/BCBS/CJP/ETF/IC/IS: {:.4}", self.phase29_live_metric()));
         right_bottom.push(format!("40 Phase30 SOTA Taylor/Damodaran/VaR/LVaR/CGO/Regret/Beneish/Campisi/Heckman/Elastic/ResetCB/FSB: {:.4}", self.phase30_live_metric()));
+        right_bottom.push(format!("41 Phase31 SOTA KRD-LSC/CMO-PAC/Asquith-CB/ASU2024/ASC470/ColVA/Hill/Bouchaud/Karnosky/DGTW/Brock/Penman: {:.4}", self.phase31_live_metric()));
         while right_bottom.len() < BOTTOM_ROWS {
             right_bottom.push(String::new());
         }
@@ -5749,7 +5951,7 @@ mod phase14_tests {
     use super::*;
     #[test]
     fn phase14_tab_is_registered() {
-        assert_eq!(TabId::ALL.len(), 40);
+        assert_eq!(TabId::ALL.len(), 41);
         assert!(TabId::ALL.contains(&TabId::Phase14Sota));
         assert!(TabId::ALL.contains(&TabId::Phase15Sota));
         let mut ws = DeskWorkstation::new();
@@ -5790,7 +5992,7 @@ mod phase16_tests {
 
     #[test]
     fn phase16_tab_and_metric_are_live() {
-        assert_eq!(TabId::ALL.len(), 40);
+        assert_eq!(TabId::ALL.len(), 41);
         assert!(TabId::ALL.contains(&TabId::Phase16Sota));
         let mut ws = DeskWorkstation::new();
         let frame = ws.step_tick();
@@ -5814,7 +6016,7 @@ mod phase17_tests {
 
     #[test]
     fn phase17_tab_metric_dashboard_and_rates_reactivity() {
-        assert_eq!(TabId::ALL.len(), 40);
+        assert_eq!(TabId::ALL.len(), 41);
         assert!(TabId::ALL.contains(&TabId::Phase17Sota));
         assert_eq!(
             TabId::Phase17Sota.label(),
@@ -5853,7 +6055,7 @@ mod phase18_tests {
     use super::*;
     #[test]
     fn phase18_tab_metric_dashboard_and_stress_reactivity() {
-        assert_eq!(TabId::ALL.len(), 40);
+        assert_eq!(TabId::ALL.len(), 41);
         assert_eq!(
             TabId::Phase18Sota.label(),
             "28 MtM-XCCS / CTD-COLVA / ZABR-PDV / Weather / ENB"
@@ -5896,7 +6098,7 @@ mod phase19_tests {
 
     #[test]
     fn phase19_tab29_terminal_renders_and_ticks_cleanly() {
-        assert_eq!(TabId::ALL.len(), 40);
+        assert_eq!(TabId::ALL.len(), 41);
         assert_eq!(
             TabId::Phase19Sota.label(),
             "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP"
@@ -5934,7 +6136,7 @@ mod phase20_tests {
 
     #[test]
     fn phase20_tab_metric_dashboard_and_stress_reactivity() {
-        assert_eq!(TabId::ALL.len(), 40);
+        assert_eq!(TabId::ALL.len(), 41);
         assert!(TabId::ALL.contains(&TabId::Phase20Sota));
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
@@ -5974,7 +6176,7 @@ mod phase21_tests {
 
     #[test]
     fn phase21_terminal_reactivity() {
-        assert_eq!(TabId::ALL.len(), 40);
+        assert_eq!(TabId::ALL.len(), 41);
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
         let next = ws.step_tick();
@@ -6081,7 +6283,7 @@ mod phase24_tests {
     use super::*;
     #[test]
     fn phase24_tab_metric_tick_and_rate_reactivity() {
-        assert_eq!(TabId::ALL.len(), 40);
+        assert_eq!(TabId::ALL.len(), 41);
         assert!(TabId::Phase24Sota.label().starts_with("34 Phase 24 SOTA"));
         let mut ws = DeskWorkstation::new();
         let a = ws.step_tick();
@@ -6204,8 +6406,8 @@ mod phase26_tests {
             ws.render_dashboard(&stressed, false)
                 .contains("36 Phase26 SOTA")
         );
-        assert_eq!(TabId::TAB_COUNT, 40);
-        assert_eq!(TabId::ALL.len(), 40);
+        assert_eq!(TabId::TAB_COUNT, 41);
+        assert_eq!(TabId::ALL.len(), 41);
         assert!(TabId::ALL.contains(&TabId::Phase26Sota));
     }
 }
@@ -6226,8 +6428,8 @@ mod phase27_tests {
             ws.render_dashboard(&stressed, false)
                 .contains("37 Phase 27 SOTA")
         );
-        assert_eq!(TabId::TAB_COUNT, 40);
-        assert_eq!(TabId::ALL.len(), 40);
+        assert_eq!(TabId::TAB_COUNT, 41);
+        assert_eq!(TabId::ALL.len(), 41);
         assert!(TabId::ALL.contains(&TabId::Phase27Sota));
     }
 
@@ -6270,7 +6472,7 @@ mod phase28_tests {
         ws.scenario = ScenarioKind::CreditWideningPlus100Bp;
         let stressed_frame = ws.step_tick();
         let stressed = ws.render_dashboard(&stressed_frame, false);
-        assert_eq!(TabId::ALL.len(), 40);
+        assert_eq!(TabId::ALL.len(), 41);
         assert!(TabId::ALL.contains(&TabId::Phase28Sota));
         assert!(normal.contains("38:P28-SOTA"));
         assert!(stressed.contains("38:P28-SOTA"));
@@ -6294,7 +6496,7 @@ mod phase29_tests {
     use super::*;
     #[test]
     fn phase29_tab39_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 40);
+        assert_eq!(TabId::TAB_COUNT, 41);
         assert!(TabId::Phase29Sota.label().starts_with("39 Phase 29 SOTA"));
         let mut ws = DeskWorkstation::default();
         let a = ws.step_tick();
@@ -6311,8 +6513,8 @@ mod phase30_tests {
 
     #[test]
     fn phase30_tab40_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 40);
-        assert_eq!(TabId::ALL.len(), 40);
+        assert_eq!(TabId::TAB_COUNT, 41);
+        assert_eq!(TabId::ALL.len(), 41);
         assert!(
             TabId::Phase30BookSota
                 .label()

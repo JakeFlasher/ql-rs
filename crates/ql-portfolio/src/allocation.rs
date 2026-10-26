@@ -1,6 +1,11 @@
 #![allow(clippy::needless_range_loop)]
 
 pub use crate::phase30::*;
+pub use crate::phase31::{
+    BrockHommesAdaptiveBeliefReport, BrockHommesAdaptiveBeliefSpec, DgtwTreynorMazuyTimingReport,
+    DgtwTreynorMazuyTimingSpec, evaluate_brock_hommes_adaptive_belief_switching,
+    evaluate_dgtw_characteristic_and_treynor_mazuy_timing,
+};
 use ql_ad::Real;
 
 #[derive(Clone, Debug)]

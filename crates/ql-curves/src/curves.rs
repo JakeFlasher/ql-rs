@@ -1,6 +1,10 @@
 #![allow(clippy::needless_range_loop)]
 
 pub use crate::phase30::*;
+pub use crate::phase31::{
+    FabozziKeyRateLscImmunizationReport, FabozziKeyRateLscImmunizationSpec,
+    evaluate_fabozzi_tuckman_key_rate_and_lsc_immunization,
+};
 use ql_ad::Real;
 use ql_math::{Interpolator1D, MonotoneCubicInterpolator};
 use ql_time::{Date, DayCounter};

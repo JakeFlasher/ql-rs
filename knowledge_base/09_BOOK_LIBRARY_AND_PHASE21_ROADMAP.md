@@ -59,4 +59,4 @@ Phase 29 adds twelve book-backed SOTA quantitative finance engines, Benchmark Su
 
 
 ### Phase 30 current release
-The current release includes twelve book-backed SOTA quantitative-finance engines, Benchmark Suite 42, workstation Tab 40, and `BOTTOM_ROWS = 37`.
+The current release includes twelve book-backed SOTA quantitative-finance engines, Benchmark Suite 43, workstation Tab 41, and `BOTTOM_ROWS = 38`.

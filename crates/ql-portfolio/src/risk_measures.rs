@@ -2,6 +2,14 @@
 #![allow(clippy::needless_range_loop)]
 
 pub use crate::phase30::*;
+pub use crate::phase31::{
+    BouchaudPottersCumulantSmileReport, BouchaudPottersCumulantSmileSpec,
+    EmbrechtsHillPickandsSubexponentialReport, EmbrechtsHillPickandsSubexponentialSpec,
+    KarnoskySingerMencheroAttributionReport, KarnoskySingerMencheroAttributionSpec,
+    evaluate_bouchaud_potters_power_law_cumulant_and_smile_scaling,
+    evaluate_embrechts_hill_pickands_and_subexponential_tail,
+    evaluate_karnosky_singer_multicurrency_and_menchero_attribution,
+};
 
 use ql_ad::{Real, TapeScope, TapeVar};
 

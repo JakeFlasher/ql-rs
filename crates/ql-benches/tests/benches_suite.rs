@@ -7,7 +7,7 @@ fn benchmarks_verify_parity_and_optional_sota_speedups() {
     // parity paths during normal `cargo test`; timing gates are inherently
     // host-dependent and opt in through QL_RUN_TIMING_GATES=1.
     let rows = run_all_benchmark_suites_with_config(1, 3);
-    assert_eq!(rows.len(), 42);
+    assert_eq!(rows.len(), 43);
     for row in &rows {
         assert!(!row.id.is_empty());
         assert!(!row.description.is_empty());
@@ -124,6 +124,17 @@ fn phase30_suite42_workload_is_registered() {
         .iter()
         .find(|r| r.id.starts_with("42_"))
         .expect("suite 42");
+    assert!(row.parity_ok);
+    assert!(row.max_abs_diff < 1e-4);
+}
+
+#[test]
+fn phase31_suite43_workload_is_registered() {
+    let rows = ql_benches::run_all_benchmarks(1);
+    let row = rows
+        .iter()
+        .find(|r| r.id.starts_with("43_"))
+        .expect("suite 43");
     assert!(row.parity_ok);
     assert!(row.max_abs_diff < 1e-4);
 }

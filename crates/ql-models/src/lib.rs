@@ -22,3 +22,5 @@ pub mod vix;
 pub use vix::*;
 pub mod bergomi;
 pub use bergomi::*;
+mod phase31;
+pub use phase31::*;
