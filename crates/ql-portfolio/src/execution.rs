@@ -1,5 +1,7 @@
 #![allow(clippy::needless_range_loop)]
+
 use super::allocation::AllocationError;
+pub use crate::phase30::*;
 use ql_ad::Real;
 
 #[derive(Clone, Debug)]

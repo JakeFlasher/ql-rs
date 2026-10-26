@@ -2,7 +2,7 @@
 
 ## Verdict
 
-`ql-rs` is a cohesive 23-crate, MIT/Apache-2.0 quantitative-finance workspace. It keeps the domain fidelity that made QuantLib useful while replacing hidden mutation with immutable values, generic scalar kernels, exact first- and second-order IFT risk, data-oriented storage, and explicit parallel execution. The implementation is accompanied by 41 numerical benchmark suites, 39 workstation tabs, and a 66-paper research catalog.
+`ql-rs` is a cohesive 23-crate, MIT/Apache-2.0 quantitative-finance workspace. It keeps the domain fidelity that made QuantLib useful while replacing hidden mutation with immutable values, generic scalar kernels, exact first- and second-order IFT risk, data-oriented storage, and explicit parallel execution. The implementation is accompanied by 42 numerical benchmark suites, 40 workstation tabs, and a 66-paper research catalog.
 
 ## Three empirical pillars
 
@@ -63,3 +63,7 @@ Phase 28 delivers Suite 40 and workstation Tab 38 (`BOTTOM_ROWS = 35`) with twel
 
 
 Phase 29 adds twelve book-backed SOTA quantitative finance engines, Benchmark Suite 41, and workstation Tab 39 with `BOTTOM_ROWS = 36`.
+
+
+### Phase 30 current release
+The current release includes twelve book-backed SOTA quantitative-finance engines, Benchmark Suite 42, workstation Tab 40, and `BOTTOM_ROWS = 37`.

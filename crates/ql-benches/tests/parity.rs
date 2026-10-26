@@ -13,7 +13,7 @@ use ql_benches::{
 #[test]
 fn phase21_suite33_and_invariants() {
     let rows = with_config_override(1, 3, || run_all_benchmarks(1));
-    assert_eq!(rows.len(), 41);
+    assert_eq!(rows.len(), 42);
     let row = with_config_override(1, 3, || {
         benchmark_monotone_convex_clark_saccr_rvol_cartea_paleologo_aad(1)
     });
@@ -93,6 +93,13 @@ fn phase28_suite40_and_invariants() {
 #[test]
 fn phase29_suite41_and_invariants() {
     let row = ql_benches::benchmark_phase29_veronesi_conv_lando_gen_gatheral_corridor_russian_stop_bates_svj_koziol_cb_mckean_mfg_bcbs_floor_cjp_lob_madhavan_etf_qian_ic_glasserman_is(1);
+    assert!(row.max_abs_diff < 1e-4);
+    assert!(row.speedup > 1.0);
+}
+
+#[test]
+fn phase30_suite42_and_invariants() {
+    let row = ql_benches::benchmark_phase30_romer_taylor_damodaran_crp_christoffersen_var_foucault_lvar_barberis_pt_hart_regret_beneish_mscore_campisi_attr_heckman_gmm_elastic_net_reset_cb_fsb_bailin(1);
     assert!(row.max_abs_diff < 1e-4);
     assert!(row.speedup > 1.0);
 }

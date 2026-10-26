@@ -56,3 +56,7 @@ Suite 40 and Tab 38 add the Phase 28 book-backed SOTA expansion (IRRBB, RFR, MtM
 
 
 Phase 29 adds twelve book-backed SOTA quantitative finance engines, Benchmark Suite 41, and workstation Tab 39 with `BOTTOM_ROWS = 36`.
+
+
+### Phase 30 current release
+The current release includes twelve book-backed SOTA quantitative-finance engines, Benchmark Suite 42, workstation Tab 40, and `BOTTOM_ROWS = 37`.
