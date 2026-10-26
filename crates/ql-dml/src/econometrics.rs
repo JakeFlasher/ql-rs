@@ -1549,3 +1549,158 @@ mod evaluate_bollerslev_tsay_garch_term_structure_kurtosis_module {
     }
 }
 pub use evaluate_bollerslev_tsay_garch_term_structure_kurtosis_module::*;
+
+mod evaluate_corsi_har_realized_volatility_multi_horizon_forecast_module {
+    // Corsi (2009, Journal of Financial Econometrics 7(2), "A Simple Approximate Long-Memory
+    // Model of Realized Volatility") & Andersen, Bollerslev, Diebold & Labys (2003, Econometrica 71(2))
+    // 3-Cascade HAR-RV Multi-Horizon Term Structure & Realized Quarticity Band Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct CorsiHarRealizedVolatilitySpec<T: Real = f64> {
+        pub har_intercept_c: T,
+        pub daily_rv_weight_beta_d: T,
+        pub weekly_rv_weight_beta_w: T,
+        pub monthly_rv_weight_beta_m: T,
+        pub current_daily_rv: T,
+        pub current_weekly_rv: T,
+        pub current_monthly_rv: T,
+        pub realized_quarticity_rq: T,
+        pub forecast_horizon_days_h: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct CorsiHarRealizedVolatilityReport<T: Real = f64> {
+        pub har_total_persistence_phi: T,
+        pub unconditional_long_run_rv: T,
+        pub one_day_ahead_har_rv_forecast: T,
+        pub h_day_ahead_har_rv_forecast: T,
+        pub cumulative_average_h_day_rv: T,
+        pub bns_asymptotic_rv_standard_error: T,
+    }
+
+    pub fn evaluate_corsi_har_realized_volatility_multi_horizon_forecast<T: Real>(
+        spec: &CorsiHarRealizedVolatilitySpec<T>,
+    ) -> CorsiHarRealizedVolatilityReport<T> {
+        let c = spec.har_intercept_c.max_val(T::from_f64(1e-6));
+        let bd = spec.daily_rv_weight_beta_d.max_val(T::from_f64(0.01));
+        let bw = spec.weekly_rv_weight_beta_w.max_val(T::from_f64(0.01));
+        let bm = spec.monthly_rv_weight_beta_m.max_val(T::from_f64(0.01));
+        let rv_d = spec.current_daily_rv.max_val(T::from_f64(1e-6));
+        let rv_w = spec.current_weekly_rv.max_val(T::from_f64(1e-6));
+        let rv_m = spec.current_monthly_rv.max_val(T::from_f64(1e-6));
+        let rq = spec.realized_quarticity_rq.max_val(T::from_f64(1e-8));
+        let h = spec.forecast_horizon_days_h.max_val(T::one());
+
+        let phi = (bd + bw + bm).min_val(T::from_f64(0.995));
+        let one_minus_phi = (T::one() - phi).max_val(T::from_f64(0.005));
+        let rv_inf = c / one_minus_phi;
+
+        let rv_1 = c + bd * rv_d + bw * rv_w + bm * rv_m;
+        let ln_phi = phi.ln();
+        let phi_hm1 = ((h - T::one()) * ln_phi).exp();
+        let phi_h = (h * ln_phi).exp();
+
+        let rv_h = rv_inf + phi_hm1 * (rv_1 - rv_inf);
+        let rv_avg = rv_inf + (rv_1 - rv_inf) * ((T::one() - phi_h) / (h * one_minus_phi));
+
+        // Barndorff-Nielsen & Shephard (2002) asymptotic standard error of RV with M = 78 (5-min) intraday returns:
+        let se_rv = (T::from_f64(2.0 / 78.0) * rq).sqrt();
+
+        CorsiHarRealizedVolatilityReport {
+            har_total_persistence_phi: phi,
+            unconditional_long_run_rv: rv_inf,
+            one_day_ahead_har_rv_forecast: rv_1,
+            h_day_ahead_har_rv_forecast: rv_h,
+            cumulative_average_h_day_rv: rv_avg,
+            bns_asymptotic_rv_standard_error: se_rv,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_corsi_har_realized_volatility_multi_horizon_forecast_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn corsi_har_realized_volatility_invariants_and_ad_parity() {
+            let spec = CorsiHarRealizedVolatilitySpec {
+                har_intercept_c: 0.000_012,
+                daily_rv_weight_beta_d: 0.36,
+                weekly_rv_weight_beta_w: 0.34,
+                monthly_rv_weight_beta_m: 0.25,
+                current_daily_rv: 0.000_42,
+                current_weekly_rv: 0.000_31,
+                current_monthly_rv: 0.000_26,
+                realized_quarticity_rq: 0.000_000_45,
+                forecast_horizon_days_h: 22.0,
+            };
+            let rep = evaluate_corsi_har_realized_volatility_multi_horizon_forecast(&spec);
+            assert!((rep.har_total_persistence_phi - 0.95).abs() < 1e-12);
+            assert!(
+                rep.h_day_ahead_har_rv_forecast < rep.one_day_ahead_har_rv_forecast
+                    && rep.h_day_ahead_har_rv_forecast > rep.unconditional_long_run_rv
+            );
+
+            let h = 1e-6;
+            let r_ad = evaluate_corsi_har_realized_volatility_multi_horizon_forecast(
+                &CorsiHarRealizedVolatilitySpec {
+                    har_intercept_c: Dual::from_f64(spec.har_intercept_c),
+                    daily_rv_weight_beta_d: Dual::<6>::variable(spec.daily_rv_weight_beta_d, 0),
+                    weekly_rv_weight_beta_w: Dual::<6>::variable(spec.weekly_rv_weight_beta_w, 1),
+                    monthly_rv_weight_beta_m: Dual::<6>::variable(spec.monthly_rv_weight_beta_m, 2),
+                    current_daily_rv: Dual::<6>::variable(spec.current_daily_rv, 3),
+                    current_weekly_rv: Dual::<6>::variable(spec.current_weekly_rv, 4),
+                    current_monthly_rv: Dual::from_f64(spec.current_monthly_rv),
+                    realized_quarticity_rq: Dual::<6>::variable(spec.realized_quarticity_rq, 5),
+                    forecast_horizon_days_h: Dual::from_f64(spec.forecast_horizon_days_h),
+                },
+            );
+            for i in 0..6 {
+                // Keep the quarticity bump below its positive floor so the
+                // central difference remains in the smooth branch.
+                let step = if i == 5 { 1e-10 } else { h };
+                let mut v = [
+                    spec.daily_rv_weight_beta_d,
+                    spec.weekly_rv_weight_beta_w,
+                    spec.monthly_rv_weight_beta_m,
+                    spec.current_daily_rv,
+                    spec.current_weekly_rv,
+                    spec.realized_quarticity_rq,
+                ];
+                v[i] += step;
+                let up = evaluate_corsi_har_realized_volatility_multi_horizon_forecast(
+                    &CorsiHarRealizedVolatilitySpec {
+                        daily_rv_weight_beta_d: v[0],
+                        weekly_rv_weight_beta_w: v[1],
+                        monthly_rv_weight_beta_m: v[2],
+                        current_daily_rv: v[3],
+                        current_weekly_rv: v[4],
+                        realized_quarticity_rq: v[5],
+                        ..spec
+                    },
+                );
+                v[i] -= 2.0 * step;
+                let dn = evaluate_corsi_har_realized_volatility_multi_horizon_forecast(
+                    &CorsiHarRealizedVolatilitySpec {
+                        daily_rv_weight_beta_d: v[0],
+                        weekly_rv_weight_beta_w: v[1],
+                        monthly_rv_weight_beta_m: v[2],
+                        current_daily_rv: v[3],
+                        current_weekly_rv: v[4],
+                        realized_quarticity_rq: v[5],
+                        ..spec
+                    },
+                );
+                let val_ad =
+                    r_ad.cumulative_average_h_day_rv + r_ad.bns_asymptotic_rv_standard_error;
+                let fd = ((up.cumulative_average_h_day_rv + up.bns_asymptotic_rv_standard_error)
+                    - (dn.cumulative_average_h_day_rv + dn.bns_asymptotic_rv_standard_error))
+                    / (2.0 * step);
+                assert!((val_ad.d[i] - fd).abs() < 1e-5, "input {i}");
+            }
+        }
+    }
+}
+pub use evaluate_corsi_har_realized_volatility_multi_horizon_forecast_module::*;

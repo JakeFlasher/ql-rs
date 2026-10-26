@@ -1361,3 +1361,202 @@ mod evaluate_piterbarg_collateral_choice_option_funding_wedge_module {
     }
 }
 pub use evaluate_piterbarg_collateral_choice_option_funding_wedge_module::*;
+
+mod evaluate_kim_wright_shadow_rate_survey_term_premium_module {
+    // Kim & Wright (2005, FEDS 2005-33, "An Arbitrage-Free Three-Factor Term Structure Model
+    // and the Recent Behavior of Long-Term Yields and Distant-Horizon Forward Rates"),
+    // Black (1995, "Interest Rates as Options"), Krippner (2013), & Wu & Xia (2016)
+    // Shadow-Rate Effective-Lower-Bound (ELB) & Survey-Anchored Forward Term Premium Engine.
+
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct KimWrightShadowRateTermPremiumSpec<T: Real = f64> {
+        pub current_shadow_short_rate_s0: T,
+        pub effective_lower_bound_r_min: T,
+        pub mean_reversion_speed_kappa: T,
+        pub risk_neutral_long_run_mean_theta_q: T,
+        pub physical_long_run_mean_theta_p: T,
+        pub shadow_rate_volatility_sigma_s: T,
+        pub survey_long_run_short_rate_r_surv: T,
+        pub survey_kalman_shrinkage_weight_w: T,
+        pub horizon_years_tau: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct KimWrightShadowRateTermPremiumReport<T: Real = f64> {
+        pub unconstrained_q_shadow_forward_mean: T,
+        pub survey_anchored_p_shadow_mean: T,
+        pub expected_elb_constrained_short_rate_p: T,
+        pub krippner_shadow_convexity_adjustment: T,
+        pub instantaneous_elb_forward_rate_q: T,
+        pub zlb_call_option_wedge_bps: T,
+        pub survey_anchored_forward_term_premium: T,
+    }
+
+    pub fn evaluate_kim_wright_shadow_rate_survey_term_premium<T: Real>(
+        spec: &KimWrightShadowRateTermPremiumSpec<T>,
+    ) -> KimWrightShadowRateTermPremiumReport<T> {
+        let s0 = spec.current_shadow_short_rate_s0;
+        let r_min = spec.effective_lower_bound_r_min;
+        let kappa = spec.mean_reversion_speed_kappa.max_val(T::from_f64(0.02));
+        let theta_q = spec.risk_neutral_long_run_mean_theta_q;
+        let theta_p = spec.physical_long_run_mean_theta_p;
+        let sig_s = spec
+            .shadow_rate_volatility_sigma_s
+            .max_val(T::from_f64(0.001));
+        let r_surv = spec.survey_long_run_short_rate_r_surv;
+        let w_surv = spec
+            .survey_kalman_shrinkage_weight_w
+            .max_val(T::from_f64(0.0))
+            .min_val(T::from_f64(1.0));
+        let tau = spec.horizon_years_tau.max_val(T::from_f64(0.25));
+
+        let e_kt = (-kappa * tau).exp();
+        let b_kt = (T::one() - e_kt) / kappa;
+        let mu_q = s0 * e_kt + theta_q * (T::one() - e_kt);
+        let mu_p_raw = s0 * e_kt + theta_p * (T::one() - e_kt);
+        let mu_p = (T::one() - w_surv) * mu_p_raw + w_surv * r_surv;
+
+        let var_s = (sig_s * sig_s / (T::from_f64(2.0) * kappa))
+            * (T::one() - (-T::from_f64(2.0) * kappa * tau).exp());
+        let std_s = var_s.max_val(T::from_f64(1e-10)).sqrt();
+
+        // Black (1995) / Krippner (2013) Gaussian option expectation E[max(s_tau, r_min)]:
+        let z_q = (mu_q - r_min) / std_s;
+        let phi_zq = norm_cdf(z_q);
+        let er_q = r_min + (mu_q - r_min) * phi_zq + std_s * norm_pdf(z_q);
+
+        let z_p = (mu_p - r_min) / std_s;
+        let er_p = r_min + (mu_p - r_min) * norm_cdf(z_p) + std_s * norm_pdf(z_p);
+
+        // Krippner (2013) ELB-attenuated instantaneous forward convexity adjustment:
+        let conv_adj = T::from_f64(0.5) * phi_zq * phi_zq * sig_s * sig_s * b_kt * b_kt;
+        let f_q = er_q - conv_adj;
+        let zlb_wedge_bps = (er_q - mu_q) * T::from_f64(10_000.0);
+        let ftp = f_q - er_p;
+
+        KimWrightShadowRateTermPremiumReport {
+            unconstrained_q_shadow_forward_mean: mu_q,
+            survey_anchored_p_shadow_mean: mu_p,
+            expected_elb_constrained_short_rate_p: er_p,
+            krippner_shadow_convexity_adjustment: conv_adj,
+            instantaneous_elb_forward_rate_q: f_q,
+            zlb_call_option_wedge_bps: zlb_wedge_bps,
+            survey_anchored_forward_term_premium: ftp,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_kim_wright_shadow_rate_survey_term_premium_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn kim_wright_shadow_rate_survey_term_premium_invariants_and_ad_parity() {
+            let spec = KimWrightShadowRateTermPremiumSpec {
+                current_shadow_short_rate_s0: 0.015,
+                effective_lower_bound_r_min: 0.00125,
+                mean_reversion_speed_kappa: 0.22,
+                risk_neutral_long_run_mean_theta_q: 0.044,
+                physical_long_run_mean_theta_p: 0.032,
+                shadow_rate_volatility_sigma_s: 0.014,
+                survey_long_run_short_rate_r_surv: 0.028,
+                survey_kalman_shrinkage_weight_w: 0.35,
+                horizon_years_tau: 10.0,
+            };
+            let rep = evaluate_kim_wright_shadow_rate_survey_term_premium(&spec);
+            assert!(rep.zlb_call_option_wedge_bps > 0.0);
+            assert!(rep.survey_anchored_forward_term_premium > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_kim_wright_shadow_rate_survey_term_premium(
+                &KimWrightShadowRateTermPremiumSpec {
+                    current_shadow_short_rate_s0: Dual::<9>::variable(
+                        spec.current_shadow_short_rate_s0,
+                        0,
+                    ),
+                    effective_lower_bound_r_min: Dual::<9>::variable(
+                        spec.effective_lower_bound_r_min,
+                        1,
+                    ),
+                    mean_reversion_speed_kappa: Dual::<9>::variable(
+                        spec.mean_reversion_speed_kappa,
+                        2,
+                    ),
+                    risk_neutral_long_run_mean_theta_q: Dual::<9>::variable(
+                        spec.risk_neutral_long_run_mean_theta_q,
+                        3,
+                    ),
+                    physical_long_run_mean_theta_p: Dual::<9>::variable(
+                        spec.physical_long_run_mean_theta_p,
+                        4,
+                    ),
+                    shadow_rate_volatility_sigma_s: Dual::<9>::variable(
+                        spec.shadow_rate_volatility_sigma_s,
+                        5,
+                    ),
+                    survey_long_run_short_rate_r_surv: Dual::<9>::variable(
+                        spec.survey_long_run_short_rate_r_surv,
+                        6,
+                    ),
+                    survey_kalman_shrinkage_weight_w: Dual::<9>::variable(
+                        spec.survey_kalman_shrinkage_weight_w,
+                        7,
+                    ),
+                    horizon_years_tau: Dual::<9>::variable(spec.horizon_years_tau, 8),
+                },
+            );
+            for i in 0..9 {
+                let mut v = [
+                    spec.current_shadow_short_rate_s0,
+                    spec.effective_lower_bound_r_min,
+                    spec.mean_reversion_speed_kappa,
+                    spec.risk_neutral_long_run_mean_theta_q,
+                    spec.physical_long_run_mean_theta_p,
+                    spec.shadow_rate_volatility_sigma_s,
+                    spec.survey_long_run_short_rate_r_surv,
+                    spec.survey_kalman_shrinkage_weight_w,
+                    spec.horizon_years_tau,
+                ];
+                v[i] += h;
+                let up = evaluate_kim_wright_shadow_rate_survey_term_premium(
+                    &KimWrightShadowRateTermPremiumSpec {
+                        current_shadow_short_rate_s0: v[0],
+                        effective_lower_bound_r_min: v[1],
+                        mean_reversion_speed_kappa: v[2],
+                        risk_neutral_long_run_mean_theta_q: v[3],
+                        physical_long_run_mean_theta_p: v[4],
+                        shadow_rate_volatility_sigma_s: v[5],
+                        survey_long_run_short_rate_r_surv: v[6],
+                        survey_kalman_shrinkage_weight_w: v[7],
+                        horizon_years_tau: v[8],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_kim_wright_shadow_rate_survey_term_premium(
+                    &KimWrightShadowRateTermPremiumSpec {
+                        current_shadow_short_rate_s0: v[0],
+                        effective_lower_bound_r_min: v[1],
+                        mean_reversion_speed_kappa: v[2],
+                        risk_neutral_long_run_mean_theta_q: v[3],
+                        physical_long_run_mean_theta_p: v[4],
+                        shadow_rate_volatility_sigma_s: v[5],
+                        survey_long_run_short_rate_r_surv: v[6],
+                        survey_kalman_shrinkage_weight_w: v[7],
+                        horizon_years_tau: v[8],
+                    },
+                );
+                let fd = (up.survey_anchored_forward_term_premium
+                    - dn.survey_anchored_forward_term_premium)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.survey_anchored_forward_term_premium.d[i] - fd).abs() < 1e-5,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_kim_wright_shadow_rate_survey_term_premium_module::*;

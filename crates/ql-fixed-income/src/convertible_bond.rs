@@ -1613,3 +1613,195 @@ mod evaluate_tsiveriotis_fernandes_split_discount_convertible_module {
     }
 }
 pub use evaluate_tsiveriotis_fernandes_split_discount_convertible_module::*;
+
+mod evaluate_brennan_schwartz_callable_puttable_convertible_game_module {
+    // Brennan & Schwartz (1977, Journal of Finance 32(5), "Convertible Bonds: Valuation and
+    // Optimal Strategies for Call and Conversion"; 1980), Ingersoll (1977, JFE 4(3)),
+    // & De Spiegeleer & Schoutens (2011, The Handbook of Convertible Bonds, Ch. 4-6)
+    // Callable-Puttable Convertible Bond Game-Option Decomposition Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrennanSchwartzCallablePuttableCbSpec<T: Real = f64> {
+        pub stock_price_s0: T,
+        pub conversion_ratio_n_c: T,
+        pub par_notional_n: T,
+        pub coupon_rate_c: T,
+        pub risk_free_rate_r: T,
+        pub credit_spread_s_c: T,
+        pub dividend_yield_q: T,
+        pub equity_volatility_sigma_s: T,
+        pub investor_put_price_k_put: T,
+        pub issuer_call_trigger_price_k_call: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrennanSchwartzCallablePuttableCbReport<T: Real = f64> {
+        pub straight_risky_bond_floor: T,
+        pub conversion_parity_value: T,
+        pub embedded_conversion_call_value: T,
+        pub investor_put_floor_option_value: T,
+        pub issuer_call_forcing_giveup_value: T,
+        pub game_convertible_fair_value: T,
+        pub effective_equity_dollar_delta: T,
+    }
+
+    pub fn evaluate_brennan_schwartz_callable_puttable_convertible_game<T: Real>(
+        spec: &BrennanSchwartzCallablePuttableCbSpec<T>,
+    ) -> BrennanSchwartzCallablePuttableCbReport<T> {
+        let s0 = spec.stock_price_s0.max_val(T::from_f64(1.0));
+        let n_c = spec.conversion_ratio_n_c.max_val(T::from_f64(0.01));
+        let par = spec.par_notional_n.max_val(T::from_f64(1.0));
+        let c = spec.coupon_rate_c;
+        let r = spec.risk_free_rate_r;
+        let s_c = spec.credit_spread_s_c.max_val(T::from_f64(0.0005));
+        let q = spec.dividend_yield_q;
+        let sig_s = spec.equity_volatility_sigma_s.max_val(T::from_f64(0.02));
+        let k_put = spec.investor_put_price_k_put.max_val(T::from_f64(1.0));
+        let k_call = spec
+            .issuer_call_trigger_price_k_call
+            .max_val(par + T::from_f64(1.0));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.25));
+
+        let y_risky = (r + s_c).max_val(T::from_f64(1e-4));
+        let df_risky = (-y_risky * t).exp();
+        let b_floor = par * ((c / y_risky) * (T::one() - df_risky) + df_risky);
+        let parity = n_c * s0;
+
+        let sqrt_t = t.sqrt();
+        let std_s = sig_s * sqrt_t;
+        let df_r = (-r * t).exp();
+        let df_q = (-q * t).exp();
+
+        // Conversion call option on n_c shares above effective per-share bond floor strike:
+        let k_conv = (b_floor / n_c).max_val(T::from_f64(0.1));
+        let d1_conv = ((s0 / k_conv).ln() + (r - q + T::from_f64(0.5) * sig_s * sig_s) * t) / std_s;
+        let d2_conv = d1_conv - std_s;
+        let c_conv = n_c * (s0 * df_q * norm_cdf(d1_conv) - k_conv * df_r * norm_cdf(d2_conv));
+
+        // Issuer forced-conversion call option above per-share call trigger S_call* = K_call / n_c:
+        let s_call_star = (k_call / n_c).max_val(k_conv + T::from_f64(0.5));
+        let d1_call =
+            ((s0 / s_call_star).ln() + (r - q + T::from_f64(0.5) * sig_s * sig_s) * t) / std_s;
+        let d2_call = d1_call - std_s;
+        // Call protection attenuates issuer call-forcing by 0.5 over the life of the bond:
+        let call_giveup = T::from_f64(0.5)
+            * n_c
+            * (s0 * df_q * norm_cdf(d1_call) - s_call_star * df_r * norm_cdf(d2_call));
+
+        // Investor put floor option at intermediate put date T_p = 0.5 * T on the risky bond floor:
+        let t_p = T::from_f64(0.5) * t;
+        let sig_b = T::from_f64(0.06) + T::from_f64(0.5) * t * s_c;
+        let std_b = sig_b * t_p.sqrt();
+        let d1_put = ((b_floor / k_put).ln() + T::from_f64(0.5) * sig_b * sig_b * t_p) / std_b;
+        let d2_put = d1_put - std_b;
+        let p_floor = (-r * t_p).exp() * (k_put * norm_cdf(-d2_put) - b_floor * norm_cdf(-d1_put));
+
+        let cb_fair = b_floor + c_conv + p_floor - call_giveup;
+        let eq_delta = n_c * df_q * (norm_cdf(d1_conv) - T::from_f64(0.5) * norm_cdf(d1_call));
+
+        BrennanSchwartzCallablePuttableCbReport {
+            straight_risky_bond_floor: b_floor,
+            conversion_parity_value: parity,
+            embedded_conversion_call_value: c_conv,
+            investor_put_floor_option_value: p_floor,
+            issuer_call_forcing_giveup_value: call_giveup,
+            game_convertible_fair_value: cb_fair,
+            effective_equity_dollar_delta: eq_delta,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_brennan_schwartz_callable_puttable_convertible_game_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn brennan_schwartz_callable_puttable_cb_invariants_and_ad_parity() {
+            let spec = BrennanSchwartzCallablePuttableCbSpec {
+                stock_price_s0: 98.0,
+                conversion_ratio_n_c: 1.0,
+                par_notional_n: 100.0,
+                coupon_rate_c: 0.025,
+                risk_free_rate_r: 0.04,
+                credit_spread_s_c: 0.022,
+                dividend_yield_q: 0.012,
+                equity_volatility_sigma_s: 0.32,
+                investor_put_price_k_put: 96.0,
+                issuer_call_trigger_price_k_call: 130.0,
+                maturity_years_t: 5.0,
+            };
+            let rep = evaluate_brennan_schwartz_callable_puttable_convertible_game(&spec);
+            assert!(rep.game_convertible_fair_value > rep.straight_risky_bond_floor);
+            assert!(rep.embedded_conversion_call_value > rep.issuer_call_forcing_giveup_value);
+            assert!(rep.effective_equity_dollar_delta > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_brennan_schwartz_callable_puttable_convertible_game(
+                &BrennanSchwartzCallablePuttableCbSpec {
+                    stock_price_s0: Dual::<6>::variable(spec.stock_price_s0, 0),
+                    conversion_ratio_n_c: Dual::from_f64(spec.conversion_ratio_n_c),
+                    par_notional_n: Dual::from_f64(spec.par_notional_n),
+                    coupon_rate_c: Dual::from_f64(spec.coupon_rate_c),
+                    risk_free_rate_r: Dual::<6>::variable(spec.risk_free_rate_r, 1),
+                    credit_spread_s_c: Dual::<6>::variable(spec.credit_spread_s_c, 2),
+                    dividend_yield_q: Dual::from_f64(spec.dividend_yield_q),
+                    equity_volatility_sigma_s: Dual::<6>::variable(
+                        spec.equity_volatility_sigma_s,
+                        3,
+                    ),
+                    investor_put_price_k_put: Dual::<6>::variable(spec.investor_put_price_k_put, 4),
+                    issuer_call_trigger_price_k_call: Dual::<6>::variable(
+                        spec.issuer_call_trigger_price_k_call,
+                        5,
+                    ),
+                    maturity_years_t: Dual::from_f64(spec.maturity_years_t),
+                },
+            );
+            for i in 0..6 {
+                let mut v = [
+                    spec.stock_price_s0,
+                    spec.risk_free_rate_r,
+                    spec.credit_spread_s_c,
+                    spec.equity_volatility_sigma_s,
+                    spec.investor_put_price_k_put,
+                    spec.issuer_call_trigger_price_k_call,
+                ];
+                v[i] += h;
+                let up = evaluate_brennan_schwartz_callable_puttable_convertible_game(
+                    &BrennanSchwartzCallablePuttableCbSpec {
+                        stock_price_s0: v[0],
+                        risk_free_rate_r: v[1],
+                        credit_spread_s_c: v[2],
+                        equity_volatility_sigma_s: v[3],
+                        investor_put_price_k_put: v[4],
+                        issuer_call_trigger_price_k_call: v[5],
+                        ..spec
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_brennan_schwartz_callable_puttable_convertible_game(
+                    &BrennanSchwartzCallablePuttableCbSpec {
+                        stock_price_s0: v[0],
+                        risk_free_rate_r: v[1],
+                        credit_spread_s_c: v[2],
+                        equity_volatility_sigma_s: v[3],
+                        investor_put_price_k_put: v[4],
+                        issuer_call_trigger_price_k_call: v[5],
+                        ..spec
+                    },
+                );
+                let fd =
+                    (up.game_convertible_fair_value - dn.game_convertible_fair_value) / (2.0 * h);
+                assert!(
+                    (r_ad.game_convertible_fair_value.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_brennan_schwartz_callable_puttable_convertible_game_module::*;

@@ -3496,6 +3496,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_litterman_scheinkman_pca_fly_tf_split_cb_hull_white_double_t_cdo_roger_lee_moment_wings_brigo_capponi_cds_contagion_schwartz_ou_futures_wystup_dcd_yield_passport_option_grs_factor_ftest_bouchaud_sqrt_impact_bns_bipower_har_cj_lettau_ludvigson_cay(scale),
         benchmark_piterbarg_collateral_option_tuckman_rolldown_merton_kmv_dd_hagan_bartlett_sabr_pykhtin_mpor_spike_deng_locational_ftr_wystup_digital_overhedge_conze_fixed_lookback_tasche_hot_spots_es_frazzini_bab_pesaran_timmermann_lucas_mehra_prescott(scale),
         benchmark_gsw_svensson_curve_fabozzi_mbs_esf_vasicek_gordy_irb_ga_carr_wu_vol_drift_gregory_marginal_cva_working_brennan_storage_wystup_forward_extra_rubinstein_exchange_opt_hlz_factor_fdr_holden_subrahmanyam_kyle_bollerslev_garch_kurtosis_campbell_shiller_cape(scale),
+        benchmark_kim_wright_shadow_rate_brennan_schwartz_cb_duffie_singleton_rmv_fukasawa_gamma_swap_burgard_kjaer_fva_carmona_durrleman_spark_wystup_fx_tarf_bgk_discrete_lookback_novy_marx_ff5_acerbi_spectral_es_corsi_har_rv_bll_news_noise(scale),
     ]
 }
 
@@ -11321,6 +11322,230 @@ pub fn benchmark_gsw_svensson_curve_fabozzi_mbs_esf_vasicek_gordy_irb_ga_carr_wu
     run_comparison(
         "60_gsw_svensson_curve_fabozzi_mbs_esf_vasicek_gordy_irb_ga_carr_wu_vol_drift_gregory_marginal_cva_working_brennan_storage_wystup_forward_extra_rubinstein_exchange_opt_hlz_factor_fdr_holden_subrahmanyam_kyle_bollerslev_garch_kurtosis_campbell_shiller_cape",
         "GSW-Svensson-Curve / Fabozzi-MBS-ESF / Vasicek-Gordy-IRB-GA / Carr-Wu-Vol-Drift / Gregory-Marginal-CVA / Working-Brennan-Storage / Wystup-Forward-Extra / Rubinstein-Exchange-Opt / HLZ-Factor-FDR / Holden-Subrahmanyam-Kyle / Bollerslev-GARCH-Kurtosis / Campbell-Shiller-CAPE AD",
+        cfg,
+        1e-3,
+        baseline,
+        sota,
+    )
+}
+
+pub fn suite61_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+    let dx0 = x[0] * T::from_f64(0.01);
+    let dx1 = x[1] * T::from_f64(0.01);
+    let dx2 = x[2] * T::from_f64(0.01);
+    let dx3 = x[3] * T::from_f64(0.01);
+
+    let kw_shadow = ql_curves::evaluate_kim_wright_shadow_rate_survey_term_premium(
+        &ql_curves::KimWrightShadowRateTermPremiumSpec {
+            current_shadow_short_rate_s0: T::from_f64(0.015) + dx0,
+            effective_lower_bound_r_min: T::from_f64(0.00125),
+            mean_reversion_speed_kappa: T::from_f64(0.22) + dx1,
+            risk_neutral_long_run_mean_theta_q: T::from_f64(0.044) + dx2,
+            physical_long_run_mean_theta_p: T::from_f64(0.032),
+            shadow_rate_volatility_sigma_s: T::from_f64(0.014),
+            survey_long_run_short_rate_r_surv: T::from_f64(0.028) + dx3,
+            survey_kalman_shrinkage_weight_w: T::from_f64(0.35),
+            horizon_years_tau: T::from_f64(10.0),
+        },
+    );
+
+    let bs_cb = ql_fixed_income::evaluate_brennan_schwartz_callable_puttable_convertible_game(
+        &ql_fixed_income::BrennanSchwartzCallablePuttableCbSpec {
+            stock_price_s0: T::from_f64(98.0) + x[0],
+            conversion_ratio_n_c: T::from_f64(1.0),
+            par_notional_n: T::from_f64(100.0),
+            coupon_rate_c: T::from_f64(0.025),
+            risk_free_rate_r: T::from_f64(0.04) + dx1,
+            credit_spread_s_c: T::from_f64(0.022) + dx2,
+            dividend_yield_q: T::from_f64(0.012),
+            equity_volatility_sigma_s: T::from_f64(0.32) + dx3,
+            investor_put_price_k_put: T::from_f64(96.0),
+            issuer_call_trigger_price_k_call: T::from_f64(130.0),
+            maturity_years_t: T::from_f64(5.0),
+        },
+    );
+
+    let ds_rmv = ql_credit::evaluate_duffie_singleton_rmv_rfv_credit_triangle_basis(
+        &ql_credit::DuffieSingletonRmvRfvBasisSpec {
+            risk_free_rate_r: T::from_f64(0.04) + dx0,
+            hazard_rate_lambda: T::from_f64(0.03) + dx1,
+            recovery_rate_rec: T::from_f64(0.40) + dx2,
+            bond_coupon_rate_c: T::from_f64(0.055),
+            deliverable_recovery_dispersion_sigma_r: T::from_f64(0.08) + dx3,
+            maturity_years_t: T::from_f64(5.0),
+        },
+    );
+
+    let fn_gamma = ql_vol::evaluate_fukasawa_neuberger_gamma_skewness_swap_strip(
+        &ql_vol::FukasawaNeubergerGammaSkewnessSwapSpec {
+            forward_price_f0: T::from_f64(100.0),
+            atm_volatility_sigma0: T::from_f64(0.20) + dx0,
+            log_moneyness_skew_slope_alpha: T::from_f64(-0.18) + dx1,
+            log_moneyness_curvature_beta: T::from_f64(0.25) + dx2,
+            realized_spot_weighted_variance: T::from_f64(0.042) + dx3,
+            maturity_years_t: T::from_f64(0.50),
+            variance_notional_n_var: T::from_f64(100.0),
+        },
+    );
+
+    let bk_xva = ql_xva::evaluate_burgard_kjaer_semi_replication_fva_cva_dva(
+        &ql_xva::BurgardKjaerSemiReplicationXvaSpec {
+            expected_positive_exposure_epe: T::from_f64(25.0) + x[0],
+            expected_negative_exposure_ene: T::from_f64(14.0) + x[1],
+            counterparty_hazard_rate_lambda_c: T::from_f64(0.022) + dx2,
+            counterparty_lgd_c: T::from_f64(0.60),
+            bank_hazard_rate_lambda_b: T::from_f64(0.012),
+            bank_lgd_b: T::from_f64(0.60),
+            bank_funding_shortfall_fraction_gamma_f: T::from_f64(0.65) + dx3,
+            ois_discount_rate_r: T::from_f64(0.038),
+            maturity_years_t: T::from_f64(5.0),
+        },
+    );
+
+    let cd_spark = ql_commodities::evaluate_carmona_durrleman_spark_spread_lower_bound(
+        &ql_commodities::CarmonaDurrlemanSparkSpreadSpec {
+            electricity_forward_f_e: T::from_f64(62.0) + x[0],
+            natural_gas_forward_f_g: T::from_f64(7.20) + x[1] * T::from_f64(0.2),
+            heat_rate_mmbtu_per_mwh_h: T::from_f64(7.50),
+            variable_om_strike_k_om: T::from_f64(6.50),
+            electricity_volatility_sigma_e: T::from_f64(0.48) + dx2,
+            gas_volatility_sigma_g: T::from_f64(0.42),
+            power_gas_correlation_rho: T::from_f64(0.65) + dx3,
+            risk_free_rate_r: T::from_f64(0.04),
+            maturity_years_t: T::from_f64(0.75),
+        },
+    );
+
+    let fx_tarf = ql_fx::evaluate_wystup_lipton_fx_tarf_target_redemption_cap(
+        &ql_fx::WystupLiptonFxTarfSpec {
+            spot_fx_s0: T::from_f64(1.09) + dx0,
+            tarf_strike_k: T::from_f64(1.06) + dx1,
+            target_redemption_cap_t_cap: T::from_f64(0.25) + dx2,
+            downside_gearing_leverage_l: T::from_f64(2.0),
+            total_fixing_dates_m: T::from_f64(12.0),
+            domestic_rate_rd: T::from_f64(0.045),
+            foreign_rate_rf: T::from_f64(0.030),
+            fx_volatility_sigma: T::from_f64(0.10) + dx3,
+            maturity_years_t: T::from_f64(1.0),
+        },
+    );
+
+    let bgk_lb = ql_exotics::evaluate_broadie_glasserman_kou_discrete_lookback_option(
+        &ql_exotics::BroadieGlassermanKouDiscreteLookbackSpec {
+            spot_price_s0: T::from_f64(100.0) + x[0],
+            observed_running_minimum_m0: T::from_f64(92.0) + x[1],
+            risk_free_rate_r: T::from_f64(0.05) + dx2,
+            dividend_yield_q: T::from_f64(0.015),
+            volatility_sigma: T::from_f64(0.25) + dx3,
+            discrete_monitoring_dates_n: T::from_f64(52.0),
+            maturity_years_t: T::from_f64(1.0),
+        },
+    );
+
+    let nm_ff5 = ql_portfolio::evaluate_novy_marx_fama_french_five_factor_spanning_alpha(
+        &ql_portfolio::NovyMarxFamaFrenchSpanningSpec {
+            gross_profitability_premium_rmw: T::from_f64(0.042) + dx0,
+            value_premium_hml: T::from_f64(0.038) + dx1,
+            investment_premium_cma: T::from_f64(0.032) + dx2,
+            hml_on_rmw_loading_phi_rmw: T::from_f64(0.22),
+            hml_on_cma_loading_phi_cma: T::from_f64(0.55),
+            hml_spanning_residual_vol_sigma_e: T::from_f64(0.068),
+            rmw_factor_vol_sigma_rmw: T::from_f64(0.085),
+            hml_factor_vol_sigma_hml: T::from_f64(0.105),
+            rmw_hml_correlation_rho: T::from_f64(-0.42) + dx3,
+        },
+    );
+
+    let acerbi_srm = ql_portfolio::evaluate_acerbi_tasche_exponential_spectral_risk_measure(
+        &ql_portfolio::AcerbiTascheExponentialSpectralRiskSpec {
+            portfolio_expected_return_mu: T::from_f64(0.08) + dx0,
+            portfolio_volatility_sigma: T::from_f64(0.18) + dx1,
+            return_skewness_gamma1: T::from_f64(-0.55) + dx2,
+            return_excess_kurtosis_gamma2: T::from_f64(2.40),
+            cara_spectral_risk_aversion_k: T::from_f64(25.0) + x[3],
+            reference_es_confidence_alpha: T::from_f64(0.975),
+        },
+    );
+
+    let corsi_har = ql_dml::evaluate_corsi_har_realized_volatility_multi_horizon_forecast(
+        &ql_dml::CorsiHarRealizedVolatilitySpec {
+            har_intercept_c: T::from_f64(0.000_012),
+            daily_rv_weight_beta_d: T::from_f64(0.36) + dx0,
+            weekly_rv_weight_beta_w: T::from_f64(0.34) + dx1,
+            monthly_rv_weight_beta_m: T::from_f64(0.25) + dx2,
+            current_daily_rv: T::from_f64(0.000_42),
+            current_weekly_rv: T::from_f64(0.000_31),
+            current_monthly_rv: T::from_f64(0.000_26),
+            realized_quarticity_rq: T::from_f64(0.000_000_45) + dx3 * T::from_f64(0.000_005),
+            forecast_horizon_days_h: T::from_f64(22.0),
+        },
+    );
+
+    let bll_nn = ql_models::evaluate_blanchard_lhuillier_lorenzoni_news_noise_kalman_filter(
+        &ql_models::BlanchardLhuillierLorenzoniNewsNoiseSpec {
+            fundamental_productivity_vol_sigma_a: T::from_f64(0.015) + dx0 * T::from_f64(0.1),
+            exogenous_news_noise_vol_sigma_e: T::from_f64(0.020) + dx1 * T::from_f64(0.1),
+            shannon_channel_capacity_bits_kappa: T::from_f64(1.50) + dx2 * T::from_f64(5.0),
+            observed_macro_news_signal_s: T::from_f64(0.025) + dx3 * T::from_f64(0.2),
+            consumption_demand_elasticity_gamma_c: T::from_f64(0.85),
+            phillips_curve_slope_kappa_pc: T::from_f64(0.18),
+        },
+    );
+
+    [
+        kw_shadow.survey_anchored_forward_term_premium * T::from_f64(100.0)
+            + kw_shadow.zlb_call_option_wedge_bps,
+        bs_cb.game_convertible_fair_value,
+        ds_rmv.rfv_risky_coupon_bond_price
+            + ds_rmv.mod_r_restructuring_cds_basis_bps * T::from_f64(0.01),
+        fn_gamma.gamma_swap_mark_to_market_npv + fn_gamma.neuberger_model_free_skewness_swap_rate,
+        bk_xva.semi_replication_total_xva_charge,
+        cd_spark.carmona_durrleman_spark_call_value,
+        fx_tarf.client_tarf_net_present_value,
+        bgk_lb.bgk_discrete_lookback_call_value,
+        nm_ff5.hmlo_information_ratio + nm_ff5.combined_value_profitability_sharpe,
+        acerbi_srm.exponential_spectral_risk_measure,
+        corsi_har.cumulative_average_h_day_rv * T::from_f64(1000.0)
+            + corsi_har.bns_asymptotic_rv_standard_error * T::from_f64(1000.0),
+        bll_nn.phillips_curve_inflation_impulse * T::from_f64(100.0),
+    ]
+}
+
+pub fn benchmark_kim_wright_shadow_rate_brennan_schwartz_cb_duffie_singleton_rmv_fukasawa_gamma_swap_burgard_kjaer_fva_carmona_durrleman_spark_wystup_fx_tarf_bgk_discrete_lookback_novy_marx_ff5_acerbi_spectral_es_corsi_har_rv_bll_news_noise(
+    scale: usize,
+) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let baseline = move || {
+        let f = |x: [f64; 4]| suite61_workloads(x).iter().copied().sum::<f64>();
+        let mut z = f(x0);
+        for i in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[i] += 1e-5;
+            d[i] -= 1e-5;
+            z += (f(u) - f(d)) / (2e-5);
+        }
+        for _ in 0..20 {
+            std::hint::black_box(f(x0));
+        }
+        z
+    };
+    let sota = move || {
+        let x: [Dual<4>; 4] = [
+            Dual::variable(x0[0], 0),
+            Dual::variable(x0[1], 1),
+            Dual::variable(x0[2], 2),
+            Dual::variable(x0[3], 3),
+        ];
+        suite61_workloads(x)
+            .iter()
+            .map(|v| v.val + v.d.iter().sum::<f64>())
+            .sum::<f64>()
+    };
+    run_comparison(
+        "61_kim_wright_shadow_rate_brennan_schwartz_cb_duffie_singleton_rmv_fukasawa_gamma_swap_burgard_kjaer_fva_carmona_durrleman_spark_wystup_fx_tarf_bgk_discrete_lookback_novy_marx_ff5_acerbi_spectral_es_corsi_har_rv_bll_news_noise",
+        "Kim-Wright-Shadow / Brennan-Schwartz-CB / Duffie-Singleton-RMV / Fukasawa-Gamma-Swap / Burgard-Kjaer-FVA / Carmona-Durrleman-Spark / Wystup-FX-TARF / BGK-Discrete-Lookback / Novy-Marx-FF5 / Acerbi-Spectral-ES / Corsi-HAR-RV / BLL-News-Noise AD",
         cfg,
         1e-3,
         baseline,

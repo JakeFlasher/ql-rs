@@ -493,3 +493,176 @@ mod evaluate_conze_viswanathan_fixed_strike_lookback_excursion_module {
     }
 }
 pub use evaluate_conze_viswanathan_fixed_strike_lookback_excursion_module::*;
+
+mod evaluate_broadie_glasserman_kou_discrete_lookback_option_module {
+    // Broadie, Glasserman & Kou (1999, Finance and Stochastics 3(1), "Connecting Discrete and
+    // Continuous Path-Dependent Options", Theorem 2), Goldman, Sosin & Gatto (1979, JF 34(5)),
+    // & Haug (2007, The Complete Guide to Option Pricing Formulas, Ch. 4.16.4)
+    // Continuity-Corrected Discrete Floating-Strike Lookback Call Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BroadieGlassermanKouDiscreteLookbackSpec<T: Real = f64> {
+        pub spot_price_s0: T,
+        pub observed_running_minimum_m0: T,
+        pub risk_free_rate_r: T,
+        pub dividend_yield_q: T,
+        pub volatility_sigma: T,
+        pub discrete_monitoring_dates_n: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BroadieGlassermanKouDiscreteLookbackReport<T: Real = f64> {
+        pub continuous_gsg_lookback_call_value: T,
+        pub bgk_discrete_lookback_call_value: T,
+        pub discrete_monitoring_price_discount: T,
+        pub riemann_zeta_shift_factor: T,
+        pub effective_shifted_minimum_m_eff: T,
+    }
+
+    fn gsg_floating_lookback_call_inner<T: Real>(s0: T, m: T, r: T, q: T, sig: T, t: T) -> T {
+        let b = (r - q).max_val(T::from_f64(0.002));
+        let var = sig * sig;
+        let sqrt_t = t.sqrt();
+        let std = sig * sqrt_t;
+        let df_r = (-r * t).exp();
+        let df_q = (-q * t).exp();
+
+        let a1 = ((s0 / m).ln() + (b + T::from_f64(0.5) * var) * t) / std;
+        let a2 = a1 - std;
+        let a3 = -a1 + (T::from_f64(2.0) * b * sqrt_t) / sig;
+        let lambda = (T::from_f64(2.0) * b) / var;
+        let ratio_pow = (-lambda * (s0 / m).ln()).exp();
+
+        s0 * df_q * norm_cdf(a1) - m * df_r * norm_cdf(a2)
+            + (s0 / lambda) * (df_r * ratio_pow * norm_cdf(a3) - df_q * norm_cdf(-a1))
+    }
+
+    pub fn evaluate_broadie_glasserman_kou_discrete_lookback_option<T: Real>(
+        spec: &BroadieGlassermanKouDiscreteLookbackSpec<T>,
+    ) -> BroadieGlassermanKouDiscreteLookbackReport<T> {
+        let s0 = spec.spot_price_s0.max_val(T::from_f64(1.0));
+        let m0 = spec
+            .observed_running_minimum_m0
+            .max_val(T::from_f64(0.5))
+            .min_val(s0);
+        let r = spec.risk_free_rate_r;
+        let q = spec.dividend_yield_q;
+        let sig = spec.volatility_sigma.max_val(T::from_f64(0.02));
+        let n = spec.discrete_monitoring_dates_n.max_val(T::from_f64(2.0));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+        let c_cont = gsg_floating_lookback_call_inner(s0, m0, r, q, sig, t);
+
+        // Broadie-Glasserman-Kou (1999) constant beta_1 = -zeta(1/2) / sqrt(2*pi) = 0.5825971579390107:
+        let beta1 = T::from_f64(0.582_597_157_939_010_7);
+        let dt = t / n;
+        let shift = (-beta1 * sig * dt.sqrt()).exp();
+
+        // Smooth minimum min(S0, m0 * shift) to keep C^infinity differentiability:
+        // The continuity correction maps the observed discrete minimum to a
+        // lower effective continuous minimum (BGK's beta_1 shift).
+        let m_shifted = m0 * shift;
+        let diff = s0 - m_shifted;
+        let m_eff = T::from_f64(0.5) * (s0 + m_shifted - (diff * diff + T::from_f64(1e-6)).sqrt());
+
+        let df_q = (-q * t).exp();
+        let c_cont_shifted = gsg_floating_lookback_call_inner(s0, m_eff, r, q, sig, t);
+        let c_disc = c_cont_shifted / shift + s0 * df_q * (T::one() - T::one() / shift);
+        let discount = c_cont - c_disc;
+
+        BroadieGlassermanKouDiscreteLookbackReport {
+            continuous_gsg_lookback_call_value: c_cont,
+            bgk_discrete_lookback_call_value: c_disc,
+            discrete_monitoring_price_discount: discount,
+            riemann_zeta_shift_factor: shift,
+            effective_shifted_minimum_m_eff: m_eff,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_broadie_glasserman_kou_discrete_lookback_option_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn bgk_discrete_lookback_invariants_and_ad_parity() {
+            let spec = BroadieGlassermanKouDiscreteLookbackSpec {
+                spot_price_s0: 100.0,
+                observed_running_minimum_m0: 92.0,
+                risk_free_rate_r: 0.05,
+                dividend_yield_q: 0.015,
+                volatility_sigma: 0.25,
+                discrete_monitoring_dates_n: 52.0,
+                maturity_years_t: 1.0,
+            };
+            let rep = evaluate_broadie_glasserman_kou_discrete_lookback_option(&spec);
+            assert!(rep.bgk_discrete_lookback_call_value < rep.continuous_gsg_lookback_call_value);
+            assert!(rep.discrete_monitoring_price_discount > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_broadie_glasserman_kou_discrete_lookback_option(
+                &BroadieGlassermanKouDiscreteLookbackSpec {
+                    spot_price_s0: Dual::<6>::variable(spec.spot_price_s0, 0),
+                    observed_running_minimum_m0: Dual::<6>::variable(
+                        spec.observed_running_minimum_m0,
+                        1,
+                    ),
+                    risk_free_rate_r: Dual::<6>::variable(spec.risk_free_rate_r, 2),
+                    dividend_yield_q: Dual::from_f64(spec.dividend_yield_q),
+                    volatility_sigma: Dual::<6>::variable(spec.volatility_sigma, 3),
+                    discrete_monitoring_dates_n: Dual::<6>::variable(
+                        spec.discrete_monitoring_dates_n,
+                        4,
+                    ),
+                    maturity_years_t: Dual::<6>::variable(spec.maturity_years_t, 5),
+                },
+            );
+            for i in 0..6 {
+                let mut v = [
+                    spec.spot_price_s0,
+                    spec.observed_running_minimum_m0,
+                    spec.risk_free_rate_r,
+                    spec.volatility_sigma,
+                    spec.discrete_monitoring_dates_n,
+                    spec.maturity_years_t,
+                ];
+                v[i] += h;
+                let up = evaluate_broadie_glasserman_kou_discrete_lookback_option(
+                    &BroadieGlassermanKouDiscreteLookbackSpec {
+                        spot_price_s0: v[0],
+                        observed_running_minimum_m0: v[1],
+                        risk_free_rate_r: v[2],
+                        volatility_sigma: v[3],
+                        discrete_monitoring_dates_n: v[4],
+                        maturity_years_t: v[5],
+                        ..spec
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_broadie_glasserman_kou_discrete_lookback_option(
+                    &BroadieGlassermanKouDiscreteLookbackSpec {
+                        spot_price_s0: v[0],
+                        observed_running_minimum_m0: v[1],
+                        risk_free_rate_r: v[2],
+                        volatility_sigma: v[3],
+                        discrete_monitoring_dates_n: v[4],
+                        maturity_years_t: v[5],
+                        ..spec
+                    },
+                );
+                let fd = (up.bgk_discrete_lookback_call_value
+                    - dn.bgk_discrete_lookback_call_value)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.bgk_discrete_lookback_call_value.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_broadie_glasserman_kou_discrete_lookback_option_module::*;

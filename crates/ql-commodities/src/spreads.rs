@@ -2001,3 +2001,192 @@ mod evaluate_deng_johnson_locational_transmission_congestion_option_module {
     }
 }
 pub use evaluate_deng_johnson_locational_transmission_congestion_option_module::*;
+
+mod evaluate_carmona_durrleman_spark_spread_lower_bound_module {
+    // Carmona & Durrleman (2003, SIAM Review 45(4), "Pricing and Hedging Spread Options"),
+    // Deng, Johnson & Sogomonian (2001, Review of Derivatives Research 4(3)),
+    // & Eydeland & Wolyniec (2003, Energy and Power Risk Management, Ch. 7)
+    // Power Plant Tolling Spark Spread Lower-Bound & Second-Order Curvature Engine.
+
+    use ql_ad::Real;
+    use ql_math::norm_cdf;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct CarmonaDurrlemanSparkSpreadSpec<T: Real = f64> {
+        pub electricity_forward_f_e: T,
+        pub natural_gas_forward_f_g: T,
+        pub heat_rate_mmbtu_per_mwh_h: T,
+        pub variable_om_strike_k_om: T,
+        pub electricity_volatility_sigma_e: T,
+        pub gas_volatility_sigma_g: T,
+        pub power_gas_correlation_rho: T,
+        pub risk_free_rate_r: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct CarmonaDurrlemanSparkSpreadReport<T: Real = f64> {
+        pub kirk_composite_volatility: T,
+        pub carmona_durrleman_effective_volatility: T,
+        pub kirk_benchmark_spark_call_value: T,
+        pub carmona_durrleman_spark_call_value: T,
+        pub curvature_basis_over_kirk: T,
+        pub power_forward_delta: T,
+        pub implied_plant_dispatch_probability: T,
+    }
+
+    pub fn evaluate_carmona_durrleman_spark_spread_lower_bound<T: Real>(
+        spec: &CarmonaDurrlemanSparkSpreadSpec<T>,
+    ) -> CarmonaDurrlemanSparkSpreadReport<T> {
+        let f_e = spec.electricity_forward_f_e.max_val(T::from_f64(1.0));
+        let f_g = spec.natural_gas_forward_f_g.max_val(T::from_f64(0.1));
+        let h = spec.heat_rate_mmbtu_per_mwh_h.max_val(T::from_f64(1.0));
+        let k_om = spec.variable_om_strike_k_om.max_val(T::from_f64(0.1));
+        let sig_e = spec
+            .electricity_volatility_sigma_e
+            .max_val(T::from_f64(0.02));
+        let sig_g = spec.gas_volatility_sigma_g.max_val(T::from_f64(0.02));
+        let rho = spec
+            .power_gas_correlation_rho
+            .max_val(T::from_f64(-0.98))
+            .min_val(T::from_f64(0.98));
+        let r = spec.risk_free_rate_r;
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+        let x_fuel = h * f_g;
+        let x_tot = x_fuel + k_om;
+        let psi = x_fuel / x_tot;
+        let om_share = T::one() - psi;
+
+        let var_kirk = (sig_e * sig_e - T::from_f64(2.0) * rho * psi * sig_e * sig_g
+            + psi * psi * sig_g * sig_g)
+            .max_val(T::from_f64(1e-6));
+        let sig_kirk = var_kirk.sqrt();
+
+        // Carmona-Durrleman (2003) / Bjerksund-Stensland second-order log-sum curvature variance correction:
+        let curv_var = T::from_f64(0.25)
+            * (T::one() - rho * rho)
+            * psi
+            * psi
+            * om_share
+            * om_share
+            * (sig_g * sig_g * sig_g * sig_g / var_kirk)
+            * t;
+        let sig_cd = (var_kirk + curv_var).sqrt();
+
+        let sqrt_t = t.sqrt();
+        let df = (-r * t).exp();
+        let log_m = (f_e / x_tot).ln();
+
+        let std_kirk = sig_kirk * sqrt_t;
+        let d1_k = (log_m + T::from_f64(0.5) * var_kirk * t) / std_kirk;
+        let d2_k = d1_k - std_kirk;
+        let c_kirk = df * (f_e * norm_cdf(d1_k) - x_tot * norm_cdf(d2_k));
+
+        let std_cd = sig_cd * sqrt_t;
+        let d1_cd = (log_m + T::from_f64(0.5) * sig_cd * sig_cd * t) / std_cd;
+        let d2_cd = d1_cd - std_cd;
+        let c_cd = df * (f_e * norm_cdf(d1_cd) - x_tot * norm_cdf(d2_cd));
+
+        let basis = c_cd - c_kirk;
+        let delta_e = df * norm_cdf(d1_cd);
+        let dispatch_prob = norm_cdf(d2_cd);
+
+        CarmonaDurrlemanSparkSpreadReport {
+            kirk_composite_volatility: sig_kirk,
+            carmona_durrleman_effective_volatility: sig_cd,
+            kirk_benchmark_spark_call_value: c_kirk,
+            carmona_durrleman_spark_call_value: c_cd,
+            curvature_basis_over_kirk: basis,
+            power_forward_delta: delta_e,
+            implied_plant_dispatch_probability: dispatch_prob,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_carmona_durrleman_spark_spread_lower_bound_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn carmona_durrleman_spark_spread_invariants_and_ad_parity() {
+            let spec = CarmonaDurrlemanSparkSpreadSpec {
+                electricity_forward_f_e: 62.0,
+                natural_gas_forward_f_g: 7.20,
+                heat_rate_mmbtu_per_mwh_h: 7.50,
+                variable_om_strike_k_om: 6.50,
+                electricity_volatility_sigma_e: 0.48,
+                gas_volatility_sigma_g: 0.42,
+                power_gas_correlation_rho: 0.65,
+                risk_free_rate_r: 0.04,
+                maturity_years_t: 0.75,
+            };
+            let rep = evaluate_carmona_durrleman_spark_spread_lower_bound(&spec);
+            assert!(rep.carmona_durrleman_effective_volatility > rep.kirk_composite_volatility);
+            assert!(rep.curvature_basis_over_kirk > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_carmona_durrleman_spark_spread_lower_bound(
+                &CarmonaDurrlemanSparkSpreadSpec {
+                    electricity_forward_f_e: Dual::<6>::variable(spec.electricity_forward_f_e, 0),
+                    natural_gas_forward_f_g: Dual::<6>::variable(spec.natural_gas_forward_f_g, 1),
+                    heat_rate_mmbtu_per_mwh_h: Dual::from_f64(spec.heat_rate_mmbtu_per_mwh_h),
+                    variable_om_strike_k_om: Dual::<6>::variable(spec.variable_om_strike_k_om, 2),
+                    electricity_volatility_sigma_e: Dual::<6>::variable(
+                        spec.electricity_volatility_sigma_e,
+                        3,
+                    ),
+                    gas_volatility_sigma_g: Dual::<6>::variable(spec.gas_volatility_sigma_g, 4),
+                    power_gas_correlation_rho: Dual::<6>::variable(
+                        spec.power_gas_correlation_rho,
+                        5,
+                    ),
+                    risk_free_rate_r: Dual::from_f64(spec.risk_free_rate_r),
+                    maturity_years_t: Dual::from_f64(spec.maturity_years_t),
+                },
+            );
+            for i in 0..6 {
+                let mut v = [
+                    spec.electricity_forward_f_e,
+                    spec.natural_gas_forward_f_g,
+                    spec.variable_om_strike_k_om,
+                    spec.electricity_volatility_sigma_e,
+                    spec.gas_volatility_sigma_g,
+                    spec.power_gas_correlation_rho,
+                ];
+                v[i] += h;
+                let up = evaluate_carmona_durrleman_spark_spread_lower_bound(
+                    &CarmonaDurrlemanSparkSpreadSpec {
+                        electricity_forward_f_e: v[0],
+                        natural_gas_forward_f_g: v[1],
+                        variable_om_strike_k_om: v[2],
+                        electricity_volatility_sigma_e: v[3],
+                        gas_volatility_sigma_g: v[4],
+                        power_gas_correlation_rho: v[5],
+                        ..spec
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_carmona_durrleman_spark_spread_lower_bound(
+                    &CarmonaDurrlemanSparkSpreadSpec {
+                        electricity_forward_f_e: v[0],
+                        natural_gas_forward_f_g: v[1],
+                        variable_om_strike_k_om: v[2],
+                        electricity_volatility_sigma_e: v[3],
+                        gas_volatility_sigma_g: v[4],
+                        power_gas_correlation_rho: v[5],
+                        ..spec
+                    },
+                );
+                let fd = (up.carmona_durrleman_spark_call_value
+                    - dn.carmona_durrleman_spark_call_value)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.carmona_durrleman_spark_call_value.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_carmona_durrleman_spark_spread_lower_bound_module::*;

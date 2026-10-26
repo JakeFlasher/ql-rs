@@ -1563,3 +1563,168 @@ mod evaluate_campbell_shiller_cape_excess_yield_forecast_module {
     }
 }
 pub use evaluate_campbell_shiller_cape_excess_yield_forecast_module::*;
+
+mod evaluate_blanchard_lhuillier_lorenzoni_news_noise_kalman_filter_module {
+    // Blanchard, L'Huillier & Lorenzoni (2013, American Economic Review 103(7), "News, Noise,
+    // and Fluctuations: An Empirical Exploration"), Sims (2003, JME 50(3), "Implications of
+    // Rational Inattention"), & Veldkamp (2011, Information Choice in Macroeconomics and Finance)
+    // News-vs-Noise Kalman Signal Extraction & Rational-Inattention Output-Inflation Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BlanchardLhuillierLorenzoniNewsNoiseSpec<T: Real = f64> {
+        pub fundamental_productivity_vol_sigma_a: T,
+        pub exogenous_news_noise_vol_sigma_e: T,
+        pub shannon_channel_capacity_bits_kappa: T,
+        pub observed_macro_news_signal_s: T,
+        pub consumption_demand_elasticity_gamma_c: T,
+        pub phillips_curve_slope_kappa_pc: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BlanchardLhuillierLorenzoniNewsNoiseReport<T: Real = f64> {
+        pub rational_inattention_endogenous_noise_var: T,
+        pub optimal_kalman_signal_extraction_gain: T,
+        pub posterior_fundamental_productivity_hat_a: T,
+        pub posterior_fundamental_variance: T,
+        pub sentiment_driven_output_gap_impulse: T,
+        pub phillips_curve_inflation_impulse: T,
+    }
+
+    pub fn evaluate_blanchard_lhuillier_lorenzoni_news_noise_kalman_filter<T: Real>(
+        spec: &BlanchardLhuillierLorenzoniNewsNoiseSpec<T>,
+    ) -> BlanchardLhuillierLorenzoniNewsNoiseReport<T> {
+        let sig_a = spec
+            .fundamental_productivity_vol_sigma_a
+            .max_val(T::from_f64(0.001));
+        let sig_e = spec
+            .exogenous_news_noise_vol_sigma_e
+            .max_val(T::from_f64(0.001));
+        let kappa_bits = spec
+            .shannon_channel_capacity_bits_kappa
+            .max_val(T::from_f64(0.10));
+        let s_obs = spec.observed_macro_news_signal_s;
+        let gamma_c = spec.consumption_demand_elasticity_gamma_c;
+        let kappa_pc = spec.phillips_curve_slope_kappa_pc;
+
+        let var_a = sig_a * sig_a;
+        let var_e = sig_e * sig_e;
+
+        // Sims (2003) Shannon channel capacity constraint I(a; s_ri) <= kappa_bits => var_ri = var_a / (2^{2*kappa_bits} - 1):
+        let two_ln2 = T::from_f64(1.386_294_361_119_890_6);
+        let cap_denom = ((two_ln2 * kappa_bits).exp() - T::one()).max_val(T::from_f64(1e-4));
+        let var_ri = var_a / cap_denom;
+
+        let var_tot = var_a + var_e + var_ri;
+        let gain_g = var_a / var_tot;
+
+        let a_hat = gain_g * s_obs;
+        let post_var = (T::one() - gain_g) * var_a;
+        let dy_impulse = gamma_c * a_hat;
+        let dpi_impulse = kappa_pc * dy_impulse;
+
+        BlanchardLhuillierLorenzoniNewsNoiseReport {
+            rational_inattention_endogenous_noise_var: var_ri,
+            optimal_kalman_signal_extraction_gain: gain_g,
+            posterior_fundamental_productivity_hat_a: a_hat,
+            posterior_fundamental_variance: post_var,
+            sentiment_driven_output_gap_impulse: dy_impulse,
+            phillips_curve_inflation_impulse: dpi_impulse,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_blanchard_lhuillier_lorenzoni_news_noise_kalman_filter_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn blanchard_lhuillier_lorenzoni_news_noise_invariants_and_ad_parity() {
+            let spec = BlanchardLhuillierLorenzoniNewsNoiseSpec {
+                fundamental_productivity_vol_sigma_a: 0.015,
+                exogenous_news_noise_vol_sigma_e: 0.020,
+                shannon_channel_capacity_bits_kappa: 1.50,
+                observed_macro_news_signal_s: 0.025,
+                consumption_demand_elasticity_gamma_c: 0.85,
+                phillips_curve_slope_kappa_pc: 0.18,
+            };
+            let rep = evaluate_blanchard_lhuillier_lorenzoni_news_noise_kalman_filter(&spec);
+            assert!(
+                rep.optimal_kalman_signal_extraction_gain > 0.0
+                    && rep.optimal_kalman_signal_extraction_gain < 1.0
+            );
+            assert!(rep.posterior_fundamental_variance < 0.015 * 0.015);
+
+            let h = 1e-6;
+            let r_ad = evaluate_blanchard_lhuillier_lorenzoni_news_noise_kalman_filter(
+                &BlanchardLhuillierLorenzoniNewsNoiseSpec {
+                    fundamental_productivity_vol_sigma_a: Dual::<6>::variable(
+                        spec.fundamental_productivity_vol_sigma_a,
+                        0,
+                    ),
+                    exogenous_news_noise_vol_sigma_e: Dual::<6>::variable(
+                        spec.exogenous_news_noise_vol_sigma_e,
+                        1,
+                    ),
+                    shannon_channel_capacity_bits_kappa: Dual::<6>::variable(
+                        spec.shannon_channel_capacity_bits_kappa,
+                        2,
+                    ),
+                    observed_macro_news_signal_s: Dual::<6>::variable(
+                        spec.observed_macro_news_signal_s,
+                        3,
+                    ),
+                    consumption_demand_elasticity_gamma_c: Dual::<6>::variable(
+                        spec.consumption_demand_elasticity_gamma_c,
+                        4,
+                    ),
+                    phillips_curve_slope_kappa_pc: Dual::<6>::variable(
+                        spec.phillips_curve_slope_kappa_pc,
+                        5,
+                    ),
+                },
+            );
+            for i in 0..6 {
+                let mut v = [
+                    spec.fundamental_productivity_vol_sigma_a,
+                    spec.exogenous_news_noise_vol_sigma_e,
+                    spec.shannon_channel_capacity_bits_kappa,
+                    spec.observed_macro_news_signal_s,
+                    spec.consumption_demand_elasticity_gamma_c,
+                    spec.phillips_curve_slope_kappa_pc,
+                ];
+                v[i] += h;
+                let up = evaluate_blanchard_lhuillier_lorenzoni_news_noise_kalman_filter(
+                    &BlanchardLhuillierLorenzoniNewsNoiseSpec {
+                        fundamental_productivity_vol_sigma_a: v[0],
+                        exogenous_news_noise_vol_sigma_e: v[1],
+                        shannon_channel_capacity_bits_kappa: v[2],
+                        observed_macro_news_signal_s: v[3],
+                        consumption_demand_elasticity_gamma_c: v[4],
+                        phillips_curve_slope_kappa_pc: v[5],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_blanchard_lhuillier_lorenzoni_news_noise_kalman_filter(
+                    &BlanchardLhuillierLorenzoniNewsNoiseSpec {
+                        fundamental_productivity_vol_sigma_a: v[0],
+                        exogenous_news_noise_vol_sigma_e: v[1],
+                        shannon_channel_capacity_bits_kappa: v[2],
+                        observed_macro_news_signal_s: v[3],
+                        consumption_demand_elasticity_gamma_c: v[4],
+                        phillips_curve_slope_kappa_pc: v[5],
+                    },
+                );
+                let fd = (up.phillips_curve_inflation_impulse
+                    - dn.phillips_curve_inflation_impulse)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.phillips_curve_inflation_impulse.d[i] - fd).abs() < 1e-6,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_blanchard_lhuillier_lorenzoni_news_noise_kalman_filter_module::*;

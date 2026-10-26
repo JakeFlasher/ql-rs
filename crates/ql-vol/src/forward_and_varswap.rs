@@ -1731,3 +1731,159 @@ mod evaluate_roger_lee_wing_moment_slope_bound_module {
     }
 }
 pub use evaluate_roger_lee_wing_moment_slope_bound_module::*;
+
+mod evaluate_fukasawa_neuberger_gamma_skewness_swap_strip_module {
+    // Fukasawa (2014, Finance and Stochastics 18(1), "Volatility Derivatives and Model-Free
+    // Implied Quantities"), Neuberger (2012, Review of Financial Studies 25(11), "Realized Skewness"),
+    // & Gatheral (2006, The Volatility Surface, Ch. 11)
+    // Gamma Swap, Variance Swap & Neuberger Realized Skewness Swap Strip Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct FukasawaNeubergerGammaSkewnessSwapSpec<T: Real = f64> {
+        pub forward_price_f0: T,
+        pub atm_volatility_sigma0: T,
+        pub log_moneyness_skew_slope_alpha: T,
+        pub log_moneyness_curvature_beta: T,
+        pub realized_spot_weighted_variance: T,
+        pub maturity_years_t: T,
+        pub variance_notional_n_var: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct FukasawaNeubergerGammaSkewnessSwapReport<T: Real = f64> {
+        pub fair_variance_swap_variance_strike: T,
+        pub fair_gamma_swap_variance_strike: T,
+        pub gamma_minus_variance_swap_basis_bps: T,
+        pub neuberger_model_free_skewness_swap_rate: T,
+        pub entropy_contract_annualized_vol: T,
+        pub gamma_swap_mark_to_market_npv: T,
+    }
+
+    pub fn evaluate_fukasawa_neuberger_gamma_skewness_swap_strip<T: Real>(
+        spec: &FukasawaNeubergerGammaSkewnessSwapSpec<T>,
+    ) -> FukasawaNeubergerGammaSkewnessSwapReport<T> {
+        let f0 = spec.forward_price_f0.max_val(T::from_f64(1.0));
+        let sig0 = spec.atm_volatility_sigma0.max_val(T::from_f64(0.02));
+        let alpha = spec.log_moneyness_skew_slope_alpha;
+        let beta = spec.log_moneyness_curvature_beta.max_val(T::from_f64(0.0));
+        let rv_gamma = spec
+            .realized_spot_weighted_variance
+            .max_val(T::from_f64(0.0));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+        let n_var = spec.variance_notional_n_var;
+
+        let var0 = sig0 * sig0;
+        let curv_adj = (alpha * alpha + T::from_f64(0.5) * sig0 * beta) * t;
+
+        // Under log-moneyness smile sigma(k) = sigma0 + alpha*k + 0.5*beta*k^2:
+        // Log-contract E^Q[k] = -0.5 * sigma0^2 * T, whereas share-measure entropy E^S[k] = +0.5 * sigma0^2 * T:
+        let k_var = var0 * (T::one() - alpha * sig0 * t + curv_adj);
+        let k_gamma = var0 * (T::one() + alpha * sig0 * t + curv_adj);
+
+        let basis_bps = (k_gamma - k_var) * T::from_f64(10_000.0);
+
+        // Neuberger (2012, Proposition 1) third-moment entropy minus log-contract skewness swap rate:
+        // S_skew = 3 * (K_gamma - K_var) / (sigma0^3 * sqrt(T)) = 6 * alpha * sqrt(T):
+        let skew_swap = T::from_f64(3.0) * (k_gamma - k_var) / (sig0 * var0 * t.sqrt());
+        let entropy_vol = k_gamma.max_val(T::from_f64(1e-6)).sqrt();
+        let spot_weight = f0 / T::from_f64(100.0);
+        let mtm_npv = n_var * (rv_gamma - spot_weight * k_gamma);
+
+        FukasawaNeubergerGammaSkewnessSwapReport {
+            fair_variance_swap_variance_strike: k_var,
+            fair_gamma_swap_variance_strike: k_gamma,
+            gamma_minus_variance_swap_basis_bps: basis_bps,
+            neuberger_model_free_skewness_swap_rate: skew_swap,
+            entropy_contract_annualized_vol: entropy_vol,
+            gamma_swap_mark_to_market_npv: mtm_npv,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_fukasawa_neuberger_gamma_skewness_swap_strip_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn fukasawa_neuberger_gamma_skewness_swap_strip_invariants_and_ad_parity() {
+            let spec = FukasawaNeubergerGammaSkewnessSwapSpec {
+                forward_price_f0: 100.0,
+                atm_volatility_sigma0: 0.20,
+                log_moneyness_skew_slope_alpha: -0.18,
+                log_moneyness_curvature_beta: 0.25,
+                realized_spot_weighted_variance: 0.042,
+                maturity_years_t: 0.50,
+                variance_notional_n_var: 1000.0,
+            };
+            let rep = evaluate_fukasawa_neuberger_gamma_skewness_swap_strip(&spec);
+            // With negative equity skew (alpha < 0), Gamma swap strike is strictly below Variance swap strike:
+            assert!(rep.fair_gamma_swap_variance_strike < rep.fair_variance_swap_variance_strike);
+            assert!(rep.neuberger_model_free_skewness_swap_rate < 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_fukasawa_neuberger_gamma_skewness_swap_strip(
+                &FukasawaNeubergerGammaSkewnessSwapSpec {
+                    forward_price_f0: Dual::<6>::variable(spec.forward_price_f0, 0),
+                    atm_volatility_sigma0: Dual::<6>::variable(spec.atm_volatility_sigma0, 1),
+                    log_moneyness_skew_slope_alpha: Dual::<6>::variable(
+                        spec.log_moneyness_skew_slope_alpha,
+                        2,
+                    ),
+                    log_moneyness_curvature_beta: Dual::<6>::variable(
+                        spec.log_moneyness_curvature_beta,
+                        3,
+                    ),
+                    realized_spot_weighted_variance: Dual::<6>::variable(
+                        spec.realized_spot_weighted_variance,
+                        4,
+                    ),
+                    maturity_years_t: Dual::<6>::variable(spec.maturity_years_t, 5),
+                    variance_notional_n_var: Dual::from_f64(spec.variance_notional_n_var),
+                },
+            );
+            for i in 0..6 {
+                let mut v = [
+                    spec.forward_price_f0,
+                    spec.atm_volatility_sigma0,
+                    spec.log_moneyness_skew_slope_alpha,
+                    spec.log_moneyness_curvature_beta,
+                    spec.realized_spot_weighted_variance,
+                    spec.maturity_years_t,
+                ];
+                v[i] += h;
+                let up = evaluate_fukasawa_neuberger_gamma_skewness_swap_strip(
+                    &FukasawaNeubergerGammaSkewnessSwapSpec {
+                        forward_price_f0: v[0],
+                        atm_volatility_sigma0: v[1],
+                        log_moneyness_skew_slope_alpha: v[2],
+                        log_moneyness_curvature_beta: v[3],
+                        realized_spot_weighted_variance: v[4],
+                        maturity_years_t: v[5],
+                        ..spec
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_fukasawa_neuberger_gamma_skewness_swap_strip(
+                    &FukasawaNeubergerGammaSkewnessSwapSpec {
+                        forward_price_f0: v[0],
+                        atm_volatility_sigma0: v[1],
+                        log_moneyness_skew_slope_alpha: v[2],
+                        log_moneyness_curvature_beta: v[3],
+                        realized_spot_weighted_variance: v[4],
+                        maturity_years_t: v[5],
+                        ..spec
+                    },
+                );
+                let fd = (up.gamma_swap_mark_to_market_npv - dn.gamma_swap_mark_to_market_npv)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.gamma_swap_mark_to_market_npv.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_fukasawa_neuberger_gamma_skewness_swap_strip_module::*;

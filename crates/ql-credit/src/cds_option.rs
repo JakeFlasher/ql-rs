@@ -1694,3 +1694,160 @@ mod evaluate_merton_kmv_distance_to_default_credit_equity_hedge_module {
     }
 }
 pub use evaluate_merton_kmv_distance_to_default_credit_equity_hedge_module::*;
+
+mod evaluate_duffie_singleton_rmv_rfv_credit_triangle_basis_module {
+    // Duffie & Singleton (1999, Review of Financial Studies 12(4), "Modeling Term Structures
+    // of Defaultable Bonds"), Jarrow & Turnbull (1995), Lando (2004, Ch. 4-5),
+    // & O'Kane (2008, Modelling Single-name and Multi-name Credit Derivatives, Ch. 6)
+    // RMV vs. RT vs. RFV Credit Triangle & Restructuring Cheapest-to-Deliver Basis Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct DuffieSingletonRmvRfvBasisSpec<T: Real = f64> {
+        pub risk_free_rate_r: T,
+        pub hazard_rate_lambda: T,
+        pub recovery_rate_rec: T,
+        pub bond_coupon_rate_c: T,
+        pub deliverable_recovery_dispersion_sigma_r: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct DuffieSingletonRmvRfvBasisReport<T: Real = f64> {
+        pub rmv_credit_spread: T,
+        pub rt_zero_coupon_credit_spread: T,
+        pub rmv_risky_coupon_bond_price: T,
+        pub rfv_risky_coupon_bond_price: T,
+        pub rfv_minus_rmv_bond_price_basis_pts: T,
+        pub expected_ctd_restructuring_recovery: T,
+        pub mod_r_restructuring_cds_basis_bps: T,
+    }
+
+    pub fn evaluate_duffie_singleton_rmv_rfv_credit_triangle_basis<T: Real>(
+        spec: &DuffieSingletonRmvRfvBasisSpec<T>,
+    ) -> DuffieSingletonRmvRfvBasisReport<T> {
+        let r = spec.risk_free_rate_r.max_val(T::from_f64(0.001));
+        let lam = spec.hazard_rate_lambda.max_val(T::from_f64(1e-4));
+        let rec = spec
+            .recovery_rate_rec
+            .max_val(T::from_f64(0.02))
+            .min_val(T::from_f64(0.95));
+        let c = spec.bond_coupon_rate_c;
+        let sig_r = spec
+            .deliverable_recovery_dispersion_sigma_r
+            .max_val(T::from_f64(0.0));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.25));
+
+        // 1. Duffie-Singleton (1999) Recovery of Market Value (RMV):
+        let s_rmv = lam * (T::one() - rec);
+        let y_rmv = r + s_rmv;
+        let df_rmv = (-y_rmv * t).exp();
+        let b_rmv = (c / y_rmv) * (T::one() - df_rmv) + df_rmv;
+
+        // 2. Jarrow-Turnbull (1995) Recovery of Treasury (RT) zero-coupon credit spread:
+        let surv = (-lam * t).exp();
+        let rt_survival_adj = surv + rec * (T::one() - surv);
+        let s_rt = -rt_survival_adj.max_val(T::from_f64(1e-8)).ln() / t;
+
+        // 3. Lando (2004) / ISDA Recovery of Face Value (RFV) coupon bond price:
+        let y_rfv = r + lam;
+        let df_rfv = (-y_rfv * t).exp();
+        let b_rfv = ((c + lam * rec) / y_rfv) * (T::one() - df_rfv) + df_rfv;
+        let rfv_rmv_basis_pts = (b_rfv - b_rmv) * T::from_f64(100.0);
+
+        // 4. O'Kane (2008, Ch. 6) Mod-R / Mod-Mod-R Cheapest-to-Deliver (CTD) restructuring recovery & CDS basis:
+        // Expected minimum of two Gaussian deliverable recoveries with dispersion sigma_r is E[min(R1, R2)] = R - sigma_r / sqrt(pi):
+        let inv_sqrt_pi = T::from_f64(0.564_189_583_547_756_3);
+        let rec_ctd = (rec - sig_r * inv_sqrt_pi).max_val(T::from_f64(0.01));
+        let mod_r_basis_bps = lam * (rec - rec_ctd) * T::from_f64(10_000.0);
+
+        DuffieSingletonRmvRfvBasisReport {
+            rmv_credit_spread: s_rmv,
+            rt_zero_coupon_credit_spread: s_rt,
+            rmv_risky_coupon_bond_price: b_rmv,
+            rfv_risky_coupon_bond_price: b_rfv,
+            rfv_minus_rmv_bond_price_basis_pts: rfv_rmv_basis_pts,
+            expected_ctd_restructuring_recovery: rec_ctd,
+            mod_r_restructuring_cds_basis_bps: mod_r_basis_bps,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_duffie_singleton_rmv_rfv_credit_triangle_basis_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn duffie_singleton_rmv_rfv_credit_triangle_basis_invariants_and_ad_parity() {
+            let spec = DuffieSingletonRmvRfvBasisSpec {
+                risk_free_rate_r: 0.04,
+                hazard_rate_lambda: 0.03,
+                recovery_rate_rec: 0.40,
+                bond_coupon_rate_c: 0.055,
+                deliverable_recovery_dispersion_sigma_r: 0.08,
+                maturity_years_t: 5.0,
+            };
+            let rep = evaluate_duffie_singleton_rmv_rfv_credit_triangle_basis(&spec);
+            assert!((rep.rmv_credit_spread - 0.018).abs() < 1e-12);
+            assert!(rep.expected_ctd_restructuring_recovery < spec.recovery_rate_rec);
+            assert!(rep.mod_r_restructuring_cds_basis_bps > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_duffie_singleton_rmv_rfv_credit_triangle_basis(
+                &DuffieSingletonRmvRfvBasisSpec {
+                    risk_free_rate_r: Dual::<6>::variable(spec.risk_free_rate_r, 0),
+                    hazard_rate_lambda: Dual::<6>::variable(spec.hazard_rate_lambda, 1),
+                    recovery_rate_rec: Dual::<6>::variable(spec.recovery_rate_rec, 2),
+                    bond_coupon_rate_c: Dual::<6>::variable(spec.bond_coupon_rate_c, 3),
+                    deliverable_recovery_dispersion_sigma_r: Dual::<6>::variable(
+                        spec.deliverable_recovery_dispersion_sigma_r,
+                        4,
+                    ),
+                    maturity_years_t: Dual::<6>::variable(spec.maturity_years_t, 5),
+                },
+            );
+            for i in 0..6 {
+                let mut v = [
+                    spec.risk_free_rate_r,
+                    spec.hazard_rate_lambda,
+                    spec.recovery_rate_rec,
+                    spec.bond_coupon_rate_c,
+                    spec.deliverable_recovery_dispersion_sigma_r,
+                    spec.maturity_years_t,
+                ];
+                v[i] += h;
+                let up = evaluate_duffie_singleton_rmv_rfv_credit_triangle_basis(
+                    &DuffieSingletonRmvRfvBasisSpec {
+                        risk_free_rate_r: v[0],
+                        hazard_rate_lambda: v[1],
+                        recovery_rate_rec: v[2],
+                        bond_coupon_rate_c: v[3],
+                        deliverable_recovery_dispersion_sigma_r: v[4],
+                        maturity_years_t: v[5],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_duffie_singleton_rmv_rfv_credit_triangle_basis(
+                    &DuffieSingletonRmvRfvBasisSpec {
+                        risk_free_rate_r: v[0],
+                        hazard_rate_lambda: v[1],
+                        recovery_rate_rec: v[2],
+                        bond_coupon_rate_c: v[3],
+                        deliverable_recovery_dispersion_sigma_r: v[4],
+                        maturity_years_t: v[5],
+                    },
+                );
+                let val_ad = r_ad.rfv_risky_coupon_bond_price
+                    + r_ad.mod_r_restructuring_cds_basis_bps * Dual::from_f64(0.01);
+                let fd = ((up.rfv_risky_coupon_bond_price
+                    + up.mod_r_restructuring_cds_basis_bps * 0.01)
+                    - (dn.rfv_risky_coupon_bond_price
+                        + dn.mod_r_restructuring_cds_basis_bps * 0.01))
+                    / (2.0 * h);
+                assert!((val_ad.d[i] - fd).abs() < 1e-5, "input {i}");
+            }
+        }
+    }
+}
+pub use evaluate_duffie_singleton_rmv_rfv_credit_triangle_basis_module::*;

@@ -5141,3 +5141,185 @@ mod evaluate_tasche_litterman_hot_spots_best_hedge_es_decomposition_module {
     }
 }
 pub use evaluate_tasche_litterman_hot_spots_best_hedge_es_decomposition_module::*;
+
+mod evaluate_acerbi_tasche_exponential_spectral_risk_measure_module {
+    // Acerbi (2002, Journal of Banking & Finance 26(7), "Spectral Measures of Risk:
+    // A Coherent Representation of Subjective Risk Aversion"), Acerbi & Tasche (2002, JBF 26(7)),
+    // & McNeil, Frey & Embrechts (2015, Quantitative Risk Management, Ch. 8)
+    // Coherent Exponential Spectral Risk Measure (SRM) & Cornish-Fisher Tail Distortion Engine.
+
+    use ql_ad::Real;
+    use ql_math::{inv_norm_cdf, norm_pdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct AcerbiTascheExponentialSpectralRiskSpec<T: Real = f64> {
+        pub portfolio_expected_return_mu: T,
+        pub portfolio_volatility_sigma: T,
+        pub return_skewness_gamma1: T,
+        pub return_excess_kurtosis_gamma2: T,
+        pub cara_spectral_risk_aversion_k: T,
+        pub reference_es_confidence_alpha: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct AcerbiTascheExponentialSpectralRiskReport<T: Real = f64> {
+        pub gaussian_expected_shortfall_es: T,
+        pub cornish_fisher_tail_var_alpha: T,
+        pub exponential_spectral_risk_measure: T,
+        pub spectral_tail_aversion_add_on: T,
+        pub terminal_spectral_weight_at_one: T,
+    }
+
+    fn cornish_fisher_loss_quantile<T: Real>(z: T, gamma1: T, gamma2: T) -> T {
+        let z2 = z * z;
+        let z3 = z2 * z;
+        // For loss L = -R, skewness of L is -gamma1:
+        z - (gamma1 / T::from_f64(6.0)) * (z2 - T::one())
+            + (gamma2 / T::from_f64(24.0)) * (z3 - T::from_f64(3.0) * z)
+            - (gamma1 * gamma1 / T::from_f64(36.0)) * (T::from_f64(2.0) * z3 - T::from_f64(5.0) * z)
+    }
+
+    pub fn evaluate_acerbi_tasche_exponential_spectral_risk_measure<T: Real>(
+        spec: &AcerbiTascheExponentialSpectralRiskSpec<T>,
+    ) -> AcerbiTascheExponentialSpectralRiskReport<T> {
+        let mu = spec.portfolio_expected_return_mu;
+        let sig = spec.portfolio_volatility_sigma.max_val(T::from_f64(0.005));
+        let g1 = spec.return_skewness_gamma1;
+        let g2 = spec.return_excess_kurtosis_gamma2.max_val(T::from_f64(0.0));
+        let k = spec.cara_spectral_risk_aversion_k.max_val(T::from_f64(1.0));
+        let alpha = spec
+            .reference_es_confidence_alpha
+            .max_val(T::from_f64(0.90))
+            .min_val(T::from_f64(0.999));
+
+        let z_a = inv_norm_cdf(alpha);
+        let es_gauss = -mu + sig * (norm_pdf(z_a) / (T::one() - alpha));
+        let var_cf = -mu + sig * cornish_fisher_loss_quantile(z_a, g1, g2);
+
+        // Exact importance-sampling inverse distortion u in (0, 1) -> p(u) = 1 + ln(e^{-k} + u*(1 - e^{-k})) / k
+        // under Acerbi (2002) exponential spectrum phi_k(p) = k * e^{-k*(1 - p)} / (1 - e^{-k}):
+        const GL_NODES: [f64; 4] = [
+            -0.861_136_311_594_052_6,
+            -0.339_981_043_584_856_26,
+            0.339_981_043_584_856_26,
+            0.861_136_311_594_052_6,
+        ];
+        const GL_WEIGHTS: [f64; 4] = [
+            0.347_854_845_137_453_85,
+            0.652_145_154_862_546_1,
+            0.652_145_154_862_546_1,
+            0.347_854_845_137_453_85,
+        ];
+        let ek = (-k).exp();
+        let one_minus_ek = (T::one() - ek).max_val(T::from_f64(1e-8));
+        let mut q_spec = T::zero();
+        for (&xi, &wi) in GL_NODES.iter().zip(GL_WEIGHTS.iter()) {
+            let u = T::from_f64(0.5 * (1.0 + xi));
+            let p_u = (T::one() + (ek + u * one_minus_ek).ln() / k)
+                .max_val(T::from_f64(1e-4))
+                .min_val(T::from_f64(0.9995));
+            let z_u = inv_norm_cdf(p_u);
+            q_spec += T::from_f64(0.5 * wi) * cornish_fisher_loss_quantile(z_u, g1, g2);
+        }
+
+        let srm = -mu + sig * q_spec;
+        let add_on = srm - es_gauss;
+        let phi_1 = k / one_minus_ek;
+
+        AcerbiTascheExponentialSpectralRiskReport {
+            gaussian_expected_shortfall_es: es_gauss,
+            cornish_fisher_tail_var_alpha: var_cf,
+            exponential_spectral_risk_measure: srm,
+            spectral_tail_aversion_add_on: add_on,
+            terminal_spectral_weight_at_one: phi_1,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_acerbi_tasche_exponential_spectral_risk_measure_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn acerbi_tasche_exponential_spectral_risk_invariants_and_ad_parity() {
+            let spec = AcerbiTascheExponentialSpectralRiskSpec {
+                portfolio_expected_return_mu: 0.08,
+                portfolio_volatility_sigma: 0.18,
+                return_skewness_gamma1: -0.55,
+                return_excess_kurtosis_gamma2: 2.40,
+                cara_spectral_risk_aversion_k: 25.0,
+                reference_es_confidence_alpha: 0.975,
+            };
+            let rep = evaluate_acerbi_tasche_exponential_spectral_risk_measure(&spec);
+            assert!(rep.exponential_spectral_risk_measure > 0.20);
+            assert!(rep.terminal_spectral_weight_at_one > 24.9);
+
+            let h = 1e-6;
+            let r_ad = evaluate_acerbi_tasche_exponential_spectral_risk_measure(
+                &AcerbiTascheExponentialSpectralRiskSpec {
+                    portfolio_expected_return_mu: Dual::<6>::variable(
+                        spec.portfolio_expected_return_mu,
+                        0,
+                    ),
+                    portfolio_volatility_sigma: Dual::<6>::variable(
+                        spec.portfolio_volatility_sigma,
+                        1,
+                    ),
+                    return_skewness_gamma1: Dual::<6>::variable(spec.return_skewness_gamma1, 2),
+                    return_excess_kurtosis_gamma2: Dual::<6>::variable(
+                        spec.return_excess_kurtosis_gamma2,
+                        3,
+                    ),
+                    cara_spectral_risk_aversion_k: Dual::<6>::variable(
+                        spec.cara_spectral_risk_aversion_k,
+                        4,
+                    ),
+                    reference_es_confidence_alpha: Dual::<6>::variable(
+                        spec.reference_es_confidence_alpha,
+                        5,
+                    ),
+                },
+            );
+            for i in 0..6 {
+                let mut v = [
+                    spec.portfolio_expected_return_mu,
+                    spec.portfolio_volatility_sigma,
+                    spec.return_skewness_gamma1,
+                    spec.return_excess_kurtosis_gamma2,
+                    spec.cara_spectral_risk_aversion_k,
+                    spec.reference_es_confidence_alpha,
+                ];
+                v[i] += h;
+                let up = evaluate_acerbi_tasche_exponential_spectral_risk_measure(
+                    &AcerbiTascheExponentialSpectralRiskSpec {
+                        portfolio_expected_return_mu: v[0],
+                        portfolio_volatility_sigma: v[1],
+                        return_skewness_gamma1: v[2],
+                        return_excess_kurtosis_gamma2: v[3],
+                        cara_spectral_risk_aversion_k: v[4],
+                        reference_es_confidence_alpha: v[5],
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_acerbi_tasche_exponential_spectral_risk_measure(
+                    &AcerbiTascheExponentialSpectralRiskSpec {
+                        portfolio_expected_return_mu: v[0],
+                        portfolio_volatility_sigma: v[1],
+                        return_skewness_gamma1: v[2],
+                        return_excess_kurtosis_gamma2: v[3],
+                        cara_spectral_risk_aversion_k: v[4],
+                        reference_es_confidence_alpha: v[5],
+                    },
+                );
+                let val_ad =
+                    r_ad.exponential_spectral_risk_measure + r_ad.gaussian_expected_shortfall_es;
+                let fd = ((up.exponential_spectral_risk_measure
+                    + up.gaussian_expected_shortfall_es)
+                    - (dn.exponential_spectral_risk_measure + dn.gaussian_expected_shortfall_es))
+                    / (2.0 * h);
+                assert!((val_ad.d[i] - fd).abs() < 1e-4, "input {i}");
+            }
+        }
+    }
+}
+pub use evaluate_acerbi_tasche_exponential_spectral_risk_measure_module::*;

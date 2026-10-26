@@ -1773,3 +1773,190 @@ mod evaluate_gregory_incremental_marginal_netting_set_cva_module {
     }
 }
 pub use evaluate_gregory_incremental_marginal_netting_set_cva_module::*;
+
+mod evaluate_burgard_kjaer_semi_replication_fva_cva_dva_module {
+    // Burgard & Kjaer (2011, Journal of Derivatives 18(4), "Partial Differential Equation
+    // Representations of Derivatives with Bilateral Counterparty Risk and Funding Costs";
+    // 2013, Risk, "Funding Strategies, Funding Costs") & Brigo, Morini & Pallavicini (2013, Ch. 16)
+    // Bilateral CVA/DVA/FCA/FBA Semi-Replication & DVA-FBA Double-Counting Invariance Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BurgardKjaerSemiReplicationXvaSpec<T: Real = f64> {
+        pub expected_positive_exposure_epe: T,
+        pub expected_negative_exposure_ene: T,
+        pub counterparty_hazard_rate_lambda_c: T,
+        pub counterparty_lgd_c: T,
+        pub bank_hazard_rate_lambda_b: T,
+        pub bank_lgd_b: T,
+        pub bank_funding_shortfall_fraction_gamma_f: T,
+        pub ois_discount_rate_r: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct BurgardKjaerSemiReplicationXvaReport<T: Real = f64> {
+        pub joint_survival_risky_annuity: T,
+        pub bilateral_cva_charge: T,
+        pub bilateral_dva_benefit: T,
+        pub funding_cost_adjustment_fca: T,
+        pub non_overlapping_funding_benefit_fba: T,
+        pub dva_fba_double_counting_overlap: T,
+        pub semi_replication_total_xva_charge: T,
+    }
+
+    pub fn evaluate_burgard_kjaer_semi_replication_fva_cva_dva<T: Real>(
+        spec: &BurgardKjaerSemiReplicationXvaSpec<T>,
+    ) -> BurgardKjaerSemiReplicationXvaReport<T> {
+        let epe = spec
+            .expected_positive_exposure_epe
+            .max_val(T::from_f64(0.0));
+        let ene = spec
+            .expected_negative_exposure_ene
+            .max_val(T::from_f64(0.0));
+        let lam_c = spec
+            .counterparty_hazard_rate_lambda_c
+            .max_val(T::from_f64(1e-4));
+        let lgd_c = spec
+            .counterparty_lgd_c
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(1.0));
+        let lam_b = spec.bank_hazard_rate_lambda_b.max_val(T::from_f64(1e-4));
+        let lgd_b = spec
+            .bank_lgd_b
+            .max_val(T::from_f64(0.05))
+            .min_val(T::from_f64(1.0));
+        let gamma_f = spec
+            .bank_funding_shortfall_fraction_gamma_f
+            .max_val(T::from_f64(0.0))
+            .min_val(T::from_f64(1.0));
+        let r = spec.ois_discount_rate_r.max_val(T::from_f64(0.001));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.25));
+
+        let total_disc = r + lam_c + lam_b;
+        let annuity = (T::one() - (-total_disc * t).exp()) / total_disc;
+
+        let cva = lam_c * lgd_c * epe * annuity;
+        let dva = lam_b * lgd_b * ene * annuity;
+
+        // Under Burgard-Kjaer (2011, 2013), bank unsecured funding spread is s_F = gamma_f * lambda_B * LGD_B:
+        let s_f = gamma_f * lam_b * lgd_b;
+        let fca = s_f * epe * annuity;
+        let fba_non_overlap = (T::one() - gamma_f) * lam_b * lgd_b * ene * annuity;
+        let overlap = gamma_f * lam_b * lgd_b * ene * annuity;
+
+        let total_xva = cva - dva + fca;
+
+        BurgardKjaerSemiReplicationXvaReport {
+            joint_survival_risky_annuity: annuity,
+            bilateral_cva_charge: cva,
+            bilateral_dva_benefit: dva,
+            funding_cost_adjustment_fca: fca,
+            non_overlapping_funding_benefit_fba: fba_non_overlap,
+            dva_fba_double_counting_overlap: overlap,
+            semi_replication_total_xva_charge: total_xva,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_burgard_kjaer_semi_replication_fva_cva_dva_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn burgard_kjaer_semi_replication_fva_cva_dva_invariants_and_ad_parity() {
+            let spec = BurgardKjaerSemiReplicationXvaSpec {
+                expected_positive_exposure_epe: 25.0,
+                expected_negative_exposure_ene: 14.0,
+                counterparty_hazard_rate_lambda_c: 0.022,
+                counterparty_lgd_c: 0.60,
+                bank_hazard_rate_lambda_b: 0.012,
+                bank_lgd_b: 0.60,
+                bank_funding_shortfall_fraction_gamma_f: 0.65,
+                ois_discount_rate_r: 0.038,
+                maturity_years_t: 5.0,
+            };
+            let rep = evaluate_burgard_kjaer_semi_replication_fva_cva_dva(&spec);
+            assert!(
+                (rep.non_overlapping_funding_benefit_fba + rep.dva_fba_double_counting_overlap
+                    - rep.bilateral_dva_benefit)
+                    .abs()
+                    < 1e-12
+            );
+            assert!(rep.semi_replication_total_xva_charge > 0.0);
+
+            let h = 1e-6;
+            let r_ad = evaluate_burgard_kjaer_semi_replication_fva_cva_dva(
+                &BurgardKjaerSemiReplicationXvaSpec {
+                    expected_positive_exposure_epe: Dual::<6>::variable(
+                        spec.expected_positive_exposure_epe,
+                        0,
+                    ),
+                    expected_negative_exposure_ene: Dual::<6>::variable(
+                        spec.expected_negative_exposure_ene,
+                        1,
+                    ),
+                    counterparty_hazard_rate_lambda_c: Dual::<6>::variable(
+                        spec.counterparty_hazard_rate_lambda_c,
+                        2,
+                    ),
+                    counterparty_lgd_c: Dual::from_f64(spec.counterparty_lgd_c),
+                    bank_hazard_rate_lambda_b: Dual::<6>::variable(
+                        spec.bank_hazard_rate_lambda_b,
+                        3,
+                    ),
+                    bank_lgd_b: Dual::from_f64(spec.bank_lgd_b),
+                    bank_funding_shortfall_fraction_gamma_f: Dual::<6>::variable(
+                        spec.bank_funding_shortfall_fraction_gamma_f,
+                        4,
+                    ),
+                    ois_discount_rate_r: Dual::<6>::variable(spec.ois_discount_rate_r, 5),
+                    maturity_years_t: Dual::from_f64(spec.maturity_years_t),
+                },
+            );
+            for i in 0..6 {
+                let mut v = [
+                    spec.expected_positive_exposure_epe,
+                    spec.expected_negative_exposure_ene,
+                    spec.counterparty_hazard_rate_lambda_c,
+                    spec.bank_hazard_rate_lambda_b,
+                    spec.bank_funding_shortfall_fraction_gamma_f,
+                    spec.ois_discount_rate_r,
+                ];
+                v[i] += h;
+                let up = evaluate_burgard_kjaer_semi_replication_fva_cva_dva(
+                    &BurgardKjaerSemiReplicationXvaSpec {
+                        expected_positive_exposure_epe: v[0],
+                        expected_negative_exposure_ene: v[1],
+                        counterparty_hazard_rate_lambda_c: v[2],
+                        bank_hazard_rate_lambda_b: v[3],
+                        bank_funding_shortfall_fraction_gamma_f: v[4],
+                        ois_discount_rate_r: v[5],
+                        ..spec
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_burgard_kjaer_semi_replication_fva_cva_dva(
+                    &BurgardKjaerSemiReplicationXvaSpec {
+                        expected_positive_exposure_epe: v[0],
+                        expected_negative_exposure_ene: v[1],
+                        counterparty_hazard_rate_lambda_c: v[2],
+                        bank_hazard_rate_lambda_b: v[3],
+                        bank_funding_shortfall_fraction_gamma_f: v[4],
+                        ois_discount_rate_r: v[5],
+                        ..spec
+                    },
+                );
+                let fd = (up.semi_replication_total_xva_charge
+                    - dn.semi_replication_total_xva_charge)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.semi_replication_total_xva_charge.d[i] - fd).abs() < 1e-5,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_burgard_kjaer_semi_replication_fva_cva_dva_module::*;

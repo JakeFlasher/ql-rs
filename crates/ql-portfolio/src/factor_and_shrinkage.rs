@@ -2691,3 +2691,171 @@ mod evaluate_harvey_liu_zhu_factor_tstat_fdr_haircut_module {
     }
 }
 pub use evaluate_harvey_liu_zhu_factor_tstat_fdr_haircut_module::*;
+
+mod evaluate_novy_marx_fama_french_five_factor_spanning_alpha_module {
+    // Novy-Marx (2013, Journal of Financial Economics 108(1), "The Other Side of Value:
+    // The Gross Profitability Premium"), Fama & French (2015, JFE 116(1), "A Five-Factor
+    // Asset Pricing Model"), & Hou, Xue & Zhang (2015, RFS 28(3))
+    // Gross Profitability + Value Spanning Alpha, HMLO Orthogonalization & Tangency Engine.
+
+    use ql_ad::Real;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct NovyMarxFamaFrenchSpanningSpec<T: Real = f64> {
+        pub gross_profitability_premium_rmw: T,
+        pub value_premium_hml: T,
+        pub investment_premium_cma: T,
+        pub hml_on_rmw_loading_phi_rmw: T,
+        pub hml_on_cma_loading_phi_cma: T,
+        pub hml_spanning_residual_vol_sigma_e: T,
+        pub rmw_factor_vol_sigma_rmw: T,
+        pub hml_factor_vol_sigma_hml: T,
+        pub rmw_hml_correlation_rho: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct NovyMarxFamaFrenchSpanningReport<T: Real = f64> {
+        pub orthogonalized_hmlo_spanning_alpha: T,
+        pub hmlo_information_ratio: T,
+        pub marginal_squared_sharpe_contribution: T,
+        pub optimal_profitability_tangency_weight: T,
+        pub combined_value_profitability_sharpe: T,
+    }
+
+    pub fn evaluate_novy_marx_fama_french_five_factor_spanning_alpha<T: Real>(
+        spec: &NovyMarxFamaFrenchSpanningSpec<T>,
+    ) -> NovyMarxFamaFrenchSpanningReport<T> {
+        let lam_rmw = spec.gross_profitability_premium_rmw;
+        let lam_hml = spec.value_premium_hml;
+        let lam_cma = spec.investment_premium_cma;
+        let phi_rmw = spec.hml_on_rmw_loading_phi_rmw;
+        let phi_cma = spec.hml_on_cma_loading_phi_cma;
+        let sig_e = spec
+            .hml_spanning_residual_vol_sigma_e
+            .max_val(T::from_f64(0.005));
+        let sig_rmw = spec.rmw_factor_vol_sigma_rmw.max_val(T::from_f64(0.01));
+        let sig_hml = spec.hml_factor_vol_sigma_hml.max_val(T::from_f64(0.01));
+        let rho = spec
+            .rmw_hml_correlation_rho
+            .max_val(T::from_f64(-0.95))
+            .min_val(T::from_f64(0.95));
+
+        // Fama-French (2015) HMLO orthogonalized against profitability (RMW) and investment (CMA):
+        let alpha_hmlo = lam_hml - phi_rmw * lam_rmw - phi_cma * lam_cma;
+        let ir_hmlo = alpha_hmlo / sig_e;
+        let delta_sr2 = ir_hmlo * ir_hmlo;
+
+        // Novy-Marx (2013) two-factor Value + Gross Profitability tangency portfolio weights & Sharpe:
+        let cov_rh = rho * sig_rmw * sig_hml;
+        let raw_w_rmw = lam_rmw * sig_hml * sig_hml - lam_hml * cov_rh;
+        let raw_w_hml = lam_hml * sig_rmw * sig_rmw - lam_rmw * cov_rh;
+        let w_rmw = raw_w_rmw / (raw_w_rmw + raw_w_hml).max_val(T::from_f64(1e-6));
+
+        let sr_rmw = lam_rmw / sig_rmw;
+        let sr_hml = lam_hml / sig_hml;
+        let sr_comb = ((sr_rmw * sr_rmw + sr_hml * sr_hml
+            - T::from_f64(2.0) * rho * sr_rmw * sr_hml)
+            / (T::one() - rho * rho))
+            .max_val(T::from_f64(1e-8))
+            .sqrt();
+
+        NovyMarxFamaFrenchSpanningReport {
+            orthogonalized_hmlo_spanning_alpha: alpha_hmlo,
+            hmlo_information_ratio: ir_hmlo,
+            marginal_squared_sharpe_contribution: delta_sr2,
+            optimal_profitability_tangency_weight: w_rmw,
+            combined_value_profitability_sharpe: sr_comb,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_novy_marx_fama_french_five_factor_spanning_alpha_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn novy_marx_fama_french_spanning_invariants_and_ad_parity() {
+            let spec = NovyMarxFamaFrenchSpanningSpec {
+                gross_profitability_premium_rmw: 0.042,
+                value_premium_hml: 0.038,
+                investment_premium_cma: 0.032,
+                hml_on_rmw_loading_phi_rmw: 0.22,
+                hml_on_cma_loading_phi_cma: 0.55,
+                hml_spanning_residual_vol_sigma_e: 0.068,
+                rmw_factor_vol_sigma_rmw: 0.085,
+                hml_factor_vol_sigma_hml: 0.105,
+                rmw_hml_correlation_rho: -0.42,
+            };
+            let rep = evaluate_novy_marx_fama_french_five_factor_spanning_alpha(&spec);
+            assert!(
+                rep.combined_value_profitability_sharpe
+                    > spec.gross_profitability_premium_rmw / spec.rmw_factor_vol_sigma_rmw
+            );
+            assert!(
+                rep.optimal_profitability_tangency_weight > 0.0
+                    && rep.optimal_profitability_tangency_weight < 1.0
+            );
+
+            let h = 1e-6;
+            let r_ad = evaluate_novy_marx_fama_french_five_factor_spanning_alpha(
+                &NovyMarxFamaFrenchSpanningSpec {
+                    gross_profitability_premium_rmw: Dual::<6>::variable(
+                        spec.gross_profitability_premium_rmw,
+                        0,
+                    ),
+                    value_premium_hml: Dual::<6>::variable(spec.value_premium_hml, 1),
+                    investment_premium_cma: Dual::<6>::variable(spec.investment_premium_cma, 2),
+                    hml_on_rmw_loading_phi_rmw: Dual::from_f64(spec.hml_on_rmw_loading_phi_rmw),
+                    hml_on_cma_loading_phi_cma: Dual::from_f64(spec.hml_on_cma_loading_phi_cma),
+                    hml_spanning_residual_vol_sigma_e: Dual::<6>::variable(
+                        spec.hml_spanning_residual_vol_sigma_e,
+                        3,
+                    ),
+                    rmw_factor_vol_sigma_rmw: Dual::<6>::variable(spec.rmw_factor_vol_sigma_rmw, 4),
+                    hml_factor_vol_sigma_hml: Dual::from_f64(spec.hml_factor_vol_sigma_hml),
+                    rmw_hml_correlation_rho: Dual::<6>::variable(spec.rmw_hml_correlation_rho, 5),
+                },
+            );
+            for i in 0..6 {
+                let mut v = [
+                    spec.gross_profitability_premium_rmw,
+                    spec.value_premium_hml,
+                    spec.investment_premium_cma,
+                    spec.hml_spanning_residual_vol_sigma_e,
+                    spec.rmw_factor_vol_sigma_rmw,
+                    spec.rmw_hml_correlation_rho,
+                ];
+                v[i] += h;
+                let up = evaluate_novy_marx_fama_french_five_factor_spanning_alpha(
+                    &NovyMarxFamaFrenchSpanningSpec {
+                        gross_profitability_premium_rmw: v[0],
+                        value_premium_hml: v[1],
+                        investment_premium_cma: v[2],
+                        hml_spanning_residual_vol_sigma_e: v[3],
+                        rmw_factor_vol_sigma_rmw: v[4],
+                        rmw_hml_correlation_rho: v[5],
+                        ..spec
+                    },
+                );
+                v[i] -= 2.0 * h;
+                let dn = evaluate_novy_marx_fama_french_five_factor_spanning_alpha(
+                    &NovyMarxFamaFrenchSpanningSpec {
+                        gross_profitability_premium_rmw: v[0],
+                        value_premium_hml: v[1],
+                        investment_premium_cma: v[2],
+                        hml_spanning_residual_vol_sigma_e: v[3],
+                        rmw_factor_vol_sigma_rmw: v[4],
+                        rmw_hml_correlation_rho: v[5],
+                        ..spec
+                    },
+                );
+                let val_ad = r_ad.hmlo_information_ratio + r_ad.combined_value_profitability_sharpe;
+                let fd = ((up.hmlo_information_ratio + up.combined_value_profitability_sharpe)
+                    - (dn.hmlo_information_ratio + dn.combined_value_profitability_sharpe))
+                    / (2.0 * h);
+                assert!((val_ad.d[i] - fd).abs() < 1e-5, "input {i}");
+            }
+        }
+    }
+}
+pub use evaluate_novy_marx_fama_french_five_factor_spanning_alpha_module::*;

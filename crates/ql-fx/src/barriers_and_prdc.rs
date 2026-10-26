@@ -932,3 +932,170 @@ mod evaluate_wystup_fx_digital_call_spread_skew_overhedge_module {
     }
 }
 pub use evaluate_wystup_fx_digital_call_spread_skew_overhedge_module::*;
+
+mod evaluate_wystup_lipton_fx_tarf_target_redemption_cap_module {
+    // Wystup (2017, FX Options and Structured Products, 2nd ed., Ch. 9, "Target Forwards"),
+    // Lipton (2001, Mathematical Methods for Foreign Exchange), & Clark (2011, Ch. 10)
+    // FX Target Redemption Forward (TARF) Cumulative Gain Cap & Knock-Out Horizon Engine.
+
+    use ql_ad::Real;
+    use ql_math::{norm_cdf, norm_pdf};
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupLiptonFxTarfSpec<T: Real = f64> {
+        pub spot_fx_s0: T,
+        pub tarf_strike_k: T,
+        pub target_redemption_cap_t_cap: T,
+        pub downside_gearing_leverage_l: T,
+        pub total_fixing_dates_m: T,
+        pub domestic_rate_rd: T,
+        pub foreign_rate_rf: T,
+        pub fx_volatility_sigma: T,
+        pub maturity_years_t: T,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct WystupLiptonFxTarfReport<T: Real = f64> {
+        pub uncapped_cumulative_expected_gain: T,
+        pub capped_cumulative_expected_gain: T,
+        pub expected_active_fixing_count: T,
+        pub target_cap_giveup_option_value: T,
+        pub discounted_capped_upside_leg_pv: T,
+        pub discounted_geared_downside_leg_pv: T,
+        pub client_tarf_net_present_value: T,
+    }
+
+    pub fn evaluate_wystup_lipton_fx_tarf_target_redemption_cap<T: Real>(
+        spec: &WystupLiptonFxTarfSpec<T>,
+    ) -> WystupLiptonFxTarfReport<T> {
+        let s0 = spec.spot_fx_s0.max_val(T::from_f64(0.05));
+        let k = spec.tarf_strike_k.max_val(T::from_f64(0.05));
+        let t_cap = spec.target_redemption_cap_t_cap.max_val(T::from_f64(0.005));
+        let lev = spec.downside_gearing_leverage_l.max_val(T::one());
+        let m = spec.total_fixing_dates_m.max_val(T::one());
+        let rd = spec.domestic_rate_rd;
+        let rf = spec.foreign_rate_rf;
+        let sig = spec.fx_volatility_sigma.max_val(T::from_f64(0.01));
+        let t = spec.maturity_years_t.max_val(T::from_f64(0.10));
+
+        let dt = t / m;
+        let t_avg = T::from_f64(0.5) * (t + dt);
+        let sqrt_t = t_avg.sqrt();
+        let df_d = (-rd * t_avg).exp();
+        let fwd = s0 * ((rd - rf) * t_avg).exp();
+
+        let std_fx = sig * sqrt_t;
+        let d1 = ((fwd / k).ln() + T::from_f64(0.5) * sig * sig * t_avg) / std_fx;
+        let d2 = d1 - std_fx;
+
+        let mu_call = (fwd * norm_cdf(d1) - k * norm_cdf(d2)).max_val(T::from_f64(1e-6));
+        let mu_put = (k * norm_cdf(-d2) - fwd * norm_cdf(-d1)).max_val(T::from_f64(1e-6));
+
+        let g_uncapped = m * mu_call;
+        let sig_g = (sig * fwd * (m * t_avg * norm_cdf(d1).max_val(T::from_f64(0.02))).sqrt())
+            .max_val(T::from_f64(1e-5));
+
+        // Bachelier-Gaussian excess above target cap E[max(G - T_cap, 0)]:
+        let z_cap = (g_uncapped - t_cap) / sig_g;
+        let cap_giveup = (g_uncapped - t_cap) * norm_cdf(z_cap) + sig_g * norm_pdf(z_cap);
+        let g_capped = (g_uncapped - cap_giveup).max_val(T::from_f64(1e-6));
+
+        let m_eff = m * (g_capped / g_uncapped);
+        let pv_up = df_d * g_capped;
+        let pv_down = df_d * lev * m_eff * mu_put;
+        let net_npv = pv_up - pv_down;
+
+        WystupLiptonFxTarfReport {
+            uncapped_cumulative_expected_gain: g_uncapped,
+            capped_cumulative_expected_gain: g_capped,
+            expected_active_fixing_count: m_eff,
+            target_cap_giveup_option_value: df_d * cap_giveup,
+            discounted_capped_upside_leg_pv: pv_up,
+            discounted_geared_downside_leg_pv: pv_down,
+            client_tarf_net_present_value: net_npv,
+        }
+    }
+
+    #[cfg(test)]
+    mod evaluate_wystup_lipton_fx_tarf_target_redemption_cap_tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn wystup_lipton_fx_tarf_invariants_and_ad_parity() {
+            let spec = WystupLiptonFxTarfSpec {
+                spot_fx_s0: 1.09,
+                tarf_strike_k: 1.06,
+                target_redemption_cap_t_cap: 0.25,
+                downside_gearing_leverage_l: 2.0,
+                total_fixing_dates_m: 12.0,
+                domestic_rate_rd: 0.045,
+                foreign_rate_rf: 0.030,
+                fx_volatility_sigma: 0.10,
+                maturity_years_t: 1.0,
+            };
+            let rep = evaluate_wystup_lipton_fx_tarf_target_redemption_cap(&spec);
+            assert!(rep.capped_cumulative_expected_gain < rep.uncapped_cumulative_expected_gain);
+            assert!(rep.expected_active_fixing_count < spec.total_fixing_dates_m);
+
+            let h = 1e-6;
+            let r_ad =
+                evaluate_wystup_lipton_fx_tarf_target_redemption_cap(&WystupLiptonFxTarfSpec {
+                    spot_fx_s0: Dual::<6>::variable(spec.spot_fx_s0, 0),
+                    tarf_strike_k: Dual::<6>::variable(spec.tarf_strike_k, 1),
+                    target_redemption_cap_t_cap: Dual::<6>::variable(
+                        spec.target_redemption_cap_t_cap,
+                        2,
+                    ),
+                    downside_gearing_leverage_l: Dual::<6>::variable(
+                        spec.downside_gearing_leverage_l,
+                        3,
+                    ),
+                    total_fixing_dates_m: Dual::from_f64(spec.total_fixing_dates_m),
+                    domestic_rate_rd: Dual::<6>::variable(spec.domestic_rate_rd, 4),
+                    foreign_rate_rf: Dual::from_f64(spec.foreign_rate_rf),
+                    fx_volatility_sigma: Dual::<6>::variable(spec.fx_volatility_sigma, 5),
+                    maturity_years_t: Dual::from_f64(spec.maturity_years_t),
+                });
+            for i in 0..6 {
+                let mut v = [
+                    spec.spot_fx_s0,
+                    spec.tarf_strike_k,
+                    spec.target_redemption_cap_t_cap,
+                    spec.downside_gearing_leverage_l,
+                    spec.domestic_rate_rd,
+                    spec.fx_volatility_sigma,
+                ];
+                v[i] += h;
+                let up =
+                    evaluate_wystup_lipton_fx_tarf_target_redemption_cap(&WystupLiptonFxTarfSpec {
+                        spot_fx_s0: v[0],
+                        tarf_strike_k: v[1],
+                        target_redemption_cap_t_cap: v[2],
+                        downside_gearing_leverage_l: v[3],
+                        domestic_rate_rd: v[4],
+                        fx_volatility_sigma: v[5],
+                        ..spec
+                    });
+                v[i] -= 2.0 * h;
+                let dn =
+                    evaluate_wystup_lipton_fx_tarf_target_redemption_cap(&WystupLiptonFxTarfSpec {
+                        spot_fx_s0: v[0],
+                        tarf_strike_k: v[1],
+                        target_redemption_cap_t_cap: v[2],
+                        downside_gearing_leverage_l: v[3],
+                        domestic_rate_rd: v[4],
+                        fx_volatility_sigma: v[5],
+                        ..spec
+                    });
+                let fd = (up.client_tarf_net_present_value - dn.client_tarf_net_present_value)
+                    / (2.0 * h);
+                assert!(
+                    (r_ad.client_tarf_net_present_value.d[i] - fd).abs() < 1e-4,
+                    "input {i}"
+                );
+            }
+        }
+    }
+}
+pub use evaluate_wystup_lipton_fx_tarf_target_redemption_cap_module::*;
