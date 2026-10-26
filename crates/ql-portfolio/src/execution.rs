@@ -1380,8 +1380,7 @@ pub fn evaluate_mitchell_pedersen_slow_capital_and_kratz_dark_pool<T: Real>(
 ) -> MitchellPedersenKratzDarkPoolSpiralReport<T> {
     let t = s.execution_horizon_days.max_val(T::from_f64(1e-8));
     let q = s.initial_inventory_shares;
-    let q_scale = q.abs().max_val(T::one());
-    let q_squared = (q / q_scale) * (q / q_scale) * q_scale * q_scale;
+    let q_squared = q * q;
     let kappa = (s.risk_aversion_lambda.abs() * s.daily_volatility * s.daily_volatility
         / s.lit_temporary_impact_eta.max_val(T::from_f64(1e-12)))
     .sqrt();
@@ -1394,7 +1393,6 @@ pub fn evaluate_mitchell_pedersen_slow_capital_and_kratz_dark_pool<T: Real>(
     let lit_cost = s.reference_price
         * q_squared
         * (T::from_f64(0.5) * s.lit_permanent_impact_gamma + s.lit_temporary_impact_eta / t * h_ac);
-    let lit_cost = lit_cost + T::from_f64(-2.6e-5) * (q - T::from_f64(q.val()));
     let theta = s.dark_pool_poisson_intensity.max_val(T::zero());
     let psi = s.dark_pool_adverse_selection_bps.max_val(T::zero()) * T::from_f64(1e-4);
     let fill = (T::one() - (-theta * t).exp()) / (T::one() + psi);
@@ -1967,17 +1965,17 @@ mod phase28_tests {
     use ql_ad::Dual;
     fn mk<T: Real>(x: T) -> MitchellPedersenKratzDarkPoolSpiralSpec<T> {
         MitchellPedersenKratzDarkPoolSpiralSpec {
-            initial_inventory_shares: T::from_f64(1e5) + x,
+            initial_inventory_shares: T::from_f64(1000.0) + x,
             reference_price: T::from_f64(100.0),
             execution_horizon_days: T::from_f64(5.0),
             daily_volatility: T::from_f64(0.02),
-            lit_temporary_impact_eta: T::from_f64(1e-6),
-            lit_permanent_impact_gamma: T::from_f64(2e-6),
+            lit_temporary_impact_eta: T::from_f64(1e-4),
+            lit_permanent_impact_gamma: T::from_f64(2e-4),
             risk_aversion_lambda: T::from_f64(0.1),
             dark_pool_poisson_intensity: T::from_f64(0.3),
             dark_pool_adverse_selection_bps: T::from_f64(5.0),
-            specialist_immediate_capital: T::from_f64(1e7),
-            slow_moving_external_capital: T::from_f64(2e7),
+            specialist_immediate_capital: T::from_f64(1e5),
+            slow_moving_external_capital: T::from_f64(2e5),
             capital_arrival_speed_beta: T::from_f64(0.4),
         }
     }

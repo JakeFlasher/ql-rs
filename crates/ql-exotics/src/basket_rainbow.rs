@@ -986,8 +986,56 @@ pub fn evaluate_choi_li_deng_multi_asset_spread_basket<T: Real>(
             / (f_short * f_short).max_val(T::from_f64(1e-12));
     }
     let correction = T::from_f64(0.5) * df * k_eff * d2.norm_pdf() * jyy;
-    let choi = kirk + correction;
     let ldz = kirk + correction;
+    let gh_x = [
+        -3.190993201781528,
+        -2.266580584531843,
+        -1.468553289216668,
+        -0.723551018752838,
+        0.0,
+        0.723551018752838,
+        1.468553289216668,
+        2.266580584531843,
+        3.190993201781528,
+    ];
+    let gh_w = [
+        2.234589323288241e-5,
+        2.789141321192726e-3,
+        4.991640676224739e-2,
+        2.440974511819318e-1,
+        4.063492063492064e-1,
+        2.440974511819318e-1,
+        4.991640676224739e-2,
+        2.789141321192726e-3,
+        2.234589323288241e-5,
+    ];
+    let sqrt_t = t.sqrt();
+    let rho_clamped = rho_ls
+        .max_val(T::from_f64(-0.999))
+        .min_val(T::from_f64(0.999));
+    let cond_vol_sqrt_t = (s.long_leg_vol * (T::one() - rho_clamped * rho_clamped).sqrt() * sqrt_t)
+        .max_val(T::from_f64(1e-8));
+    let mut choi = T::zero();
+    for q in 0..9 {
+        let z = T::from_f64(std::f64::consts::SQRT_2 * gh_x[q]);
+        let mut s_short_q = k;
+        for i in 0..n {
+            let sig_i = s.short_leg_vols[i];
+            s_short_q += s.short_leg_weights[i]
+                * s.short_leg_forwards[i]
+                * (-T::from_f64(0.5) * sig_i * sig_i * t + sig_i * sqrt_t * z).exp();
+        }
+        let f_long_q = f_long
+            * (-T::from_f64(0.5) * rho_clamped * rho_clamped * s.long_leg_vol * s.long_leg_vol * t
+                + rho_clamped * s.long_leg_vol * sqrt_t * z)
+                .exp();
+        let k_q = s_short_q.max_val(T::from_f64(1e-8));
+        let d1_q = ((f_long_q / k_q).ln() + T::from_f64(0.5) * cond_vol_sqrt_t * cond_vol_sqrt_t)
+            / cond_vol_sqrt_t;
+        let d2_q = d1_q - cond_vol_sqrt_t;
+        let bs_q = f_long_q * d1_q.norm_cdf() - k_q * d2_q.norm_cdf();
+        choi += T::from_f64(gh_w[q]) * df * bs_q;
+    }
     ChoiLiDengMultiAssetSpreadBasketReport {
         choi_gauss_hermite_price: choi,
         li_deng_zhou_second_order_price: ldz,

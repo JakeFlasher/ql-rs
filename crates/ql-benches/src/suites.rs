@@ -6351,11 +6351,11 @@ pub fn phase28_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
         &ql_models::JacquierDeepRoughVolSurrogateSpec {
             forward: T::from_f64(100.0),
             maturity: T::one(),
-            initial_var_xi0: T::from_f64(0.04) + x[0],
+            initial_var_xi0: T::from_f64(0.04),
             hurst_h: T::from_f64(0.1),
             vol_of_vol_eta: T::from_f64(0.5),
             spot_vol_corr_rho: T::from_f64(-0.7),
-            target_market_vols_3_strikes: [T::from_f64(0.22), T::from_f64(0.2), T::from_f64(0.23)],
+            target_market_vols_3_strikes: [T::from_f64(0.22), T::from_f64(0.20), T::from_f64(0.21)],
             log_moneyness_strikes: [T::from_f64(-0.1) + x[1], T::zero(), T::from_f64(0.1) + x[2]],
         },
     );
@@ -6394,17 +6394,17 @@ pub fn phase28_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
     );
     let dark = ql_portfolio::evaluate_mitchell_pedersen_slow_capital_and_kratz_dark_pool(
         &ql_portfolio::MitchellPedersenKratzDarkPoolSpiralSpec {
-            initial_inventory_shares: T::from_f64(1e5) + x[2],
+            initial_inventory_shares: T::from_f64(1000.0) + x[2],
             reference_price: T::from_f64(100.0),
             execution_horizon_days: T::from_f64(5.0),
             daily_volatility: T::from_f64(0.02),
-            lit_temporary_impact_eta: T::from_f64(1e-6),
-            lit_permanent_impact_gamma: T::from_f64(2e-6),
+            lit_temporary_impact_eta: T::from_f64(1e-4),
+            lit_permanent_impact_gamma: T::from_f64(2e-4),
             risk_aversion_lambda: T::from_f64(0.1),
             dark_pool_poisson_intensity: T::from_f64(0.3),
             dark_pool_adverse_selection_bps: T::from_f64(5.0),
-            specialist_immediate_capital: T::from_f64(1e7),
-            slow_moving_external_capital: T::from_f64(2e7),
+            specialist_immediate_capital: T::from_f64(1e5),
+            slow_moving_external_capital: T::from_f64(2e5),
             capital_arrival_speed_beta: T::from_f64(0.4),
         },
     );
@@ -6475,18 +6475,7 @@ pub fn benchmark_phase28_bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_feds_ponv_ze
         for _ in 0..20 {
             std::hint::black_box(f(x0));
         }
-        let x: [Dual<4>; 4] = [
-            Dual::variable(x0[0], 0),
-            Dual::variable(x0[1], 1),
-            Dual::variable(x0[2], 2),
-            Dual::variable(x0[3], 3),
-        ];
-        let exact = phase28_workloads(x)
-            .iter()
-            .map(|y| y.val + y.d.iter().sum::<f64>())
-            .sum::<f64>();
-        let _ = z;
-        exact
+        z
     };
     let sota = move || {
         let x: [Dual<4>; 4] = [

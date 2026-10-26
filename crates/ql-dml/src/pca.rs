@@ -234,8 +234,10 @@ pub fn evaluate_huge_savine_differential_pca_and_twin_dml<T: ql_ad::Real>(
     for x in eval_d.iter().skip(rank) {
         diff_mse += *x;
     }
+    let trunc_bound = diff_mse;
     let mut standard_mse = T::zero();
     let mut twin_mse = T::zero();
+    let mut proj_diff_mse = T::zero();
     for i in 0..n {
         let mut zd = vec![T::zero(); rank];
         let mut zs = vec![T::zero(); rank];
@@ -250,7 +252,8 @@ pub fn evaluate_huge_savine_differential_pca_and_twin_dml<T: ql_ad::Real>(
         for j in 0..rank {
             let mut numd = T::zero();
             let mut nums = T::zero();
-            let mut den = T::zero();
+            let mut den_d = T::zero();
+            let mut den_s = T::zero();
             for k in 0..n {
                 let mut zdk = T::zero();
                 let mut zsk = T::zero();
@@ -260,10 +263,11 @@ pub fn evaluate_huge_savine_differential_pca_and_twin_dml<T: ql_ad::Real>(
                 }
                 numd += zdk * s.payoff_samples[k];
                 nums += zsk * s.payoff_samples[k];
-                den += zdk * zdk + s.ridge_regularization;
-                pd += zd[j] * numd / den.max_val(T::from_f64(1e-12));
-                ps += zs[j] * nums / den.max_val(T::from_f64(1e-12));
+                den_d += zdk * zdk + s.ridge_regularization;
+                den_s += zsk * zsk + s.ridge_regularization;
             }
+            pd += zd[j] * numd / den_d.max_val(T::from_f64(1e-12));
+            ps += zs[j] * nums / den_s.max_val(T::from_f64(1e-12));
         }
         let mut twin = T::zero();
         for p in 0..d {
@@ -274,12 +278,11 @@ pub fn evaluate_huge_savine_differential_pca_and_twin_dml<T: ql_ad::Real>(
         let epd = pd - s.payoff_samples[i];
         let eps = ps - s.payoff_samples[i];
         let et = twin - s.payoff_samples[i];
-        diff_mse += T::zero();
+        proj_diff_mse += epd * epd;
         standard_mse += eps * eps;
         twin_mse += et * et;
-        let _ = epd;
     }
-    let diff_rmse = (diff_mse / T::from_f64(d.max(1) as f64)).sqrt();
+    let diff_rmse = (proj_diff_mse / T::from_f64(n.max(1) as f64)).sqrt();
     let std_rmse = (standard_mse / T::from_f64(n.max(1) as f64)).sqrt();
     let twin_rmse = (twin_mse / T::from_f64(n.max(1) as f64)).sqrt();
     HugeSavineDifferentialPcaReport {
@@ -287,7 +290,7 @@ pub fn evaluate_huge_savine_differential_pca_and_twin_dml<T: ql_ad::Real>(
         standard_pca_eigenvalues: eval_s,
         diff_pca_explained_relevance_ratio: diff_sum / total_d,
         standard_pca_captured_relevance_ratio: std_cap / tr.max_val(T::from_f64(1e-12)),
-        truncation_gradient_mse_bound: diff_mse,
+        truncation_gradient_mse_bound: trunc_bound,
         diff_pca_projected_pricing_rmse: diff_rmse,
         standard_pca_projected_pricing_rmse: std_rmse,
         twin_difference_dml_pricing_rmse: twin_rmse,
@@ -301,10 +304,22 @@ mod phase28_tests {
     use ql_ad::Dual;
     fn mk<T: ql_ad::Real>(x: T) -> HugeSavineDifferentialPcaSpec<T> {
         HugeSavineDifferentialPcaSpec {
-            state_samples: vec![vec![T::one(), T::from_f64(2.0)]],
-            payoff_samples: vec![T::one()],
-            aad_gradient_samples: vec![vec![T::from_f64(1.0) + x, T::from_f64(0.5)]],
-            twin_fd_gradient_samples: vec![vec![T::from_f64(0.8), T::from_f64(0.4)]],
+            state_samples: vec![
+                vec![T::from_f64(0.5) + x, T::from_f64(2.0)],
+                vec![T::from_f64(-0.4), T::from_f64(-1.8)],
+                vec![T::from_f64(0.3), T::from_f64(1.6)],
+            ],
+            payoff_samples: vec![T::from_f64(1.1) + x, T::from_f64(-0.88), T::from_f64(0.66)],
+            aad_gradient_samples: vec![
+                vec![T::from_f64(2.2) + x, T::from_f64(0.1)],
+                vec![T::from_f64(1.9), T::from_f64(-0.1)],
+                vec![T::from_f64(2.0), T::from_f64(0.05)],
+            ],
+            twin_fd_gradient_samples: vec![
+                vec![T::from_f64(2.0), T::from_f64(0.1)],
+                vec![T::from_f64(1.8), T::from_f64(-0.1)],
+                vec![T::from_f64(1.9), T::from_f64(0.05)],
+            ],
             retained_rank: 1,
             ridge_regularization: T::from_f64(1e-6),
         }

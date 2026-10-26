@@ -864,8 +864,9 @@ pub fn evaluate_bess_analytical_sdp_degradation_storage<T: Real>(
     s: &BessAnalyticalSdpDegradationStorageSpec<T>,
 ) -> BessAnalyticalSdpDegradationStorageReport<T> {
     let rt = s.charge_efficiency * s.discharge_efficiency;
-    let delta_e =
-        s.energy_capacity_mwh * (s.max_soc_fraction - s.min_soc_fraction).max_val(T::zero());
+    let delta_e = (s.max_power_mw * T::from_f64(4.0)).min_val(
+        s.energy_capacity_mwh * (s.max_soc_fraction - s.min_soc_fraction).max_val(T::zero()),
+    );
     let deg = s.battery_capex_usd
         / (T::from_f64(2.0)
             * s.rated_cycle_life.max_val(T::from_f64(1e-8))
