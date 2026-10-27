@@ -3043,3 +3043,182 @@ mod klingler_syrstad_sofr_repo_spike_tests {
         }
     }
 }
+
+/// Input specification for the Nakamura & Steinsson (2018, *Quarterly Journal
+/// of Economics* 133(3), 1283–1330, "High-Frequency Identification of Monetary
+/// Non-Neutrality: The Information Effect") FOMC Information Effect vs. Real
+/// Interest Rate Shock Decomposition across Nominal and TIPS Forward Curves.
+#[derive(Debug, Clone, Copy)]
+pub struct NakamuraSteinssonFomcInformationEffectSpec<T: Real> {
+    /// 30-minute FOMC policy news composite shock $\Delta s_{\text{NS}}$ (in rate units).
+    pub policy_news_composite_shock_ds: T,
+    /// Fraction of policy news driven by Fed macroeconomic growth information $\omega_{\text{info}} \in (0, 1)$.
+    pub fed_information_share_omega: T,
+    /// Natural real rate loading on Fed growth news $\psi_{\text{nat}} > 0$.
+    pub natural_rate_information_loading_psi: T,
+    /// Natural rate information persistence decay $\kappa_{\text{info}} > 0$.
+    pub information_decay_kappa_info: T,
+    /// Conventional monetary real-rate gap mean-reversion speed $\kappa_{\text{mp}} > 0$.
+    pub monetary_gap_decay_kappa_mp: T,
+    /// Break-even inflation loading on positive Fed growth news $\gamma_{\text{inf}} > 0$.
+    pub information_inflation_loading_gamma_inf: T,
+    /// Conventional monetary tightening disinflation loading $\gamma_{\text{mp}} > 0$.
+    pub monetary_disinflation_loading_gamma_mp: T,
+    /// Forward curve maturity horizon in years $\tau > 0$.
+    pub maturity_years_tau: T,
+}
+
+/// Analytics returned by [`evaluate_nakamura_steinsson_fomc_information_effect`].
+#[derive(Debug, Clone, Copy)]
+pub struct NakamuraSteinssonFomcInformationEffectAnalytics<T: Real> {
+    /// Fed information natural real forward rate revision $\Delta r_t^*(\tau)$ (in bps).
+    pub natural_real_rate_revision_bps: T,
+    /// Conventional monetary policy real-rate gap shock $\Delta \tilde{r}_t(\tau)$ (in bps).
+    pub monetary_real_rate_gap_shock_bps: T,
+    /// Total TIPS real forward rate response $\Delta r_t^{\text{TIPS}}(\tau)$ (in bps).
+    pub tips_real_forward_rate_response_bps: T,
+    /// Break-even inflation forward response $\Delta \pi_t^{\text{BEI}}(\tau)$ (in bps).
+    pub breakeven_inflation_forward_response_bps: T,
+    /// Nominal Treasury forward rate response $\Delta f_t^{\text{nom}}(\tau)$ (in bps).
+    pub nominal_forward_rate_response_bps: T,
+}
+
+/// Evaluates the Nakamura & Steinsson (2018, *QJE* 133(3)) decomposition of
+/// high-frequency FOMC policy news $\Delta s_{\text{NS}}$ into a **Fed
+/// macroeconomic information component** (which raises expected natural real
+/// rates $\Delta r_t^*(\tau)$ and break-even inflation $\Delta \pi_t^{\text{BEI}}(\tau)$)
+/// and a **conventional monetary tightening component** (which raises the real
+/// interest rate gap $\Delta \tilde{r}_t(\tau)$ while lowering expected inflation):
+/// $$\Delta r_t^{\text{TIPS}}(\tau) = \omega_{\text{info}} \psi_{\text{nat}} e^{-\kappa_{\text{info}}\tau}\Delta s_{\text{NS}} + (1 - \omega_{\text{info}})\frac{1 - e^{-\kappa_{\text{mp}}\tau}}{\kappa_{\text{mp}}\tau}\Delta s_{\text{NS}},$$
+/// $$\Delta \pi_t^{\text{BEI}}(\tau) = \left[\gamma_{\text{inf}}\omega_{\text{info}} e^{-\kappa_{\text{info}}\tau} - \gamma_{\text{mp}}(1 - \omega_{\text{info}})e^{-\kappa_{\text{mp}}\tau}\right]\Delta s_{\text{NS}}.$$
+pub fn evaluate_nakamura_steinsson_fomc_information_effect<T: Real>(
+    spec: &NakamuraSteinssonFomcInformationEffectSpec<T>,
+) -> NakamuraSteinssonFomcInformationEffectAnalytics<T> {
+    let one = T::one();
+    let bps = T::from_f64(10_000.0);
+
+    let ds = spec.policy_news_composite_shock_ds;
+    let omega = spec
+        .fed_information_share_omega
+        .max_val(T::from_f64(0.01))
+        .min_val(T::from_f64(0.99));
+    let psi = spec
+        .natural_rate_information_loading_psi
+        .max_val(T::from_f64(0.05));
+    let k_info = spec.information_decay_kappa_info.max_val(T::from_f64(0.02));
+    let k_mp = spec.monetary_gap_decay_kappa_mp.max_val(T::from_f64(0.05));
+    let g_inf = spec
+        .information_inflation_loading_gamma_inf
+        .max_val(T::from_f64(0.01));
+    let g_mp = spec
+        .monetary_disinflation_loading_gamma_mp
+        .max_val(T::from_f64(0.01));
+    let tau = spec.maturity_years_tau.max_val(T::from_f64(0.25));
+
+    let exp_info = (-(k_info * tau)).exp();
+    let k_mp_tau = k_mp * tau;
+    let exp_mp = (-k_mp_tau).exp();
+    let ns_mp = (one - exp_mp) / k_mp_tau;
+
+    let dr_nat = omega * psi * exp_info * ds;
+    let dr_gap = (one - omega) * ns_mp * ds;
+    let dr_tips = dr_nat + dr_gap;
+
+    let d_bei = (g_inf * omega * exp_info - g_mp * (one - omega) * exp_mp) * ds;
+    let df_nom = dr_tips + d_bei;
+
+    NakamuraSteinssonFomcInformationEffectAnalytics {
+        natural_real_rate_revision_bps: dr_nat * bps,
+        monetary_real_rate_gap_shock_bps: dr_gap * bps,
+        tips_real_forward_rate_response_bps: dr_tips * bps,
+        breakeven_inflation_forward_response_bps: d_bei * bps,
+        nominal_forward_rate_response_bps: df_nom * bps,
+    }
+}
+
+#[cfg(test)]
+mod nakamura_steinsson_fomc_information_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn nakamura_steinsson_fomc_information_invariants_and_ad_parity() {
+        let base = NakamuraSteinssonFomcInformationEffectSpec {
+            policy_news_composite_shock_ds: 0.0018_f64,
+            fed_information_share_omega: 0.62_f64,
+            natural_rate_information_loading_psi: 0.85_f64,
+            information_decay_kappa_info: 0.22_f64,
+            monetary_gap_decay_kappa_mp: 0.55_f64,
+            information_inflation_loading_gamma_inf: 0.45_f64,
+            monetary_disinflation_loading_gamma_mp: 0.30_f64,
+            maturity_years_tau: 3.0_f64,
+        };
+        let r0 = evaluate_nakamura_steinsson_fomc_information_effect(&base);
+        assert!(r0.natural_real_rate_revision_bps > 0.0);
+        assert!(r0.monetary_real_rate_gap_shock_bps > 0.0);
+        assert!(r0.breakeven_inflation_forward_response_bps > 0.0);
+        assert!(r0.nominal_forward_rate_response_bps > r0.tips_real_forward_rate_response_bps);
+
+        let x0 = [
+            base.policy_news_composite_shock_ds,
+            base.fed_information_share_omega,
+            base.natural_rate_information_loading_psi,
+            base.information_decay_kappa_info,
+            base.monetary_gap_decay_kappa_mp,
+            base.information_inflation_loading_gamma_inf,
+            base.monetary_disinflation_loading_gamma_mp,
+            base.maturity_years_tau,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_nakamura_steinsson_fomc_information_effect(
+            &NakamuraSteinssonFomcInformationEffectSpec {
+                policy_news_composite_shock_ds: xd[0],
+                fed_information_share_omega: xd[1],
+                natural_rate_information_loading_psi: xd[2],
+                information_decay_kappa_info: xd[3],
+                monetary_gap_decay_kappa_mp: xd[4],
+                information_inflation_loading_gamma_inf: xd[5],
+                monetary_disinflation_loading_gamma_mp: xd[6],
+                maturity_years_tau: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_nakamura_steinsson_fomc_information_effect(
+                &NakamuraSteinssonFomcInformationEffectSpec {
+                    policy_news_composite_shock_ds: xp[0],
+                    fed_information_share_omega: xp[1],
+                    natural_rate_information_loading_psi: xp[2],
+                    information_decay_kappa_info: xp[3],
+                    monetary_gap_decay_kappa_mp: xp[4],
+                    information_inflation_loading_gamma_inf: xp[5],
+                    monetary_disinflation_loading_gamma_mp: xp[6],
+                    maturity_years_tau: xp[7],
+                },
+            );
+            let rm = evaluate_nakamura_steinsson_fomc_information_effect(
+                &NakamuraSteinssonFomcInformationEffectSpec {
+                    policy_news_composite_shock_ds: xm[0],
+                    fed_information_share_omega: xm[1],
+                    natural_rate_information_loading_psi: xm[2],
+                    information_decay_kappa_info: xm[3],
+                    monetary_gap_decay_kappa_mp: xm[4],
+                    information_inflation_loading_gamma_inf: xm[5],
+                    monetary_disinflation_loading_gamma_mp: xm[6],
+                    maturity_years_tau: xm[7],
+                },
+            );
+            let fd = (rp.nominal_forward_rate_response_bps - rm.nominal_forward_rate_response_bps)
+                / (2.0 * h);
+            assert!(rad.nominal_forward_rate_response_bps.d[i].abs() > 1e-9);
+            assert!((rad.nominal_forward_rate_response_bps.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

@@ -3354,3 +3354,174 @@ mod bollerslev_todorov_jump_tail_fear_tests {
         }
     }
 }
+
+/// Input specification for the Christoffersen, Heston & Jacobs (2013, *Review
+/// of Financial Studies* 26(8), 1962–2004, "Capturing Option Anomalies with a
+/// Variance-Dependent Pricing Kernel") U-Shaped Option Pricing Kernel and
+/// Variance Risk Premium Model.
+#[derive(Debug, Clone, Copy)]
+pub struct ChristoffersenHestonJacobsVarianceKernelSpec<T: Real> {
+    /// Equity return risk aversion parameter $\gamma > 0$.
+    pub equity_risk_aversion_gamma: T,
+    /// Variance preference / variance risk aversion parameter $\xi_{\text{var}} > 0$.
+    pub variance_preference_xi: T,
+    /// Spot variance $V_0 > 0$.
+    pub spot_variance_v0: T,
+    /// Volatility of variance $\sigma_v > 0$.
+    pub variance_of_variance_sigma_v: T,
+    /// Return-variance leverage correlation $\rho \in (-1, 0)$.
+    pub return_variance_correlation_rho: T,
+    /// Physical variance mean-reversion speed $\kappa^{\mathbb{P}} > 0$.
+    pub physical_mean_reversion_kappa_p: T,
+    /// Standardized log return innovation $z_R$.
+    pub standardized_log_return_z: T,
+}
+
+/// Analytics returned by [`evaluate_christoffersen_heston_jacobs_variance_dependent_kernel`].
+#[derive(Debug, Clone, Copy)]
+pub struct ChristoffersenHestonJacobsVarianceKernelAnalytics<T: Real> {
+    /// Risk-neutral variance mean-reversion speed $\kappa^{\mathbb{Q}} = \kappa^{\mathbb{P}} - \xi_{\text{var}}\sigma_v^2$.
+    pub risk_neutral_mean_reversion_kappa_q: T,
+    /// Instantaneous variance risk premium wedge $\text{VRP}_{\text{CHJ}} = (\kappa^{\mathbb{P}} - \kappa^{\mathbb{Q}})V_0 > 0$.
+    pub variance_risk_premium_wedge: T,
+    /// Quadratic U-shaped projected log pricing kernel $\ln M(z_R)$.
+    pub projected_log_pricing_kernel: T,
+    /// Projected state-price density ratio $M(z_R) = \exp(\ln M(z_R))$ with physical drift scaling.
+    pub state_price_density_kernel_ratio: T,
+}
+
+/// Evaluates the Christoffersen, Heston & Jacobs (2013, *RFS* 26(8))
+/// variance-dependent stochastic discount factor. Because spot variance $V_t$
+/// correlates negatively with returns ($\rho < 0$) and investors dislike
+/// positive variance spikes ($\xi_{\text{var}} > 0$), projecting the bivariate
+/// log SDF onto standardized returns $z_R$ yields a **U-shaped pricing kernel**:
+/// $$\ln M(z_R) = -\gamma\sqrt{V_0}\,z_R + \xi_{\text{var}}\sigma_v\sqrt{V_0}\left[\rho z_R + \frac{1}{2}(1 - \rho^2)(z_R^2 - 1)\right] - 0.05\,\kappa^{\mathbb{P}}V_0.$$
+pub fn evaluate_christoffersen_heston_jacobs_variance_dependent_kernel<T: Real>(
+    spec: &ChristoffersenHestonJacobsVarianceKernelSpec<T>,
+) -> ChristoffersenHestonJacobsVarianceKernelAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+
+    let gamma = spec.equity_risk_aversion_gamma.max_val(T::from_f64(0.1));
+    let xi = spec.variance_preference_xi.max_val(T::from_f64(0.1));
+    let v0 = spec.spot_variance_v0.max_val(T::from_f64(1e-4));
+    let sig_v = spec.variance_of_variance_sigma_v.max_val(T::from_f64(0.02));
+    let rho = spec
+        .return_variance_correlation_rho
+        .max_val(T::from_f64(-0.98))
+        .min_val(T::from_f64(0.98));
+    let kappa_p = spec
+        .physical_mean_reversion_kappa_p
+        .max_val(T::from_f64(0.1));
+    let z = spec.standardized_log_return_z;
+
+    let kappa_q = kappa_p - xi * sig_v * sig_v;
+    let vrp = xi * sig_v * sig_v * v0;
+    let sqrt_v0 = v0.sqrt();
+
+    let log_m = -gamma * sqrt_v0 * z
+        + xi * sig_v * sqrt_v0 * (rho * z + half * (one - rho * rho) * (z * z - one))
+        - T::from_f64(0.05) * kappa_p * v0;
+    let m_ratio = log_m.exp();
+
+    ChristoffersenHestonJacobsVarianceKernelAnalytics {
+        risk_neutral_mean_reversion_kappa_q: kappa_q,
+        variance_risk_premium_wedge: vrp,
+        projected_log_pricing_kernel: log_m,
+        state_price_density_kernel_ratio: m_ratio,
+    }
+}
+
+#[cfg(test)]
+mod christoffersen_heston_jacobs_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn christoffersen_heston_jacobs_u_shape_and_ad_parity() {
+        let base = ChristoffersenHestonJacobsVarianceKernelSpec {
+            equity_risk_aversion_gamma: 2.2_f64,
+            variance_preference_xi: 14.0_f64,
+            spot_variance_v0: 0.032_f64,
+            variance_of_variance_sigma_v: 0.38_f64,
+            return_variance_correlation_rho: -0.72_f64,
+            physical_mean_reversion_kappa_p: 3.50_f64,
+            standardized_log_return_z: 5.00_f64,
+        };
+        let r_pos = evaluate_christoffersen_heston_jacobs_variance_dependent_kernel(&base);
+        let r_zero = evaluate_christoffersen_heston_jacobs_variance_dependent_kernel(
+            &ChristoffersenHestonJacobsVarianceKernelSpec {
+                standardized_log_return_z: 0.50_f64,
+                ..base
+            },
+        );
+        let r_neg = evaluate_christoffersen_heston_jacobs_variance_dependent_kernel(
+            &ChristoffersenHestonJacobsVarianceKernelSpec {
+                standardized_log_return_z: -2.00_f64,
+                ..base
+            },
+        );
+        // U-shaped pricing kernel: both deep left tail (z = -2.0) and extreme right tail (z = +2.4) exceed moderate positive return (z = +0.5)
+        assert!(r_neg.state_price_density_kernel_ratio > r_zero.state_price_density_kernel_ratio);
+        assert!(r_pos.state_price_density_kernel_ratio > r_zero.state_price_density_kernel_ratio);
+        assert!(r_pos.variance_risk_premium_wedge > 0.0);
+
+        let x0 = [
+            base.equity_risk_aversion_gamma,
+            base.variance_preference_xi,
+            base.spot_variance_v0,
+            base.variance_of_variance_sigma_v,
+            base.return_variance_correlation_rho,
+            base.physical_mean_reversion_kappa_p,
+            base.standardized_log_return_z,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_christoffersen_heston_jacobs_variance_dependent_kernel(
+            &ChristoffersenHestonJacobsVarianceKernelSpec {
+                equity_risk_aversion_gamma: xd[0],
+                variance_preference_xi: xd[1],
+                spot_variance_v0: xd[2],
+                variance_of_variance_sigma_v: xd[3],
+                return_variance_correlation_rho: xd[4],
+                physical_mean_reversion_kappa_p: xd[5],
+                standardized_log_return_z: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_christoffersen_heston_jacobs_variance_dependent_kernel(
+                &ChristoffersenHestonJacobsVarianceKernelSpec {
+                    equity_risk_aversion_gamma: xp[0],
+                    variance_preference_xi: xp[1],
+                    spot_variance_v0: xp[2],
+                    variance_of_variance_sigma_v: xp[3],
+                    return_variance_correlation_rho: xp[4],
+                    physical_mean_reversion_kappa_p: xp[5],
+                    standardized_log_return_z: xp[6],
+                },
+            );
+            let rm = evaluate_christoffersen_heston_jacobs_variance_dependent_kernel(
+                &ChristoffersenHestonJacobsVarianceKernelSpec {
+                    equity_risk_aversion_gamma: xm[0],
+                    variance_preference_xi: xm[1],
+                    spot_variance_v0: xm[2],
+                    variance_of_variance_sigma_v: xm[3],
+                    return_variance_correlation_rho: xm[4],
+                    physical_mean_reversion_kappa_p: xm[5],
+                    standardized_log_return_z: xm[6],
+                },
+            );
+            let fd = (rp.state_price_density_kernel_ratio - rm.state_price_density_kernel_ratio)
+                / (2.0 * h);
+            assert!(rad.state_price_density_kernel_ratio.d[i].abs() > 1e-9);
+            assert!((rad.state_price_density_kernel_ratio.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

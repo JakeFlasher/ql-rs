@@ -5385,3 +5385,170 @@ mod capponi_cheng_clearinghouse_margin_tests {
         }
     }
 }
+
+/// Input specification for the Brigo, Francischello & Pallavicini (2019,
+/// *Mathematical Finance* 29(4), 1063–1104, "Analysis of Nonlinear Valuation
+/// Equations Under Credit and Funding Effects") Replacement-Cost vs. Risk-Free
+/// Close-Out XVA Nonlinearity Model.
+#[derive(Debug, Clone, Copy)]
+pub struct BrigoFrancischelloPallaviciniCloseoutXvaSpec<T: Real> {
+    /// Clean risk-free mark-to-market derivative value $V_0 > 0$.
+    pub risk_free_mark_to_market_v0: T,
+    /// Counterparty default hazard intensity $\lambda_C > 0$.
+    pub counterparty_hazard_rate_lambda_c: T,
+    /// Institution (bank) own default hazard intensity $\lambda_B > 0$.
+    pub institution_hazard_rate_lambda_b: T,
+    /// Counterparty Loss Given Default $L_C \in (0, 1)$.
+    pub counterparty_lgd_c: T,
+    /// Institution (bank) Loss Given Default $L_B \in (0, 1)$.
+    pub institution_lgd_b: T,
+    /// Net uncollateralized treasury funding spread $s_F > 0$.
+    pub uncollateralized_funding_spread_sf: T,
+    /// Residual maturity horizon in years $T > 0$.
+    pub maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_brigo_francischello_pallavicini_closeout_xva`].
+#[derive(Debug, Clone, Copy)]
+pub struct BrigoFrancischelloPallaviciniCloseoutXvaAnalytics<T: Real> {
+    /// Recursive ISDA 2002 replacement-cost close-out valuation $\hat{V}_{\text{rep}}$.
+    pub replacement_closeout_valuation: T,
+    /// Linear ISDA 1992 risk-free close-out valuation $\hat{V}_{\text{rf}}$.
+    pub risk_free_closeout_valuation: T,
+    /// Close-out convention nonlinearity wedge $\Delta \text{XVA}_{\text{closeout}} = \hat{V}_{\text{rep}} - \hat{V}_{\text{rf}}$.
+    pub closeout_convention_xva_wedge: T,
+    /// Effective replacement-cost bilateral discount spread $s_{\text{rep}} = L_C\lambda_C - L_B\lambda_B + s_F$.
+    pub replacement_effective_spread: T,
+}
+
+/// Evaluates the Brigo, Francischello & Pallavicini (2019, *Mathematical Finance*
+/// 29(4)) valuation difference between **replacement-cost close-out** (where the
+/// close-out amount equals the credit-and-funding-adjusted continuation value
+/// $\hat{V}_{\tau-}$, yielding a homogeneous effective discount spread
+/// $s_{\text{rep}} = L_C\lambda_C - L_B\lambda_B + s_F$) and **risk-free
+/// close-out** (where the close-out payoff references the clean risk-free value
+/// $V_{\tau-}$, coupling first-to-default survival probabilities $\lambda_C + \lambda_B$):
+/// $$\hat{V}_{\text{rep}} = V_0 \exp(-s_{\text{rep}} T), \qquad \hat{V}_{\text{rf}} = V_0 \left[e^{-(\lambda_C + \lambda_B + s_F)T} + \frac{1 - e^{-(\lambda_C + \lambda_B + s_F)T}}{\lambda_C + \lambda_B + s_F}\left((1 - L_C)\lambda_C + (1 + L_B)\lambda_B\right)\right].$$
+pub fn evaluate_brigo_francischello_pallavicini_closeout_xva<T: Real>(
+    spec: &BrigoFrancischelloPallaviciniCloseoutXvaSpec<T>,
+) -> BrigoFrancischelloPallaviciniCloseoutXvaAnalytics<T> {
+    let one = T::one();
+
+    let v0 = spec.risk_free_mark_to_market_v0.max_val(T::from_f64(1.0));
+    let lam_c = spec
+        .counterparty_hazard_rate_lambda_c
+        .max_val(T::from_f64(1e-4));
+    let lam_b = spec
+        .institution_hazard_rate_lambda_b
+        .max_val(T::from_f64(1e-4));
+    let lgd_c = spec
+        .counterparty_lgd_c
+        .max_val(T::from_f64(0.05))
+        .min_val(T::from_f64(0.95));
+    let lgd_b = spec
+        .institution_lgd_b
+        .max_val(T::from_f64(0.05))
+        .min_val(T::from_f64(0.95));
+    let sf = spec
+        .uncollateralized_funding_spread_sf
+        .max_val(T::from_f64(1e-4));
+    let t = spec.maturity_years_t.max_val(T::from_f64(0.25));
+
+    let s_rep = lgd_c * lam_c - lgd_b * lam_b + sf;
+    let v_rep = v0 * (-(s_rep * t)).exp();
+
+    let lam_tot = lam_c + lam_b + sf;
+    let surv_tot = (-(lam_tot * t)).exp();
+    let default_leg =
+        ((one - surv_tot) / lam_tot) * ((one - lgd_c) * lam_c + (one + lgd_b) * lam_b);
+    let v_rf = v0 * (surv_tot + default_leg);
+    let wedge = v_rep - v_rf;
+
+    BrigoFrancischelloPallaviciniCloseoutXvaAnalytics {
+        replacement_closeout_valuation: v_rep,
+        risk_free_closeout_valuation: v_rf,
+        closeout_convention_xva_wedge: wedge,
+        replacement_effective_spread: s_rep,
+    }
+}
+
+#[cfg(test)]
+mod brigo_francischello_pallavicini_closeout_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn brigo_francischello_pallavicini_closeout_invariants_and_ad_parity() {
+        let base = BrigoFrancischelloPallaviciniCloseoutXvaSpec {
+            risk_free_mark_to_market_v0: 100.0_f64,
+            counterparty_hazard_rate_lambda_c: 0.032_f64,
+            institution_hazard_rate_lambda_b: 0.018_f64,
+            counterparty_lgd_c: 0.60_f64,
+            institution_lgd_b: 0.60_f64,
+            uncollateralized_funding_spread_sf: 0.012_f64,
+            maturity_years_t: 5.0_f64,
+        };
+        let r0 = evaluate_brigo_francischello_pallavicini_closeout_xva(&base);
+        assert!(r0.replacement_closeout_valuation > 0.0);
+        assert!(r0.risk_free_closeout_valuation > 0.0);
+        assert!(r0.closeout_convention_xva_wedge.abs() > 1e-4);
+
+        let x0 = [
+            base.risk_free_mark_to_market_v0,
+            base.counterparty_hazard_rate_lambda_c,
+            base.institution_hazard_rate_lambda_b,
+            base.counterparty_lgd_c,
+            base.institution_lgd_b,
+            base.uncollateralized_funding_spread_sf,
+            base.maturity_years_t,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_brigo_francischello_pallavicini_closeout_xva(
+            &BrigoFrancischelloPallaviciniCloseoutXvaSpec {
+                risk_free_mark_to_market_v0: xd[0],
+                counterparty_hazard_rate_lambda_c: xd[1],
+                institution_hazard_rate_lambda_b: xd[2],
+                counterparty_lgd_c: xd[3],
+                institution_lgd_b: xd[4],
+                uncollateralized_funding_spread_sf: xd[5],
+                maturity_years_t: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_brigo_francischello_pallavicini_closeout_xva(
+                &BrigoFrancischelloPallaviciniCloseoutXvaSpec {
+                    risk_free_mark_to_market_v0: xp[0],
+                    counterparty_hazard_rate_lambda_c: xp[1],
+                    institution_hazard_rate_lambda_b: xp[2],
+                    counterparty_lgd_c: xp[3],
+                    institution_lgd_b: xp[4],
+                    uncollateralized_funding_spread_sf: xp[5],
+                    maturity_years_t: xp[6],
+                },
+            );
+            let rm = evaluate_brigo_francischello_pallavicini_closeout_xva(
+                &BrigoFrancischelloPallaviciniCloseoutXvaSpec {
+                    risk_free_mark_to_market_v0: xm[0],
+                    counterparty_hazard_rate_lambda_c: xm[1],
+                    institution_hazard_rate_lambda_b: xm[2],
+                    counterparty_lgd_c: xm[3],
+                    institution_lgd_b: xm[4],
+                    uncollateralized_funding_spread_sf: xm[5],
+                    maturity_years_t: xm[6],
+                },
+            );
+            let fd =
+                (rp.closeout_convention_xva_wedge - rm.closeout_convention_xva_wedge) / (2.0 * h);
+            assert!(rad.closeout_convention_xva_wedge.d[i].abs() > 1e-9);
+            assert!((rad.closeout_convention_xva_wedge.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

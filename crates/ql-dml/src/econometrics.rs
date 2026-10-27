@@ -4927,3 +4927,148 @@ mod christensen_oomen_podolskij_uhf_jump_tests {
         }
     }
 }
+
+/// Input specification for the Jacod, Li, Mykland, Podolskij & Vetter (2009,
+/// *Stochastic Processes and their Applications* 119(7), 2249–2276,
+/// "Microstructure Noise in the Continuous Case: The Pre-Averaging Approach")
+/// Pre-Averaged Realized Variance and $n^{-1/4}$ Asymptotic Variance Estimator.
+#[derive(Debug, Clone, Copy)]
+pub struct JacodLiMyklandPodolskijVetterPreaveragingSpec<T: Real> {
+    /// High-frequency observation count $n > 100$.
+    pub observation_count_n: T,
+    /// Pre-averaging window tuning constant $\theta > 0$ where $k_n = \theta\sqrt{n}$.
+    pub preaveraging_window_theta: T,
+    /// Unnormalized sum of squared pre-averaged returns $S_{\text{bar}} = \sum_{i=0}^{n-k_n}(\bar{Y}_i)^2 > 0$.
+    pub sum_squared_preaveraged_returns_sbar: T,
+    /// Microstructure noise variance $\omega^2 > 0$.
+    pub microstructure_noise_variance_omega2: T,
+    /// Integrated quarticity proxy $IQ = \int_0^1 \sigma_s^4\,ds > 0$.
+    pub integrated_quarticity_iq: T,
+}
+
+/// Analytics returned by [`evaluate_jacod_li_mykland_podolskij_vetter_preaveraging_rv`].
+#[derive(Debug, Clone, Copy)]
+pub struct JacodLiMyklandPodolskijVetterPreaveragingAnalytics<T: Real> {
+    /// Bias-corrected JLMPV pre-averaging realized variance $\hat{C}_n^{\text{JLMPV}}$.
+    pub preaveraged_realized_variance: T,
+    /// Microstructure noise bias subtraction term $\frac{\psi_1}{\theta^2 \psi_2}\omega^2 = \frac{12}{\theta^2}\omega^2$.
+    pub noise_bias_correction_term: T,
+    /// Asymptotic variance $\Sigma_n^{\text{JLMPV}}(\theta)$ of $n^{1/4}(\hat{C}_n^{\text{JLMPV}} - IV)$.
+    pub asymptotic_quarticity_variance: T,
+    /// Finite-sample $n^{-1/4}$ standard error $\text{SE}_n^{\text{JLMPV}} = n^{-1/4}\sqrt{\Sigma_n^{\text{JLMPV}}(\theta)}$.
+    pub preaveraging_standard_error: T,
+}
+
+/// Evaluates the Jacod, Li, Mykland, Podolskij & Vetter (2009, *SPA* 119(7))
+/// pre-averaging realized variance estimator under triangular kernel
+/// $g(x) = \min(x, 1-x)$ ($\psi_1 = 1$, $\psi_2 = \frac{1}{12}$):
+/// $$\hat{C}_n^{\text{JLMPV}} = \frac{\sqrt{n}}{\theta \psi_2 (n - \theta\sqrt{n} + 2)} S_{\text{bar}} - \frac{\psi_1}{\theta^2 \psi_2}\omega^2,$$
+/// together with its exact $n^{-1/4}$-rate asymptotic variance
+/// $$\Sigma_n^{\text{JLMPV}}(\theta) = 4\left(\frac{151}{140}\theta\,IQ + \frac{12}{\theta}\hat{C}_n^{\text{JLMPV}}\omega^2 + \frac{48}{\theta^3}\omega^4\right).$$
+pub fn evaluate_jacod_li_mykland_podolskij_vetter_preaveraging_rv<T: Real>(
+    spec: &JacodLiMyklandPodolskijVetterPreaveragingSpec<T>,
+) -> JacodLiMyklandPodolskijVetterPreaveragingAnalytics<T> {
+    let n = spec.observation_count_n.max_val(T::from_f64(100.0));
+    let theta = spec.preaveraging_window_theta.max_val(T::from_f64(0.05));
+    let s_bar = spec
+        .sum_squared_preaveraged_returns_sbar
+        .max_val(T::from_f64(1e-8));
+    let omega2 = spec
+        .microstructure_noise_variance_omega2
+        .max_val(T::from_f64(1e-10));
+    let iq = spec.integrated_quarticity_iq.max_val(T::from_f64(1e-10));
+
+    let psi2 = T::from_f64(1.0 / 12.0);
+    let sqrt_n = n.sqrt();
+    let k_n = theta * sqrt_n;
+    let finite_sample_scale = n / (n - k_n + T::from_f64(2.0));
+
+    let raw_rv = (finite_sample_scale / (theta * psi2 * sqrt_n)) * s_bar;
+    let bias_corr = (T::from_f64(12.0) / (theta * theta)) * omega2;
+    let c_hat = (raw_rv - bias_corr).max_val(T::from_f64(1e-8));
+
+    let term_iq = T::from_f64(151.0 / 140.0) * theta * iq;
+    let term_cross = (T::from_f64(12.0) / theta) * c_hat * omega2;
+    let term_noise = (T::from_f64(48.0) / (theta * theta * theta)) * omega2 * omega2;
+    let sigma_asympt = T::from_f64(4.0) * (term_iq + term_cross + term_noise);
+    let se = sigma_asympt.sqrt() / sqrt_n.sqrt();
+
+    JacodLiMyklandPodolskijVetterPreaveragingAnalytics {
+        preaveraged_realized_variance: c_hat,
+        noise_bias_correction_term: bias_corr,
+        asymptotic_quarticity_variance: sigma_asympt,
+        preaveraging_standard_error: se,
+    }
+}
+
+#[cfg(test)]
+mod jacod_li_mykland_podolskij_vetter_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn jlmpv_preaveraging_invariants_and_ad_parity() {
+        let base = JacodLiMyklandPodolskijVetterPreaveragingSpec {
+            observation_count_n: 23_400.0_f64,
+            preaveraging_window_theta: 0.80_f64,
+            sum_squared_preaveraged_returns_sbar: 0.00245_f64,
+            microstructure_noise_variance_omega2: 0.0000015_f64,
+            integrated_quarticity_iq: 0.00000012_f64,
+        };
+        let r0 = evaluate_jacod_li_mykland_podolskij_vetter_preaveraging_rv(&base);
+        assert!(r0.preaveraged_realized_variance > 0.0);
+        assert!(r0.noise_bias_correction_term > 0.0);
+        assert!(r0.asymptotic_quarticity_variance > 0.0);
+        assert!(r0.preaveraging_standard_error > 0.0);
+
+        let x0 = [
+            base.observation_count_n,
+            base.preaveraging_window_theta,
+            base.sum_squared_preaveraged_returns_sbar,
+            base.microstructure_noise_variance_omega2,
+            base.integrated_quarticity_iq,
+        ];
+        let mut xd = [Dual::<5>::from_f64(0.0); 5];
+        for i in 0..5 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_jacod_li_mykland_podolskij_vetter_preaveraging_rv(
+            &JacodLiMyklandPodolskijVetterPreaveragingSpec {
+                observation_count_n: xd[0],
+                preaveraging_window_theta: xd[1],
+                sum_squared_preaveraged_returns_sbar: xd[2],
+                microstructure_noise_variance_omega2: xd[3],
+                integrated_quarticity_iq: xd[4],
+            },
+        );
+        let h = 1e-10;
+        for i in 0..5 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_jacod_li_mykland_podolskij_vetter_preaveraging_rv(
+                &JacodLiMyklandPodolskijVetterPreaveragingSpec {
+                    observation_count_n: xp[0],
+                    preaveraging_window_theta: xp[1],
+                    sum_squared_preaveraged_returns_sbar: xp[2],
+                    microstructure_noise_variance_omega2: xp[3],
+                    integrated_quarticity_iq: xp[4],
+                },
+            );
+            let rm = evaluate_jacod_li_mykland_podolskij_vetter_preaveraging_rv(
+                &JacodLiMyklandPodolskijVetterPreaveragingSpec {
+                    observation_count_n: xm[0],
+                    preaveraging_window_theta: xm[1],
+                    sum_squared_preaveraged_returns_sbar: xm[2],
+                    microstructure_noise_variance_omega2: xm[3],
+                    integrated_quarticity_iq: xm[4],
+                },
+            );
+            let fd = (rp.preaveraging_standard_error - rm.preaveraging_standard_error) / (2.0 * h);
+            assert!(rad.preaveraging_standard_error.d[i].abs() > 1e-11);
+            let tolerance = 1e-6 * (1.0 + fd.abs());
+            assert!((rad.preaveraging_standard_error.d[i] - fd).abs() < tolerance);
+        }
+    }
+}

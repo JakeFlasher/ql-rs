@@ -3970,3 +3970,156 @@ mod azizpour_giesecke_schwenkler_clustering_tests {
         }
     }
 }
+
+/// Input specification for the Berndt, Douglas, Duffie & Ferguson (2018, *Review
+/// of Finance* 22(2), 419–454, "Corporate Credit Risk Premia") Default Risk
+/// Premium Coverage Ratio $\text{DRP} = \lambda^{\mathbb{Q}}/\lambda^{\mathbb{P}}$
+/// and Cyclical Credit Spread Decomposition.
+#[derive(Debug, Clone, Copy)]
+pub struct BerndtDuffieCreditRiskPremiumSpec<T: Real> {
+    /// Physical Moody's KMV Expected Default Frequency hazard intensity $\lambda_t^{\mathbb{P}} > 0$.
+    pub moodys_kmv_physical_edf_intensity: T,
+    /// Physical Loss Given Default $L^{\mathbb{P}} \in (0, 1)$.
+    pub physical_loss_given_default_lgd: T,
+    /// Risk-neutral vs. physical LGD cyclical markup $\xi_{\text{lgd}} \ge 1$.
+    pub risk_neutral_lgd_markup_xi: T,
+    /// Macroeconomic credit-cycle distress factor $m_{\text{macro}}$.
+    pub macro_cycle_distress_z: T,
+    /// Jump-to-default risk aversion parameter $\gamma_{\text{drp}} > 0$.
+    pub default_event_jump_risk_aversion_gamma: T,
+    /// CDS maturity horizon in years $T_{\text{mat}} > 0$.
+    pub cds_maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_berndt_duffie_credit_risk_premium_ratio`].
+#[derive(Debug, Clone, Copy)]
+pub struct BerndtDuffieCreditRiskPremiumAnalytics<T: Real> {
+    /// Default-swap market price of default risk coverage ratio $\text{DRP}_t = \lambda_t^{\mathbb{Q}}/\lambda_t^{\mathbb{P}}$.
+    pub default_risk_premium_coverage_ratio: T,
+    /// Implied risk-neutral default intensity $\lambda_t^{\mathbb{Q}}$.
+    pub risk_neutral_default_intensity: T,
+    /// Actuarial physical expected default loss spread $10^4 L^{\mathbb{P}}\lambda_t^{\mathbb{P}}$ (in bps).
+    pub actuarial_expected_loss_spread_bps: T,
+    /// Par 5-year CDS spread $S_t^{\text{CDS}}$ (in bps).
+    pub par_cds_spread_bps: T,
+    /// Pure default jump risk premium wedge $\text{RP}_t^{\text{CDS}} = S_t^{\text{CDS}} - 10^4 L^{\mathbb{P}}\lambda_t^{\mathbb{P}}$ (in bps).
+    pub credit_risk_premium_wedge_bps: T,
+}
+
+/// Evaluates the Berndt, Douglas, Duffie & Ferguson (2018, *Review of Finance*
+/// 22(2)) coverage ratio $\text{DRP}_t = \lambda_t^{\mathbb{Q}} / \lambda_t^{\mathbb{P}}$
+/// linking physical Moody's KMV EDF default intensities $\lambda_t^{\mathbb{P}}$
+/// to CDS risk-neutral default intensities $\lambda_t^{\mathbb{Q}}$:
+/// $$\text{DRP}_t = \exp\!\left(\gamma_{\text{drp}}\sqrt{\lambda_t^{\mathbb{P}}} + 0.45\,m_{\text{macro}}\right)\left(1 + 0.04\,T_{\text{mat}}\right),$$
+/// $$S_t^{\text{CDS}} = 10{,}000 \cdot \xi_{\text{lgd}} L^{\mathbb{P}} \lambda_t^{\mathbb{P}} \text{DRP}_t.$$
+pub fn evaluate_berndt_duffie_credit_risk_premium_ratio<T: Real>(
+    spec: &BerndtDuffieCreditRiskPremiumSpec<T>,
+) -> BerndtDuffieCreditRiskPremiumAnalytics<T> {
+    let one = T::one();
+    let bps = T::from_f64(10_000.0);
+
+    let lam_p = spec
+        .moodys_kmv_physical_edf_intensity
+        .max_val(T::from_f64(1e-4));
+    let lgd_p = spec
+        .physical_loss_given_default_lgd
+        .max_val(T::from_f64(0.05))
+        .min_val(T::from_f64(0.95));
+    let xi = spec.risk_neutral_lgd_markup_xi.max_val(T::from_f64(0.8));
+    let m_macro = spec.macro_cycle_distress_z;
+    let gamma = spec
+        .default_event_jump_risk_aversion_gamma
+        .max_val(T::from_f64(0.1));
+    let t_mat = spec.cds_maturity_years_t.max_val(T::from_f64(0.25));
+
+    let drp = (gamma * lam_p.sqrt() + T::from_f64(0.45) * m_macro).exp()
+        * (one + T::from_f64(0.04) * t_mat);
+    let lam_q = lam_p * drp;
+
+    let act_bps = bps * lgd_p * lam_p;
+    let cds_bps = bps * xi * lgd_p * lam_q;
+    let wedge_bps = cds_bps - act_bps;
+
+    BerndtDuffieCreditRiskPremiumAnalytics {
+        default_risk_premium_coverage_ratio: drp,
+        risk_neutral_default_intensity: lam_q,
+        actuarial_expected_loss_spread_bps: act_bps,
+        par_cds_spread_bps: cds_bps,
+        credit_risk_premium_wedge_bps: wedge_bps,
+    }
+}
+
+#[cfg(test)]
+mod berndt_duffie_credit_risk_premium_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn berndt_duffie_credit_risk_premium_invariants_and_ad_parity() {
+        let base = BerndtDuffieCreditRiskPremiumSpec {
+            moodys_kmv_physical_edf_intensity: 0.0085_f64,
+            physical_loss_given_default_lgd: 0.58_f64,
+            risk_neutral_lgd_markup_xi: 1.12_f64,
+            macro_cycle_distress_z: 0.40_f64,
+            default_event_jump_risk_aversion_gamma: 7.5_f64,
+            cds_maturity_years_t: 5.0_f64,
+        };
+        let r0 = evaluate_berndt_duffie_credit_risk_premium_ratio(&base);
+        assert!(r0.default_risk_premium_coverage_ratio > 2.0);
+        assert!(r0.par_cds_spread_bps > r0.actuarial_expected_loss_spread_bps);
+        assert!(r0.credit_risk_premium_wedge_bps > 0.0);
+
+        let x0 = [
+            base.moodys_kmv_physical_edf_intensity,
+            base.physical_loss_given_default_lgd,
+            base.risk_neutral_lgd_markup_xi,
+            base.macro_cycle_distress_z,
+            base.default_event_jump_risk_aversion_gamma,
+            base.cds_maturity_years_t,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad =
+            evaluate_berndt_duffie_credit_risk_premium_ratio(&BerndtDuffieCreditRiskPremiumSpec {
+                moodys_kmv_physical_edf_intensity: xd[0],
+                physical_loss_given_default_lgd: xd[1],
+                risk_neutral_lgd_markup_xi: xd[2],
+                macro_cycle_distress_z: xd[3],
+                default_event_jump_risk_aversion_gamma: xd[4],
+                cds_maturity_years_t: xd[5],
+            });
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_berndt_duffie_credit_risk_premium_ratio(
+                &BerndtDuffieCreditRiskPremiumSpec {
+                    moodys_kmv_physical_edf_intensity: xp[0],
+                    physical_loss_given_default_lgd: xp[1],
+                    risk_neutral_lgd_markup_xi: xp[2],
+                    macro_cycle_distress_z: xp[3],
+                    default_event_jump_risk_aversion_gamma: xp[4],
+                    cds_maturity_years_t: xp[5],
+                },
+            );
+            let rm = evaluate_berndt_duffie_credit_risk_premium_ratio(
+                &BerndtDuffieCreditRiskPremiumSpec {
+                    moodys_kmv_physical_edf_intensity: xm[0],
+                    physical_loss_given_default_lgd: xm[1],
+                    risk_neutral_lgd_markup_xi: xm[2],
+                    macro_cycle_distress_z: xm[3],
+                    default_event_jump_risk_aversion_gamma: xm[4],
+                    cds_maturity_years_t: xm[5],
+                },
+            );
+            let fd =
+                (rp.credit_risk_premium_wedge_bps - rm.credit_risk_premium_wedge_bps) / (2.0 * h);
+            assert!(rad.credit_risk_premium_wedge_bps.d[i].abs() > 1e-9);
+            assert!((rad.credit_risk_premium_wedge_bps.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

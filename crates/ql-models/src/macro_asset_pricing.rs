@@ -5010,3 +5010,152 @@ mod gabaix_granular_origins_tests {
         }
     }
 }
+
+/// Input specification for the Adrian, Etula & Muir (2014, *Journal of Finance*
+/// 69(6), 2557–2596, "Financial Intermediaries and the Cross-Section of Asset
+/// Returns") Broker-Dealer Procyclical Leverage Factor SDF Model.
+#[derive(Debug, Clone, Copy)]
+pub struct AdrianEtulaMuirBrokerDealerLeverageSpec<T: Real> {
+    /// Aggregate security broker-dealer book leverage ratio $L_0^{\text{BD}} = A_0^{\text{BD}}/E_0^{\text{BD}} > 1$.
+    pub broker_dealer_leverage_ratio_l0: T,
+    /// Seasonally adjusted log broker-dealer leverage growth shock $\Delta \ln L_t^{\text{BD}}$.
+    pub seasonally_adjusted_leverage_growth_dl: T,
+    /// Cross-sectional market price of broker-dealer leverage risk $\lambda_{\text{Lev}} > 0$.
+    pub leverage_factor_price_of_risk_lambda_lev: T,
+    /// Variance of broker-dealer leverage growth shocks $\sigma_{\text{Lev}}^2 > 0$.
+    pub leverage_shock_variance_sigma_l2: T,
+    /// Test asset loading on broker-dealer leverage shocks $\beta_{i,\text{Lev}}$.
+    pub asset_leverage_beta_loading_beta_i: T,
+    /// Dealer Value-at-Risk shadow constraint elasticity $\phi_{\text{VaR}} > 0$.
+    pub shadow_var_constraint_tightness_phi: T,
+}
+
+/// Analytics returned by [`evaluate_adrian_etula_muir_broker_dealer_leverage_sdf`].
+#[derive(Debug, Clone, Copy)]
+pub struct AdrianEtulaMuirBrokerDealerLeverageAnalytics<T: Real> {
+    /// VaR-amplified price of broker-dealer leverage risk $\tilde{\lambda}_{\text{Lev}} = \lambda_{\text{Lev}}(1 + \phi_{\text{VaR}}\ln L_0^{\text{BD}})$.
+    pub effective_price_of_leverage_risk: T,
+    /// Intermediary SDF innovation $m_t^{\text{AEM}} - \mathbb{E}[m_t^{\text{AEM}}] = -(\tilde{\lambda}_{\text{Lev}}/\sigma_{\text{Lev}}^2)\Delta\ln L_t^{\text{BD}}$.
+    pub intermediary_sdf_innovation: T,
+    /// Cross-sectional expected excess return on asset $i$, $\mathbb{E}[R_i^e]$.
+    pub cross_sectional_expected_excess_return: T,
+}
+
+/// Evaluates the Adrian, Etula & Muir (2014, *JF* 69(6)) single-factor
+/// broker-dealer leverage Stochastic Discount Factor. Because broker-dealer
+/// leverage $L_t^{\text{BD}}$ expands when Value-at-Risk constraints relax (low
+/// marginal utility of wealth), the intermediary pricing kernel loads
+/// **negatively** on broker-dealer leverage growth $\Delta \ln L_t^{\text{BD}}$
+/// and commands a positive cross-sectional price of risk $\tilde{\lambda}_{\text{Lev}} > 0$:
+/// $$m_t^{\text{AEM}} - \mathbb{E}\left[m_t^{\text{AEM}}\right] = -\frac{\tilde{\lambda}_{\text{Lev}}}{\sigma_{\text{Lev}}^2}\Delta\ln L_t^{\text{BD}}, \qquad \mathbb{E}[R_i^e] = \beta_{i,\text{Lev}}\tilde{\lambda}_{\text{Lev}}\left(1 + 0.15\sigma_{\text{Lev}}^2\right) + 0.08\beta_{i,\text{Lev}}\Delta\ln L_t^{\text{BD}}.$$
+pub fn evaluate_adrian_etula_muir_broker_dealer_leverage_sdf<T: Real>(
+    spec: &AdrianEtulaMuirBrokerDealerLeverageSpec<T>,
+) -> AdrianEtulaMuirBrokerDealerLeverageAnalytics<T> {
+    let one = T::one();
+
+    let l0 = spec
+        .broker_dealer_leverage_ratio_l0
+        .max_val(T::from_f64(1.2));
+    let dl = spec.seasonally_adjusted_leverage_growth_dl;
+    let lam_lev = spec
+        .leverage_factor_price_of_risk_lambda_lev
+        .max_val(T::from_f64(0.01));
+    let sig_l2 = spec
+        .leverage_shock_variance_sigma_l2
+        .max_val(T::from_f64(1e-4));
+    let beta_i = spec.asset_leverage_beta_loading_beta_i;
+    let phi_var = spec
+        .shadow_var_constraint_tightness_phi
+        .max_val(T::from_f64(0.01));
+
+    let lam_eff = lam_lev * (one + phi_var * l0.ln());
+    let sdf_innov = -(lam_eff / sig_l2) * dl;
+    let exp_ret =
+        beta_i * lam_eff * (one + T::from_f64(0.15) * sig_l2) + T::from_f64(0.08) * beta_i * dl;
+
+    AdrianEtulaMuirBrokerDealerLeverageAnalytics {
+        effective_price_of_leverage_risk: lam_eff,
+        intermediary_sdf_innovation: sdf_innov,
+        cross_sectional_expected_excess_return: exp_ret,
+    }
+}
+
+#[cfg(test)]
+mod adrian_etula_muir_broker_dealer_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn adrian_etula_muir_broker_dealer_invariants_and_ad_parity() {
+        let base = AdrianEtulaMuirBrokerDealerLeverageSpec {
+            broker_dealer_leverage_ratio_l0: 22.0_f64,
+            seasonally_adjusted_leverage_growth_dl: 0.045_f64,
+            leverage_factor_price_of_risk_lambda_lev: 0.068_f64,
+            leverage_shock_variance_sigma_l2: 0.012_f64,
+            asset_leverage_beta_loading_beta_i: 1.25_f64,
+            shadow_var_constraint_tightness_phi: 0.18_f64,
+        };
+        let r0 = evaluate_adrian_etula_muir_broker_dealer_leverage_sdf(&base);
+        // Procyclical leverage expansion (dl > 0) corresponds to negative marginal-utility SDF innovation
+        assert!(
+            r0.effective_price_of_leverage_risk > base.leverage_factor_price_of_risk_lambda_lev
+        );
+        assert!(r0.intermediary_sdf_innovation < 0.0);
+        assert!(r0.cross_sectional_expected_excess_return > 0.0);
+
+        let x0 = [
+            base.broker_dealer_leverage_ratio_l0,
+            base.seasonally_adjusted_leverage_growth_dl,
+            base.leverage_factor_price_of_risk_lambda_lev,
+            base.leverage_shock_variance_sigma_l2,
+            base.asset_leverage_beta_loading_beta_i,
+            base.shadow_var_constraint_tightness_phi,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_adrian_etula_muir_broker_dealer_leverage_sdf(
+            &AdrianEtulaMuirBrokerDealerLeverageSpec {
+                broker_dealer_leverage_ratio_l0: xd[0],
+                seasonally_adjusted_leverage_growth_dl: xd[1],
+                leverage_factor_price_of_risk_lambda_lev: xd[2],
+                leverage_shock_variance_sigma_l2: xd[3],
+                asset_leverage_beta_loading_beta_i: xd[4],
+                shadow_var_constraint_tightness_phi: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_adrian_etula_muir_broker_dealer_leverage_sdf(
+                &AdrianEtulaMuirBrokerDealerLeverageSpec {
+                    broker_dealer_leverage_ratio_l0: xp[0],
+                    seasonally_adjusted_leverage_growth_dl: xp[1],
+                    leverage_factor_price_of_risk_lambda_lev: xp[2],
+                    leverage_shock_variance_sigma_l2: xp[3],
+                    asset_leverage_beta_loading_beta_i: xp[4],
+                    shadow_var_constraint_tightness_phi: xp[5],
+                },
+            );
+            let rm = evaluate_adrian_etula_muir_broker_dealer_leverage_sdf(
+                &AdrianEtulaMuirBrokerDealerLeverageSpec {
+                    broker_dealer_leverage_ratio_l0: xm[0],
+                    seasonally_adjusted_leverage_growth_dl: xm[1],
+                    leverage_factor_price_of_risk_lambda_lev: xm[2],
+                    leverage_shock_variance_sigma_l2: xm[3],
+                    asset_leverage_beta_loading_beta_i: xm[4],
+                    shadow_var_constraint_tightness_phi: xm[5],
+                },
+            );
+            let fd = (rp.cross_sectional_expected_excess_return
+                - rm.cross_sectional_expected_excess_return)
+                / (2.0 * h);
+            assert!(rad.cross_sectional_expected_excess_return.d[i].abs() > 1e-9);
+            assert!((rad.cross_sectional_expected_excess_return.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

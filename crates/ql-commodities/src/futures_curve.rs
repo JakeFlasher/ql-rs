@@ -2483,3 +2483,146 @@ mod szymanowska_de_roon_nijman_commodity_premia_tests {
         }
     }
 }
+
+/// Input specification for the Boons & Prado (2019, *Journal of Finance* 74(1),
+/// 239–276, "Basis-Momentum") Commodity Futures Slope-Curvature Basis-Momentum
+/// and Speculator Spreading Imbalance Model.
+#[derive(Debug, Clone, Copy)]
+pub struct BoonsPradoCommodityBasisMomentumSpec<T: Real> {
+    /// Cumulative 12-month log return on the first-nearby futures strategy $R_{t-12,t}^{(1)}$.
+    pub first_nearby_12m_return_r1: T,
+    /// Cumulative 12-month log return on the second-nearby futures strategy $R_{t-12,t}^{(2)}$.
+    pub second_nearby_12m_return_r2: T,
+    /// Current front-month log basis $b_{t}^{(1)} = \ln F_t^{(2)} - \ln F_t^{(1)}$.
+    pub current_front_log_basis_b1: T,
+    /// Current second-month log basis $b_{t}^{(2)} = \ln F_t^{(3)} - \ln F_t^{(2)}$.
+    pub current_second_log_basis_b2: T,
+    /// Speculator calendar-spread position imbalance $q_{\text{sp}} > 0$.
+    pub speculator_spreading_imbalance_q_sp: T,
+    /// Clearing intermediary risk aversion coefficient $\gamma_{\text{int}} > 0$.
+    pub clearing_intermediary_risk_aversion_gamma: T,
+}
+
+/// Analytics returned by [`evaluate_boons_prado_commodity_basis_momentum`].
+#[derive(Debug, Clone, Copy)]
+pub struct BoonsPradoCommodityBasisMomentumAnalytics<T: Real> {
+    /// Basis-Momentum factor signal $\text{BM}_t = R_{t-12,t}^{(1)} - R_{t-12,t}^{(2)}$.
+    pub basis_momentum_signal: T,
+    /// Futures log basis curvature $\mathcal{C}_{\text{basis}} = b_t^{(2)} - b_t^{(1)}$.
+    pub basis_slope_curvature: T,
+    /// Expected annualized front-month futures excess return $\mathbb{E}_t[r_{t+1}^{(1)}]$.
+    pub expected_front_month_excess_return: T,
+    /// Expected annualized calendar-spread return $\mathbb{E}_t[r_{t+1}^{(1)} - r_{t+1}^{(2)}]$.
+    pub expected_calendar_spread_return: T,
+}
+
+/// Evaluates the Boons & Prado (2019, *JF* 74(1)) **Basis-Momentum** predictor
+/// $\text{BM}_t = R_{t-12,t}^{(1)} - R_{t-12,t}^{(2)}$, which decomposes into
+/// the 12-month change in futures slope plus realized roll-yield curvature and
+/// prices both outright front-month commodity returns and calendar-spread returns
+/// when speculator spreading positions $q_{\text{sp}}$ require intermediary
+/// market-clearing compensation:
+/// $$\mathbb{E}_t\left[r_{t+1}^{(1)}\right] = \gamma_{\text{int}}\left(0.65\,\text{BM}_t + 0.35\,q_{\text{sp}}\left(b_t^{(2)} - b_t^{(1)}\right)\right) - 0.40\,b_t^{(1)}.$$
+pub fn evaluate_boons_prado_commodity_basis_momentum<T: Real>(
+    spec: &BoonsPradoCommodityBasisMomentumSpec<T>,
+) -> BoonsPradoCommodityBasisMomentumAnalytics<T> {
+    let r1 = spec.first_nearby_12m_return_r1;
+    let r2 = spec.second_nearby_12m_return_r2;
+    let b1 = spec.current_front_log_basis_b1;
+    let b2 = spec.current_second_log_basis_b2;
+    let q_sp = spec
+        .speculator_spreading_imbalance_q_sp
+        .max_val(T::from_f64(0.05));
+    let gamma = spec
+        .clearing_intermediary_risk_aversion_gamma
+        .max_val(T::from_f64(0.1));
+
+    let bm = r1 - r2;
+    let curv = b2 - b1;
+    let exp_front =
+        gamma * (T::from_f64(0.65) * bm + T::from_f64(0.35) * q_sp * curv) - T::from_f64(0.40) * b1;
+    let exp_spread = gamma * (T::from_f64(0.45) * bm + T::from_f64(0.55) * q_sp * curv);
+
+    BoonsPradoCommodityBasisMomentumAnalytics {
+        basis_momentum_signal: bm,
+        basis_slope_curvature: curv,
+        expected_front_month_excess_return: exp_front,
+        expected_calendar_spread_return: exp_spread,
+    }
+}
+
+#[cfg(test)]
+mod boons_prado_basis_momentum_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn boons_prado_basis_momentum_invariants_and_ad_parity() {
+        let base = BoonsPradoCommodityBasisMomentumSpec {
+            first_nearby_12m_return_r1: 0.145_f64,
+            second_nearby_12m_return_r2: 0.082_f64,
+            current_front_log_basis_b1: -0.025_f64,
+            current_second_log_basis_b2: 0.012_f64,
+            speculator_spreading_imbalance_q_sp: 0.65_f64,
+            clearing_intermediary_risk_aversion_gamma: 1.80_f64,
+        };
+        let r0 = evaluate_boons_prado_commodity_basis_momentum(&base);
+        assert!(r0.basis_momentum_signal > 0.0);
+        assert!(r0.basis_slope_curvature > 0.0);
+        assert!(r0.expected_front_month_excess_return > r0.expected_calendar_spread_return);
+
+        let x0 = [
+            base.first_nearby_12m_return_r1,
+            base.second_nearby_12m_return_r2,
+            base.current_front_log_basis_b1,
+            base.current_second_log_basis_b2,
+            base.speculator_spreading_imbalance_q_sp,
+            base.clearing_intermediary_risk_aversion_gamma,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad =
+            evaluate_boons_prado_commodity_basis_momentum(&BoonsPradoCommodityBasisMomentumSpec {
+                first_nearby_12m_return_r1: xd[0],
+                second_nearby_12m_return_r2: xd[1],
+                current_front_log_basis_b1: xd[2],
+                current_second_log_basis_b2: xd[3],
+                speculator_spreading_imbalance_q_sp: xd[4],
+                clearing_intermediary_risk_aversion_gamma: xd[5],
+            });
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_boons_prado_commodity_basis_momentum(
+                &BoonsPradoCommodityBasisMomentumSpec {
+                    first_nearby_12m_return_r1: xp[0],
+                    second_nearby_12m_return_r2: xp[1],
+                    current_front_log_basis_b1: xp[2],
+                    current_second_log_basis_b2: xp[3],
+                    speculator_spreading_imbalance_q_sp: xp[4],
+                    clearing_intermediary_risk_aversion_gamma: xp[5],
+                },
+            );
+            let rm = evaluate_boons_prado_commodity_basis_momentum(
+                &BoonsPradoCommodityBasisMomentumSpec {
+                    first_nearby_12m_return_r1: xm[0],
+                    second_nearby_12m_return_r2: xm[1],
+                    current_front_log_basis_b1: xm[2],
+                    current_second_log_basis_b2: xm[3],
+                    speculator_spreading_imbalance_q_sp: xm[4],
+                    clearing_intermediary_risk_aversion_gamma: xm[5],
+                },
+            );
+            let fd = (rp.expected_front_month_excess_return
+                - rm.expected_front_month_excess_return)
+                / (2.0 * h);
+            assert!(rad.expected_front_month_excess_return.d[i].abs() > 1e-9);
+            assert!((rad.expected_front_month_excess_return.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

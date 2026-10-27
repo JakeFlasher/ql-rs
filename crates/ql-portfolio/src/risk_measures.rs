@@ -7024,3 +7024,151 @@ mod acharya_pedersen_philippon_richardson_ses_tests {
         }
     }
 }
+
+/// Input specification for the Kelly & Jiang (2014, *Journal of Finance* 69(5),
+/// 2141–2178, "Tail Risk and Asset Prices") Cross-Sectional Power-Law Dynamic
+/// Tail Exponent $\lambda_t^{\text{KJ}}$ and Tail Risk Beta Pricing Model.
+#[derive(Debug, Clone, Copy)]
+pub struct KellyJiangTailRiskFactorSpec<T: Real> {
+    /// Pooled cross-sectional Hill mean log exceedance $\lambda_t^{\text{KJ}} = \frac{1}{K_t}\sum_{k=1}^{K_t}\ln(R_{k,t}/u_t) > 0$.
+    pub mean_log_exceedance_ratio_hill: T,
+    /// Left-tail threshold magnitude $|u_t| > 0$.
+    pub tail_threshold_magnitude_u: T,
+    /// Number of daily firm-level tail exceedances $K_t > 0$.
+    pub exceedance_count_k: T,
+    /// Asset predictive loading on innovations in tail risk $\beta_{i,\text{tail}}$.
+    pub asset_tail_beta_loading_beta_tail: T,
+    /// Market price of cross-sectional tail risk $\gamma_{\text{KJ}} > 0$.
+    pub tail_factor_market_price_of_risk_gamma_kj: T,
+    /// Autoregressive persistence of the common tail factor $\rho_\lambda \in (0, 1)$.
+    pub tail_persistence_rho_lambda: T,
+}
+
+/// Analytics returned by [`evaluate_kelly_jiang_cross_sectional_tail_risk_factor`].
+#[derive(Debug, Clone, Copy)]
+pub struct KellyJiangTailRiskFactorAnalytics<T: Real> {
+    /// Implied Pareto power-law tail index $\alpha_t^{\text{Pareto}} = 1 / \lambda_t^{\text{KJ}}$.
+    pub implied_pareto_tail_index: T,
+    /// Finite-sample bias-adjusted dynamic tail risk index $\tilde{\lambda}_t^{\text{KJ}}$.
+    pub adjusted_dynamic_tail_risk_index: T,
+    /// Conditional 1% cross-sectional Expected Tail Loss $\text{ETL}_{0.01}$.
+    pub conditional_expected_tail_loss: T,
+    /// Required cross-sectional tail risk premium on asset $i$, $\text{RP}_{i,\text{KJ}}$.
+    pub required_tail_risk_premium: T,
+}
+
+/// Evaluates the Kelly & Jiang (2014, *JF* 69(5)) dynamic power-law tail factor
+/// $\lambda_t^{\text{KJ}}$ estimated from pooled cross-sectional firm crash
+/// exceedances $R_{k,t} < u_t < 0$:
+/// $$\mathbb{P}(R_{i,t+1} < r \mid R_{i,t+1} < u_t) = \left(\frac{r}{u_t}\right)^{-a_i / \lambda_t^{\text{KJ}}}, \qquad \tilde{\lambda}_t^{\text{KJ}} = \lambda_t^{\text{KJ}}\left(1 + \frac{1}{2 K_t}\right)(1 + 0.5|u_t|),$$
+/// and maps asset tail beta $\beta_{i,\text{tail}}$ into the required cross-sectional
+/// tail risk premium $\text{RP}_{i,\text{KJ}} = \beta_{i,\text{tail}} \gamma_{\text{KJ}} \tilde{\lambda}_t^{\text{KJ}} / (1 - 0.25\rho_\lambda)$.
+pub fn evaluate_kelly_jiang_cross_sectional_tail_risk_factor<T: Real>(
+    spec: &KellyJiangTailRiskFactorSpec<T>,
+) -> KellyJiangTailRiskFactorAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+
+    let lam_kj = spec
+        .mean_log_exceedance_ratio_hill
+        .max_val(T::from_f64(0.05));
+    let u_mag = spec.tail_threshold_magnitude_u.max_val(T::from_f64(0.005));
+    let k_cnt = spec.exceedance_count_k.max_val(T::from_f64(5.0));
+    let beta_t = spec.asset_tail_beta_loading_beta_tail;
+    let gamma_kj = spec
+        .tail_factor_market_price_of_risk_gamma_kj
+        .max_val(T::from_f64(0.01));
+    let rho_l = spec
+        .tail_persistence_rho_lambda
+        .max_val(T::from_f64(0.05))
+        .min_val(T::from_f64(0.99));
+
+    let alpha_pareto = one / lam_kj;
+    let lam_adj = lam_kj * (one + one / (T::from_f64(2.0) * k_cnt)) * (one + half * u_mag);
+    let persistence_mult = one / (one - T::from_f64(0.25) * rho_l);
+
+    let etl = u_mag * lam_adj.exp() * persistence_mult;
+    let rp_kj = beta_t * gamma_kj * lam_adj * persistence_mult;
+
+    KellyJiangTailRiskFactorAnalytics {
+        implied_pareto_tail_index: alpha_pareto,
+        adjusted_dynamic_tail_risk_index: lam_adj,
+        conditional_expected_tail_loss: etl,
+        required_tail_risk_premium: rp_kj,
+    }
+}
+
+#[cfg(test)]
+mod kelly_jiang_tail_risk_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn kelly_jiang_tail_risk_invariants_and_ad_parity() {
+        let base = KellyJiangTailRiskFactorSpec {
+            mean_log_exceedance_ratio_hill: 0.42_f64,
+            tail_threshold_magnitude_u: 0.048_f64,
+            exceedance_count_k: 180.0_f64,
+            asset_tail_beta_loading_beta_tail: 1.35_f64,
+            tail_factor_market_price_of_risk_gamma_kj: 0.14_f64,
+            tail_persistence_rho_lambda: 0.88_f64,
+        };
+        let r0 = evaluate_kelly_jiang_cross_sectional_tail_risk_factor(&base);
+        assert!(r0.implied_pareto_tail_index > 2.0);
+        assert!(r0.adjusted_dynamic_tail_risk_index > base.mean_log_exceedance_ratio_hill);
+        assert!(r0.conditional_expected_tail_loss > base.tail_threshold_magnitude_u);
+        assert!(r0.required_tail_risk_premium > 0.0);
+
+        let x0 = [
+            base.mean_log_exceedance_ratio_hill,
+            base.tail_threshold_magnitude_u,
+            base.exceedance_count_k,
+            base.asset_tail_beta_loading_beta_tail,
+            base.tail_factor_market_price_of_risk_gamma_kj,
+            base.tail_persistence_rho_lambda,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad =
+            evaluate_kelly_jiang_cross_sectional_tail_risk_factor(&KellyJiangTailRiskFactorSpec {
+                mean_log_exceedance_ratio_hill: xd[0],
+                tail_threshold_magnitude_u: xd[1],
+                exceedance_count_k: xd[2],
+                asset_tail_beta_loading_beta_tail: xd[3],
+                tail_factor_market_price_of_risk_gamma_kj: xd[4],
+                tail_persistence_rho_lambda: xd[5],
+            });
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_kelly_jiang_cross_sectional_tail_risk_factor(
+                &KellyJiangTailRiskFactorSpec {
+                    mean_log_exceedance_ratio_hill: xp[0],
+                    tail_threshold_magnitude_u: xp[1],
+                    exceedance_count_k: xp[2],
+                    asset_tail_beta_loading_beta_tail: xp[3],
+                    tail_factor_market_price_of_risk_gamma_kj: xp[4],
+                    tail_persistence_rho_lambda: xp[5],
+                },
+            );
+            let rm = evaluate_kelly_jiang_cross_sectional_tail_risk_factor(
+                &KellyJiangTailRiskFactorSpec {
+                    mean_log_exceedance_ratio_hill: xm[0],
+                    tail_threshold_magnitude_u: xm[1],
+                    exceedance_count_k: xm[2],
+                    asset_tail_beta_loading_beta_tail: xm[3],
+                    tail_factor_market_price_of_risk_gamma_kj: xm[4],
+                    tail_persistence_rho_lambda: xm[5],
+                },
+            );
+            let fd = (rp.required_tail_risk_premium - rm.required_tail_risk_premium) / (2.0 * h);
+            assert!(rad.required_tail_risk_premium.d[i].abs() > 1e-9);
+            assert!((rad.required_tail_risk_premium.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

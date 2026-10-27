@@ -2636,3 +2636,166 @@ mod menkhoff_sarno_schmeling_schrimpf_fx_vol_tests {
         }
     }
 }
+
+/// Input specification for the Colacito, Croce, Gavazzoni & Ready (2018,
+/// *Journal of Finance* 73(6), 2719–2756, "Currency Risk Factors in a Recursive
+/// Multi-Country Economy") Epstein-Zin Long-Run Growth News FX Carry and Dollar
+/// Factor Model.
+#[derive(Debug, Clone, Copy)]
+pub struct ColacitoCroceGavazzoniReadyRecursiveFxSpec<T: Real> {
+    /// Coefficient of relative risk aversion $\gamma > 1$.
+    pub relative_risk_aversion_gamma: T,
+    /// Intertemporal elasticity of substitution $\psi > 0$.
+    pub intertemporal_elasticity_psi: T,
+    /// Domestic (low-interest funding currency) exposure to global long-run growth news $\beta_H > 0$.
+    pub home_lrr_exposure_beta_h: T,
+    /// Foreign (high-interest investment currency) exposure to global long-run growth news $\beta_F \in (0, \beta_H)$.
+    pub foreign_lrr_exposure_beta_f: T,
+    /// Conditional volatility of global long-run growth news $\sigma_x > 0$.
+    pub global_lrr_volatility_sigma_x: T,
+    /// Conditional volatility of short-run consumption growth $\sigma_c > 0$.
+    pub short_run_output_volatility_sigma_c: T,
+    /// Persistence of long-run growth news $\rho_x \in (0, 1)$.
+    pub lrr_persistence_rho_x: T,
+}
+
+/// Analytics returned by [`evaluate_colacito_croce_gavazzoni_ready_recursive_fx_factors`].
+#[derive(Debug, Clone, Copy)]
+pub struct ColacitoCroceGavazzoniReadyRecursiveFxAnalytics<T: Real> {
+    /// Epstein-Zin long-run risk pricing multiplier $\kappa_{\text{EZ}} = (\gamma - 1/\psi)/(1 - \rho_x)$.
+    pub epstein_zin_lrr_multiplier: T,
+    /// Equilibrium foreign minus domestic interest rate differential $r_t^F - r_t^H$.
+    pub equilibrium_interest_rate_differential: T,
+    /// Long-run growth news contribution to the FX carry risk premium.
+    pub long_run_risk_fx_carry_component: T,
+    /// Total equilibrium FX carry expected excess return $\mathbb{E}_t[rx_{t+1}^{\text{FX}}]$.
+    pub equilibrium_fx_carry_risk_premium: T,
+}
+
+/// Evaluates the Colacito, Croce, Gavazzoni & Ready (2018, *JF* 73(6))
+/// multi-country recursive Epstein-Zin currency pricing equations. Countries
+/// with lower exposure $\beta_F < \beta_H$ to global long-run growth news have
+/// weaker precautionary savings demand—hence higher equilibrium interest rates
+/// $r_t^F > r_t^H$—and depreciate in global bad times, earning a positive
+/// currency carry risk premium:
+/// $$\kappa_{\text{EZ}} = \frac{\gamma - 1/\psi}{1 - \rho_x}, \qquad r_t^F - r_t^H = \frac{1}{2}\kappa_{\text{EZ}}^2\left(\beta_H^2 - \beta_F^2\right)\sigma_x^2 + \frac{1}{2}\gamma(\beta_H - \beta_F)\sigma_c^2,$$
+/// $$\mathbb{E}_t\left[rx_{t+1}^{\text{FX}}\right] = \kappa_{\text{EZ}}^2\left(\beta_H^2 - \beta_F^2\right)\sigma_x^2 + \gamma(\beta_H - \beta_F)\sigma_c^2.$$
+pub fn evaluate_colacito_croce_gavazzoni_ready_recursive_fx_factors<T: Real>(
+    spec: &ColacitoCroceGavazzoniReadyRecursiveFxSpec<T>,
+) -> ColacitoCroceGavazzoniReadyRecursiveFxAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+
+    let gamma = spec.relative_risk_aversion_gamma.max_val(T::from_f64(1.05));
+    let psi = spec.intertemporal_elasticity_psi.max_val(T::from_f64(0.2));
+    let beta_h = spec.home_lrr_exposure_beta_h.max_val(T::from_f64(0.1));
+    let beta_f = spec.foreign_lrr_exposure_beta_f.max_val(T::from_f64(0.05));
+    let sig_x = spec
+        .global_lrr_volatility_sigma_x
+        .max_val(T::from_f64(1e-4));
+    let sig_c = spec
+        .short_run_output_volatility_sigma_c
+        .max_val(T::from_f64(1e-4));
+    let rho_x = spec
+        .lrr_persistence_rho_x
+        .max_val(T::from_f64(0.05))
+        .min_val(T::from_f64(0.99));
+
+    let kappa_ez = (gamma - one / psi) / (one - rho_x);
+    let beta_diff_sq = beta_h * beta_h - beta_f * beta_f;
+    let beta_diff = beta_h - beta_f;
+
+    let lrr_comp = kappa_ez * kappa_ez * beta_diff_sq * sig_x * sig_x;
+    let srr_comp = gamma * beta_diff * sig_c * sig_c;
+
+    let ir_diff = half * (lrr_comp + srr_comp);
+    let carry_prem = lrr_comp + srr_comp;
+
+    ColacitoCroceGavazzoniReadyRecursiveFxAnalytics {
+        epstein_zin_lrr_multiplier: kappa_ez,
+        equilibrium_interest_rate_differential: ir_diff,
+        long_run_risk_fx_carry_component: lrr_comp,
+        equilibrium_fx_carry_risk_premium: carry_prem,
+    }
+}
+
+#[cfg(test)]
+mod colacito_croce_gavazzoni_ready_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn colacito_croce_gavazzoni_ready_invariants_and_ad_parity() {
+        let base = ColacitoCroceGavazzoniReadyRecursiveFxSpec {
+            relative_risk_aversion_gamma: 6.5_f64,
+            intertemporal_elasticity_psi: 1.5_f64,
+            home_lrr_exposure_beta_h: 1.25_f64,
+            foreign_lrr_exposure_beta_f: 0.72_f64,
+            global_lrr_volatility_sigma_x: 0.0042_f64,
+            short_run_output_volatility_sigma_c: 0.015_f64,
+            lrr_persistence_rho_x: 0.94_f64,
+        };
+        let r0 = evaluate_colacito_croce_gavazzoni_ready_recursive_fx_factors(&base);
+        assert!(r0.epstein_zin_lrr_multiplier > 0.0);
+        assert!(r0.equilibrium_interest_rate_differential > 0.0);
+        assert!(r0.equilibrium_fx_carry_risk_premium > r0.equilibrium_interest_rate_differential);
+
+        let x0 = [
+            base.relative_risk_aversion_gamma,
+            base.intertemporal_elasticity_psi,
+            base.home_lrr_exposure_beta_h,
+            base.foreign_lrr_exposure_beta_f,
+            base.global_lrr_volatility_sigma_x,
+            base.short_run_output_volatility_sigma_c,
+            base.lrr_persistence_rho_x,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_colacito_croce_gavazzoni_ready_recursive_fx_factors(
+            &ColacitoCroceGavazzoniReadyRecursiveFxSpec {
+                relative_risk_aversion_gamma: xd[0],
+                intertemporal_elasticity_psi: xd[1],
+                home_lrr_exposure_beta_h: xd[2],
+                foreign_lrr_exposure_beta_f: xd[3],
+                global_lrr_volatility_sigma_x: xd[4],
+                short_run_output_volatility_sigma_c: xd[5],
+                lrr_persistence_rho_x: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_colacito_croce_gavazzoni_ready_recursive_fx_factors(
+                &ColacitoCroceGavazzoniReadyRecursiveFxSpec {
+                    relative_risk_aversion_gamma: xp[0],
+                    intertemporal_elasticity_psi: xp[1],
+                    home_lrr_exposure_beta_h: xp[2],
+                    foreign_lrr_exposure_beta_f: xp[3],
+                    global_lrr_volatility_sigma_x: xp[4],
+                    short_run_output_volatility_sigma_c: xp[5],
+                    lrr_persistence_rho_x: xp[6],
+                },
+            );
+            let rm = evaluate_colacito_croce_gavazzoni_ready_recursive_fx_factors(
+                &ColacitoCroceGavazzoniReadyRecursiveFxSpec {
+                    relative_risk_aversion_gamma: xm[0],
+                    intertemporal_elasticity_psi: xm[1],
+                    home_lrr_exposure_beta_h: xm[2],
+                    foreign_lrr_exposure_beta_f: xm[3],
+                    global_lrr_volatility_sigma_x: xm[4],
+                    short_run_output_volatility_sigma_c: xm[5],
+                    lrr_persistence_rho_x: xm[6],
+                },
+            );
+            let fd = (rp.equilibrium_fx_carry_risk_premium - rm.equilibrium_fx_carry_risk_premium)
+                / (2.0 * h);
+            assert!(rad.equilibrium_fx_carry_risk_premium.d[i].abs() > 1e-9);
+            assert!((rad.equilibrium_fx_carry_risk_premium.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

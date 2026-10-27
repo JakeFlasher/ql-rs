@@ -2564,3 +2564,169 @@ pub use pennacchi_sundaresan_coco_at1_mod::{
     PennacchiSundaresanCocoAt1TriggerAnalytics, PennacchiSundaresanCocoAt1TriggerSpec,
     evaluate_pennacchi_sundaresan_coco_at1_trigger_valuation,
 };
+
+/// Input specification for the Dick-Nielsen, Feldhütter & Lando (2012, *Journal
+/// of Financial Economics* 103(3), 471–492, "Corporate Bond Liquidity Before
+/// and After the Onset of the Subprime Crisis") Composite TRACE Corporate Bond
+/// Illiquidity Index $\lambda_{\text{DFL}}$ and Regime Spread Multiplier.
+#[derive(Debug, Clone, Copy)]
+pub struct DickNielsenFeldhutterLandoBondIlliquiditySpec<T: Real> {
+    /// Amihud (2002) daily price impact in bps per $1M traded volume $A > 0$.
+    pub amihud_price_impact_bp_per_mn: T,
+    /// Feldhütter (2012) Imputed Roundtrip Cost (IRC) in bps $\text{IRC} > 0$.
+    pub imputed_roundtrip_cost_bps: T,
+    /// Quarterly standard deviation of daily Amihud price impact $\sigma_A > 0$.
+    pub amihud_volatility_bp_per_mn: T,
+    /// Quarterly standard deviation of Imputed Roundtrip Cost $\sigma_{\text{IRC}} > 0$.
+    pub irc_volatility_bps: T,
+    /// Quarterly bond turnover rate $\zeta_{\text{turn}} > 0$.
+    pub turnover_rate_zeta: T,
+    /// Credit-rating speculative-grade regime multiplier $M_{\text{rating}} \ge 1$.
+    pub credit_rating_speculative_multiplier_m: T,
+    /// Liquidity yield spread slope in bps per unit of $\lambda_{\text{DFL}}$, $\beta_{\text{DFL}} > 0$.
+    pub crisis_regime_slope_beta_dfl: T,
+}
+
+/// Analytics returned by [`evaluate_dick_nielsen_feldhutter_lando_bond_illiquidity`].
+#[derive(Debug, Clone, Copy)]
+pub struct DickNielsenFeldhutterLandoBondIlliquidityAnalytics<T: Real> {
+    /// Standardized four-metric TRACE composite illiquidity score $\lambda_{\text{DFL}}$.
+    pub composite_dfl_illiquidity_index: T,
+    /// Transaction cost level contribution (Amihud + IRC) to $\lambda_{\text{DFL}}$.
+    pub level_transaction_cost_component: T,
+    /// Liquidity risk / uncertainty contribution ($\sigma_A + \sigma_{\text{IRC}}$) to $\lambda_{\text{DFL}}$.
+    pub liquidity_uncertainty_component: T,
+    /// Implied corporate bond liquidity yield spread component $s_{\text{liq,bps}}$ (in bps).
+    pub liquidity_yield_spread_component_bps: T,
+}
+
+/// Evaluates the Dick-Nielsen, Feldhütter & Lando (2012, *JFE* 103(3))
+/// corporate bond illiquidity factor $\lambda_{\text{DFL}}$ as the equally
+/// weighted composite of standardized Amihud (2002) price impact, Feldhütter
+/// (2012) Imputed Roundtrip Cost (IRC), and their quarterly time-series
+/// standard deviations, modulated by turnover attenuation:
+/// $$\lambda_{\text{DFL}} = \frac{1}{4}\left(\frac{A}{5.0} + \frac{\text{IRC}}{25.0} + \frac{\sigma_A}{4.0} + \frac{\sigma_{\text{IRC}}}{15.0}\right)\left(1 + \frac{0.25}{1 + \zeta_{\text{turn}}}\right),$$
+/// $$s_{\text{liq,bps}} = \beta_{\text{DFL}} \, M_{\text{rating}} \, \lambda_{\text{DFL}}.$$
+pub fn evaluate_dick_nielsen_feldhutter_lando_bond_illiquidity<T: Real>(
+    spec: &DickNielsenFeldhutterLandoBondIlliquiditySpec<T>,
+) -> DickNielsenFeldhutterLandoBondIlliquidityAnalytics<T> {
+    let one = T::one();
+    let quarter = T::from_f64(0.25);
+
+    let amihud = spec
+        .amihud_price_impact_bp_per_mn
+        .max_val(T::from_f64(0.05));
+    let irc = spec.imputed_roundtrip_cost_bps.max_val(T::from_f64(0.5));
+    let sig_a = spec.amihud_volatility_bp_per_mn.max_val(T::from_f64(0.05));
+    let sig_irc = spec.irc_volatility_bps.max_val(T::from_f64(0.5));
+    let zeta = spec.turnover_rate_zeta.max_val(T::from_f64(0.01));
+    let m_rat = spec
+        .credit_rating_speculative_multiplier_m
+        .max_val(T::from_f64(0.5));
+    let beta = spec.crisis_regime_slope_beta_dfl.max_val(T::from_f64(1.0));
+
+    let z_a = amihud / T::from_f64(5.0);
+    let z_irc = irc / T::from_f64(25.0);
+    let z_sa = sig_a / T::from_f64(4.0);
+    let z_sirc = sig_irc / T::from_f64(15.0);
+
+    let turnover_mult = one + quarter / (one + zeta);
+    let level_comp = quarter * (z_a + z_irc) * turnover_mult;
+    let unc_comp = quarter * (z_sa + z_sirc) * turnover_mult;
+    let lambda_dfl = level_comp + unc_comp;
+    let spread_bps = beta * m_rat * lambda_dfl;
+
+    DickNielsenFeldhutterLandoBondIlliquidityAnalytics {
+        composite_dfl_illiquidity_index: lambda_dfl,
+        level_transaction_cost_component: level_comp,
+        liquidity_uncertainty_component: unc_comp,
+        liquidity_yield_spread_component_bps: spread_bps,
+    }
+}
+
+#[cfg(test)]
+mod dick_nielsen_feldhutter_lando_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn dick_nielsen_feldhutter_lando_invariants_and_ad_parity() {
+        let base = DickNielsenFeldhutterLandoBondIlliquiditySpec {
+            amihud_price_impact_bp_per_mn: 6.2_f64,
+            imputed_roundtrip_cost_bps: 31.0_f64,
+            amihud_volatility_bp_per_mn: 4.8_f64,
+            irc_volatility_bps: 18.5_f64,
+            turnover_rate_zeta: 0.18_f64,
+            credit_rating_speculative_multiplier_m: 1.45_f64,
+            crisis_regime_slope_beta_dfl: 42.0_f64,
+        };
+        let r0 = evaluate_dick_nielsen_feldhutter_lando_bond_illiquidity(&base);
+        assert!(r0.composite_dfl_illiquidity_index > 1.0);
+        assert!(
+            (r0.composite_dfl_illiquidity_index
+                - (r0.level_transaction_cost_component + r0.liquidity_uncertainty_component))
+                .abs()
+                < 1e-12
+        );
+        assert!(r0.liquidity_yield_spread_component_bps > 50.0);
+
+        let x0 = [
+            base.amihud_price_impact_bp_per_mn,
+            base.imputed_roundtrip_cost_bps,
+            base.amihud_volatility_bp_per_mn,
+            base.irc_volatility_bps,
+            base.turnover_rate_zeta,
+            base.credit_rating_speculative_multiplier_m,
+            base.crisis_regime_slope_beta_dfl,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_dick_nielsen_feldhutter_lando_bond_illiquidity(
+            &DickNielsenFeldhutterLandoBondIlliquiditySpec {
+                amihud_price_impact_bp_per_mn: xd[0],
+                imputed_roundtrip_cost_bps: xd[1],
+                amihud_volatility_bp_per_mn: xd[2],
+                irc_volatility_bps: xd[3],
+                turnover_rate_zeta: xd[4],
+                credit_rating_speculative_multiplier_m: xd[5],
+                crisis_regime_slope_beta_dfl: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_dick_nielsen_feldhutter_lando_bond_illiquidity(
+                &DickNielsenFeldhutterLandoBondIlliquiditySpec {
+                    amihud_price_impact_bp_per_mn: xp[0],
+                    imputed_roundtrip_cost_bps: xp[1],
+                    amihud_volatility_bp_per_mn: xp[2],
+                    irc_volatility_bps: xp[3],
+                    turnover_rate_zeta: xp[4],
+                    credit_rating_speculative_multiplier_m: xp[5],
+                    crisis_regime_slope_beta_dfl: xp[6],
+                },
+            );
+            let rm = evaluate_dick_nielsen_feldhutter_lando_bond_illiquidity(
+                &DickNielsenFeldhutterLandoBondIlliquiditySpec {
+                    amihud_price_impact_bp_per_mn: xm[0],
+                    imputed_roundtrip_cost_bps: xm[1],
+                    amihud_volatility_bp_per_mn: xm[2],
+                    irc_volatility_bps: xm[3],
+                    turnover_rate_zeta: xm[4],
+                    credit_rating_speculative_multiplier_m: xm[5],
+                    crisis_regime_slope_beta_dfl: xm[6],
+                },
+            );
+            let fd = (rp.liquidity_yield_spread_component_bps
+                - rm.liquidity_yield_spread_component_bps)
+                / (2.0 * h);
+            assert!(rad.liquidity_yield_spread_component_bps.d[i].abs() > 1e-9);
+            assert!((rad.liquidity_yield_spread_component_bps.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

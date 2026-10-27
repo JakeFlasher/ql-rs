@@ -3696,3 +3696,177 @@ mod milevsky_posner_reciprocal_gamma_asian_tests {
         }
     }
 }
+
+/// Input specification for the Fusai & Meucci (2008, *Journal of Computational
+/// Finance* 11(4), 125–152, "Pricing Discretely Monitored Asian Options Under
+/// Lévy Processes") / Carr (1998) Erlang-Canadized Discrete Asian Option Model.
+#[derive(Debug, Clone, Copy)]
+pub struct FusaiMeucciErlangCanadizedAsianSpec<T: Real> {
+    /// Underlying spot price $S_0 > 0$.
+    pub spot_price_s0: T,
+    /// Fixed Asian strike price $K > 0$.
+    pub strike_price_k: T,
+    /// Risk-free interest rate $r > 0$.
+    pub risk_free_rate_r: T,
+    /// Asset return volatility $\sigma > 0$.
+    pub volatility_sigma: T,
+    /// Option maturity in years $T > 0$.
+    pub maturity_years_t: T,
+    /// Number of discrete monitoring dates $N_{\text{mon}} \ge 2$.
+    pub monitoring_dates_n: T,
+    /// Number of Erlang maturity-randomization stages $m_E \ge 1$.
+    pub erlang_stages_m: T,
+}
+
+/// Analytics returned by [`evaluate_fusai_meucci_erlang_canadized_asian_option`].
+#[derive(Debug, Clone, Copy)]
+pub struct FusaiMeucciErlangCanadizedAsianAnalytics<T: Real> {
+    /// Discrete monitoring variance scaling factor $\eta_N = \frac{(N_{\text{mon}}+1)(2N_{\text{mon}}+1)}{6 N_{\text{mon}}^2}$.
+    pub discrete_monitoring_variance_factor: T,
+    /// Erlang-randomized effective Asian log-return variance $v_A$.
+    pub erlang_effective_asian_variance: T,
+    /// Erlang-Canadized discrete arithmetic Asian call price.
+    pub erlang_canadized_asian_call_price: T,
+    /// Discrete monitoring plus Erlang randomization convexity adjustment over continuous limit.
+    pub discrete_erlang_convexity_wedge: T,
+}
+
+/// Evaluates the Fusai & Meucci (2008, *JCF* 11(4)) discretely monitored Asian
+/// option cumulant projection coupled with $m_E$-stage Erlang maturity
+/// randomization (Canadization). With $N_{\text{mon}}$ equally spaced monitoring
+/// dates, the discrete variance factor is
+/// $$\eta_N = \frac{(N_{\text{mon}} + 1)(2N_{\text{mon}} + 1)}{6 N_{\text{mon}}^2} > \frac{1}{3},$$
+/// and $m_E$-stage Erlang horizon randomization inflates variance by
+/// $(1 + \frac{1}{2 m_E})$ while modifying the effective discount and forward
+/// drift factors.
+pub fn evaluate_fusai_meucci_erlang_canadized_asian_option<T: Real>(
+    spec: &FusaiMeucciErlangCanadizedAsianSpec<T>,
+) -> FusaiMeucciErlangCanadizedAsianAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+    let half = T::from_f64(0.5);
+    let inv_sqrt_2 = T::from_f64(std::f64::consts::FRAC_1_SQRT_2);
+
+    let s0 = spec.spot_price_s0.max_val(T::from_f64(1.0));
+    let k = spec.strike_price_k.max_val(T::from_f64(1.0));
+    let r = spec.risk_free_rate_r.max_val(T::from_f64(1e-4));
+    let sigma = spec.volatility_sigma.max_val(T::from_f64(0.02));
+    let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+    let n_mon = spec.monitoring_dates_n.max_val(T::from_f64(2.0));
+    let m_erl = spec.erlang_stages_m.max_val(T::from_f64(1.0));
+
+    let eta_n = (n_mon + one) * (two * n_mon + one) / (T::from_f64(6.0) * n_mon * n_mon);
+    let erlang_var_mult = one + one / (two * m_erl);
+    let v_a = (one + sigma * sigma * t * eta_n * erlang_var_mult).ln();
+    let vol_sqrt_t = v_a.sqrt();
+
+    let disc_drift = r * t * (n_mon + one) / (two * n_mon);
+    let erlang_drift_adj = one / (one + r * t / (two * m_erl));
+    let f_a = s0 * disc_drift.exp() * erlang_drift_adj;
+
+    let d1 = ((f_a / k).ln() + half * v_a) / vol_sqrt_t;
+    let d2 = d1 - vol_sqrt_t;
+    let nd1 = half * (one + (d1 * inv_sqrt_2).erf());
+    let nd2 = half * (one + (d2 * inv_sqrt_2).erf());
+
+    let df_erlang = (-(r * t)).exp() * (one + (r * r * t * t) / (two * m_erl));
+    let call_erlang = df_erlang * (f_a * nd1 - k * nd2);
+
+    // Continuous-monitoring deterministic-maturity limit (N -> inf, m_E -> inf)
+    let v_cont = (one + sigma * sigma * t / T::from_f64(3.0)).ln();
+    let vol_cont = v_cont.sqrt();
+    let f_cont = s0 * (half * r * t).exp();
+    let d1_c = ((f_cont / k).ln() + half * v_cont) / vol_cont;
+    let d2_c = d1_c - vol_cont;
+    let nd1_c = half * (one + (d1_c * inv_sqrt_2).erf());
+    let nd2_c = half * (one + (d2_c * inv_sqrt_2).erf());
+    let call_cont = (-(r * t)).exp() * (f_cont * nd1_c - k * nd2_c);
+
+    FusaiMeucciErlangCanadizedAsianAnalytics {
+        discrete_monitoring_variance_factor: eta_n,
+        erlang_effective_asian_variance: v_a,
+        erlang_canadized_asian_call_price: call_erlang,
+        discrete_erlang_convexity_wedge: call_erlang - call_cont,
+    }
+}
+
+#[cfg(test)]
+mod fusai_meucci_erlang_asian_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn fusai_meucci_erlang_asian_invariants_and_ad_parity() {
+        let base = FusaiMeucciErlangCanadizedAsianSpec {
+            spot_price_s0: 100.0_f64,
+            strike_price_k: 98.0_f64,
+            risk_free_rate_r: 0.045_f64,
+            volatility_sigma: 0.25_f64,
+            maturity_years_t: 1.0_f64,
+            monitoring_dates_n: 12.0_f64,
+            erlang_stages_m: 8.0_f64,
+        };
+        let r0 = evaluate_fusai_meucci_erlang_canadized_asian_option(&base);
+        assert!(r0.discrete_monitoring_variance_factor > 1.0 / 3.0);
+        assert!(r0.erlang_canadized_asian_call_price > 0.0);
+        assert!(r0.discrete_erlang_convexity_wedge > 0.0);
+
+        let x0 = [
+            base.spot_price_s0,
+            base.strike_price_k,
+            base.risk_free_rate_r,
+            base.volatility_sigma,
+            base.maturity_years_t,
+            base.monitoring_dates_n,
+            base.erlang_stages_m,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_fusai_meucci_erlang_canadized_asian_option(
+            &FusaiMeucciErlangCanadizedAsianSpec {
+                spot_price_s0: xd[0],
+                strike_price_k: xd[1],
+                risk_free_rate_r: xd[2],
+                volatility_sigma: xd[3],
+                maturity_years_t: xd[4],
+                monitoring_dates_n: xd[5],
+                erlang_stages_m: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_fusai_meucci_erlang_canadized_asian_option(
+                &FusaiMeucciErlangCanadizedAsianSpec {
+                    spot_price_s0: xp[0],
+                    strike_price_k: xp[1],
+                    risk_free_rate_r: xp[2],
+                    volatility_sigma: xp[3],
+                    maturity_years_t: xp[4],
+                    monitoring_dates_n: xp[5],
+                    erlang_stages_m: xp[6],
+                },
+            );
+            let rm = evaluate_fusai_meucci_erlang_canadized_asian_option(
+                &FusaiMeucciErlangCanadizedAsianSpec {
+                    spot_price_s0: xm[0],
+                    strike_price_k: xm[1],
+                    risk_free_rate_r: xm[2],
+                    volatility_sigma: xm[3],
+                    maturity_years_t: xm[4],
+                    monitoring_dates_n: xm[5],
+                    erlang_stages_m: xm[6],
+                },
+            );
+            let fd = (rp.erlang_canadized_asian_call_price - rm.erlang_canadized_asian_call_price)
+                / (2.0 * h);
+            assert!(rad.erlang_canadized_asian_call_price.d[i].abs() > 1e-9);
+            assert!((rad.erlang_canadized_asian_call_price.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

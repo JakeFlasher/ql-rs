@@ -4421,3 +4421,161 @@ mod kozak_nagel_santosh_sdf_shrinkage_tests {
         }
     }
 }
+
+/// Input specification for the Freyberger, Neuhierl & Weber (2020, *Review of
+/// Financial Studies* 33(5), 2326–2377, "Dissecting Characteristics
+/// Nonparametrically") Adaptive Group-LASSO Spline Characteristic Return Model.
+#[derive(Debug, Clone, Copy)]
+pub struct FreybergerNeuhierlWeberNonparametricSpec<T: Real> {
+    /// Cross-sectional rank quantile of firm characteristic $c \in (0, 1)$.
+    pub characteristic_quantile_c: T,
+    /// First-stage linear characteristic return slope $b_1$.
+    pub linear_characteristic_slope_b1: T,
+    /// Extreme-decile quadratic B-spline curvature coefficient $b_2$.
+    pub extreme_tail_spline_curvature_b2: T,
+    /// Interior spline knot threshold $\tau_k \in (0, 1)$.
+    pub knot_threshold_tau_k: T,
+    /// Group-LASSO regularization penalty $\lambda_g > 0$.
+    pub group_lasso_penalty_lambda_g: T,
+    /// Adaptive group-weight exponent $\nu_{\text{ada}} > 0$.
+    pub adaptive_weight_exponent_nu: T,
+}
+
+/// Analytics returned by [`evaluate_freyberger_neuhierl_weber_nonparametric_characteristics`].
+#[derive(Debug, Clone, Copy)]
+pub struct FreybergerNeuhierlWeberNonparametricAnalytics<T: Real> {
+    /// Group $L_2$ norm across spline basis coefficients $\|b\|_2 = \sqrt{b_1^2 + b_2^2}$.
+    pub spline_group_l2_norm: T,
+    /// Adaptive Group-LASSO shrinkage factor $s_{\text{AGL}} \in (0, 1)$.
+    pub adaptive_group_lasso_shrinkage_factor: T,
+    /// Nonparametric adaptive spline expected excess return $m_{\text{FNW}}(c)$.
+    pub nonparametric_characteristic_expected_return: T,
+    /// Nonlinear spline tail increment over a linear characteristic model $\Delta_{\text{nonlin}}(c)$.
+    pub nonlinear_spline_tail_increment: T,
+}
+
+/// Evaluates the Freyberger, Neuhierl & Weber (2020, *RFS* 33(5)) nonparametric
+/// quadratic spline expansion of expected stock returns over rank-normalized
+/// firm characteristics $c \in (0, 1)$, regularized via two-step Adaptive
+/// Group-LASSO with group norm $\|b\|_2 = \sqrt{b_1^2 + b_2^2}$:
+/// $$s_{\text{AGL}} = \frac{\|b\|_2^{\nu_{\text{ada}} + 1}}{\|b\|_2^{\nu_{\text{ada}} + 1} + \lambda_g}, \qquad \phi_2(c; \tau_k) = \frac{1}{2}\left((c - \tau_k) + \sqrt{(c - \tau_k)^2 + 0.01}\right)^2,$$
+/// $$m_{\text{FNW}}(c) = s_{\text{AGL}}\left[b_1(c - 0.5) + b_2\phi_2(c; \tau_k)\right].$$
+pub fn evaluate_freyberger_neuhierl_weber_nonparametric_characteristics<T: Real>(
+    spec: &FreybergerNeuhierlWeberNonparametricSpec<T>,
+) -> FreybergerNeuhierlWeberNonparametricAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+
+    let c = spec
+        .characteristic_quantile_c
+        .max_val(T::from_f64(0.01))
+        .min_val(T::from_f64(0.99));
+    let b1 = spec.linear_characteristic_slope_b1;
+    let b2 = spec.extreme_tail_spline_curvature_b2;
+    let tau_k = spec
+        .knot_threshold_tau_k
+        .max_val(T::from_f64(0.1))
+        .min_val(T::from_f64(0.9));
+    let lam_g = spec.group_lasso_penalty_lambda_g.max_val(T::from_f64(1e-4));
+    let nu = spec.adaptive_weight_exponent_nu.max_val(T::from_f64(0.1));
+
+    let norm_b = (b1 * b1 + b2 * b2 + T::from_f64(1e-8)).sqrt();
+    let pow_b = norm_b.pow(nu + one);
+    let s_agl = pow_b / (pow_b + lam_g);
+
+    let diff_k = c - tau_k;
+    let hinge = half * (diff_k + (diff_k * diff_k + T::from_f64(0.01)).sqrt());
+    let phi2 = hinge * hinge;
+
+    let nonlin_inc = s_agl * b2 * phi2;
+    let m_fnw = s_agl * b1 * (c - half) + nonlin_inc;
+
+    FreybergerNeuhierlWeberNonparametricAnalytics {
+        spline_group_l2_norm: norm_b,
+        adaptive_group_lasso_shrinkage_factor: s_agl,
+        nonparametric_characteristic_expected_return: m_fnw,
+        nonlinear_spline_tail_increment: nonlin_inc,
+    }
+}
+
+#[cfg(test)]
+mod freyberger_neuhierl_weber_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn freyberger_neuhierl_weber_invariants_and_ad_parity() {
+        let base = FreybergerNeuhierlWeberNonparametricSpec {
+            characteristic_quantile_c: 0.88_f64,
+            linear_characteristic_slope_b1: 0.085_f64,
+            extreme_tail_spline_curvature_b2: 0.195_f64,
+            knot_threshold_tau_k: 0.70_f64,
+            group_lasso_penalty_lambda_g: 0.012_f64,
+            adaptive_weight_exponent_nu: 1.50_f64,
+        };
+        let r0 = evaluate_freyberger_neuhierl_weber_nonparametric_characteristics(&base);
+        assert!(
+            r0.adaptive_group_lasso_shrinkage_factor > 0.0
+                && r0.adaptive_group_lasso_shrinkage_factor < 1.0
+        );
+        assert!(r0.nonlinear_spline_tail_increment > 0.0);
+        assert!(
+            r0.nonparametric_characteristic_expected_return > r0.nonlinear_spline_tail_increment
+        );
+
+        let x0 = [
+            base.characteristic_quantile_c,
+            base.linear_characteristic_slope_b1,
+            base.extreme_tail_spline_curvature_b2,
+            base.knot_threshold_tau_k,
+            base.group_lasso_penalty_lambda_g,
+            base.adaptive_weight_exponent_nu,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_freyberger_neuhierl_weber_nonparametric_characteristics(
+            &FreybergerNeuhierlWeberNonparametricSpec {
+                characteristic_quantile_c: xd[0],
+                linear_characteristic_slope_b1: xd[1],
+                extreme_tail_spline_curvature_b2: xd[2],
+                knot_threshold_tau_k: xd[3],
+                group_lasso_penalty_lambda_g: xd[4],
+                adaptive_weight_exponent_nu: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_freyberger_neuhierl_weber_nonparametric_characteristics(
+                &FreybergerNeuhierlWeberNonparametricSpec {
+                    characteristic_quantile_c: xp[0],
+                    linear_characteristic_slope_b1: xp[1],
+                    extreme_tail_spline_curvature_b2: xp[2],
+                    knot_threshold_tau_k: xp[3],
+                    group_lasso_penalty_lambda_g: xp[4],
+                    adaptive_weight_exponent_nu: xp[5],
+                },
+            );
+            let rm = evaluate_freyberger_neuhierl_weber_nonparametric_characteristics(
+                &FreybergerNeuhierlWeberNonparametricSpec {
+                    characteristic_quantile_c: xm[0],
+                    linear_characteristic_slope_b1: xm[1],
+                    extreme_tail_spline_curvature_b2: xm[2],
+                    knot_threshold_tau_k: xm[3],
+                    group_lasso_penalty_lambda_g: xm[4],
+                    adaptive_weight_exponent_nu: xm[5],
+                },
+            );
+            let fd = (rp.nonparametric_characteristic_expected_return
+                - rm.nonparametric_characteristic_expected_return)
+                / (2.0 * h);
+            assert!(rad.nonparametric_characteristic_expected_return.d[i].abs() > 1e-9);
+            assert!((rad.nonparametric_characteristic_expected_return.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}
