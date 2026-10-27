@@ -3061,7 +3061,7 @@ mod carr_lee_corridor_varswap_mod {
 
     /// Evaluates the Carr & Lee (2009, §4) static $2/K^2$ strip replication truncated to the
     /// corridor $[B_{\text{low}}, \infty)$, decomposing total variance $K_{\text{var}}^{\text{tot}} = K_{\text{var}}^{\text{up}} + K_{\text{var}}^{\text{down}}$:
-    /// $$K_{\text{var}}^{\text{up}}(b) = \sigma_0^2 \Phi(-d_2(b)) + 2\sigma_0\psi\Big(\sigma_0\sqrt{T}\phi(d_2(b)) - b\Phi(-d_2(b))\Big), \qquad b = \ln(B_{\text{low}} / F_0).$$
+    /// $$K_{\text{var}}^{\text{up}}(b) = K_{\text{var}}^{\text{tot}} \Phi(-d_2(b)) + 2\sigma_0\psi\sigma_0\sqrt{T}\phi(d_2(b)), \qquad b = \ln(B_{\text{low}} / F_0).$$
     pub fn evaluate_carr_lee_corridor_conditional_variance_swap<T: Real>(
         spec: &CarrLeeCorridorVarianceSwapSpec<T>,
     ) -> CarrLeeCorridorVarianceSwapAnalytics<T> {
@@ -3080,7 +3080,7 @@ mod carr_lee_corridor_varswap_mod {
 
         let sig0_2 = sig0 * sig0;
         let k_tot = sig0_2 * (T::one() - psi * std_t);
-        let k_up = sig0_2 * p_occ + T::from_f64(2.0) * sig0 * psi * (std_t * pdf_b - b * p_occ);
+        let k_up = k_tot * p_occ + T::from_f64(2.0) * sig0 * psi * std_t * pdf_b;
         let k_down = k_tot - k_up;
 
         let df = (-r * t).exp();
