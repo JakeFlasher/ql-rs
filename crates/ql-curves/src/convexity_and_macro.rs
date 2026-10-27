@@ -2990,3 +2990,185 @@ mod gurkaynak_sack_swanson_fomc_tests {
         }
     }
 }
+
+/// Input specification for the Wright (2011, *American Economic Review* 101(4),
+/// 1514–1534, "Term Premia and Inflation Uncertainty: Empirical Evidence from
+/// an International Panel Dataset") Survey Inflation Uncertainty and Credibility
+/// Term Premium Decomposition.
+#[derive(Debug, Clone, Copy)]
+pub struct WrightInflationUncertaintyTermPremiumSpec<T: Real> {
+    /// Long-horizon survey inflation forecast standard deviation $\sigma_\pi^{\text{survey}} > 0$.
+    pub survey_inflation_forecast_dispersion_sigma_pi: T,
+    /// Long-horizon survey real GDP growth forecast standard deviation $\sigma_g^{\text{survey}} > 0$.
+    pub survey_growth_forecast_dispersion_sigma_g: T,
+    /// Central-bank inflation-targeting credibility index $\theta_{\text{IT}} \in (0, 1)$.
+    pub inflation_targeting_credibility_theta_it: T,
+    /// Nominal-real procyclical vs. stagflationary correlation $\rho_{\pi,g} \in (-1, 1)$.
+    pub inflation_growth_uncertainty_correlation_rho: T,
+    /// Inflation uncertainty term-premium slope $\beta_\pi > 0$.
+    pub inflation_uncertainty_slope_beta_pi: T,
+    /// Real growth dispersion term-premium slope $\beta_g > 0$.
+    pub real_growth_uncertainty_slope_beta_g: T,
+    /// Term-structure uncertainty decay rate $\kappa_\pi > 0$.
+    pub maturity_decay_kappa_pi: T,
+    /// Nominal bond maturity in years $\tau > 0$.
+    pub maturity_years_tau: T,
+}
+
+/// Analytics returned by [`evaluate_wright_inflation_uncertainty_term_premium`].
+#[derive(Debug, Clone, Copy)]
+pub struct WrightInflationUncertaintyTermPremiumAnalytics<T: Real> {
+    /// Credibility-attenuated inflation uncertainty factor $\text{IU}_t = \sigma_\pi^{\text{survey}}(1 - 0.55\theta_{\text{IT}})$.
+    pub effective_inflation_uncertainty_factor: T,
+    /// Inflation risk premium component $\text{IRP}_t(\tau)$ (in bps).
+    pub inflation_risk_premium_bps: T,
+    /// Real term premium component $\text{RTP}_t(\tau)$ (in bps).
+    pub real_term_premium_bps: T,
+    /// Total nominal bond term premium $\text{TP}_t^{\text{nom}}(\tau) = \text{IRP}_t(\tau) + \text{RTP}_t(\tau)$ (in bps).
+    pub total_nominal_term_premium_bps: T,
+}
+
+/// Evaluates the Wright (2011, *AER* 101(4)) decomposition of nominal bond term
+/// premia into an **inflation risk premium** driven by survey inflation
+/// forecast disagreement $\sigma_\pi^{\text{survey}}$ (attenuated by central-bank
+/// inflation-targeting credibility $\theta_{\text{IT}}$) and a **real term
+/// premium** driven by real GDP growth forecast dispersion $\sigma_g^{\text{survey}}$:
+/// $$\text{IRP}_t(\tau) = 10^4 \beta_\pi \sigma_\pi^{\text{survey}}(1 - 0.55\theta_{\text{IT}})\frac{1 - e^{-\kappa_\pi \tau}}{\kappa_\pi}\left(1 + 0.35\rho_{\pi,g}\sigma_g^{\text{survey}}\right),$$
+/// $$\text{RTP}_t(\tau) = 10^4 \beta_g \sigma_g^{\text{survey}}\frac{1 - e^{-0.5\kappa_\pi \tau}}{0.5\kappa_\pi}.$$
+pub fn evaluate_wright_inflation_uncertainty_term_premium<T: Real>(
+    spec: &WrightInflationUncertaintyTermPremiumSpec<T>,
+) -> WrightInflationUncertaintyTermPremiumAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+    let bps = T::from_f64(10_000.0);
+
+    let sig_pi = spec
+        .survey_inflation_forecast_dispersion_sigma_pi
+        .max_val(T::from_f64(1e-4));
+    let sig_g = spec
+        .survey_growth_forecast_dispersion_sigma_g
+        .max_val(T::from_f64(1e-4));
+    let theta_it = spec
+        .inflation_targeting_credibility_theta_it
+        .max_val(T::from_f64(0.01))
+        .min_val(T::from_f64(0.99));
+    let rho = spec
+        .inflation_growth_uncertainty_correlation_rho
+        .max_val(T::from_f64(-0.98))
+        .min_val(T::from_f64(0.98));
+    let beta_pi = spec
+        .inflation_uncertainty_slope_beta_pi
+        .max_val(T::from_f64(0.05));
+    let beta_g = spec
+        .real_growth_uncertainty_slope_beta_g
+        .max_val(T::from_f64(0.05));
+    let kappa = spec.maturity_decay_kappa_pi.max_val(T::from_f64(0.02));
+    let tau = spec.maturity_years_tau.max_val(T::from_f64(0.25));
+
+    let iu = sig_pi * (one - T::from_f64(0.55) * theta_it);
+    let dur_pi = (one - (-(kappa * tau)).exp()) / kappa;
+    let dur_g = (one - (-(half * kappa * tau)).exp()) / (half * kappa);
+
+    let irp_bps = bps * beta_pi * iu * dur_pi * (one + T::from_f64(0.35) * rho * sig_g);
+    let rtp_bps = bps * beta_g * sig_g * dur_g;
+    let total_bps = irp_bps + rtp_bps;
+
+    WrightInflationUncertaintyTermPremiumAnalytics {
+        effective_inflation_uncertainty_factor: iu,
+        inflation_risk_premium_bps: irp_bps,
+        real_term_premium_bps: rtp_bps,
+        total_nominal_term_premium_bps: total_bps,
+    }
+}
+
+#[cfg(test)]
+mod wright_inflation_uncertainty_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn wright_inflation_uncertainty_invariants_and_ad_parity() {
+        let base = WrightInflationUncertaintyTermPremiumSpec {
+            survey_inflation_forecast_dispersion_sigma_pi: 0.0045_f64,
+            survey_growth_forecast_dispersion_sigma_g: 0.0060_f64,
+            inflation_targeting_credibility_theta_it: 0.65_f64,
+            inflation_growth_uncertainty_correlation_rho: 0.35_f64,
+            inflation_uncertainty_slope_beta_pi: 0.85_f64,
+            real_growth_uncertainty_slope_beta_g: 0.32_f64,
+            maturity_decay_kappa_pi: 0.18_f64,
+            maturity_years_tau: 10.0_f64,
+        };
+        let r0 = evaluate_wright_inflation_uncertainty_term_premium(&base);
+        let low_cred = evaluate_wright_inflation_uncertainty_term_premium(
+            &WrightInflationUncertaintyTermPremiumSpec {
+                inflation_targeting_credibility_theta_it: 0.20_f64,
+                ..base
+            },
+        );
+        assert!(r0.inflation_risk_premium_bps > 0.0);
+        assert!(r0.real_term_premium_bps > 0.0);
+        assert!(low_cred.total_nominal_term_premium_bps > r0.total_nominal_term_premium_bps);
+
+        let x0 = [
+            base.survey_inflation_forecast_dispersion_sigma_pi,
+            base.survey_growth_forecast_dispersion_sigma_g,
+            base.inflation_targeting_credibility_theta_it,
+            base.inflation_growth_uncertainty_correlation_rho,
+            base.inflation_uncertainty_slope_beta_pi,
+            base.real_growth_uncertainty_slope_beta_g,
+            base.maturity_decay_kappa_pi,
+            base.maturity_years_tau,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_wright_inflation_uncertainty_term_premium(
+            &WrightInflationUncertaintyTermPremiumSpec {
+                survey_inflation_forecast_dispersion_sigma_pi: xd[0],
+                survey_growth_forecast_dispersion_sigma_g: xd[1],
+                inflation_targeting_credibility_theta_it: xd[2],
+                inflation_growth_uncertainty_correlation_rho: xd[3],
+                inflation_uncertainty_slope_beta_pi: xd[4],
+                real_growth_uncertainty_slope_beta_g: xd[5],
+                maturity_decay_kappa_pi: xd[6],
+                maturity_years_tau: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_wright_inflation_uncertainty_term_premium(
+                &WrightInflationUncertaintyTermPremiumSpec {
+                    survey_inflation_forecast_dispersion_sigma_pi: xp[0],
+                    survey_growth_forecast_dispersion_sigma_g: xp[1],
+                    inflation_targeting_credibility_theta_it: xp[2],
+                    inflation_growth_uncertainty_correlation_rho: xp[3],
+                    inflation_uncertainty_slope_beta_pi: xp[4],
+                    real_growth_uncertainty_slope_beta_g: xp[5],
+                    maturity_decay_kappa_pi: xp[6],
+                    maturity_years_tau: xp[7],
+                },
+            );
+            let rm = evaluate_wright_inflation_uncertainty_term_premium(
+                &WrightInflationUncertaintyTermPremiumSpec {
+                    survey_inflation_forecast_dispersion_sigma_pi: xm[0],
+                    survey_growth_forecast_dispersion_sigma_g: xm[1],
+                    inflation_targeting_credibility_theta_it: xm[2],
+                    inflation_growth_uncertainty_correlation_rho: xm[3],
+                    inflation_uncertainty_slope_beta_pi: xm[4],
+                    real_growth_uncertainty_slope_beta_g: xm[5],
+                    maturity_decay_kappa_pi: xm[6],
+                    maturity_years_tau: xm[7],
+                },
+            );
+            let fd =
+                (rp.total_nominal_term_premium_bps - rm.total_nominal_term_premium_bps) / (2.0 * h);
+            assert!(rad.total_nominal_term_premium_bps.d[i].abs() > 1e-9);
+            assert!((rad.total_nominal_term_premium_bps.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

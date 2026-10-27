@@ -5552,3 +5552,155 @@ mod brigo_francischello_pallavicini_closeout_tests {
         }
     }
 }
+
+/// Input specification for the Piterbarg (2012, *Risk*, "Cooking with
+/// Collateral") / Fujii & Takahashi (2011, *Journal of Fixed Income* 21(1),
+/// 68–79, "Choice of Collateral Currency") Multi-Currency CSA Cheapest-to-Deliver
+/// (CTD) Collateral Switch Option Model.
+#[derive(Debug, Clone, Copy)]
+pub struct PiterbargLouMulticurrencyCsaCtdSpec<T: Real> {
+    /// Collateralized derivative positive exposure $E_0 > 0$.
+    pub collateralized_exposure_e0: T,
+    /// Domestic CSA collateral spread over OIS $s_1$ (in rate units).
+    pub domestic_collateral_spread_s1: T,
+    /// FX-swapped foreign CSA collateral spread (including cross-currency basis) $s_2$ (in rate units).
+    pub foreign_swapped_collateral_spread_s2: T,
+    /// Annualized volatility of collateral spread differential $\sigma_{\Delta s} > 0$.
+    pub collateral_spread_diff_vol_sigma: T,
+    /// Effective switch horizon in years $T > 0$.
+    pub switch_horizon_years_t: T,
+    /// Sticky collateral operational switching friction $c_{\text{switch}} \ge 0$.
+    pub operational_switching_friction_c: T,
+}
+
+/// Analytics returned by [`evaluate_piterbarg_lou_multicurrency_csa_ctd_collateral`].
+#[derive(Debug, Clone, Copy)]
+pub struct PiterbargLouMulticurrencyCsaCtdAnalytics<T: Real> {
+    /// Expected CTD collateral discount spread $\mathbb{E}[\max(s_1, s_2 - c_{\text{switch}})]$ (in bps).
+    pub expected_ctd_collateral_spread_bps: T,
+    /// Pure Margrabe/Bachelier collateral switch option convexity value (in bps).
+    pub ctd_switch_option_convexity_bps: T,
+    /// Total Multi-Currency CSA CTD Collateral Valuation Adjustment (CTD-COLVA).
+    pub multicurrency_ctd_colva: T,
+}
+
+/// Evaluates the Piterbarg (2012) / Fujii & Takahashi (2011) Cheapest-to-Deliver
+/// (CTD) multi-currency CSA discount spread and collateral valuation adjustment.
+/// Under Gaussian spread differential innovations with dispersion
+/// $v = \sigma_{\Delta s}\sqrt{T}$ and net spread advantage
+/// $\mu_\Delta = s_2 - s_1 - c_{\text{switch}}$:
+/// $$\mathbb{E}\left[\max(s_1, s_2 - c_{\text{switch}})\right] = s_1 + \mu_\Delta \Phi\!\left(\frac{\mu_\Delta}{v}\right) + v\,\phi\!\left(\frac{\mu_\Delta}{v}\right),$$
+/// $$\text{CTD-COLVA} = E_0 \cdot T \cdot \mathbb{E}\left[\max(s_1, s_2 - c_{\text{switch}})\right].$$
+pub fn evaluate_piterbarg_lou_multicurrency_csa_ctd_collateral<T: Real>(
+    spec: &PiterbargLouMulticurrencyCsaCtdSpec<T>,
+) -> PiterbargLouMulticurrencyCsaCtdAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+    let bps = T::from_f64(10_000.0);
+    let inv_sqrt_2 = T::from_f64(std::f64::consts::FRAC_1_SQRT_2);
+    let inv_sqrt_2pi = T::from_f64(0.398_942_280_401_432_7);
+
+    let e0 = spec.collateralized_exposure_e0.max_val(T::from_f64(1.0));
+    let s1 = spec.domestic_collateral_spread_s1;
+    let s2 = spec.foreign_swapped_collateral_spread_s2;
+    let sig = spec
+        .collateral_spread_diff_vol_sigma
+        .max_val(T::from_f64(1e-4));
+    let t = spec.switch_horizon_years_t.max_val(T::from_f64(0.05));
+    let c_sw = spec
+        .operational_switching_friction_c
+        .max_val(T::from_f64(0.0));
+
+    let v = sig * t.sqrt();
+    let mu_d = s2 - s1 - c_sw;
+    let z = mu_d / v;
+
+    let phi_cdf = half * (one + (z * inv_sqrt_2).erf());
+    let phi_pdf = inv_sqrt_2pi * (-(half * z * z)).exp();
+
+    let expected_max = s1 + mu_d * phi_cdf + v * phi_pdf;
+    let smooth_intrinsic = s1 + half * (mu_d + (mu_d * mu_d + T::from_f64(1e-10)).sqrt());
+    let opt_conv = expected_max - smooth_intrinsic;
+    let colva = e0 * t * expected_max;
+
+    PiterbargLouMulticurrencyCsaCtdAnalytics {
+        expected_ctd_collateral_spread_bps: expected_max * bps,
+        ctd_switch_option_convexity_bps: opt_conv * bps,
+        multicurrency_ctd_colva: colva,
+    }
+}
+
+#[cfg(test)]
+mod piterbarg_lou_multicurrency_csa_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn piterbarg_lou_multicurrency_csa_invariants_and_ad_parity() {
+        let base = PiterbargLouMulticurrencyCsaCtdSpec {
+            collateralized_exposure_e0: 120.0_f64,
+            domestic_collateral_spread_s1: 0.0015_f64,
+            foreign_swapped_collateral_spread_s2: 0.0028_f64,
+            collateral_spread_diff_vol_sigma: 0.0020_f64,
+            switch_horizon_years_t: 3.0_f64,
+            operational_switching_friction_c: 0.0004_f64,
+        };
+        let r0 = evaluate_piterbarg_lou_multicurrency_csa_ctd_collateral(&base);
+        assert!(r0.expected_ctd_collateral_spread_bps > base.domestic_collateral_spread_s1 * 1e4);
+        assert!(r0.ctd_switch_option_convexity_bps > 0.0);
+        assert!(r0.multicurrency_ctd_colva > 0.0);
+
+        let x0 = [
+            base.collateralized_exposure_e0,
+            base.domestic_collateral_spread_s1,
+            base.foreign_swapped_collateral_spread_s2,
+            base.collateral_spread_diff_vol_sigma,
+            base.switch_horizon_years_t,
+            base.operational_switching_friction_c,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_piterbarg_lou_multicurrency_csa_ctd_collateral(
+            &PiterbargLouMulticurrencyCsaCtdSpec {
+                collateralized_exposure_e0: xd[0],
+                domestic_collateral_spread_s1: xd[1],
+                foreign_swapped_collateral_spread_s2: xd[2],
+                collateral_spread_diff_vol_sigma: xd[3],
+                switch_horizon_years_t: xd[4],
+                operational_switching_friction_c: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_piterbarg_lou_multicurrency_csa_ctd_collateral(
+                &PiterbargLouMulticurrencyCsaCtdSpec {
+                    collateralized_exposure_e0: xp[0],
+                    domestic_collateral_spread_s1: xp[1],
+                    foreign_swapped_collateral_spread_s2: xp[2],
+                    collateral_spread_diff_vol_sigma: xp[3],
+                    switch_horizon_years_t: xp[4],
+                    operational_switching_friction_c: xp[5],
+                },
+            );
+            let rm = evaluate_piterbarg_lou_multicurrency_csa_ctd_collateral(
+                &PiterbargLouMulticurrencyCsaCtdSpec {
+                    collateralized_exposure_e0: xm[0],
+                    domestic_collateral_spread_s1: xm[1],
+                    foreign_swapped_collateral_spread_s2: xm[2],
+                    collateral_spread_diff_vol_sigma: xm[3],
+                    switch_horizon_years_t: xm[4],
+                    operational_switching_friction_c: xm[5],
+                },
+            );
+            let fd = (rp.multicurrency_ctd_colva - rm.multicurrency_ctd_colva) / (2.0 * h);
+            assert!(rad.multicurrency_ctd_colva.d[i].abs() > 1e-9);
+            assert!((rad.multicurrency_ctd_colva.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

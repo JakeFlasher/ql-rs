@@ -2422,3 +2422,203 @@ mod geman_yor_bessel_asian_tests {
         }
     }
 }
+
+/// Input specification for the Kou & Wang (2003, *Advances in Applied
+/// Probability* 35(2), 504–531, "First Passage Times of a Jump Diffusion
+/// Process") Double-Exponential Jump-Diffusion First-Passage Barrier Model.
+#[derive(Debug, Clone, Copy)]
+pub struct KouWangJumpFirstPassageBarrierSpec<T: Real> {
+    /// Underlying spot price $S_0 > 0$.
+    pub spot_price_s0: T,
+    /// Upper barrier level $H > S_0$.
+    pub upper_barrier_h: T,
+    /// Risk-free discount rate $r > 0$.
+    pub risk_free_rate_r: T,
+    /// Diffusive volatility $\sigma > 0$.
+    pub diffusive_volatility_sigma: T,
+    /// Poisson jump arrival intensity $\lambda_J > 0$.
+    pub jump_intensity_lambda: T,
+    /// Probability of an upward exponential jump $p \in (0, 1)$.
+    pub upward_jump_probability_p: T,
+    /// Upward exponential jump rate parameter $\eta_1 > 1$.
+    pub upward_jump_decay_eta1: T,
+    /// Downward exponential jump rate parameter $\eta_2 > 0$.
+    pub downward_jump_decay_eta2: T,
+}
+
+/// Analytics returned by [`evaluate_kou_wang_double_exponential_jump_first_passage_barrier`].
+#[derive(Debug, Clone, Copy)]
+pub struct KouWangJumpFirstPassageBarrierAnalytics<T: Real> {
+    /// Smaller positive root $\beta_{1,r} \in (0, \eta_1)$ of $G(x) = r$.
+    pub first_positive_levy_root_beta1: T,
+    /// Larger positive root $\beta_{2,r} \in (\eta_1, \infty)$ of $G(x) = r$.
+    pub second_positive_levy_root_beta2: T,
+    /// Exact first-passage Laplace transform (perpetual One-Touch price) $\mathbb{E}[e^{-r\tau_b}]$.
+    pub first_passage_laplace_transform: T,
+    /// Expected discounted jump overshoot rebate $\mathbb{E}[e^{-r\tau_b}(X_{\tau_b} - b)\mathbb{I}_{\{X_{\tau_b} > b\}}]$.
+    pub expected_discounted_jump_overshoot: T,
+}
+
+/// Evaluates the Kou & Wang (2003, *AAP* 35(2), Theorem 3.1) exact first-passage
+/// Laplace transform and jump-overshoot distribution for a double-exponential
+/// jump-diffusion $X_t = \ln(S_t/S_0)$ crossing upper log-barrier
+/// $b = \ln(H/S_0) > 0$. By clearing the pole at $x = \eta_1$ via
+/// $$H(x) = (x - \eta_1)\left[\frac{1}{2}\sigma^2 x^2 + \mu x - r - \lambda_J\left(1 - \frac{(1-p)\eta_2}{\eta_2 + x}\right)\right] - \lambda_J p \eta_1 = 0,$$
+/// Newton refinement obtains the two unique positive roots
+/// $0 < \beta_{1,r} < \eta_1 < \beta_{2,r}$ of $G(x) = r$, yielding:
+/// $$\mathbb{E}\left[e^{-r\tau_b}\right] = \frac{\eta_1 - \beta_{1,r}}{\eta_1}\frac{\beta_{2,r}}{\beta_{2,r} - \beta_{1,r}}e^{-\beta_{1,r}b} + \frac{\beta_{2,r} - \eta_1}{\eta_1}\frac{\beta_{1,r}}{\beta_{2,r} - \beta_{1,r}}e^{-\beta_{2,r}b},$$
+/// $$\mathbb{E}\left[e^{-r\tau_b}(X_{\tau_b} - b)\right] = \frac{(\eta_1 - \beta_{1,r})(\beta_{2,r} - \eta_1)}{\eta_1^2(\beta_{2,r} - \beta_{1,r})}\left(e^{-\beta_{1,r}b} - e^{-\beta_{2,r}b}\right).$$
+pub fn evaluate_kou_wang_double_exponential_jump_first_passage_barrier<T: Real>(
+    spec: &KouWangJumpFirstPassageBarrierSpec<T>,
+) -> KouWangJumpFirstPassageBarrierAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+
+    let s0 = spec.spot_price_s0.max_val(T::from_f64(1.0));
+    let h_bar = spec.upper_barrier_h.max_val(s0 * T::from_f64(1.01));
+    let r = spec.risk_free_rate_r.max_val(T::from_f64(1e-4));
+    let sigma = spec.diffusive_volatility_sigma.max_val(T::from_f64(0.02));
+    let lam = spec.jump_intensity_lambda.max_val(T::from_f64(0.01));
+    let p = spec
+        .upward_jump_probability_p
+        .max_val(T::from_f64(0.05))
+        .min_val(T::from_f64(0.95));
+    let eta1 = spec.upward_jump_decay_eta1.max_val(T::from_f64(1.5));
+    let eta2 = spec.downward_jump_decay_eta2.max_val(T::from_f64(0.5));
+
+    let b = (h_bar / s0).ln();
+    let sig2 = sigma * sigma;
+    let zeta = (p * eta1) / (eta1 - one) + ((one - p) * eta2) / (eta2 + one) - one;
+    let mu = r - half * sig2 - lam * zeta;
+
+    // Pole-free cubic-rational residual H(x) = (x - eta1) * Q(x) - lam * p * eta1 = 0
+    let mut beta1 = T::from_f64(0.25) * eta1;
+    for _ in 0..8 {
+        let q = half * sig2 * beta1 * beta1 + mu * beta1 - r - lam
+            + (lam * (one - p) * eta2) / (eta2 + beta1);
+        let dq = sig2 * beta1 + mu - (lam * (one - p) * eta2) / ((eta2 + beta1) * (eta2 + beta1));
+        let h_val = (beta1 - eta1) * q - lam * p * eta1;
+        let dh_val = q + (beta1 - eta1) * dq;
+        beta1 -= h_val / dh_val;
+    }
+
+    let mut beta2 = T::from_f64(1.35) * eta1;
+    for _ in 0..8 {
+        let q = half * sig2 * beta2 * beta2 + mu * beta2 - r - lam
+            + (lam * (one - p) * eta2) / (eta2 + beta2);
+        let dq = sig2 * beta2 + mu - (lam * (one - p) * eta2) / ((eta2 + beta2) * (eta2 + beta2));
+        let h_val = (beta2 - eta1) * q - lam * p * eta1;
+        let dh_val = q + (beta2 - eta1) * dq;
+        beta2 -= h_val / dh_val;
+    }
+
+    let diff_beta = beta2 - beta1;
+    let exp_b1 = (-(beta1 * b)).exp();
+    let exp_b2 = (-(beta2 * b)).exp();
+
+    let w1 = ((eta1 - beta1) / eta1) * (beta2 / diff_beta);
+    let w2 = ((beta2 - eta1) / eta1) * (beta1 / diff_beta);
+    let laplace_fp = w1 * exp_b1 + w2 * exp_b2;
+
+    let overshoot =
+        (((eta1 - beta1) * (beta2 - eta1)) / (eta1 * eta1 * diff_beta)) * (exp_b1 - exp_b2);
+
+    KouWangJumpFirstPassageBarrierAnalytics {
+        first_positive_levy_root_beta1: beta1,
+        second_positive_levy_root_beta2: beta2,
+        first_passage_laplace_transform: laplace_fp,
+        expected_discounted_jump_overshoot: overshoot,
+    }
+}
+
+#[cfg(test)]
+mod kou_wang_jump_first_passage_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn kou_wang_jump_first_passage_invariants_and_ad_parity() {
+        let base = KouWangJumpFirstPassageBarrierSpec {
+            spot_price_s0: 100.0_f64,
+            upper_barrier_h: 120.0_f64,
+            risk_free_rate_r: 0.05_f64,
+            diffusive_volatility_sigma: 0.22_f64,
+            jump_intensity_lambda: 1.50_f64,
+            upward_jump_probability_p: 0.45_f64,
+            upward_jump_decay_eta1: 10.0_f64,
+            downward_jump_decay_eta2: 8.0_f64,
+        };
+        let r0 = evaluate_kou_wang_double_exponential_jump_first_passage_barrier(&base);
+        assert!(
+            r0.first_positive_levy_root_beta1 > 0.0
+                && r0.first_positive_levy_root_beta1 < base.upward_jump_decay_eta1
+        );
+        assert!(r0.second_positive_levy_root_beta2 > base.upward_jump_decay_eta1);
+        assert!(
+            r0.first_passage_laplace_transform > 0.0 && r0.first_passage_laplace_transform < 1.0
+        );
+        assert!(r0.expected_discounted_jump_overshoot > 0.0);
+
+        let x0 = [
+            base.spot_price_s0,
+            base.upper_barrier_h,
+            base.risk_free_rate_r,
+            base.diffusive_volatility_sigma,
+            base.jump_intensity_lambda,
+            base.upward_jump_probability_p,
+            base.upward_jump_decay_eta1,
+            base.downward_jump_decay_eta2,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_kou_wang_double_exponential_jump_first_passage_barrier(
+            &KouWangJumpFirstPassageBarrierSpec {
+                spot_price_s0: xd[0],
+                upper_barrier_h: xd[1],
+                risk_free_rate_r: xd[2],
+                diffusive_volatility_sigma: xd[3],
+                jump_intensity_lambda: xd[4],
+                upward_jump_probability_p: xd[5],
+                upward_jump_decay_eta1: xd[6],
+                downward_jump_decay_eta2: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_kou_wang_double_exponential_jump_first_passage_barrier(
+                &KouWangJumpFirstPassageBarrierSpec {
+                    spot_price_s0: xp[0],
+                    upper_barrier_h: xp[1],
+                    risk_free_rate_r: xp[2],
+                    diffusive_volatility_sigma: xp[3],
+                    jump_intensity_lambda: xp[4],
+                    upward_jump_probability_p: xp[5],
+                    upward_jump_decay_eta1: xp[6],
+                    downward_jump_decay_eta2: xp[7],
+                },
+            );
+            let rm = evaluate_kou_wang_double_exponential_jump_first_passage_barrier(
+                &KouWangJumpFirstPassageBarrierSpec {
+                    spot_price_s0: xm[0],
+                    upper_barrier_h: xm[1],
+                    risk_free_rate_r: xm[2],
+                    diffusive_volatility_sigma: xm[3],
+                    jump_intensity_lambda: xm[4],
+                    upward_jump_probability_p: xm[5],
+                    upward_jump_decay_eta1: xm[6],
+                    downward_jump_decay_eta2: xm[7],
+                },
+            );
+            let fd = (rp.first_passage_laplace_transform - rm.first_passage_laplace_transform)
+                / (2.0 * h);
+            assert!(rad.first_passage_laplace_transform.d[i].abs() > 1e-9);
+            assert!((rad.first_passage_laplace_transform.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

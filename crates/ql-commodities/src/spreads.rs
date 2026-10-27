@@ -3907,3 +3907,154 @@ mod kang_rouwenhorst_tang_two_premiums_tests {
         }
     }
 }
+
+/// Input specification for the Basak & Pavlova (2016, *Journal of Finance*
+/// 71(4), 1511–1556, "A Model of Financialization of Commodities") Institutional
+/// Commodity-Index Benchmarking and Cross-Commodity Correlation Model.
+#[derive(Debug, Clone, Copy)]
+pub struct BasakPavlovaCommodityFinancializationSpec<T: Real> {
+    /// Fundamental un-financialized commodity futures price $F_0^{\text{fund}} > 0$.
+    pub fundamental_futures_price_f0: T,
+    /// Institutional index-benchmarked investor wealth share $\lambda_{\text{inst}} \in (0, 1)$.
+    pub institutional_wealth_share_lambda: T,
+    /// Institutional benchmark tracking-error importance $\theta_{\text{bench}} > 0$.
+    pub benchmark_importance_theta: T,
+    /// Commodity weight in the benchmark index $\alpha_{\text{idx}} \in (0, 1)$.
+    pub index_commodity_weight_alpha: T,
+    /// Fundamental commodity supply-shock volatility $\sigma_{\text{fund}} > 0$.
+    pub fundamental_supply_volatility_sigma_f: T,
+    /// Aggregate equity market volatility $\sigma_{\text{eq}} > 0$.
+    pub equity_market_volatility_sigma_eq: T,
+}
+
+/// Analytics returned by [`evaluate_basak_pavlova_commodity_index_financialization`].
+#[derive(Debug, Clone, Copy)]
+pub struct BasakPavlovaCommodityFinancializationAnalytics<T: Real> {
+    /// Institutional benchmarking discount-factor multiplier $M_{\text{BP}} = 1 + \lambda_{\text{inst}}\theta_{\text{bench}}\alpha_{\text{idx}}$.
+    pub institutional_index_amplification_multiplier: T,
+    /// Equilibrium financialized futures price $F_0^{\text{fin}}$.
+    pub financialized_futures_price: T,
+    /// Equilibrium financialized commodity futures volatility $\sigma_{F,\text{fin}}$.
+    pub financialized_futures_volatility: T,
+    /// Financialization-induced excess correlation with the equity market $\Delta\rho_{\text{comm,eq}}$.
+    pub excess_commodity_equity_correlation: T,
+}
+
+/// Evaluates the Basak & Pavlova (2016, *JF* 71(4)) equilibrium effects of
+/// institutional commodity-index financialization. When institutions with wealth
+/// share $\lambda_{\text{inst}}$ are evaluated against a commodity index with
+/// weight $\alpha_{\text{idx}}$, their marginal utility covaries with the index,
+/// inflating index-commodity futures prices, volatilities, and equity correlations:
+/// $$F_0^{\text{fin}} = F_0^{\text{fund}}\left(1 + 0.35\,\lambda_{\text{inst}}\theta_{\text{bench}}\alpha_{\text{idx}}\left(1 + \sigma_{\text{fund}}^2 + \sigma_{\text{eq}}^2\right)\right),$$
+/// $$\sigma_{F,\text{fin}} = \sigma_{\text{fund}}\sqrt{1 + \lambda_{\text{inst}}\theta_{\text{bench}}\alpha_{\text{idx}}\left(1 + \sigma_{\text{eq}}/\sigma_{\text{fund}}\right)}.$$
+pub fn evaluate_basak_pavlova_commodity_index_financialization<T: Real>(
+    spec: &BasakPavlovaCommodityFinancializationSpec<T>,
+) -> BasakPavlovaCommodityFinancializationAnalytics<T> {
+    let one = T::one();
+
+    let f0 = spec.fundamental_futures_price_f0.max_val(T::from_f64(1.0));
+    let lam = spec
+        .institutional_wealth_share_lambda
+        .max_val(T::from_f64(0.01))
+        .min_val(T::from_f64(0.99));
+    let theta = spec.benchmark_importance_theta.max_val(T::from_f64(0.05));
+    let alpha = spec
+        .index_commodity_weight_alpha
+        .max_val(T::from_f64(0.01))
+        .min_val(T::from_f64(0.99));
+    let sig_f = spec
+        .fundamental_supply_volatility_sigma_f
+        .max_val(T::from_f64(0.02));
+    let sig_eq = spec
+        .equity_market_volatility_sigma_eq
+        .max_val(T::from_f64(0.02));
+
+    let wedge = lam * theta * alpha;
+    let m_bp = one + wedge;
+    let f_fin = f0 * (one + T::from_f64(0.35) * wedge * (one + sig_f * sig_f + sig_eq * sig_eq));
+    let sig_fin = sig_f * (one + wedge * (one + sig_eq / sig_f)).sqrt();
+    let exc_corr = (wedge * sig_eq) / (sig_fin + sig_eq);
+
+    BasakPavlovaCommodityFinancializationAnalytics {
+        institutional_index_amplification_multiplier: m_bp,
+        financialized_futures_price: f_fin,
+        financialized_futures_volatility: sig_fin,
+        excess_commodity_equity_correlation: exc_corr,
+    }
+}
+
+#[cfg(test)]
+mod basak_pavlova_financialization_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn basak_pavlova_financialization_invariants_and_ad_parity() {
+        let base = BasakPavlovaCommodityFinancializationSpec {
+            fundamental_futures_price_f0: 75.0_f64,
+            institutional_wealth_share_lambda: 0.38_f64,
+            benchmark_importance_theta: 1.65_f64,
+            index_commodity_weight_alpha: 0.30_f64,
+            fundamental_supply_volatility_sigma_f: 0.24_f64,
+            equity_market_volatility_sigma_eq: 0.18_f64,
+        };
+        let r0 = evaluate_basak_pavlova_commodity_index_financialization(&base);
+        assert!(r0.institutional_index_amplification_multiplier > 1.0);
+        assert!(r0.financialized_futures_price > base.fundamental_futures_price_f0);
+        assert!(r0.financialized_futures_volatility > base.fundamental_supply_volatility_sigma_f);
+        assert!(r0.excess_commodity_equity_correlation > 0.0);
+
+        let x0 = [
+            base.fundamental_futures_price_f0,
+            base.institutional_wealth_share_lambda,
+            base.benchmark_importance_theta,
+            base.index_commodity_weight_alpha,
+            base.fundamental_supply_volatility_sigma_f,
+            base.equity_market_volatility_sigma_eq,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_basak_pavlova_commodity_index_financialization(
+            &BasakPavlovaCommodityFinancializationSpec {
+                fundamental_futures_price_f0: xd[0],
+                institutional_wealth_share_lambda: xd[1],
+                benchmark_importance_theta: xd[2],
+                index_commodity_weight_alpha: xd[3],
+                fundamental_supply_volatility_sigma_f: xd[4],
+                equity_market_volatility_sigma_eq: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_basak_pavlova_commodity_index_financialization(
+                &BasakPavlovaCommodityFinancializationSpec {
+                    fundamental_futures_price_f0: xp[0],
+                    institutional_wealth_share_lambda: xp[1],
+                    benchmark_importance_theta: xp[2],
+                    index_commodity_weight_alpha: xp[3],
+                    fundamental_supply_volatility_sigma_f: xp[4],
+                    equity_market_volatility_sigma_eq: xp[5],
+                },
+            );
+            let rm = evaluate_basak_pavlova_commodity_index_financialization(
+                &BasakPavlovaCommodityFinancializationSpec {
+                    fundamental_futures_price_f0: xm[0],
+                    institutional_wealth_share_lambda: xm[1],
+                    benchmark_importance_theta: xm[2],
+                    index_commodity_weight_alpha: xm[3],
+                    fundamental_supply_volatility_sigma_f: xm[4],
+                    equity_market_volatility_sigma_eq: xm[5],
+                },
+            );
+            let fd = (rp.financialized_futures_price - rm.financialized_futures_price) / (2.0 * h);
+            assert!(rad.financialized_futures_price.d[i].abs() > 1e-9);
+            assert!((rad.financialized_futures_price.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

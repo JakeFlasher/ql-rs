@@ -3664,3 +3664,155 @@ mod collin_dufresne_goldstein_martin_tests {
         }
     }
 }
+
+/// Input specification for the Culp, Nozawa & Veronesi (2018, *Journal of
+/// Political Economy* 126(3), 1218–1269, "Option-Based Credit Spreads")
+/// Model-Free Pseudo-Firm Option-Implied Credit Spread and Illiquidity Wedge.
+#[derive(Debug, Clone, Copy)]
+pub struct CulpNozawaVeronesiPseudoFirmCreditSpec<T: Real> {
+    /// Pseudo-firm traded asset / index spot value $A_0 > 0$.
+    pub asset_spot_value_a0: T,
+    /// Zero-coupon pseudo-debt face value (OTM put strike) $K_{\text{debt}} < A_0$.
+    pub pseudo_debt_face_value_k: T,
+    /// Risk-free interest rate $r > 0$.
+    pub risk_free_rate_r: T,
+    /// Deep-OTM put option implied volatility $\sigma_{\text{put}} > 0$.
+    pub left_tail_put_implied_vol_sigma: T,
+    /// Pseudo-debt maturity horizon in years $T > 0$.
+    pub maturity_years_t: T,
+    /// Observed actual corporate bond credit spread $s_{\text{corp,bps}} > 0$ (in bps).
+    pub observed_corporate_spread_bps: T,
+}
+
+/// Analytics returned by [`evaluate_culp_nozawa_veronesi_pseudo_firm_credit_spread`].
+#[derive(Debug, Clone, Copy)]
+pub struct CulpNozawaVeronesiPseudoFirmCreditAnalytics<T: Real> {
+    /// Deep-OTM put option default-loss value $P_0(T, K_{\text{debt}})$.
+    pub pseudo_debt_default_put_value: T,
+    /// Risky pseudo-bond price $B_0^{\text{pseudo}}(T, K_{\text{debt}}) = K_{\text{debt}}e^{-rT} - P_0(T, K_{\text{debt}})$.
+    pub pseudo_bond_price: T,
+    /// Option-implied pseudo-firm credit spread $s_{\text{pseudo,bps}}$ (in bps).
+    pub pseudo_firm_credit_spread_bps: T,
+    /// Corporate-minus-pseudo bond illiquidity and bankruptcy friction wedge $\Delta s_{\text{CNV,bps}}$ (in bps).
+    pub illiquidity_and_bankruptcy_friction_wedge_bps: T,
+}
+
+/// Evaluates the Culp, Nozawa & Veronesi (2018, *JPE* 126(3)) pseudo-firm
+/// credit spread constructed from traded deep-OTM put options $P_0(T, K_{\text{debt}})$:
+/// $$B_0^{\text{pseudo}}(T, K_{\text{debt}}) = K_{\text{debt}}e^{-rT} - P_0(T, K_{\text{debt}}), \qquad s_{\text{pseudo,bps}} = -\frac{10^4}{T}\ln\!\left(1 - \frac{P_0(T, K_{\text{debt}})}{K_{\text{debt}}e^{-rT}}\right).$$
+pub fn evaluate_culp_nozawa_veronesi_pseudo_firm_credit_spread<T: Real>(
+    spec: &CulpNozawaVeronesiPseudoFirmCreditSpec<T>,
+) -> CulpNozawaVeronesiPseudoFirmCreditAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+    let bps = T::from_f64(10_000.0);
+    let inv_sqrt_2 = T::from_f64(std::f64::consts::FRAC_1_SQRT_2);
+
+    let a0 = spec.asset_spot_value_a0.max_val(T::from_f64(10.0));
+    let k = spec.pseudo_debt_face_value_k.max_val(T::from_f64(1.0));
+    let r = spec.risk_free_rate_r.max_val(T::from_f64(1e-4));
+    let sigma = spec
+        .left_tail_put_implied_vol_sigma
+        .max_val(T::from_f64(0.02));
+    let t = spec.maturity_years_t.max_val(T::from_f64(0.1));
+    let s_corp = spec.observed_corporate_spread_bps;
+
+    let vol_sqrt_t = sigma * t.sqrt();
+    let df = (-(r * t)).exp();
+    let k_df = k * df;
+
+    let d1 = ((a0 / k).ln() + (r + half * sigma * sigma) * t) / vol_sqrt_t;
+    let d2 = d1 - vol_sqrt_t;
+    let n_minus_d1 = half * (one - (d1 * inv_sqrt_2).erf());
+    let n_minus_d2 = half * (one - (d2 * inv_sqrt_2).erf());
+
+    let put_val = k_df * n_minus_d2 - a0 * n_minus_d1;
+    let b_pseudo = (k_df - put_val).max_val(T::from_f64(1e-6));
+    let loss_ratio = (put_val / k_df).min_val(T::from_f64(0.95));
+    let s_pseudo_bps = -(bps / t) * (one - loss_ratio).ln();
+    let wedge_bps = s_corp - s_pseudo_bps;
+
+    CulpNozawaVeronesiPseudoFirmCreditAnalytics {
+        pseudo_debt_default_put_value: put_val,
+        pseudo_bond_price: b_pseudo,
+        pseudo_firm_credit_spread_bps: s_pseudo_bps,
+        illiquidity_and_bankruptcy_friction_wedge_bps: wedge_bps,
+    }
+}
+
+#[cfg(test)]
+mod culp_nozawa_veronesi_pseudo_firm_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn culp_nozawa_veronesi_pseudo_firm_invariants_and_ad_parity() {
+        let base = CulpNozawaVeronesiPseudoFirmCreditSpec {
+            asset_spot_value_a0: 100.0_f64,
+            pseudo_debt_face_value_k: 65.0_f64,
+            risk_free_rate_r: 0.040_f64,
+            left_tail_put_implied_vol_sigma: 0.34_f64,
+            maturity_years_t: 2.0_f64,
+            observed_corporate_spread_bps: 165.0_f64,
+        };
+        let r0 = evaluate_culp_nozawa_veronesi_pseudo_firm_credit_spread(&base);
+        assert!(r0.pseudo_debt_default_put_value > 0.0);
+        assert!(r0.pseudo_firm_credit_spread_bps > 50.0);
+        assert!(r0.illiquidity_and_bankruptcy_friction_wedge_bps.is_finite());
+
+        let x0 = [
+            base.asset_spot_value_a0,
+            base.pseudo_debt_face_value_k,
+            base.risk_free_rate_r,
+            base.left_tail_put_implied_vol_sigma,
+            base.maturity_years_t,
+            base.observed_corporate_spread_bps,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_culp_nozawa_veronesi_pseudo_firm_credit_spread(
+            &CulpNozawaVeronesiPseudoFirmCreditSpec {
+                asset_spot_value_a0: xd[0],
+                pseudo_debt_face_value_k: xd[1],
+                risk_free_rate_r: xd[2],
+                left_tail_put_implied_vol_sigma: xd[3],
+                maturity_years_t: xd[4],
+                observed_corporate_spread_bps: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_culp_nozawa_veronesi_pseudo_firm_credit_spread(
+                &CulpNozawaVeronesiPseudoFirmCreditSpec {
+                    asset_spot_value_a0: xp[0],
+                    pseudo_debt_face_value_k: xp[1],
+                    risk_free_rate_r: xp[2],
+                    left_tail_put_implied_vol_sigma: xp[3],
+                    maturity_years_t: xp[4],
+                    observed_corporate_spread_bps: xp[5],
+                },
+            );
+            let rm = evaluate_culp_nozawa_veronesi_pseudo_firm_credit_spread(
+                &CulpNozawaVeronesiPseudoFirmCreditSpec {
+                    asset_spot_value_a0: xm[0],
+                    pseudo_debt_face_value_k: xm[1],
+                    risk_free_rate_r: xm[2],
+                    left_tail_put_implied_vol_sigma: xm[3],
+                    maturity_years_t: xm[4],
+                    observed_corporate_spread_bps: xm[5],
+                },
+            );
+            let fd = (rp.illiquidity_and_bankruptcy_friction_wedge_bps
+                - rm.illiquidity_and_bankruptcy_friction_wedge_bps)
+                / (2.0 * h);
+            assert!(rad.illiquidity_and_bankruptcy_friction_wedge_bps.d[i].abs() > 1e-9);
+            assert!((rad.illiquidity_and_bankruptcy_friction_wedge_bps.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

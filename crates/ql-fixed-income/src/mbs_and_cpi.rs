@@ -4541,3 +4541,177 @@ mod boyarchenko_fuster_lucca_mortgage_oas_tests {
         }
     }
 }
+
+/// Input specification for the D'Amico, Fan & Kitsul (2018, *Journal of
+/// Financial Economics* 127(2), 397–415, "The Term Structure of Real Rates and
+/// Expected Inflation") TIPS Liquidity Premium vs. Inflation Risk Premium
+/// Break-Even Decomposition.
+#[derive(Debug, Clone, Copy)]
+pub struct DamicoFanKitsulTipsLiquidityPremiumSpec<T: Real> {
+    /// Observed nominal Treasury yield $y_t^{\text{nom}}(\tau) > 0$.
+    pub nominal_treasury_yield_y_nom: T,
+    /// Observed TIPS real yield $y_t^{\text{TIPS}}(\tau)$.
+    pub tips_real_yield_y_tips: T,
+    /// TIPS-Treasury special repo and bid-ask illiquidity wedge $s_{\text{repo}} > 0$.
+    pub tips_repo_bid_ask_wedge_s_repo: T,
+    /// Flight-to-safety VIX/funding stress factor $v_{\text{fts}} > 0$.
+    pub flight_to_safety_stress_v_fts: T,
+    /// Conditional inflation volatility $\sigma_\pi > 0$.
+    pub inflation_volatility_sigma_pi: T,
+    /// Inflation risk premium loading $\beta_{\text{irp}} > 0$.
+    pub inflation_risk_premium_loading_beta: T,
+    /// TIPS liquidity premium maturity decay $\kappa_L > 0$.
+    pub liquidity_decay_kappa_l: T,
+    /// Maturity horizon in years $\tau > 0$.
+    pub maturity_years_tau: T,
+}
+
+/// Analytics returned by [`evaluate_damico_fan_kitsul_tips_liquidity_inflation_wedge`].
+#[derive(Debug, Clone, Copy)]
+pub struct DamicoFanKitsulTipsLiquidityPremiumAnalytics<T: Real> {
+    /// Raw TIPS break-even inflation rate $\text{BEI}_t(\tau) = y_t^{\text{nom}}(\tau) - y_t^{\text{TIPS}}(\tau)$ (in bps).
+    pub raw_breakeven_inflation_bps: T,
+    /// TIPS illiquidity yield premium $L_t^{\text{TIPS}}(\tau) > 0$ (in bps).
+    pub tips_liquidity_premium_bps: T,
+    /// Inflation risk premium $\phi_t^\pi(\tau)$ (in bps).
+    pub inflation_risk_premium_bps: T,
+    /// Liquidity-and-risk-adjusted true expected inflation $\pi_t^e(\tau) = \text{BEI}_t(\tau) + L_t^{\text{TIPS}}(\tau) - \phi_t^\pi(\tau)$ (in bps).
+    pub true_expected_inflation_bps: T,
+}
+
+/// Evaluates the D'Amico, Fan & Kitsul (2018, *JFE* 127(2)) three-part
+/// decomposition of TIPS break-even inflation $\text{BEI}_t(\tau)$ into true
+/// expected inflation $\pi_t^e(\tau)$, the inflation risk premium
+/// $\phi_t^\pi(\tau)$, and the negative TIPS liquidity distortion
+/// $-L_t^{\text{TIPS}}(\tau)$:
+/// $$\text{BEI}_t(\tau) = \pi_t^e(\tau) + \phi_t^\pi(\tau) - L_t^{\text{TIPS}}(\tau),$$
+/// $$L_t^{\text{TIPS}}(\tau) = \left(1.40\,s_{\text{repo}} + 0.012\,v_{\text{fts}}\right)\frac{1 + e^{-\kappa_L \tau}}{2}, \qquad \phi_t^\pi(\tau) = \beta_{\text{irp}}\,\sigma_\pi\left(1 - e^{-0.5\kappa_L \tau}\right).$$
+pub fn evaluate_damico_fan_kitsul_tips_liquidity_inflation_wedge<T: Real>(
+    spec: &DamicoFanKitsulTipsLiquidityPremiumSpec<T>,
+) -> DamicoFanKitsulTipsLiquidityPremiumAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+    let bps = T::from_f64(10_000.0);
+
+    let y_nom = spec.nominal_treasury_yield_y_nom;
+    let y_tips = spec.tips_real_yield_y_tips;
+    let s_repo = spec
+        .tips_repo_bid_ask_wedge_s_repo
+        .max_val(T::from_f64(1e-4));
+    let v_fts = spec
+        .flight_to_safety_stress_v_fts
+        .max_val(T::from_f64(0.01));
+    let sig_pi = spec
+        .inflation_volatility_sigma_pi
+        .max_val(T::from_f64(1e-4));
+    let beta_irp = spec
+        .inflation_risk_premium_loading_beta
+        .max_val(T::from_f64(0.05));
+    let kappa_l = spec.liquidity_decay_kappa_l.max_val(T::from_f64(0.02));
+    let tau = spec.maturity_years_tau.max_val(T::from_f64(0.25));
+
+    let raw_bei = y_nom - y_tips;
+    let l_tips = (T::from_f64(1.40) * s_repo + T::from_f64(0.012) * v_fts)
+        * half
+        * (one + (-(kappa_l * tau)).exp());
+    let phi_pi = beta_irp * sig_pi * (one - (-(half * kappa_l * tau)).exp());
+    let pi_exp = raw_bei + l_tips - phi_pi;
+
+    DamicoFanKitsulTipsLiquidityPremiumAnalytics {
+        raw_breakeven_inflation_bps: raw_bei * bps,
+        tips_liquidity_premium_bps: l_tips * bps,
+        inflation_risk_premium_bps: phi_pi * bps,
+        true_expected_inflation_bps: pi_exp * bps,
+    }
+}
+
+#[cfg(test)]
+mod damico_fan_kitsul_tips_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn damico_fan_kitsul_tips_invariants_and_ad_parity() {
+        let base = DamicoFanKitsulTipsLiquidityPremiumSpec {
+            nominal_treasury_yield_y_nom: 0.0425_f64,
+            tips_real_yield_y_tips: 0.0210_f64,
+            tips_repo_bid_ask_wedge_s_repo: 0.0022_f64,
+            flight_to_safety_stress_v_fts: 0.24_f64,
+            inflation_volatility_sigma_pi: 0.0065_f64,
+            inflation_risk_premium_loading_beta: 0.55_f64,
+            liquidity_decay_kappa_l: 0.25_f64,
+            maturity_years_tau: 10.0_f64,
+        };
+        let r0 = evaluate_damico_fan_kitsul_tips_liquidity_inflation_wedge(&base);
+        assert!(r0.tips_liquidity_premium_bps > 0.0);
+        assert!(r0.inflation_risk_premium_bps > 0.0);
+        assert!(
+            (r0.raw_breakeven_inflation_bps
+                - (r0.true_expected_inflation_bps + r0.inflation_risk_premium_bps
+                    - r0.tips_liquidity_premium_bps))
+                .abs()
+                < 1e-10
+        );
+
+        let x0 = [
+            base.nominal_treasury_yield_y_nom,
+            base.tips_real_yield_y_tips,
+            base.tips_repo_bid_ask_wedge_s_repo,
+            base.flight_to_safety_stress_v_fts,
+            base.inflation_volatility_sigma_pi,
+            base.inflation_risk_premium_loading_beta,
+            base.liquidity_decay_kappa_l,
+            base.maturity_years_tau,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_damico_fan_kitsul_tips_liquidity_inflation_wedge(
+            &DamicoFanKitsulTipsLiquidityPremiumSpec {
+                nominal_treasury_yield_y_nom: xd[0],
+                tips_real_yield_y_tips: xd[1],
+                tips_repo_bid_ask_wedge_s_repo: xd[2],
+                flight_to_safety_stress_v_fts: xd[3],
+                inflation_volatility_sigma_pi: xd[4],
+                inflation_risk_premium_loading_beta: xd[5],
+                liquidity_decay_kappa_l: xd[6],
+                maturity_years_tau: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_damico_fan_kitsul_tips_liquidity_inflation_wedge(
+                &DamicoFanKitsulTipsLiquidityPremiumSpec {
+                    nominal_treasury_yield_y_nom: xp[0],
+                    tips_real_yield_y_tips: xp[1],
+                    tips_repo_bid_ask_wedge_s_repo: xp[2],
+                    flight_to_safety_stress_v_fts: xp[3],
+                    inflation_volatility_sigma_pi: xp[4],
+                    inflation_risk_premium_loading_beta: xp[5],
+                    liquidity_decay_kappa_l: xp[6],
+                    maturity_years_tau: xp[7],
+                },
+            );
+            let rm = evaluate_damico_fan_kitsul_tips_liquidity_inflation_wedge(
+                &DamicoFanKitsulTipsLiquidityPremiumSpec {
+                    nominal_treasury_yield_y_nom: xm[0],
+                    tips_real_yield_y_tips: xm[1],
+                    tips_repo_bid_ask_wedge_s_repo: xm[2],
+                    flight_to_safety_stress_v_fts: xm[3],
+                    inflation_volatility_sigma_pi: xm[4],
+                    inflation_risk_premium_loading_beta: xm[5],
+                    liquidity_decay_kappa_l: xm[6],
+                    maturity_years_tau: xm[7],
+                },
+            );
+            let fd = (rp.true_expected_inflation_bps - rm.true_expected_inflation_bps) / (2.0 * h);
+            assert!(rad.true_expected_inflation_bps.d[i].abs() > 1e-9);
+            assert!((rad.true_expected_inflation_bps.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

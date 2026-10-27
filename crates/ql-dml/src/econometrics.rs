@@ -5072,3 +5072,152 @@ mod jacod_li_mykland_podolskij_vetter_tests {
         }
     }
 }
+
+/// Input specification for the Patton & Sheppard (2015, *Review of Economics
+/// and Statistics* 97(3), 683–697, "Good Volatility, Bad Volatility: Signed
+/// Jumps and the Persistence of Volatility") Realized Semivariance and Signed
+/// Jump SHAR Volatility Forecast Model.
+#[derive(Debug, Clone, Copy)]
+pub struct PattonSheppardRealizedSemivarianceSpec<T: Real> {
+    /// Upside ("good") daily realized semivariance $RS_t^+ = \sum r_{t,i}^2 \mathbb{I}_{\{r_{t,i}>0\}} > 0$.
+    pub upside_realized_semivariance_rs_plus: T,
+    /// Downside ("bad") daily realized semivariance $RS_t^- = \sum r_{t,i}^2 \mathbb{I}_{\{r_{t,i}<0\}} > 0$.
+    pub downside_realized_semivariance_rs_minus: T,
+    /// Weekly (5-day) average realized variance $RV_{t,w} > 0$.
+    pub weekly_realized_variance_rv_w: T,
+    /// Monthly (22-day) average realized variance $RV_{t,m} > 0$.
+    pub monthly_realized_variance_rv_m: T,
+    /// SHAR autoregressive loading on upside semivariance $\beta_d^+$.
+    pub upside_semivariance_loading_beta_plus: T,
+    /// SHAR autoregressive loading on downside semivariance $\beta_d^- > \beta_d^+$.
+    pub downside_semivariance_loading_beta_minus: T,
+}
+
+/// Analytics returned by [`evaluate_patton_sheppard_good_bad_realized_semivariance`].
+#[derive(Debug, Clone, Copy)]
+pub struct PattonSheppardRealizedSemivarianceAnalytics<T: Real> {
+    /// Total daily realized variance $RV_t = RS_t^+ + RS_t^-$.
+    pub total_daily_realized_variance: T,
+    /// Signed jump variation $\Delta J_t^2 = RS_t^+ - RS_t^-$.
+    pub signed_jump_variation: T,
+    /// Semivariance HAR (SHAR) next-day realized variance forecast $\widehat{RV}_{t+1}^{\text{SHAR}}$.
+    pub shar_realized_variance_forecast: T,
+    /// Asymmetric bad-volatility persistence premium over symmetric Corsi HAR $(\beta_d^- - \beta_d^+)(RS_t^- - RS_t^+)/2$.
+    pub bad_volatility_persistence_wedge: T,
+}
+
+/// Evaluates the Patton & Sheppard (2015, *RESTAT* 97(3)) Semivariance HAR
+/// (SHAR) volatility forecast and signed jump variation
+/// $\Delta J_t^2 = RS_t^+ - RS_t^-$:
+/// $$\widehat{RV}_{t+1}^{\text{SHAR}} = \beta_d^+ RS_t^+ + \beta_d^- RS_t^- + 0.32\,RV_{t,w} + 0.24\,RV_{t,m},$$
+/// capturing the empirical finding that negative ("bad") realized semivariance
+/// $RS_t^-$ strongly increases future volatility ($\beta_d^- > \beta_d^+$).
+pub fn evaluate_patton_sheppard_good_bad_realized_semivariance<T: Real>(
+    spec: &PattonSheppardRealizedSemivarianceSpec<T>,
+) -> PattonSheppardRealizedSemivarianceAnalytics<T> {
+    let half = T::from_f64(0.5);
+
+    let rs_p = spec
+        .upside_realized_semivariance_rs_plus
+        .max_val(T::from_f64(1e-7));
+    let rs_m = spec
+        .downside_realized_semivariance_rs_minus
+        .max_val(T::from_f64(1e-7));
+    let rv_w = spec
+        .weekly_realized_variance_rv_w
+        .max_val(T::from_f64(1e-7));
+    let rv_m = spec
+        .monthly_realized_variance_rv_m
+        .max_val(T::from_f64(1e-7));
+    let b_plus = spec.upside_semivariance_loading_beta_plus;
+    let b_minus = spec.downside_semivariance_loading_beta_minus;
+
+    let rv_tot = rs_p + rs_m;
+    let signed_jump = rs_p - rs_m;
+    let shar_fc =
+        b_plus * rs_p + b_minus * rs_m + T::from_f64(0.32) * rv_w + T::from_f64(0.24) * rv_m;
+    let bad_wedge = half * (b_minus - b_plus) * (rs_m - rs_p);
+
+    PattonSheppardRealizedSemivarianceAnalytics {
+        total_daily_realized_variance: rv_tot,
+        signed_jump_variation: signed_jump,
+        shar_realized_variance_forecast: shar_fc,
+        bad_volatility_persistence_wedge: bad_wedge,
+    }
+}
+
+#[cfg(test)]
+mod patton_sheppard_semivariance_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn patton_sheppard_semivariance_invariants_and_ad_parity() {
+        let base = PattonSheppardRealizedSemivarianceSpec {
+            upside_realized_semivariance_rs_plus: 0.000085_f64,
+            downside_realized_semivariance_rs_minus: 0.000165_f64,
+            weekly_realized_variance_rv_w: 0.000210_f64,
+            monthly_realized_variance_rv_m: 0.000190_f64,
+            upside_semivariance_loading_beta_plus: 0.12_f64,
+            downside_semivariance_loading_beta_minus: 0.58_f64,
+        };
+        let r0 = evaluate_patton_sheppard_good_bad_realized_semivariance(&base);
+        assert!(r0.signed_jump_variation < 0.0);
+        assert!(r0.bad_volatility_persistence_wedge > 0.0);
+        assert!(r0.shar_realized_variance_forecast > 0.0);
+
+        let x0 = [
+            base.upside_realized_semivariance_rs_plus,
+            base.downside_realized_semivariance_rs_minus,
+            base.weekly_realized_variance_rv_w,
+            base.monthly_realized_variance_rv_m,
+            base.upside_semivariance_loading_beta_plus,
+            base.downside_semivariance_loading_beta_minus,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_patton_sheppard_good_bad_realized_semivariance(
+            &PattonSheppardRealizedSemivarianceSpec {
+                upside_realized_semivariance_rs_plus: xd[0],
+                downside_realized_semivariance_rs_minus: xd[1],
+                weekly_realized_variance_rv_w: xd[2],
+                monthly_realized_variance_rv_m: xd[3],
+                upside_semivariance_loading_beta_plus: xd[4],
+                downside_semivariance_loading_beta_minus: xd[5],
+            },
+        );
+        let h = 1e-7;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_patton_sheppard_good_bad_realized_semivariance(
+                &PattonSheppardRealizedSemivarianceSpec {
+                    upside_realized_semivariance_rs_plus: xp[0],
+                    downside_realized_semivariance_rs_minus: xp[1],
+                    weekly_realized_variance_rv_w: xp[2],
+                    monthly_realized_variance_rv_m: xp[3],
+                    upside_semivariance_loading_beta_plus: xp[4],
+                    downside_semivariance_loading_beta_minus: xp[5],
+                },
+            );
+            let rm = evaluate_patton_sheppard_good_bad_realized_semivariance(
+                &PattonSheppardRealizedSemivarianceSpec {
+                    upside_realized_semivariance_rs_plus: xm[0],
+                    downside_realized_semivariance_rs_minus: xm[1],
+                    weekly_realized_variance_rv_w: xm[2],
+                    monthly_realized_variance_rv_m: xm[3],
+                    upside_semivariance_loading_beta_plus: xm[4],
+                    downside_semivariance_loading_beta_minus: xm[5],
+                },
+            );
+            let fd = (rp.shar_realized_variance_forecast - rm.shar_realized_variance_forecast)
+                / (2.0 * h);
+            assert!(rad.shar_realized_variance_forecast.d[i].abs() > 1e-11);
+            assert!((rad.shar_realized_variance_forecast.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

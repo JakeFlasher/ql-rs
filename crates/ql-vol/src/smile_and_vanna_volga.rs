@@ -2392,3 +2392,159 @@ mod andersen_fusari_todorov_left_tail_tests {
         }
     }
 }
+
+/// Input specification for the Bollerslev, Todorov & Xu (2015, *Journal of
+/// Financial Economics* 118(1), 113–132, "Tail Risk Premia and Return
+/// Predictability") Diffusive vs. Left-Tail Jump Variance Risk Premium
+/// Predictability Model.
+#[derive(Debug, Clone, Copy)]
+pub struct BollerslevTodorovXuTailPredictabilitySpec<T: Real> {
+    /// Risk-neutral continuous diffusive variance $CV_t^{\mathbb{Q}} > 0$.
+    pub risk_neutral_continuous_variance_cv_q: T,
+    /// Physical expected continuous diffusive variance $CV_t^{\mathbb{P}} > 0$.
+    pub physical_continuous_variance_cv_p: T,
+    /// Risk-neutral left-tail negative jump variation $JV_t^{\mathbb{Q}-} > 0$.
+    pub risk_neutral_left_jump_variation_jv_q: T,
+    /// Physical expected left-tail negative jump variation $JV_t^{\mathbb{P}-} > 0$.
+    pub physical_left_jump_variation_jv_p: T,
+    /// Predictive slope on diffusive variance risk premium $\beta_{\text{diff}}$.
+    pub diffusive_vrp_predictive_slope_beta_d: T,
+    /// Predictive slope on left-tail jump variance risk premium $\beta_{\text{tail}} > \beta_{\text{diff}}$.
+    pub left_tail_vrp_predictive_slope_beta_t: T,
+    /// Return forecasting horizon in years $h > 0$.
+    pub forecast_horizon_years_h: T,
+}
+
+/// Analytics returned by [`evaluate_bollerslev_todorov_xu_tail_variance_predictability`].
+#[derive(Debug, Clone, Copy)]
+pub struct BollerslevTodorovXuTailPredictabilityAnalytics<T: Real> {
+    /// Diffusive Variance Risk Premium $\text{VRP}_t^{\text{diff}} = CV_t^{\mathbb{Q}} - CV_t^{\mathbb{P}}$.
+    pub diffusive_variance_risk_premium: T,
+    /// Left-Tail Jump Variance Risk Premium $\text{LTVRP}_t = JV_t^{\mathbb{Q}-} - JV_t^{\mathbb{P}-}$.
+    pub left_tail_jump_variance_risk_premium: T,
+    /// Fraction of total variance risk premium attributable to left-tail jump fears.
+    pub jump_fear_share_of_total_vrp: T,
+    /// Predicted $h$-year cumulative market excess return $\mathbb{E}_t[r_{t,t+h}^e]$.
+    pub predicted_market_excess_return: T,
+}
+
+/// Evaluates the Bollerslev, Todorov & Xu (2015, *JFE* 118(1)) decomposition
+/// of the equity Variance Risk Premium into normal-sized diffusive volatility
+/// risk $\text{VRP}_t^{\text{diff}} = CV_t^{\mathbb{Q}} - CV_t^{\mathbb{P}}$
+/// versus left-tail crash jump fear $\text{LTVRP}_t = JV_t^{\mathbb{Q}-} - JV_t^{\mathbb{P}-}$,
+/// and forecasts the $h$-year equity risk premium:
+/// $$\mathbb{E}_t\left[r_{t,t+h}^e\right] = h\left(\beta_{\text{diff}}\,\text{VRP}_t^{\text{diff}} + \beta_{\text{tail}}\,\text{LTVRP}_t\right)\exp(-0.25\,h).$$
+pub fn evaluate_bollerslev_todorov_xu_tail_variance_predictability<T: Real>(
+    spec: &BollerslevTodorovXuTailPredictabilitySpec<T>,
+) -> BollerslevTodorovXuTailPredictabilityAnalytics<T> {
+    let cv_q = spec
+        .risk_neutral_continuous_variance_cv_q
+        .max_val(T::from_f64(1e-4));
+    let cv_p = spec
+        .physical_continuous_variance_cv_p
+        .max_val(T::from_f64(1e-4));
+    let jv_q = spec
+        .risk_neutral_left_jump_variation_jv_q
+        .max_val(T::from_f64(1e-4));
+    let jv_p = spec
+        .physical_left_jump_variation_jv_p
+        .max_val(T::from_f64(1e-5));
+    let beta_d = spec.diffusive_vrp_predictive_slope_beta_d;
+    let beta_t = spec.left_tail_vrp_predictive_slope_beta_t;
+    let h = spec.forecast_horizon_years_h.max_val(T::from_f64(0.05));
+
+    let vrp_diff = cv_q - cv_p;
+    let ltvrp = jv_q - jv_p;
+    let tot_vrp = (vrp_diff + ltvrp).max_val(T::from_f64(1e-6));
+    let share_jump = ltvrp / tot_vrp;
+
+    let pred_ret = h * (beta_d * vrp_diff + beta_t * ltvrp) * (-(T::from_f64(0.25) * h)).exp();
+
+    BollerslevTodorovXuTailPredictabilityAnalytics {
+        diffusive_variance_risk_premium: vrp_diff,
+        left_tail_jump_variance_risk_premium: ltvrp,
+        jump_fear_share_of_total_vrp: share_jump,
+        predicted_market_excess_return: pred_ret,
+    }
+}
+
+#[cfg(test)]
+mod bollerslev_todorov_xu_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn bollerslev_todorov_xu_invariants_and_ad_parity() {
+        let base = BollerslevTodorovXuTailPredictabilitySpec {
+            risk_neutral_continuous_variance_cv_q: 0.0220_f64,
+            physical_continuous_variance_cv_p: 0.0175_f64,
+            risk_neutral_left_jump_variation_jv_q: 0.0145_f64,
+            physical_left_jump_variation_jv_p: 0.0035_f64,
+            diffusive_vrp_predictive_slope_beta_d: 1.80_f64,
+            left_tail_vrp_predictive_slope_beta_t: 6.40_f64,
+            forecast_horizon_years_h: 0.50_f64,
+        };
+        let r0 = evaluate_bollerslev_todorov_xu_tail_variance_predictability(&base);
+        assert!(r0.left_tail_jump_variance_risk_premium > r0.diffusive_variance_risk_premium);
+        assert!(r0.jump_fear_share_of_total_vrp > 0.5);
+        assert!(r0.predicted_market_excess_return > 0.0);
+
+        let x0 = [
+            base.risk_neutral_continuous_variance_cv_q,
+            base.physical_continuous_variance_cv_p,
+            base.risk_neutral_left_jump_variation_jv_q,
+            base.physical_left_jump_variation_jv_p,
+            base.diffusive_vrp_predictive_slope_beta_d,
+            base.left_tail_vrp_predictive_slope_beta_t,
+            base.forecast_horizon_years_h,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_bollerslev_todorov_xu_tail_variance_predictability(
+            &BollerslevTodorovXuTailPredictabilitySpec {
+                risk_neutral_continuous_variance_cv_q: xd[0],
+                physical_continuous_variance_cv_p: xd[1],
+                risk_neutral_left_jump_variation_jv_q: xd[2],
+                physical_left_jump_variation_jv_p: xd[3],
+                diffusive_vrp_predictive_slope_beta_d: xd[4],
+                left_tail_vrp_predictive_slope_beta_t: xd[5],
+                forecast_horizon_years_h: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_bollerslev_todorov_xu_tail_variance_predictability(
+                &BollerslevTodorovXuTailPredictabilitySpec {
+                    risk_neutral_continuous_variance_cv_q: xp[0],
+                    physical_continuous_variance_cv_p: xp[1],
+                    risk_neutral_left_jump_variation_jv_q: xp[2],
+                    physical_left_jump_variation_jv_p: xp[3],
+                    diffusive_vrp_predictive_slope_beta_d: xp[4],
+                    left_tail_vrp_predictive_slope_beta_t: xp[5],
+                    forecast_horizon_years_h: xp[6],
+                },
+            );
+            let rm = evaluate_bollerslev_todorov_xu_tail_variance_predictability(
+                &BollerslevTodorovXuTailPredictabilitySpec {
+                    risk_neutral_continuous_variance_cv_q: xm[0],
+                    physical_continuous_variance_cv_p: xm[1],
+                    risk_neutral_left_jump_variation_jv_q: xm[2],
+                    physical_left_jump_variation_jv_p: xm[3],
+                    diffusive_vrp_predictive_slope_beta_d: xm[4],
+                    left_tail_vrp_predictive_slope_beta_t: xm[5],
+                    forecast_horizon_years_h: xm[6],
+                },
+            );
+            let fd =
+                (rp.predicted_market_excess_return - rm.predicted_market_excess_return) / (2.0 * h);
+            assert!(rad.predicted_market_excess_return.d[i].abs() > 1e-9);
+            assert!((rad.predicted_market_excess_return.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

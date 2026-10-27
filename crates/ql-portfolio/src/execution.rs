@@ -5324,3 +5324,160 @@ mod biais_foucault_moinas_fast_trading_tests {
         }
     }
 }
+
+/// Input specification for the Menkveld (2013, *Journal of Financial Markets*
+/// 16(4), 712–740, "High Frequency Trading and the New Market Makers")
+/// Multi-Venue High-Frequency Market-Making Positioning vs. Inventory Decomposition.
+#[derive(Debug, Clone, Copy)]
+pub struct MenkveldMultiVenueHftMarketMakingSpec<T: Real> {
+    /// Effective quoted half-spread in bps $s_{\text{half,bps}} > 0$.
+    pub quoted_half_spread_bps: T,
+    /// Daily passive market-making volume across incumbent and entrant venues $V_{\text{pass}} > 0$.
+    pub passive_venue_volume_v: T,
+    /// Adverse selection fraction of passive fills $\alpha_{\text{adv}} \in (0, 1)$.
+    pub adverse_selection_fill_fraction_alpha: T,
+    /// Entrant venue liquidity-provider maker rebate in bps $r_{\text{maker,bps}} > 0$.
+    pub entrant_venue_maker_rebate_bps: T,
+    /// RMS inventory position across venues $I_{\text{rms}} > 0$.
+    pub rms_inventory_position_i: T,
+    /// Intraday inventory mean-reversion speed $\kappa_{\text{inv}} > 0$.
+    pub inventory_mean_reversion_speed_kappa: T,
+    /// Intraday fundamental return volatility $\sigma_{\text{intra}} > 0$.
+    pub intraday_volatility_sigma: T,
+}
+
+/// Analytics returned by [`evaluate_menkveld_multi_venue_hft_market_making`].
+#[derive(Debug, Clone, Copy)]
+pub struct MenkveldMultiVenueHftMarketMakingAnalytics<T: Real> {
+    /// Net price-positioning spread revenue $\pi_{\text{pos}}$.
+    pub price_positioning_spread_revenue: T,
+    /// Multi-venue maker fee-rebate revenue $\pi_{\text{rebate}}$.
+    pub multi_venue_rebate_revenue: T,
+    /// Mean-reverting inventory-holding loss $\mathcal{L}_{\text{inv}} > 0$.
+    pub inventory_holding_cost_loss: T,
+    /// Net daily HFT market-making profit $\Pi_{\text{HFT}} = \pi_{\text{pos}} + \pi_{\text{rebate}} - \mathcal{L}_{\text{inv}}$.
+    pub net_hft_market_making_profit: T,
+}
+
+/// Evaluates the Menkveld (2013, *JFM* 16(4)) decomposition of cross-venue HFT
+/// market-maker net trading revenue into **passive price-positioning revenue**
+/// $\pi_{\text{pos}}$, **entrant-venue maker rebates** $\pi_{\text{rebate}}$,
+/// and **mean-reverting inventory-holding losses** $\mathcal{L}_{\text{inv}}$:
+/// $$\pi_{\text{pos}} = 10^{-4} V_{\text{pass}}\,s_{\text{half,bps}}(1 - \alpha_{\text{adv}}), \qquad \pi_{\text{rebate}} = 10^{-4} V_{\text{pass}}\,r_{\text{maker,bps}},$$
+/// $$\mathcal{L}_{\text{inv}} = \frac{\sigma_{\text{intra}}^2 I_{\text{rms}}^2}{2\kappa_{\text{inv}}}, \qquad \Pi_{\text{HFT}} = \pi_{\text{pos}} + \pi_{\text{rebate}} - \mathcal{L}_{\text{inv}}.$$
+pub fn evaluate_menkveld_multi_venue_hft_market_making<T: Real>(
+    spec: &MenkveldMultiVenueHftMarketMakingSpec<T>,
+) -> MenkveldMultiVenueHftMarketMakingAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+    let bp_scale = T::from_f64(1e-4);
+
+    let s_half = spec.quoted_half_spread_bps.max_val(T::from_f64(0.05));
+    let vol_v = spec.passive_venue_volume_v.max_val(T::from_f64(1.0));
+    let alpha = spec
+        .adverse_selection_fill_fraction_alpha
+        .max_val(T::from_f64(0.01))
+        .min_val(T::from_f64(0.99));
+    let reb = spec
+        .entrant_venue_maker_rebate_bps
+        .max_val(T::from_f64(0.0));
+    let inv_i = spec.rms_inventory_position_i.max_val(T::from_f64(0.1));
+    let kappa = spec
+        .inventory_mean_reversion_speed_kappa
+        .max_val(T::from_f64(0.05));
+    let sigma = spec.intraday_volatility_sigma.max_val(T::from_f64(0.001));
+
+    let pi_pos = bp_scale * vol_v * s_half * (one - alpha);
+    let pi_reb = bp_scale * vol_v * reb;
+    let loss_inv = (sigma * sigma * inv_i * inv_i) / (two * kappa);
+    let net_pnl = pi_pos + pi_reb - loss_inv;
+
+    MenkveldMultiVenueHftMarketMakingAnalytics {
+        price_positioning_spread_revenue: pi_pos,
+        multi_venue_rebate_revenue: pi_reb,
+        inventory_holding_cost_loss: loss_inv,
+        net_hft_market_making_profit: net_pnl,
+    }
+}
+
+#[cfg(test)]
+mod menkveld_multi_venue_hft_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn menkveld_multi_venue_hft_invariants_and_ad_parity() {
+        let base = MenkveldMultiVenueHftMarketMakingSpec {
+            quoted_half_spread_bps: 1.85_f64,
+            passive_venue_volume_v: 25_000.0_f64,
+            adverse_selection_fill_fraction_alpha: 0.36_f64,
+            entrant_venue_maker_rebate_bps: 0.28_f64,
+            rms_inventory_position_i: 42.0_f64,
+            inventory_mean_reversion_speed_kappa: 8.5_f64,
+            intraday_volatility_sigma: 0.018_f64,
+        };
+        let r0 = evaluate_menkveld_multi_venue_hft_market_making(&base);
+        assert!(r0.price_positioning_spread_revenue > 0.0);
+        assert!(r0.multi_venue_rebate_revenue > 0.0);
+        assert!(r0.inventory_holding_cost_loss > 0.0);
+        assert!(r0.net_hft_market_making_profit > 0.0);
+
+        let x0 = [
+            base.quoted_half_spread_bps,
+            base.passive_venue_volume_v,
+            base.adverse_selection_fill_fraction_alpha,
+            base.entrant_venue_maker_rebate_bps,
+            base.rms_inventory_position_i,
+            base.inventory_mean_reversion_speed_kappa,
+            base.intraday_volatility_sigma,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_menkveld_multi_venue_hft_market_making(
+            &MenkveldMultiVenueHftMarketMakingSpec {
+                quoted_half_spread_bps: xd[0],
+                passive_venue_volume_v: xd[1],
+                adverse_selection_fill_fraction_alpha: xd[2],
+                entrant_venue_maker_rebate_bps: xd[3],
+                rms_inventory_position_i: xd[4],
+                inventory_mean_reversion_speed_kappa: xd[5],
+                intraday_volatility_sigma: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_menkveld_multi_venue_hft_market_making(
+                &MenkveldMultiVenueHftMarketMakingSpec {
+                    quoted_half_spread_bps: xp[0],
+                    passive_venue_volume_v: xp[1],
+                    adverse_selection_fill_fraction_alpha: xp[2],
+                    entrant_venue_maker_rebate_bps: xp[3],
+                    rms_inventory_position_i: xp[4],
+                    inventory_mean_reversion_speed_kappa: xp[5],
+                    intraday_volatility_sigma: xp[6],
+                },
+            );
+            let rm = evaluate_menkveld_multi_venue_hft_market_making(
+                &MenkveldMultiVenueHftMarketMakingSpec {
+                    quoted_half_spread_bps: xm[0],
+                    passive_venue_volume_v: xm[1],
+                    adverse_selection_fill_fraction_alpha: xm[2],
+                    entrant_venue_maker_rebate_bps: xm[3],
+                    rms_inventory_position_i: xm[4],
+                    inventory_mean_reversion_speed_kappa: xm[5],
+                    intraday_volatility_sigma: xm[6],
+                },
+            );
+            let fd =
+                (rp.net_hft_market_making_profit - rm.net_hft_market_making_profit) / (2.0 * h);
+            assert!(rad.net_hft_market_making_profit.d[i].abs() > 1e-9);
+            assert!((rad.net_hft_market_making_profit.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

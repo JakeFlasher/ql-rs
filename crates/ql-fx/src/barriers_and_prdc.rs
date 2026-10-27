@@ -2861,3 +2861,146 @@ mod lustig_roussanov_verdelhan_dollar_carry_tests {
         }
     }
 }
+
+/// Input specification for the Mueller, Tahbaz-Salehi & Vedolin (2017, *Journal
+/// of Finance* 72(3), 1213–1252, "Exchange Rates and Monetary Policy
+/// Uncertainty") FOMC Announcement-Window FX Excess Return and Monetary Policy
+/// Uncertainty Model.
+#[derive(Debug, Clone, Copy)]
+pub struct MuellerTahbazSalehiVedolinFomcFxSpec<T: Real> {
+    /// Short-dated interest-rate option Monetary Policy Uncertainty index $\sigma_{\text{MPU}} > 0$.
+    pub monetary_policy_uncertainty_sigma_mpu: T,
+    /// Foreign minus US short-term interest rate differential $i^* - i_{\text{USD}}$.
+    pub foreign_minus_us_rate_differential_di: T,
+    /// Baseline FOMC announcement-day short-USD drift $\alpha_{\text{FOMC}} > 0$.
+    pub baseline_fomc_drift_alpha: T,
+    /// Unconditional MPU loading on FOMC currency excess returns $\beta_{\text{mpu}} > 0$.
+    pub mpu_return_loading_beta_mpu: T,
+    /// Conditional carry-times-MPU interaction slope $\beta_{\text{carry}} > 0$.
+    pub carry_mpu_interaction_slope_beta_c: T,
+    /// Global dealer balance-sheet intermediary risk aversion $\gamma_{\text{dealer}} > 0$.
+    pub dealer_intermediary_risk_aversion_gamma: T,
+}
+
+/// Analytics returned by [`evaluate_mueller_tahbaz_salehi_vedolin_fomc_fx_uncertainty`].
+#[derive(Debug, Clone, Copy)]
+pub struct MuellerTahbazSalehiVedolinFomcFxAnalytics<T: Real> {
+    /// Unconditional FOMC announcement-window short-USD excess return (in bps).
+    pub unconditional_fomc_fx_return_bps: T,
+    /// Carry-conditional MPU interaction premium on FOMC days (in bps).
+    pub carry_conditional_mpu_premium_bps: T,
+    /// Total expected FOMC announcement-day currency excess return (in bps).
+    pub total_fomc_announcement_fx_premium_bps: T,
+}
+
+/// Evaluates the Mueller, Tahbaz-Salehi & Vedolin (2017, *JF* 72(3)) FOMC
+/// announcement-day FX risk premium. Short-USD / long-foreign currency excess
+/// returns spike around scheduled FOMC announcements in proportion to ex-ante
+/// Monetary Policy Uncertainty $\sigma_{\text{MPU}}$ and the interest-rate
+/// carry differential $i^* - i_{\text{USD}}$:
+/// $$\text{ER}_{\text{FOMC,bps}} = 10^4 \gamma_{\text{dealer}}\left[\alpha_{\text{FOMC}} + \beta_{\text{mpu}}\sigma_{\text{MPU}} + \beta_{\text{carry}}\sigma_{\text{MPU}}(i^* - i_{\text{USD}})\right].$$
+pub fn evaluate_mueller_tahbaz_salehi_vedolin_fomc_fx_uncertainty<T: Real>(
+    spec: &MuellerTahbazSalehiVedolinFomcFxSpec<T>,
+) -> MuellerTahbazSalehiVedolinFomcFxAnalytics<T> {
+    let bps = T::from_f64(10_000.0);
+
+    let mpu = spec
+        .monetary_policy_uncertainty_sigma_mpu
+        .max_val(T::from_f64(0.01));
+    let di = spec.foreign_minus_us_rate_differential_di;
+    let alpha = spec.baseline_fomc_drift_alpha.max_val(T::from_f64(1e-5));
+    let beta_mpu = spec.mpu_return_loading_beta_mpu.max_val(T::from_f64(1e-4));
+    let beta_c = spec
+        .carry_mpu_interaction_slope_beta_c
+        .max_val(T::from_f64(1e-4));
+    let gamma_d = spec
+        .dealer_intermediary_risk_aversion_gamma
+        .max_val(T::from_f64(0.1));
+
+    let uncond_bps = bps * gamma_d * (alpha + beta_mpu * mpu);
+    let carry_int_bps = bps * gamma_d * (beta_c * mpu * di);
+    let total_bps = uncond_bps + carry_int_bps;
+
+    MuellerTahbazSalehiVedolinFomcFxAnalytics {
+        unconditional_fomc_fx_return_bps: uncond_bps,
+        carry_conditional_mpu_premium_bps: carry_int_bps,
+        total_fomc_announcement_fx_premium_bps: total_bps,
+    }
+}
+
+#[cfg(test)]
+mod mueller_tahbaz_salehi_vedolin_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn mueller_tahbaz_salehi_vedolin_invariants_and_ad_parity() {
+        let base = MuellerTahbazSalehiVedolinFomcFxSpec {
+            monetary_policy_uncertainty_sigma_mpu: 0.85_f64,
+            foreign_minus_us_rate_differential_di: 0.024_f64,
+            baseline_fomc_drift_alpha: 0.0008_f64,
+            mpu_return_loading_beta_mpu: 0.0022_f64,
+            carry_mpu_interaction_slope_beta_c: 0.065_f64,
+            dealer_intermediary_risk_aversion_gamma: 1.35_f64,
+        };
+        let r0 = evaluate_mueller_tahbaz_salehi_vedolin_fomc_fx_uncertainty(&base);
+        assert!(r0.unconditional_fomc_fx_return_bps > 0.0);
+        assert!(r0.carry_conditional_mpu_premium_bps > 0.0);
+        assert!(r0.total_fomc_announcement_fx_premium_bps > r0.unconditional_fomc_fx_return_bps);
+
+        let x0 = [
+            base.monetary_policy_uncertainty_sigma_mpu,
+            base.foreign_minus_us_rate_differential_di,
+            base.baseline_fomc_drift_alpha,
+            base.mpu_return_loading_beta_mpu,
+            base.carry_mpu_interaction_slope_beta_c,
+            base.dealer_intermediary_risk_aversion_gamma,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_mueller_tahbaz_salehi_vedolin_fomc_fx_uncertainty(
+            &MuellerTahbazSalehiVedolinFomcFxSpec {
+                monetary_policy_uncertainty_sigma_mpu: xd[0],
+                foreign_minus_us_rate_differential_di: xd[1],
+                baseline_fomc_drift_alpha: xd[2],
+                mpu_return_loading_beta_mpu: xd[3],
+                carry_mpu_interaction_slope_beta_c: xd[4],
+                dealer_intermediary_risk_aversion_gamma: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_mueller_tahbaz_salehi_vedolin_fomc_fx_uncertainty(
+                &MuellerTahbazSalehiVedolinFomcFxSpec {
+                    monetary_policy_uncertainty_sigma_mpu: xp[0],
+                    foreign_minus_us_rate_differential_di: xp[1],
+                    baseline_fomc_drift_alpha: xp[2],
+                    mpu_return_loading_beta_mpu: xp[3],
+                    carry_mpu_interaction_slope_beta_c: xp[4],
+                    dealer_intermediary_risk_aversion_gamma: xp[5],
+                },
+            );
+            let rm = evaluate_mueller_tahbaz_salehi_vedolin_fomc_fx_uncertainty(
+                &MuellerTahbazSalehiVedolinFomcFxSpec {
+                    monetary_policy_uncertainty_sigma_mpu: xm[0],
+                    foreign_minus_us_rate_differential_di: xm[1],
+                    baseline_fomc_drift_alpha: xm[2],
+                    mpu_return_loading_beta_mpu: xm[3],
+                    carry_mpu_interaction_slope_beta_c: xm[4],
+                    dealer_intermediary_risk_aversion_gamma: xm[5],
+                },
+            );
+            let fd = (rp.total_fomc_announcement_fx_premium_bps
+                - rm.total_fomc_announcement_fx_premium_bps)
+                / (2.0 * h);
+            assert!(rad.total_fomc_announcement_fx_premium_bps.d[i].abs() > 1e-9);
+            assert!((rad.total_fomc_announcement_fx_premium_bps.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

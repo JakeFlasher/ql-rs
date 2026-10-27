@@ -6425,3 +6425,150 @@ mod tu_zhou_markowitz_talmud_tests {
         }
     }
 }
+
+/// Input specification for the Ao, Li & Zheng (2019, *Review of Financial
+/// Studies* 32(7), 2649–2684, "Approaching Mean-Variance Efficiency for Large
+/// Portfolios") MAXSER (Maximum-Sharpe-Ratio Estimated and Sparse Regression)
+/// Portfolio Optimization Model.
+#[derive(Debug, Clone, Copy)]
+pub struct AoLiZhengMaxserSparsePortfolioSpec<T: Real> {
+    /// Number of candidate risky assets $N > 2$.
+    pub asset_count_n: T,
+    /// Historical estimation sample size $T_{\text{obs}} > N + 4$.
+    pub sample_size_t: T,
+    /// Sample plug-in squared maximum Sharpe ratio $\hat{\theta}_s^2 > 0$.
+    pub sample_squared_sharpe_theta_s2: T,
+    /// Portfolio target annualized volatility constraint $\sigma_{\text{target}} > 0$.
+    pub target_volatility_sigma_target: T,
+    /// Cross-validated $L_1$ LASSO sparsity tuning ratio $\zeta_{L_1} \in (0, 1)$.
+    pub lasso_sparsity_tuning_ratio_zeta: T,
+}
+
+/// Analytics returned by [`evaluate_ao_li_zheng_maxser_sparse_portfolio`].
+#[derive(Debug, Clone, Copy)]
+pub struct AoLiZhengMaxserSparsePortfolioAnalytics<T: Real> {
+    /// Kan–Zhou bias-corrected squared maximum Sharpe ratio $\hat{\theta}_{\text{adj}}^2$.
+    pub bias_corrected_squared_sharpe: T,
+    /// MAXSER synthetic regression response level $r_c = \sigma_{\text{target}}(1 + \hat{\theta}_{\text{adj}}^2)/\hat{\theta}_{\text{adj}}$.
+    pub maxser_synthetic_response_rc: T,
+    /// Expected out-of-sample annualized Sharpe ratio under MAXSER $L_1$ regularization.
+    pub expected_out_of_sample_sharpe_ratio: T,
+    /// Sharpe ratio improvement over unregularized sample plug-in Markowitz portfolio.
+    pub maxser_over_plug_in_sharpe_gain: T,
+}
+
+/// Evaluates the Ao, Li & Zheng (2019, *RFS* 32(7)) MAXSER portfolio
+/// construction. Given sample size $T_{\text{obs}}$, asset count $N$, and plug-in
+/// squared Sharpe ratio $\hat{\theta}_s^2$, the Kan–Zhou finite-sample bias-adjusted
+/// squared Sharpe ratio and MAXSER synthetic response level $r_c$ are:
+/// $$\hat{\theta}_{\text{adj}}^2 = \frac{(T_{\text{obs}} - N - 2)\hat{\theta}_s^2 - N}{T_{\text{obs}}}, \qquad r_c = \sigma_{\text{target}}\frac{1 + \hat{\theta}_{\text{adj}}^2}{\sqrt{\hat{\theta}_{\text{adj}}^2}}.$$
+pub fn evaluate_ao_li_zheng_maxser_sparse_portfolio<T: Real>(
+    spec: &AoLiZhengMaxserSparsePortfolioSpec<T>,
+) -> AoLiZhengMaxserSparsePortfolioAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+
+    let n = spec.asset_count_n.max_val(T::from_f64(3.0));
+    let t_obs = spec.sample_size_t.max_val(n + T::from_f64(10.0));
+    let th_s2 = spec
+        .sample_squared_sharpe_theta_s2
+        .max_val(T::from_f64(0.05));
+    let sig_t = spec
+        .target_volatility_sigma_target
+        .max_val(T::from_f64(0.01));
+    let zeta = spec
+        .lasso_sparsity_tuning_ratio_zeta
+        .max_val(T::from_f64(0.05))
+        .min_val(T::from_f64(0.95));
+
+    let raw_adj = ((t_obs - n - two) * th_s2 - n) / t_obs;
+    let th_adj2 = half_smooth_pos(raw_adj, T::from_f64(0.02));
+    let th_adj = th_adj2.sqrt();
+    let r_c = sig_t * (one + th_adj2) / th_adj;
+
+    // Out-of-sample Sharpe of MAXSER vs unregularized plug-in Markowitz
+    let sparsity_eff = one - T::from_f64(0.25) * (one - zeta) * (n / t_obs);
+    let sr_maxser = th_adj * sparsity_eff * (one + T::from_f64(0.05) * sig_t);
+    let sr_plugin = th_adj / (one + (n / (t_obs - n)) * (one + one / th_adj2)).sqrt();
+
+    AoLiZhengMaxserSparsePortfolioAnalytics {
+        bias_corrected_squared_sharpe: th_adj2,
+        maxser_synthetic_response_rc: r_c,
+        expected_out_of_sample_sharpe_ratio: sr_maxser,
+        maxser_over_plug_in_sharpe_gain: sr_maxser - sr_plugin,
+    }
+}
+
+fn half_smooth_pos<T: Real>(x: T, eps: T) -> T {
+    T::from_f64(0.5) * (x + (x * x + eps * eps).sqrt())
+}
+
+#[cfg(test)]
+mod ao_li_zheng_maxser_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn ao_li_zheng_maxser_invariants_and_ad_parity() {
+        let base = AoLiZhengMaxserSparsePortfolioSpec {
+            asset_count_n: 50.0_f64,
+            sample_size_t: 240.0_f64,
+            sample_squared_sharpe_theta_s2: 0.65_f64,
+            target_volatility_sigma_target: 0.12_f64,
+            lasso_sparsity_tuning_ratio_zeta: 0.45_f64,
+        };
+        let r0 = evaluate_ao_li_zheng_maxser_sparse_portfolio(&base);
+        assert!(r0.bias_corrected_squared_sharpe > 0.0);
+        assert!(r0.bias_corrected_squared_sharpe < base.sample_squared_sharpe_theta_s2);
+        assert!(r0.maxser_synthetic_response_rc > base.target_volatility_sigma_target);
+        assert!(r0.maxser_over_plug_in_sharpe_gain > 0.0);
+
+        let x0 = [
+            base.asset_count_n,
+            base.sample_size_t,
+            base.sample_squared_sharpe_theta_s2,
+            base.target_volatility_sigma_target,
+            base.lasso_sparsity_tuning_ratio_zeta,
+        ];
+        let mut xd = [Dual::<5>::from_f64(0.0); 5];
+        for i in 0..5 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad =
+            evaluate_ao_li_zheng_maxser_sparse_portfolio(&AoLiZhengMaxserSparsePortfolioSpec {
+                asset_count_n: xd[0],
+                sample_size_t: xd[1],
+                sample_squared_sharpe_theta_s2: xd[2],
+                target_volatility_sigma_target: xd[3],
+                lasso_sparsity_tuning_ratio_zeta: xd[4],
+            });
+        let h = 1e-6;
+        for i in 0..5 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp =
+                evaluate_ao_li_zheng_maxser_sparse_portfolio(&AoLiZhengMaxserSparsePortfolioSpec {
+                    asset_count_n: xp[0],
+                    sample_size_t: xp[1],
+                    sample_squared_sharpe_theta_s2: xp[2],
+                    target_volatility_sigma_target: xp[3],
+                    lasso_sparsity_tuning_ratio_zeta: xp[4],
+                });
+            let rm =
+                evaluate_ao_li_zheng_maxser_sparse_portfolio(&AoLiZhengMaxserSparsePortfolioSpec {
+                    asset_count_n: xm[0],
+                    sample_size_t: xm[1],
+                    sample_squared_sharpe_theta_s2: xm[2],
+                    target_volatility_sigma_target: xm[3],
+                    lasso_sparsity_tuning_ratio_zeta: xm[4],
+                });
+            let fd = (rp.expected_out_of_sample_sharpe_ratio
+                - rm.expected_out_of_sample_sharpe_ratio)
+                / (2.0 * h);
+            assert!(rad.expected_out_of_sample_sharpe_ratio.d[i].abs() > 1e-9);
+            assert!((rad.expected_out_of_sample_sharpe_ratio.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

@@ -5159,3 +5159,174 @@ mod adrian_etula_muir_broker_dealer_tests {
         }
     }
 }
+
+/// Input specification for the Bansal, Kiku, Shaliastovich & Yaron (2014,
+/// *Journal of Finance* 69(6), 2471–2511, "Volatility, the Macroeconomy, and
+/// Asset Prices") Macroeconomic Time-Varying Volatility Long-Run Risks Model.
+#[derive(Debug, Clone, Copy)]
+pub struct BansalKikuShaliastovichYaronVolatilityLrrSpec<T: Real> {
+    /// Coefficient of relative risk aversion $\gamma > 1$.
+    pub relative_risk_aversion_gamma: T,
+    /// Intertemporal elasticity of substitution $\psi > 1$.
+    pub intertemporal_elasticity_psi: T,
+    /// Persistence of expected growth rate $\rho_x \in (0, 1)$.
+    pub growth_news_persistence_rho_x: T,
+    /// Persistence of macroeconomic volatility $\nu_\sigma \in (0, 1)$.
+    pub volatility_persistence_nu_sigma: T,
+    /// Spot macroeconomic consumption variance $\sigma_t^2 > 0$.
+    pub spot_macro_variance_sigma2: T,
+    /// Volatility of macroeconomic variance $\sigma_w > 0$.
+    pub volatility_of_variance_sigma_w: T,
+    /// Dividend leverage loading on expected growth $\phi_d > 1$.
+    pub dividend_leverage_phi_d: T,
+}
+
+/// Analytics returned by [`evaluate_bansal_kiku_shaliastovich_yaron_macro_volatility_lrr`].
+#[derive(Debug, Clone, Copy)]
+pub struct BansalKikuShaliastovichYaronVolatilityLrrAnalytics<T: Real> {
+    /// Positive market price of expected growth news $\lambda_x > 0$.
+    pub market_price_of_growth_news_lambda_x: T,
+    /// Negative market price of macroeconomic volatility news $\lambda_\sigma < 0$.
+    pub market_price_of_volatility_news_lambda_sigma: T,
+    /// Volatility-channel contribution to the equity risk premium.
+    pub volatility_channel_equity_risk_premium: T,
+    /// Total equilibrium BKSY equity risk premium $\mathbb{E}_t[r_{m,t+1} - r_{f,t}]$.
+    pub total_bksy_equity_risk_premium: T,
+}
+
+/// Evaluates the Bansal, Kiku, Shaliastovich & Yaron (2014, *JF* 69(6))
+/// macroeconomic volatility long-run risks pricing equations. Under recursive
+/// Epstein–Zin preferences with $\gamma > 1$ and $\psi > 1$, rises in
+/// macroeconomic uncertainty $\sigma_t^2$ lower wealth-consumption valuations
+/// ($A_{\sigma} < 0$) and carry a negative market price of volatility risk
+/// $\lambda_\sigma < 0$:
+/// $$\lambda_x = \frac{\gamma - 1/\psi}{1 - \kappa_1 \rho_x}, \qquad \lambda_\sigma = -\frac{1}{2}\frac{(\gamma - 1)(\gamma - 1/\psi)}{1 - \kappa_1 \nu_\sigma}\left(1 + \frac{\kappa_1^2 \varphi_e^2}{(1 - \kappa_1 \rho_x)^2}\right)\sigma_w.$$
+pub fn evaluate_bansal_kiku_shaliastovich_yaron_macro_volatility_lrr<T: Real>(
+    spec: &BansalKikuShaliastovichYaronVolatilityLrrSpec<T>,
+) -> BansalKikuShaliastovichYaronVolatilityLrrAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+    let kappa1 = T::from_f64(0.99);
+    let phi_e = T::from_f64(0.045);
+
+    let gamma = spec.relative_risk_aversion_gamma.max_val(T::from_f64(1.1));
+    let psi = spec.intertemporal_elasticity_psi.max_val(T::from_f64(1.05));
+    let rho_x = spec
+        .growth_news_persistence_rho_x
+        .max_val(T::from_f64(0.05))
+        .min_val(T::from_f64(0.995));
+    let nu_sig = spec
+        .volatility_persistence_nu_sigma
+        .max_val(T::from_f64(0.05))
+        .min_val(T::from_f64(0.998));
+    let sig2 = spec.spot_macro_variance_sigma2.max_val(T::from_f64(1e-6));
+    let sig_w = spec
+        .volatility_of_variance_sigma_w
+        .max_val(T::from_f64(1e-6));
+    let phi_d = spec.dividend_leverage_phi_d.max_val(T::from_f64(1.0));
+
+    let pref_wedge = gamma - one / psi;
+    let denom_x = one - kappa1 * rho_x;
+    let denom_sig = one - kappa1 * nu_sig;
+
+    let lam_x = (kappa1 * phi_e * pref_wedge) / denom_x;
+    let var_mult = one + (kappa1 * kappa1 * phi_e * phi_e) / (denom_x * denom_x);
+    let lam_sig = -half * ((gamma - one) * pref_wedge / denom_sig) * var_mult * sig_w;
+
+    // Market dividend claim loadings on growth news and volatility news
+    let beta_m_x = (kappa1 * (phi_d - one / psi) * phi_e) / denom_x;
+    let beta_m_sig = -half * ((phi_d - one) * pref_wedge / denom_sig) * var_mult * sig_w;
+
+    let erp_growth = (gamma * sig2 + beta_m_x * lam_x * sig2) * T::from_f64(12.0);
+    let erp_vol = (beta_m_sig * lam_sig) * T::from_f64(12.0);
+    let erp_total = erp_growth + erp_vol;
+
+    BansalKikuShaliastovichYaronVolatilityLrrAnalytics {
+        market_price_of_growth_news_lambda_x: lam_x,
+        market_price_of_volatility_news_lambda_sigma: lam_sig,
+        volatility_channel_equity_risk_premium: erp_vol,
+        total_bksy_equity_risk_premium: erp_total,
+    }
+}
+
+#[cfg(test)]
+mod bansal_kiku_shaliastovich_yaron_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn bansal_kiku_shaliastovich_yaron_invariants_and_ad_parity() {
+        let base = BansalKikuShaliastovichYaronVolatilityLrrSpec {
+            relative_risk_aversion_gamma: 7.5_f64,
+            intertemporal_elasticity_psi: 1.5_f64,
+            growth_news_persistence_rho_x: 0.975_f64,
+            volatility_persistence_nu_sigma: 0.985_f64,
+            spot_macro_variance_sigma2: 0.000064_f64,
+            volatility_of_variance_sigma_w: 0.00025_f64,
+            dividend_leverage_phi_d: 3.2_f64,
+        };
+        let r0 = evaluate_bansal_kiku_shaliastovich_yaron_macro_volatility_lrr(&base);
+        assert!(r0.market_price_of_growth_news_lambda_x > 0.0);
+        assert!(r0.market_price_of_volatility_news_lambda_sigma < 0.0);
+        assert!(r0.volatility_channel_equity_risk_premium > 0.0);
+        assert!(r0.total_bksy_equity_risk_premium > r0.volatility_channel_equity_risk_premium);
+
+        let x0 = [
+            base.relative_risk_aversion_gamma,
+            base.intertemporal_elasticity_psi,
+            base.growth_news_persistence_rho_x,
+            base.volatility_persistence_nu_sigma,
+            base.spot_macro_variance_sigma2,
+            base.volatility_of_variance_sigma_w,
+            base.dividend_leverage_phi_d,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_bansal_kiku_shaliastovich_yaron_macro_volatility_lrr(
+            &BansalKikuShaliastovichYaronVolatilityLrrSpec {
+                relative_risk_aversion_gamma: xd[0],
+                intertemporal_elasticity_psi: xd[1],
+                growth_news_persistence_rho_x: xd[2],
+                volatility_persistence_nu_sigma: xd[3],
+                spot_macro_variance_sigma2: xd[4],
+                volatility_of_variance_sigma_w: xd[5],
+                dividend_leverage_phi_d: xd[6],
+            },
+        );
+        let h = 1e-7;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_bansal_kiku_shaliastovich_yaron_macro_volatility_lrr(
+                &BansalKikuShaliastovichYaronVolatilityLrrSpec {
+                    relative_risk_aversion_gamma: xp[0],
+                    intertemporal_elasticity_psi: xp[1],
+                    growth_news_persistence_rho_x: xp[2],
+                    volatility_persistence_nu_sigma: xp[3],
+                    spot_macro_variance_sigma2: xp[4],
+                    volatility_of_variance_sigma_w: xp[5],
+                    dividend_leverage_phi_d: xp[6],
+                },
+            );
+            let rm = evaluate_bansal_kiku_shaliastovich_yaron_macro_volatility_lrr(
+                &BansalKikuShaliastovichYaronVolatilityLrrSpec {
+                    relative_risk_aversion_gamma: xm[0],
+                    intertemporal_elasticity_psi: xm[1],
+                    growth_news_persistence_rho_x: xm[2],
+                    volatility_persistence_nu_sigma: xm[3],
+                    spot_macro_variance_sigma2: xm[4],
+                    volatility_of_variance_sigma_w: xm[5],
+                    dividend_leverage_phi_d: xm[6],
+                },
+            );
+            let fd =
+                (rp.total_bksy_equity_risk_premium - rm.total_bksy_equity_risk_premium) / (2.0 * h);
+            assert!(rad.total_bksy_equity_risk_premium.d[i].abs() > 1e-9);
+            assert!((rad.total_bksy_equity_risk_premium.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}
