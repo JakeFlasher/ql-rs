@@ -4123,3 +4123,164 @@ mod berndt_duffie_credit_risk_premium_tests {
         }
     }
 }
+
+/// Input specification for the Giesecke, Longstaff, Schaefer & Strebulaev
+/// (2011, *Journal of Financial Economics* 102(2), 233–259, "Corporate Bond
+/// Default Risk: A 150-Year Perspective") Markov Regime-Switching Default
+/// Intensity and Secular Credit Spread Model.
+#[derive(Debug, Clone, Copy)]
+pub struct GieseckeLongstaffSchaeferStrebulaevDefaultSpec<T: Real> {
+    /// Baseline low-default regime hazard rate $\lambda_{\text{low}} > 0$.
+    pub low_regime_hazard_rate_lambda_l: T,
+    /// Clustered high-default crisis regime hazard rate $\lambda_{\text{high}} > \lambda_{\text{low}}$.
+    pub high_regime_hazard_rate_lambda_h: T,
+    /// Annualized aggregate equity market volatility $\sigma_{\text{eq}} > 0$.
+    pub equity_market_volatility_sigma_eq: T,
+    /// Trailing 1-year aggregate stock market return $r_{\text{eq}}$.
+    pub trailing_equity_return_r_eq: T,
+    /// Real GDP growth rate $g_{\text{gdp}}$.
+    pub real_gdp_growth_rate_g: T,
+    /// Physical Loss Given Default $L_{\text{def}} \in (0, 1)$.
+    pub loss_given_default_lgd: T,
+}
+
+/// Analytics returned by [`evaluate_giesecke_longstaff_schaefer_strebulaev_default_regime`].
+#[derive(Debug, Clone, Copy)]
+pub struct GieseckeLongstaffSchaeferStrebulaevDefaultAnalytics<T: Real> {
+    /// Filtered probability of the high-default clustering regime $p_{\text{high}} \in (0, 1)$.
+    pub high_default_regime_probability: T,
+    /// Regime-weighted physical default intensity $\lambda_t^{\mathbb{P}}$.
+    pub physical_regime_default_intensity: T,
+    /// Actuarial expected default loss rate in bps $10^4 L_{\text{def}}\lambda_t^{\mathbb{P}}$.
+    pub actuarial_expected_loss_bps: T,
+    /// Secular credit spread in bps (reflecting slow-moving risk-neutral regime persistence).
+    pub secular_regime_credit_spread_bps: T,
+}
+
+/// Evaluates the Giesecke, Longstaff, Schaefer & Strebulaev (2011, *JFE* 102(2))
+/// Markov regime-switching corporate bond default model, where stock return
+/// volatility $\sigma_{\text{eq}}$, stock market returns $r_{\text{eq}}$, and
+/// real GDP growth $g_{\text{gdp}}$ drive the transition probability into
+/// clustered high-default regimes:
+/// $$p_{\text{high}} = \frac{1}{1 + \exp\!\left[-\left(-1.85 + 6.5\,\sigma_{\text{eq}} - 2.8\,r_{\text{eq}} - 4.2\,g_{\text{gdp}}\right)\right]},$$
+/// $$\lambda_t^{\mathbb{P}} = (1 - p_{\text{high}})\lambda_{\text{low}} + p_{\text{high}}\lambda_{\text{high}}.$$
+pub fn evaluate_giesecke_longstaff_schaefer_strebulaev_default_regime<T: Real>(
+    spec: &GieseckeLongstaffSchaeferStrebulaevDefaultSpec<T>,
+) -> GieseckeLongstaffSchaeferStrebulaevDefaultAnalytics<T> {
+    let one = T::one();
+    let bps = T::from_f64(10_000.0);
+
+    let lam_l = spec
+        .low_regime_hazard_rate_lambda_l
+        .max_val(T::from_f64(1e-4));
+    let lam_h = spec
+        .high_regime_hazard_rate_lambda_h
+        .max_val(T::from_f64(1e-3));
+    let sig_eq = spec
+        .equity_market_volatility_sigma_eq
+        .max_val(T::from_f64(0.02));
+    let r_eq = spec.trailing_equity_return_r_eq;
+    let g_gdp = spec.real_gdp_growth_rate_g;
+    let lgd = spec
+        .loss_given_default_lgd
+        .max_val(T::from_f64(0.05))
+        .min_val(T::from_f64(0.95));
+
+    let logit_z = T::from_f64(-1.85) + T::from_f64(6.5) * sig_eq
+        - T::from_f64(2.8) * r_eq
+        - T::from_f64(4.2) * g_gdp;
+    let p_high = one / (one + (-logit_z).exp());
+    let lam_p = (one - p_high) * lam_l + p_high * lam_h;
+
+    // Risk-neutral regime probability overweights the high-default state
+    let p_high_q = (p_high * T::from_f64(1.65)) / (one + T::from_f64(0.65) * p_high);
+    let lam_q =
+        (one - p_high_q) * (lam_l * T::from_f64(1.8)) + p_high_q * (lam_h * T::from_f64(1.5));
+
+    let act_bps = bps * lgd * lam_p;
+    let spread_bps = bps * lgd * lam_q;
+
+    GieseckeLongstaffSchaeferStrebulaevDefaultAnalytics {
+        high_default_regime_probability: p_high,
+        physical_regime_default_intensity: lam_p,
+        actuarial_expected_loss_bps: act_bps,
+        secular_regime_credit_spread_bps: spread_bps,
+    }
+}
+
+#[cfg(test)]
+mod giesecke_longstaff_schaefer_strebulaev_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn glss_default_regime_invariants_and_ad_parity() {
+        let base = GieseckeLongstaffSchaeferStrebulaevDefaultSpec {
+            low_regime_hazard_rate_lambda_l: 0.0035_f64,
+            high_regime_hazard_rate_lambda_h: 0.0420_f64,
+            equity_market_volatility_sigma_eq: 0.24_f64,
+            trailing_equity_return_r_eq: -0.05_f64,
+            real_gdp_growth_rate_g: 0.015_f64,
+            loss_given_default_lgd: 0.55_f64,
+        };
+        let r0 = evaluate_giesecke_longstaff_schaefer_strebulaev_default_regime(&base);
+        assert!(
+            r0.high_default_regime_probability > 0.0 && r0.high_default_regime_probability < 1.0
+        );
+        assert!(r0.secular_regime_credit_spread_bps > r0.actuarial_expected_loss_bps);
+
+        let x0 = [
+            base.low_regime_hazard_rate_lambda_l,
+            base.high_regime_hazard_rate_lambda_h,
+            base.equity_market_volatility_sigma_eq,
+            base.trailing_equity_return_r_eq,
+            base.real_gdp_growth_rate_g,
+            base.loss_given_default_lgd,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_giesecke_longstaff_schaefer_strebulaev_default_regime(
+            &GieseckeLongstaffSchaeferStrebulaevDefaultSpec {
+                low_regime_hazard_rate_lambda_l: xd[0],
+                high_regime_hazard_rate_lambda_h: xd[1],
+                equity_market_volatility_sigma_eq: xd[2],
+                trailing_equity_return_r_eq: xd[3],
+                real_gdp_growth_rate_g: xd[4],
+                loss_given_default_lgd: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_giesecke_longstaff_schaefer_strebulaev_default_regime(
+                &GieseckeLongstaffSchaeferStrebulaevDefaultSpec {
+                    low_regime_hazard_rate_lambda_l: xp[0],
+                    high_regime_hazard_rate_lambda_h: xp[1],
+                    equity_market_volatility_sigma_eq: xp[2],
+                    trailing_equity_return_r_eq: xp[3],
+                    real_gdp_growth_rate_g: xp[4],
+                    loss_given_default_lgd: xp[5],
+                },
+            );
+            let rm = evaluate_giesecke_longstaff_schaefer_strebulaev_default_regime(
+                &GieseckeLongstaffSchaeferStrebulaevDefaultSpec {
+                    low_regime_hazard_rate_lambda_l: xm[0],
+                    high_regime_hazard_rate_lambda_h: xm[1],
+                    equity_market_volatility_sigma_eq: xm[2],
+                    trailing_equity_return_r_eq: xm[3],
+                    real_gdp_growth_rate_g: xm[4],
+                    loss_given_default_lgd: xm[5],
+                },
+            );
+            let fd = (rp.secular_regime_credit_spread_bps - rm.secular_regime_credit_spread_bps)
+                / (2.0 * h);
+            assert!(rad.secular_regime_credit_spread_bps.d[i].abs() > 1e-9);
+            assert!((rad.secular_regime_credit_spread_bps.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

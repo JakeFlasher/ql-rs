@@ -5704,3 +5704,143 @@ mod piterbarg_lou_multicurrency_csa_tests {
         }
     }
 }
+
+/// Input specification for the Glasserman & Yang (2018, *Operations Research*
+/// 66(4), 941–958, "Bounding Wrong-Way Risk in CVA Calculation") Relative-Entropy
+/// (Kullback–Leibler) Worst-Case Wrong-Way Risk CVA Bound Model.
+#[derive(Debug, Clone, Copy)]
+pub struct GlassermanYangEntropyBoundedWwrCvaSpec<T: Real> {
+    /// Expected positive derivative exposure under baseline measure $\mu_E > 0$.
+    pub baseline_expected_exposure_mu_e: T,
+    /// Standard deviation of positive derivative exposure $\sigma_E > 0$.
+    pub exposure_volatility_sigma_e: T,
+    /// Counterparty cumulative default probability $p_d \in (0, 1)$.
+    pub counterparty_default_probability_pd: T,
+    /// Counterparty Loss Given Default $\text{LGD} \in (0, 1)$.
+    pub loss_given_default_lgd: T,
+    /// Kullback–Leibler relative-entropy ambiguity radius $\eta_{\text{KL}} > 0$.
+    pub kl_divergence_radius_eta: T,
+}
+
+/// Analytics returned by [`evaluate_glasserman_yang_entropy_bounded_wrong_way_cva`].
+#[derive(Debug, Clone, Copy)]
+pub struct GlassermanYangEntropyBoundedWwrCvaAnalytics<T: Real> {
+    /// Baseline independent-exposure Credit Valuation Adjustment $\text{CVA}_0 = \text{LGD}\,p_d\,\mu_E$.
+    pub independent_baseline_cva: T,
+    /// Worst-case entropy-bounded Wrong-Way Risk CVA $\text{CVA}_{\text{WWR}}(\eta_{\text{KL}})$.
+    pub worst_case_entropy_wwr_cva: T,
+    /// Wrong-Way Risk relative-entropy add-on $\Delta\text{CVA}_{\text{WWR}} = \text{CVA}_{\text{WWR}}(\eta_{\text{KL}}) - \text{CVA}_0$.
+    pub entropy_wwr_cva_addon: T,
+    /// Worst-case to baseline CVA amplification multiplier $\text{CVA}_{\text{WWR}}(\eta_{\text{KL}})/\text{CVA}_0$.
+    pub wwr_cva_amplification_multiplier: T,
+}
+
+/// Evaluates the Glasserman & Yang (2018, *Operations Research* 66(4))
+/// Donsker–Varadhan variational bound on Wrong-Way Risk (WWR) CVA over all
+/// joint exposure-default distributions $Q$ within Kullback–Leibler divergence
+/// $D_{\text{KL}}(Q \parallel P_0) \le \eta_{\text{KL}}$:
+/// $$\text{CVA}_0 = \text{LGD}\,p_d\,\mu_E, \qquad \Delta\text{CVA}_{\text{WWR}}(\eta_{\text{KL}}) = \text{LGD}\sqrt{2\eta_{\text{KL}}\,p_d(1 - p_d)\left(\sigma_E^2 + (1 - p_d)\mu_E^2\right)} + \frac{1}{2}\eta_{\text{KL}}\,\text{LGD}\,p_d\,\sigma_E.$$
+pub fn evaluate_glasserman_yang_entropy_bounded_wrong_way_cva<T: Real>(
+    spec: &GlassermanYangEntropyBoundedWwrCvaSpec<T>,
+) -> GlassermanYangEntropyBoundedWwrCvaAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+    let half = T::from_f64(0.5);
+
+    let mu_e = spec
+        .baseline_expected_exposure_mu_e
+        .max_val(T::from_f64(0.1));
+    let sig_e = spec.exposure_volatility_sigma_e.max_val(T::from_f64(0.05));
+    let pd = spec
+        .counterparty_default_probability_pd
+        .max_val(T::from_f64(1e-4))
+        .min_val(T::from_f64(0.95));
+    let lgd = spec
+        .loss_given_default_lgd
+        .max_val(T::from_f64(0.05))
+        .min_val(T::from_f64(0.95));
+    let eta = spec.kl_divergence_radius_eta.max_val(T::from_f64(1e-4));
+
+    let cva0 = lgd * pd * mu_e;
+    let var_l = pd * (one - pd) * (sig_e * sig_e + (one - pd) * mu_e * mu_e);
+    let addon = lgd * (two * eta * var_l).sqrt() + half * eta * lgd * pd * sig_e;
+    let cva_wwr = cva0 + addon;
+    let mult = cva_wwr / cva0;
+
+    GlassermanYangEntropyBoundedWwrCvaAnalytics {
+        independent_baseline_cva: cva0,
+        worst_case_entropy_wwr_cva: cva_wwr,
+        entropy_wwr_cva_addon: addon,
+        wwr_cva_amplification_multiplier: mult,
+    }
+}
+
+#[cfg(test)]
+mod glasserman_yang_entropy_wwr_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn glasserman_yang_entropy_wwr_invariants_and_ad_parity() {
+        let base = GlassermanYangEntropyBoundedWwrCvaSpec {
+            baseline_expected_exposure_mu_e: 45.0_f64,
+            exposure_volatility_sigma_e: 28.0_f64,
+            counterparty_default_probability_pd: 0.045_f64,
+            loss_given_default_lgd: 0.60_f64,
+            kl_divergence_radius_eta: 0.08_f64,
+        };
+        let r0 = evaluate_glasserman_yang_entropy_bounded_wrong_way_cva(&base);
+        assert!(r0.independent_baseline_cva > 0.0);
+        assert!(r0.entropy_wwr_cva_addon > 0.0);
+        assert!(r0.wwr_cva_amplification_multiplier > 1.5);
+
+        let x0 = [
+            base.baseline_expected_exposure_mu_e,
+            base.exposure_volatility_sigma_e,
+            base.counterparty_default_probability_pd,
+            base.loss_given_default_lgd,
+            base.kl_divergence_radius_eta,
+        ];
+        let mut xd = [Dual::<5>::from_f64(0.0); 5];
+        for i in 0..5 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_glasserman_yang_entropy_bounded_wrong_way_cva(
+            &GlassermanYangEntropyBoundedWwrCvaSpec {
+                baseline_expected_exposure_mu_e: xd[0],
+                exposure_volatility_sigma_e: xd[1],
+                counterparty_default_probability_pd: xd[2],
+                loss_given_default_lgd: xd[3],
+                kl_divergence_radius_eta: xd[4],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..5 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_glasserman_yang_entropy_bounded_wrong_way_cva(
+                &GlassermanYangEntropyBoundedWwrCvaSpec {
+                    baseline_expected_exposure_mu_e: xp[0],
+                    exposure_volatility_sigma_e: xp[1],
+                    counterparty_default_probability_pd: xp[2],
+                    loss_given_default_lgd: xp[3],
+                    kl_divergence_radius_eta: xp[4],
+                },
+            );
+            let rm = evaluate_glasserman_yang_entropy_bounded_wrong_way_cva(
+                &GlassermanYangEntropyBoundedWwrCvaSpec {
+                    baseline_expected_exposure_mu_e: xm[0],
+                    exposure_volatility_sigma_e: xm[1],
+                    counterparty_default_probability_pd: xm[2],
+                    loss_given_default_lgd: xm[3],
+                    kl_divergence_radius_eta: xm[4],
+                },
+            );
+            let fd = (rp.worst_case_entropy_wwr_cva - rm.worst_case_entropy_wwr_cva) / (2.0 * h);
+            assert!(rad.worst_case_entropy_wwr_cva.d[i].abs() > 1e-9);
+            assert!((rad.worst_case_entropy_wwr_cva.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

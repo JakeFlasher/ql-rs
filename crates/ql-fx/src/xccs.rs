@@ -2799,3 +2799,155 @@ mod colacito_croce_gavazzoni_ready_tests {
         }
     }
 }
+
+/// Input specification for the Hassan (2013, *Journal of Finance* 68(6),
+/// 2269–2306, "Country Size, Currency Unions, and International Asset Returns")
+/// Country-Size Systemic Safe-Haven Currency Discount Model.
+#[derive(Debug, Clone, Copy)]
+pub struct HassanCountrySizeCurrencySafetySpec<T: Real> {
+    /// Large economy share of world wealth $\omega_{\text{large}} \in (0, 1)$.
+    pub large_economy_wealth_share_omega_l: T,
+    /// Small economy share of world wealth $\omega_{\text{small}} \in (0, \omega_{\text{large}})$.
+    pub small_economy_wealth_share_omega_s: T,
+    /// Non-traded consumption expenditure share $1 - \tau_{\text{nt}} \in (0, 1)$.
+    pub nontraded_goods_expenditure_share: T,
+    /// Coefficient of relative risk aversion $\gamma > 1$.
+    pub relative_risk_aversion_gamma: T,
+    /// Volatility of country-specific non-traded endowment shocks $\sigma_{\text{nt}} > 0$.
+    pub nontraded_shock_volatility_sigma_nt: T,
+    /// Currency union partner wealth share increment $\Delta\omega_{\text{union}} > 0$.
+    pub currency_union_size_increment_domega: T,
+}
+
+/// Analytics returned by [`evaluate_hassan_country_size_currency_safety_premium`].
+#[derive(Debug, Clone, Copy)]
+pub struct HassanCountrySizeCurrencySafetyAnalytics<T: Real> {
+    /// Equilibrium interest rate differential $r_{\text{small}} - r_{\text{large}}$ (in bps).
+    pub small_minus_large_interest_rate_differential_bps: T,
+    /// Currency union safe-haven yield compression from adding $\Delta\omega_{\text{union}}$ (in bps).
+    pub currency_union_yield_compression_bps: T,
+    /// Total systemic size-based currency hedge risk premium (in bps).
+    pub systemic_size_currency_premium_bps: T,
+}
+
+/// Evaluates the Hassan (2013, *JF* 68(6)) country-size currency pricing model.
+/// Bonds denominated in the currency of a larger economy ($\omega_{\text{large}} > \omega_{\text{small}}$)
+/// appreciate against global consumption baskets when domestic non-traded supply
+/// shocks hit, providing a systemic hedge that lowers the large economy's
+/// equilibrium risk-free rate and UIP return:
+/// $$r_{\text{small}} - r_{\text{large}} = 10^4\,\gamma(1 - \tau_{\text{nt}})^2(\omega_{\text{large}} - \omega_{\text{small}})\sigma_{\text{nt}}^2.$$
+pub fn evaluate_hassan_country_size_currency_safety_premium<T: Real>(
+    spec: &HassanCountrySizeCurrencySafetySpec<T>,
+) -> HassanCountrySizeCurrencySafetyAnalytics<T> {
+    let bps = T::from_f64(10_000.0);
+
+    let om_l = spec
+        .large_economy_wealth_share_omega_l
+        .max_val(T::from_f64(0.05))
+        .min_val(T::from_f64(0.95));
+    let om_s = spec
+        .small_economy_wealth_share_omega_s
+        .max_val(T::from_f64(0.001));
+    let nt_share = spec
+        .nontraded_goods_expenditure_share
+        .max_val(T::from_f64(0.05))
+        .min_val(T::from_f64(0.95));
+    let gamma = spec.relative_risk_aversion_gamma.max_val(T::from_f64(1.0));
+    let sig_nt = spec
+        .nontraded_shock_volatility_sigma_nt
+        .max_val(T::from_f64(0.005));
+    let dom_u = spec
+        .currency_union_size_increment_domega
+        .max_val(T::from_f64(0.005));
+
+    let kernel_scale = bps * gamma * nt_share * nt_share * sig_nt * sig_nt;
+    let ir_diff_bps = kernel_scale * (om_l - om_s);
+    let union_comp_bps = kernel_scale * dom_u * (T::one() + T::from_f64(0.5) * om_l);
+    let tot_bps = ir_diff_bps + union_comp_bps;
+
+    HassanCountrySizeCurrencySafetyAnalytics {
+        small_minus_large_interest_rate_differential_bps: ir_diff_bps,
+        currency_union_yield_compression_bps: union_comp_bps,
+        systemic_size_currency_premium_bps: tot_bps,
+    }
+}
+
+#[cfg(test)]
+mod hassan_country_size_fx_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn hassan_country_size_fx_invariants_and_ad_parity() {
+        let base = HassanCountrySizeCurrencySafetySpec {
+            large_economy_wealth_share_omega_l: 0.28_f64,
+            small_economy_wealth_share_omega_s: 0.03_f64,
+            nontraded_goods_expenditure_share: 0.58_f64,
+            relative_risk_aversion_gamma: 6.0_f64,
+            nontraded_shock_volatility_sigma_nt: 0.065_f64,
+            currency_union_size_increment_domega: 0.12_f64,
+        };
+        let r0 = evaluate_hassan_country_size_currency_safety_premium(&base);
+        assert!(r0.small_minus_large_interest_rate_differential_bps > 0.0);
+        assert!(r0.currency_union_yield_compression_bps > 0.0);
+        assert!(
+            r0.systemic_size_currency_premium_bps
+                > r0.small_minus_large_interest_rate_differential_bps
+        );
+
+        let x0 = [
+            base.large_economy_wealth_share_omega_l,
+            base.small_economy_wealth_share_omega_s,
+            base.nontraded_goods_expenditure_share,
+            base.relative_risk_aversion_gamma,
+            base.nontraded_shock_volatility_sigma_nt,
+            base.currency_union_size_increment_domega,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_hassan_country_size_currency_safety_premium(
+            &HassanCountrySizeCurrencySafetySpec {
+                large_economy_wealth_share_omega_l: xd[0],
+                small_economy_wealth_share_omega_s: xd[1],
+                nontraded_goods_expenditure_share: xd[2],
+                relative_risk_aversion_gamma: xd[3],
+                nontraded_shock_volatility_sigma_nt: xd[4],
+                currency_union_size_increment_domega: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_hassan_country_size_currency_safety_premium(
+                &HassanCountrySizeCurrencySafetySpec {
+                    large_economy_wealth_share_omega_l: xp[0],
+                    small_economy_wealth_share_omega_s: xp[1],
+                    nontraded_goods_expenditure_share: xp[2],
+                    relative_risk_aversion_gamma: xp[3],
+                    nontraded_shock_volatility_sigma_nt: xp[4],
+                    currency_union_size_increment_domega: xp[5],
+                },
+            );
+            let rm = evaluate_hassan_country_size_currency_safety_premium(
+                &HassanCountrySizeCurrencySafetySpec {
+                    large_economy_wealth_share_omega_l: xm[0],
+                    small_economy_wealth_share_omega_s: xm[1],
+                    nontraded_goods_expenditure_share: xm[2],
+                    relative_risk_aversion_gamma: xm[3],
+                    nontraded_shock_volatility_sigma_nt: xm[4],
+                    currency_union_size_increment_domega: xm[5],
+                },
+            );
+            let fd = (rp.systemic_size_currency_premium_bps
+                - rm.systemic_size_currency_premium_bps)
+                / (2.0 * h);
+            assert!(rad.systemic_size_currency_premium_bps.d[i].abs() > 1e-9);
+            assert!((rad.systemic_size_currency_premium_bps.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

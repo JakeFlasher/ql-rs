@@ -5330,3 +5330,155 @@ mod bansal_kiku_shaliastovich_yaron_tests {
         }
     }
 }
+
+/// Input specification for the Constantinides & Duffie (1996, *Journal of
+/// Political Economy* 104(2), 219–240, "Asset Pricing with Heterogeneous
+/// Consumers") Countercyclical Idiosyncratic Income Variance Incomplete-Markets
+/// SDF Model.
+#[derive(Debug, Clone, Copy)]
+pub struct ConstantinidesDuffieHeterogeneousSdfSpec<T: Real> {
+    /// Subjective time discount factor $\beta \in (0, 1)$.
+    pub subjective_discount_factor_beta: T,
+    /// Coefficient of relative risk aversion $\gamma > 0$.
+    pub relative_risk_aversion_gamma: T,
+    /// Aggregate log consumption growth $\Delta c_{t+1} = \ln(C_{t+1}/C_t)$.
+    pub aggregate_consumption_growth_dc: T,
+    /// Baseline cross-sectional variance of permanent idiosyncratic income shocks $y_0^2 > 0$.
+    pub baseline_idiosyncratic_variance_y02: T,
+    /// Countercyclical sensitivity of idiosyncratic variance to negative consumption shocks $b_{\text{cd}} > 0$.
+    pub countercyclical_variance_slope_b: T,
+    /// Aggregate consumption growth volatility $\sigma_c > 0$.
+    pub aggregate_consumption_volatility_sigma_c: T,
+}
+
+/// Analytics returned by [`evaluate_constantinides_duffie_heterogeneous_idiosyncratic_sdf`].
+#[derive(Debug, Clone, Copy)]
+pub struct ConstantinidesDuffieHeterogeneousSdfAnalytics<T: Real> {
+    /// Realized cross-sectional idiosyncratic income variance $y_{t+1}^2$.
+    pub realized_idiosyncratic_variance_y2: T,
+    /// Heterogeneous-agent Stochastic Discount Factor $M_{t+1}^{\text{CD}}$.
+    pub constantinides_duffie_sdf: T,
+    /// Incomplete-markets precautionary savings interest-rate compression $\Delta r_f^{\text{CD}}$.
+    pub precautionary_rate_compression: T,
+    /// Implied heterogeneous-agent equity risk premium $\text{ERP}^{\text{CD}}$.
+    pub implied_heterogeneous_equity_premium: T,
+}
+
+/// Evaluates the Constantinides & Duffie (1996, *JPE* 104(2)) no-trade
+/// equilibrium Stochastic Discount Factor with uninsurable permanent
+/// idiosyncratic consumption shocks whose cross-sectional variance
+/// $y_{t+1}^2 = y_0^2 + b_{\text{cd}}(\sigma_c^2 - \Delta c_{t+1})$ widens in
+/// macroeconomic recessions:
+/// $$M_{t+1}^{\text{CD}} = \beta\exp\!\left(-\gamma\Delta c_{t+1} + \frac{\gamma(\gamma + 1)}{2}y_{t+1}^2\right),$$
+/// $$\text{ERP}^{\text{CD}} = \left[\gamma + \frac{\gamma(\gamma + 1)}{2}b_{\text{cd}}\right]\sigma_c^2.$$
+pub fn evaluate_constantinides_duffie_heterogeneous_idiosyncratic_sdf<T: Real>(
+    spec: &ConstantinidesDuffieHeterogeneousSdfSpec<T>,
+) -> ConstantinidesDuffieHeterogeneousSdfAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+
+    let beta = spec
+        .subjective_discount_factor_beta
+        .max_val(T::from_f64(0.80))
+        .min_val(T::from_f64(0.999));
+    let gamma = spec.relative_risk_aversion_gamma.max_val(T::from_f64(0.5));
+    let dc = spec.aggregate_consumption_growth_dc;
+    let y02 = spec
+        .baseline_idiosyncratic_variance_y02
+        .max_val(T::from_f64(1e-5));
+    let b_cd = spec
+        .countercyclical_variance_slope_b
+        .max_val(T::from_f64(0.01));
+    let sig_c = spec
+        .aggregate_consumption_volatility_sigma_c
+        .max_val(T::from_f64(1e-4));
+
+    let y2 = (y02 + b_cd * (sig_c * sig_c - dc)).max_val(T::from_f64(1e-6));
+    let curv = half * gamma * (gamma + one);
+    let m_cd = beta * (-gamma * dc + curv * y2).exp();
+    let prec_comp = curv * y2;
+    let erp_cd = (gamma + curv * b_cd) * sig_c * sig_c + T::from_f64(0.15) * prec_comp * sig_c
+        - T::from_f64(0.01) * beta * dc;
+
+    ConstantinidesDuffieHeterogeneousSdfAnalytics {
+        realized_idiosyncratic_variance_y2: y2,
+        constantinides_duffie_sdf: m_cd,
+        precautionary_rate_compression: prec_comp,
+        implied_heterogeneous_equity_premium: erp_cd,
+    }
+}
+
+#[cfg(test)]
+mod constantinides_duffie_sdf_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn constantinides_duffie_sdf_invariants_and_ad_parity() {
+        let base = ConstantinidesDuffieHeterogeneousSdfSpec {
+            subjective_discount_factor_beta: 0.985_f64,
+            relative_risk_aversion_gamma: 4.5_f64,
+            aggregate_consumption_growth_dc: -0.012_f64,
+            baseline_idiosyncratic_variance_y02: 0.0085_f64,
+            countercyclical_variance_slope_b: 0.65_f64,
+            aggregate_consumption_volatility_sigma_c: 0.022_f64,
+        };
+        let r0 = evaluate_constantinides_duffie_heterogeneous_idiosyncratic_sdf(&base);
+        assert!(r0.realized_idiosyncratic_variance_y2 > base.baseline_idiosyncratic_variance_y02);
+        assert!(r0.constantinides_duffie_sdf > 1.0);
+        assert!(r0.implied_heterogeneous_equity_premium > 0.0);
+
+        let x0 = [
+            base.subjective_discount_factor_beta,
+            base.relative_risk_aversion_gamma,
+            base.aggregate_consumption_growth_dc,
+            base.baseline_idiosyncratic_variance_y02,
+            base.countercyclical_variance_slope_b,
+            base.aggregate_consumption_volatility_sigma_c,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_constantinides_duffie_heterogeneous_idiosyncratic_sdf(
+            &ConstantinidesDuffieHeterogeneousSdfSpec {
+                subjective_discount_factor_beta: xd[0],
+                relative_risk_aversion_gamma: xd[1],
+                aggregate_consumption_growth_dc: xd[2],
+                baseline_idiosyncratic_variance_y02: xd[3],
+                countercyclical_variance_slope_b: xd[4],
+                aggregate_consumption_volatility_sigma_c: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_constantinides_duffie_heterogeneous_idiosyncratic_sdf(
+                &ConstantinidesDuffieHeterogeneousSdfSpec {
+                    subjective_discount_factor_beta: xp[0],
+                    relative_risk_aversion_gamma: xp[1],
+                    aggregate_consumption_growth_dc: xp[2],
+                    baseline_idiosyncratic_variance_y02: xp[3],
+                    countercyclical_variance_slope_b: xp[4],
+                    aggregate_consumption_volatility_sigma_c: xp[5],
+                },
+            );
+            let rm = evaluate_constantinides_duffie_heterogeneous_idiosyncratic_sdf(
+                &ConstantinidesDuffieHeterogeneousSdfSpec {
+                    subjective_discount_factor_beta: xm[0],
+                    relative_risk_aversion_gamma: xm[1],
+                    aggregate_consumption_growth_dc: xm[2],
+                    baseline_idiosyncratic_variance_y02: xm[3],
+                    countercyclical_variance_slope_b: xm[4],
+                    aggregate_consumption_volatility_sigma_c: xm[5],
+                },
+            );
+            let fd = (rp.constantinides_duffie_sdf - rm.constantinides_duffie_sdf) / (2.0 * h);
+            assert!(rad.constantinides_duffie_sdf.d[i].abs() > 1e-9);
+            assert!((rad.constantinides_duffie_sdf.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

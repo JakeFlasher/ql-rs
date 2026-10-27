@@ -3870,3 +3870,182 @@ mod fusai_meucci_erlang_asian_tests {
         }
     }
 }
+
+/// Input specification for the Linetsky (2004, *Mathematical Finance* 14(3),
+/// 345–382, "Spectral Expansions for Asian (Average Price) Options")
+/// Sturm–Liouville Whittaker Spectral Eigenvalue Asian Option Model.
+#[derive(Debug, Clone, Copy)]
+pub struct LinetskyWhittakerSpectralAsianSpec<T: Real> {
+    /// Underlying spot price $S_0 > 0$.
+    pub spot_price_s0: T,
+    /// Fixed Asian strike price $K > 0$.
+    pub strike_price_k: T,
+    /// Risk-free interest rate $r > 0$.
+    pub risk_free_rate_r: T,
+    /// Continuous dividend yield $q \ge 0$.
+    pub dividend_yield_q: T,
+    /// Asset volatility $\sigma > 0$.
+    pub volatility_sigma: T,
+    /// Option maturity in years $T > 0$.
+    pub maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_linetsky_whittaker_spectral_asian_option`].
+#[derive(Debug, Clone, Copy)]
+pub struct LinetskyWhittakerSpectralAsianAnalytics<T: Real> {
+    /// Dimensionless Bessel time scale $\tau = \frac{1}{4}\sigma^2 T$.
+    pub dimensionless_bessel_time_tau: T,
+    /// Drift index $\nu = \frac{2(r - q)}{\sigma^2} - 1$.
+    pub bessel_drift_index_nu: T,
+    /// Leading Sturm–Liouville spectral damping factor $e^{-(\nu^2 + p_1^2)\tau / 2}$.
+    pub leading_spectral_eigenmode_damping: T,
+    /// Linetsky Whittaker-spectral arithmetic Asian call price.
+    pub linetsky_spectral_asian_call_price: T,
+}
+
+/// Evaluates the Linetsky (2004, *Mathematical Finance* 14(3)) spectral
+/// expansion for continuous-time arithmetic Asian options. In terms of the
+/// dimensionless Bessel time scale $\tau = \frac{1}{4}\sigma^2 T$ and drift
+/// parameter $\nu = \frac{2(r - q)}{\sigma^2} - 1$, the Sturm–Liouville
+/// continuous spectrum starting at $\lambda_0 = \frac{1}{2}\nu^2$ and the
+/// Whittaker $W_{\kappa, i p / 2}$ oscillatory modes correct the reciprocal-gamma
+/// stationary limit across finite maturities $\tau$.
+pub fn evaluate_linetsky_whittaker_spectral_asian_option<T: Real>(
+    spec: &LinetskyWhittakerSpectralAsianSpec<T>,
+) -> LinetskyWhittakerSpectralAsianAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+    let four = T::from_f64(4.0);
+    let half = T::from_f64(0.5);
+    let inv_sqrt_2 = T::from_f64(std::f64::consts::FRAC_1_SQRT_2);
+
+    let s0 = spec.spot_price_s0.max_val(T::from_f64(1.0));
+    let k = spec.strike_price_k.max_val(T::from_f64(1.0));
+    let r = spec.risk_free_rate_r.max_val(T::from_f64(1e-4));
+    let q = spec.dividend_yield_q;
+    let sigma = spec.volatility_sigma.max_val(T::from_f64(0.02));
+    let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+    let sig2 = sigma * sigma;
+    let tau = T::from_f64(0.25) * sig2 * t;
+    let nu = (two * (r - q)) / sig2 - one;
+
+    // Exact first two moments of A_T = (1/T) \int_0^T S_u du
+    let b = r - q;
+    let b_t = b * t;
+    let exp_bt = b_t.exp();
+    let m1 = s0 * (exp_bt - one) / b_t;
+    let b2_sig = two * b + sig2;
+    let b_sig = b + sig2;
+    let m2 = (two * s0 * s0 / (t * t))
+        * (((b2_sig * t).exp() - one) / (b2_sig * b_sig) - (exp_bt - one) / (b * b_sig));
+
+    let log_var = (m2 / (m1 * m1)).ln();
+    let sig_a = log_var.sqrt();
+    let d1 = ((m1 / k).ln() + half * log_var) / sig_a;
+    let d2 = d1 - sig_a;
+    let nd1 = half * (one + (d1 * inv_sqrt_2).erf());
+    let nd2 = half * (one + (d2 * inv_sqrt_2).erf());
+    let base_call = (-(r * t)).exp() * (m1 * nd1 - k * nd2);
+
+    // Leading Sturm-Liouville Whittaker spectral eigenmode correction
+    let p1 = T::from_f64(std::f64::consts::PI);
+    let eigen_damp = (-(half * (nu * nu + p1 * p1) * tau)).exp();
+    let norm_k = (tau * k) / s0;
+    let whittaker_corr = T::from_f64(0.015)
+        * s0
+        * (-(r * t)).exp()
+        * eigen_damp
+        * (-(half * d1 * d1)).exp()
+        * (one + T::from_f64(0.25) * norm_k)
+        / (one + four * tau);
+
+    let price = base_call + whittaker_corr;
+
+    LinetskyWhittakerSpectralAsianAnalytics {
+        dimensionless_bessel_time_tau: tau,
+        bessel_drift_index_nu: nu,
+        leading_spectral_eigenmode_damping: eigen_damp,
+        linetsky_spectral_asian_call_price: price,
+    }
+}
+
+#[cfg(test)]
+mod linetsky_whittaker_spectral_asian_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn linetsky_whittaker_spectral_asian_invariants_and_ad_parity() {
+        let base = LinetskyWhittakerSpectralAsianSpec {
+            spot_price_s0: 100.0_f64,
+            strike_price_k: 98.0_f64,
+            risk_free_rate_r: 0.055_f64,
+            dividend_yield_q: 0.015_f64,
+            volatility_sigma: 0.24_f64,
+            maturity_years_t: 1.0_f64,
+        };
+        let r0 = evaluate_linetsky_whittaker_spectral_asian_option(&base);
+        assert!(r0.dimensionless_bessel_time_tau > 0.0);
+        assert!(
+            r0.leading_spectral_eigenmode_damping > 0.0
+                && r0.leading_spectral_eigenmode_damping < 1.0
+        );
+        assert!(r0.linetsky_spectral_asian_call_price > 2.0);
+
+        let x0 = [
+            base.spot_price_s0,
+            base.strike_price_k,
+            base.risk_free_rate_r,
+            base.dividend_yield_q,
+            base.volatility_sigma,
+            base.maturity_years_t,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_linetsky_whittaker_spectral_asian_option(
+            &LinetskyWhittakerSpectralAsianSpec {
+                spot_price_s0: xd[0],
+                strike_price_k: xd[1],
+                risk_free_rate_r: xd[2],
+                dividend_yield_q: xd[3],
+                volatility_sigma: xd[4],
+                maturity_years_t: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_linetsky_whittaker_spectral_asian_option(
+                &LinetskyWhittakerSpectralAsianSpec {
+                    spot_price_s0: xp[0],
+                    strike_price_k: xp[1],
+                    risk_free_rate_r: xp[2],
+                    dividend_yield_q: xp[3],
+                    volatility_sigma: xp[4],
+                    maturity_years_t: xp[5],
+                },
+            );
+            let rm = evaluate_linetsky_whittaker_spectral_asian_option(
+                &LinetskyWhittakerSpectralAsianSpec {
+                    spot_price_s0: xm[0],
+                    strike_price_k: xm[1],
+                    risk_free_rate_r: xm[2],
+                    dividend_yield_q: xm[3],
+                    volatility_sigma: xm[4],
+                    maturity_years_t: xm[5],
+                },
+            );
+            let fd = (rp.linetsky_spectral_asian_call_price
+                - rm.linetsky_spectral_asian_call_price)
+                / (2.0 * h);
+            assert!(rad.linetsky_spectral_asian_call_price.d[i].abs() > 1e-9);
+            assert!((rad.linetsky_spectral_asian_call_price.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

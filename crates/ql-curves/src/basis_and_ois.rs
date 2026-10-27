@@ -3222,3 +3222,176 @@ mod nakamura_steinsson_fomc_information_tests {
         }
     }
 }
+
+/// Input specification for the Duffie & Singleton (1997, *Journal of Finance*
+/// 52(4), 1287–1321, "An Econometric Model of the Term Structure of
+/// Interest-Rate Swap Yields") Default-and-Liquidity Adjusted Swap Spread
+/// Decomposition.
+#[derive(Debug, Clone, Copy)]
+pub struct DuffieSingletonSwapSpreadCreditLiquiditySpec<T: Real> {
+    /// Instantaneous interbank credit mean-loss rate $s_t^{\text{cred}} = h_t L_t > 0$.
+    pub spot_interbank_credit_loss_rate_sc: T,
+    /// Long-run interbank credit loss rate $\theta_c > 0$.
+    pub long_run_credit_loss_rate_theta_c: T,
+    /// Credit factor mean-reversion speed $\kappa_c > 0$.
+    pub credit_mean_reversion_kappa_c: T,
+    /// Instantaneous Treasury repo specialness / liquidity convenience yield $l_t > 0$.
+    pub spot_treasury_specialness_convenience_sl: T,
+    /// Long-run Treasury liquidity convenience yield $\theta_l > 0$.
+    pub long_run_liquidity_convenience_theta_l: T,
+    /// Liquidity factor mean-reversion speed $\kappa_l > 0$.
+    pub liquidity_mean_reversion_kappa_l: T,
+    /// Correlation-scaled joint credit-liquidity volatility product $\psi_{\text{cov}} = \rho_{c,l}\sigma_c\sigma_l$.
+    pub credit_liquidity_covariance_psi: T,
+    /// Swap maturity horizon in years $\tau > 0$.
+    pub maturity_years_tau: T,
+}
+
+/// Analytics returned by [`evaluate_duffie_singleton_swap_spread_credit_liquidity`].
+#[derive(Debug, Clone, Copy)]
+pub struct DuffieSingletonSwapSpreadCreditLiquidityAnalytics<T: Real> {
+    /// Interbank counterparty credit component of the $\tau$-year swap spread (in bps).
+    pub swap_spread_credit_component_bps: T,
+    /// Treasury repo specialness / convenience-yield component of the $\tau$-year swap spread (in bps).
+    pub swap_spread_liquidity_convenience_component_bps: T,
+    /// Joint credit-liquidity convexity adjustment (in bps).
+    pub joint_convexity_adjustment_bps: T,
+    /// Total $\tau$-year par swap spread over Treasury yield $S_t^{\text{swap}}(\tau)$ (in bps).
+    pub total_swap_spread_bps: T,
+}
+
+/// Evaluates the Duffie & Singleton (1997, *JF* 52(4)) two-factor affine swap
+/// spread decomposition under the default-and-liquidity-adjusted short rate
+/// $R_t = r_t + h_t L_t + l_t^{\text{repo}}$:
+/// $$S_t^{\text{cred}}(\tau) = 10^4\left[\theta_c + (s_t^{\text{cred}} - \theta_c)\frac{1 - e^{-\kappa_c\tau}}{\kappa_c\tau}\right],$$
+/// $$S_t^{\text{liq}}(\tau) = 10^4\left[\theta_l + (l_t - \theta_l)\frac{1 - e^{-\kappa_l\tau}}{\kappa_l\tau}\right], \qquad S_t^{\text{swap}}(\tau) = S_t^{\text{cred}}(\tau) + S_t^{\text{liq}}(\tau) - \frac{10^4}{2}\psi_{\text{cov}}\tau.$$
+pub fn evaluate_duffie_singleton_swap_spread_credit_liquidity<T: Real>(
+    spec: &DuffieSingletonSwapSpreadCreditLiquiditySpec<T>,
+) -> DuffieSingletonSwapSpreadCreditLiquidityAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+    let bps = T::from_f64(10_000.0);
+
+    let sc = spec
+        .spot_interbank_credit_loss_rate_sc
+        .max_val(T::from_f64(1e-5));
+    let th_c = spec
+        .long_run_credit_loss_rate_theta_c
+        .max_val(T::from_f64(1e-5));
+    let kc = spec
+        .credit_mean_reversion_kappa_c
+        .max_val(T::from_f64(0.02));
+    let sl = spec
+        .spot_treasury_specialness_convenience_sl
+        .max_val(T::from_f64(1e-5));
+    let th_l = spec
+        .long_run_liquidity_convenience_theta_l
+        .max_val(T::from_f64(1e-5));
+    let kl = spec
+        .liquidity_mean_reversion_kappa_l
+        .max_val(T::from_f64(0.02));
+    let psi = spec.credit_liquidity_covariance_psi;
+    let tau = spec.maturity_years_tau.max_val(T::from_f64(0.25));
+
+    let kc_tau = kc * tau;
+    let kl_tau = kl * tau;
+    let load_c = (one - (-kc_tau).exp()) / kc_tau;
+    let load_l = (one - (-kl_tau).exp()) / kl_tau;
+
+    let cred_bps = bps * (th_c + (sc - th_c) * load_c);
+    let liq_bps = bps * (th_l + (sl - th_l) * load_l);
+    let conv_bps = -bps * half * psi * tau;
+    let tot_bps = cred_bps + liq_bps + conv_bps;
+
+    DuffieSingletonSwapSpreadCreditLiquidityAnalytics {
+        swap_spread_credit_component_bps: cred_bps,
+        swap_spread_liquidity_convenience_component_bps: liq_bps,
+        joint_convexity_adjustment_bps: conv_bps,
+        total_swap_spread_bps: tot_bps,
+    }
+}
+
+#[cfg(test)]
+mod duffie_singleton_swap_spread_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn duffie_singleton_swap_spread_invariants_and_ad_parity() {
+        let base = DuffieSingletonSwapSpreadCreditLiquiditySpec {
+            spot_interbank_credit_loss_rate_sc: 0.0024_f64,
+            long_run_credit_loss_rate_theta_c: 0.0018_f64,
+            credit_mean_reversion_kappa_c: 0.35_f64,
+            spot_treasury_specialness_convenience_sl: 0.0019_f64,
+            long_run_liquidity_convenience_theta_l: 0.0014_f64,
+            liquidity_mean_reversion_kappa_l: 0.65_f64,
+            credit_liquidity_covariance_psi: 0.000015_f64,
+            maturity_years_tau: 5.0_f64,
+        };
+        let r0 = evaluate_duffie_singleton_swap_spread_credit_liquidity(&base);
+        assert!(r0.swap_spread_credit_component_bps > 15.0);
+        assert!(r0.swap_spread_liquidity_convenience_component_bps > 10.0);
+        assert!(r0.total_swap_spread_bps > 25.0);
+
+        let x0 = [
+            base.spot_interbank_credit_loss_rate_sc,
+            base.long_run_credit_loss_rate_theta_c,
+            base.credit_mean_reversion_kappa_c,
+            base.spot_treasury_specialness_convenience_sl,
+            base.long_run_liquidity_convenience_theta_l,
+            base.liquidity_mean_reversion_kappa_l,
+            base.credit_liquidity_covariance_psi,
+            base.maturity_years_tau,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_duffie_singleton_swap_spread_credit_liquidity(
+            &DuffieSingletonSwapSpreadCreditLiquiditySpec {
+                spot_interbank_credit_loss_rate_sc: xd[0],
+                long_run_credit_loss_rate_theta_c: xd[1],
+                credit_mean_reversion_kappa_c: xd[2],
+                spot_treasury_specialness_convenience_sl: xd[3],
+                long_run_liquidity_convenience_theta_l: xd[4],
+                liquidity_mean_reversion_kappa_l: xd[5],
+                credit_liquidity_covariance_psi: xd[6],
+                maturity_years_tau: xd[7],
+            },
+        );
+        let h = 1e-7;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_duffie_singleton_swap_spread_credit_liquidity(
+                &DuffieSingletonSwapSpreadCreditLiquiditySpec {
+                    spot_interbank_credit_loss_rate_sc: xp[0],
+                    long_run_credit_loss_rate_theta_c: xp[1],
+                    credit_mean_reversion_kappa_c: xp[2],
+                    spot_treasury_specialness_convenience_sl: xp[3],
+                    long_run_liquidity_convenience_theta_l: xp[4],
+                    liquidity_mean_reversion_kappa_l: xp[5],
+                    credit_liquidity_covariance_psi: xp[6],
+                    maturity_years_tau: xp[7],
+                },
+            );
+            let rm = evaluate_duffie_singleton_swap_spread_credit_liquidity(
+                &DuffieSingletonSwapSpreadCreditLiquiditySpec {
+                    spot_interbank_credit_loss_rate_sc: xm[0],
+                    long_run_credit_loss_rate_theta_c: xm[1],
+                    credit_mean_reversion_kappa_c: xm[2],
+                    spot_treasury_specialness_convenience_sl: xm[3],
+                    long_run_liquidity_convenience_theta_l: xm[4],
+                    liquidity_mean_reversion_kappa_l: xm[5],
+                    credit_liquidity_covariance_psi: xm[6],
+                    maturity_years_tau: xm[7],
+                },
+            );
+            let fd = (rp.total_swap_spread_bps - rm.total_swap_spread_bps) / (2.0 * h);
+            assert!(rad.total_swap_spread_bps.d[i].abs() > 1e-9);
+            assert!((rad.total_swap_spread_bps.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

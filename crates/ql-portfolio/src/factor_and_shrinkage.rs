@@ -4579,3 +4579,147 @@ mod freyberger_neuhierl_weber_tests {
         }
     }
 }
+
+/// Input specification for the Barillas & Shanken (2018, *Journal of Finance*
+/// 73(2), 715–754, "Comparing Asset Pricing Models") Test-Asset-Irrelevant
+/// Factor Spanning Squared Sharpe Increment and Bayes Factor Model.
+#[derive(Debug, Clone, Copy)]
+pub struct BarillasShankenFactorComparisonSpec<T: Real> {
+    /// Benchmark factor model maximum squared Sharpe ratio $\theta^2(f_A) > 0$.
+    pub benchmark_factor_squared_sharpe_theta_a2: T,
+    /// Excluded candidate factor spanning alpha $\alpha_{\text{new}}$ against $f_A$.
+    pub candidate_factor_spanning_alpha: T,
+    /// Excluded candidate factor spanning residual volatility $\sigma_\varepsilon > 0$.
+    pub candidate_factor_residual_volatility_sigma_e: T,
+    /// Sample observation count $T_{\text{obs}} > 24$.
+    pub sample_size_t: T,
+    /// Prior Sharpe-multiplier variance hyperparameter $c_{\text{prior}} > 0$.
+    pub prior_variance_multiplier_c: T,
+}
+
+/// Analytics returned by [`evaluate_barillas_shanken_nested_factor_model_squared_sharpe`].
+#[derive(Debug, Clone, Copy)]
+pub struct BarillasShankenFactorComparisonAnalytics<T: Real> {
+    /// Squared Sharpe ratio increment $\Delta\theta^2 = \alpha_{\text{new}}^2 / \sigma_\varepsilon^2$.
+    pub squared_sharpe_ratio_increment: T,
+    /// Augmented factor model maximum squared Sharpe ratio $\theta^2(f_A, f_{\text{new}}) = \theta^2(f_A) + \Delta\theta^2$.
+    pub augmented_model_squared_sharpe: T,
+    /// Gibbons–Ross–Shanken spanning F-statistic $F_{\text{span}} = \frac{T_{\text{obs}}}{1 + \theta^2(f_A)}\Delta\theta^2$.
+    pub spanning_grs_f_statistic: T,
+    /// Log Bayes Factor $\ln \text{BF}_{\text{aug,bench}}$ in favor of including $f_{\text{new}}$.
+    pub log_bayes_factor_augmented_vs_benchmark: T,
+}
+
+/// Evaluates the Barillas & Shanken (2018, *JF* 73(2)) nested traded-factor
+/// model comparison criterion. Because test assets carry no additional
+/// information beyond the traded factors themselves, nested factor model
+/// comparison reduces strictly to the spanning regression intercept
+/// $\alpha_{\text{new}}$ of the new factor on the benchmark factors $f_A$:
+/// $$\Delta\theta^2 = \frac{\alpha_{\text{new}}^2}{\sigma_\varepsilon^2}, \qquad \ln\text{BF}_{\text{aug,bench}} = -\frac{1}{2}\ln(1 + c_{\text{prior}}) + \frac{T_{\text{obs}}}{2}\ln\!\left(\frac{1 + \frac{T_{\text{obs}}\Delta\theta^2}{1 + \theta^2(f_A)}}{1 + \frac{T_{\text{obs}}\Delta\theta^2}{(1 + c_{\text{prior}})(1 + \theta^2(f_A))}}\right).$$
+pub fn evaluate_barillas_shanken_nested_factor_model_squared_sharpe<T: Real>(
+    spec: &BarillasShankenFactorComparisonSpec<T>,
+) -> BarillasShankenFactorComparisonAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+
+    let th_a2 = spec
+        .benchmark_factor_squared_sharpe_theta_a2
+        .max_val(T::from_f64(1e-4));
+    let alpha = spec.candidate_factor_spanning_alpha;
+    let sig_e = spec
+        .candidate_factor_residual_volatility_sigma_e
+        .max_val(T::from_f64(1e-3));
+    let t_obs = spec.sample_size_t.max_val(T::from_f64(12.0));
+    let c_pr = spec.prior_variance_multiplier_c.max_val(T::from_f64(0.05));
+
+    let d_theta2 = (alpha * alpha) / (sig_e * sig_e);
+    let th_aug2 = th_a2 + d_theta2;
+    let f_stat = (t_obs / (one + th_a2)) * d_theta2;
+
+    let log_ratio = (one + (f_stat * c_pr) / (one + c_pr + f_stat)).ln();
+    let log_bf = -half * (one + c_pr).ln() + half * t_obs * log_ratio;
+
+    BarillasShankenFactorComparisonAnalytics {
+        squared_sharpe_ratio_increment: d_theta2,
+        augmented_model_squared_sharpe: th_aug2,
+        spanning_grs_f_statistic: f_stat,
+        log_bayes_factor_augmented_vs_benchmark: log_bf,
+    }
+}
+
+#[cfg(test)]
+mod barillas_shanken_factor_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn barillas_shanken_factor_invariants_and_ad_parity() {
+        let base = BarillasShankenFactorComparisonSpec {
+            benchmark_factor_squared_sharpe_theta_a2: 0.085_f64,
+            candidate_factor_spanning_alpha: 0.0065_f64,
+            candidate_factor_residual_volatility_sigma_e: 0.032_f64,
+            sample_size_t: 360.0_f64,
+            prior_variance_multiplier_c: 2.50_f64,
+        };
+        let r0 = evaluate_barillas_shanken_nested_factor_model_squared_sharpe(&base);
+        assert!(r0.squared_sharpe_ratio_increment > 0.0);
+        assert!(r0.augmented_model_squared_sharpe > base.benchmark_factor_squared_sharpe_theta_a2);
+        assert!(r0.spanning_grs_f_statistic > 4.0);
+        assert!(r0.log_bayes_factor_augmented_vs_benchmark > 0.0);
+
+        let x0 = [
+            base.benchmark_factor_squared_sharpe_theta_a2,
+            base.candidate_factor_spanning_alpha,
+            base.candidate_factor_residual_volatility_sigma_e,
+            base.sample_size_t,
+            base.prior_variance_multiplier_c,
+        ];
+        let mut xd = [Dual::<5>::from_f64(0.0); 5];
+        for i in 0..5 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_barillas_shanken_nested_factor_model_squared_sharpe(
+            &BarillasShankenFactorComparisonSpec {
+                benchmark_factor_squared_sharpe_theta_a2: xd[0],
+                candidate_factor_spanning_alpha: xd[1],
+                candidate_factor_residual_volatility_sigma_e: xd[2],
+                sample_size_t: xd[3],
+                prior_variance_multiplier_c: xd[4],
+            },
+        );
+        // The Bayes-factor surface is sharply curved in alpha and sigma_e;
+        // use a smaller central bump to keep the finite-difference check in
+        // the truncation-error regime rather than comparing against a biased
+        // second-order estimate.
+        let h = 1e-7;
+        for i in 0..5 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_barillas_shanken_nested_factor_model_squared_sharpe(
+                &BarillasShankenFactorComparisonSpec {
+                    benchmark_factor_squared_sharpe_theta_a2: xp[0],
+                    candidate_factor_spanning_alpha: xp[1],
+                    candidate_factor_residual_volatility_sigma_e: xp[2],
+                    sample_size_t: xp[3],
+                    prior_variance_multiplier_c: xp[4],
+                },
+            );
+            let rm = evaluate_barillas_shanken_nested_factor_model_squared_sharpe(
+                &BarillasShankenFactorComparisonSpec {
+                    benchmark_factor_squared_sharpe_theta_a2: xm[0],
+                    candidate_factor_spanning_alpha: xm[1],
+                    candidate_factor_residual_volatility_sigma_e: xm[2],
+                    sample_size_t: xm[3],
+                    prior_variance_multiplier_c: xm[4],
+                },
+            );
+            let fd = (rp.log_bayes_factor_augmented_vs_benchmark
+                - rm.log_bayes_factor_augmented_vs_benchmark)
+                / (2.0 * h);
+            assert!(rad.log_bayes_factor_augmented_vs_benchmark.d[i].abs() > 1e-9);
+            assert!((rad.log_bayes_factor_augmented_vs_benchmark.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

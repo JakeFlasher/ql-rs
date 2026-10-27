@@ -7172,3 +7172,150 @@ mod kelly_jiang_tail_risk_tests {
         }
     }
 }
+
+/// Input specification for the Giglio, Kelly & Pruitt (2016, *Journal of
+/// Financial Economics* 119(3), 457–471, "Systemic Risk and the Macroeconomy:
+/// An Empirical Evaluation") Partial Quantile Regression (PQR) Systemic Risk
+/// Macroeconomic Downside Forecast Model.
+#[derive(Debug, Clone, Copy)]
+pub struct GiglioKellyPruittSystemicDownsideSpec<T: Real> {
+    /// Standardized institution-level CoVaR / MES systemic tail indicator $s_{1,t}$.
+    pub covar_mes_tail_indicator_s1: T,
+    /// Standardized dealer leverage / SRISK capital shortfall indicator $s_{2,t}$.
+    pub srisk_capital_shortfall_indicator_s2: T,
+    /// Standardized credit-spread & funding illiquidity indicator $s_{3,t}$.
+    pub credit_funding_illiquidity_indicator_s3: T,
+    /// Unconditional macroeconomic industrial-production growth mean $\mu_y$.
+    pub unconditional_macro_growth_mean_mu: T,
+    /// Baseline macroeconomic shock volatility $\sigma_y > 0$.
+    pub baseline_macro_volatility_sigma_y: T,
+    /// PQR left-tail quantile sensitivity slope $\beta_{\text{PQR}} > 0$.
+    pub pqr_downside_quantile_slope_beta: T,
+}
+
+/// Analytics returned by [`evaluate_giglio_kelly_pruitt_partial_quantile_macro_downside`].
+#[derive(Debug, Clone, Copy)]
+pub struct GiglioKellyPruittSystemicDownsideAnalytics<T: Real> {
+    /// Partial Quantile Regression (PQR) composite systemic index $F_t^{\text{PQR}}$.
+    pub pqr_composite_systemic_risk_index: T,
+    /// Conditional 5th-percentile macroeconomic Growth-at-Risk quantile $Q_{0.05}(y_{t+1} \mid F_t^{\text{PQR}})$.
+    pub conditional_5pct_macro_growth_quantile: T,
+    /// Conditional 95th-percentile macroeconomic upper quantile $Q_{0.95}(y_{t+1} \mid F_t^{\text{PQR}})$.
+    pub conditional_95pct_macro_growth_quantile: T,
+    /// Asymmetric macroeconomic left-tail downside skewness wedge.
+    pub downside_asymmetry_entropy_wedge: T,
+}
+
+/// Evaluates the Giglio, Kelly & Pruitt (2016, *JFE* 119(3)) Partial Quantile
+/// Regression (PQR) systemic risk aggregation and macroeconomic downside
+/// quantile forecast. Financial systemic risk $F_t^{\text{PQR}}$ strongly shifts
+/// the lower 5th percentile $Q_{0.05}(y_{t+1} \mid F_t^{\text{PQR}})$ of future
+/// macroeconomic output while leaving the upper 95th percentile nearly invariant:
+/// $$F_t^{\text{PQR}} = 0.42\,s_{1,t} + 0.35\,s_{2,t} + 0.23\,s_{3,t},$$
+/// $$Q_{0.05}(y_{t+1} \mid F_t^{\text{PQR}}) = \mu_y - \beta_{\text{PQR}} F_t^{\text{PQR}} - 1.64485\,\sigma_y\left(1 + 0.45\,F_t^{\text{PQR}}\right).$$
+pub fn evaluate_giglio_kelly_pruitt_partial_quantile_macro_downside<T: Real>(
+    spec: &GiglioKellyPruittSystemicDownsideSpec<T>,
+) -> GiglioKellyPruittSystemicDownsideAnalytics<T> {
+    let one = T::one();
+    let z95 = T::from_f64(1.644_853_626_951_472_2);
+
+    let s1 = spec.covar_mes_tail_indicator_s1;
+    let s2 = spec.srisk_capital_shortfall_indicator_s2;
+    let s3 = spec.credit_funding_illiquidity_indicator_s3;
+    let mu_y = spec.unconditional_macro_growth_mean_mu;
+    let sig_y = spec
+        .baseline_macro_volatility_sigma_y
+        .max_val(T::from_f64(1e-4));
+    let beta = spec
+        .pqr_downside_quantile_slope_beta
+        .max_val(T::from_f64(1e-4));
+
+    let f_pqr = T::from_f64(0.42) * s1 + T::from_f64(0.35) * s2 + T::from_f64(0.23) * s3;
+    let q05 = mu_y - beta * f_pqr - z95 * sig_y * (one + T::from_f64(0.45) * f_pqr);
+    let q95 = mu_y - T::from_f64(0.10) * beta * f_pqr + z95 * sig_y;
+    let asym_wedge = (mu_y - q05) - (q95 - mu_y);
+
+    GiglioKellyPruittSystemicDownsideAnalytics {
+        pqr_composite_systemic_risk_index: f_pqr,
+        conditional_5pct_macro_growth_quantile: q05,
+        conditional_95pct_macro_growth_quantile: q95,
+        downside_asymmetry_entropy_wedge: asym_wedge,
+    }
+}
+
+#[cfg(test)]
+mod giglio_kelly_pruitt_pqr_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn giglio_kelly_pruitt_pqr_invariants_and_ad_parity() {
+        let base = GiglioKellyPruittSystemicDownsideSpec {
+            covar_mes_tail_indicator_s1: 1.45_f64,
+            srisk_capital_shortfall_indicator_s2: 1.20_f64,
+            credit_funding_illiquidity_indicator_s3: 1.60_f64,
+            unconditional_macro_growth_mean_mu: 0.022_f64,
+            baseline_macro_volatility_sigma_y: 0.015_f64,
+            pqr_downside_quantile_slope_beta: 0.018_f64,
+        };
+        let r0 = evaluate_giglio_kelly_pruitt_partial_quantile_macro_downside(&base);
+        assert!(r0.pqr_composite_systemic_risk_index > 1.0);
+        assert!(r0.conditional_5pct_macro_growth_quantile < 0.0);
+        assert!(r0.downside_asymmetry_entropy_wedge > 0.0);
+
+        let x0 = [
+            base.covar_mes_tail_indicator_s1,
+            base.srisk_capital_shortfall_indicator_s2,
+            base.credit_funding_illiquidity_indicator_s3,
+            base.unconditional_macro_growth_mean_mu,
+            base.baseline_macro_volatility_sigma_y,
+            base.pqr_downside_quantile_slope_beta,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_giglio_kelly_pruitt_partial_quantile_macro_downside(
+            &GiglioKellyPruittSystemicDownsideSpec {
+                covar_mes_tail_indicator_s1: xd[0],
+                srisk_capital_shortfall_indicator_s2: xd[1],
+                credit_funding_illiquidity_indicator_s3: xd[2],
+                unconditional_macro_growth_mean_mu: xd[3],
+                baseline_macro_volatility_sigma_y: xd[4],
+                pqr_downside_quantile_slope_beta: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_giglio_kelly_pruitt_partial_quantile_macro_downside(
+                &GiglioKellyPruittSystemicDownsideSpec {
+                    covar_mes_tail_indicator_s1: xp[0],
+                    srisk_capital_shortfall_indicator_s2: xp[1],
+                    credit_funding_illiquidity_indicator_s3: xp[2],
+                    unconditional_macro_growth_mean_mu: xp[3],
+                    baseline_macro_volatility_sigma_y: xp[4],
+                    pqr_downside_quantile_slope_beta: xp[5],
+                },
+            );
+            let rm = evaluate_giglio_kelly_pruitt_partial_quantile_macro_downside(
+                &GiglioKellyPruittSystemicDownsideSpec {
+                    covar_mes_tail_indicator_s1: xm[0],
+                    srisk_capital_shortfall_indicator_s2: xm[1],
+                    credit_funding_illiquidity_indicator_s3: xm[2],
+                    unconditional_macro_growth_mean_mu: xm[3],
+                    baseline_macro_volatility_sigma_y: xm[4],
+                    pqr_downside_quantile_slope_beta: xm[5],
+                },
+            );
+            let fd = (rp.conditional_5pct_macro_growth_quantile
+                - rm.conditional_5pct_macro_growth_quantile)
+                / (2.0 * h);
+            assert!(rad.conditional_5pct_macro_growth_quantile.d[i].abs() > 1e-9);
+            assert!((rad.conditional_5pct_macro_growth_quantile.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

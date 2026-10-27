@@ -3437,3 +3437,155 @@ mod bao_pan_wang_bond_illiquidity_tests {
         }
     }
 }
+
+/// Input specification for the Chen, Lesmond & Wei (2007, *Journal of Finance*
+/// 62(1), 119–149, "Corporate Yield Spreads and Bond Liquidity") Lesmond–Ogden–
+/// Trzcinka (LOT) Zero-Return Threshold Corporate Bond Illiquidity Model.
+#[derive(Debug, Clone, Copy)]
+pub struct ChenLesmondWeiLotBondIlliquiditySpec<T: Real> {
+    /// Observed proportion of zero-return trading days $z_{\text{zero}} \in (0, 1)$.
+    pub zero_return_day_proportion_z: T,
+    /// Latent true daily bond return volatility $\sigma_{\text{latent}} > 0$.
+    pub latent_daily_return_volatility_sigma: T,
+    /// Quoted dealer round-trip bid-ask spread in bps $s_{\text{ba,bps}} > 0$.
+    pub quoted_bid_ask_spread_bps: T,
+    /// Bond maturity duration in years $D_{\text{mat}} > 0$.
+    pub bond_maturity_years_d: T,
+    /// Issuer debt-to-capital leverage ratio $L_{\text{lev}} \in (0, 1)$.
+    pub issuer_leverage_ratio_l: T,
+    /// Yield spread slope on LOT transaction costs $\beta_{\text{LOT}} > 0$.
+    pub lot_yield_spread_loading_beta: T,
+}
+
+/// Analytics returned by [`evaluate_chen_lesmond_wei_lot_zero_return_bond_illiquidity`].
+#[derive(Debug, Clone, Copy)]
+pub struct ChenLesmondWeiLotBondIlliquidityAnalytics<T: Real> {
+    /// Implied LOT round-trip transaction cost band $\text{LOT}_i = \alpha_{2,i} - \alpha_{1,i}$ (in bps).
+    pub lot_roundtrip_transaction_cost_bps: T,
+    /// Zero-return threshold width contribution $2\sigma_{\text{latent}}\Phi^{-1}((1+z_{\text{zero}})/2)$ (in bps).
+    pub zero_return_threshold_band_bps: T,
+    /// Liquidity component of the corporate bond yield spread (in bps).
+    pub lot_corporate_yield_spread_component_bps: T,
+}
+
+/// Evaluates the Chen, Lesmond & Wei (2007, *JF* 62(1)) corporate bond
+/// illiquidity model based on the Lesmond, Ogden & Trzcinka (1999) zero-return
+/// threshold estimator $\text{LOT}_i = \alpha_{2,i} - \alpha_{1,i}$. Using the
+/// inverse-normal Winitzki/probit expansion for the zero-return probability
+/// $z_{\text{zero}} = \Phi(\alpha_{2,i}/\sigma) - \Phi(\alpha_{1,i}/\sigma)$:
+/// $$\text{LOT}_{i,\text{bps}} = 2 \cdot 10^4\,\sigma_{\text{latent}}\sqrt{\frac{\pi}{2}}\left(z_{\text{zero}} + \frac{\pi}{12}z_{\text{zero}}^3\right) + 0.45\,s_{\text{ba,bps}},$$
+/// $$s_{\text{liq,bps}}^{\text{CLW}} = \beta_{\text{LOT}}\,\text{LOT}_{i,\text{bps}}\left(1 + 0.06\,D_{\text{mat}}\right)\left(1 + 0.85\,L_{\text{lev}}\right).$$
+pub fn evaluate_chen_lesmond_wei_lot_zero_return_bond_illiquidity<T: Real>(
+    spec: &ChenLesmondWeiLotBondIlliquiditySpec<T>,
+) -> ChenLesmondWeiLotBondIlliquidityAnalytics<T> {
+    let one = T::one();
+    let bps = T::from_f64(10_000.0);
+    let sqrt_half_pi = T::from_f64(1.253_314_137_315_500_3);
+    let pi_over_12 = T::from_f64(0.261_799_387_799_149_4);
+
+    let z = spec
+        .zero_return_day_proportion_z
+        .max_val(T::from_f64(0.01))
+        .min_val(T::from_f64(0.95));
+    let sig = spec
+        .latent_daily_return_volatility_sigma
+        .max_val(T::from_f64(1e-4));
+    let s_ba = spec.quoted_bid_ask_spread_bps.max_val(T::from_f64(0.5));
+    let d_mat = spec.bond_maturity_years_d.max_val(T::from_f64(0.25));
+    let lev = spec
+        .issuer_leverage_ratio_l
+        .max_val(T::from_f64(0.01))
+        .min_val(T::from_f64(0.95));
+    let beta = spec
+        .lot_yield_spread_loading_beta
+        .max_val(T::from_f64(0.05));
+
+    let probit_z = sqrt_half_pi * (z + pi_over_12 * z * z * z);
+    let z_band_bps = T::from_f64(2.0) * bps * sig * probit_z;
+    let lot_bps = z_band_bps + T::from_f64(0.45) * s_ba;
+    let yield_comp_bps =
+        beta * lot_bps * (one + T::from_f64(0.06) * d_mat) * (one + T::from_f64(0.85) * lev);
+
+    ChenLesmondWeiLotBondIlliquidityAnalytics {
+        lot_roundtrip_transaction_cost_bps: lot_bps,
+        zero_return_threshold_band_bps: z_band_bps,
+        lot_corporate_yield_spread_component_bps: yield_comp_bps,
+    }
+}
+
+#[cfg(test)]
+mod chen_lesmond_wei_lot_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn chen_lesmond_wei_lot_invariants_and_ad_parity() {
+        let base = ChenLesmondWeiLotBondIlliquiditySpec {
+            zero_return_day_proportion_z: 0.28_f64,
+            latent_daily_return_volatility_sigma: 0.0045_f64,
+            quoted_bid_ask_spread_bps: 36.0_f64,
+            bond_maturity_years_d: 6.5_f64,
+            issuer_leverage_ratio_l: 0.42_f64,
+            lot_yield_spread_loading_beta: 0.85_f64,
+        };
+        let r0 = evaluate_chen_lesmond_wei_lot_zero_return_bond_illiquidity(&base);
+        assert!(r0.zero_return_threshold_band_bps > 0.0);
+        assert!(r0.lot_roundtrip_transaction_cost_bps > r0.zero_return_threshold_band_bps);
+        assert!(r0.lot_corporate_yield_spread_component_bps > 30.0);
+
+        let x0 = [
+            base.zero_return_day_proportion_z,
+            base.latent_daily_return_volatility_sigma,
+            base.quoted_bid_ask_spread_bps,
+            base.bond_maturity_years_d,
+            base.issuer_leverage_ratio_l,
+            base.lot_yield_spread_loading_beta,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_chen_lesmond_wei_lot_zero_return_bond_illiquidity(
+            &ChenLesmondWeiLotBondIlliquiditySpec {
+                zero_return_day_proportion_z: xd[0],
+                latent_daily_return_volatility_sigma: xd[1],
+                quoted_bid_ask_spread_bps: xd[2],
+                bond_maturity_years_d: xd[3],
+                issuer_leverage_ratio_l: xd[4],
+                lot_yield_spread_loading_beta: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_chen_lesmond_wei_lot_zero_return_bond_illiquidity(
+                &ChenLesmondWeiLotBondIlliquiditySpec {
+                    zero_return_day_proportion_z: xp[0],
+                    latent_daily_return_volatility_sigma: xp[1],
+                    quoted_bid_ask_spread_bps: xp[2],
+                    bond_maturity_years_d: xp[3],
+                    issuer_leverage_ratio_l: xp[4],
+                    lot_yield_spread_loading_beta: xp[5],
+                },
+            );
+            let rm = evaluate_chen_lesmond_wei_lot_zero_return_bond_illiquidity(
+                &ChenLesmondWeiLotBondIlliquiditySpec {
+                    zero_return_day_proportion_z: xm[0],
+                    latent_daily_return_volatility_sigma: xm[1],
+                    quoted_bid_ask_spread_bps: xm[2],
+                    bond_maturity_years_d: xm[3],
+                    issuer_leverage_ratio_l: xm[4],
+                    lot_yield_spread_loading_beta: xm[5],
+                },
+            );
+            let fd = (rp.lot_corporate_yield_spread_component_bps
+                - rm.lot_corporate_yield_spread_component_bps)
+                / (2.0 * h);
+            assert!(rad.lot_corporate_yield_spread_component_bps.d[i].abs() > 1e-9);
+            assert!((rad.lot_corporate_yield_spread_component_bps.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

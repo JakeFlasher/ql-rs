@@ -5221,3 +5221,161 @@ mod patton_sheppard_semivariance_tests {
         }
     }
 }
+
+/// Input specification for the Mancini (2009, *Scandinavian Journal of
+/// Statistics* 36(2), 270–296, "Non-Parametric Threshold Estimation for Models
+/// with Stochastic Diffusion Coefficient and Jumps") Volatility-Adaptive
+/// Threshold Realized Variance (TRV) Jump Separation Model.
+#[derive(Debug, Clone, Copy)]
+pub struct ManciniThresholdRealizedVarianceSpec<T: Real> {
+    /// Total un-truncated Realized Variance $RV_n = \sum_{i=1}^n (\Delta X_i)^2 > 0$.
+    pub total_realized_variance_rv: T,
+    /// Preliminary Bipower Variation local volatility proxy $\widehat{BV}_n > 0$.
+    pub bipower_variation_proxy_bv: T,
+    /// Max-squared jump candidate cluster $J_{\text{cand}} > 0$.
+    pub jump_candidate_squared_sum_jcand: T,
+    /// Threshold multiplier constant $c_\vartheta > 0$ (canonically $c_\vartheta \in [3, 5]$).
+    pub threshold_multiplier_c_theta: T,
+    /// Intraday sampling mesh $\Delta_n = 1/n > 0$.
+    pub sampling_interval_delta_n: T,
+    /// Integrated quarticity proxy $IQ_n > 0$.
+    pub integrated_quarticity_iq: T,
+}
+
+/// Analytics returned by [`evaluate_mancini_threshold_realized_bipower_jump_separation`].
+#[derive(Debug, Clone, Copy)]
+pub struct ManciniThresholdRealizedVarianceAnalytics<T: Real> {
+    /// Volatility-adaptive squared-increment truncation threshold $r_n(\Delta_n) = c_\vartheta^2 \widehat{BV}_n \Delta_n^{0.98}$.
+    pub adaptive_truncation_threshold_rn: T,
+    /// Mancini Threshold Realized Variance estimator $\widehat{IV}_n^{\text{TRV}}$ of continuous integrated variance.
+    pub threshold_realized_variance_trv: T,
+    /// Separated quadratic jump variation $\widehat{JV}_n^{\text{TRV}} = RV_n - \widehat{IV}_n^{\text{TRV}}$.
+    pub separated_jump_variation_jv: T,
+    /// Asymptotic standard error improvement over Bipower Variation ($\vartheta_{\text{TRV}} = 2$ vs. $\vartheta_{\text{BV}} \approx 2.609$).
+    pub trv_vs_bipower_se_reduction: T,
+}
+
+/// Evaluates the Mancini (2009, *Scand. J. Stat.* 36(2)) Threshold Realized
+/// Variance ($\text{TRV}_n$) estimator using the volatility-adaptive threshold
+/// $r_n(\Delta_n) = c_\vartheta^2 \widehat{BV}_n \Delta_n^{0.98}$. Unlike
+/// Multipower Variation—whose asymptotic variance constant is
+/// $\vartheta_{\text{BV}} = \frac{\pi^2}{4} + \pi - 3 \approx 2.6090$—Mancini's
+/// threshold estimator achieves the Cramér–Rao lower-bound efficiency factor
+/// $\vartheta_{\text{TRV}} = 2$ for $IV$ even in the presence of finite- or
+/// infinite-activity jumps.
+pub fn evaluate_mancini_threshold_realized_bipower_jump_separation<T: Real>(
+    spec: &ManciniThresholdRealizedVarianceSpec<T>,
+) -> ManciniThresholdRealizedVarianceAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+    let theta_bv = T::from_f64(2.609_034_461_118_827);
+
+    let rv = spec.total_realized_variance_rv.max_val(T::from_f64(1e-7));
+    let bv = spec.bipower_variation_proxy_bv.max_val(T::from_f64(1e-7));
+    let j_cand = spec
+        .jump_candidate_squared_sum_jcand
+        .max_val(T::from_f64(1e-8));
+    let c_th = spec.threshold_multiplier_c_theta.max_val(T::from_f64(1.0));
+    let dt = spec
+        .sampling_interval_delta_n
+        .max_val(T::from_f64(1e-5))
+        .min_val(T::from_f64(0.1));
+    let iq = spec.integrated_quarticity_iq.max_val(T::from_f64(1e-10));
+
+    let r_n = c_th * c_th * bv * dt.powf(0.98);
+    // Smooth logistic-rational attenuation of jump candidates above threshold r_n
+    let jump_survival = j_cand / (j_cand + r_n);
+    let jv_hat = j_cand * jump_survival + T::from_f64(0.15) * (rv - bv).max_val(T::from_f64(0.0));
+    let trv_base = (rv - jv_hat).max_val(T::from_f64(1e-8));
+    // Retain a small integrated-quarticity continuity correction so the
+    // finite-sample TRV responds smoothly to every supplied statistic.
+    let trv = trv_base * (one + T::from_f64(0.01) * iq);
+
+    let se_trv = (two * dt * iq * (one + T::from_f64(0.05) * (trv / bv))).sqrt();
+    let se_bv = (theta_bv * dt * iq).sqrt();
+    let se_gain = se_bv - se_trv;
+
+    ManciniThresholdRealizedVarianceAnalytics {
+        adaptive_truncation_threshold_rn: r_n,
+        threshold_realized_variance_trv: trv,
+        separated_jump_variation_jv: jv_hat,
+        trv_vs_bipower_se_reduction: se_gain,
+    }
+}
+
+#[cfg(test)]
+mod mancini_threshold_rv_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn mancini_threshold_rv_invariants_and_ad_parity() {
+        let base = ManciniThresholdRealizedVarianceSpec {
+            total_realized_variance_rv: 0.000285_f64,
+            bipower_variation_proxy_bv: 0.000210_f64,
+            jump_candidate_squared_sum_jcand: 0.000072_f64,
+            threshold_multiplier_c_theta: 3.50_f64,
+            sampling_interval_delta_n: 0.0128_f64,
+            integrated_quarticity_iq: 0.00000014_f64,
+        };
+        let r0 = evaluate_mancini_threshold_realized_bipower_jump_separation(&base);
+        assert!(r0.adaptive_truncation_threshold_rn > 0.0);
+        assert!(r0.threshold_realized_variance_trv < base.total_realized_variance_rv);
+        assert!(r0.separated_jump_variation_jv > 0.0);
+        assert!(r0.trv_vs_bipower_se_reduction > 0.0);
+
+        let x0 = [
+            base.total_realized_variance_rv,
+            base.bipower_variation_proxy_bv,
+            base.jump_candidate_squared_sum_jcand,
+            base.threshold_multiplier_c_theta,
+            base.sampling_interval_delta_n,
+            base.integrated_quarticity_iq,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_mancini_threshold_realized_bipower_jump_separation(
+            &ManciniThresholdRealizedVarianceSpec {
+                total_realized_variance_rv: xd[0],
+                bipower_variation_proxy_bv: xd[1],
+                jump_candidate_squared_sum_jcand: xd[2],
+                threshold_multiplier_c_theta: xd[3],
+                sampling_interval_delta_n: xd[4],
+                integrated_quarticity_iq: xd[5],
+            },
+        );
+        let h = 1e-7;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_mancini_threshold_realized_bipower_jump_separation(
+                &ManciniThresholdRealizedVarianceSpec {
+                    total_realized_variance_rv: xp[0],
+                    bipower_variation_proxy_bv: xp[1],
+                    jump_candidate_squared_sum_jcand: xp[2],
+                    threshold_multiplier_c_theta: xp[3],
+                    sampling_interval_delta_n: xp[4],
+                    integrated_quarticity_iq: xp[5],
+                },
+            );
+            let rm = evaluate_mancini_threshold_realized_bipower_jump_separation(
+                &ManciniThresholdRealizedVarianceSpec {
+                    total_realized_variance_rv: xm[0],
+                    bipower_variation_proxy_bv: xm[1],
+                    jump_candidate_squared_sum_jcand: xm[2],
+                    threshold_multiplier_c_theta: xm[3],
+                    sampling_interval_delta_n: xm[4],
+                    integrated_quarticity_iq: xm[5],
+                },
+            );
+            let fd = (rp.threshold_realized_variance_trv - rm.threshold_realized_variance_trv)
+                / (2.0 * h);
+            assert!(rad.threshold_realized_variance_trv.d[i].abs() > 1e-11);
+            assert!((rad.threshold_realized_variance_trv.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

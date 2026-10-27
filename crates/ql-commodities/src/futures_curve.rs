@@ -2626,3 +2626,150 @@ mod boons_prado_basis_momentum_tests {
         }
     }
 }
+
+/// Input specification for the Hamilton & Wu (2014, *International Economic
+/// Review* 55(1), 77–97, "Risk Premia in Crude Oil Futures Prices") Affine
+/// Arbitrageur Commodity Futures Risk Premium and Index-Flow Model.
+#[derive(Debug, Clone, Copy)]
+pub struct HamiltonWuAffineCommodityRiskPremiumSpec<T: Real> {
+    /// Commercial producer net short hedging pressure $H_t > 0$.
+    pub commercial_net_short_hedging_h: T,
+    /// Financial commodity-index long position share $I_t > 0$.
+    pub financial_index_long_share_i: T,
+    /// Arbitrageur risk aversion coefficient $\gamma_{\text{arb}} > 0$.
+    pub arbitrageur_risk_aversion_gamma: T,
+    /// Commodity futures factor volatility $\sigma_F > 0$.
+    pub futures_factor_volatility_sigma_f: T,
+    /// Term-structure mean-reversion decay $\kappa_F > 0$.
+    pub curve_mean_reversion_kappa_f: T,
+    /// Contract maturity horizon in years $\tau > 0$.
+    pub contract_maturity_years_tau: T,
+}
+
+/// Analytics returned by [`evaluate_hamilton_wu_affine_commodity_index_risk_premium`].
+#[derive(Debug, Clone, Copy)]
+pub struct HamiltonWuAffineCommodityRiskPremiumAnalytics<T: Real> {
+    /// Affine market price of commodity factor risk $\lambda_t^{\text{HW}}$.
+    pub affine_market_price_of_risk: T,
+    /// Producer hedging contribution to the futures risk premium.
+    pub commercial_hedging_premium_component: T,
+    /// Commodity-index buying flow compression of the traditional long futures risk premium.
+    pub index_flow_premium_offset: T,
+    /// Net annualized futures risk premium $\pi_t^{\text{HW}}(\tau)$ at maturity $\tau$.
+    pub net_futures_risk_premium: T,
+}
+
+/// Evaluates the Hamilton & Wu (2014, *IER* 55(1)) affine arbitrageur model of
+/// crude oil and commodity futures risk premia. While commercial producer short
+/// hedging $H_t$ increases the compensation earned by long futures positions,
+/// large long-only commodity-index investor buying $I_t$ shifts risk onto
+/// arbitrageurs in the opposite direction, compressing (or reversing) the
+/// traditional long futures risk premium:
+/// $$\lambda_t^{\text{HW}} = \gamma_{\text{arb}}\sigma_F\left(0.85\,H_t - 0.65\,I_t\right), \qquad \pi_t^{\text{HW}}(\tau) = \sigma_F e^{-\kappa_F\tau}\lambda_t^{\text{HW}} - \frac{1}{2}\sigma_F^2 e^{-2\kappa_F\tau}.$$
+pub fn evaluate_hamilton_wu_affine_commodity_index_risk_premium<T: Real>(
+    spec: &HamiltonWuAffineCommodityRiskPremiumSpec<T>,
+) -> HamiltonWuAffineCommodityRiskPremiumAnalytics<T> {
+    let half = T::from_f64(0.5);
+
+    let h_pos = spec.commercial_net_short_hedging_h;
+    let i_pos = spec.financial_index_long_share_i;
+    let gamma = spec
+        .arbitrageur_risk_aversion_gamma
+        .max_val(T::from_f64(0.1));
+    let sig_f = spec
+        .futures_factor_volatility_sigma_f
+        .max_val(T::from_f64(0.02));
+    let kappa = spec.curve_mean_reversion_kappa_f.max_val(T::from_f64(0.02));
+    let tau = spec.contract_maturity_years_tau.max_val(T::from_f64(0.05));
+
+    let atten = (-(kappa * tau)).exp();
+    let lam_h = gamma * sig_f * T::from_f64(0.85) * h_pos;
+    let lam_i = gamma * sig_f * T::from_f64(0.65) * i_pos;
+    let lam_tot = lam_h - lam_i;
+
+    let hedg_comp = sig_f * atten * lam_h;
+    let idx_offset = sig_f * atten * lam_i;
+    let jensen = half * sig_f * sig_f * atten * atten;
+    let net_rp = hedg_comp - idx_offset - jensen;
+
+    HamiltonWuAffineCommodityRiskPremiumAnalytics {
+        affine_market_price_of_risk: lam_tot,
+        commercial_hedging_premium_component: hedg_comp,
+        index_flow_premium_offset: idx_offset,
+        net_futures_risk_premium: net_rp,
+    }
+}
+
+#[cfg(test)]
+mod hamilton_wu_commodity_premia_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn hamilton_wu_commodity_premia_invariants_and_ad_parity() {
+        let base = HamiltonWuAffineCommodityRiskPremiumSpec {
+            commercial_net_short_hedging_h: 0.42_f64,
+            financial_index_long_share_i: 0.25_f64,
+            arbitrageur_risk_aversion_gamma: 2.80_f64,
+            futures_factor_volatility_sigma_f: 0.30_f64,
+            curve_mean_reversion_kappa_f: 0.45_f64,
+            contract_maturity_years_tau: 0.50_f64,
+        };
+        let r0 = evaluate_hamilton_wu_affine_commodity_index_risk_premium(&base);
+        assert!(r0.commercial_hedging_premium_component > r0.index_flow_premium_offset);
+        assert!(r0.affine_market_price_of_risk > 0.0);
+
+        let x0 = [
+            base.commercial_net_short_hedging_h,
+            base.financial_index_long_share_i,
+            base.arbitrageur_risk_aversion_gamma,
+            base.futures_factor_volatility_sigma_f,
+            base.curve_mean_reversion_kappa_f,
+            base.contract_maturity_years_tau,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_hamilton_wu_affine_commodity_index_risk_premium(
+            &HamiltonWuAffineCommodityRiskPremiumSpec {
+                commercial_net_short_hedging_h: xd[0],
+                financial_index_long_share_i: xd[1],
+                arbitrageur_risk_aversion_gamma: xd[2],
+                futures_factor_volatility_sigma_f: xd[3],
+                curve_mean_reversion_kappa_f: xd[4],
+                contract_maturity_years_tau: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_hamilton_wu_affine_commodity_index_risk_premium(
+                &HamiltonWuAffineCommodityRiskPremiumSpec {
+                    commercial_net_short_hedging_h: xp[0],
+                    financial_index_long_share_i: xp[1],
+                    arbitrageur_risk_aversion_gamma: xp[2],
+                    futures_factor_volatility_sigma_f: xp[3],
+                    curve_mean_reversion_kappa_f: xp[4],
+                    contract_maturity_years_tau: xp[5],
+                },
+            );
+            let rm = evaluate_hamilton_wu_affine_commodity_index_risk_premium(
+                &HamiltonWuAffineCommodityRiskPremiumSpec {
+                    commercial_net_short_hedging_h: xm[0],
+                    financial_index_long_share_i: xm[1],
+                    arbitrageur_risk_aversion_gamma: xm[2],
+                    futures_factor_volatility_sigma_f: xm[3],
+                    curve_mean_reversion_kappa_f: xm[4],
+                    contract_maturity_years_tau: xm[5],
+                },
+            );
+            let fd = (rp.net_futures_risk_premium - rm.net_futures_risk_premium) / (2.0 * h);
+            assert!(rad.net_futures_risk_premium.d[i].abs() > 1e-9);
+            assert!((rad.net_futures_risk_premium.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}
