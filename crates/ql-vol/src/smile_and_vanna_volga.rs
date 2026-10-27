@@ -1712,3 +1712,191 @@ mod bayer_friz_gatheral_rough_skew_mod {
     }
 }
 pub use bayer_friz_gatheral_rough_skew_mod::*;
+
+mod broadie_jain_sepp_svj_volswap_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Broadie & Jain (2008, *IJTAF* 11(8), *"The Effect of Jumps
+    /// and Discrete Sampling on Volatility and Variance Swaps"*) and Sepp (2008, *Journal of
+    /// Computational Finance* 11(4)) Bates SVJ volatility swap convexity wedge engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct BroadieJainSeppSvjVolatilitySwapSpec<T: Real> {
+        /// Initial instantaneous diffusive variance $v_0 > 0$ (e.g., $0.044$).
+        pub initial_variance_v0: T,
+        /// Long-run mean diffusive variance $\theta_v > 0$ (e.g., $0.036$).
+        pub long_run_variance_theta: T,
+        /// Variance mean-reversion speed $\kappa_v > 0$ (e.g., $2.10$).
+        pub mean_reversion_kappa: T,
+        /// Volatility of variance $\xi_v > 0$ (e.g., $0.45$).
+        pub vol_of_vol_xi: T,
+        /// Poisson jump arrival intensity $\lambda_J > 0$ (e.g., $0.65$).
+        pub jump_intensity_lambda_j: T,
+        /// Mean log-jump size $\mu_J$ (e.g., $-0.075$).
+        pub jump_mean_mu_j: T,
+        /// Log-jump standard deviation $\sigma_J > 0$ (e.g., $0.095$).
+        pub jump_std_sigma_j: T,
+        /// Swap maturity $T > 0$ in years (e.g., $1.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_broadie_jain_sepp_svj_volatility_swap_convexity`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct BroadieJainSeppSvjVolatilitySwapAnalytics<T: Real> {
+        /// Total SVJ fair variance swap strike $K_{\text{var}}^{\text{SVJ}}(T) = \bar{V}_{\text{diff}}(T) + \lambda_J(\mu_J^2 + \sigma_J^2)$.
+        pub svj_fair_variance_strike: T,
+        /// Total variance of annualized realized variance $\text{Var}^{\mathbb{Q}}(RV_T) = \Sigma_{\text{diff}}^2(T) + \Sigma_{\text{jump}}^2(T)$.
+        pub realized_variance_of_variance: T,
+        /// Convexity-adjusted fair volatility swap strike $K_{\text{vol}}^{\text{SVJ}}(T)$.
+        pub svj_fair_volatility_strike: T,
+        /// Volatility-swap vs. square-root-variance-swap convexity wedge in volatility points ($100 \cdot (\sqrt{K_{\text{var}}} - K_{\text{vol}})$).
+        pub vol_vs_var_convexity_wedge_vol_pts: T,
+    }
+
+    /// Evaluates the Broadie & Jain (2008, Props. 3.1–3.2) and Sepp (2008) Bates SVJ variance
+    /// and volatility swap strikes via the second-order Laplace convexity expansion:
+    /// $$K_{\text{vol}}^{\text{SVJ}}(T) = \sqrt{K_{\text{var}}^{\text{SVJ}}(T)} - \frac{\Sigma_{\text{diff}}^2(T) + \Sigma_{\text{jump}}^2(T)}{8\big(K_{\text{var}}^{\text{SVJ}}(T)\big)^{3/2}}.$$
+    pub fn evaluate_broadie_jain_sepp_svj_volatility_swap_convexity<T: Real>(
+        spec: &BroadieJainSeppSvjVolatilitySwapSpec<T>,
+    ) -> BroadieJainSeppSvjVolatilitySwapAnalytics<T> {
+        let v0 = spec.initial_variance_v0;
+        let theta = spec.long_run_variance_theta;
+        let kappa = spec.mean_reversion_kappa;
+        let xi = spec.vol_of_vol_xi;
+        let lam_j = spec.jump_intensity_lambda_j;
+        let mu_j = spec.jump_mean_mu_j;
+        let sig_j = spec.jump_std_sigma_j;
+        let t = spec.maturity_years_t;
+
+        let kt = kappa * t;
+        let e_kt = (-kt).exp();
+        let e_2kt = (-T::from_f64(2.0) * kt).exp();
+        let one_minus_e = T::one() - e_kt;
+
+        let v_diff = theta + (v0 - theta) * (one_minus_e / kt);
+        let mu_j2 = mu_j * mu_j;
+        let sig_j2 = sig_j * sig_j;
+        let v_jump = lam_j * (mu_j2 + sig_j2);
+        let k_var = v_diff + v_jump;
+
+        let term_theta = t - T::from_f64(2.0) * one_minus_e / kappa
+            + (T::one() - e_2kt) / (T::from_f64(2.0) * kappa);
+        let term_v0 = one_minus_e / kappa
+            - t * e_kt
+            - (one_minus_e * one_minus_e) / (T::from_f64(2.0) * kappa);
+        let var_diff = (xi * xi / (kt * kt)) * (theta * term_theta + (v0 - theta) * term_v0);
+
+        let var_jump = (lam_j / t)
+            * (mu_j2 * mu_j2
+                + T::from_f64(6.0) * mu_j2 * sig_j2
+                + T::from_f64(3.0) * sig_j2 * sig_j2);
+        let total_var_rv = var_diff + var_jump;
+
+        let sqrt_k_var = k_var.sqrt();
+        let conv_wedge = total_var_rv / (T::from_f64(8.0) * k_var * sqrt_k_var);
+        let k_vol = sqrt_k_var - conv_wedge;
+
+        BroadieJainSeppSvjVolatilitySwapAnalytics {
+            svj_fair_variance_strike: k_var,
+            realized_variance_of_variance: total_var_rv,
+            svj_fair_volatility_strike: k_vol,
+            vol_vs_var_convexity_wedge_vol_pts: T::from_f64(100.0) * conv_wedge,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn broadie_jain_sepp_svj_volswap_invariants_and_ad_parity() {
+            let base = BroadieJainSeppSvjVolatilitySwapSpec {
+                initial_variance_v0: 0.044_f64,
+                long_run_variance_theta: 0.036_f64,
+                mean_reversion_kappa: 2.10_f64,
+                vol_of_vol_xi: 0.45_f64,
+                jump_intensity_lambda_j: 0.65_f64,
+                jump_mean_mu_j: -0.075_f64,
+                jump_std_sigma_j: 0.095_f64,
+                maturity_years_t: 1.0_f64,
+            };
+            let res = evaluate_broadie_jain_sepp_svj_volatility_swap_convexity(&base);
+            assert!(res.svj_fair_variance_strike > 0.04);
+            assert!(res.realized_variance_of_variance > 0.0);
+            assert!(res.svj_fair_volatility_strike > 0.15);
+            assert!(res.vol_vs_var_convexity_wedge_vol_pts > 0.0);
+
+            let inputs = [
+                base.initial_variance_v0,
+                base.long_run_variance_theta,
+                base.mean_reversion_kappa,
+                base.vol_of_vol_xi,
+                base.jump_intensity_lambda_j,
+                base.jump_mean_mu_j,
+                base.jump_std_sigma_j,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BroadieJainSeppSvjVolatilitySwapSpec {
+                initial_variance_v0: dual_in[0],
+                long_run_variance_theta: dual_in[1],
+                mean_reversion_kappa: dual_in[2],
+                vol_of_vol_xi: dual_in[3],
+                jump_intensity_lambda_j: dual_in[4],
+                jump_mean_mu_j: dual_in[5],
+                jump_std_sigma_j: dual_in[6],
+                maturity_years_t: dual_in[7],
+            };
+            let ad = evaluate_broadie_jain_sepp_svj_volatility_swap_convexity(&spec_ad)
+                .svj_fair_volatility_strike;
+            let eps = 1e-7;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let f_p = evaluate_broadie_jain_sepp_svj_volatility_swap_convexity(
+                    &BroadieJainSeppSvjVolatilitySwapSpec {
+                        initial_variance_v0: p[0],
+                        long_run_variance_theta: p[1],
+                        mean_reversion_kappa: p[2],
+                        vol_of_vol_xi: p[3],
+                        jump_intensity_lambda_j: p[4],
+                        jump_mean_mu_j: p[5],
+                        jump_std_sigma_j: p[6],
+                        maturity_years_t: p[7],
+                    },
+                )
+                .svj_fair_volatility_strike;
+                let f_m = evaluate_broadie_jain_sepp_svj_volatility_swap_convexity(
+                    &BroadieJainSeppSvjVolatilitySwapSpec {
+                        initial_variance_v0: m[0],
+                        long_run_variance_theta: m[1],
+                        mean_reversion_kappa: m[2],
+                        vol_of_vol_xi: m[3],
+                        jump_intensity_lambda_j: m[4],
+                        jump_mean_mu_j: m[5],
+                        jump_std_sigma_j: m[6],
+                        maturity_years_t: m[7],
+                    },
+                )
+                .svj_fair_volatility_strike;
+                let fd = (f_p - f_m) / (2.0 * eps);
+                assert!(ad.d[i].abs() > 1e-6, "zero derivative at index {i}");
+                assert!(
+                    (ad.d[i] - fd).abs() < 1e-4,
+                    "mismatch at index {i}: ad={} fd={}",
+                    ad.d[i],
+                    fd
+                );
+            }
+        }
+    }
+}
+pub use broadie_jain_sepp_svj_volswap_mod::{
+    BroadieJainSeppSvjVolatilitySwapAnalytics, BroadieJainSeppSvjVolatilitySwapSpec,
+    evaluate_broadie_jain_sepp_svj_volatility_swap_convexity,
+};

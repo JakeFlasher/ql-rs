@@ -3510,6 +3510,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_hagan_west_monotone_convex_fabozzi_effective_duration_oas_frye_altman_downturn_lgd_gatheral_jacquier_svi_arbitrage_gregory_brigo_ftd_bilateral_cva_brennan_schwartz_mine_hysteresis_wystup_fx_fader_broadie_detemple_capped_call_meucci_entropy_pooling_cont_deguest_scandolo_robust_risk_pesaran_shin_smith_ardl_christiano_eichenbaum_evans_nk(scale),
         benchmark_mercurio_russo_ibor_ois_basis_jarrow_yildirim_yoy_inflation_duffie_lando_hybrid_cds_bayer_friz_gatheral_rough_skew_andersen_pykhtin_sokol_mpor_bjerksund_stensland_321_crack_carr_chou_symmetry_barrier_chesney_jeanblanc_yor_parisian_demiguel_brodie_norm_shrinkage_gueant_lehalle_tapia_mm_hansen_white_spa_test_brunnermeier_sannikov_paradox(scale),
         benchmark_filipovic_larsson_trolle_linear_rational_duffie_krishnamurthy_special_repo_duffie_saita_wang_stochastic_default_carr_madan_neuberger_log_contract_hull_white_burgard_kjaer_fva_windfall_casassus_collin_dufresne_convenience_yield_lustig_roussanov_verdelhan_fx_carry_carr_lee_corridor_varswap_garlappi_uppal_wang_multi_prior_mcneil_frey_evt_garch_patton_sjc_copula_pastor_veronesi_political_uncertainty(scale),
+        benchmark_lyashenko_mercurio_rfr_in_arrears_pennacchi_sundaresan_coco_at1_pedersen_brigo_cds_index_fep_broadie_jain_sepp_svj_volswap_brigo_capponi_pallavicini_contagion_wwr_routledge_seppi_spatt_storage_piterbarg_prdc_hybrid_broadie_glasserman_kou_discrete_barrier_brandt_santa_clara_valkanov_ppp_gatheral_schied_slynko_transient_impact_corsi_bpq_harq_lettau_ludvigson_cay(scale),
     ]
 }
 
@@ -12136,16 +12137,16 @@ pub fn suite64_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
         },
     );
 
-    let bsv_ppp = ql_portfolio::evaluate_brandt_santa_clara_valkanov_parametric_portfolio_policy(
-        &ql_portfolio::BrandtSantaClaraValkanovPppSpec {
-            value_characteristic_mean_return: T::from_f64(0.045) + dx0,
-            momentum_characteristic_mean_return: T::from_f64(0.062) + dx1,
-            value_characteristic_variance: T::from_f64(0.018) + dx2 * T::from_f64(0.1),
-            momentum_characteristic_variance: T::from_f64(0.024),
-            value_momentum_covariance: T::from_f64(-0.008),
-            benchmark_value_covariance: T::from_f64(0.002),
-            benchmark_momentum_covariance: T::from_f64(-0.001),
-            relative_risk_aversion_gamma: T::from_f64(5.0) + x[3] * T::from_f64(0.1),
+    let bsv_ppp = ql_portfolio::evaluate_brandt_santa_clara_valkanov_crra_characteristic_tilt(
+        &ql_portfolio::BrandtSantaClaraValkanovCharacteristicTiltSpec {
+            benchmark_expected_return_mu_b: T::from_f64(0.068) + dx0,
+            benchmark_volatility_sigma_b: T::from_f64(0.155),
+            value_characteristic_premium_mu_v: T::from_f64(0.042) + dx1,
+            momentum_characteristic_premium_mu_m: T::from_f64(0.058) + dx2,
+            value_characteristic_vol_sigma_v: T::from_f64(0.115),
+            momentum_characteristic_vol_sigma_m: T::from_f64(0.145),
+            characteristic_correlation_rho_vm: T::from_f64(-0.35),
+            relative_risk_aversion_gamma: T::from_f64(5.0) + x[3],
         },
     );
 
@@ -12208,7 +12209,7 @@ pub fn suite64_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
         rss_stor.equilibrium_forward_price * T::from_f64(0.1),
         dtv_cip.net_actionable_cip_arbitrage_alpha_bps * T::from_f64(0.1),
         wc_cliq.total_cliquet_present_value * T::from_f64(0.1),
-        bsv_ppp.certainty_equivalent_utility_gain_bps * T::from_f64(0.01),
+        bsv_ppp.crra_certainty_equivalent_return * T::from_f64(100.0),
         aj_evar.jump_diffusion_entropic_var,
         ek_bekk.conditional_correlation_rho12 * T::from_f64(10.0),
         gab_dis.equilibrium_price_dividend_ratio,
@@ -14445,6 +14446,225 @@ pub fn benchmark_filipovic_larsson_trolle_linear_rational_duffie_krishnamurthy_s
     run_comparison(
         "74_filipovic_larsson_trolle_linear_rational_duffie_krishnamurthy_special_repo_duffie_saita_wang_stochastic_default_carr_madan_neuberger_log_contract_hull_white_burgard_kjaer_fva_windfall_casassus_collin_dufresne_convenience_yield_lustig_roussanov_verdelhan_fx_carry_carr_lee_corridor_varswap_garlappi_uppal_wang_multi_prior_mcneil_frey_evt_garch_patton_sjc_copula_pastor_veronesi_political_uncertainty",
         "Filipovic-Larsson-Trolle-LRTSM / Duffie-Krishnamurthy-Repo / Duffie-Saita-Wang-Default / Carr-Madan-Neuberger-LogContract / Hull-White-Burgard-Kjaer-FVA / Casassus-Collin-Dufresne-CY / Lustig-Roussanov-Verdelhan-FX / Carr-Lee-Corridor-VarSwap / Garlappi-Uppal-Wang-MultiPrior / McNeil-Frey-EVT-GARCH / Patton-SJC-Copula / Pastor-Veronesi-Political-Risk AD",
+        cfg,
+        1e-3,
+        baseline,
+        sota,
+    )
+}
+
+pub fn suite75_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+    let dx0 = x[0] * T::from_f64(0.01);
+    let dx1 = x[1] * T::from_f64(0.01);
+    let dx2 = x[2] * T::from_f64(0.01);
+    let dx3 = x[3] * T::from_f64(0.01);
+
+    let lm_rfr = ql_curves::evaluate_lyashenko_mercurio_rfr_in_arrears_caplet_convexity(
+        &ql_curves::LyashenkoMercurioRfrInArrearsCapletSpec {
+            forward_rfr_rate_f0: T::from_f64(0.042) + dx0 * T::from_f64(0.2),
+            strike_rate_k: T::from_f64(0.040) + dx1 * T::from_f64(0.2),
+            fixing_start_years_t_prev: T::from_f64(0.50) + dx2,
+            accrual_fraction_tau: T::from_f64(0.25),
+            rfr_forward_volatility_sigma: T::from_f64(0.24) + dx3,
+            discount_factor_p_ti: T::from_f64(0.968),
+        },
+    );
+
+    let ps_coco = ql_fixed_income::evaluate_pennacchi_sundaresan_coco_at1_trigger_valuation(
+        &ql_fixed_income::PennacchiSundaresanCocoAt1TriggerSpec {
+            current_cet1_ratio_c0: T::from_f64(0.132) + dx0 * T::from_f64(0.5),
+            trigger_cet1_ratio_c_trig: T::from_f64(0.070) + dx1 * T::from_f64(0.2),
+            cet1_drift_mu_c: T::from_f64(0.008),
+            cet1_volatility_sigma_c: T::from_f64(0.19) + dx2,
+            at1_coupon_rate_q: T::from_f64(0.068) + dx3 * T::from_f64(0.5),
+            equity_conversion_share_chi: T::from_f64(0.45),
+            write_down_loss_severity_lwd: T::from_f64(0.85),
+            risk_free_rate_r: T::from_f64(0.038),
+            horizon_years_t: T::from_f64(5.0),
+        },
+    );
+
+    let pb_cdx = ql_credit::evaluate_pedersen_brigo_cds_index_option_fep_swaption(
+        &ql_credit::PedersenBrigoCdsIndexOptionFepSpec {
+            current_index_spread_s0: T::from_f64(0.0095) + dx0 * T::from_f64(0.1),
+            strike_spread_k: T::from_f64(0.0108) + dx1 * T::from_f64(0.1),
+            index_running_coupon_c: T::from_f64(0.0100),
+            forward_rpv01_annuity_a0: T::from_f64(4.15) + x[2],
+            spread_volatility_sigma_s: T::from_f64(0.48) + dx3,
+            recovery_rate_r: T::from_f64(0.40),
+            risk_free_rate_rf: T::from_f64(0.036),
+            option_expiry_years_te: T::from_f64(0.50),
+        },
+    );
+
+    let bjs_svj = ql_vol::evaluate_broadie_jain_sepp_svj_volatility_swap_convexity(
+        &ql_vol::BroadieJainSeppSvjVolatilitySwapSpec {
+            initial_variance_v0: T::from_f64(0.044) + dx0 * T::from_f64(0.2),
+            long_run_variance_theta: T::from_f64(0.036) + dx1 * T::from_f64(0.2),
+            mean_reversion_kappa: T::from_f64(2.10),
+            vol_of_vol_xi: T::from_f64(0.45) + dx2,
+            jump_intensity_lambda_j: T::from_f64(0.65) + dx3,
+            jump_mean_mu_j: T::from_f64(-0.075),
+            jump_std_sigma_j: T::from_f64(0.095),
+            maturity_years_t: T::one(),
+        },
+    );
+
+    let bcp_wwr = ql_xva::evaluate_brigo_capponi_pallavicini_cds_contagion_wwr_cva(
+        &ql_xva::BrigoCapponiPallaviciniCdsContagionWwrSpec {
+            counterparty_hazard_lambda_c: T::from_f64(0.022) + dx0 * T::from_f64(0.2),
+            reference_hazard_lambda_r: T::from_f64(0.018) + dx1 * T::from_f64(0.2),
+            reference_spread_vol_sigma_r: T::from_f64(0.52) + dx2,
+            spread_correlation_rho_rc: T::from_f64(0.55),
+            contagion_hazard_jump_eta: T::from_f64(0.65) + dx3,
+            counterparty_lgd: T::from_f64(0.60),
+            risk_free_rate_r: T::from_f64(0.035),
+            maturity_years_t: T::from_f64(5.0),
+        },
+    );
+
+    let rss_store = ql_commodities::evaluate_routledge_seppi_spatt_competitive_storage_equilibrium(
+        &ql_commodities::RoutledgeSeppiSpattCompetitiveStorageSpec {
+            spot_price_s0: T::from_f64(78.0) + x[0],
+            current_inventory_i0: T::from_f64(28.0) + x[1],
+            critical_stockout_inventory_i_star: T::from_f64(22.0),
+            stockout_convenience_spike_delta: T::from_f64(0.28) + dx2,
+            storage_cost_rate_c: T::from_f64(0.075),
+            base_spot_volatility_sigma: T::from_f64(0.24) + dx3,
+            stockout_vol_amplification_beta: T::from_f64(0.85),
+            maturity_years_t: T::one(),
+        },
+    );
+
+    let pit_prdc = ql_fx::evaluate_piterbarg_prdc_fx_ir_hybrid_coupon_valuation(
+        &ql_fx::PiterbargPrdcHybridSmileCouponSpec {
+            spot_fx_s0: T::from_f64(104.0) + x[0],
+            domestic_rate_rd: T::from_f64(0.008),
+            foreign_rate_rf: T::from_f64(0.044) + dx1 * T::from_f64(0.2),
+            foreign_coupon_gearing_gf: T::from_f64(0.12),
+            domestic_coupon_strike_gd: T::from_f64(0.08),
+            fx_spot_volatility_sigma_s: T::from_f64(0.115) + dx2,
+            rate_diff_volatility_sigma_ir: T::from_f64(0.012),
+            fx_ir_correlation_rho: T::from_f64(0.35) + dx3,
+            maturity_years_t: T::from_f64(10.0),
+        },
+    );
+
+    let bgk_bar = ql_exotics::evaluate_broadie_glasserman_kou_discrete_barrier_call(
+        &ql_exotics::BroadieGlassermanKouDiscreteBarrierCallSpec {
+            spot_price_s0: T::from_f64(100.0) + x[0],
+            strike_price_k: T::from_f64(100.0) + x[1],
+            lower_barrier_h: T::from_f64(88.0) + x[2],
+            risk_free_rate_r: T::from_f64(0.045),
+            volatility_sigma: T::from_f64(0.24) + dx3,
+            maturity_years_t: T::one(),
+            monitoring_intervals_m: T::from_f64(52.0),
+        },
+    );
+
+    let bsv_ppp = ql_portfolio::evaluate_brandt_santa_clara_valkanov_parametric_portfolio_policy(
+        &ql_portfolio::BrandtSantaClaraValkanovPppSpec {
+            value_characteristic_mean_return: T::from_f64(0.045) + dx0,
+            momentum_characteristic_mean_return: T::from_f64(0.062) + dx1,
+            value_characteristic_variance: T::from_f64(0.018) + dx2 * T::from_f64(0.1),
+            momentum_characteristic_variance: T::from_f64(0.024),
+            value_momentum_covariance: T::from_f64(-0.008),
+            benchmark_value_covariance: T::from_f64(0.002),
+            benchmark_momentum_covariance: T::from_f64(-0.001),
+            relative_risk_aversion_gamma: T::from_f64(5.0) + x[3] * T::from_f64(0.1),
+        },
+    );
+
+    let gss_imp = ql_portfolio::evaluate_gatheral_schied_slynko_transient_impact_execution(
+        &ql_portfolio::GatheralSchiedSlynkoTransientImpactSpec {
+            order_size_shares_x0: T::from_f64(10.0) + x[0],
+            transient_impact_coeff_eta: T::from_f64(0.085) + dx1,
+            resilience_decay_rate_rho: T::from_f64(1.60) + dx2,
+            permanent_impact_coeff_gamma: T::from_f64(0.025),
+            price_volatility_sigma: T::from_f64(0.32) + dx3,
+            risk_aversion_lambda: T::from_f64(0.15),
+            execution_horizon_hours_t: T::from_f64(4.0),
+        },
+    );
+
+    let bpq_harq = ql_dml::evaluate_corsi_bollerslev_patton_quaedvlieg_harq_volatility(
+        &ql_dml::CorsiBollerslevPattonQuaedvliegHarqSpec {
+            intercept_beta0: T::from_f64(0.000018),
+            daily_persistence_beta_d: T::from_f64(0.42) + dx0,
+            weekly_persistence_beta_w: T::from_f64(0.34) + dx1,
+            monthly_persistence_beta_m: T::from_f64(0.20) + dx2,
+            quarticity_attenuation_beta_q: T::from_f64(-0.16) + dx3,
+            daily_realized_variance_rv_d: T::from_f64(0.00024),
+            weekly_realized_variance_rv_w: T::from_f64(0.00018),
+            monthly_realized_variance_rv_m: T::from_f64(0.00015),
+            realized_quarticity_excess_rq: T::from_f64(0.65),
+        },
+    );
+
+    let ll_cay = ql_models::evaluate_lettau_ludvigson_cay_conditional_equity_premium(
+        &ql_models::LettauLudvigsonCayConditionalRiskPremiumSpec {
+            log_consumption_c: T::from_f64(10.24) + dx0,
+            log_asset_wealth_a: T::from_f64(10.05) + dx1,
+            log_labor_income_y: T::from_f64(10.28),
+            asset_wealth_cointegration_share_omega: T::from_f64(0.32),
+            baseline_risk_aversion_gamma0: T::from_f64(12.0) + x[2],
+            cay_conditioning_sensitivity_gamma1: T::from_f64(185.0),
+            consumption_volatility_sigma_c: T::from_f64(0.018),
+            equity_return_volatility_sigma_m: T::from_f64(0.165) + dx3,
+        },
+    );
+
+    [
+        lm_rfr.in_arrears_rfr_caplet_pv * T::from_f64(10.0),
+        ps_coco.coco_at1_fair_price_pct * T::from_f64(0.1),
+        pb_cdx.cds_index_payer_swaption_pv_pct * T::from_f64(10.0),
+        bjs_svj.svj_fair_volatility_strike * T::from_f64(10.0),
+        bcp_wwr.total_contagion_wwr_cva_pct * T::from_f64(10.0),
+        rss_store.equilibrium_futures_price * T::from_f64(0.1),
+        pit_prdc.cancelable_prdc_net_value,
+        bgk_bar.discrete_bgk_down_and_out_call,
+        bsv_ppp.certainty_equivalent_utility_gain_bps * T::from_f64(0.01),
+        gss_imp.expected_implementation_shortfall_cost,
+        bpq_harq.annualized_harq_volatility_forecast * T::from_f64(10.0),
+        ll_cay.conditional_equity_risk_premium * T::from_f64(100.0),
+    ]
+}
+
+pub fn benchmark_lyashenko_mercurio_rfr_in_arrears_pennacchi_sundaresan_coco_at1_pedersen_brigo_cds_index_fep_broadie_jain_sepp_svj_volswap_brigo_capponi_pallavicini_contagion_wwr_routledge_seppi_spatt_storage_piterbarg_prdc_hybrid_broadie_glasserman_kou_discrete_barrier_brandt_santa_clara_valkanov_ppp_gatheral_schied_slynko_transient_impact_corsi_bpq_harq_lettau_ludvigson_cay(
+    scale: usize,
+) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let baseline = move || {
+        let f = |x: [f64; 4]| suite75_workloads(x).iter().copied().sum::<f64>();
+        let mut z = f(x0);
+        for i in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[i] += 1e-5;
+            d[i] -= 1e-5;
+            z += (f(u) - f(d)) / (2e-5);
+        }
+        for _ in 0..20 {
+            std::hint::black_box(f(x0));
+        }
+        z
+    };
+    let sota = move || {
+        let x: [Dual<4>; 4] = [
+            Dual::variable(x0[0], 0),
+            Dual::variable(x0[1], 1),
+            Dual::variable(x0[2], 2),
+            Dual::variable(x0[3], 3),
+        ];
+        suite75_workloads(x)
+            .iter()
+            .map(|v| v.val + v.d.iter().sum::<f64>())
+            .sum::<f64>()
+    };
+    run_comparison(
+        "75_lyashenko_mercurio_rfr_in_arrears_pennacchi_sundaresan_coco_at1_pedersen_brigo_cds_index_fep_broadie_jain_sepp_svj_volswap_brigo_capponi_pallavicini_contagion_wwr_routledge_seppi_spatt_storage_piterbarg_prdc_hybrid_broadie_glasserman_kou_discrete_barrier_brandt_santa_clara_valkanov_ppp_gatheral_schied_slynko_transient_impact_corsi_bpq_harq_lettau_ludvigson_cay",
+        "Lyashenko-Mercurio-RFR / Pennacchi-Sundaresan-CoCo / Pedersen-Brigo-CDX-FEP / Broadie-Jain-Sepp-SVJ-VolSwap / Brigo-Capponi-Pallavicini-WWR / Routledge-Seppi-Spatt-Storage / Piterbarg-PRDC-Hybrid / Broadie-Glasserman-Kou-Barrier / Brandt-Santa-Clara-Valkanov-PPP / Gatheral-Schied-Slynko-Impact / Corsi-BPQ-HARQ / Lettau-Ludvigson-CAY AD",
         cfg,
         1e-3,
         baseline,

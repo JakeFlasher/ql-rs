@@ -4222,3 +4222,184 @@ mod hull_white_burgard_kjaer_fva_windfall_mod {
     }
 }
 pub use hull_white_burgard_kjaer_fva_windfall_mod::*;
+
+mod brigo_capponi_pallavicini_cds_contagion_wwr_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Brigo, Capponi & Pallavicini (2014, *Mathematical Finance*
+    /// 24(1), *"Arbitrage-Free Bilateral Counterparty Risk Valuation under Collateralization
+    /// and Application to Credit Default Swaps"*) CDS default-contagion jump and credit-spread
+    /// Wrong-Way Risk (WWR) CVA engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrigoCapponiPallaviciniCdsContagionWwrSpec<T: Real> {
+        /// Counterparty default hazard rate $\lambda_C > 0$ (e.g., $0.022$).
+        pub counterparty_hazard_lambda_c: T,
+        /// Reference entity pre-contagion hazard rate $\lambda_R > 0$ (e.g., $0.018$).
+        pub reference_hazard_lambda_r: T,
+        /// Reference CDS spread log-volatility $\sigma_R > 0$ (e.g., $0.52$).
+        pub reference_spread_vol_sigma_r: T,
+        /// Counterparty-reference credit spread correlation $\rho_{RC} \in (-1, 1)$ (e.g., $0.55$).
+        pub spread_correlation_rho_rc: T,
+        /// Relative contagion jump $\eta_{\text{jump}} > 0$ in $\lambda_R$ at $\tau_C$ (e.g., $0.65$).
+        pub contagion_hazard_jump_eta: T,
+        /// Counterparty loss given default $\text{LGD}_C \in (0, 1)$ (e.g., $0.60$).
+        pub counterparty_lgd: T,
+        /// Risk-free discount rate $r > 0$ (e.g., $0.035$).
+        pub risk_free_rate_r: T,
+        /// CDS protection maturity $T > 0$ in years (e.g., $5.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_brigo_capponi_pallavicini_cds_contagion_wwr_cva`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrigoCapponiPallaviciniCdsContagionWwrAnalytics<T: Real> {
+        /// Independent (zero-correlation, zero-contagion) CDS protection CVA per $100$ notional.
+        pub independent_cds_cva_pct: T,
+        /// Contagion jump-at-default replacement CDS exposure $\Delta V_{\text{jump}}(T)$ per $100$ notional.
+        pub contagion_jump_exposure_pct: T,
+        /// Total Brigo–Capponi–Pallavicini diffusive + contagion WWR CVA per $100$ notional.
+        pub total_contagion_wwr_cva_pct: T,
+        /// Ratio $\text{CVA}_{\text{BCP}} / \text{CVA}_{\text{indep}} > 1$ measuring WWR + contagion amplification.
+        pub wwr_contagion_amplification_ratio: T,
+    }
+
+    /// Evaluates the Brigo, Capponi & Pallavicini (2014, §3.2) CDS protection CVA combining
+    /// correlated spread diffusion $\exp(\frac{1}{2}\rho_{RC}\sigma_R\sqrt{T})$ and immediate
+    /// default-contagion intensity jump $\lambda_R \mapsto \lambda_R(1 + \eta_{\text{jump}})$ at $\tau_C$.
+    pub fn evaluate_brigo_capponi_pallavicini_cds_contagion_wwr_cva<T: Real>(
+        spec: &BrigoCapponiPallaviciniCdsContagionWwrSpec<T>,
+    ) -> BrigoCapponiPallaviciniCdsContagionWwrAnalytics<T> {
+        let lam_c = spec.counterparty_hazard_lambda_c;
+        let lam_r = spec.reference_hazard_lambda_r;
+        let sig_r = spec.reference_spread_vol_sigma_r;
+        let rho = spec.spread_correlation_rho_rc;
+        let eta = spec.contagion_hazard_jump_eta;
+        let lgd_c = spec.counterparty_lgd;
+        let r = spec.risk_free_rate_r;
+        let t = spec.maturity_years_t;
+
+        let lgd_r = T::from_f64(0.60);
+        let rate_pre = r + lam_r;
+        let a_pre = (T::one() - (-rate_pre * t).exp()) / rate_pre;
+
+        let lam_r_post = lam_r * (T::one() + eta);
+        let rate_post = r + lam_r_post;
+        let a_post = (T::one() - (-rate_post * t).exp()) / rate_post;
+
+        let sqrt_t = t.sqrt();
+        let inv_sqrt_2pi = T::from_f64(0.398_942_280_401_432_7);
+        let epe_0 = inv_sqrt_2pi * lgd_r * lam_r * sig_r * sqrt_t * a_pre;
+        let jump_exp = lgd_r * lam_r * eta * a_post;
+
+        let rate_joint = r + lam_c + lam_r;
+        let w_c = lam_c * (T::one() - (-rate_joint * t).exp()) / rate_joint;
+
+        let cva_indep = T::from_f64(100.0) * lgd_c * w_c * epe_0;
+        let diff_mult = (T::from_f64(0.5) * rho * sig_r * sqrt_t).exp();
+        let cva_total = T::from_f64(100.0) * lgd_c * w_c * (epe_0 * diff_mult + jump_exp);
+
+        BrigoCapponiPallaviciniCdsContagionWwrAnalytics {
+            independent_cds_cva_pct: cva_indep,
+            contagion_jump_exposure_pct: T::from_f64(100.0) * jump_exp,
+            total_contagion_wwr_cva_pct: cva_total,
+            wwr_contagion_amplification_ratio: cva_total / cva_indep,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn brigo_capponi_pallavicini_cds_contagion_wwr_invariants_and_ad_parity() {
+            let base = BrigoCapponiPallaviciniCdsContagionWwrSpec {
+                counterparty_hazard_lambda_c: 0.022_f64,
+                reference_hazard_lambda_r: 0.018_f64,
+                reference_spread_vol_sigma_r: 0.52_f64,
+                spread_correlation_rho_rc: 0.55_f64,
+                contagion_hazard_jump_eta: 0.65_f64,
+                counterparty_lgd: 0.60_f64,
+                risk_free_rate_r: 0.035_f64,
+                maturity_years_t: 5.0_f64,
+            };
+            let res = evaluate_brigo_capponi_pallavicini_cds_contagion_wwr_cva(&base);
+            assert!(res.independent_cds_cva_pct > 0.0);
+            assert!(res.contagion_jump_exposure_pct > 0.0);
+            assert!(res.total_contagion_wwr_cva_pct > res.independent_cds_cva_pct);
+            assert!(res.wwr_contagion_amplification_ratio > 1.5);
+
+            let inputs = [
+                base.counterparty_hazard_lambda_c,
+                base.reference_hazard_lambda_r,
+                base.reference_spread_vol_sigma_r,
+                base.spread_correlation_rho_rc,
+                base.contagion_hazard_jump_eta,
+                base.counterparty_lgd,
+                base.risk_free_rate_r,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BrigoCapponiPallaviciniCdsContagionWwrSpec {
+                counterparty_hazard_lambda_c: dual_in[0],
+                reference_hazard_lambda_r: dual_in[1],
+                reference_spread_vol_sigma_r: dual_in[2],
+                spread_correlation_rho_rc: dual_in[3],
+                contagion_hazard_jump_eta: dual_in[4],
+                counterparty_lgd: dual_in[5],
+                risk_free_rate_r: dual_in[6],
+                maturity_years_t: dual_in[7],
+            };
+            let ad = evaluate_brigo_capponi_pallavicini_cds_contagion_wwr_cva(&spec_ad)
+                .total_contagion_wwr_cva_pct;
+            let eps = 1e-7;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let f_p = evaluate_brigo_capponi_pallavicini_cds_contagion_wwr_cva(
+                    &BrigoCapponiPallaviciniCdsContagionWwrSpec {
+                        counterparty_hazard_lambda_c: p[0],
+                        reference_hazard_lambda_r: p[1],
+                        reference_spread_vol_sigma_r: p[2],
+                        spread_correlation_rho_rc: p[3],
+                        contagion_hazard_jump_eta: p[4],
+                        counterparty_lgd: p[5],
+                        risk_free_rate_r: p[6],
+                        maturity_years_t: p[7],
+                    },
+                )
+                .total_contagion_wwr_cva_pct;
+                let f_m = evaluate_brigo_capponi_pallavicini_cds_contagion_wwr_cva(
+                    &BrigoCapponiPallaviciniCdsContagionWwrSpec {
+                        counterparty_hazard_lambda_c: m[0],
+                        reference_hazard_lambda_r: m[1],
+                        reference_spread_vol_sigma_r: m[2],
+                        spread_correlation_rho_rc: m[3],
+                        contagion_hazard_jump_eta: m[4],
+                        counterparty_lgd: m[5],
+                        risk_free_rate_r: m[6],
+                        maturity_years_t: m[7],
+                    },
+                )
+                .total_contagion_wwr_cva_pct;
+                let fd = (f_p - f_m) / (2.0 * eps);
+                assert!(ad.d[i].abs() > 1e-6, "zero derivative at index {i}");
+                assert!(
+                    (ad.d[i] - fd).abs() < 1e-4,
+                    "mismatch at index {i}: ad={} fd={}",
+                    ad.d[i],
+                    fd
+                );
+            }
+        }
+    }
+}
+pub use brigo_capponi_pallavicini_cds_contagion_wwr_mod::{
+    BrigoCapponiPallaviciniCdsContagionWwrAnalytics, BrigoCapponiPallaviciniCdsContagionWwrSpec,
+    evaluate_brigo_capponi_pallavicini_cds_contagion_wwr_cva,
+};

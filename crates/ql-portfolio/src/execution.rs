@@ -4686,3 +4686,170 @@ mod gueant_lehalle_tapia_mm_mod {
     }
 }
 pub use gueant_lehalle_tapia_mm_mod::*;
+
+mod gatheral_schied_slynko_transient_impact_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Gatheral, Schied & Slynko (2012, *Mathematical Finance* 22(3),
+    /// *"Transient Linear Price Impact and Fredholm Integral Equations"*) and Obizhaeva & Wang
+    /// (2013) exponential-resilience transient market impact execution engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct GatheralSchiedSlynkoTransientImpactSpec<T: Real> {
+        /// Total parent order size $X_0 > 0$ (in normalized blocks, e.g., $10.0$).
+        pub order_size_shares_x0: T,
+        /// Instantaneous transient price impact coefficient $\eta > 0$ (e.g., $0.085$).
+        pub transient_impact_coeff_eta: T,
+        /// Limit-order-book resilience decay rate $\rho > 0$ per hour (e.g., $1.60$).
+        pub resilience_decay_rate_rho: T,
+        /// Permanent linear price impact coefficient $\gamma > 0$ (e.g., $0.025$).
+        pub permanent_impact_coeff_gamma: T,
+        /// Asset price volatility $\sigma > 0$ per $\sqrt{\text{hour}}$ (e.g., $0.32$).
+        pub price_volatility_sigma: T,
+        /// Inventory risk aversion parameter $\lambda > 0$ (e.g., $0.15$).
+        pub risk_aversion_lambda: T,
+        /// Execution horizon $T > 0$ in hours (e.g., $4.0$).
+        pub execution_horizon_hours_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_gatheral_schied_slynko_transient_impact_execution`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct GatheralSchiedSlynkoTransientImpactAnalytics<T: Real> {
+        /// Boundary block impulse fraction $\Delta X_0 / X_0 = \frac{1}{2 + \rho T} \in (0, 0.5)$ at $t = 0$ and $t = T$.
+        pub boundary_block_trade_fraction: T,
+        /// Interior continuous trading rate $\dot{x}_{\text{int}} = \frac{\rho X_0}{2 + \rho T}$.
+        pub interior_continuous_trading_rate: T,
+        /// Risk-adjusted hyperbolic urgency parameter $\kappa_{\text{GSS}} = \sqrt{\lambda\sigma^2\rho / \eta}$.
+        pub urgency_hyperbolic_parameter_kappa: T,
+        /// Expected risk-adjusted implementation shortfall cost $C_{\text{GSS}}(X_0, T)$.
+        pub expected_implementation_shortfall_cost: T,
+    }
+
+    /// Evaluates the Gatheral, Schied & Slynko (2012) and Obizhaeva & Wang (2013) Fredholm
+    /// integral equation solution for exponential transient impact $G(t - s) = \eta e^{-\rho(t - s)}$,
+    /// yielding boundary block impulses $\Delta X_0 = \Delta X_T = \frac{X_0}{2 + \rho T}$, interior
+    /// continuous rate $\dot{x}_{\text{int}} = \frac{\rho X_0}{2 + \rho T}$, and total expected execution cost.
+    pub fn evaluate_gatheral_schied_slynko_transient_impact_execution<T: Real>(
+        spec: &GatheralSchiedSlynkoTransientImpactSpec<T>,
+    ) -> GatheralSchiedSlynkoTransientImpactAnalytics<T> {
+        let x0 = spec.order_size_shares_x0;
+        let eta = spec.transient_impact_coeff_eta;
+        let rho = spec.resilience_decay_rate_rho;
+        let gamma = spec.permanent_impact_coeff_gamma;
+        let sig = spec.price_volatility_sigma;
+        let lam = spec.risk_aversion_lambda;
+        let t = spec.execution_horizon_hours_t;
+
+        let denom = T::from_f64(2.0) + rho * t;
+        let f_block = T::one() / denom;
+        let x_dot = rho * x0 / denom;
+        let sig2 = sig * sig;
+        let kappa = (lam * sig2 * rho / eta).sqrt();
+
+        let x0_2 = x0 * x0;
+        let int_share = (rho * t) / denom;
+        let cost = T::from_f64(0.5) * gamma * x0_2
+            + (eta * x0_2) / denom
+            + (T::one() / T::from_f64(12.0)) * lam * sig2 * t * int_share * int_share * x0_2;
+
+        GatheralSchiedSlynkoTransientImpactAnalytics {
+            boundary_block_trade_fraction: f_block,
+            interior_continuous_trading_rate: x_dot,
+            urgency_hyperbolic_parameter_kappa: kappa,
+            expected_implementation_shortfall_cost: cost,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn gatheral_schied_slynko_transient_impact_invariants_and_ad_parity() {
+            let base = GatheralSchiedSlynkoTransientImpactSpec {
+                order_size_shares_x0: 10.0_f64,
+                transient_impact_coeff_eta: 0.085_f64,
+                resilience_decay_rate_rho: 1.60_f64,
+                permanent_impact_coeff_gamma: 0.025_f64,
+                price_volatility_sigma: 0.32_f64,
+                risk_aversion_lambda: 0.15_f64,
+                execution_horizon_hours_t: 4.0_f64,
+            };
+            let res = evaluate_gatheral_schied_slynko_transient_impact_execution(&base);
+            assert!(
+                res.boundary_block_trade_fraction > 0.0 && res.boundary_block_trade_fraction < 0.5
+            );
+            assert!(res.interior_continuous_trading_rate > 0.0);
+            assert!(res.urgency_hyperbolic_parameter_kappa > 0.0);
+            assert!(res.expected_implementation_shortfall_cost > 0.0);
+
+            let inputs = [
+                base.order_size_shares_x0,
+                base.transient_impact_coeff_eta,
+                base.resilience_decay_rate_rho,
+                base.permanent_impact_coeff_gamma,
+                base.price_volatility_sigma,
+                base.risk_aversion_lambda,
+                base.execution_horizon_hours_t,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = GatheralSchiedSlynkoTransientImpactSpec {
+                order_size_shares_x0: dual_in[0],
+                transient_impact_coeff_eta: dual_in[1],
+                resilience_decay_rate_rho: dual_in[2],
+                permanent_impact_coeff_gamma: dual_in[3],
+                price_volatility_sigma: dual_in[4],
+                risk_aversion_lambda: dual_in[5],
+                execution_horizon_hours_t: dual_in[6],
+            };
+            let ad = evaluate_gatheral_schied_slynko_transient_impact_execution(&spec_ad)
+                .expected_implementation_shortfall_cost;
+            let eps = 1e-7;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let f_p = evaluate_gatheral_schied_slynko_transient_impact_execution(
+                    &GatheralSchiedSlynkoTransientImpactSpec {
+                        order_size_shares_x0: p[0],
+                        transient_impact_coeff_eta: p[1],
+                        resilience_decay_rate_rho: p[2],
+                        permanent_impact_coeff_gamma: p[3],
+                        price_volatility_sigma: p[4],
+                        risk_aversion_lambda: p[5],
+                        execution_horizon_hours_t: p[6],
+                    },
+                )
+                .expected_implementation_shortfall_cost;
+                let f_m = evaluate_gatheral_schied_slynko_transient_impact_execution(
+                    &GatheralSchiedSlynkoTransientImpactSpec {
+                        order_size_shares_x0: m[0],
+                        transient_impact_coeff_eta: m[1],
+                        resilience_decay_rate_rho: m[2],
+                        permanent_impact_coeff_gamma: m[3],
+                        price_volatility_sigma: m[4],
+                        risk_aversion_lambda: m[5],
+                        execution_horizon_hours_t: m[6],
+                    },
+                )
+                .expected_implementation_shortfall_cost;
+                let fd = (f_p - f_m) / (2.0 * eps);
+                assert!(ad.d[i].abs() > 1e-6, "zero derivative at index {i}");
+                assert!(
+                    (ad.d[i] - fd).abs() < 1e-4,
+                    "mismatch at index {i}: ad={} fd={}",
+                    ad.d[i],
+                    fd
+                );
+            }
+        }
+    }
+}
+pub use gatheral_schied_slynko_transient_impact_mod::{
+    GatheralSchiedSlynkoTransientImpactAnalytics, GatheralSchiedSlynkoTransientImpactSpec,
+    evaluate_gatheral_schied_slynko_transient_impact_execution,
+};

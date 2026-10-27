@@ -2526,3 +2526,174 @@ mod mercurio_russo_ibor_ois_basis_mod {
     }
 }
 pub use mercurio_russo_ibor_ois_basis_mod::*;
+
+mod lyashenko_mercurio_rfr_in_arrears_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Lyashenko & Mercurio (2019, *Risk*, *"Looking Forward to
+    /// Backward-Looking Rates: A Modeling Framework for Term Rates Replaced by Overnight
+    /// Averages"*) Extended-FMM overnight RFR in-arrears vs. in-advance caplet convexity engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct LyashenkoMercurioRfrInArrearsCapletSpec<T: Real> {
+        /// Initial forward overnight RFR term rate $F_{i,0} > 0$ over $[T_{i-1}, T_i]$ (e.g., $0.042$).
+        pub forward_rfr_rate_f0: T,
+        /// Caplet strike rate $K > 0$ (e.g., $0.040$).
+        pub strike_rate_k: T,
+        /// Accrual start date $T_{i-1} > 0$ in years (e.g., $0.50$).
+        pub fixing_start_years_t_prev: T,
+        /// Accrual period year fraction $\tau_i = T_i - T_{i-1} > 0$ (e.g., $0.25$).
+        pub accrual_fraction_tau: T,
+        /// Pre-accrual Black volatility $\sigma_i > 0$ of the forward rate (e.g., $0.24$).
+        pub rfr_forward_volatility_sigma: T,
+        /// Discount factor $P(0, T_i) \in (0, 1)$ to payment date $T_i$ (e.g., $0.968$).
+        pub discount_factor_p_ti: T,
+    }
+
+    /// Analytics returned by [`evaluate_lyashenko_mercurio_rfr_in_arrears_caplet_convexity`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct LyashenkoMercurioRfrInArrearsCapletAnalytics<T: Real> {
+        /// Effective annualized Black volatility $\sigma_{\text{eff,arr}} = \sigma_i\sqrt{\frac{T_{i-1} + \tau_i / 3}{T_{i-1} + \tau_i}}$.
+        pub effective_in_arrears_volatility: T,
+        /// Integrated variance pickup ratio $V_{\text{arr}} / V_{\text{adv}} = 1 + \frac{\tau_i}{3 T_{i-1}} > 1$.
+        pub in_arrears_variance_pickup_ratio: T,
+        /// Early-settlement in-advance convexity adjustment $\Delta F_{\text{conv}}^{\text{bps}}$ in basis points.
+        pub in_arrears_convexity_adjustment_bps: T,
+        /// Present value of the backward-looking in-arrears RFR caplet per $100$ notional.
+        pub in_arrears_rfr_caplet_pv: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        let z = x * T::from_f64(0.707_106_781_186_547_5);
+        T::from_f64(0.5) * (T::one() + z.erf())
+    }
+
+    /// Evaluates the Lyashenko & Mercurio (2019, §3–§4) Extended-FMM linear volatility decay
+    /// inside the accrual period $[T_{i-1}, T_i]$, yielding integrated in-arrears variance:
+    /// $$V_{\text{arr}} = \sigma_i^2\left(T_{i-1} + \frac{1}{3}\tau_i\right), \qquad V_{\text{adv}} = \sigma_i^2 T_{i-1},$$
+    /// early-payment convexity spread $\Delta F_{\text{conv}} = \frac{\tau_i F_{i,0}^2}{1 + \tau_i F_{i,0}}\sigma_i^2 T_{i-1}$,
+    /// and Black-76 in-arrears RFR caplet present value per $100$ par notional.
+    pub fn evaluate_lyashenko_mercurio_rfr_in_arrears_caplet_convexity<T: Real>(
+        spec: &LyashenkoMercurioRfrInArrearsCapletSpec<T>,
+    ) -> LyashenkoMercurioRfrInArrearsCapletAnalytics<T> {
+        let f0 = spec.forward_rfr_rate_f0;
+        let k = spec.strike_rate_k;
+        let t_prev = spec.fixing_start_years_t_prev;
+        let tau = spec.accrual_fraction_tau;
+        let sig = spec.rfr_forward_volatility_sigma;
+        let df = spec.discount_factor_p_ti;
+
+        let third = T::one() / T::from_f64(3.0);
+        let t_eff = t_prev + third * tau;
+        let t_end = t_prev + tau;
+        let sig2 = sig * sig;
+
+        let v_arr = sig2 * t_eff;
+        let std_arr = v_arr.sqrt();
+        let sig_eff = sig * (t_eff / t_end).sqrt();
+        let var_ratio = T::one() + tau / (T::from_f64(3.0) * t_prev);
+
+        let conv_adj = (tau * f0 * f0 / (T::one() + tau * f0)) * sig2 * t_prev;
+        let conv_bps = T::from_f64(10_000.0) * conv_adj;
+
+        let log_fk = (f0 / k).ln();
+        let d1 = (log_fk + T::from_f64(0.5) * v_arr) / std_arr;
+        let d2 = d1 - std_arr;
+        let caplet_pv =
+            T::from_f64(100.0) * df * tau * (f0 * std_norm_cdf(d1) - k * std_norm_cdf(d2));
+
+        LyashenkoMercurioRfrInArrearsCapletAnalytics {
+            effective_in_arrears_volatility: sig_eff,
+            in_arrears_variance_pickup_ratio: var_ratio,
+            in_arrears_convexity_adjustment_bps: conv_bps,
+            in_arrears_rfr_caplet_pv: caplet_pv,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn lyashenko_mercurio_rfr_in_arrears_invariants_and_ad_parity() {
+            let base = LyashenkoMercurioRfrInArrearsCapletSpec {
+                forward_rfr_rate_f0: 0.042_f64,
+                strike_rate_k: 0.040_f64,
+                fixing_start_years_t_prev: 0.50_f64,
+                accrual_fraction_tau: 0.25_f64,
+                rfr_forward_volatility_sigma: 0.24_f64,
+                discount_factor_p_ti: 0.968_f64,
+            };
+            let res = evaluate_lyashenko_mercurio_rfr_in_arrears_caplet_convexity(&base);
+            assert!(res.effective_in_arrears_volatility > 0.0);
+            assert!(res.in_arrears_variance_pickup_ratio > 1.0);
+            assert!(res.in_arrears_convexity_adjustment_bps > 0.0);
+            assert!(res.in_arrears_rfr_caplet_pv > 0.0);
+
+            let inputs = [
+                base.forward_rfr_rate_f0,
+                base.strike_rate_k,
+                base.fixing_start_years_t_prev,
+                base.accrual_fraction_tau,
+                base.rfr_forward_volatility_sigma,
+                base.discount_factor_p_ti,
+            ];
+            let mut dual_in = [Dual::<6>::from_value(0.0); 6];
+            for i in 0..6 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = LyashenkoMercurioRfrInArrearsCapletSpec {
+                forward_rfr_rate_f0: dual_in[0],
+                strike_rate_k: dual_in[1],
+                fixing_start_years_t_prev: dual_in[2],
+                accrual_fraction_tau: dual_in[3],
+                rfr_forward_volatility_sigma: dual_in[4],
+                discount_factor_p_ti: dual_in[5],
+            };
+            let ad = evaluate_lyashenko_mercurio_rfr_in_arrears_caplet_convexity(&spec_ad)
+                .in_arrears_rfr_caplet_pv;
+            let eps = 1e-7;
+            for i in 0..6 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let f_p = evaluate_lyashenko_mercurio_rfr_in_arrears_caplet_convexity(
+                    &LyashenkoMercurioRfrInArrearsCapletSpec {
+                        forward_rfr_rate_f0: p[0],
+                        strike_rate_k: p[1],
+                        fixing_start_years_t_prev: p[2],
+                        accrual_fraction_tau: p[3],
+                        rfr_forward_volatility_sigma: p[4],
+                        discount_factor_p_ti: p[5],
+                    },
+                )
+                .in_arrears_rfr_caplet_pv;
+                let f_m = evaluate_lyashenko_mercurio_rfr_in_arrears_caplet_convexity(
+                    &LyashenkoMercurioRfrInArrearsCapletSpec {
+                        forward_rfr_rate_f0: m[0],
+                        strike_rate_k: m[1],
+                        fixing_start_years_t_prev: m[2],
+                        accrual_fraction_tau: m[3],
+                        rfr_forward_volatility_sigma: m[4],
+                        discount_factor_p_ti: m[5],
+                    },
+                )
+                .in_arrears_rfr_caplet_pv;
+                let fd = (f_p - f_m) / (2.0 * eps);
+                assert!(ad.d[i].abs() > 1e-6, "zero derivative at index {i}");
+                assert!(
+                    (ad.d[i] - fd).abs() < 1e-4,
+                    "mismatch at index {i}: ad={} fd={}",
+                    ad.d[i],
+                    fd
+                );
+            }
+        }
+    }
+}
+pub use lyashenko_mercurio_rfr_in_arrears_mod::{
+    LyashenkoMercurioRfrInArrearsCapletAnalytics, LyashenkoMercurioRfrInArrearsCapletSpec,
+    evaluate_lyashenko_mercurio_rfr_in_arrears_caplet_convexity,
+};

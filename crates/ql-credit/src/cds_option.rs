@@ -2962,3 +2962,191 @@ mod duffie_lando_das_sundaram_cds_mod {
     }
 }
 pub use duffie_lando_das_sundaram_cds_mod::*;
+
+mod pedersen_brigo_cds_index_option_fep_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Pedersen (2003), Brigo & Morini (2005), and O'Kane (2008,
+    /// *Modelling Single-Name and Multi-Name Credit Derivatives*, Ch. 11) CDS Index Option
+    /// (CDX / iTraxx Payer Swaption) with Front-End Protection (FEP) engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct PedersenBrigoCdsIndexOptionFepSpec<T: Real> {
+        /// Current market CDS index par spread $S_0 > 0$ (e.g., $0.0095$ for 95 bps).
+        pub current_index_spread_s0: T,
+        /// Swaption contractual strike spread $K > 0$ (e.g., $0.0105$).
+        pub strike_spread_k: T,
+        /// Contractual index running coupon $C_{\text{idx}} > 0$ (e.g., $0.0100$ for 100 bps).
+        pub index_running_coupon_c: T,
+        /// Forward risky PV01 annuity $A_0 = \text{RPV01}(T_e, T_M) > 0$ (e.g., $4.15$).
+        pub forward_rpv01_annuity_a0: T,
+        /// Black spread volatility $\sigma_S > 0$ (e.g., $0.48$).
+        pub spread_volatility_sigma_s: T,
+        /// Constituent recovery rate $R_{\text{rec}} \in (0, 1)$ (e.g., $0.40$).
+        pub recovery_rate_r: T,
+        /// Risk-free discount rate $r > 0$ (e.g., $0.036$).
+        pub risk_free_rate_rf: T,
+        /// Option expiry $T_e > 0$ in years (e.g., $0.50$).
+        pub option_expiry_years_te: T,
+    }
+
+    /// Analytics returned by [`evaluate_pedersen_brigo_cds_index_option_fep_swaption`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct PedersenBrigoCdsIndexOptionFepAnalytics<T: Real> {
+        /// Present value of Front-End Protection $\text{FEP}_0$ per $100$ notional.
+        pub front_end_protection_pv_pct: T,
+        /// Default-adjusted forward spread $F_{\text{adj}} = S_0 + \text{FEP}_0 / A_0$ in basis points.
+        pub fep_adjusted_forward_spread_bps: T,
+        /// Forward-measure payer exercise probability $\Phi(d_2) \in (0, 1)$.
+        pub payer_exercise_probability_nd2: T,
+        /// Black-76 FEP-adjusted CDS index payer swaption present value per $100$ notional.
+        pub cds_index_payer_swaption_pv_pct: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        let z = x * T::from_f64(0.707_106_781_186_547_5);
+        T::from_f64(0.5) * (T::one() + z.erf())
+    }
+
+    /// Evaluates the Pedersen (2003) and O'Kane (2008, §11.4, Eqs. 11.11–11.14) CDS index
+    /// payer swaption with Front-End Protection $\text{FEP}_0 = (1 - R_{\text{rec}})(1 - e^{-\lambda_{\text{idx}} T_e})e^{-\frac{1}{2}r T_e}$,
+    /// FEP-adjusted forward spread $F_{\text{adj}} = S_0 + \text{FEP}_0 / A_0$, and surviving-notional
+    /// adjusted strike spread $K_{\text{adj}} = C_{\text{idx}} + (K - C_{\text{idx}})e^{-\lambda_{\text{idx}} T_e}$.
+    pub fn evaluate_pedersen_brigo_cds_index_option_fep_swaption<T: Real>(
+        spec: &PedersenBrigoCdsIndexOptionFepSpec<T>,
+    ) -> PedersenBrigoCdsIndexOptionFepAnalytics<T> {
+        let s0 = spec.current_index_spread_s0;
+        let k = spec.strike_spread_k;
+        let c_idx = spec.index_running_coupon_c;
+        let a0 = spec.forward_rpv01_annuity_a0;
+        let sig_s = spec.spread_volatility_sigma_s;
+        let rec = spec.recovery_rate_r;
+        let rf = spec.risk_free_rate_rf;
+        let te = spec.option_expiry_years_te;
+
+        let lgd = T::one() - rec;
+        let lambda_idx = s0 / lgd;
+        let surv_te = (-lambda_idx * te).exp();
+        let df_half = (-T::from_f64(0.5) * rf * te).exp();
+        let df_te = (-rf * te).exp();
+
+        let fep_0 = lgd * (T::one() - surv_te) * df_half;
+        let f_adj = s0 + fep_0 / a0;
+        let k_adj = c_idx + (k - c_idx) * surv_te;
+
+        let std_s = sig_s * te.sqrt();
+        let d1 = ((f_adj / k_adj).ln() + T::from_f64(0.5) * std_s * std_s) / std_s;
+        let d2 = d1 - std_s;
+        let nd1 = std_norm_cdf(d1);
+        let nd2 = std_norm_cdf(d2);
+
+        let payer_pv = T::from_f64(100.0) * df_te * a0 * (f_adj * nd1 - k_adj * nd2);
+
+        PedersenBrigoCdsIndexOptionFepAnalytics {
+            front_end_protection_pv_pct: T::from_f64(100.0) * fep_0,
+            fep_adjusted_forward_spread_bps: T::from_f64(10_000.0) * f_adj,
+            payer_exercise_probability_nd2: nd2,
+            cds_index_payer_swaption_pv_pct: payer_pv,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn pedersen_brigo_cds_index_option_fep_invariants_and_ad_parity() {
+            let base = PedersenBrigoCdsIndexOptionFepSpec {
+                current_index_spread_s0: 0.0095_f64,
+                strike_spread_k: 0.0108_f64,
+                index_running_coupon_c: 0.0100_f64,
+                forward_rpv01_annuity_a0: 4.15_f64,
+                spread_volatility_sigma_s: 0.48_f64,
+                recovery_rate_r: 0.40_f64,
+                risk_free_rate_rf: 0.036_f64,
+                option_expiry_years_te: 0.50_f64,
+            };
+            let res = evaluate_pedersen_brigo_cds_index_option_fep_swaption(&base);
+            assert!(res.front_end_protection_pv_pct > 0.0);
+            assert!(res.fep_adjusted_forward_spread_bps > 95.0);
+            assert!(
+                res.payer_exercise_probability_nd2 > 0.0
+                    && res.payer_exercise_probability_nd2 < 1.0
+            );
+            assert!(res.cds_index_payer_swaption_pv_pct > 0.0);
+
+            let inputs = [
+                base.current_index_spread_s0,
+                base.strike_spread_k,
+                base.index_running_coupon_c,
+                base.forward_rpv01_annuity_a0,
+                base.spread_volatility_sigma_s,
+                base.recovery_rate_r,
+                base.risk_free_rate_rf,
+                base.option_expiry_years_te,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = PedersenBrigoCdsIndexOptionFepSpec {
+                current_index_spread_s0: dual_in[0],
+                strike_spread_k: dual_in[1],
+                index_running_coupon_c: dual_in[2],
+                forward_rpv01_annuity_a0: dual_in[3],
+                spread_volatility_sigma_s: dual_in[4],
+                recovery_rate_r: dual_in[5],
+                risk_free_rate_rf: dual_in[6],
+                option_expiry_years_te: dual_in[7],
+            };
+            let ad = evaluate_pedersen_brigo_cds_index_option_fep_swaption(&spec_ad)
+                .cds_index_payer_swaption_pv_pct;
+            let eps = 1e-7;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let f_p = evaluate_pedersen_brigo_cds_index_option_fep_swaption(
+                    &PedersenBrigoCdsIndexOptionFepSpec {
+                        current_index_spread_s0: p[0],
+                        strike_spread_k: p[1],
+                        index_running_coupon_c: p[2],
+                        forward_rpv01_annuity_a0: p[3],
+                        spread_volatility_sigma_s: p[4],
+                        recovery_rate_r: p[5],
+                        risk_free_rate_rf: p[6],
+                        option_expiry_years_te: p[7],
+                    },
+                )
+                .cds_index_payer_swaption_pv_pct;
+                let f_m = evaluate_pedersen_brigo_cds_index_option_fep_swaption(
+                    &PedersenBrigoCdsIndexOptionFepSpec {
+                        current_index_spread_s0: m[0],
+                        strike_spread_k: m[1],
+                        index_running_coupon_c: m[2],
+                        forward_rpv01_annuity_a0: m[3],
+                        spread_volatility_sigma_s: m[4],
+                        recovery_rate_r: m[5],
+                        risk_free_rate_rf: m[6],
+                        option_expiry_years_te: m[7],
+                    },
+                )
+                .cds_index_payer_swaption_pv_pct;
+                let fd = (f_p - f_m) / (2.0 * eps);
+                assert!(ad.d[i].abs() > 1e-6, "zero derivative at index {i}");
+                assert!(
+                    (ad.d[i] - fd).abs() < 1e-4,
+                    "mismatch at index {i}: ad={} fd={}",
+                    ad.d[i],
+                    fd
+                );
+            }
+        }
+    }
+}
+pub use pedersen_brigo_cds_index_option_fep_mod::{
+    PedersenBrigoCdsIndexOptionFepAnalytics, PedersenBrigoCdsIndexOptionFepSpec,
+    evaluate_pedersen_brigo_cds_index_option_fep_swaption,
+};

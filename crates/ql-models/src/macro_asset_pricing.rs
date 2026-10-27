@@ -3877,3 +3877,171 @@ mod pastor_veronesi_political_uncertainty_mod {
     }
 }
 pub use pastor_veronesi_political_uncertainty_mod::*;
+
+mod lettau_ludvigson_cay_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Lettau & Ludvigson (2001, *Journal of Finance* 56(3),
+    /// *"Consumption, Aggregate Wealth, and Expected Stock Returns"*; 2001b, *JPE* 109(6))
+    /// cointegrating consumption–wealth ratio ($\text{cay}_t$) conditional CCAPM engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct LettauLudvigsonCayConditionalRiskPremiumSpec<T: Real> {
+        /// Standardized log aggregate consumption $c_t$ (e.g., $10.24$).
+        pub log_consumption_c: T,
+        /// Standardized log household financial asset wealth $a_t$ (e.g., $10.05$).
+        pub log_asset_wealth_a: T,
+        /// Standardized log labor income $y_t$ (e.g., $10.28$).
+        pub log_labor_income_y: T,
+        /// Cointegrating asset-wealth share $\omega_a \in (0, 1)$ (e.g., $0.32$).
+        pub asset_wealth_cointegration_share_omega: T,
+        /// Baseline unconditional relative risk aversion $\gamma_0 > 0$ (e.g., $12.0$).
+        pub baseline_risk_aversion_gamma0: T,
+        /// Conditioning sensitivity $\gamma_1 > 0$ of risk aversion to $\text{cay}_t$ (e.g., $185.0$).
+        pub cay_conditioning_sensitivity_gamma1: T,
+        /// Annualized aggregate consumption growth volatility $\sigma_c > 0$ (e.g., $0.018$).
+        pub consumption_volatility_sigma_c: T,
+        /// Annualized equity market return volatility $\sigma_m > 0$ (e.g., $0.165$).
+        pub equity_return_volatility_sigma_m: T,
+    }
+
+    /// Analytics returned by [`evaluate_lettau_ludvigson_cay_conditional_equity_premium`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct LettauLudvigsonCayConditionalRiskPremiumAnalytics<T: Real> {
+        /// Cointegrating consumption-wealth residual $\text{cay}_t = c_t - \omega_a a_t - (1 - \omega_a) y_t$.
+        pub cointegrating_residual_cay: T,
+        /// Time-varying effective relative risk aversion $\gamma_{\text{eff}}(\text{cay}_t) = \gamma_0 + \gamma_1\text{cay}_t$.
+        pub conditional_effective_risk_aversion: T,
+        /// Conditional expected equity risk premium $\mathbb{E}_t[R_{m,t+1} - R_{f,t}]$.
+        pub conditional_equity_risk_premium: T,
+        /// Conditional equity market Sharpe ratio $SR_t(\text{cay}_t) = \mathbb{E}_t[R_{m,t+1} - R_{f,t}] / \sigma_m$.
+        pub conditional_sharpe_ratio: T,
+    }
+
+    /// Evaluates the Lettau & Ludvigson (2001, Eq. 6; 2001b, Eq. 8) cointegrating residual
+    /// $\text{cay}_t = c_t - \omega_a a_t - (1 - \omega_a) y_t$, conditional effective risk
+    /// aversion $\gamma_{\text{eff}}(\text{cay}_t) = \gamma_0 + \gamma_1\text{cay}_t$, and
+    /// conditional CCAPM equity risk premium.
+    pub fn evaluate_lettau_ludvigson_cay_conditional_equity_premium<T: Real>(
+        spec: &LettauLudvigsonCayConditionalRiskPremiumSpec<T>,
+    ) -> LettauLudvigsonCayConditionalRiskPremiumAnalytics<T> {
+        let c_t = spec.log_consumption_c;
+        let a_t = spec.log_asset_wealth_a;
+        let y_t = spec.log_labor_income_y;
+        let omega = spec.asset_wealth_cointegration_share_omega;
+        let gam0 = spec.baseline_risk_aversion_gamma0;
+        let gam1 = spec.cay_conditioning_sensitivity_gamma1;
+        let sig_c = spec.consumption_volatility_sigma_c;
+        let sig_m = spec.equity_return_volatility_sigma_m;
+
+        let cay = c_t - omega * a_t - (T::one() - omega) * y_t;
+        let gam_eff = gam0 + gam1 * cay;
+        let rho_cm = T::from_f64(0.65);
+        let erp = gam_eff * rho_cm * sig_c * sig_m + T::from_f64(0.5) * sig_m * sig_m * cay;
+        let sr = erp / sig_m;
+
+        LettauLudvigsonCayConditionalRiskPremiumAnalytics {
+            cointegrating_residual_cay: cay,
+            conditional_effective_risk_aversion: gam_eff,
+            conditional_equity_risk_premium: erp,
+            conditional_sharpe_ratio: sr,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn lettau_ludvigson_cay_invariants_and_ad_parity() {
+            let base = LettauLudvigsonCayConditionalRiskPremiumSpec {
+                log_consumption_c: 10.24_f64,
+                log_asset_wealth_a: 10.05_f64,
+                log_labor_income_y: 10.28_f64,
+                asset_wealth_cointegration_share_omega: 0.32_f64,
+                baseline_risk_aversion_gamma0: 12.0_f64,
+                cay_conditioning_sensitivity_gamma1: 185.0_f64,
+                consumption_volatility_sigma_c: 0.018_f64,
+                equity_return_volatility_sigma_m: 0.165_f64,
+            };
+            let res = evaluate_lettau_ludvigson_cay_conditional_equity_premium(&base);
+            assert!(res.cointegrating_residual_cay > 0.0);
+            assert!(res.conditional_effective_risk_aversion > base.baseline_risk_aversion_gamma0);
+            assert!(res.conditional_equity_risk_premium > 0.03);
+            assert!(res.conditional_sharpe_ratio > 0.15);
+
+            let inputs = [
+                base.log_consumption_c,
+                base.log_asset_wealth_a,
+                base.log_labor_income_y,
+                base.asset_wealth_cointegration_share_omega,
+                base.baseline_risk_aversion_gamma0,
+                base.cay_conditioning_sensitivity_gamma1,
+                base.consumption_volatility_sigma_c,
+                base.equity_return_volatility_sigma_m,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = LettauLudvigsonCayConditionalRiskPremiumSpec {
+                log_consumption_c: dual_in[0],
+                log_asset_wealth_a: dual_in[1],
+                log_labor_income_y: dual_in[2],
+                asset_wealth_cointegration_share_omega: dual_in[3],
+                baseline_risk_aversion_gamma0: dual_in[4],
+                cay_conditioning_sensitivity_gamma1: dual_in[5],
+                consumption_volatility_sigma_c: dual_in[6],
+                equity_return_volatility_sigma_m: dual_in[7],
+            };
+            let ad = evaluate_lettau_ludvigson_cay_conditional_equity_premium(&spec_ad)
+                .conditional_equity_risk_premium;
+            let eps = 1e-7;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let f_p = evaluate_lettau_ludvigson_cay_conditional_equity_premium(
+                    &LettauLudvigsonCayConditionalRiskPremiumSpec {
+                        log_consumption_c: p[0],
+                        log_asset_wealth_a: p[1],
+                        log_labor_income_y: p[2],
+                        asset_wealth_cointegration_share_omega: p[3],
+                        baseline_risk_aversion_gamma0: p[4],
+                        cay_conditioning_sensitivity_gamma1: p[5],
+                        consumption_volatility_sigma_c: p[6],
+                        equity_return_volatility_sigma_m: p[7],
+                    },
+                )
+                .conditional_equity_risk_premium;
+                let f_m = evaluate_lettau_ludvigson_cay_conditional_equity_premium(
+                    &LettauLudvigsonCayConditionalRiskPremiumSpec {
+                        log_consumption_c: m[0],
+                        log_asset_wealth_a: m[1],
+                        log_labor_income_y: m[2],
+                        asset_wealth_cointegration_share_omega: m[3],
+                        baseline_risk_aversion_gamma0: m[4],
+                        cay_conditioning_sensitivity_gamma1: m[5],
+                        consumption_volatility_sigma_c: m[6],
+                        equity_return_volatility_sigma_m: m[7],
+                    },
+                )
+                .conditional_equity_risk_premium;
+                let fd = (f_p - f_m) / (2.0 * eps);
+                assert!(ad.d[i].abs() > 1e-6, "zero derivative at index {i}");
+                assert!(
+                    (ad.d[i] - fd).abs() < 1e-4,
+                    "mismatch at index {i}: ad={} fd={}",
+                    ad.d[i],
+                    fd
+                );
+            }
+        }
+    }
+}
+pub use lettau_ludvigson_cay_mod::{
+    LettauLudvigsonCayConditionalRiskPremiumAnalytics,
+    LettauLudvigsonCayConditionalRiskPremiumSpec,
+    evaluate_lettau_ludvigson_cay_conditional_equity_premium,
+};

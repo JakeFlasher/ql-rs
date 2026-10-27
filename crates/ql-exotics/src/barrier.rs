@@ -1739,3 +1739,185 @@ mod chesney_jeanblanc_yor_parisian_mod {
     }
 }
 pub use chesney_jeanblanc_yor_parisian_mod::*;
+
+mod broadie_glasserman_kou_discrete_barrier_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Broadie, Glasserman & Kou (1997, *Mathematical Finance* 7(4),
+    /// *"A Continuity Correction for Discrete Barrier Options"*) discrete down-and-out call
+    /// continuity correction ($\beta = -\zeta(1/2)/\sqrt{2\pi} \approx 0.5826$) engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct BroadieGlassermanKouDiscreteBarrierCallSpec<T: Real> {
+        /// Underlying spot price $S_0 > H$ (e.g., $100.0$).
+        pub spot_price_s0: T,
+        /// Option strike price $K \ge H$ (e.g., $100.0$).
+        pub strike_price_k: T,
+        /// Contractual lower knock-out barrier $H < S_0$ (e.g., $88.0$).
+        pub lower_barrier_h: T,
+        /// Risk-free continuously compounded rate $r > 0$ (e.g., $0.045$).
+        pub risk_free_rate_r: T,
+        /// Underlying return volatility $\sigma > 0$ (e.g., $0.24$).
+        pub volatility_sigma: T,
+        /// Option maturity $T > 0$ in years (e.g., $1.0$).
+        pub maturity_years_t: T,
+        /// Number of discrete monitoring dates $M > 0$ over $[0, T]$ (e.g., $52.0$).
+        pub monitoring_intervals_m: T,
+    }
+
+    /// Analytics returned by [`evaluate_broadie_glasserman_kou_discrete_barrier_call`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct BroadieGlassermanKouDiscreteBarrierCallAnalytics<T: Real> {
+        /// Continuity-corrected discrete barrier $H_{\text{adj}} = H \exp(-\beta_{\text{BGK}}\sigma\sqrt{T/M}) < H$.
+        pub shifted_discrete_barrier_h_adj: T,
+        /// Continuous-monitoring down-and-out call price $C_{\text{DO}}^{\text{cont}}(H)$.
+        pub continuous_down_and_out_call: T,
+        /// Discrete-monitoring Broadie–Glasserman–Kou down-and-out call price $C_{\text{DO}}^{\text{disc}}(H_{\text{adj}})$.
+        pub discrete_bgk_down_and_out_call: T,
+        /// Discrete vs. continuous monitoring price pickup $C_{\text{DO}}^{\text{disc}} - C_{\text{DO}}^{\text{cont}} > 0$.
+        pub discrete_monitoring_price_pickup: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        let z = x * T::from_f64(0.707_106_781_186_547_5);
+        T::from_f64(0.5) * (T::one() + z.erf())
+    }
+
+    #[inline]
+    fn bs_call<T: Real>(s: T, k: T, r: T, sig: T, t: T) -> T {
+        let std_t = sig * t.sqrt();
+        let d1 = ((s / k).ln() + (r + T::from_f64(0.5) * sig * sig) * t) / std_t;
+        let d2 = d1 - std_t;
+        s * std_norm_cdf(d1) - k * (-r * t).exp() * std_norm_cdf(d2)
+    }
+
+    /// Evaluates Theorem 1 of Broadie, Glasserman & Kou (1997): shifting the lower knock-out
+    /// barrier $H \mapsto H_{\text{adj}} = H \exp(-\beta_{\text{BGK}}\sigma\sqrt{T/M})$ with
+    /// $\beta_{\text{BGK}} = -\zeta(1/2)/\sqrt{2\pi} \approx 0.5825971579$ prices the $M$-date
+    /// discretely monitored down-and-out call to $O(M^{-1})$ accuracy.
+    pub fn evaluate_broadie_glasserman_kou_discrete_barrier_call<T: Real>(
+        spec: &BroadieGlassermanKouDiscreteBarrierCallSpec<T>,
+    ) -> BroadieGlassermanKouDiscreteBarrierCallAnalytics<T> {
+        let s0 = spec.spot_price_s0;
+        let k = spec.strike_price_k;
+        let h = spec.lower_barrier_h;
+        let r = spec.risk_free_rate_r;
+        let sig = spec.volatility_sigma;
+        let t = spec.maturity_years_t;
+        let m = spec.monitoring_intervals_m;
+
+        let beta_bgk = T::from_f64(0.582_597_157_939_010_7);
+        let dt_sqrt = (t / m).sqrt();
+        let h_adj = h * (-beta_bgk * sig * dt_sqrt).exp();
+
+        let vanilla = bs_call(s0, k, r, sig, t);
+        let refl_exp = T::from_f64(2.0) * r / (sig * sig) - T::one();
+
+        let h_ratio_cont = (h / s0).pow(refl_exp);
+        let c_refl_cont = bs_call(h * h / s0, k, r, sig, t);
+        let c_do_cont = vanilla - h_ratio_cont * c_refl_cont;
+
+        let h_ratio_disc = (h_adj / s0).pow(refl_exp);
+        let c_refl_disc = bs_call(h_adj * h_adj / s0, k, r, sig, t);
+        let c_do_disc = vanilla - h_ratio_disc * c_refl_disc;
+
+        BroadieGlassermanKouDiscreteBarrierCallAnalytics {
+            shifted_discrete_barrier_h_adj: h_adj,
+            continuous_down_and_out_call: c_do_cont,
+            discrete_bgk_down_and_out_call: c_do_disc,
+            discrete_monitoring_price_pickup: c_do_disc - c_do_cont,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn broadie_glasserman_kou_discrete_barrier_invariants_and_ad_parity() {
+            let base = BroadieGlassermanKouDiscreteBarrierCallSpec {
+                spot_price_s0: 100.0_f64,
+                strike_price_k: 100.0_f64,
+                lower_barrier_h: 88.0_f64,
+                risk_free_rate_r: 0.045_f64,
+                volatility_sigma: 0.24_f64,
+                maturity_years_t: 1.0_f64,
+                monitoring_intervals_m: 52.0_f64,
+            };
+            let res = evaluate_broadie_glasserman_kou_discrete_barrier_call(&base);
+            assert!(res.shifted_discrete_barrier_h_adj < base.lower_barrier_h);
+            assert!(res.continuous_down_and_out_call > 0.0);
+            assert!(res.discrete_bgk_down_and_out_call > res.continuous_down_and_out_call);
+            assert!(res.discrete_monitoring_price_pickup > 0.0);
+
+            let inputs = [
+                base.spot_price_s0,
+                base.strike_price_k,
+                base.lower_barrier_h,
+                base.risk_free_rate_r,
+                base.volatility_sigma,
+                base.maturity_years_t,
+                base.monitoring_intervals_m,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BroadieGlassermanKouDiscreteBarrierCallSpec {
+                spot_price_s0: dual_in[0],
+                strike_price_k: dual_in[1],
+                lower_barrier_h: dual_in[2],
+                risk_free_rate_r: dual_in[3],
+                volatility_sigma: dual_in[4],
+                maturity_years_t: dual_in[5],
+                monitoring_intervals_m: dual_in[6],
+            };
+            let ad = evaluate_broadie_glasserman_kou_discrete_barrier_call(&spec_ad)
+                .discrete_bgk_down_and_out_call;
+            let eps = 1e-7;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let f_p = evaluate_broadie_glasserman_kou_discrete_barrier_call(
+                    &BroadieGlassermanKouDiscreteBarrierCallSpec {
+                        spot_price_s0: p[0],
+                        strike_price_k: p[1],
+                        lower_barrier_h: p[2],
+                        risk_free_rate_r: p[3],
+                        volatility_sigma: p[4],
+                        maturity_years_t: p[5],
+                        monitoring_intervals_m: p[6],
+                    },
+                )
+                .discrete_bgk_down_and_out_call;
+                let f_m = evaluate_broadie_glasserman_kou_discrete_barrier_call(
+                    &BroadieGlassermanKouDiscreteBarrierCallSpec {
+                        spot_price_s0: m[0],
+                        strike_price_k: m[1],
+                        lower_barrier_h: m[2],
+                        risk_free_rate_r: m[3],
+                        volatility_sigma: m[4],
+                        maturity_years_t: m[5],
+                        monitoring_intervals_m: m[6],
+                    },
+                )
+                .discrete_bgk_down_and_out_call;
+                let fd = (f_p - f_m) / (2.0 * eps);
+                assert!(ad.d[i].abs() > 1e-6, "zero derivative at index {i}");
+                assert!(
+                    (ad.d[i] - fd).abs() < 1e-4,
+                    "mismatch at index {i}: ad={} fd={}",
+                    ad.d[i],
+                    fd
+                );
+            }
+        }
+    }
+}
+pub use broadie_glasserman_kou_discrete_barrier_mod::{
+    BroadieGlassermanKouDiscreteBarrierCallAnalytics, BroadieGlassermanKouDiscreteBarrierCallSpec,
+    evaluate_broadie_glasserman_kou_discrete_barrier_call,
+};

@@ -3787,3 +3787,176 @@ mod patton_sjc_copula_mod {
     }
 }
 pub use patton_sjc_copula_mod::*;
+
+mod corsi_bpq_harq_volatility_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Corsi (2009, *Journal of Financial Econometrics* 7(2)) and
+    /// Bollerslev, Patton & Quaedvlieg (2016, *Journal of Econometrics* 192(1), *"Exploiting the
+    /// Errors: A Simple Approach for Improved Volatility Forecasting"*) HARQ realized-quarticity
+    /// attenuation volatility forecast engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct CorsiBollerslevPattonQuaedvliegHarqSpec<T: Real> {
+        /// HARQ intercept $\beta_0 > 0$ (daily variance units, e.g., $0.000_018$).
+        pub intercept_beta0: T,
+        /// Baseline daily realized variance persistence $\beta_d > 0$ (e.g., $0.42$).
+        pub daily_persistence_beta_d: T,
+        /// Weekly (5-day) realized variance persistence $\beta_w > 0$ (e.g., $0.34$).
+        pub weekly_persistence_beta_w: T,
+        /// Monthly (22-day) realized variance persistence $\beta_m > 0$ (e.g., $0.20$).
+        pub monthly_persistence_beta_m: T,
+        /// Realized-quarticity attenuation slope $\beta_Q < 0$ (e.g., $-0.16$).
+        pub quarticity_attenuation_beta_q: T,
+        /// Current daily realized variance $RV_{d,t} > 0$ (e.g., $0.000_24$).
+        pub daily_realized_variance_rv_d: T,
+        /// Current weekly average realized variance $RV_{w,t} > 0$ (e.g., $0.000_18$).
+        pub weekly_realized_variance_rv_w: T,
+        /// Current monthly average realized variance $RV_{m,t} > 0$ (e.g., $0.000_15$).
+        pub monthly_realized_variance_rv_m: T,
+        /// Standardized excess square-root realized quarticity $\Delta\sqrt{RQ_t} > 0$ (e.g., $0.65$).
+        pub realized_quarticity_excess_rq: T,
+    }
+
+    /// Analytics returned by [`evaluate_corsi_bollerslev_patton_quaedvlieg_harq_volatility`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct CorsiBollerslevPattonQuaedvliegHarqAnalytics<T: Real> {
+        /// Measurement-error attenuated daily persistence $\beta_{d,t}^{\text{HARQ}} = \beta_d + \beta_Q\Delta\sqrt{RQ_t}$.
+        pub effective_daily_persistence_beta_dt: T,
+        /// Unadjusted Corsi (2009) HAR-RV 1-day-ahead variance forecast $\widehat{RV}_{t+1}^{\text{HAR}}$.
+        pub baseline_har_rv_forecast: T,
+        /// Bollerslev–Patton–Quaedvlieg (2016) HARQ 1-day-ahead variance forecast $\widehat{RV}_{t+1}^{\text{HARQ}}$.
+        pub harq_attenuated_rv_forecast: T,
+        /// Annualized HARQ volatility forecast $\widehat{\sigma}_{t+1}^{\text{ann}} = \sqrt{252 \cdot \widehat{RV}_{t+1}^{\text{HARQ}}}$.
+        pub annualized_harq_volatility_forecast: T,
+    }
+
+    /// Evaluates the Corsi (2009) and Bollerslev, Patton & Quaedvlieg (2016, Eqs. 6–10) HARQ
+    /// model, attenuating daily autoregressive weight $\beta_{d,t}^{\text{HARQ}} = \beta_d + \beta_Q\Delta\sqrt{RQ_t}$
+    /// when high realized quarticity signals noisy intraday jump/estimation error.
+    pub fn evaluate_corsi_bollerslev_patton_quaedvlieg_harq_volatility<T: Real>(
+        spec: &CorsiBollerslevPattonQuaedvliegHarqSpec<T>,
+    ) -> CorsiBollerslevPattonQuaedvliegHarqAnalytics<T> {
+        let b0 = spec.intercept_beta0;
+        let bd = spec.daily_persistence_beta_d;
+        let bw = spec.weekly_persistence_beta_w;
+        let bm = spec.monthly_persistence_beta_m;
+        let bq = spec.quarticity_attenuation_beta_q;
+        let rvd = spec.daily_realized_variance_rv_d;
+        let rvw = spec.weekly_realized_variance_rv_w;
+        let rvm = spec.monthly_realized_variance_rv_m;
+        let drq = spec.realized_quarticity_excess_rq;
+
+        let b_dt = bd + bq * drq;
+        let har_rv = b0 + bd * rvd + bw * rvw + bm * rvm;
+        let harq_rv = b0 + b_dt * rvd + bw * rvw + bm * rvm;
+        let ann_vol = (T::from_f64(252.0) * harq_rv).sqrt();
+
+        CorsiBollerslevPattonQuaedvliegHarqAnalytics {
+            effective_daily_persistence_beta_dt: b_dt,
+            baseline_har_rv_forecast: har_rv,
+            harq_attenuated_rv_forecast: harq_rv,
+            annualized_harq_volatility_forecast: ann_vol,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn corsi_bpq_harq_volatility_invariants_and_ad_parity() {
+            let base = CorsiBollerslevPattonQuaedvliegHarqSpec {
+                intercept_beta0: 0.000_018_f64,
+                daily_persistence_beta_d: 0.42_f64,
+                weekly_persistence_beta_w: 0.34_f64,
+                monthly_persistence_beta_m: 0.20_f64,
+                quarticity_attenuation_beta_q: -0.16_f64,
+                daily_realized_variance_rv_d: 0.000_24_f64,
+                weekly_realized_variance_rv_w: 0.000_18_f64,
+                monthly_realized_variance_rv_m: 0.000_15_f64,
+                realized_quarticity_excess_rq: 0.65_f64,
+            };
+            let res = evaluate_corsi_bollerslev_patton_quaedvlieg_harq_volatility(&base);
+            assert!(res.effective_daily_persistence_beta_dt < base.daily_persistence_beta_d);
+            assert!(res.harq_attenuated_rv_forecast < res.baseline_har_rv_forecast);
+            assert!(res.annualized_harq_volatility_forecast > 0.10);
+
+            let inputs = [
+                base.intercept_beta0,
+                base.daily_persistence_beta_d,
+                base.weekly_persistence_beta_w,
+                base.monthly_persistence_beta_m,
+                base.quarticity_attenuation_beta_q,
+                base.daily_realized_variance_rv_d,
+                base.weekly_realized_variance_rv_w,
+                base.monthly_realized_variance_rv_m,
+                base.realized_quarticity_excess_rq,
+            ];
+            let mut dual_in = [Dual::<9>::from_value(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = CorsiBollerslevPattonQuaedvliegHarqSpec {
+                intercept_beta0: dual_in[0],
+                daily_persistence_beta_d: dual_in[1],
+                weekly_persistence_beta_w: dual_in[2],
+                monthly_persistence_beta_m: dual_in[3],
+                quarticity_attenuation_beta_q: dual_in[4],
+                daily_realized_variance_rv_d: dual_in[5],
+                weekly_realized_variance_rv_w: dual_in[6],
+                monthly_realized_variance_rv_m: dual_in[7],
+                realized_quarticity_excess_rq: dual_in[8],
+            };
+            let ad = evaluate_corsi_bollerslev_patton_quaedvlieg_harq_volatility(&spec_ad)
+                .annualized_harq_volatility_forecast;
+            let eps = 1e-8;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let f_p = evaluate_corsi_bollerslev_patton_quaedvlieg_harq_volatility(
+                    &CorsiBollerslevPattonQuaedvliegHarqSpec {
+                        intercept_beta0: p[0],
+                        daily_persistence_beta_d: p[1],
+                        weekly_persistence_beta_w: p[2],
+                        monthly_persistence_beta_m: p[3],
+                        quarticity_attenuation_beta_q: p[4],
+                        daily_realized_variance_rv_d: p[5],
+                        weekly_realized_variance_rv_w: p[6],
+                        monthly_realized_variance_rv_m: p[7],
+                        realized_quarticity_excess_rq: p[8],
+                    },
+                )
+                .annualized_harq_volatility_forecast;
+                let f_m = evaluate_corsi_bollerslev_patton_quaedvlieg_harq_volatility(
+                    &CorsiBollerslevPattonQuaedvliegHarqSpec {
+                        intercept_beta0: m[0],
+                        daily_persistence_beta_d: m[1],
+                        weekly_persistence_beta_w: m[2],
+                        monthly_persistence_beta_m: m[3],
+                        quarticity_attenuation_beta_q: m[4],
+                        daily_realized_variance_rv_d: m[5],
+                        weekly_realized_variance_rv_w: m[6],
+                        monthly_realized_variance_rv_m: m[7],
+                        realized_quarticity_excess_rq: m[8],
+                    },
+                )
+                .annualized_harq_volatility_forecast;
+                let fd = (f_p - f_m) / (2.0 * eps);
+                assert!(ad.d[i].abs() > 1e-6, "zero derivative at index {i}");
+                assert!(
+                    (ad.d[i] - fd).abs() < 1e-3,
+                    "mismatch at index {i}: ad={} fd={}",
+                    ad.d[i],
+                    fd
+                );
+            }
+        }
+    }
+}
+pub use corsi_bpq_harq_volatility_mod::{
+    CorsiBollerslevPattonQuaedvliegHarqAnalytics, CorsiBollerslevPattonQuaedvliegHarqSpec,
+    evaluate_corsi_bollerslev_patton_quaedvlieg_harq_volatility,
+};

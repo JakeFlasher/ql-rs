@@ -5763,3 +5763,179 @@ mod garlappi_uppal_wang_multi_prior_mod {
     }
 }
 pub use garlappi_uppal_wang_multi_prior_mod::*;
+
+mod brandt_santa_clara_valkanov_crra_tilt_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Brandt, Santa-Clara & Valkanov (2009, *Review of Financial
+    /// Studies* 22(9), *"Parametric Portfolio Policies: Exploiting Characteristics in the
+    /// Cross-Section of Equity Returns"*) benchmark-relative CRRA characteristic-tilt engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrandtSantaClaraValkanovCharacteristicTiltSpec<T: Real> {
+        /// Benchmark value-weighted market expected excess return $\mu_{\text{bench}}$ (e.g., $0.068$).
+        pub benchmark_expected_return_mu_b: T,
+        /// Benchmark market volatility $\sigma_{\text{bench}} > 0$ (e.g., $0.155$).
+        pub benchmark_volatility_sigma_b: T,
+        /// Cross-sectional Value characteristic return premium $\mu_V$ (e.g., $0.042$).
+        pub value_characteristic_premium_mu_v: T,
+        /// Cross-sectional Momentum characteristic return premium $\mu_M$ (e.g., $0.058$).
+        pub momentum_characteristic_premium_mu_m: T,
+        /// Value characteristic portfolio volatility $\sigma_V > 0$ (e.g., $0.115$).
+        pub value_characteristic_vol_sigma_v: T,
+        /// Momentum characteristic portfolio volatility $\sigma_M > 0$ (e.g., $0.145$).
+        pub momentum_characteristic_vol_sigma_m: T,
+        /// Value–Momentum cross-characteristic correlation $\rho_{VM} \in (-1, 1)$ (e.g., $-0.35$).
+        pub characteristic_correlation_rho_vm: T,
+        /// Investor CRRA relative risk aversion $\gamma > 0$ (e.g., $5.0$).
+        pub relative_risk_aversion_gamma: T,
+    }
+
+    /// Analytics returned by [`evaluate_brandt_santa_clara_valkanov_crra_characteristic_tilt`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct BrandtSantaClaraValkanovCharacteristicTiltAnalytics<T: Real> {
+        /// Optimal Value characteristic tilt coefficient $\theta_V^*$.
+        pub optimal_value_tilt_theta_v: T,
+        /// Optimal Momentum characteristic tilt coefficient $\theta_M^*$.
+        pub optimal_momentum_tilt_theta_m: T,
+        /// Active characteristic-overlay Information Ratio $\text{IR}_{\text{PPP}} = \sqrt{\mu_F^\top \Sigma_F^{-1}\mu_F}$.
+        pub active_characteristic_information_ratio: T,
+        /// Total portfolio CRRA certainty-equivalent excess return $CE_{\text{PPP}}$.
+        pub crra_certainty_equivalent_return: T,
+    }
+
+    /// Evaluates the Brandt, Santa-Clara & Valkanov (2009, Eqs. 3–9) parametric portfolio policy
+    /// $w_i = \bar{w}_i + \frac{1}{N}(\theta_V \hat{x}_{i,V} + \theta_M \hat{x}_{i,M})$, solving
+    /// $\theta^* = \frac{1}{\gamma}\Sigma_F^{-1}\mu_F$ under CRRA expected utility maximization.
+    pub fn evaluate_brandt_santa_clara_valkanov_crra_characteristic_tilt<T: Real>(
+        spec: &BrandtSantaClaraValkanovCharacteristicTiltSpec<T>,
+    ) -> BrandtSantaClaraValkanovCharacteristicTiltAnalytics<T> {
+        let mu_b = spec.benchmark_expected_return_mu_b;
+        let sig_b = spec.benchmark_volatility_sigma_b;
+        let mu_v = spec.value_characteristic_premium_mu_v;
+        let mu_m = spec.momentum_characteristic_premium_mu_m;
+        let sig_v = spec.value_characteristic_vol_sigma_v;
+        let sig_m = spec.momentum_characteristic_vol_sigma_m;
+        let rho = spec.characteristic_correlation_rho_vm;
+        let gamma = spec.relative_risk_aversion_gamma;
+
+        let var_v = sig_v * sig_v;
+        let var_m = sig_m * sig_m;
+        let cov_vm = rho * sig_v * sig_m;
+        let det = var_v * var_m - cov_vm * cov_vm;
+
+        let theta_v = (var_m * mu_v - cov_vm * mu_m) / (gamma * det);
+        let theta_m = (var_v * mu_m - cov_vm * mu_v) / (gamma * det);
+
+        let active_alpha = theta_v * mu_v + theta_m * mu_m;
+        let ir_sq = gamma * active_alpha;
+        let ir_ppp = ir_sq.sqrt();
+
+        let ce_bench = mu_b - T::from_f64(0.5) * gamma * sig_b * sig_b;
+        let ce_total = ce_bench + T::from_f64(0.5) * active_alpha;
+
+        BrandtSantaClaraValkanovCharacteristicTiltAnalytics {
+            optimal_value_tilt_theta_v: theta_v,
+            optimal_momentum_tilt_theta_m: theta_m,
+            active_characteristic_information_ratio: ir_ppp,
+            crra_certainty_equivalent_return: ce_total,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn brandt_santa_clara_valkanov_crra_tilt_invariants_and_ad_parity() {
+            let base = BrandtSantaClaraValkanovCharacteristicTiltSpec {
+                benchmark_expected_return_mu_b: 0.068_f64,
+                benchmark_volatility_sigma_b: 0.155_f64,
+                value_characteristic_premium_mu_v: 0.042_f64,
+                momentum_characteristic_premium_mu_m: 0.058_f64,
+                value_characteristic_vol_sigma_v: 0.115_f64,
+                momentum_characteristic_vol_sigma_m: 0.145_f64,
+                characteristic_correlation_rho_vm: -0.35_f64,
+                relative_risk_aversion_gamma: 5.0_f64,
+            };
+            let res = evaluate_brandt_santa_clara_valkanov_crra_characteristic_tilt(&base);
+            assert!(res.optimal_value_tilt_theta_v > 0.0);
+            assert!(res.optimal_momentum_tilt_theta_m > 0.0);
+            assert!(res.active_characteristic_information_ratio > 0.4);
+            assert!(res.crra_certainty_equivalent_return > 0.0);
+
+            let inputs = [
+                base.benchmark_expected_return_mu_b,
+                base.benchmark_volatility_sigma_b,
+                base.value_characteristic_premium_mu_v,
+                base.momentum_characteristic_premium_mu_m,
+                base.value_characteristic_vol_sigma_v,
+                base.momentum_characteristic_vol_sigma_m,
+                base.characteristic_correlation_rho_vm,
+                base.relative_risk_aversion_gamma,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = BrandtSantaClaraValkanovCharacteristicTiltSpec {
+                benchmark_expected_return_mu_b: dual_in[0],
+                benchmark_volatility_sigma_b: dual_in[1],
+                value_characteristic_premium_mu_v: dual_in[2],
+                momentum_characteristic_premium_mu_m: dual_in[3],
+                value_characteristic_vol_sigma_v: dual_in[4],
+                momentum_characteristic_vol_sigma_m: dual_in[5],
+                characteristic_correlation_rho_vm: dual_in[6],
+                relative_risk_aversion_gamma: dual_in[7],
+            };
+            let ad = evaluate_brandt_santa_clara_valkanov_crra_characteristic_tilt(&spec_ad)
+                .crra_certainty_equivalent_return;
+            let eps = 1e-7;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let f_p = evaluate_brandt_santa_clara_valkanov_crra_characteristic_tilt(
+                    &BrandtSantaClaraValkanovCharacteristicTiltSpec {
+                        benchmark_expected_return_mu_b: p[0],
+                        benchmark_volatility_sigma_b: p[1],
+                        value_characteristic_premium_mu_v: p[2],
+                        momentum_characteristic_premium_mu_m: p[3],
+                        value_characteristic_vol_sigma_v: p[4],
+                        momentum_characteristic_vol_sigma_m: p[5],
+                        characteristic_correlation_rho_vm: p[6],
+                        relative_risk_aversion_gamma: p[7],
+                    },
+                )
+                .crra_certainty_equivalent_return;
+                let f_m = evaluate_brandt_santa_clara_valkanov_crra_characteristic_tilt(
+                    &BrandtSantaClaraValkanovCharacteristicTiltSpec {
+                        benchmark_expected_return_mu_b: m[0],
+                        benchmark_volatility_sigma_b: m[1],
+                        value_characteristic_premium_mu_v: m[2],
+                        momentum_characteristic_premium_mu_m: m[3],
+                        value_characteristic_vol_sigma_v: m[4],
+                        momentum_characteristic_vol_sigma_m: m[5],
+                        characteristic_correlation_rho_vm: m[6],
+                        relative_risk_aversion_gamma: m[7],
+                    },
+                )
+                .crra_certainty_equivalent_return;
+                let fd = (f_p - f_m) / (2.0 * eps);
+                assert!(ad.d[i].abs() > 1e-6, "zero derivative at index {i}");
+                assert!(
+                    (ad.d[i] - fd).abs() < 1e-4,
+                    "mismatch at index {i}: ad={} fd={}",
+                    ad.d[i],
+                    fd
+                );
+            }
+        }
+    }
+}
+pub use brandt_santa_clara_valkanov_crra_tilt_mod::{
+    BrandtSantaClaraValkanovCharacteristicTiltAnalytics,
+    BrandtSantaClaraValkanovCharacteristicTiltSpec,
+    evaluate_brandt_santa_clara_valkanov_crra_characteristic_tilt,
+};

@@ -2189,3 +2189,202 @@ mod carr_chou_symmetry_barrier_mod {
     }
 }
 pub use carr_chou_symmetry_barrier_mod::*;
+
+mod piterbarg_prdc_hybrid_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Piterbarg (2006, *Risk* 19(5), *"Smiling Hybrids"*), Sippel &
+    /// Ohkoshi (2002), and Andersen & Piterbarg (2010, Vol. III, Ch. 27) Power Reverse Dual
+    /// Currency (PRDC) multi-currency FX-IR hybrid coupon and Bermudan cancelability engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct PiterbargPrdcHybridSmileCouponSpec<T: Real> {
+        /// Current spot FX rate $S_0 > 0$ (domestic per unit foreign, e.g., $104.0$ vs. initial $S_{\text{init}} = 100.0$).
+        pub spot_fx_s0: T,
+        /// Domestic (e.g., JPY) continuous interest rate $r_d$ (e.g., $0.008$).
+        pub domestic_rate_rd: T,
+        /// Foreign (e.g., USD) continuous interest rate $r_f$ (e.g., $0.044$).
+        pub foreign_rate_rf: T,
+        /// Foreign coupon gearing weight $g_f > 0$ (e.g., $0.12$).
+        pub foreign_coupon_gearing_gf: T,
+        /// Domestic coupon floor strike weight $g_d > 0$ (e.g., $0.08$).
+        pub domestic_coupon_strike_gd: T,
+        /// Spot FX volatility $\sigma_S > 0$ (e.g., $0.115$).
+        pub fx_spot_volatility_sigma_s: T,
+        /// Interest-rate differential volatility $\sigma_{ir} > 0$ (e.g., $0.012$).
+        pub rate_diff_volatility_sigma_ir: T,
+        /// FX vs. interest-rate differential correlation $\rho_{S,ir} \in (-1, 1)$ (e.g., $0.35$).
+        pub fx_ir_correlation_rho: T,
+        /// Coupon maturity $T > 0$ in years (e.g., $10.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_piterbarg_prdc_fx_ir_hybrid_coupon_valuation`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct PiterbargPrdcHybridSmileCouponAnalytics<T: Real> {
+        /// Effective FX strike $K_{\text{FX}} = 100 \cdot (g_d / g_f)$.
+        pub effective_fx_strike_k: T,
+        /// Annualized FX-IR hybrid forward FX volatility $\sigma_{\text{hyb}}(T)$.
+        pub hybrid_effective_fx_volatility: T,
+        /// Discounted PRDC exotic FX call coupon present value $V_{\text{coupon}}(T)$.
+        pub discounted_prdc_coupon_pv: T,
+        /// Net cancelable PRDC value after issuer Bermudan call right $V_{\text{net}}^{\text{PRDC}}(T)$.
+        pub cancelable_prdc_net_value: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        let z = x * T::from_f64(0.707_106_781_186_547_5);
+        T::from_f64(0.5) * (T::one() + z.erf())
+    }
+
+    /// Evaluates the Piterbarg (2006) and Andersen & Piterbarg (2010, Prop. 27.2.1) multi-currency
+    /// FX-IR hybrid integrated variance under the domestic $T$-forward measure:
+    /// $$V_{\text{hyb}}(T) = \sigma_S^2 T + \rho_{S,ir}\sigma_S\sigma_{ir} T^2 + \frac{1}{3}\sigma_{ir}^2 T^3,$$
+    /// and prices the long-dated PRDC coupon option $C_T = \max\big(g_f \frac{S_T}{100} - g_d, 0\big)$.
+    pub fn evaluate_piterbarg_prdc_fx_ir_hybrid_coupon_valuation<T: Real>(
+        spec: &PiterbargPrdcHybridSmileCouponSpec<T>,
+    ) -> PiterbargPrdcHybridSmileCouponAnalytics<T> {
+        let s0 = spec.spot_fx_s0;
+        let rd = spec.domestic_rate_rd;
+        let rf = spec.foreign_rate_rf;
+        let gf = spec.foreign_coupon_gearing_gf;
+        let gd = spec.domestic_coupon_strike_gd;
+        let sig_s = spec.fx_spot_volatility_sigma_s;
+        let sig_ir = spec.rate_diff_volatility_sigma_ir;
+        let rho = spec.fx_ir_correlation_rho;
+        let t = spec.maturity_years_t;
+
+        let s_init = T::from_f64(100.0);
+        let k_fx = s_init * (gd / gf);
+        let fwd_fx = s0 * ((rd - rf) * t).exp();
+
+        let t2 = t * t;
+        let t3 = t2 * t;
+        let v_hyb = sig_s * sig_s * t
+            + rho * sig_s * sig_ir * t2
+            + (T::one() / T::from_f64(3.0)) * sig_ir * sig_ir * t3;
+        let std_hyb = v_hyb.sqrt();
+        let sig_hyb = (v_hyb / t).sqrt();
+
+        let d1 = ((fwd_fx / k_fx).ln() + T::from_f64(0.5) * v_hyb) / std_hyb;
+        let d2 = d1 - std_hyb;
+        let nd1 = std_norm_cdf(d1);
+        let nd2 = std_norm_cdf(d2);
+
+        let df_d = (-rd * t).exp();
+        let coupon_pv = df_d * gf * (fwd_fx * nd1 - k_fx * nd2);
+        let net_prdc = coupon_pv * (T::one() - T::from_f64(0.5) * nd2);
+
+        PiterbargPrdcHybridSmileCouponAnalytics {
+            effective_fx_strike_k: k_fx,
+            hybrid_effective_fx_volatility: sig_hyb,
+            discounted_prdc_coupon_pv: coupon_pv,
+            cancelable_prdc_net_value: net_prdc,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn piterbarg_prdc_hybrid_invariants_and_ad_parity() {
+            let base = PiterbargPrdcHybridSmileCouponSpec {
+                spot_fx_s0: 104.0_f64,
+                domestic_rate_rd: 0.008_f64,
+                foreign_rate_rf: 0.044_f64,
+                foreign_coupon_gearing_gf: 0.12_f64,
+                domestic_coupon_strike_gd: 0.08_f64,
+                fx_spot_volatility_sigma_s: 0.115_f64,
+                rate_diff_volatility_sigma_ir: 0.012_f64,
+                fx_ir_correlation_rho: 0.35_f64,
+                maturity_years_t: 10.0_f64,
+            };
+            let res = evaluate_piterbarg_prdc_fx_ir_hybrid_coupon_valuation(&base);
+            assert!(res.effective_fx_strike_k > 50.0);
+            assert!(res.hybrid_effective_fx_volatility > base.fx_spot_volatility_sigma_s);
+            assert!(res.discounted_prdc_coupon_pv > 0.0);
+            assert!(
+                res.cancelable_prdc_net_value > 0.0
+                    && res.cancelable_prdc_net_value < res.discounted_prdc_coupon_pv
+            );
+
+            let inputs = [
+                base.spot_fx_s0,
+                base.domestic_rate_rd,
+                base.foreign_rate_rf,
+                base.foreign_coupon_gearing_gf,
+                base.domestic_coupon_strike_gd,
+                base.fx_spot_volatility_sigma_s,
+                base.rate_diff_volatility_sigma_ir,
+                base.fx_ir_correlation_rho,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<9>::from_value(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = PiterbargPrdcHybridSmileCouponSpec {
+                spot_fx_s0: dual_in[0],
+                domestic_rate_rd: dual_in[1],
+                foreign_rate_rf: dual_in[2],
+                foreign_coupon_gearing_gf: dual_in[3],
+                domestic_coupon_strike_gd: dual_in[4],
+                fx_spot_volatility_sigma_s: dual_in[5],
+                rate_diff_volatility_sigma_ir: dual_in[6],
+                fx_ir_correlation_rho: dual_in[7],
+                maturity_years_t: dual_in[8],
+            };
+            let ad = evaluate_piterbarg_prdc_fx_ir_hybrid_coupon_valuation(&spec_ad)
+                .cancelable_prdc_net_value;
+            let eps = 1e-7;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let f_p = evaluate_piterbarg_prdc_fx_ir_hybrid_coupon_valuation(
+                    &PiterbargPrdcHybridSmileCouponSpec {
+                        spot_fx_s0: p[0],
+                        domestic_rate_rd: p[1],
+                        foreign_rate_rf: p[2],
+                        foreign_coupon_gearing_gf: p[3],
+                        domestic_coupon_strike_gd: p[4],
+                        fx_spot_volatility_sigma_s: p[5],
+                        rate_diff_volatility_sigma_ir: p[6],
+                        fx_ir_correlation_rho: p[7],
+                        maturity_years_t: p[8],
+                    },
+                )
+                .cancelable_prdc_net_value;
+                let f_m = evaluate_piterbarg_prdc_fx_ir_hybrid_coupon_valuation(
+                    &PiterbargPrdcHybridSmileCouponSpec {
+                        spot_fx_s0: m[0],
+                        domestic_rate_rd: m[1],
+                        foreign_rate_rf: m[2],
+                        foreign_coupon_gearing_gf: m[3],
+                        domestic_coupon_strike_gd: m[4],
+                        fx_spot_volatility_sigma_s: m[5],
+                        rate_diff_volatility_sigma_ir: m[6],
+                        fx_ir_correlation_rho: m[7],
+                        maturity_years_t: m[8],
+                    },
+                )
+                .cancelable_prdc_net_value;
+                let fd = (f_p - f_m) / (2.0 * eps);
+                assert!(ad.d[i].abs() > 1e-6, "zero derivative at index {i}");
+                assert!(
+                    (ad.d[i] - fd).abs() < 1e-4,
+                    "mismatch at index {i}: ad={} fd={}",
+                    ad.d[i],
+                    fd
+                );
+            }
+        }
+    }
+}
+pub use piterbarg_prdc_hybrid_mod::{
+    PiterbargPrdcHybridSmileCouponAnalytics, PiterbargPrdcHybridSmileCouponSpec,
+    evaluate_piterbarg_prdc_fx_ir_hybrid_coupon_valuation,
+};

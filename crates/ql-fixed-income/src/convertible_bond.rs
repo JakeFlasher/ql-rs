@@ -2365,3 +2365,202 @@ mod andersen_buffum_convertible_bond_mod {
     }
 }
 pub use andersen_buffum_convertible_bond_mod::*;
+
+mod pennacchi_sundaresan_coco_at1_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Pennacchi (2010, *JMCB*), Glasserman & Nouri (2012,
+    /// *Management Science* 58(10)), and Sundaresan & Wang (2015, *Journal of Finance* 70(2))
+    /// Contingent Convertible (CoCo / AT1) CET1 capital-ratio trigger valuation engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct PennacchiSundaresanCocoAt1TriggerSpec<T: Real> {
+        /// Current Common Equity Tier 1 (CET1) capital ratio $c_0 > c_{\text{trig}}$ (e.g., $0.132$).
+        pub current_cet1_ratio_c0: T,
+        /// Contractual CET1 absorption trigger ratio $c_{\text{trig}} > 0$ (e.g., $0.070$).
+        pub trigger_cet1_ratio_c_trig: T,
+        /// Risk-neutral CET1 ratio drift $\mu_c$ (e.g., $0.008$).
+        pub cet1_drift_mu_c: T,
+        /// Annualized CET1 log-volatility $\sigma_c > 0$ (e.g., $0.19$).
+        pub cet1_volatility_sigma_c: T,
+        /// Contractual AT1 annualized coupon rate $q_{\text{AT1}} > 0$ (e.g., $0.068$).
+        pub at1_coupon_rate_q: T,
+        /// Mandatory equity conversion fraction $\chi_{\text{conv}} \in [0, 1]$ (vs. permanent write-down) (e.g., $0.45$).
+        pub equity_conversion_share_chi: T,
+        /// Principal write-down loss severity $L_{\text{wd}} \in (0, 1)$ upon trigger breach (e.g., $0.85$).
+        pub write_down_loss_severity_lwd: T,
+        /// Risk-free discount rate $r > 0$ (e.g., $0.038$).
+        pub risk_free_rate_r: T,
+        /// Valuation horizon $T > 0$ in years (e.g., $5.0$).
+        pub horizon_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_pennacchi_sundaresan_coco_at1_trigger_valuation`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct PennacchiSundaresanCocoAt1TriggerAnalytics<T: Real> {
+        /// Reflection-principle first-passage CET1 trigger breach probability $P_{\text{trig}}(T) \in (0, 1)$.
+        pub first_passage_trigger_probability: T,
+        /// Effective loss-given-trigger $\text{LGT}_{\text{CoCo}} \in (0, 1)$ across write-down and conversion legs.
+        pub effective_loss_given_trigger: T,
+        /// CoCo / AT1 fair price per $100$ par notional.
+        pub coco_at1_fair_price_pct: T,
+        /// Implied CoCo credit spread over the risk-free curve in basis points.
+        pub coco_implied_credit_spread_bps: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        let z = x * T::from_f64(0.707_106_781_186_547_5);
+        T::from_f64(0.5) * (T::one() + z.erf())
+    }
+
+    /// Evaluates the Pennacchi (2010), Glasserman & Nouri (2012), and Sundaresan & Wang (2015)
+    /// structural first-passage CET1 trigger probability:
+    /// $$P_{\text{trig}}(T) = \Phi\!\left(\frac{b_c - \nu_c T}{\sigma_c\sqrt{T}}\right) + \exp\!\left(\frac{2\nu_c b_c}{\sigma_c^2}\right)\Phi\!\left(\frac{b_c + \nu_c T}{\sigma_c\sqrt{T}}\right), \qquad b_c = \ln(c_{\text{trig}} / c_0),$$
+    /// effective trigger loss $\text{LGT}_{\text{CoCo}}$, and CoCo AT1 fair value per $100$ par.
+    pub fn evaluate_pennacchi_sundaresan_coco_at1_trigger_valuation<T: Real>(
+        spec: &PennacchiSundaresanCocoAt1TriggerSpec<T>,
+    ) -> PennacchiSundaresanCocoAt1TriggerAnalytics<T> {
+        let c0 = spec.current_cet1_ratio_c0;
+        let c_trig = spec.trigger_cet1_ratio_c_trig;
+        let mu_c = spec.cet1_drift_mu_c;
+        let sig_c = spec.cet1_volatility_sigma_c;
+        let q = spec.at1_coupon_rate_q;
+        let chi = spec.equity_conversion_share_chi;
+        let lwd = spec.write_down_loss_severity_lwd;
+        let r = spec.risk_free_rate_r;
+        let t = spec.horizon_years_t;
+
+        let b_c = (c_trig / c0).ln();
+        let sig2 = sig_c * sig_c;
+        let nu_c = mu_c - T::from_f64(0.5) * sig2;
+        let std_t = sig_c * t.sqrt();
+
+        let z1 = (b_c - nu_c * t) / std_t;
+        let z2 = (b_c + nu_c * t) / std_t;
+        let refl_weight = (T::from_f64(2.0) * nu_c * b_c / sig2).exp();
+        let p_trig = std_norm_cdf(z1) + refl_weight * std_norm_cdf(z2);
+
+        let eq_dilution_loss = T::from_f64(0.5) * lwd * (T::one() - c_trig / c0);
+        let lgt = (T::one() - chi) * lwd + chi * eq_dilution_loss;
+
+        let df = (-r * t).exp();
+        let risky_annuity = ((T::one() - df) / r) * (T::one() - T::from_f64(0.5) * p_trig);
+        let expected_redemption = T::one() - lgt * p_trig;
+        let price_pct = T::from_f64(100.0) * (q * risky_annuity + df * expected_redemption);
+        let spread_bps = T::from_f64(10_000.0) * (-expected_redemption.ln() / t);
+
+        PennacchiSundaresanCocoAt1TriggerAnalytics {
+            first_passage_trigger_probability: p_trig,
+            effective_loss_given_trigger: lgt,
+            coco_at1_fair_price_pct: price_pct,
+            coco_implied_credit_spread_bps: spread_bps,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn pennacchi_sundaresan_coco_at1_invariants_and_ad_parity() {
+            let base = PennacchiSundaresanCocoAt1TriggerSpec {
+                current_cet1_ratio_c0: 0.132_f64,
+                trigger_cet1_ratio_c_trig: 0.070_f64,
+                cet1_drift_mu_c: 0.008_f64,
+                cet1_volatility_sigma_c: 0.19_f64,
+                at1_coupon_rate_q: 0.068_f64,
+                equity_conversion_share_chi: 0.45_f64,
+                write_down_loss_severity_lwd: 0.85_f64,
+                risk_free_rate_r: 0.038_f64,
+                horizon_years_t: 5.0_f64,
+            };
+            let res = evaluate_pennacchi_sundaresan_coco_at1_trigger_valuation(&base);
+            assert!(
+                res.first_passage_trigger_probability > 0.0
+                    && res.first_passage_trigger_probability < 1.0
+            );
+            assert!(
+                res.effective_loss_given_trigger > 0.0 && res.effective_loss_given_trigger < 1.0
+            );
+            assert!(res.coco_at1_fair_price_pct > 50.0 && res.coco_at1_fair_price_pct < 150.0);
+            assert!(res.coco_implied_credit_spread_bps > 0.0);
+
+            let inputs = [
+                base.current_cet1_ratio_c0,
+                base.trigger_cet1_ratio_c_trig,
+                base.cet1_drift_mu_c,
+                base.cet1_volatility_sigma_c,
+                base.at1_coupon_rate_q,
+                base.equity_conversion_share_chi,
+                base.write_down_loss_severity_lwd,
+                base.risk_free_rate_r,
+                base.horizon_years_t,
+            ];
+            let mut dual_in = [Dual::<9>::from_value(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = PennacchiSundaresanCocoAt1TriggerSpec {
+                current_cet1_ratio_c0: dual_in[0],
+                trigger_cet1_ratio_c_trig: dual_in[1],
+                cet1_drift_mu_c: dual_in[2],
+                cet1_volatility_sigma_c: dual_in[3],
+                at1_coupon_rate_q: dual_in[4],
+                equity_conversion_share_chi: dual_in[5],
+                write_down_loss_severity_lwd: dual_in[6],
+                risk_free_rate_r: dual_in[7],
+                horizon_years_t: dual_in[8],
+            };
+            let ad = evaluate_pennacchi_sundaresan_coco_at1_trigger_valuation(&spec_ad)
+                .coco_at1_fair_price_pct;
+            let eps = 1e-7;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let f_p = evaluate_pennacchi_sundaresan_coco_at1_trigger_valuation(
+                    &PennacchiSundaresanCocoAt1TriggerSpec {
+                        current_cet1_ratio_c0: p[0],
+                        trigger_cet1_ratio_c_trig: p[1],
+                        cet1_drift_mu_c: p[2],
+                        cet1_volatility_sigma_c: p[3],
+                        at1_coupon_rate_q: p[4],
+                        equity_conversion_share_chi: p[5],
+                        write_down_loss_severity_lwd: p[6],
+                        risk_free_rate_r: p[7],
+                        horizon_years_t: p[8],
+                    },
+                )
+                .coco_at1_fair_price_pct;
+                let f_m = evaluate_pennacchi_sundaresan_coco_at1_trigger_valuation(
+                    &PennacchiSundaresanCocoAt1TriggerSpec {
+                        current_cet1_ratio_c0: m[0],
+                        trigger_cet1_ratio_c_trig: m[1],
+                        cet1_drift_mu_c: m[2],
+                        cet1_volatility_sigma_c: m[3],
+                        at1_coupon_rate_q: m[4],
+                        equity_conversion_share_chi: m[5],
+                        write_down_loss_severity_lwd: m[6],
+                        risk_free_rate_r: m[7],
+                        horizon_years_t: m[8],
+                    },
+                )
+                .coco_at1_fair_price_pct;
+                let fd = (f_p - f_m) / (2.0 * eps);
+                assert!(ad.d[i].abs() > 1e-6, "zero derivative at index {i}");
+                assert!(
+                    (ad.d[i] - fd).abs() < 1e-4,
+                    "mismatch at index {i}: ad={} fd={}",
+                    ad.d[i],
+                    fd
+                );
+            }
+        }
+    }
+}
+pub use pennacchi_sundaresan_coco_at1_mod::{
+    PennacchiSundaresanCocoAt1TriggerAnalytics, PennacchiSundaresanCocoAt1TriggerSpec,
+    evaluate_pennacchi_sundaresan_coco_at1_trigger_valuation,
+};

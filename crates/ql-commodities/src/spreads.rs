@@ -3260,3 +3260,167 @@ mod bjerksund_stensland_321_crack_mod {
     }
 }
 pub use bjerksund_stensland_321_crack_mod::*;
+
+mod routledge_seppi_spatt_storage_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Routledge, Seppi & Spatt (2000, *Journal of Finance* 55(3),
+    /// *"Equilibrium Forward Curves for Commodities"*) competitive storage stockout regime,
+    /// endogenous convenience yield, and Kaldor–Working inverse-leverage volatility engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct RoutledgeSeppiSpattCompetitiveStorageSpec<T: Real> {
+        /// Current spot commodity price $S_0 > 0$ (e.g., $78.0$).
+        pub spot_price_s0: T,
+        /// Current physical buffer inventory $I_0 > 0$ (e.g., $28.0$ million barrels).
+        pub current_inventory_i0: T,
+        /// Critical stockout threshold inventory $I^* > 0$ (e.g., $22.0$ million barrels).
+        pub critical_stockout_inventory_i_star: T,
+        /// Stockout convenience yield spike $\Delta\delta_{\text{out}} > 0$ at $I_0 \to 0^+$ (e.g., $0.28$).
+        pub stockout_convenience_spike_delta: T,
+        /// Annualized physical storage + financing carry rate $c_{\text{store}} > 0$ (e.g., $0.075$).
+        pub storage_cost_rate_c: T,
+        /// Baseline buffer-inventory spot volatility $\sigma_{\text{base}} > 0$ (e.g., $0.24$).
+        pub base_spot_volatility_sigma: T,
+        /// Kaldor–Working stockout volatility amplification $\beta_{\text{vol}} > 0$ (e.g., $0.85$).
+        pub stockout_vol_amplification_beta: T,
+        /// Futures contract maturity $T > 0$ in years (e.g., $1.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_routledge_seppi_spatt_competitive_storage_equilibrium`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct RoutledgeSeppiSpattCompetitiveStorageAnalytics<T: Real> {
+        /// Competitive stockout regime probability $p_{\text{out}}(I_0) = \exp(-I_0 / I^*) \in (0, 1)$.
+        pub stockout_regime_probability: T,
+        /// Endogenous equilibrium convenience yield $\delta_{\text{eff}}(I_0)$.
+        pub equilibrium_convenience_yield: T,
+        /// Inventory-conditional spot volatility $\sigma_{\text{spot}}(I_0) = \sigma_{\text{base}}(1 + \beta_{\text{vol}} p_{\text{out}}(I_0))$.
+        pub inventory_conditional_spot_volatility: T,
+        /// Equilibrium futures price $F(0, T) = S_0 \exp((c_{\text{store}} - \delta_{\text{eff}}(I_0))T)$.
+        pub equilibrium_futures_price: T,
+    }
+
+    /// Evaluates the Routledge, Seppi & Spatt (2000, Props. 1–3) competitive storage forward curve
+    /// and Kaldor–Working spot volatility amplification under stockout probability $p_{\text{out}}(I_0) = e^{-I_0 / I^*}$.
+    pub fn evaluate_routledge_seppi_spatt_competitive_storage_equilibrium<T: Real>(
+        spec: &RoutledgeSeppiSpattCompetitiveStorageSpec<T>,
+    ) -> RoutledgeSeppiSpattCompetitiveStorageAnalytics<T> {
+        let s0 = spec.spot_price_s0;
+        let i0 = spec.current_inventory_i0;
+        let i_star = spec.critical_stockout_inventory_i_star;
+        let delta_spike = spec.stockout_convenience_spike_delta;
+        let c_store = spec.storage_cost_rate_c;
+        let sig_base = spec.base_spot_volatility_sigma;
+        let beta_vol = spec.stockout_vol_amplification_beta;
+        let t = spec.maturity_years_t;
+
+        let p_out = (-i0 / i_star).exp();
+        let sig_spot = sig_base * (T::one() + beta_vol * p_out);
+        let delta_eff = delta_spike * p_out + T::from_f64(0.5) * sig_spot * sig_spot * p_out;
+        let fut_price = s0 * ((c_store - delta_eff) * t).exp();
+
+        RoutledgeSeppiSpattCompetitiveStorageAnalytics {
+            stockout_regime_probability: p_out,
+            equilibrium_convenience_yield: delta_eff,
+            inventory_conditional_spot_volatility: sig_spot,
+            equilibrium_futures_price: fut_price,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn routledge_seppi_spatt_storage_invariants_and_ad_parity() {
+            let base = RoutledgeSeppiSpattCompetitiveStorageSpec {
+                spot_price_s0: 78.0_f64,
+                current_inventory_i0: 28.0_f64,
+                critical_stockout_inventory_i_star: 22.0_f64,
+                stockout_convenience_spike_delta: 0.28_f64,
+                storage_cost_rate_c: 0.075_f64,
+                base_spot_volatility_sigma: 0.24_f64,
+                stockout_vol_amplification_beta: 0.85_f64,
+                maturity_years_t: 1.0_f64,
+            };
+            let res = evaluate_routledge_seppi_spatt_competitive_storage_equilibrium(&base);
+            assert!(res.stockout_regime_probability > 0.0 && res.stockout_regime_probability < 1.0);
+            assert!(res.equilibrium_convenience_yield > 0.0);
+            assert!(res.inventory_conditional_spot_volatility > base.base_spot_volatility_sigma);
+            assert!(res.equilibrium_futures_price > 0.0);
+
+            let inputs = [
+                base.spot_price_s0,
+                base.current_inventory_i0,
+                base.critical_stockout_inventory_i_star,
+                base.stockout_convenience_spike_delta,
+                base.storage_cost_rate_c,
+                base.base_spot_volatility_sigma,
+                base.stockout_vol_amplification_beta,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = RoutledgeSeppiSpattCompetitiveStorageSpec {
+                spot_price_s0: dual_in[0],
+                current_inventory_i0: dual_in[1],
+                critical_stockout_inventory_i_star: dual_in[2],
+                stockout_convenience_spike_delta: dual_in[3],
+                storage_cost_rate_c: dual_in[4],
+                base_spot_volatility_sigma: dual_in[5],
+                stockout_vol_amplification_beta: dual_in[6],
+                maturity_years_t: dual_in[7],
+            };
+            let ad = evaluate_routledge_seppi_spatt_competitive_storage_equilibrium(&spec_ad)
+                .equilibrium_futures_price;
+            let eps = 1e-7;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let f_p = evaluate_routledge_seppi_spatt_competitive_storage_equilibrium(
+                    &RoutledgeSeppiSpattCompetitiveStorageSpec {
+                        spot_price_s0: p[0],
+                        current_inventory_i0: p[1],
+                        critical_stockout_inventory_i_star: p[2],
+                        stockout_convenience_spike_delta: p[3],
+                        storage_cost_rate_c: p[4],
+                        base_spot_volatility_sigma: p[5],
+                        stockout_vol_amplification_beta: p[6],
+                        maturity_years_t: p[7],
+                    },
+                )
+                .equilibrium_futures_price;
+                let f_m = evaluate_routledge_seppi_spatt_competitive_storage_equilibrium(
+                    &RoutledgeSeppiSpattCompetitiveStorageSpec {
+                        spot_price_s0: m[0],
+                        current_inventory_i0: m[1],
+                        critical_stockout_inventory_i_star: m[2],
+                        stockout_convenience_spike_delta: m[3],
+                        storage_cost_rate_c: m[4],
+                        base_spot_volatility_sigma: m[5],
+                        stockout_vol_amplification_beta: m[6],
+                        maturity_years_t: m[7],
+                    },
+                )
+                .equilibrium_futures_price;
+                let fd = (f_p - f_m) / (2.0 * eps);
+                assert!(ad.d[i].abs() > 1e-6, "zero derivative at index {i}");
+                assert!(
+                    (ad.d[i] - fd).abs() < 1e-4,
+                    "mismatch at index {i}: ad={} fd={}",
+                    ad.d[i],
+                    fd
+                );
+            }
+        }
+    }
+}
+pub use routledge_seppi_spatt_storage_mod::{
+    RoutledgeSeppiSpattCompetitiveStorageAnalytics, RoutledgeSeppiSpattCompetitiveStorageSpec,
+    evaluate_routledge_seppi_spatt_competitive_storage_equilibrium,
+};
