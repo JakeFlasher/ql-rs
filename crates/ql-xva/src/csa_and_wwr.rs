@@ -4069,3 +4069,156 @@ mod andersen_pykhtin_sokol_mpor_mod {
     }
 }
 pub use andersen_pykhtin_sokol_mpor_mod::*;
+mod hull_white_burgard_kjaer_fva_windfall_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Hull & White (2014, *Financial Analysts Journal* 70(3),
+    /// *"Valuing Derivatives: Funding Value Adjustments and Fair Value"*) & Burgard & Kjaer
+    /// (2011, *Journal of Derivatives* 19(2)) FVA vs. $\text{DVA}_2$ bondholder windfall
+    /// separation and shareholder liquidity funding engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct HullWhiteBurgardKjaerFvaWindfallSpec<T: Real> {
+        /// Expected Positive Exposure $\text{EPE} > 0$ requiring unsecured treasury borrowing (e.g., $22.0$).
+        pub expected_positive_exposure_epe: T,
+        /// Expected Negative Exposure $\text{ENE} > 0$ generating treasury funding benefit (e.g., $9.5$).
+        pub expected_negative_exposure_ene: T,
+        /// Bank own default hazard rate $\lambda_B > 0$ (e.g., $0.016$).
+        pub bank_default_hazard_lambda_b: T,
+        /// Bank own Loss Given Default $\text{LGD}_B \in (0, 1)$ (e.g., $0.60$).
+        pub bank_loss_given_default_lgd_b: T,
+        /// Pure funding-liquidity spread $s_{\text{liq}}$ over OIS beyond default compensation (e.g., $0.0045$).
+        pub pure_liquidity_funding_spread_s_liq: T,
+        /// Counterparty default hazard rate $\lambda_C > 0$ (e.g., $0.020$).
+        pub counterparty_hazard_lambda_c: T,
+        /// OIS risk-free rate $r$ (e.g., $0.035$).
+        pub ois_risk_free_rate_r: T,
+        /// Effective portfolio maturity $T$ in years (e.g., $5.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_hull_white_burgard_kjaer_fva_dva2_separation`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct HullWhiteBurgardKjaerFvaWindfallAnalytics<T: Real> {
+        /// Gross Funding Cost Adjustment $\text{FCA} = (\lambda_B \text{LGD}_B + s_{\text{liq}})\,\text{EPE}\,A(T)$.
+        pub gross_funding_cost_adjustment_fca: T,
+        /// Bondholder windfall $\text{DVA}_2 = \lambda_B \text{LGD}_B\,\text{EPE}\,A(T)$ at bank default (Hull & White 2014).
+        pub bondholder_windfall_dva2: T,
+        /// Unadjusted desk net FVA $\text{FVA}_{\text{desk}} = \text{FCA} - \text{FBA}$.
+        pub funding_benefit_adjustment_fba: T,
+        /// Shareholder-retained pure liquidity FVA $\text{FVA}_{\text{sh}} = \text{FCA} - \text{DVA}_2 - \text{FBA}$.
+        pub shareholder_liquidity_fva: T,
+    }
+
+    /// Evaluates the Hull & White (2014) & Burgard & Kjaer (2011) decomposition of gross dealer
+    /// funding spread $s_F = \lambda_B \text{LGD}_B + s_{\text{liq}}$ into bondholder default windfall
+    /// $\text{DVA}_2 = \lambda_B \text{LGD}_B\,\text{EPE}\,A(T)$, desk net FVA $\text{FCA} - \text{FBA}$,
+    /// and shareholder-borne pure liquidity funding cost $\text{FVA}_{\text{sh}} = s_{\text{liq}}(\text{EPE} - \text{ENE})A(T)$.
+    pub fn evaluate_hull_white_burgard_kjaer_fva_dva2_separation<T: Real>(
+        spec: &HullWhiteBurgardKjaerFvaWindfallSpec<T>,
+    ) -> HullWhiteBurgardKjaerFvaWindfallAnalytics<T> {
+        let epe = spec.expected_positive_exposure_epe;
+        let ene = spec.expected_negative_exposure_ene;
+        let lam_b = spec.bank_default_hazard_lambda_b;
+        let lgd_b = spec.bank_loss_given_default_lgd_b;
+        let s_liq = spec.pure_liquidity_funding_spread_s_liq;
+        let lam_c = spec.counterparty_hazard_lambda_c;
+        let r = spec.ois_risk_free_rate_r;
+        let t = spec.maturity_years_t;
+
+        let s_def = lam_b * lgd_b;
+        let s_tot = s_def + s_liq;
+        let eff_disc = r + lam_c + lam_b;
+        let risky_annuity = (T::one() - (-eff_disc * t).exp()) / eff_disc;
+
+        let fca = s_tot * epe * risky_annuity;
+        let dva2 = s_def * epe * risky_annuity;
+        let fba = s_liq * ene * risky_annuity;
+        let fva_desk = fca - fba;
+        let fva_sh = fca - dva2 - fba;
+
+        HullWhiteBurgardKjaerFvaWindfallAnalytics {
+            gross_funding_cost_adjustment_fca: fca,
+            bondholder_windfall_dva2: dva2,
+            funding_benefit_adjustment_fba: fva_desk,
+            shareholder_liquidity_fva: fva_sh,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn hull_white_burgard_kjaer_fva_windfall_invariants_and_ad_parity() {
+            let base = HullWhiteBurgardKjaerFvaWindfallSpec {
+                expected_positive_exposure_epe: 22.0_f64,
+                expected_negative_exposure_ene: 9.5_f64,
+                bank_default_hazard_lambda_b: 0.016_f64,
+                bank_loss_given_default_lgd_b: 0.60_f64,
+                pure_liquidity_funding_spread_s_liq: 0.0045_f64,
+                counterparty_hazard_lambda_c: 0.020_f64,
+                ois_risk_free_rate_r: 0.035_f64,
+                maturity_years_t: 5.0_f64,
+            };
+            let res = evaluate_hull_white_burgard_kjaer_fva_dva2_separation(&base);
+            assert!(res.gross_funding_cost_adjustment_fca > res.bondholder_windfall_dva2);
+            assert!(res.bondholder_windfall_dva2 > 0.0);
+            assert!(res.funding_benefit_adjustment_fba > res.shareholder_liquidity_fva);
+            assert!(res.shareholder_liquidity_fva > 0.0);
+
+            let inputs = [
+                base.expected_positive_exposure_epe,
+                base.expected_negative_exposure_ene,
+                base.bank_default_hazard_lambda_b,
+                base.bank_loss_given_default_lgd_b,
+                base.pure_liquidity_funding_spread_s_liq,
+                base.counterparty_hazard_lambda_c,
+                base.ois_risk_free_rate_r,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = HullWhiteBurgardKjaerFvaWindfallSpec {
+                expected_positive_exposure_epe: dual_in[0],
+                expected_negative_exposure_ene: dual_in[1],
+                bank_default_hazard_lambda_b: dual_in[2],
+                bank_loss_given_default_lgd_b: dual_in[3],
+                pure_liquidity_funding_spread_s_liq: dual_in[4],
+                counterparty_hazard_lambda_c: dual_in[5],
+                ois_risk_free_rate_r: dual_in[6],
+                maturity_years_t: dual_in[7],
+            };
+            let r_ad = evaluate_hull_white_burgard_kjaer_fva_dva2_separation(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| HullWhiteBurgardKjaerFvaWindfallSpec {
+                    expected_positive_exposure_epe: v[0],
+                    expected_negative_exposure_ene: v[1],
+                    bank_default_hazard_lambda_b: v[2],
+                    bank_loss_given_default_lgd_b: v[3],
+                    pure_liquidity_funding_spread_s_liq: v[4],
+                    counterparty_hazard_lambda_c: v[5],
+                    ois_risk_free_rate_r: v[6],
+                    maturity_years_t: v[7],
+                };
+                let rp = evaluate_hull_white_burgard_kjaer_fva_dva2_separation(&mk(p));
+                let rm = evaluate_hull_white_burgard_kjaer_fva_dva2_separation(&mk(m));
+                let fd = (rp.funding_benefit_adjustment_fba - rm.funding_benefit_adjustment_fba)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.funding_benefit_adjustment_fba.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.funding_benefit_adjustment_fba.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use hull_white_burgard_kjaer_fva_windfall_mod::*;

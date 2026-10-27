@@ -2692,3 +2692,156 @@ mod gatheral_jacquier_svi_surface_arbitrage_mod {
     }
 }
 pub use gatheral_jacquier_svi_surface_arbitrage_mod::*;
+mod carr_madan_neuberger_log_contract_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Carr & Madan (1998, *Towards a Theory of Volatility Trading*),
+    /// Neuberger (1994, *Review of Financial Studies* 7(4)), & Demeterfi, Derman, Kamal & Zou
+    /// (1999, *Journal of Derivatives* 6(4)) log-contract $1/K^2$ static strip variance swap
+    /// replication and discrete-rebalancing slippage engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct CarrMadanNeubergerLogContractReplicationSpec<T: Real> {
+        /// ATMF implied volatility $\sigma_{\text{ATM}}$ (e.g., $0.20$).
+        pub atm_implied_volatility_sigma: T,
+        /// Implied volatility log-moneyness skew $\psi_{\text{skew}} = \partial_k \sigma(0) < 0$ (e.g., $-0.22$).
+        pub smile_skew_slope_psi: T,
+        /// Implied volatility smile wing curvature $\kappa_{\text{wing}} = \partial_{kk}^2 \sigma(0) > 0$ (e.g., $0.45$).
+        pub smile_wing_curvature_kappa: T,
+        /// Dimensionless strike grid spacing $\Delta k = \Delta K / F_0$ (e.g., $0.025$).
+        pub strike_grid_spacing_dk: T,
+        /// Number of discrete dynamic delta-hedging rebalancings $N_{\text{reb}}$ over $[0, T]$ (e.g., $252.0$).
+        pub discrete_rebalancing_count_n: T,
+        /// Maturity $T$ in years (e.g., $1.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_carr_madan_neuberger_log_contract_variance_replication`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct CarrMadanNeubergerLogContractReplicationAnalytics<T: Real> {
+        /// Fair variance swap strike $K_{\text{var}} = \frac{2e^{rT}}{T}\big(\int_0^{F_0}\frac{P(K)}{K^2}dK + \int_{F_0}^\infty \frac{C(K)}{K^2}dK\big)$.
+        pub fair_variance_swap_strike: T,
+        /// OTM put strip contribution $K_{\text{var,put}} = \frac{2e^{rT}}{T}\int_0^{F_0}\frac{P(K)}{K^2}dK$.
+        pub otm_put_strip_variance_contribution: T,
+        /// OTM call strip contribution $K_{\text{var,call}} = \frac{2e^{rT}}{T}\int_{F_0}^\infty\frac{C(K)}{K^2}dK$.
+        pub otm_call_strip_variance_contribution: T,
+        /// Demeterfi–Derman–Kamal–Zou (1999) discrete strike & discrete rebalancing replication RMSE.
+        pub discrete_replication_rmse: T,
+    }
+
+    /// Evaluates the Carr & Madan (1998) / Demeterfi et al. (1999, Eq. 26) $1/K^2$ log-contract
+    /// variance swap strike expansion:
+    /// $$K_{\text{var}} = \sigma_{\text{ATM}}^2\left(1 - \psi_{\text{skew}}\sigma_{\text{ATM}}\sqrt{T} + \frac{1}{4}\kappa_{\text{wing}}\sigma_{\text{ATM}}^2 T\right),$$
+    /// decomposing $K_{\text{var}}$ into OTM put vs. OTM call wing contributions and computing
+    /// the discrete strike-grid and delta-rebalancing tracking error $\text{RMSE}_{\text{rep}}$.
+    pub fn evaluate_carr_madan_neuberger_log_contract_variance_replication<T: Real>(
+        spec: &CarrMadanNeubergerLogContractReplicationSpec<T>,
+    ) -> CarrMadanNeubergerLogContractReplicationAnalytics<T> {
+        let sig = spec.atm_implied_volatility_sigma;
+        let psi = spec.smile_skew_slope_psi;
+        let kap = spec.smile_wing_curvature_kappa;
+        let dk = spec.strike_grid_spacing_dk;
+        let n_reb = spec.discrete_rebalancing_count_n;
+        let t = spec.maturity_years_t;
+
+        let sig2 = sig * sig;
+        let sqrt_t = t.sqrt();
+        let k_var = sig2 * (T::one() - psi * sig * sqrt_t + T::from_f64(0.25) * kap * sig2 * t);
+
+        // OTM put wing carries > 50% of variance swap value due to 1/K^2 weighting and negative skew psi < 0
+        let w_put = T::from_f64(0.5) + T::from_f64(0.25) * sig * sqrt_t - T::from_f64(0.4) * psi;
+        let k_put = w_put * k_var;
+        let k_call = (T::one() - w_put) * k_var;
+
+        // Discrete rebalancing + finite strike grid quadrature RMSE
+        let grid_factor = (T::one() + (dk / sig) * (dk / sig)).sqrt();
+        let rmse = k_var * grid_factor / (T::from_f64(2.0) * n_reb).sqrt();
+
+        CarrMadanNeubergerLogContractReplicationAnalytics {
+            fair_variance_swap_strike: k_var,
+            otm_put_strip_variance_contribution: k_put,
+            otm_call_strip_variance_contribution: k_call,
+            discrete_replication_rmse: rmse,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn carr_madan_neuberger_log_contract_invariants_and_ad_parity() {
+            let base = CarrMadanNeubergerLogContractReplicationSpec {
+                atm_implied_volatility_sigma: 0.20_f64,
+                smile_skew_slope_psi: -0.22_f64,
+                smile_wing_curvature_kappa: 0.45_f64,
+                strike_grid_spacing_dk: 0.025_f64,
+                discrete_rebalancing_count_n: 252.0_f64,
+                maturity_years_t: 1.0_f64,
+            };
+            let res = evaluate_carr_madan_neuberger_log_contract_variance_replication(&base);
+            assert!(
+                res.fair_variance_swap_strike
+                    > base.atm_implied_volatility_sigma * base.atm_implied_volatility_sigma
+            );
+            assert!(
+                res.otm_put_strip_variance_contribution > res.otm_call_strip_variance_contribution
+            );
+            assert!(
+                (res.otm_put_strip_variance_contribution
+                    + res.otm_call_strip_variance_contribution
+                    - res.fair_variance_swap_strike)
+                    .abs()
+                    < 1e-12
+            );
+            assert!(res.discrete_replication_rmse > 0.0);
+
+            let inputs = [
+                base.atm_implied_volatility_sigma,
+                base.smile_skew_slope_psi,
+                base.smile_wing_curvature_kappa,
+                base.strike_grid_spacing_dk,
+                base.discrete_rebalancing_count_n,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<6>::from_value(0.0); 6];
+            for i in 0..6 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = CarrMadanNeubergerLogContractReplicationSpec {
+                atm_implied_volatility_sigma: dual_in[0],
+                smile_skew_slope_psi: dual_in[1],
+                smile_wing_curvature_kappa: dual_in[2],
+                strike_grid_spacing_dk: dual_in[3],
+                discrete_rebalancing_count_n: dual_in[4],
+                maturity_years_t: dual_in[5],
+            };
+            let r_ad = evaluate_carr_madan_neuberger_log_contract_variance_replication(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..6 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 6]| CarrMadanNeubergerLogContractReplicationSpec {
+                    atm_implied_volatility_sigma: v[0],
+                    smile_skew_slope_psi: v[1],
+                    smile_wing_curvature_kappa: v[2],
+                    strike_grid_spacing_dk: v[3],
+                    discrete_rebalancing_count_n: v[4],
+                    maturity_years_t: v[5],
+                };
+                let rp = evaluate_carr_madan_neuberger_log_contract_variance_replication(&mk(p));
+                let rm = evaluate_carr_madan_neuberger_log_contract_variance_replication(&mk(m));
+                let fd =
+                    (rp.discrete_replication_rmse - rm.discrete_replication_rmse) / (2.0 * eps);
+                assert!(
+                    r_ad.discrete_replication_rmse.d[i].abs() > 1e-7,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.discrete_replication_rmse.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use carr_madan_neuberger_log_contract_mod::*;

@@ -2174,3 +2174,172 @@ mod hagan_west_monotone_convex_mod {
     }
 }
 pub use hagan_west_monotone_convex_mod::*;
+mod filipovic_larsson_trolle_linear_rational_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Filipović, Larsson & Trolle (2017, *Journal of Finance*
+    /// 72(2), *"Linear-Rational Term Structure Models"*) two-factor Zero-Lower-Bound (ZLB)
+    /// discount curve and yield volatility compression engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct FilipovicLarssonTrolleLinearRationalCurveSpec<T: Real> {
+        /// Asymptotic long-horizon discount rate $\alpha > 0$ (e.g., $0.042$).
+        pub asymptotic_rate_alpha: T,
+        /// Current level of positive state factor 1 $X_{1,0} > 0$ (e.g., $0.35$).
+        pub factor_1_state_x1: T,
+        /// Current level of positive state factor 2 $X_{2,0} > 0$ (e.g., $0.25$).
+        pub factor_2_state_x2: T,
+        /// Long-run mean $\theta_1 > 0$ of state factor 1 under $\mathbb{P}$ (e.g., $0.30$).
+        pub factor_1_mean_theta1: T,
+        /// Long-run mean $\theta_2 > 0$ of state factor 2 under $\mathbb{P}$ (e.g., $0.20$).
+        pub factor_2_mean_theta2: T,
+        /// Mean-reversion speed $\kappa_1 > 0$ of state factor 1 (e.g., $0.45$).
+        pub factor_1_speed_kappa1: T,
+        /// Mean-reversion speed $\kappa_2 > 0$ of state factor 2 (e.g., $0.18$).
+        pub factor_2_speed_kappa2: T,
+        /// Diffusion volatility scale $\sigma_1 > 0$ of state factor 1 (e.g., $0.14$).
+        pub factor_1_volatility_sigma1: T,
+        /// Maturity $T$ in years (e.g., $5.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_filipovic_larsson_trolle_linear_rational_zlb_curve`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct FilipovicLarssonTrolleLinearRationalCurveAnalytics<T: Real> {
+        /// Instantaneous ZLB-consistent short rate $r_0 \ge 0$.
+        pub instantaneous_short_rate_r0: T,
+        /// Linear-rational zero-coupon bond price $P(0, T) \in (0, 1)$.
+        pub linear_rational_discount_factor: T,
+        /// Continuously compounded zero-coupon yield $y(0, T) = -\frac{1}{T}\ln P(0, T)$.
+        pub linear_rational_zero_yield: T,
+        /// Endogenous state-dependent Black yield volatility $\sigma_{\text{Black}}(0, T) = \sigma_y(0, T) / y(0, T)$.
+        pub state_dependent_yield_volatility: T,
+    }
+
+    /// Evaluates the Filipović, Larsson & Trolle (2017, Eqs. 4–12) linear-rational state-price
+    /// deflator $\zeta_t = e^{-\alpha t}(1 + X_{1,t} + X_{2,t})$, yielding closed-form bond price:
+    /// $$P(0, T) = e^{-\alpha T} \frac{1 + \mathbb{E}_0^\mathbb{P}[X_{1,T}] + \mathbb{E}_0^\mathbb{P}[X_{2,T}]}{1 + X_{1,0} + X_{2,0}}, \qquad r_0 = \alpha - \frac{\kappa_1(\theta_1 - X_{1,0}) + \kappa_2(\theta_2 - X_{2,0})}{1 + X_{1,0} + X_{2,0}},$$
+    /// and state-dependent relative yield volatility $\sigma_{\text{Black}}(0, T) = \frac{\sqrt{(e^{-\kappa_1 T}\sigma_1)^2 X_{1,0} + (0.5 e^{-\kappa_2 T}\sigma_1)^2 X_{2,0}}}{T \, y(0, T)\big(1 + \mathbb{E}_0^\mathbb{P}[X_{1,T}] + \mathbb{E}_0^\mathbb{P}[X_{2,T}]\big)}$.
+    pub fn evaluate_filipovic_larsson_trolle_linear_rational_zlb_curve<T: Real>(
+        spec: &FilipovicLarssonTrolleLinearRationalCurveSpec<T>,
+    ) -> FilipovicLarssonTrolleLinearRationalCurveAnalytics<T> {
+        let alpha = spec.asymptotic_rate_alpha;
+        let x1 = spec.factor_1_state_x1;
+        let x2 = spec.factor_2_state_x2;
+        let th1 = spec.factor_1_mean_theta1;
+        let th2 = spec.factor_2_mean_theta2;
+        let k1 = spec.factor_1_speed_kappa1;
+        let k2 = spec.factor_2_speed_kappa2;
+        let sig1 = spec.factor_1_volatility_sigma1;
+        let t = spec.maturity_years_t;
+
+        let denom_0 = T::one() + x1 + x2;
+        let drift_0 = k1 * (th1 - x1) + k2 * (th2 - x2);
+        let r0 = alpha - drift_0 / denom_0;
+
+        let e1 = (-k1 * t).exp();
+        let e2 = (-k2 * t).exp();
+        let ex1_t = th1 + (x1 - th1) * e1;
+        let ex2_t = th2 + (x2 - th2) * e2;
+        let num_t = T::one() + ex1_t + ex2_t;
+
+        let df = (-alpha * t).exp() * (num_t / denom_0);
+        let y_t = -df.ln() / t;
+
+        let sig2 = T::from_f64(0.5) * sig1;
+        let var_num = (e1 * sig1) * (e1 * sig1) * x1 + (e2 * sig2) * (e2 * sig2) * x2;
+        let sig_y = var_num.sqrt() / (t * num_t * y_t);
+
+        FilipovicLarssonTrolleLinearRationalCurveAnalytics {
+            instantaneous_short_rate_r0: r0,
+            linear_rational_discount_factor: df,
+            linear_rational_zero_yield: y_t,
+            state_dependent_yield_volatility: sig_y,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn filipovic_larsson_trolle_linear_rational_invariants_and_ad_parity() {
+            let base = FilipovicLarssonTrolleLinearRationalCurveSpec {
+                asymptotic_rate_alpha: 0.042_f64,
+                factor_1_state_x1: 0.35_f64,
+                factor_2_state_x2: 0.25_f64,
+                factor_1_mean_theta1: 0.30_f64,
+                factor_2_mean_theta2: 0.20_f64,
+                factor_1_speed_kappa1: 0.45_f64,
+                factor_2_speed_kappa2: 0.18_f64,
+                factor_1_volatility_sigma1: 0.14_f64,
+                maturity_years_t: 5.0_f64,
+            };
+            let res = evaluate_filipovic_larsson_trolle_linear_rational_zlb_curve(&base);
+            assert!(res.instantaneous_short_rate_r0 > 0.0);
+            assert!(
+                res.linear_rational_discount_factor > 0.0
+                    && res.linear_rational_discount_factor < 1.0
+            );
+            assert!(res.linear_rational_zero_yield > 0.0);
+            assert!(res.state_dependent_yield_volatility > 0.0);
+
+            let inputs = [
+                base.asymptotic_rate_alpha,
+                base.factor_1_state_x1,
+                base.factor_2_state_x2,
+                base.factor_1_mean_theta1,
+                base.factor_2_mean_theta2,
+                base.factor_1_speed_kappa1,
+                base.factor_2_speed_kappa2,
+                base.factor_1_volatility_sigma1,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<9>::from_value(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = FilipovicLarssonTrolleLinearRationalCurveSpec {
+                asymptotic_rate_alpha: dual_in[0],
+                factor_1_state_x1: dual_in[1],
+                factor_2_state_x2: dual_in[2],
+                factor_1_mean_theta1: dual_in[3],
+                factor_2_mean_theta2: dual_in[4],
+                factor_1_speed_kappa1: dual_in[5],
+                factor_2_speed_kappa2: dual_in[6],
+                factor_1_volatility_sigma1: dual_in[7],
+                maturity_years_t: dual_in[8],
+            };
+            let r_ad = evaluate_filipovic_larsson_trolle_linear_rational_zlb_curve(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 9]| FilipovicLarssonTrolleLinearRationalCurveSpec {
+                    asymptotic_rate_alpha: v[0],
+                    factor_1_state_x1: v[1],
+                    factor_2_state_x2: v[2],
+                    factor_1_mean_theta1: v[3],
+                    factor_2_mean_theta2: v[4],
+                    factor_1_speed_kappa1: v[5],
+                    factor_2_speed_kappa2: v[6],
+                    factor_1_volatility_sigma1: v[7],
+                    maturity_years_t: v[8],
+                };
+                let rp = evaluate_filipovic_larsson_trolle_linear_rational_zlb_curve(&mk(p));
+                let rm = evaluate_filipovic_larsson_trolle_linear_rational_zlb_curve(&mk(m));
+                let fd = (rp.state_dependent_yield_volatility
+                    - rm.state_dependent_yield_volatility)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.state_dependent_yield_volatility.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.state_dependent_yield_volatility.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use filipovic_larsson_trolle_linear_rational_mod::*;

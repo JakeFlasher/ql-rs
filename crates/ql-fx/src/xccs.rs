@@ -2001,3 +2001,151 @@ mod wystup_fx_fader_option_mod {
     }
 }
 pub use wystup_fx_fader_option_mod::*;
+mod lustig_roussanov_verdelhan_fx_carry_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Lustig, Roussanov & Verdelhan (2011, *Review of Financial
+    /// Studies* 24(11), *"Common Risk Factors in Currency Markets"*) & Menkhoff, Sarno,
+    /// Schmeling & Schrimpf (2012, *Journal of Finance* 67(2)) Dollar ($DOL$), Carry Slope
+    /// ($HML_{FX}$), and Global FX Volatility factor pricing engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct LustigRoussanovVerdelhanFxCarryFactorSpec<T: Real> {
+        /// Foreign-minus-USD interest rate differential $r_i - r_{\text{USD}}$ (e.g., $0.038$).
+        pub interest_rate_differential_di: T,
+        /// Currency loading $\beta_{i,\text{DOL}}$ on the global Dollar factor (e.g., $0.95$).
+        pub dollar_factor_beta_dol: T,
+        /// Currency loading $\beta_{i,\text{HML}} > 0$ on the high-minus-low Carry slope factor $HML_{FX}$ (e.g., $0.65$).
+        pub carry_slope_beta_hml: T,
+        /// Currency loading $\beta_{i,\text{VOL}} < 0$ on global FX volatility innovations (e.g., $-0.42$).
+        pub global_vol_beta_vol: T,
+        /// Market risk price $\lambda_{\text{DOL}}$ of the Dollar factor (e.g., $0.015$).
+        pub dollar_factor_risk_price_lambda_dol: T,
+        /// Market risk price $\lambda_{\text{HML}} > 0$ of the Carry slope factor $HML_{FX}$ (e.g., $0.048$).
+        pub carry_slope_risk_price_lambda_hml: T,
+        /// Market risk price $\lambda_{\text{VOL}} < 0$ of global FX volatility innovations (e.g., $-0.025$).
+        pub global_vol_risk_price_lambda_vol: T,
+        /// Annualized volatility $\sigma_{\text{HML}}$ of the $HML_{FX}$ carry factor (e.g., $0.095$).
+        pub carry_factor_volatility_sigma_hml: T,
+    }
+
+    /// Analytics returned by [`evaluate_lustig_roussanov_verdelhan_fx_carry_factor_pricing`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct LustigRoussanovVerdelhanFxCarryFactorAnalytics<T: Real> {
+        /// Equilibrium expected currency excess return $\mathbb{E}[rx_i] = \beta_{\text{DOL}}\lambda_{\text{DOL}} + \beta_{\text{HML}}\lambda_{\text{HML}} + \beta_{\text{VOL}}\lambda_{\text{VOL}}$.
+        pub expected_currency_excess_return: T,
+        /// Implied expected exchange-rate appreciation $\mathbb{E}[\Delta s_i] = \mathbb{E}[rx_i] - (r_i - r_{\text{USD}})$.
+        pub implied_expected_fx_appreciation: T,
+        /// Factor-implied currency return volatility $\sigma_{rx,i}$.
+        pub factor_implied_currency_volatility: T,
+        /// Crash-adjusted currency carry Sharpe ratio $\text{SR}_i = \mathbb{E}[rx_i] / \sigma_{rx,i}$.
+        pub carry_factor_sharpe_ratio: T,
+    }
+
+    /// Evaluates the Lustig, Roussanov & Verdelhan (2011, Eqs. 8–16 & §3.2) & Menkhoff et al. (2012)
+    /// cross-sectional FX asset pricing model with conditional carry loading
+    /// $\beta_{i,\text{HML}}^{\text{cond}} = \beta_{i,\text{HML}} + \tfrac{1}{2}(r_i - r_{\text{USD}})$:
+    /// $$\mathbb{E}[rx_i] = \beta_{i,\text{DOL}}\lambda_{\text{DOL}} + \beta_{i,\text{HML}}^{\text{cond}}\lambda_{\text{HML}} + \beta_{i,\text{VOL}}\lambda_{\text{VOL}}, \qquad \text{SR}_i = \frac{\mathbb{E}[rx_i]}{\sigma_{rx,i}}.$$
+    pub fn evaluate_lustig_roussanov_verdelhan_fx_carry_factor_pricing<T: Real>(
+        spec: &LustigRoussanovVerdelhanFxCarryFactorSpec<T>,
+    ) -> LustigRoussanovVerdelhanFxCarryFactorAnalytics<T> {
+        let beta_hml_cond =
+            spec.carry_slope_beta_hml + T::from_f64(0.5) * spec.interest_rate_differential_di;
+        let erx = spec.dollar_factor_beta_dol * spec.dollar_factor_risk_price_lambda_dol
+            + beta_hml_cond * spec.carry_slope_risk_price_lambda_hml
+            + spec.global_vol_beta_vol * spec.global_vol_risk_price_lambda_vol;
+        let exp_ds = erx - spec.interest_rate_differential_di;
+
+        let sig_hml = spec.carry_factor_volatility_sigma_hml;
+        let sig_dol = T::from_f64(0.080);
+        let sig_vol = T::from_f64(0.065);
+        let var_rx = spec.dollar_factor_beta_dol * spec.dollar_factor_beta_dol * sig_dol * sig_dol
+            + beta_hml_cond * beta_hml_cond * sig_hml * sig_hml
+            + spec.global_vol_beta_vol * spec.global_vol_beta_vol * sig_vol * sig_vol;
+        let sig_rx = var_rx.sqrt();
+        let sharpe = erx / sig_rx;
+
+        LustigRoussanovVerdelhanFxCarryFactorAnalytics {
+            expected_currency_excess_return: erx,
+            implied_expected_fx_appreciation: exp_ds,
+            factor_implied_currency_volatility: sig_rx,
+            carry_factor_sharpe_ratio: sharpe,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn lustig_roussanov_verdelhan_fx_carry_invariants_and_ad_parity() {
+            let base = LustigRoussanovVerdelhanFxCarryFactorSpec {
+                interest_rate_differential_di: 0.038_f64,
+                dollar_factor_beta_dol: 0.95_f64,
+                carry_slope_beta_hml: 0.65_f64,
+                global_vol_beta_vol: -0.42_f64,
+                dollar_factor_risk_price_lambda_dol: 0.015_f64,
+                carry_slope_risk_price_lambda_hml: 0.048_f64,
+                global_vol_risk_price_lambda_vol: -0.025_f64,
+                carry_factor_volatility_sigma_hml: 0.095_f64,
+            };
+            let res = evaluate_lustig_roussanov_verdelhan_fx_carry_factor_pricing(&base);
+            assert!(res.expected_currency_excess_return > 0.04);
+            assert!(res.factor_implied_currency_volatility > 0.05);
+            assert!(res.carry_factor_sharpe_ratio > 0.4);
+
+            let inputs = [
+                base.interest_rate_differential_di,
+                base.dollar_factor_beta_dol,
+                base.carry_slope_beta_hml,
+                base.global_vol_beta_vol,
+                base.dollar_factor_risk_price_lambda_dol,
+                base.carry_slope_risk_price_lambda_hml,
+                base.global_vol_risk_price_lambda_vol,
+                base.carry_factor_volatility_sigma_hml,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = LustigRoussanovVerdelhanFxCarryFactorSpec {
+                interest_rate_differential_di: dual_in[0],
+                dollar_factor_beta_dol: dual_in[1],
+                carry_slope_beta_hml: dual_in[2],
+                global_vol_beta_vol: dual_in[3],
+                dollar_factor_risk_price_lambda_dol: dual_in[4],
+                carry_slope_risk_price_lambda_hml: dual_in[5],
+                global_vol_risk_price_lambda_vol: dual_in[6],
+                carry_factor_volatility_sigma_hml: dual_in[7],
+            };
+            let r_ad = evaluate_lustig_roussanov_verdelhan_fx_carry_factor_pricing(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| LustigRoussanovVerdelhanFxCarryFactorSpec {
+                    interest_rate_differential_di: v[0],
+                    dollar_factor_beta_dol: v[1],
+                    carry_slope_beta_hml: v[2],
+                    global_vol_beta_vol: v[3],
+                    dollar_factor_risk_price_lambda_dol: v[4],
+                    carry_slope_risk_price_lambda_hml: v[5],
+                    global_vol_risk_price_lambda_vol: v[6],
+                    carry_factor_volatility_sigma_hml: v[7],
+                };
+                let rp = evaluate_lustig_roussanov_verdelhan_fx_carry_factor_pricing(&mk(p));
+                let rm = evaluate_lustig_roussanov_verdelhan_fx_carry_factor_pricing(&mk(m));
+                let fd =
+                    (rp.carry_factor_sharpe_ratio - rm.carry_factor_sharpe_ratio) / (2.0 * eps);
+                assert!(
+                    r_ad.carry_factor_sharpe_ratio.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.carry_factor_sharpe_ratio.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use lustig_roussanov_verdelhan_fx_carry_mod::*;

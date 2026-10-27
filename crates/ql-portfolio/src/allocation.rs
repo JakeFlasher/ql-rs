@@ -5597,3 +5597,169 @@ mod meucci_entropy_pooling_view_mod {
     }
 }
 pub use meucci_entropy_pooling_view_mod::*;
+mod garlappi_uppal_wang_multi_prior_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Garlappi, Uppal & Wang (2007, *Review of Financial Studies*
+    /// 20(1), *"Portfolio Selection with Parameter and Model Uncertainty: A Multi-Prior Approach"*)
+    /// ambiguity-averse $\varepsilon$-contaminated max-min expected return portfolio engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct GarlappiUppalWangMultiPriorPortfolioSpec<T: Real> {
+        /// Sample expected excess return $\hat{\mu}_1$ of asset 1 (e.g., $0.085$).
+        pub sample_mean_asset1_mu1: T,
+        /// Sample expected excess return $\hat{\mu}_2$ of asset 2 (e.g., $0.050$).
+        pub sample_mean_asset2_mu2: T,
+        /// Return variance $\sigma_1^2$ of asset 1 (e.g., $0.048$).
+        pub variance_asset1_v1: T,
+        /// Return variance $\sigma_2^2$ of asset 2 (e.g., $0.026$).
+        pub variance_asset2_v2: T,
+        /// Return correlation $\rho_{12} \in (-1, 1)$ between assets 1 and 2 (e.g., $0.25$).
+        pub correlation_rho12: T,
+        /// Relative risk aversion $\gamma > 0$ (e.g., $3.0$).
+        pub risk_aversion_gamma: T,
+        /// Elliptical Knightian ambiguity radius $\varepsilon > 0$ around sample means (e.g., $0.42$).
+        pub ambiguity_radius_epsilon: T,
+        /// Sample estimation length $T_{\text{obs}} > 0$ (e.g., $60.0$).
+        pub estimation_sample_size_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_garlappi_uppal_wang_multi_prior_ambiguity_portfolio`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct GarlappiUppalWangMultiPriorPortfolioAnalytics<T: Real> {
+        /// Garlappi–Uppal–Wang shrinkage weight $\phi_{\text{GUW}}(\varepsilon) \in (0, 1)$ toward the GMV portfolio.
+        pub gmv_ambiguity_shrinkage_weight: T,
+        /// Ambiguity-robust optimal weight $w_1^*(\varepsilon)$ on asset 1.
+        pub ambiguity_robust_weight_asset1: T,
+        /// Worst-case expected excess return $\min_{\mu \in \mathcal{U}(\varepsilon)} w^{*\top}\mu$ under the multi-prior set.
+        pub worst_case_expected_return: T,
+        /// Max-min ambiguity-adjusted certainty-equivalent utility.
+        pub max_min_certainty_equivalent: T,
+    }
+
+    /// Evaluates the Garlappi, Uppal & Wang (2007, Theorem 1 & Eq. 15) multi-prior max-min
+    /// portfolio optimization:
+    /// $$\max_{w^\top \mathbf{1} = 1} \min_{(\hat{\mu}-\mu)^\top \Sigma_{\hat{\mu}}^{-1}(\hat{\mu}-\mu) \le \varepsilon} \left(w^\top \mu - \frac{\gamma}{2}w^\top \Sigma w\right) = \max_{w^\top \mathbf{1} = 1} \left(w^\top \hat{\mu} - \sqrt{\frac{\varepsilon}{T_{\text{obs}}}}\sqrt{w^\top \Sigma w} - \frac{\gamma}{2}w^\top \Sigma w\right),$$
+    /// which shrinks the classical Markowitz tilt toward the Global Minimum Variance (GMV) weight $w_1^{\text{GMV}}$.
+    pub fn evaluate_garlappi_uppal_wang_multi_prior_ambiguity_portfolio<T: Real>(
+        spec: &GarlappiUppalWangMultiPriorPortfolioSpec<T>,
+    ) -> GarlappiUppalWangMultiPriorPortfolioAnalytics<T> {
+        let mu1 = spec.sample_mean_asset1_mu1;
+        let mu2 = spec.sample_mean_asset2_mu2;
+        let v1 = spec.variance_asset1_v1;
+        let v2 = spec.variance_asset2_v2;
+        let cov12 = spec.correlation_rho12 * (v1 * v2).sqrt();
+        let gam = spec.risk_aversion_gamma;
+        let eps = spec.ambiguity_radius_epsilon;
+        let t_obs = spec.estimation_sample_size_t;
+
+        let denom_gmv = v1 + v2 - T::from_f64(2.0) * cov12;
+        let w1_gmv = (v2 - cov12) / denom_gmv;
+        let w1_mv = w1_gmv + (mu1 - mu2) / (gam * denom_gmv);
+
+        // Garlappi-Uppal-Wang (2007, Eq. 15) ambiguity shrinkage weight toward GMV:
+        // phi_GUW(eps) = sqrt(eps / T_obs) / (sqrt(eps / T_obs) + gamma * sigma_GMV)
+        let k_amb = (eps / t_obs).sqrt();
+        let var_gmv = (v1 * v2 - cov12 * cov12) / denom_gmv;
+        let sig_gmv = var_gmv.sqrt();
+        let phi_guw = k_amb / (k_amb + gam * sig_gmv);
+
+        let w1_opt = phi_guw * w1_gmv + (T::one() - phi_guw) * w1_mv;
+        let w2_opt = T::one() - w1_opt;
+
+        let port_var = w1_opt * w1_opt * v1
+            + T::from_f64(2.0) * w1_opt * w2_opt * cov12
+            + w2_opt * w2_opt * v2;
+        let port_std = port_var.sqrt();
+        let sample_ret = w1_opt * mu1 + w2_opt * mu2;
+        let worst_ret = sample_ret - k_amb * port_std;
+        let ce_util = worst_ret - T::from_f64(0.5) * gam * port_var;
+
+        GarlappiUppalWangMultiPriorPortfolioAnalytics {
+            gmv_ambiguity_shrinkage_weight: phi_guw,
+            ambiguity_robust_weight_asset1: w1_opt,
+            worst_case_expected_return: worst_ret,
+            max_min_certainty_equivalent: ce_util,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn garlappi_uppal_wang_multi_prior_invariants_and_ad_parity() {
+            let base = GarlappiUppalWangMultiPriorPortfolioSpec {
+                sample_mean_asset1_mu1: 0.085_f64,
+                sample_mean_asset2_mu2: 0.050_f64,
+                variance_asset1_v1: 0.048_f64,
+                variance_asset2_v2: 0.026_f64,
+                correlation_rho12: 0.25_f64,
+                risk_aversion_gamma: 3.0_f64,
+                ambiguity_radius_epsilon: 0.42_f64,
+                estimation_sample_size_t: 60.0_f64,
+            };
+            let res = evaluate_garlappi_uppal_wang_multi_prior_ambiguity_portfolio(&base);
+            assert!(
+                res.gmv_ambiguity_shrinkage_weight > 0.0
+                    && res.gmv_ambiguity_shrinkage_weight < 1.0
+            );
+            assert!(res.ambiguity_robust_weight_asset1 > 0.0);
+            assert!(res.worst_case_expected_return > 0.0);
+            assert!(res.max_min_certainty_equivalent < res.worst_case_expected_return);
+
+            let inputs = [
+                base.sample_mean_asset1_mu1,
+                base.sample_mean_asset2_mu2,
+                base.variance_asset1_v1,
+                base.variance_asset2_v2,
+                base.correlation_rho12,
+                base.risk_aversion_gamma,
+                base.ambiguity_radius_epsilon,
+                base.estimation_sample_size_t,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = GarlappiUppalWangMultiPriorPortfolioSpec {
+                sample_mean_asset1_mu1: dual_in[0],
+                sample_mean_asset2_mu2: dual_in[1],
+                variance_asset1_v1: dual_in[2],
+                variance_asset2_v2: dual_in[3],
+                correlation_rho12: dual_in[4],
+                risk_aversion_gamma: dual_in[5],
+                ambiguity_radius_epsilon: dual_in[6],
+                estimation_sample_size_t: dual_in[7],
+            };
+            let r_ad = evaluate_garlappi_uppal_wang_multi_prior_ambiguity_portfolio(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| GarlappiUppalWangMultiPriorPortfolioSpec {
+                    sample_mean_asset1_mu1: v[0],
+                    sample_mean_asset2_mu2: v[1],
+                    variance_asset1_v1: v[2],
+                    variance_asset2_v2: v[3],
+                    correlation_rho12: v[4],
+                    risk_aversion_gamma: v[5],
+                    ambiguity_radius_epsilon: v[6],
+                    estimation_sample_size_t: v[7],
+                };
+                let rp = evaluate_garlappi_uppal_wang_multi_prior_ambiguity_portfolio(&mk(p));
+                let rm = evaluate_garlappi_uppal_wang_multi_prior_ambiguity_portfolio(&mk(m));
+                let fd = (rp.max_min_certainty_equivalent - rm.max_min_certainty_equivalent)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.max_min_certainty_equivalent.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.max_min_certainty_equivalent.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use garlappi_uppal_wang_multi_prior_mod::*;

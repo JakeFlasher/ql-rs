@@ -7,7 +7,7 @@ fn benchmarks_verify_parity_and_optional_sota_speedups() {
     // parity paths during normal `cargo test`; timing gates are inherently
     // host-dependent and opt in through QL_RUN_TIMING_GATES=1.
     let rows = run_all_benchmark_suites_with_config(1, 3);
-    assert_eq!(rows.len(), 73);
+    assert_eq!(rows.len(), 74);
     for row in &rows {
         assert!(!row.id.is_empty());
         assert!(!row.description.is_empty());
@@ -350,5 +350,12 @@ fn suite72_workload_is_registered() {
 fn suite73_workload_is_registered() {
     assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("73_")));
     let row = ql_benches::benchmark_mercurio_russo_ibor_ois_basis_jarrow_yildirim_yoy_inflation_duffie_lando_hybrid_cds_bayer_friz_gatheral_rough_skew_andersen_pykhtin_sokol_mpor_bjerksund_stensland_321_crack_carr_chou_symmetry_barrier_chesney_jeanblanc_yor_parisian_demiguel_brodie_norm_shrinkage_gueant_lehalle_tapia_mm_hansen_white_spa_test_brunnermeier_sannikov_paradox(1);
+    assert!(row.parity_ok && row.max_abs_diff < 1e-3);
+}
+
+#[test]
+fn suite74_workload_is_registered() {
+    assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("74_")));
+    let row = ql_benches::benchmark_filipovic_larsson_trolle_linear_rational_duffie_krishnamurthy_special_repo_duffie_saita_wang_stochastic_default_carr_madan_neuberger_log_contract_hull_white_burgard_kjaer_fva_windfall_casassus_collin_dufresne_convenience_yield_lustig_roussanov_verdelhan_fx_carry_carr_lee_corridor_varswap_garlappi_uppal_wang_multi_prior_mcneil_frey_evt_garch_patton_sjc_copula_pastor_veronesi_political_uncertainty(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-3);
 }

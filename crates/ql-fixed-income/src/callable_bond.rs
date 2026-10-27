@@ -2805,3 +2805,158 @@ mod fabozzi_effective_duration_oas_mod {
     }
 }
 pub use fabozzi_effective_duration_oas_mod::*;
+mod duffie_krishnamurthy_special_repo_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Duffie (1996, *Journal of Finance* 51(2), *"Special Repo Rates"*)
+    /// & Krishnamurthy (2002, *Journal of Financial Economics* 66(2)) On-the-Run vs. Off-the-Run
+    /// Treasury special repo financing dividend and auction-cycle convergence engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct DuffieKrishnamurthySpecialRepoTreasurySpec<T: Real> {
+        /// General Collateral (GC) repo rate $r_{\text{GC}}$ (e.g., $0.045$).
+        pub general_collateral_repo_rate: T,
+        /// Initial on-the-run repo specialness spread $s_0 = r_{\text{GC}} - r_{\text{spec}}(0)$ (e.g., $0.0110$).
+        pub initial_repo_specialness_s0: T,
+        /// Auction-cycle specialness decay rate $\kappa_s > 0$ (e.g., $3.20$).
+        pub specialness_decay_rate_kappa: T,
+        /// Short-interest squeeze sensitivity $\gamma_{\text{short}} > 0$ (e.g., $0.0085$).
+        pub short_squeeze_sensitivity_gamma: T,
+        /// Short-interest to floating supply ratio $q_{\text{short}} \in (0, 1)$ (e.g., $0.35$).
+        pub short_to_float_ratio_q: T,
+        /// Time to next benchmark Treasury auction $T_{\text{auc}}$ in years (e.g., $0.25$).
+        pub remaining_auction_cycle_years: T,
+        /// Benchmark Treasury modified duration $D_{\text{mod}}$ in years (e.g., $7.80$).
+        pub modified_duration_d_mod: T,
+        /// Dealer repo intermediation haircut fraction $h_{\text{dealer}} \in (0, 1)$ (e.g., $0.18$).
+        pub dealer_intermediation_haircut_h: T,
+    }
+
+    /// Analytics returned by [`evaluate_duffie_krishnamurthy_on_the_run_special_repo_premium`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct DuffieKrishnamurthySpecialRepoTreasuryAnalytics<T: Real> {
+        /// Present value of special repo financing dividends $\Delta P_{\text{OTR}}$ per $100$ par.
+        pub on_the_run_special_repo_price_premium: T,
+        /// Equilibrium On-the-Run vs. Off-the-Run yield spread compression $\Delta y_{\text{OTR-OFR}}$ (in bps).
+        pub on_the_run_yield_spread_compression_bps: T,
+        /// Net convergence arbitrage carry per $100$ par after dealer repo intermediation haircut.
+        pub net_convergence_arbitrage_carry: T,
+        /// Effective annualized duration-hedged specialness yield pick-up (in bps/yr).
+        pub annualized_specialness_pickup_rate: T,
+    }
+
+    /// Evaluates the Duffie (1996, Proposition 1) & Krishnamurthy (2002, Eqs. 3–8) present value
+    /// of special repo financing cashflows over the auction cycle $[0, T_{\text{auc}}]$:
+    /// $$\Delta P_{\text{OTR}} = 100 \left( s_0 \frac{1 - e^{-(r_{\text{GC}} + \kappa_s)T_{\text{auc}}}}{r_{\text{GC}} + \kappa_s} + \gamma_{\text{short}} q_{\text{short}} \frac{1 - e^{-(r_{\text{GC}} + \tfrac{1}{2}\kappa_s)T_{\text{auc}}}}{r_{\text{GC}} + \tfrac{1}{2}\kappa_s} \right),$$
+    /// and the implied yield spread compression $\Delta y_{\text{OTR-OFR}}^{\text{bps}} = 100 \cdot \Delta P_{\text{OTR}} / D_{\text{mod}}$.
+    pub fn evaluate_duffie_krishnamurthy_on_the_run_special_repo_premium<T: Real>(
+        spec: &DuffieKrishnamurthySpecialRepoTreasurySpec<T>,
+    ) -> DuffieKrishnamurthySpecialRepoTreasuryAnalytics<T> {
+        let r_gc = spec.general_collateral_repo_rate;
+        let s0 = spec.initial_repo_specialness_s0;
+        let kap = spec.specialness_decay_rate_kappa;
+        let gam = spec.short_squeeze_sensitivity_gamma;
+        let q_sh = spec.short_to_float_ratio_q;
+        let t_auc = spec.remaining_auction_cycle_years;
+        let d_mod = spec.modified_duration_d_mod;
+        let h_dlr = spec.dealer_intermediation_haircut_h;
+
+        let rate1 = r_gc + kap;
+        let rate2 = r_gc + T::from_f64(0.5) * kap;
+        let pv1 = s0 * (T::one() - (-rate1 * t_auc).exp()) / rate1;
+        let pv2 = gam * q_sh * (T::one() - (-rate2 * t_auc).exp()) / rate2;
+
+        let dp_otr = T::from_f64(100.0) * (pv1 + pv2);
+        let dy_bps = (dp_otr / d_mod) * T::from_f64(100.0);
+        let net_carry = (T::one() - h_dlr) * dp_otr;
+        let ann_pickup = (T::one() - h_dlr) * dy_bps / t_auc;
+
+        DuffieKrishnamurthySpecialRepoTreasuryAnalytics {
+            on_the_run_special_repo_price_premium: dp_otr,
+            on_the_run_yield_spread_compression_bps: dy_bps,
+            net_convergence_arbitrage_carry: net_carry,
+            annualized_specialness_pickup_rate: ann_pickup,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn duffie_krishnamurthy_special_repo_invariants_and_ad_parity() {
+            let base = DuffieKrishnamurthySpecialRepoTreasurySpec {
+                general_collateral_repo_rate: 0.045_f64,
+                initial_repo_specialness_s0: 0.0110_f64,
+                specialness_decay_rate_kappa: 3.20_f64,
+                short_squeeze_sensitivity_gamma: 0.0085_f64,
+                short_to_float_ratio_q: 0.35_f64,
+                remaining_auction_cycle_years: 0.25_f64,
+                modified_duration_d_mod: 7.80_f64,
+                dealer_intermediation_haircut_h: 0.18_f64,
+            };
+            let res = evaluate_duffie_krishnamurthy_on_the_run_special_repo_premium(&base);
+            assert!(res.on_the_run_special_repo_price_premium > 0.0);
+            assert!(res.on_the_run_yield_spread_compression_bps > 0.0);
+            assert!(
+                res.net_convergence_arbitrage_carry < res.on_the_run_special_repo_price_premium
+                    && res.net_convergence_arbitrage_carry > 0.0
+            );
+            assert!(res.annualized_specialness_pickup_rate > 0.0);
+
+            let inputs = [
+                base.general_collateral_repo_rate,
+                base.initial_repo_specialness_s0,
+                base.specialness_decay_rate_kappa,
+                base.short_squeeze_sensitivity_gamma,
+                base.short_to_float_ratio_q,
+                base.remaining_auction_cycle_years,
+                base.modified_duration_d_mod,
+                base.dealer_intermediation_haircut_h,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = DuffieKrishnamurthySpecialRepoTreasurySpec {
+                general_collateral_repo_rate: dual_in[0],
+                initial_repo_specialness_s0: dual_in[1],
+                specialness_decay_rate_kappa: dual_in[2],
+                short_squeeze_sensitivity_gamma: dual_in[3],
+                short_to_float_ratio_q: dual_in[4],
+                remaining_auction_cycle_years: dual_in[5],
+                modified_duration_d_mod: dual_in[6],
+                dealer_intermediation_haircut_h: dual_in[7],
+            };
+            let r_ad = evaluate_duffie_krishnamurthy_on_the_run_special_repo_premium(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| DuffieKrishnamurthySpecialRepoTreasurySpec {
+                    general_collateral_repo_rate: v[0],
+                    initial_repo_specialness_s0: v[1],
+                    specialness_decay_rate_kappa: v[2],
+                    short_squeeze_sensitivity_gamma: v[3],
+                    short_to_float_ratio_q: v[4],
+                    remaining_auction_cycle_years: v[5],
+                    modified_duration_d_mod: v[6],
+                    dealer_intermediation_haircut_h: v[7],
+                };
+                let rp = evaluate_duffie_krishnamurthy_on_the_run_special_repo_premium(&mk(p));
+                let rm = evaluate_duffie_krishnamurthy_on_the_run_special_repo_premium(&mk(m));
+                let fd = (rp.annualized_specialness_pickup_rate
+                    - rm.annualized_specialness_pickup_rate)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.annualized_specialness_pickup_rate.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.annualized_specialness_pickup_rate.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use duffie_krishnamurthy_special_repo_mod::*;

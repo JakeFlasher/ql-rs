@@ -1820,3 +1820,168 @@ mod brennan_schwartz_mine_hysteresis_mod {
     }
 }
 pub use brennan_schwartz_mine_hysteresis_mod::*;
+mod casassus_collin_dufresne_convenience_yield_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Casassus & Collin-Dufresne (2005, *Journal of Finance*
+    /// 60(5), *"Stochastic Convenience Yield Implied from Commodity Futures and Interest Rates"*)
+    /// & Pindyck (2001) level-dependent convenience yield and futures risk premium engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct CasassusCollinDufresneConvenienceYieldSpec<T: Real> {
+        /// Current commodity spot price $S_0 > 0$ (e.g., $82.0$).
+        pub spot_price_s0: T,
+        /// Long-run equilibrium spot anchor $\bar{S} > 0$ (e.g., $70.0$).
+        pub equilibrium_spot_anchor_s_bar: T,
+        /// Baseline convenience yield $\delta_0$ at $S_t = \bar{S}$ (e.g., $0.035$).
+        pub baseline_convenience_yield_delta0: T,
+        /// Sensitivity $\alpha_x > 0$ of convenience yield to log-spot $\ln(S_t/\bar{S})$ (induces risk-neutral mean reversion, e.g., $0.42$).
+        pub spot_level_sensitivity_alpha_x: T,
+        /// Sensitivity $\alpha_r$ of convenience yield to short interest rate $r_0$ (e.g., $0.30$).
+        pub rate_sensitivity_alpha_r: T,
+        /// Risk-free interest rate $r_0$ (e.g., $0.040$).
+        pub risk_free_rate_r0: T,
+        /// Spot diffusive volatility $\sigma_S > 0$ (e.g., $0.28$).
+        pub spot_volatility_sigma_s: T,
+        /// Market price of commodity spot risk $\lambda_S$ (e.g., $0.35$).
+        pub market_price_of_risk_lambda_s: T,
+        /// Futures maturity $T$ in years (e.g., $1.5$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_casassus_collin_dufresne_level_dependent_convenience_yield`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct CasassusCollinDufresneConvenienceYieldAnalytics<T: Real> {
+        /// Instantaneous level-dependent marginal convenience yield $\delta(S_0, r_0)$.
+        pub instantaneous_convenience_yield: T,
+        /// Equilibrium commodity futures price $F(0, T)$ under level-dependent convenience yield.
+        pub equilibrium_futures_price: T,
+        /// Annualized futures basis $(1/T)\ln(S_0 / F(0, T))$ (positive in backwardation).
+        pub annualized_backwardation_basis: T,
+        /// Annualized physical vs. risk-neutral futures risk premium $\pi_{\text{fut}}(T)$.
+        pub annualized_futures_risk_premium: T,
+    }
+
+    /// Evaluates the Casassus & Collin-Dufresne (2005, Eqs. 6–14) level-dependent convenience
+    /// yield $\delta_t = \delta_0 + \alpha_x(x_t - \bar{x}) + \alpha_r r_0$ ($x_t = \ln S_t$),
+    /// which induces endogenous risk-neutral mean-reversion speed $\alpha_x$ in log-spot:
+    /// $$\ln F(0, T) = e^{-\alpha_x T} x_0 + (1 - e^{-\alpha_x T})\bar{x}^{\mathbb{Q}} + \frac{\sigma_S^2}{4\alpha_x}\big(1 - e^{-2\alpha_x T}\big),$$
+    /// where $\bar{x}^{\mathbb{Q}} = \bar{x} + \frac{r_0(1 - \alpha_r) - \delta_0 - \lambda_S\sigma_S - \tfrac{1}{2}\sigma_S^2}{\alpha_x}$.
+    pub fn evaluate_casassus_collin_dufresne_level_dependent_convenience_yield<T: Real>(
+        spec: &CasassusCollinDufresneConvenienceYieldSpec<T>,
+    ) -> CasassusCollinDufresneConvenienceYieldAnalytics<T> {
+        let x0 = spec.spot_price_s0.ln();
+        let x_bar = spec.equilibrium_spot_anchor_s_bar.ln();
+        let d0 = spec.baseline_convenience_yield_delta0;
+        let ax = spec.spot_level_sensitivity_alpha_x;
+        let ar = spec.rate_sensitivity_alpha_r;
+        let r0 = spec.risk_free_rate_r0;
+        let sig = spec.spot_volatility_sigma_s;
+        let lam = spec.market_price_of_risk_lambda_s;
+        let t = spec.maturity_years_t;
+        let half = T::from_f64(0.5);
+
+        let delta_inst = d0 + ax * (x0 - x_bar) + ar * r0;
+        let x_bar_q = x_bar + (r0 * (T::one() - ar) - d0 - lam * sig - half * sig * sig) / ax;
+
+        let e_at = (-ax * t).exp();
+        let e_2at = e_at * e_at;
+        let ln_f = e_at * x0
+            + (T::one() - e_at) * x_bar_q
+            + (sig * sig / (T::from_f64(4.0) * ax)) * (T::one() - e_2at);
+        let f_t = ln_f.exp();
+        let basis = (x0 - ln_f) / t;
+        let risk_prem = lam * sig * (T::one() - e_at) / (ax * t);
+
+        CasassusCollinDufresneConvenienceYieldAnalytics {
+            instantaneous_convenience_yield: delta_inst,
+            equilibrium_futures_price: f_t,
+            annualized_backwardation_basis: basis,
+            annualized_futures_risk_premium: risk_prem,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn casassus_collin_dufresne_convenience_yield_invariants_and_ad_parity() {
+            let base = CasassusCollinDufresneConvenienceYieldSpec {
+                spot_price_s0: 82.0_f64,
+                equilibrium_spot_anchor_s_bar: 70.0_f64,
+                baseline_convenience_yield_delta0: 0.035_f64,
+                spot_level_sensitivity_alpha_x: 0.42_f64,
+                rate_sensitivity_alpha_r: 0.30_f64,
+                risk_free_rate_r0: 0.040_f64,
+                spot_volatility_sigma_s: 0.28_f64,
+                market_price_of_risk_lambda_s: 0.35_f64,
+                maturity_years_t: 1.5_f64,
+            };
+            let res = evaluate_casassus_collin_dufresne_level_dependent_convenience_yield(&base);
+            assert!(res.instantaneous_convenience_yield > base.baseline_convenience_yield_delta0);
+            assert!(res.equilibrium_futures_price > 0.0);
+            assert!(res.annualized_backwardation_basis > 0.0);
+            assert!(res.annualized_futures_risk_premium > 0.0);
+
+            let inputs = [
+                base.spot_price_s0,
+                base.equilibrium_spot_anchor_s_bar,
+                base.baseline_convenience_yield_delta0,
+                base.spot_level_sensitivity_alpha_x,
+                base.rate_sensitivity_alpha_r,
+                base.risk_free_rate_r0,
+                base.spot_volatility_sigma_s,
+                base.market_price_of_risk_lambda_s,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<9>::from_value(0.0); 9];
+            for i in 0..9 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = CasassusCollinDufresneConvenienceYieldSpec {
+                spot_price_s0: dual_in[0],
+                equilibrium_spot_anchor_s_bar: dual_in[1],
+                baseline_convenience_yield_delta0: dual_in[2],
+                spot_level_sensitivity_alpha_x: dual_in[3],
+                rate_sensitivity_alpha_r: dual_in[4],
+                risk_free_rate_r0: dual_in[5],
+                spot_volatility_sigma_s: dual_in[6],
+                market_price_of_risk_lambda_s: dual_in[7],
+                maturity_years_t: dual_in[8],
+            };
+            let r_ad =
+                evaluate_casassus_collin_dufresne_level_dependent_convenience_yield(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..9 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 9]| CasassusCollinDufresneConvenienceYieldSpec {
+                    spot_price_s0: v[0],
+                    equilibrium_spot_anchor_s_bar: v[1],
+                    baseline_convenience_yield_delta0: v[2],
+                    spot_level_sensitivity_alpha_x: v[3],
+                    rate_sensitivity_alpha_r: v[4],
+                    risk_free_rate_r0: v[5],
+                    spot_volatility_sigma_s: v[6],
+                    market_price_of_risk_lambda_s: v[7],
+                    maturity_years_t: v[8],
+                };
+                let rp =
+                    evaluate_casassus_collin_dufresne_level_dependent_convenience_yield(&mk(p));
+                let rm =
+                    evaluate_casassus_collin_dufresne_level_dependent_convenience_yield(&mk(m));
+                let fd =
+                    (rp.equilibrium_futures_price - rm.equilibrium_futures_price) / (2.0 * eps);
+                assert!(
+                    r_ad.equilibrium_futures_price.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.equilibrium_futures_price.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use casassus_collin_dufresne_convenience_yield_mod::*;

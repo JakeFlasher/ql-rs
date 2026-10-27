@@ -6404,3 +6404,151 @@ mod cont_deguest_scandolo_robust_risk_mod {
     }
 }
 pub use cont_deguest_scandolo_robust_risk_mod::*;
+mod mcneil_frey_evt_garch_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the McNeil & Frey (2000, *Journal of Empirical Finance* 7(3),
+    /// *"Estimation of Tail-Related Risk Measures for Heteroscedastic Financial Time Series"*)
+    /// two-stage GARCH-filtered Peaks-Over-Threshold (POT) Generalized Pareto conditional
+    /// $\text{VaR}$ and Expected Shortfall engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct McNeilFreyConditionalEvtGarchRiskSpec<T: Real> {
+        /// Conditional 1-step loss drift forecast $\mu_{t+1}$ (e.g., $0.0005$).
+        pub conditional_loss_mean_mu: T,
+        /// GARCH$(1,1)$ unconditional variance intercept $\omega > 0$ (e.g., $0.000012$).
+        pub garch_omega: T,
+        /// GARCH$(1,1)$ squared-shock reaction coefficient $\alpha_{\text{ARCH}} \times \epsilon_t^2$ (e.g., $0.00018$).
+        pub garch_arch_shock_term: T,
+        /// GARCH$(1,1)$ lagged conditional variance term $\beta_{\text{GARCH}} \times \sigma_t^2$ (e.g., $0.00022$).
+        pub garch_lagged_variance_term: T,
+        /// Standardized residual POT threshold $u_z > 0$ (e.g., $1.65$).
+        pub standardized_pot_threshold_u: T,
+        /// Tail exceedance fraction $p_u = N_u / n \in (1 - q, 1)$ above $u_z$ (e.g., $0.060$).
+        pub threshold_exceedance_rate_pu: T,
+        /// GPD tail shape index $\xi \in (0, 1)$ on standardized residuals (e.g., $0.22$).
+        pub gpd_shape_index_xi: T,
+        /// GPD scale parameter $\beta_{\text{GPD}} > 0$ on standardized residuals (e.g., $0.52$).
+        pub gpd_scale_beta: T,
+    }
+
+    /// Analytics returned by [`evaluate_mcneil_frey_garch_filtered_evt_pot_tail_risk`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct McNeilFreyConditionalEvtGarchRiskAnalytics<T: Real> {
+        /// 1-step-ahead GARCH conditional volatility forecast $\sigma_{t+1}$.
+        pub conditional_garch_volatility: T,
+        /// Standardized 99% EVT-POT innovation quantile $z_{0.99}$.
+        pub standardized_evt_quantile_z: T,
+        /// Dynamic conditional 99% Value-at-Risk $\text{VaR}_{t+1}^{0.99} = \mu_{t+1} + \sigma_{t+1} z_{0.99}$.
+        pub conditional_evt_garch_var99: T,
+        /// Dynamic conditional 99% Expected Shortfall $\text{ES}_{t+1}^{0.99} = \mu_{t+1} + \sigma_{t+1} s_{0.99}$.
+        pub conditional_evt_garch_es99: T,
+    }
+
+    /// Evaluates the McNeil & Frey (2000, Eqs. 11–13) two-stage GARCH-EVT conditional tail
+    /// risk estimator at confidence level $q = 0.99$:
+    /// $$z_q = u_z + \frac{\beta_{\text{GPD}}}{\xi}\left(\left(\frac{1 - q}{p_u}\right)^{-\xi} - 1\right), \qquad s_q = \frac{z_q}{1 - \xi} + \frac{\beta_{\text{GPD}} - \xi u_z}{1 - \xi},$$
+    /// scaling standardized tail risk by the 1-step GARCH volatility $\sigma_{t+1} = \sqrt{\omega + \alpha\epsilon_t^2 + \beta\sigma_t^2}$.
+    pub fn evaluate_mcneil_frey_garch_filtered_evt_pot_tail_risk<T: Real>(
+        spec: &McNeilFreyConditionalEvtGarchRiskSpec<T>,
+    ) -> McNeilFreyConditionalEvtGarchRiskAnalytics<T> {
+        let sig_next =
+            (spec.garch_omega + spec.garch_arch_shock_term + spec.garch_lagged_variance_term)
+                .sqrt();
+        let u_z = spec.standardized_pot_threshold_u;
+        let p_u = spec.threshold_exceedance_rate_pu;
+        let xi = spec.gpd_shape_index_xi;
+        let beta = spec.gpd_scale_beta;
+
+        // 99% tail probability 1 - q = 0.01
+        let tail_ratio = p_u / T::from_f64(0.01);
+        let z_q = u_z + (beta / xi) * (tail_ratio.pow(xi) - T::one());
+        let s_q = (z_q + beta - xi * u_z) / (T::one() - xi);
+
+        let var99 = spec.conditional_loss_mean_mu + sig_next * z_q;
+        let es99 = spec.conditional_loss_mean_mu + sig_next * s_q;
+
+        McNeilFreyConditionalEvtGarchRiskAnalytics {
+            conditional_garch_volatility: sig_next,
+            standardized_evt_quantile_z: z_q,
+            conditional_evt_garch_var99: var99,
+            conditional_evt_garch_es99: es99,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn mcneil_frey_evt_garch_invariants_and_ad_parity() {
+            let base = McNeilFreyConditionalEvtGarchRiskSpec {
+                conditional_loss_mean_mu: 0.0005_f64,
+                garch_omega: 0.000012_f64,
+                garch_arch_shock_term: 0.00018_f64,
+                garch_lagged_variance_term: 0.00022_f64,
+                standardized_pot_threshold_u: 1.65_f64,
+                threshold_exceedance_rate_pu: 0.060_f64,
+                gpd_shape_index_xi: 0.22_f64,
+                gpd_scale_beta: 0.52_f64,
+            };
+            let res = evaluate_mcneil_frey_garch_filtered_evt_pot_tail_risk(&base);
+            assert!(res.conditional_garch_volatility > 0.015);
+            assert!(res.standardized_evt_quantile_z > base.standardized_pot_threshold_u);
+            assert!(res.conditional_evt_garch_es99 > res.conditional_evt_garch_var99);
+
+            let inputs = [
+                base.conditional_loss_mean_mu,
+                base.garch_omega,
+                base.garch_arch_shock_term,
+                base.garch_lagged_variance_term,
+                base.standardized_pot_threshold_u,
+                base.threshold_exceedance_rate_pu,
+                base.gpd_shape_index_xi,
+                base.gpd_scale_beta,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = McNeilFreyConditionalEvtGarchRiskSpec {
+                conditional_loss_mean_mu: dual_in[0],
+                garch_omega: dual_in[1],
+                garch_arch_shock_term: dual_in[2],
+                garch_lagged_variance_term: dual_in[3],
+                standardized_pot_threshold_u: dual_in[4],
+                threshold_exceedance_rate_pu: dual_in[5],
+                gpd_shape_index_xi: dual_in[6],
+                gpd_scale_beta: dual_in[7],
+            };
+            let r_ad = evaluate_mcneil_frey_garch_filtered_evt_pot_tail_risk(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| McNeilFreyConditionalEvtGarchRiskSpec {
+                    conditional_loss_mean_mu: v[0],
+                    garch_omega: v[1],
+                    garch_arch_shock_term: v[2],
+                    garch_lagged_variance_term: v[3],
+                    standardized_pot_threshold_u: v[4],
+                    threshold_exceedance_rate_pu: v[5],
+                    gpd_shape_index_xi: v[6],
+                    gpd_scale_beta: v[7],
+                };
+                let rp = evaluate_mcneil_frey_garch_filtered_evt_pot_tail_risk(&mk(p));
+                let rm = evaluate_mcneil_frey_garch_filtered_evt_pot_tail_risk(&mk(m));
+                let fd =
+                    (rp.conditional_evt_garch_es99 - rm.conditional_evt_garch_es99) / (2.0 * eps);
+                assert!(
+                    r_ad.conditional_evt_garch_es99.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.conditional_evt_garch_es99.d[i] - fd).abs() < 1e-4);
+            }
+        }
+    }
+}
+pub use mcneil_frey_evt_garch_mod::*;

@@ -3727,3 +3727,153 @@ mod brunnermeier_sannikov_paradox_mod {
     }
 }
 pub use brunnermeier_sannikov_paradox_mod::*;
+mod pastor_veronesi_political_uncertainty_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Pástor & Veronesi (2012, *Journal of Finance* 67(4);
+    /// 2013, *Journal of Financial Economics* 110(3), *"Political Uncertainty and Risk Premia"*)
+    /// Bayesian government policy learning and political uncertainty equity risk premium engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct PastorVeronesiPoliticalUncertaintySpec<T: Real> {
+        /// Posterior mean perception $\hat{g}_t$ of current government policy impact on profitability (e.g., $-0.012$).
+        pub perceived_policy_impact_g_hat: T,
+        /// Prior standard deviation $\sigma_{g,0} > 0$ of unknown policy impact (e.g., $0.035$).
+        pub prior_policy_uncertainty_sigma_g0: T,
+        /// Fundamental macroeconomic shock volatility $\sigma_{\text{macro}} > 0$ (e.g., $0.14$).
+        pub fundamental_macro_volatility_sigma_m: T,
+        /// Political cost heterogeneity dispersion $\sigma_{\text{pol}} > 0$ across replacement policies (e.g., $0.085$).
+        pub political_cost_dispersion_sigma_pol: T,
+        /// Representative investor CRRA risk aversion $\gamma > 1$ (e.g., $3.50$).
+        pub investor_risk_aversion_gamma: T,
+        /// Elapsed Bayesian learning duration $\tau_{\text{learn}} > 0$ in years (e.g., $2.0$).
+        pub bayesian_learning_duration_tau: T,
+    }
+
+    /// Analytics returned by [`evaluate_pastor_veronesi_political_uncertainty_risk_premium`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct PastorVeronesiPoliticalUncertaintyAnalytics<T: Real> {
+        /// Bayesian posterior policy uncertainty variance $\hat{\sigma}_g^2(\tau_{\text{learn}})$.
+        pub posterior_policy_uncertainty_variance: T,
+        /// Endogenous probability $p_{\text{change}} \in (0, 1)$ of a government policy regime switch.
+        pub policy_regime_switch_probability: T,
+        /// Total equity return volatility $\sigma_R$ incorporating macro, Bayesian learning, and political jump risk.
+        pub total_equity_return_volatility: T,
+        /// Equilibrium equity risk premium $\pi_{\text{EQ}}$ driven by economic and political uncertainty.
+        pub political_uncertainty_equity_risk_premium: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    /// Evaluates the Pástor & Veronesi (2012, 2013, Propositions 1–4) Bayesian policy-learning
+    /// precision update $\hat{\sigma}_g^{-2} = \sigma_{g,0}^{-2} + \tau_{\text{learn}}\sigma_{\text{macro}}^{-2}$,
+    /// policy adoption probability $p_{\text{change}} = \Phi\!\left(\frac{-\hat{g}_t}{\sqrt{\hat{\sigma}_g^2 + \sigma_{\text{pol}}^2}}\right)$,
+    /// and equilibrium political uncertainty equity risk premium.
+    pub fn evaluate_pastor_veronesi_political_uncertainty_risk_premium<T: Real>(
+        spec: &PastorVeronesiPoliticalUncertaintySpec<T>,
+    ) -> PastorVeronesiPoliticalUncertaintyAnalytics<T> {
+        let g_hat = spec.perceived_policy_impact_g_hat;
+        let sig_g0 = spec.prior_policy_uncertainty_sigma_g0;
+        let sig_m = spec.fundamental_macro_volatility_sigma_m;
+        let sig_pol = spec.political_cost_dispersion_sigma_pol;
+        let gam = spec.investor_risk_aversion_gamma;
+        let tau = spec.bayesian_learning_duration_tau;
+
+        let prec_post = T::one() / (sig_g0 * sig_g0) + tau / (sig_m * sig_m);
+        let var_g_post = T::one() / prec_post;
+
+        let switch_std = (var_g_post + sig_pol * sig_pol).sqrt();
+        let p_change = std_norm_cdf(-g_hat / switch_std);
+
+        let var_eq = sig_m * sig_m
+            + gam * gam * var_g_post
+            + p_change * (T::one() - p_change) * sig_pol * sig_pol;
+        let vol_eq = var_eq.sqrt();
+
+        let erp = gam * (sig_m * sig_m + var_g_post) + gam * p_change * sig_pol * sig_pol;
+
+        PastorVeronesiPoliticalUncertaintyAnalytics {
+            posterior_policy_uncertainty_variance: var_g_post,
+            policy_regime_switch_probability: p_change,
+            total_equity_return_volatility: vol_eq,
+            political_uncertainty_equity_risk_premium: erp,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn pastor_veronesi_political_uncertainty_invariants_and_ad_parity() {
+            let base = PastorVeronesiPoliticalUncertaintySpec {
+                perceived_policy_impact_g_hat: -0.012_f64,
+                prior_policy_uncertainty_sigma_g0: 0.035_f64,
+                fundamental_macro_volatility_sigma_m: 0.14_f64,
+                political_cost_dispersion_sigma_pol: 0.085_f64,
+                investor_risk_aversion_gamma: 3.50_f64,
+                bayesian_learning_duration_tau: 2.0_f64,
+            };
+            let res = evaluate_pastor_veronesi_political_uncertainty_risk_premium(&base);
+            assert!(
+                res.posterior_policy_uncertainty_variance
+                    < base.prior_policy_uncertainty_sigma_g0
+                        * base.prior_policy_uncertainty_sigma_g0
+            );
+            assert!(res.policy_regime_switch_probability > 0.5);
+            assert!(res.total_equity_return_volatility > base.fundamental_macro_volatility_sigma_m);
+            assert!(res.political_uncertainty_equity_risk_premium > 0.05);
+
+            let inputs = [
+                base.perceived_policy_impact_g_hat,
+                base.prior_policy_uncertainty_sigma_g0,
+                base.fundamental_macro_volatility_sigma_m,
+                base.political_cost_dispersion_sigma_pol,
+                base.investor_risk_aversion_gamma,
+                base.bayesian_learning_duration_tau,
+            ];
+            let mut dual_in = [Dual::<6>::from_value(0.0); 6];
+            for i in 0..6 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = PastorVeronesiPoliticalUncertaintySpec {
+                perceived_policy_impact_g_hat: dual_in[0],
+                prior_policy_uncertainty_sigma_g0: dual_in[1],
+                fundamental_macro_volatility_sigma_m: dual_in[2],
+                political_cost_dispersion_sigma_pol: dual_in[3],
+                investor_risk_aversion_gamma: dual_in[4],
+                bayesian_learning_duration_tau: dual_in[5],
+            };
+            let r_ad = evaluate_pastor_veronesi_political_uncertainty_risk_premium(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..6 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 6]| PastorVeronesiPoliticalUncertaintySpec {
+                    perceived_policy_impact_g_hat: v[0],
+                    prior_policy_uncertainty_sigma_g0: v[1],
+                    fundamental_macro_volatility_sigma_m: v[2],
+                    political_cost_dispersion_sigma_pol: v[3],
+                    investor_risk_aversion_gamma: v[4],
+                    bayesian_learning_duration_tau: v[5],
+                };
+                let rp = evaluate_pastor_veronesi_political_uncertainty_risk_premium(&mk(p));
+                let rm = evaluate_pastor_veronesi_political_uncertainty_risk_premium(&mk(m));
+                let fd = (rp.political_uncertainty_equity_risk_premium
+                    - rm.political_uncertainty_equity_risk_premium)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.political_uncertainty_equity_risk_premium.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.political_uncertainty_equity_risk_premium.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use pastor_veronesi_political_uncertainty_mod::*;

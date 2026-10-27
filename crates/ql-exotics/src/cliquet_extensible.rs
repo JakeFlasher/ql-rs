@@ -3014,3 +3014,159 @@ mod broadie_detemple_capped_call_mod {
     }
 }
 pub use broadie_detemple_capped_call_mod::*;
+mod carr_lee_corridor_varswap_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Carr & Lee (2009, *Annual Review of Financial Economics*
+    /// 1(1); 2010, *Mathematical Finance*) & Andersen & Bondarenko (2007) upside/downside
+    /// corridor variance swap and conditional variance decomposition engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct CarrLeeCorridorVarianceSwapSpec<T: Real> {
+        /// Forward price $F_0 > 0$ at maturity $T$ (e.g., $100.0$).
+        pub forward_price_f0: T,
+        /// Lower corridor barrier $B_{\text{low}} > 0$ above which upside corridor variance accrues (e.g., $94.0$).
+        pub lower_corridor_barrier_b: T,
+        /// ATMF implied volatility $\sigma_0 > 0$ (e.g., $0.21$).
+        pub atmf_volatility_sigma0: T,
+        /// Implied volatility skew slope $\psi < 0$ wrt log-strike (e.g., $-0.18$).
+        pub skew_slope_psi: T,
+        /// Risk-free discount rate $r$ (e.g., $0.036$).
+        pub risk_free_rate_r: T,
+        /// Maturity $T$ in years (e.g., $1.0$).
+        pub maturity_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_carr_lee_corridor_conditional_variance_swap`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct CarrLeeCorridorVarianceSwapAnalytics<T: Real> {
+        /// Risk-neutral expected corridor occupation fraction $\mathbb{Q}(S_T > B_{\text{low}})$.
+        pub corridor_occupation_probability: T,
+        /// Fair upside corridor variance strike $K_{\text{var}}^{\text{up}}(B_{\text{low}})$ accruing on $\{S_t > B_{\text{low}}\}$.
+        pub upside_corridor_variance_strike: T,
+        /// Complementary downside corridor variance strike $K_{\text{var}}^{\text{down}}(B_{\text{low}})$ accruing on $\{S_t \le B_{\text{low}}\}$.
+        pub downside_corridor_variance_strike: T,
+        /// Present value of a seasoned upside corridor variance swap per $100$ vega notional against strike $\sigma_0^2 / 2$.
+        pub corridor_variance_swap_pv: T,
+    }
+
+    #[inline]
+    fn std_norm_cdf<T: Real>(x: T) -> T {
+        T::from_f64(0.5) * (T::one() + (x * T::from_f64(0.707_106_781_186_547_5)).erf())
+    }
+
+    #[inline]
+    fn std_norm_pdf<T: Real>(x: T) -> T {
+        T::from_f64(0.398_942_280_401_432_7) * (-T::from_f64(0.5) * x * x).exp()
+    }
+
+    /// Evaluates the Carr & Lee (2009, §4) static $2/K^2$ strip replication truncated to the
+    /// corridor $[B_{\text{low}}, \infty)$, decomposing total variance $K_{\text{var}}^{\text{tot}} = K_{\text{var}}^{\text{up}} + K_{\text{var}}^{\text{down}}$:
+    /// $$K_{\text{var}}^{\text{up}}(b) = \sigma_0^2 \Phi(-d_2(b)) + 2\sigma_0\psi\Big(\sigma_0\sqrt{T}\phi(d_2(b)) - b\Phi(-d_2(b))\Big), \qquad b = \ln(B_{\text{low}} / F_0).$$
+    pub fn evaluate_carr_lee_corridor_conditional_variance_swap<T: Real>(
+        spec: &CarrLeeCorridorVarianceSwapSpec<T>,
+    ) -> CarrLeeCorridorVarianceSwapAnalytics<T> {
+        let f0 = spec.forward_price_f0;
+        let b_bar = spec.lower_corridor_barrier_b;
+        let sig0 = spec.atmf_volatility_sigma0;
+        let psi = spec.skew_slope_psi;
+        let r = spec.risk_free_rate_r;
+        let t = spec.maturity_years_t;
+
+        let b = (b_bar / f0).ln();
+        let std_t = sig0 * t.sqrt();
+        let d2_b = (b + T::from_f64(0.5) * sig0 * sig0 * t) / std_t;
+        let p_occ = std_norm_cdf(-d2_b);
+        let pdf_b = std_norm_pdf(d2_b);
+
+        let sig0_2 = sig0 * sig0;
+        let k_tot = sig0_2 * (T::one() - psi * std_t);
+        let k_up = sig0_2 * p_occ + T::from_f64(2.0) * sig0 * psi * (std_t * pdf_b - b * p_occ);
+        let k_down = k_tot - k_up;
+
+        let df = (-r * t).exp();
+        // The fixed strike is paid only while the underlying occupies the corridor.  Weighting
+        // it by the same occupation probability as the replicated variance leg keeps the PV on
+        // a conditional-corridor basis (rather than charging the full-period strike).
+        let pv = T::from_f64(100.0) * df * (k_up - T::from_f64(0.5) * sig0_2 * p_occ);
+
+        CarrLeeCorridorVarianceSwapAnalytics {
+            corridor_occupation_probability: p_occ,
+            upside_corridor_variance_strike: k_up,
+            downside_corridor_variance_strike: k_down,
+            corridor_variance_swap_pv: pv,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn carr_lee_corridor_varswap_invariants_and_ad_parity() {
+            let base = CarrLeeCorridorVarianceSwapSpec {
+                forward_price_f0: 100.0_f64,
+                lower_corridor_barrier_b: 94.0_f64,
+                atmf_volatility_sigma0: 0.21_f64,
+                skew_slope_psi: -0.18_f64,
+                risk_free_rate_r: 0.036_f64,
+                maturity_years_t: 1.0_f64,
+            };
+            let res = evaluate_carr_lee_corridor_conditional_variance_swap(&base);
+            assert!(
+                res.corridor_occupation_probability > 0.5
+                    && res.corridor_occupation_probability < 1.0
+            );
+            assert!(res.upside_corridor_variance_strike > 0.0);
+            assert!(res.downside_corridor_variance_strike > 0.0);
+            assert!(res.corridor_variance_swap_pv > 0.0);
+
+            let inputs = [
+                base.forward_price_f0,
+                base.lower_corridor_barrier_b,
+                base.atmf_volatility_sigma0,
+                base.skew_slope_psi,
+                base.risk_free_rate_r,
+                base.maturity_years_t,
+            ];
+            let mut dual_in = [Dual::<6>::from_value(0.0); 6];
+            for i in 0..6 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = CarrLeeCorridorVarianceSwapSpec {
+                forward_price_f0: dual_in[0],
+                lower_corridor_barrier_b: dual_in[1],
+                atmf_volatility_sigma0: dual_in[2],
+                skew_slope_psi: dual_in[3],
+                risk_free_rate_r: dual_in[4],
+                maturity_years_t: dual_in[5],
+            };
+            let r_ad = evaluate_carr_lee_corridor_conditional_variance_swap(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..6 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 6]| CarrLeeCorridorVarianceSwapSpec {
+                    forward_price_f0: v[0],
+                    lower_corridor_barrier_b: v[1],
+                    atmf_volatility_sigma0: v[2],
+                    skew_slope_psi: v[3],
+                    risk_free_rate_r: v[4],
+                    maturity_years_t: v[5],
+                };
+                let rp = evaluate_carr_lee_corridor_conditional_variance_swap(&mk(p));
+                let rm = evaluate_carr_lee_corridor_conditional_variance_swap(&mk(m));
+                let fd =
+                    (rp.corridor_variance_swap_pv - rm.corridor_variance_swap_pv) / (2.0 * eps);
+                assert!(
+                    r_ad.corridor_variance_swap_pv.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.corridor_variance_swap_pv.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use carr_lee_corridor_varswap_mod::*;

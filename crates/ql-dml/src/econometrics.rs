@@ -3632,3 +3632,158 @@ mod hansen_white_spa_test_mod {
     }
 }
 pub use hansen_white_spa_test_mod::*;
+mod patton_sjc_copula_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Patton (2006, *International Economic Review* 47(2),
+    /// *"Modelling Asymmetric Exchange Rate Dependence"*) Symmetrized Joe–Clayton (SJC)
+    /// dynamic copula upper and lower tail-dependence engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct PattonSymmetrizedJoeClaytonCopulaSpec<T: Real> {
+        /// Lower-tail logistic intercept $\omega_L$ (e.g., $-0.35$).
+        pub lower_tail_intercept_omega_l: T,
+        /// Lower-tail autoregressive persistence $\beta_L$ on lagged $\tau_{t-1}^L$ (e.g., $1.40$).
+        pub lower_tail_persistence_beta_l: T,
+        /// Lagged lower-tail dependence coefficient $\tau_{t-1}^L \in (0, 1)$ (e.g., $0.38$).
+        pub lagged_lower_tail_tau_l: T,
+        /// Upper-tail logistic intercept $\omega_U$ (e.g., $-0.85$).
+        pub upper_tail_intercept_omega_u: T,
+        /// Upper-tail autoregressive persistence $\beta_U$ on lagged $\tau_{t-1}^U$ (e.g., $1.10$).
+        pub upper_tail_persistence_beta_u: T,
+        /// Lagged upper-tail dependence coefficient $\tau_{t-1}^U \in (0, 1)$ (e.g., $0.24$).
+        pub lagged_upper_tail_tau_u: T,
+        /// Mean absolute PIT difference forcing innovation $\bar{\Delta}_{t-1} = \frac{1}{10}\sum_{j=1}^{10}|u_{1,t-j}-u_{2,t-j}|$ (e.g., $0.18$).
+        pub pit_discrepancy_forcing_delta: T,
+        /// Forcing sensitivity $\alpha_{\text{SJC}} < 0$ (smaller $|u_1 - u_2|$ increases tail dependence, e.g., $-1.60$).
+        pub forcing_sensitivity_alpha: T,
+    }
+
+    /// Analytics returned by [`evaluate_patton_symmetrized_joe_clayton_tail_dependence`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct PattonSymmetrizedJoeClaytonCopulaAnalytics<T: Real> {
+        /// Updated dynamic lower-tail dependence coefficient $\tau_t^L \in (0, 1)$.
+        pub dynamic_lower_tail_dependence_tau_l: T,
+        /// Updated dynamic upper-tail dependence coefficient $\tau_t^U \in (0, 1)$.
+        pub dynamic_upper_tail_dependence_tau_u: T,
+        /// Implied Joe–Clayton lower-tail parameter $\gamma_t = -\frac{\ln 2}{\ln \tau_t^L} > 0$.
+        pub joe_clayton_lower_exponent_gamma: T,
+        /// Crash-vs-boom dynamic tail-dependence asymmetry $\Delta\tau_t = \tau_t^L - \tau_t^U$.
+        pub symmetrized_tail_asymmetry_wedge: T,
+    }
+
+    #[inline]
+    fn logistic_cdf<T: Real>(x: T) -> T {
+        T::one() / (T::one() + (-x).exp())
+    }
+
+    /// Evaluates the Patton (2006, Eqs. 11–14) Symmetrized Joe–Clayton dynamic copula tail
+    /// dependence evolution:
+    /// $$\tau_t^L = \Lambda\big(\omega_L + \beta_L \tau_{t-1}^L + \alpha_{\text{SJC}}\bar{\Delta}_{t-1}\big), \qquad \tau_t^U = \Lambda\big(\omega_U + \beta_U \tau_{t-1}^U + \tfrac{1}{2}\alpha_{\text{SJC}}\bar{\Delta}_{t-1}\big),$$
+    /// the Joe–Clayton parameter inversion $\gamma_t = -\frac{\ln 2}{\ln \tau_t^L}$, and the
+    /// dynamic tail-dependence asymmetry wedge $\Delta\tau_t = \tau_t^L - \tau_t^U$.
+    pub fn evaluate_patton_symmetrized_joe_clayton_tail_dependence<T: Real>(
+        spec: &PattonSymmetrizedJoeClaytonCopulaSpec<T>,
+    ) -> PattonSymmetrizedJoeClaytonCopulaAnalytics<T> {
+        let forcing = spec.forcing_sensitivity_alpha * spec.pit_discrepancy_forcing_delta;
+        let idx_l = spec.lower_tail_intercept_omega_l
+            + spec.lower_tail_persistence_beta_l * spec.lagged_lower_tail_tau_l
+            + forcing;
+        let idx_u = spec.upper_tail_intercept_omega_u
+            + spec.upper_tail_persistence_beta_u * spec.lagged_upper_tail_tau_u
+            + T::from_f64(0.5) * forcing;
+
+        let tau_l = logistic_cdf(idx_l);
+        let tau_u = logistic_cdf(idx_u);
+
+        let ln2 = T::from_f64(std::f64::consts::LN_2);
+        let gamma_t = -ln2 / tau_l.ln();
+        let asym_wedge = tau_l - tau_u;
+
+        PattonSymmetrizedJoeClaytonCopulaAnalytics {
+            dynamic_lower_tail_dependence_tau_l: tau_l,
+            dynamic_upper_tail_dependence_tau_u: tau_u,
+            joe_clayton_lower_exponent_gamma: gamma_t,
+            symmetrized_tail_asymmetry_wedge: asym_wedge,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn patton_sjc_copula_invariants_and_ad_parity() {
+            let base = PattonSymmetrizedJoeClaytonCopulaSpec {
+                lower_tail_intercept_omega_l: -0.35_f64,
+                lower_tail_persistence_beta_l: 1.40_f64,
+                lagged_lower_tail_tau_l: 0.38_f64,
+                upper_tail_intercept_omega_u: -0.85_f64,
+                upper_tail_persistence_beta_u: 1.10_f64,
+                lagged_upper_tail_tau_u: 0.24_f64,
+                pit_discrepancy_forcing_delta: 0.18_f64,
+                forcing_sensitivity_alpha: -1.60_f64,
+            };
+            let res = evaluate_patton_symmetrized_joe_clayton_tail_dependence(&base);
+            assert!(
+                res.dynamic_lower_tail_dependence_tau_l > res.dynamic_upper_tail_dependence_tau_u
+            );
+            assert!(res.joe_clayton_lower_exponent_gamma > 0.0);
+            assert!(res.symmetrized_tail_asymmetry_wedge > 0.0);
+
+            let inputs = [
+                base.lower_tail_intercept_omega_l,
+                base.lower_tail_persistence_beta_l,
+                base.lagged_lower_tail_tau_l,
+                base.upper_tail_intercept_omega_u,
+                base.upper_tail_persistence_beta_u,
+                base.lagged_upper_tail_tau_u,
+                base.pit_discrepancy_forcing_delta,
+                base.forcing_sensitivity_alpha,
+            ];
+            let mut dual_in = [Dual::<8>::from_value(0.0); 8];
+            for i in 0..8 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = PattonSymmetrizedJoeClaytonCopulaSpec {
+                lower_tail_intercept_omega_l: dual_in[0],
+                lower_tail_persistence_beta_l: dual_in[1],
+                lagged_lower_tail_tau_l: dual_in[2],
+                upper_tail_intercept_omega_u: dual_in[3],
+                upper_tail_persistence_beta_u: dual_in[4],
+                lagged_upper_tail_tau_u: dual_in[5],
+                pit_discrepancy_forcing_delta: dual_in[6],
+                forcing_sensitivity_alpha: dual_in[7],
+            };
+            let r_ad = evaluate_patton_symmetrized_joe_clayton_tail_dependence(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..8 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 8]| PattonSymmetrizedJoeClaytonCopulaSpec {
+                    lower_tail_intercept_omega_l: v[0],
+                    lower_tail_persistence_beta_l: v[1],
+                    lagged_lower_tail_tau_l: v[2],
+                    upper_tail_intercept_omega_u: v[3],
+                    upper_tail_persistence_beta_u: v[4],
+                    lagged_upper_tail_tau_u: v[5],
+                    pit_discrepancy_forcing_delta: v[6],
+                    forcing_sensitivity_alpha: v[7],
+                };
+                let rp = evaluate_patton_symmetrized_joe_clayton_tail_dependence(&mk(p));
+                let rm = evaluate_patton_symmetrized_joe_clayton_tail_dependence(&mk(m));
+                let fd = (rp.symmetrized_tail_asymmetry_wedge
+                    - rm.symmetrized_tail_asymmetry_wedge)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.symmetrized_tail_asymmetry_wedge.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.symmetrized_tail_asymmetry_wedge.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use patton_sjc_copula_mod::*;

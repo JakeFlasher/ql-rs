@@ -3290,3 +3290,162 @@ mod frye_altman_downturn_lgd_mod {
     }
 }
 pub use frye_altman_downturn_lgd_mod::*;
+mod duffie_saita_wang_stochastic_default_mod {
+    use ql_ad::Real;
+
+    /// Input specification for the Duffie, Saita & Wang (2007, *Journal of Financial Economics*
+    /// 83(3), *"Multi-Period Corporate Default Prediction with Stochastic Covariates"*)
+    /// doubly-stochastic Distance-to-Default term-structure survival engine.
+    #[derive(Debug, Clone, Copy)]
+    pub struct DuffieSaitaWangMultiPeriodDefaultSpec<T: Real> {
+        /// Baseline log-hazard intercept $\beta_0$ (e.g., $-2.40$).
+        pub baseline_log_hazard_beta0: T,
+        /// Current Merton Distance-to-Default $\text{DD}_0$ in standard deviations (e.g., $2.60$).
+        pub initial_distance_to_default_dd0: T,
+        /// Long-run stationary Distance-to-Default $\bar{D}$ (e.g., $2.20$).
+        pub long_run_distance_to_default_bar: T,
+        /// Distance-to-Default mean-reversion speed $\kappa_D > 0$ (e.g., $0.38$).
+        pub dd_mean_reversion_kappa: T,
+        /// Distance-to-Default diffusion volatility $\sigma_D > 0$ (e.g., $0.45$).
+        pub dd_volatility_sigma: T,
+        /// Sensitivity $\beta_D > 0$ of log-default intensity to Distance-to-Default (e.g., $0.85$).
+        pub dd_hazard_loading_beta_d: T,
+        /// Prediction horizon $T$ in years (e.g., $3.0$).
+        pub horizon_years_t: T,
+    }
+
+    /// Analytics returned by [`evaluate_duffie_saita_wang_stochastic_covariate_survival`].
+    #[derive(Debug, Clone, Copy)]
+    pub struct DuffieSaitaWangMultiPeriodDefaultAnalytics<T: Real> {
+        /// Instantaneous default intensity $\lambda_0 = \exp(\beta_0 - \beta_D \text{DD}_0)$.
+        pub instantaneous_default_hazard: T,
+        /// Expected cumulative hazard $\bar{H}(0, T)$ incorporating covariate mean-reversion and convexity.
+        pub expected_cumulative_hazard: T,
+        /// Multi-period survival probability $S(0, T) = \exp(-\bar{H}(0, T))$.
+        pub multi_period_survival_probability: T,
+        /// Multi-period cumulative default probability $\text{PD}(0, T) = 1 - S(0, T)$.
+        pub multi_period_default_probability: T,
+    }
+
+    /// Evaluates the Duffie, Saita & Wang (2007, Eqs. 1–9) doubly-stochastic intensity
+    /// $\lambda_t = \exp(\beta_0 - \beta_D \text{DD}_t)$ under Ornstein–Uhlenbeck covariate
+    /// dynamics $d\text{DD}_t = \kappa_D(\bar{D} - \text{DD}_t)\,dt + \sigma_D\,dW_t$, computing
+    /// the mean-reverting path average $\bar{\mu}_\Lambda(T)$ and integrated log-hazard variance $\Sigma_\Lambda^2(T)$.
+    pub fn evaluate_duffie_saita_wang_stochastic_covariate_survival<T: Real>(
+        spec: &DuffieSaitaWangMultiPeriodDefaultSpec<T>,
+    ) -> DuffieSaitaWangMultiPeriodDefaultAnalytics<T> {
+        let b0 = spec.baseline_log_hazard_beta0;
+        let dd0 = spec.initial_distance_to_default_dd0;
+        let d_bar = spec.long_run_distance_to_default_bar;
+        let kap = spec.dd_mean_reversion_kappa;
+        let sig = spec.dd_volatility_sigma;
+        let b_d = spec.dd_hazard_loading_beta_d;
+        let t = spec.horizon_years_t;
+
+        let lam0 = (b0 - b_d * dd0).exp();
+
+        let e_kt = (-kap * t).exp();
+        let b_frac = (T::one() - e_kt) / (kap * t);
+        let avg_dd = d_bar + (dd0 - d_bar) * b_frac;
+        let mu_log = b0 - b_d * avg_dd;
+
+        // Integrated OU variance over [0, T] divided by T^2
+        let e_2kt = e_kt * e_kt;
+        let ou_int_var = (b_d * b_d * sig * sig / (kap * kap))
+            * (t - T::from_f64(2.0) * (T::one() - e_kt) / kap
+                + (T::one() - e_2kt) / (T::from_f64(2.0) * kap));
+        let h_cum = t * (mu_log + T::from_f64(0.5) * ou_int_var / t).exp();
+        let surv = (-h_cum).exp();
+        let pd = T::one() - surv;
+
+        DuffieSaitaWangMultiPeriodDefaultAnalytics {
+            instantaneous_default_hazard: lam0,
+            expected_cumulative_hazard: h_cum,
+            multi_period_survival_probability: surv,
+            multi_period_default_probability: pd,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ql_ad::Dual;
+
+        #[test]
+        fn duffie_saita_wang_stochastic_default_invariants_and_ad_parity() {
+            let base = DuffieSaitaWangMultiPeriodDefaultSpec {
+                baseline_log_hazard_beta0: -2.40_f64,
+                initial_distance_to_default_dd0: 2.60_f64,
+                long_run_distance_to_default_bar: 2.20_f64,
+                dd_mean_reversion_kappa: 0.38_f64,
+                dd_volatility_sigma: 0.45_f64,
+                dd_hazard_loading_beta_d: 0.85_f64,
+                horizon_years_t: 3.0_f64,
+            };
+            let res = evaluate_duffie_saita_wang_stochastic_covariate_survival(&base);
+            assert!(res.instantaneous_default_hazard > 0.0);
+            assert!(res.expected_cumulative_hazard > 0.0);
+            assert!(
+                res.multi_period_survival_probability > 0.0
+                    && res.multi_period_survival_probability < 1.0
+            );
+            assert!(
+                (res.multi_period_survival_probability + res.multi_period_default_probability
+                    - 1.0)
+                    .abs()
+                    < 1e-12
+            );
+
+            let inputs = [
+                base.baseline_log_hazard_beta0,
+                base.initial_distance_to_default_dd0,
+                base.long_run_distance_to_default_bar,
+                base.dd_mean_reversion_kappa,
+                base.dd_volatility_sigma,
+                base.dd_hazard_loading_beta_d,
+                base.horizon_years_t,
+            ];
+            let mut dual_in = [Dual::<7>::from_value(0.0); 7];
+            for i in 0..7 {
+                dual_in[i] = Dual::variable(inputs[i], i);
+            }
+            let spec_ad = DuffieSaitaWangMultiPeriodDefaultSpec {
+                baseline_log_hazard_beta0: dual_in[0],
+                initial_distance_to_default_dd0: dual_in[1],
+                long_run_distance_to_default_bar: dual_in[2],
+                dd_mean_reversion_kappa: dual_in[3],
+                dd_volatility_sigma: dual_in[4],
+                dd_hazard_loading_beta_d: dual_in[5],
+                horizon_years_t: dual_in[6],
+            };
+            let r_ad = evaluate_duffie_saita_wang_stochastic_covariate_survival(&spec_ad);
+            let eps = 1e-6;
+            for i in 0..7 {
+                let mut p = inputs;
+                let mut m = inputs;
+                p[i] += eps;
+                m[i] -= eps;
+                let mk = |v: [f64; 7]| DuffieSaitaWangMultiPeriodDefaultSpec {
+                    baseline_log_hazard_beta0: v[0],
+                    initial_distance_to_default_dd0: v[1],
+                    long_run_distance_to_default_bar: v[2],
+                    dd_mean_reversion_kappa: v[3],
+                    dd_volatility_sigma: v[4],
+                    dd_hazard_loading_beta_d: v[5],
+                    horizon_years_t: v[6],
+                };
+                let rp = evaluate_duffie_saita_wang_stochastic_covariate_survival(&mk(p));
+                let rm = evaluate_duffie_saita_wang_stochastic_covariate_survival(&mk(m));
+                let fd = (rp.multi_period_default_probability
+                    - rm.multi_period_default_probability)
+                    / (2.0 * eps);
+                assert!(
+                    r_ad.multi_period_default_probability.d[i].abs() > 1e-6,
+                    "zero derivative at {i}"
+                );
+                assert!((r_ad.multi_period_default_probability.d[i] - fd).abs() < 1e-5);
+            }
+        }
+    }
+}
+pub use duffie_saita_wang_stochastic_default_mod::*;
