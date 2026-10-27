@@ -3960,3 +3960,177 @@ pub use corsi_bpq_harq_volatility_mod::{
     CorsiBollerslevPattonQuaedvliegHarqAnalytics, CorsiBollerslevPattonQuaedvliegHarqSpec,
     evaluate_corsi_bollerslev_patton_quaedvlieg_harq_volatility,
 };
+
+/// Input specification for the Bollerslev, Tauchen & Zhou (2009, *Review of
+/// Financial Studies* 22(11)) Model-Free Implied-minus-Realized Variance Risk
+/// Premium ($VRP_t$) & Multi-Horizon Return Predictability engine.
+#[derive(Debug, Clone, Copy)]
+pub struct BollerslevTauchenZhouVarianceRiskPremiumSpec<T: Real> {
+    /// Model-free option-implied variance $IV_t > 0$ (annualized variance units).
+    pub model_free_implied_variance_iv: T,
+    /// High-frequency realized variance $RV_t > 0$ (annualized variance units).
+    pub high_frequency_realized_variance_rv: T,
+    /// Realized variance AR(1) persistence parameter $\rho_v \in (0,1)$.
+    pub variance_persistence_rho_v: T,
+    /// Volatility-of-volatility AR(1) persistence parameter $\rho_q \in (0,1)$.
+    pub vol_of_vol_persistence_rho_q: T,
+    /// Innovation variance of volatility-of-volatility $\varphi_q^2 > 0$.
+    pub vol_of_vol_shock_variance_varphi: T,
+    /// Wealth-consumption sensitivity to vol-of-vol $A_q > 0$.
+    pub consumption_volatility_sensitivity_a_q: T,
+    /// Epstein-Zin relative risk aversion $\gamma > 1$.
+    pub recursive_risk_aversion_gamma: T,
+    /// Return predictability horizon in quarters $h \ge 1$.
+    pub forecast_horizon_quarters_h: T,
+}
+
+/// Analytics returned by [`evaluate_bollerslev_tauchen_zhou_variance_risk_premium_predictability`].
+#[derive(Debug, Clone, Copy)]
+pub struct BollerslevTauchenZhouVarianceRiskPremiumAnalytics<T: Real> {
+    /// Variance Risk Premium $VRP_t = IV_t - \mathbb{E}_t[RV_{t+1}]$.
+    pub variance_risk_premium_vrp: T,
+    /// Implied latent volatility-of-volatility state $\hat{q}_t$.
+    pub implied_vol_of_vol_state_q: T,
+    /// Multi-horizon predictability slope $\beta_{VRP}(h)$.
+    pub multi_horizon_predictability_beta_h: T,
+    /// Predicted $h$-quarter annualized excess equity return $\widehat{rx}_{t \to t+h}$.
+    pub predicted_annualized_excess_return: T,
+}
+
+/// Evaluates the Bollerslev, Tauchen & Zhou (2009, *RFS* 22(11)) variance risk
+/// premium $VRP_t = IV_t - RV_t$ and its multi-horizon stock market return
+/// predictability driven by recursive utility and time-varying vol-of-vol $q_t$.
+pub fn evaluate_bollerslev_tauchen_zhou_variance_risk_premium_predictability<T: Real>(
+    spec: &BollerslevTauchenZhouVarianceRiskPremiumSpec<T>,
+) -> BollerslevTauchenZhouVarianceRiskPremiumAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+    let kappa1_sq = T::from_f64(0.994009);
+
+    let iv = spec
+        .model_free_implied_variance_iv
+        .max_val(T::from_f64(1e-5));
+    let rv = spec
+        .high_frequency_realized_variance_rv
+        .max_val(T::from_f64(1e-5));
+    let rho_v = spec
+        .variance_persistence_rho_v
+        .min_val(T::from_f64(0.99))
+        .max_val(T::from_f64(0.05));
+    let rho_q = spec
+        .vol_of_vol_persistence_rho_q
+        .min_val(T::from_f64(0.99))
+        .max_val(T::from_f64(0.05));
+    let varphi = spec
+        .vol_of_vol_shock_variance_varphi
+        .max_val(T::from_f64(1e-6));
+    let aq = spec
+        .consumption_volatility_sensitivity_a_q
+        .max_val(T::from_f64(0.1));
+    let gamma = spec.recursive_risk_aversion_gamma.max_val(T::from_f64(1.1));
+    let h = spec.forecast_horizon_quarters_h.max_val(T::from_f64(0.5));
+
+    let vrp = iv - (rho_v * rv + (one - rho_v) * half * (iv + rv));
+    let theta_q = (gamma - one) * aq * kappa1_sq * varphi;
+    let q_hat = vrp / theta_q.max_val(T::from_f64(1e-6));
+
+    let geom_q = (one - (h * rho_q.ln()).exp()) / (one - rho_q);
+    let geom_v = (one - (h * rho_v.ln()).exp()) / (one - rho_v);
+    let diff_rho = rho_v - rho_q;
+
+    let beta_h = geom_q * (gamma * aq * varphi) - geom_v * (half * gamma * diff_rho * diff_rho);
+    let rx_pred = (T::from_f64(4.0) / h) * beta_h * vrp;
+
+    BollerslevTauchenZhouVarianceRiskPremiumAnalytics {
+        variance_risk_premium_vrp: vrp,
+        implied_vol_of_vol_state_q: q_hat,
+        multi_horizon_predictability_beta_h: beta_h,
+        predicted_annualized_excess_return: rx_pred,
+    }
+}
+
+#[cfg(test)]
+mod bollerslev_tauchen_zhou_variance_risk_premium_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn bollerslev_tauchen_zhou_variance_risk_premium_invariants_and_ad_parity() {
+        let base = BollerslevTauchenZhouVarianceRiskPremiumSpec {
+            model_free_implied_variance_iv: 0.042_f64,
+            high_frequency_realized_variance_rv: 0.024_f64,
+            variance_persistence_rho_v: 0.62_f64,
+            vol_of_vol_persistence_rho_q: 0.82_f64,
+            vol_of_vol_shock_variance_varphi: 0.18_f64,
+            consumption_volatility_sensitivity_a_q: 2.40_f64,
+            recursive_risk_aversion_gamma: 6.5_f64,
+            forecast_horizon_quarters_h: 2.0_f64,
+        };
+        let r0 = evaluate_bollerslev_tauchen_zhou_variance_risk_premium_predictability(&base);
+        assert!(r0.variance_risk_premium_vrp > 0.0);
+        assert!(r0.predicted_annualized_excess_return > 0.0);
+
+        let x0 = [
+            base.model_free_implied_variance_iv,
+            base.high_frequency_realized_variance_rv,
+            base.variance_persistence_rho_v,
+            base.vol_of_vol_persistence_rho_q,
+            base.vol_of_vol_shock_variance_varphi,
+            base.consumption_volatility_sensitivity_a_q,
+            base.recursive_risk_aversion_gamma,
+            base.forecast_horizon_quarters_h,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_bollerslev_tauchen_zhou_variance_risk_premium_predictability(
+            &BollerslevTauchenZhouVarianceRiskPremiumSpec {
+                model_free_implied_variance_iv: xd[0],
+                high_frequency_realized_variance_rv: xd[1],
+                variance_persistence_rho_v: xd[2],
+                vol_of_vol_persistence_rho_q: xd[3],
+                vol_of_vol_shock_variance_varphi: xd[4],
+                consumption_volatility_sensitivity_a_q: xd[5],
+                recursive_risk_aversion_gamma: xd[6],
+                forecast_horizon_quarters_h: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_bollerslev_tauchen_zhou_variance_risk_premium_predictability(
+                &BollerslevTauchenZhouVarianceRiskPremiumSpec {
+                    model_free_implied_variance_iv: xp[0],
+                    high_frequency_realized_variance_rv: xp[1],
+                    variance_persistence_rho_v: xp[2],
+                    vol_of_vol_persistence_rho_q: xp[3],
+                    vol_of_vol_shock_variance_varphi: xp[4],
+                    consumption_volatility_sensitivity_a_q: xp[5],
+                    recursive_risk_aversion_gamma: xp[6],
+                    forecast_horizon_quarters_h: xp[7],
+                },
+            );
+            let rm = evaluate_bollerslev_tauchen_zhou_variance_risk_premium_predictability(
+                &BollerslevTauchenZhouVarianceRiskPremiumSpec {
+                    model_free_implied_variance_iv: xm[0],
+                    high_frequency_realized_variance_rv: xm[1],
+                    variance_persistence_rho_v: xm[2],
+                    vol_of_vol_persistence_rho_q: xm[3],
+                    vol_of_vol_shock_variance_varphi: xm[4],
+                    consumption_volatility_sensitivity_a_q: xm[5],
+                    recursive_risk_aversion_gamma: xm[6],
+                    forecast_horizon_quarters_h: xm[7],
+                },
+            );
+            let fd = (rp.predicted_annualized_excess_return
+                - rm.predicted_annualized_excess_return)
+                / (2.0 * h);
+            assert!(rad.predicted_annualized_excess_return.d[i].abs() > 1e-9);
+            assert!((rad.predicted_annualized_excess_return.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

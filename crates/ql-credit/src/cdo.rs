@@ -3449,3 +3449,163 @@ mod duffie_saita_wang_stochastic_default_mod {
     }
 }
 pub use duffie_saita_wang_stochastic_default_mod::*;
+
+/// Input specification for the Errais, Giesecke & Goldberg (2010, *SIAM Journal
+/// on Financial Mathematics* 1(1)) Self-Exciting Hawkes Frailty Contagion
+/// Portfolio Credit Loss engine.
+#[derive(Debug, Clone, Copy)]
+pub struct ErraisGieseckeGoldbergHawkesCreditSpec<T: Real> {
+    /// Initial portfolio default intensity $\lambda_0 > 0$.
+    pub initial_default_intensity_lambda0: T,
+    /// Long-run baseline reversion intensity $\mu_\lambda > 0$.
+    pub long_run_baseline_intensity_mu: T,
+    /// Intensity exponential mean-reversion speed $\kappa > 0$.
+    pub mean_reversion_speed_kappa: T,
+    /// Self-exciting Hawkes jump impact per unit loss $\delta_H > 0$.
+    pub self_exciting_contagion_impact_delta: T,
+    /// Average fractional loss per default event $\bar{\ell} \in (0,1)$.
+    pub expected_loss_per_default_ell: T,
+    /// Evaluation horizon in years $T > 0$.
+    pub horizon_years_t: T,
+    /// Tranche detachment fraction $K_d \in (0,1)$.
+    pub tranche_detachment_fraction_d: T,
+}
+
+/// Analytics returned by [`evaluate_errais_giesecke_goldberg_hawkes_contagion_credit_loss`].
+#[derive(Debug, Clone, Copy)]
+pub struct ErraisGieseckeGoldbergHawkesCreditAnalytics<T: Real> {
+    /// Effective net decay rate $\hat{\kappa} = \kappa - \delta_H \bar{\ell}$.
+    pub effective_net_decay_kappa_hat: T,
+    /// Hawkes contagion branching ratio $\eta_H = \delta_H \bar{\ell} / \kappa$.
+    pub contagion_branching_ratio_eta: T,
+    /// Expected terminal default intensity $\mathbb{E}[\lambda_T]$.
+    pub expected_terminal_intensity_lambda_t: T,
+    /// Expected cumulative portfolio credit loss $\mathbb{E}[L_T]$.
+    pub expected_cumulative_portfolio_loss: T,
+    /// Contagion-amplified tranche risk charge $\Pi_{\text{tranche}}(K_d)$.
+    pub contagion_adjusted_tranche_risk_charge: T,
+}
+
+/// Evaluates the Errais, Giesecke & Goldberg (2010, *SIFIN* 1(1)) affine
+/// self-exciting Hawkes point-process portfolio credit loss and contagion
+/// clustering amplification.
+pub fn evaluate_errais_giesecke_goldberg_hawkes_contagion_credit_loss<T: Real>(
+    spec: &ErraisGieseckeGoldbergHawkesCreditSpec<T>,
+) -> ErraisGieseckeGoldbergHawkesCreditAnalytics<T> {
+    let one = T::one();
+    let kappa = spec.mean_reversion_speed_kappa.max_val(T::from_f64(0.1));
+    let ell = spec
+        .expected_loss_per_default_ell
+        .max_val(T::from_f64(1e-4));
+    let delta = spec
+        .self_exciting_contagion_impact_delta
+        .max_val(T::from_f64(0.0));
+    let t = spec.horizon_years_t.max_val(T::from_f64(1e-4));
+
+    let feedback = delta * ell;
+    let kappa_hat = (kappa - feedback).max_val(T::from_f64(0.05));
+    let eta = feedback / kappa;
+    let asym_lambda = kappa * spec.long_run_baseline_intensity_mu / kappa_hat;
+
+    let decay = (-kappa_hat * t).exp();
+    let e_lambda_t = asym_lambda + (spec.initial_default_intensity_lambda0 - asym_lambda) * decay;
+    let e_n_t = asym_lambda * t
+        + (spec.initial_default_intensity_lambda0 - asym_lambda) * (one - decay) / kappa_hat;
+    let e_loss = ell * e_n_t;
+
+    let kd = spec
+        .tranche_detachment_fraction_d
+        .max_val(T::from_f64(1e-4));
+    let cluster_mult =
+        one + (feedback / kappa_hat) * (-kd / e_loss.max_val(T::from_f64(1e-6))).exp();
+    let tranche_charge = e_loss * cluster_mult;
+
+    ErraisGieseckeGoldbergHawkesCreditAnalytics {
+        effective_net_decay_kappa_hat: kappa_hat,
+        contagion_branching_ratio_eta: eta,
+        expected_terminal_intensity_lambda_t: e_lambda_t,
+        expected_cumulative_portfolio_loss: e_loss,
+        contagion_adjusted_tranche_risk_charge: tranche_charge,
+    }
+}
+
+#[cfg(test)]
+mod errais_giesecke_goldberg_hawkes_credit_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn errais_giesecke_goldberg_hawkes_credit_invariants_and_ad_parity() {
+        let base = ErraisGieseckeGoldbergHawkesCreditSpec {
+            initial_default_intensity_lambda0: 0.035_f64,
+            long_run_baseline_intensity_mu: 0.025_f64,
+            mean_reversion_speed_kappa: 1.40_f64,
+            self_exciting_contagion_impact_delta: 0.95_f64,
+            expected_loss_per_default_ell: 0.60_f64,
+            horizon_years_t: 5.0_f64,
+            tranche_detachment_fraction_d: 0.12_f64,
+        };
+        let r0 = evaluate_errais_giesecke_goldberg_hawkes_contagion_credit_loss(&base);
+        assert!(r0.contagion_branching_ratio_eta > 0.0 && r0.contagion_branching_ratio_eta < 1.0);
+        assert!(r0.contagion_adjusted_tranche_risk_charge > r0.expected_cumulative_portfolio_loss);
+
+        let x0 = [
+            base.initial_default_intensity_lambda0,
+            base.long_run_baseline_intensity_mu,
+            base.mean_reversion_speed_kappa,
+            base.self_exciting_contagion_impact_delta,
+            base.expected_loss_per_default_ell,
+            base.horizon_years_t,
+            base.tranche_detachment_fraction_d,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_errais_giesecke_goldberg_hawkes_contagion_credit_loss(
+            &ErraisGieseckeGoldbergHawkesCreditSpec {
+                initial_default_intensity_lambda0: xd[0],
+                long_run_baseline_intensity_mu: xd[1],
+                mean_reversion_speed_kappa: xd[2],
+                self_exciting_contagion_impact_delta: xd[3],
+                expected_loss_per_default_ell: xd[4],
+                horizon_years_t: xd[5],
+                tranche_detachment_fraction_d: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_errais_giesecke_goldberg_hawkes_contagion_credit_loss(
+                &ErraisGieseckeGoldbergHawkesCreditSpec {
+                    initial_default_intensity_lambda0: xp[0],
+                    long_run_baseline_intensity_mu: xp[1],
+                    mean_reversion_speed_kappa: xp[2],
+                    self_exciting_contagion_impact_delta: xp[3],
+                    expected_loss_per_default_ell: xp[4],
+                    horizon_years_t: xp[5],
+                    tranche_detachment_fraction_d: xp[6],
+                },
+            );
+            let rm = evaluate_errais_giesecke_goldberg_hawkes_contagion_credit_loss(
+                &ErraisGieseckeGoldbergHawkesCreditSpec {
+                    initial_default_intensity_lambda0: xm[0],
+                    long_run_baseline_intensity_mu: xm[1],
+                    mean_reversion_speed_kappa: xm[2],
+                    self_exciting_contagion_impact_delta: xm[3],
+                    expected_loss_per_default_ell: xm[4],
+                    horizon_years_t: xm[5],
+                    tranche_detachment_fraction_d: xm[6],
+                },
+            );
+            let fd = (rp.contagion_adjusted_tranche_risk_charge
+                - rm.contagion_adjusted_tranche_risk_charge)
+                / (2.0 * h);
+            assert!(rad.contagion_adjusted_tranche_risk_charge.d[i].abs() > 1e-9);
+            assert!((rad.contagion_adjusted_tranche_risk_charge.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

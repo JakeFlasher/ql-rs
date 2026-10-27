@@ -1985,3 +1985,184 @@ mod casassus_collin_dufresne_convenience_yield_mod {
     }
 }
 pub use casassus_collin_dufresne_convenience_yield_mod::*;
+
+/// Input specification for the Trolle & Schwartz (2009, *Review of Financial
+/// Studies* 22(11)) Unspanned Stochastic Volatility (USV) Commodity Futures &
+/// Options engine.
+#[derive(Debug, Clone, Copy)]
+pub struct TrolleSchwartzUnspannedStochasticVolatilitySpec<T: Real> {
+    /// Current futures price $F(t,T_F) > 0$.
+    pub futures_price_f0: T,
+    /// Initial forward convenience/cost-of-carry state $y_0$.
+    pub forward_cost_of_carry_y0: T,
+    /// Forward convenience-yield HJM decay rate $\kappa_y > 0$.
+    pub carry_decay_kappa_y: T,
+    /// Initial unspanned stochastic variance state $v_0 > 0$.
+    pub initial_stochastic_variance_v0: T,
+    /// Long-run mean of unspanned stochastic variance $\theta_v > 0$.
+    pub long_run_variance_theta_v: T,
+    /// Mean-reversion speed of unspanned variance $\kappa_v > 0$.
+    pub variance_mean_reversion_kappa_v: T,
+    /// Volatility of variance $\sigma_v > 0$.
+    pub vol_of_vol_sigma_v: T,
+    /// Futures option expiry in years $T_O > 0$.
+    pub option_expiry_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_trolle_schwartz_unspanned_stochastic_volatility_commodity`].
+#[derive(Debug, Clone, Copy)]
+pub struct TrolleSchwartzUnspannedStochasticVolatilityAnalytics<T: Real> {
+    /// Model futures price $F_{\text{model}}(t,T_F)$ (invariant to unspanned variance $v_0$).
+    pub spanned_futures_price: T,
+    /// Integrated unspanned futures variance $V_{\text{USV}}(T_O)$.
+    pub integrated_unspanned_futures_variance: T,
+    /// Effective USV annualized implied volatility $\sigma_{\text{USV}}$.
+    pub usv_effective_implied_volatility: T,
+    /// Undiscounted ATM futures call option value $C_{\text{USV}}$.
+    pub usv_atm_futures_option_value: T,
+    /// Unspanned variance sensitivity $\partial C_{\text{USV}} / \partial v_0$ (unhedgeable by futures).
+    pub unspanned_variance_exposure_vega: T,
+}
+
+/// Evaluates the Trolle & Schwartz (2009, *RFS* 22(11)) unspanned stochastic
+/// volatility (USV) commodity futures and option valuation model.
+pub fn evaluate_trolle_schwartz_unspanned_stochastic_volatility_commodity<T: Real>(
+    spec: &TrolleSchwartzUnspannedStochasticVolatilitySpec<T>,
+) -> TrolleSchwartzUnspannedStochasticVolatilityAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+    let half = T::from_f64(0.5);
+    let inv_sqrt_2 = T::from_f64(std::f64::consts::FRAC_1_SQRT_2);
+    let inv_sqrt_2pi = T::from_f64(0.3989422804014327);
+
+    let f0 = spec.futures_price_f0.max_val(T::from_f64(1.0));
+    let ky = spec.carry_decay_kappa_y.max_val(T::from_f64(0.05));
+    let kv = spec
+        .variance_mean_reversion_kappa_v
+        .max_val(T::from_f64(0.05));
+    let v0 = spec
+        .initial_stochastic_variance_v0
+        .max_val(T::from_f64(1e-5));
+    let theta_v = spec.long_run_variance_theta_v.max_val(T::from_f64(1e-5));
+    let sig_v = spec.vol_of_vol_sigma_v.max_val(T::from_f64(1e-5));
+    let t = spec.option_expiry_years_t.max_val(T::from_f64(1e-4));
+
+    let b_y_int = (one - (-ky * t).exp()) / ky;
+    let f_model = f0 * (spec.forward_cost_of_carry_y0 * b_y_int).exp();
+
+    let b_y_mult = one + b_y_int / t;
+    let b_v_frac = (one - (-kv * t).exp()) / (kv * t);
+    let v_bar = theta_v + (v0 - theta_v) * b_v_frac;
+
+    let vov_term = (sig_v * sig_v / (T::from_f64(4.0) * kv * kv))
+        * (one - (-kv * t).exp())
+        * (one - (-kv * t).exp());
+    let int_var = v_bar * (b_y_mult * b_y_mult * t + vov_term);
+    let std_tot = int_var.max_val(T::from_f64(1e-10)).sqrt();
+    let sig_usv = std_tot / t.sqrt();
+
+    let d1 = half * std_tot;
+    let n_d1 = half * (one + (d1 * inv_sqrt_2).erf());
+    let call_val = f_model * (two * n_d1 - one);
+
+    let pdf_d1 = inv_sqrt_2pi * (-half * d1 * d1).exp();
+    let dv_dv0 = b_v_frac * (b_y_mult * b_y_mult * t + vov_term);
+    let vega_unspanned = f_model * pdf_d1 * half * dv_dv0 / std_tot;
+
+    TrolleSchwartzUnspannedStochasticVolatilityAnalytics {
+        spanned_futures_price: f_model,
+        integrated_unspanned_futures_variance: int_var,
+        usv_effective_implied_volatility: sig_usv,
+        usv_atm_futures_option_value: call_val,
+        unspanned_variance_exposure_vega: vega_unspanned,
+    }
+}
+
+#[cfg(test)]
+mod trolle_schwartz_unspanned_stochastic_volatility_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn trolle_schwartz_unspanned_stochastic_volatility_invariants_and_ad_parity() {
+        let base = TrolleSchwartzUnspannedStochasticVolatilitySpec {
+            futures_price_f0: 76.0_f64,
+            forward_cost_of_carry_y0: -0.035_f64,
+            carry_decay_kappa_y: 1.25_f64,
+            initial_stochastic_variance_v0: 0.095_f64,
+            long_run_variance_theta_v: 0.080_f64,
+            variance_mean_reversion_kappa_v: 1.80_f64,
+            vol_of_vol_sigma_v: 0.42_f64,
+            option_expiry_years_t: 0.50_f64,
+        };
+        let r0 = evaluate_trolle_schwartz_unspanned_stochastic_volatility_commodity(&base);
+        assert!(r0.usv_atm_futures_option_value > 0.0);
+        assert!(r0.unspanned_variance_exposure_vega > 0.0);
+
+        let x0 = [
+            base.futures_price_f0,
+            base.forward_cost_of_carry_y0,
+            base.carry_decay_kappa_y,
+            base.initial_stochastic_variance_v0,
+            base.long_run_variance_theta_v,
+            base.variance_mean_reversion_kappa_v,
+            base.vol_of_vol_sigma_v,
+            base.option_expiry_years_t,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_trolle_schwartz_unspanned_stochastic_volatility_commodity(
+            &TrolleSchwartzUnspannedStochasticVolatilitySpec {
+                futures_price_f0: xd[0],
+                forward_cost_of_carry_y0: xd[1],
+                carry_decay_kappa_y: xd[2],
+                initial_stochastic_variance_v0: xd[3],
+                long_run_variance_theta_v: xd[4],
+                variance_mean_reversion_kappa_v: xd[5],
+                vol_of_vol_sigma_v: xd[6],
+                option_expiry_years_t: xd[7],
+            },
+        );
+        // Verify USV invariance: futures price has zero derivative w.r.t. unspanned variance parameters (indices 3, 4, 5, 6)
+        assert!(rad.spanned_futures_price.d[3].abs() < 1e-14);
+        assert!(rad.spanned_futures_price.d[6].abs() < 1e-14);
+
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_trolle_schwartz_unspanned_stochastic_volatility_commodity(
+                &TrolleSchwartzUnspannedStochasticVolatilitySpec {
+                    futures_price_f0: xp[0],
+                    forward_cost_of_carry_y0: xp[1],
+                    carry_decay_kappa_y: xp[2],
+                    initial_stochastic_variance_v0: xp[3],
+                    long_run_variance_theta_v: xp[4],
+                    variance_mean_reversion_kappa_v: xp[5],
+                    vol_of_vol_sigma_v: xp[6],
+                    option_expiry_years_t: xp[7],
+                },
+            );
+            let rm = evaluate_trolle_schwartz_unspanned_stochastic_volatility_commodity(
+                &TrolleSchwartzUnspannedStochasticVolatilitySpec {
+                    futures_price_f0: xm[0],
+                    forward_cost_of_carry_y0: xm[1],
+                    carry_decay_kappa_y: xm[2],
+                    initial_stochastic_variance_v0: xm[3],
+                    long_run_variance_theta_v: xm[4],
+                    variance_mean_reversion_kappa_v: xm[5],
+                    vol_of_vol_sigma_v: xm[6],
+                    option_expiry_years_t: xm[7],
+                },
+            );
+            let fd =
+                (rp.usv_atm_futures_option_value - rm.usv_atm_futures_option_value) / (2.0 * h);
+            assert!(rad.usv_atm_futures_option_value.d[i].abs() > 1e-9);
+            assert!((rad.usv_atm_futures_option_value.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

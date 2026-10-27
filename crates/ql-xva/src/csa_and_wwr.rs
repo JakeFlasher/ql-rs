@@ -4403,3 +4403,185 @@ pub use brigo_capponi_pallavicini_cds_contagion_wwr_mod::{
     BrigoCapponiPallaviciniCdsContagionWwrAnalytics, BrigoCapponiPallaviciniCdsContagionWwrSpec,
     evaluate_brigo_capponi_pallavicini_cds_contagion_wwr_cva,
 };
+
+/// Input specification for the Crépey (2015, *Mathematical Finance* 25(1)) &
+/// Bichuch, Capponi & Sturm (2018, *Mathematical Finance* 28(2)) Asymmetric
+/// Borrowing-Lending Rate & Recursive XVA BSDE engine.
+#[derive(Debug, Clone, Copy)]
+pub struct CrepeyBichuchCapponiNonlinearXvaBsdeSpec<T: Real> {
+    /// Clean OIS-discounted mark-to-market value $V_0$.
+    pub clean_derivative_mtm_v0: T,
+    /// CSA variation-margin collateralization fraction $\alpha_{\text{CSA}} \in [0,1]$.
+    pub collateralization_fraction_alpha: T,
+    /// Unsecured treasury borrowing spread over OIS $s_f^+ > 0$.
+    pub unsecured_borrowing_spread_s_b: T,
+    /// Unsecured treasury lending spread over OIS $s_f^- \ge 0$.
+    pub unsecured_lending_spread_s_l: T,
+    /// Counterparty loss-adjusted credit spread $s_C = \lambda_C \text{LGD}_C > 0$.
+    pub counterparty_default_spread_s_c: T,
+    /// Hedger own-default credit spread $s_H = \lambda_H \text{LGD}_H > 0$.
+    pub hedger_default_spread_s_h: T,
+    /// Portfolio mark-to-market diffusion volatility $\sigma_V > 0$.
+    pub exposure_volatility_sigma_v: T,
+    /// Trade maturity in years $T > 0$.
+    pub maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_crepey_bichuch_capponi_nonlinear_xva_bsde`].
+#[derive(Debug, Clone, Copy)]
+pub struct CrepeyBichuchCapponiNonlinearXvaBsdeAnalytics<T: Real> {
+    /// First-order linear XVA approximation $\Theta^{(1)}$ (ignoring recursive XVA funding).
+    pub linear_first_order_xva: T,
+    /// Recursive nonlinear BSDE total XVA $\Theta_{\text{BSDE}}$.
+    pub nonlinear_bsde_total_xva: T,
+    /// Asymmetric funding BSDE feedback wedge $\Delta\Theta_{\text{nonlin}} = \Theta_{\text{BSDE}} - \Theta^{(1)}$.
+    pub recursive_funding_feedback_wedge: T,
+    /// All-in XVA-adjusted economic value $\hat{V}_0 = V_0 - \Theta_{\text{BSDE}}$.
+    pub xva_adjusted_all_in_price: T,
+}
+
+/// Evaluates the Crépey (2015, *Math. Finance* 25(1)) & Bichuch, Capponi & Sturm
+/// (2018, *Math. Finance* 28(2)) recursive nonlinear XVA BSDE with asymmetric
+/// unsecured borrowing ($s_f^+$) and lending ($s_f^-$) rates.
+pub fn evaluate_crepey_bichuch_capponi_nonlinear_xva_bsde<T: Real>(
+    spec: &CrepeyBichuchCapponiNonlinearXvaBsdeSpec<T>,
+) -> CrepeyBichuchCapponiNonlinearXvaBsdeAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+    let inv_sqrt_2 = T::from_f64(std::f64::consts::FRAC_1_SQRT_2);
+    let inv_sqrt_2pi = T::from_f64(0.3989422804014327);
+
+    let v0 = spec.clean_derivative_mtm_v0;
+    let uncoll = (one - spec.collateralization_fraction_alpha).max_val(T::zero());
+    let sb = spec
+        .unsecured_borrowing_spread_s_b
+        .max_val(T::from_f64(1e-5));
+    let sl = spec.unsecured_lending_spread_s_l.max_val(T::zero());
+    let sc = spec
+        .counterparty_default_spread_s_c
+        .max_val(T::from_f64(1e-5));
+    let sh = spec.hedger_default_spread_s_h.max_val(T::from_f64(1e-5));
+    let t = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+
+    let std_v =
+        spec.exposure_volatility_sigma_v.max_val(T::from_f64(1e-4)) * (t / T::from_f64(3.0)).sqrt();
+    let z0 = v0 / std_v;
+    let n_z0 = half * (one + (z0 * inv_sqrt_2).erf());
+    let pdf_z0 = inv_sqrt_2pi * (-half * z0 * z0).exp();
+    let epe0 = v0 * n_z0 + std_v * pdf_z0;
+    let ene0 = epe0 - v0;
+
+    let discount_rate = sc + sh + sb;
+    let t_eff = (one - (-discount_rate * t).exp()) / discount_rate;
+
+    let cva_dva = sc * epe0 - sh * ene0;
+    let theta_1 = (cva_dva + uncoll * (sb * epe0 - sl * ene0)) * t_eff;
+
+    let v_adj = v0 - theta_1;
+    let z1 = v_adj / std_v;
+    let n_z1 = half * (one + (z1 * inv_sqrt_2).erf());
+    let pdf_z1 = inv_sqrt_2pi * (-half * z1 * z1).exp();
+    let epe1 = v_adj * n_z1 + std_v * pdf_z1;
+    let ene1 = epe1 - v_adj;
+
+    let theta_bsde = (cva_dva + uncoll * (sb * epe1 - sl * ene1)) * t_eff;
+    let wedge = theta_bsde - theta_1;
+    let v_all_in = v0 - theta_bsde;
+
+    CrepeyBichuchCapponiNonlinearXvaBsdeAnalytics {
+        linear_first_order_xva: theta_1,
+        nonlinear_bsde_total_xva: theta_bsde,
+        recursive_funding_feedback_wedge: wedge,
+        xva_adjusted_all_in_price: v_all_in,
+    }
+}
+
+#[cfg(test)]
+mod crepey_bichuch_capponi_nonlinear_xva_bsde_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn crepey_bichuch_capponi_nonlinear_xva_bsde_invariants_and_ad_parity() {
+        let base = CrepeyBichuchCapponiNonlinearXvaBsdeSpec {
+            clean_derivative_mtm_v0: 12.5_f64,
+            collateralization_fraction_alpha: 0.35_f64,
+            unsecured_borrowing_spread_s_b: 0.0145_f64,
+            unsecured_lending_spread_s_l: 0.0040_f64,
+            counterparty_default_spread_s_c: 0.0120_f64,
+            hedger_default_spread_s_h: 0.0065_f64,
+            exposure_volatility_sigma_v: 8.5_f64,
+            maturity_years_t: 5.0_f64,
+        };
+        let r0 = evaluate_crepey_bichuch_capponi_nonlinear_xva_bsde(&base);
+        assert!(r0.nonlinear_bsde_total_xva > 0.0);
+        assert!(r0.recursive_funding_feedback_wedge.abs() > 1e-6);
+        assert!(
+            (r0.xva_adjusted_all_in_price
+                - (base.clean_derivative_mtm_v0 - r0.nonlinear_bsde_total_xva))
+                .abs()
+                < 1e-12
+        );
+
+        let x0 = [
+            base.clean_derivative_mtm_v0,
+            base.collateralization_fraction_alpha,
+            base.unsecured_borrowing_spread_s_b,
+            base.unsecured_lending_spread_s_l,
+            base.counterparty_default_spread_s_c,
+            base.hedger_default_spread_s_h,
+            base.exposure_volatility_sigma_v,
+            base.maturity_years_t,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_crepey_bichuch_capponi_nonlinear_xva_bsde(
+            &CrepeyBichuchCapponiNonlinearXvaBsdeSpec {
+                clean_derivative_mtm_v0: xd[0],
+                collateralization_fraction_alpha: xd[1],
+                unsecured_borrowing_spread_s_b: xd[2],
+                unsecured_lending_spread_s_l: xd[3],
+                counterparty_default_spread_s_c: xd[4],
+                hedger_default_spread_s_h: xd[5],
+                exposure_volatility_sigma_v: xd[6],
+                maturity_years_t: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_crepey_bichuch_capponi_nonlinear_xva_bsde(
+                &CrepeyBichuchCapponiNonlinearXvaBsdeSpec {
+                    clean_derivative_mtm_v0: xp[0],
+                    collateralization_fraction_alpha: xp[1],
+                    unsecured_borrowing_spread_s_b: xp[2],
+                    unsecured_lending_spread_s_l: xp[3],
+                    counterparty_default_spread_s_c: xp[4],
+                    hedger_default_spread_s_h: xp[5],
+                    exposure_volatility_sigma_v: xp[6],
+                    maturity_years_t: xp[7],
+                },
+            );
+            let rm = evaluate_crepey_bichuch_capponi_nonlinear_xva_bsde(
+                &CrepeyBichuchCapponiNonlinearXvaBsdeSpec {
+                    clean_derivative_mtm_v0: xm[0],
+                    collateralization_fraction_alpha: xm[1],
+                    unsecured_borrowing_spread_s_b: xm[2],
+                    unsecured_lending_spread_s_l: xm[3],
+                    counterparty_default_spread_s_c: xm[4],
+                    hedger_default_spread_s_h: xm[5],
+                    exposure_volatility_sigma_v: xm[6],
+                    maturity_years_t: xm[7],
+                },
+            );
+            let fd = (rp.nonlinear_bsde_total_xva - rm.nonlinear_bsde_total_xva) / (2.0 * h);
+            assert!(rad.nonlinear_bsde_total_xva.d[i].abs() > 1e-9);
+            assert!((rad.nonlinear_bsde_total_xva.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

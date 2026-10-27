@@ -6552,3 +6552,162 @@ mod mcneil_frey_evt_garch_mod {
     }
 }
 pub use mcneil_frey_evt_garch_mod::*;
+
+/// Input specification for the Adrian & Brunnermeier (2016, *American Economic
+/// Review* 106(7)) Conditional Value-at-Risk ($\text{CoVaR}$ & $\Delta\text{CoVaR}$)
+/// Systemic Tail Spillover engine.
+#[derive(Debug, Clone, Copy)]
+pub struct AdrianBrunnermeierSystemicCoVarSpec<T: Real> {
+    /// Institution $i$ expected loss rate $\mu_i$.
+    pub institution_mean_loss_mu_i: T,
+    /// Institution $i$ return volatility $\sigma_i > 0$.
+    pub institution_volatility_sigma_i: T,
+    /// Financial system expected loss rate $\mu_{\text{sys}}$.
+    pub system_mean_loss_mu_s: T,
+    /// Financial system return volatility $\sigma_{\text{sys}} > 0$.
+    pub system_volatility_sigma_s: T,
+    /// Baseline linear correlation between institution $i$ and system $\rho_0 \in (-1,1)$.
+    pub normal_correlation_rho: T,
+    /// State-dependent tail quantile amplification slope $\Delta\beta_q > 0$.
+    pub distress_quantile_slope_delta_beta: T,
+    /// Institution leverage and wholesale maturity mismatch factor $M_i > 0$.
+    pub leverage_maturity_mismatch_m: T,
+    /// Tail quantile score $z_q > 0$ (e.g. $2.3263$ for $99\%$ quantile).
+    pub tail_quantile_z_q: T,
+}
+
+/// Analytics returned by [`evaluate_adrian_brunnermeier_systemic_delta_covar`].
+#[derive(Debug, Clone, Copy)]
+pub struct AdrianBrunnermeierSystemicCoVarAnalytics<T: Real> {
+    /// Institution $i$'s standalone $q$-quantile Value-at-Risk $\text{VaR}_q^i$.
+    pub institution_standalone_var_q: T,
+    /// Tail quantile regression slope $\beta_q^{\text{sys}|i}$.
+    pub tail_quantile_spillover_beta_q: T,
+    /// System CoVaR conditional on institution $i$ at its median state $\text{CoVaR}_q^{\text{sys}|\text{median}}$.
+    pub system_covar_at_median: T,
+    /// System CoVaR conditional on institution $i$ in $q$-quantile distress $\text{CoVaR}_q^{\text{sys}|i}$.
+    pub system_covar_in_distress: T,
+    /// Systemic tail spillover contribution $\Delta\text{CoVaR}_q^i = \text{CoVaR}_q^{\text{sys}|i} - \text{CoVaR}_q^{\text{sys}|\text{median}}$.
+    pub systemic_delta_covar_contribution: T,
+}
+
+/// Evaluates the Adrian & Brunnermeier (2016, *AER* 106(7)) Conditional
+/// Value-at-Risk ($\text{CoVaR}_q^{\text{sys}|i}$) and marginal systemic risk
+/// contribution ($\Delta\text{CoVaR}_q^i$).
+pub fn evaluate_adrian_brunnermeier_systemic_delta_covar<T: Real>(
+    spec: &AdrianBrunnermeierSystemicCoVarSpec<T>,
+) -> AdrianBrunnermeierSystemicCoVarAnalytics<T> {
+    let one = T::one();
+    let sig_i = spec
+        .institution_volatility_sigma_i
+        .max_val(T::from_f64(1e-4));
+    let sig_s = spec.system_volatility_sigma_s.max_val(T::from_f64(1e-4));
+    let rho = spec
+        .normal_correlation_rho
+        .min_val(T::from_f64(0.99))
+        .max_val(T::from_f64(-0.99));
+    let m_i = spec.leverage_maturity_mismatch_m.max_val(T::zero());
+    let zq = spec.tail_quantile_z_q.max_val(T::from_f64(0.1));
+
+    let var_i_excess = sig_i * (one + T::from_f64(0.15) * m_i) * zq;
+    let var_i_q = spec.institution_mean_loss_mu_i + var_i_excess;
+
+    let beta_q = (sig_s / sig_i) * rho + spec.distress_quantile_slope_delta_beta * m_i;
+    let covar_median = spec.system_mean_loss_mu_s
+        + sig_s * (one - rho * rho).max_val(T::from_f64(1e-6)).sqrt() * zq
+        + T::from_f64(0.05) * spec.institution_mean_loss_mu_i;
+    let delta_covar = beta_q * var_i_excess;
+    let covar_distress = covar_median + delta_covar;
+
+    AdrianBrunnermeierSystemicCoVarAnalytics {
+        institution_standalone_var_q: var_i_q,
+        tail_quantile_spillover_beta_q: beta_q,
+        system_covar_at_median: covar_median,
+        system_covar_in_distress: covar_distress,
+        systemic_delta_covar_contribution: delta_covar,
+    }
+}
+
+#[cfg(test)]
+mod adrian_brunnermeier_systemic_covar_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn adrian_brunnermeier_systemic_covar_invariants_and_ad_parity() {
+        let base = AdrianBrunnermeierSystemicCoVarSpec {
+            institution_mean_loss_mu_i: 0.004_f64,
+            institution_volatility_sigma_i: 0.032_f64,
+            system_mean_loss_mu_s: 0.003_f64,
+            system_volatility_sigma_s: 0.024_f64,
+            normal_correlation_rho: 0.58_f64,
+            distress_quantile_slope_delta_beta: 0.22_f64,
+            leverage_maturity_mismatch_m: 1.45_f64,
+            tail_quantile_z_q: 2.3263_f64,
+        };
+        let r0 = evaluate_adrian_brunnermeier_systemic_delta_covar(&base);
+        assert!(r0.systemic_delta_covar_contribution > 0.0);
+        assert!(r0.system_covar_in_distress > r0.system_covar_at_median);
+
+        let x0 = [
+            base.institution_mean_loss_mu_i,
+            base.institution_volatility_sigma_i,
+            base.system_mean_loss_mu_s,
+            base.system_volatility_sigma_s,
+            base.normal_correlation_rho,
+            base.distress_quantile_slope_delta_beta,
+            base.leverage_maturity_mismatch_m,
+            base.tail_quantile_z_q,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_adrian_brunnermeier_systemic_delta_covar(
+            &AdrianBrunnermeierSystemicCoVarSpec {
+                institution_mean_loss_mu_i: xd[0],
+                institution_volatility_sigma_i: xd[1],
+                system_mean_loss_mu_s: xd[2],
+                system_volatility_sigma_s: xd[3],
+                normal_correlation_rho: xd[4],
+                distress_quantile_slope_delta_beta: xd[5],
+                leverage_maturity_mismatch_m: xd[6],
+                tail_quantile_z_q: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_adrian_brunnermeier_systemic_delta_covar(
+                &AdrianBrunnermeierSystemicCoVarSpec {
+                    institution_mean_loss_mu_i: xp[0],
+                    institution_volatility_sigma_i: xp[1],
+                    system_mean_loss_mu_s: xp[2],
+                    system_volatility_sigma_s: xp[3],
+                    normal_correlation_rho: xp[4],
+                    distress_quantile_slope_delta_beta: xp[5],
+                    leverage_maturity_mismatch_m: xp[6],
+                    tail_quantile_z_q: xp[7],
+                },
+            );
+            let rm = evaluate_adrian_brunnermeier_systemic_delta_covar(
+                &AdrianBrunnermeierSystemicCoVarSpec {
+                    institution_mean_loss_mu_i: xm[0],
+                    institution_volatility_sigma_i: xm[1],
+                    system_mean_loss_mu_s: xm[2],
+                    system_volatility_sigma_s: xm[3],
+                    normal_correlation_rho: xm[4],
+                    distress_quantile_slope_delta_beta: xm[5],
+                    leverage_maturity_mismatch_m: xm[6],
+                    tail_quantile_z_q: xm[7],
+                },
+            );
+            let fd = (rp.system_covar_in_distress - rm.system_covar_in_distress) / (2.0 * h);
+            assert!(rad.system_covar_in_distress.d[i].abs() > 1e-9);
+            assert!((rad.system_covar_in_distress.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

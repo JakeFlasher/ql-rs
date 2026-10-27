@@ -4041,3 +4041,166 @@ mod jarrow_yildirim_yoy_inflation_mod {
     }
 }
 pub use jarrow_yildirim_yoy_inflation_mod::*;
+
+/// Input specification for the Gabaix, Krishnamurthy & Vigneron (2007, *Journal
+/// of Finance* 62(2)) & Boyarchenko, Fuster & Lucca (2019, *JFE* 133(2)) MBS
+/// Prepayment Negative-Convexity Intermediary Marginal Risk-Bearing OAS engine.
+#[derive(Debug, Clone, Copy)]
+pub struct GabaixKrishnamurthyVigneronMbsOasSpec<T: Real> {
+    /// Weighted-average mortgage note rate $c_m$.
+    pub mortgage_coupon_wac: T,
+    /// Current primary mortgage refinancing rate $r_t$.
+    pub current_refi_rate_r: T,
+    /// Logistic refinancing S-curve steepness parameter $\beta_{\text{CPR}} > 0$.
+    pub prepayment_s_curve_slope_beta: T,
+    /// Interest-rate volatility $\sigma_r > 0$.
+    pub rate_volatility_sigma_r: T,
+    /// Aggregate MBS share held by specialized arbitrageurs $w_{\text{MBS}} > 0$.
+    pub aggregate_mbs_outstanding_share_w: T,
+    /// Specialist intermediary effective risk aversion $\gamma_I > 0$.
+    pub intermediary_risk_aversion_gamma: T,
+    /// Baseline pass-through effective duration $D_0 > 0$.
+    pub pass_through_duration_d0: T,
+    /// Dynamic delta-hedging gamma-slippage cost parameter $\lambda_{\text{hedge}} > 0$.
+    pub liquidity_hedging_cost_lambda: T,
+}
+
+/// Analytics returned by [`evaluate_gabaix_krishnamurthy_vigneron_mbs_intermediary_oas`].
+#[derive(Debug, Clone, Copy)]
+pub struct GabaixKrishnamurthyVigneronMbsOasAnalytics<T: Real> {
+    /// Logistic prepayment S-curve slope $\phi_{\text{refi}} = \partial\text{CPR}/\partial(c_m - r_t)$.
+    pub prepayment_refi_sensitivity_phi: T,
+    /// MBS negative rate convexity $\Gamma_{\text{MBS}} < 0$.
+    pub mbs_negative_rate_convexity: T,
+    /// Specialist intermediary capital-constrained prepayment risk premium (bps).
+    pub intermediary_capital_oas_bps: T,
+    /// Dynamic delta-hedging gamma-slippage OAS component (bps).
+    pub hedging_gamma_slippage_oas_bps: T,
+    /// Total equilibrium MBS Option-Adjusted Spread (bps).
+    pub equilibrium_mbs_total_oas_bps: T,
+}
+
+/// Evaluates the Gabaix, Krishnamurthy & Vigneron (2007, *JF* 62(2)) specialist
+/// intermediary marginal risk-bearing pricing of MBS prepayment negative convexity.
+pub fn evaluate_gabaix_krishnamurthy_vigneron_mbs_intermediary_oas<T: Real>(
+    spec: &GabaixKrishnamurthyVigneronMbsOasSpec<T>,
+) -> GabaixKrishnamurthyVigneronMbsOasAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+    let bps = T::from_f64(10_000.0);
+
+    let beta = spec.prepayment_s_curve_slope_beta.max_val(T::from_f64(1.0));
+    let inc = spec.mortgage_coupon_wac - spec.current_refi_rate_r;
+    let z = (beta * inc)
+        .min_val(T::from_f64(20.0))
+        .max_val(T::from_f64(-20.0));
+    let ez = z.exp();
+    let denom = one + ez;
+    let phi_refi = beta * ez / (denom * denom);
+
+    let d0 = spec.pass_through_duration_d0.max_val(T::from_f64(0.5));
+    let abs_gamma_mbs = d0 * d0 * phi_refi;
+    let gamma_mbs = -abs_gamma_mbs;
+
+    let sig2 = spec.rate_volatility_sigma_r * spec.rate_volatility_sigma_r;
+    let oas_interm = spec.intermediary_risk_aversion_gamma
+        * abs_gamma_mbs
+        * spec.aggregate_mbs_outstanding_share_w
+        * sig2
+        * bps;
+    let oas_hedge = half * spec.liquidity_hedging_cost_lambda * abs_gamma_mbs * sig2 * bps;
+    let oas_tot = oas_interm + oas_hedge;
+
+    GabaixKrishnamurthyVigneronMbsOasAnalytics {
+        prepayment_refi_sensitivity_phi: phi_refi,
+        mbs_negative_rate_convexity: gamma_mbs,
+        intermediary_capital_oas_bps: oas_interm,
+        hedging_gamma_slippage_oas_bps: oas_hedge,
+        equilibrium_mbs_total_oas_bps: oas_tot,
+    }
+}
+
+#[cfg(test)]
+mod gabaix_krishnamurthy_vigneron_mbs_oas_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn gabaix_krishnamurthy_vigneron_mbs_oas_invariants_and_ad_parity() {
+        let base = GabaixKrishnamurthyVigneronMbsOasSpec {
+            mortgage_coupon_wac: 0.055_f64,
+            current_refi_rate_r: 0.050_f64,
+            prepayment_s_curve_slope_beta: 25.0_f64,
+            rate_volatility_sigma_r: 0.012_f64,
+            aggregate_mbs_outstanding_share_w: 0.65_f64,
+            intermediary_risk_aversion_gamma: 18.0_f64,
+            pass_through_duration_d0: 5.4_f64,
+            liquidity_hedging_cost_lambda: 3.5_f64,
+        };
+        let r0 = evaluate_gabaix_krishnamurthy_vigneron_mbs_intermediary_oas(&base);
+        assert!(r0.mbs_negative_rate_convexity < 0.0);
+        assert!(r0.equilibrium_mbs_total_oas_bps > r0.intermediary_capital_oas_bps);
+
+        let x0 = [
+            base.mortgage_coupon_wac,
+            base.current_refi_rate_r,
+            base.prepayment_s_curve_slope_beta,
+            base.rate_volatility_sigma_r,
+            base.aggregate_mbs_outstanding_share_w,
+            base.intermediary_risk_aversion_gamma,
+            base.pass_through_duration_d0,
+            base.liquidity_hedging_cost_lambda,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_gabaix_krishnamurthy_vigneron_mbs_intermediary_oas(
+            &GabaixKrishnamurthyVigneronMbsOasSpec {
+                mortgage_coupon_wac: xd[0],
+                current_refi_rate_r: xd[1],
+                prepayment_s_curve_slope_beta: xd[2],
+                rate_volatility_sigma_r: xd[3],
+                aggregate_mbs_outstanding_share_w: xd[4],
+                intermediary_risk_aversion_gamma: xd[5],
+                pass_through_duration_d0: xd[6],
+                liquidity_hedging_cost_lambda: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_gabaix_krishnamurthy_vigneron_mbs_intermediary_oas(
+                &GabaixKrishnamurthyVigneronMbsOasSpec {
+                    mortgage_coupon_wac: xp[0],
+                    current_refi_rate_r: xp[1],
+                    prepayment_s_curve_slope_beta: xp[2],
+                    rate_volatility_sigma_r: xp[3],
+                    aggregate_mbs_outstanding_share_w: xp[4],
+                    intermediary_risk_aversion_gamma: xp[5],
+                    pass_through_duration_d0: xp[6],
+                    liquidity_hedging_cost_lambda: xp[7],
+                },
+            );
+            let rm = evaluate_gabaix_krishnamurthy_vigneron_mbs_intermediary_oas(
+                &GabaixKrishnamurthyVigneronMbsOasSpec {
+                    mortgage_coupon_wac: xm[0],
+                    current_refi_rate_r: xm[1],
+                    prepayment_s_curve_slope_beta: xm[2],
+                    rate_volatility_sigma_r: xm[3],
+                    aggregate_mbs_outstanding_share_w: xm[4],
+                    intermediary_risk_aversion_gamma: xm[5],
+                    pass_through_duration_d0: xm[6],
+                    liquidity_hedging_cost_lambda: xm[7],
+                },
+            );
+            let fd =
+                (rp.equilibrium_mbs_total_oas_bps - rm.equilibrium_mbs_total_oas_bps) / (2.0 * h);
+            assert!(rad.equilibrium_mbs_total_oas_bps.d[i].abs() > 1e-9);
+            assert!((rad.equilibrium_mbs_total_oas_bps.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

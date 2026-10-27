@@ -4045,3 +4045,166 @@ pub use lettau_ludvigson_cay_mod::{
     LettauLudvigsonCayConditionalRiskPremiumSpec,
     evaluate_lettau_ludvigson_cay_conditional_equity_premium,
 };
+
+/// Input specification for the Campbell & Vuolteenaho (2004, *American Economic
+/// Review* 94(5)) Bad Beta (Cash-Flow News $\beta_{i,CF}$) vs. Good Beta
+/// (Discount-Rate News $\beta_{i,DR}$) Intertemporal ICAPM engine.
+#[derive(Debug, Clone, Copy)]
+pub struct CampbellVuolteenahoBadGoodBetaIcapmSpec<T: Real> {
+    /// Covariance of asset return with market cash-flow news $\text{Cov}_t(r_{i,t+1}, N_{CF,t+1})$.
+    pub cash_flow_news_covariance_cov_cf: T,
+    /// Covariance of asset return with negative market discount-rate news $\text{Cov}_t(r_{i,t+1}, -N_{DR,t+1})$.
+    pub discount_rate_news_covariance_cov_dr: T,
+    /// Total market return variance $\sigma_M^2 = \text{Var}_t(r_{M,t+1}) > 0$.
+    pub market_return_variance_var_m: T,
+    /// Representative investor relative risk aversion $\gamma > 1$.
+    pub investor_relative_risk_aversion_gamma: T,
+    /// Campbell-Shiller log-linearization discount factor $\rho \in (0,1)$.
+    pub log_linearization_discount_rho: T,
+    /// Expected-return VAR(1) persistence coefficient $\phi_{\text{VAR}} \in (0,1)$.
+    pub return_forecasting_var_persistence_phi: T,
+    /// Small-value funding constraint sensitivity $\xi_{\text{size}}$.
+    pub idiosyncratic_alpha_adjustment_xi: T,
+}
+
+/// Analytics returned by [`evaluate_campbell_vuolteenaho_bad_beta_good_beta_icapm`].
+#[derive(Debug, Clone, Copy)]
+pub struct CampbellVuolteenahoBadGoodBetaIcapmAnalytics<T: Real> {
+    /// Bad beta (cash-flow news beta) $\beta_{i,CF}$.
+    pub bad_cash_flow_beta_cf: T,
+    /// Good beta (discount-rate news beta) $\beta_{i,DR}$.
+    pub good_discount_rate_beta_dr: T,
+    /// Total CAPM market beta $\beta_{i,M} = \beta_{i,CF} + \beta_{i,DR}$.
+    pub total_capm_beta_m: T,
+    /// Two-beta ICAPM required excess equity return $\mathbb{E}_t[R_{i,t+1}^e]$.
+    pub icapm_two_beta_required_risk_premium: T,
+    /// Single-beta CAPM pricing error (value-minus-growth alpha) $\alpha_{i,\text{CAPM}}$.
+    pub single_beta_capm_value_alpha: T,
+}
+
+/// Evaluates the Campbell & Vuolteenaho (2004, *AER* 94(5)) two-beta ICAPM
+/// decomposing total CAPM beta into "bad" cash-flow news beta $\beta_{i,CF}$
+/// (priced at $\gamma \sigma_M^2$) and "good" discount-rate news beta $\beta_{i,DR}$
+/// (priced at $\sigma_M^2$).
+pub fn evaluate_campbell_vuolteenaho_bad_beta_good_beta_icapm<T: Real>(
+    spec: &CampbellVuolteenahoBadGoodBetaIcapmSpec<T>,
+) -> CampbellVuolteenahoBadGoodBetaIcapmAnalytics<T> {
+    let one = T::one();
+    let var_m = spec.market_return_variance_var_m.max_val(T::from_f64(1e-5));
+    let gamma = spec
+        .investor_relative_risk_aversion_gamma
+        .max_val(T::from_f64(1.05));
+    let rho = spec
+        .log_linearization_discount_rho
+        .min_val(T::from_f64(0.995))
+        .max_val(T::from_f64(0.5));
+    let phi = spec
+        .return_forecasting_var_persistence_phi
+        .min_val(T::from_f64(0.995))
+        .max_val(T::from_f64(0.1));
+
+    let beta_cf = spec.cash_flow_news_covariance_cov_cf / var_m;
+    let beta_dr = spec.discount_rate_news_covariance_cov_dr / var_m;
+    let beta_m = beta_cf + beta_dr;
+
+    let lam_dr = (rho * phi) / (one - rho * phi);
+    let tilt = spec.idiosyncratic_alpha_adjustment_xi * (beta_cf - beta_dr / gamma);
+
+    let req_rp =
+        gamma * var_m * beta_cf + var_m * (one + T::from_f64(0.1) * lam_dr) * beta_dr + tilt;
+    let capm_alpha = (gamma - one) * var_m * (beta_cf - beta_m / (one + lam_dr)) + tilt;
+
+    CampbellVuolteenahoBadGoodBetaIcapmAnalytics {
+        bad_cash_flow_beta_cf: beta_cf,
+        good_discount_rate_beta_dr: beta_dr,
+        total_capm_beta_m: beta_m,
+        icapm_two_beta_required_risk_premium: req_rp,
+        single_beta_capm_value_alpha: capm_alpha,
+    }
+}
+
+#[cfg(test)]
+mod campbell_vuolteenaho_bad_good_beta_icapm_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn campbell_vuolteenaho_bad_good_beta_icapm_invariants_and_ad_parity() {
+        let base = CampbellVuolteenahoBadGoodBetaIcapmSpec {
+            cash_flow_news_covariance_cov_cf: 0.0115_f64,
+            discount_rate_news_covariance_cov_dr: 0.0145_f64,
+            market_return_variance_var_m: 0.0250_f64,
+            investor_relative_risk_aversion_gamma: 7.5_f64,
+            log_linearization_discount_rho: 0.95_f64,
+            return_forecasting_var_persistence_phi: 0.88_f64,
+            idiosyncratic_alpha_adjustment_xi: 0.015_f64,
+        };
+        let r0 = evaluate_campbell_vuolteenaho_bad_beta_good_beta_icapm(&base);
+        assert!(
+            (r0.total_capm_beta_m - (r0.bad_cash_flow_beta_cf + r0.good_discount_rate_beta_dr))
+                .abs()
+                < 1e-12
+        );
+        assert!(r0.icapm_two_beta_required_risk_premium > 0.0);
+        assert!(r0.single_beta_capm_value_alpha > 0.0);
+
+        let x0 = [
+            base.cash_flow_news_covariance_cov_cf,
+            base.discount_rate_news_covariance_cov_dr,
+            base.market_return_variance_var_m,
+            base.investor_relative_risk_aversion_gamma,
+            base.log_linearization_discount_rho,
+            base.return_forecasting_var_persistence_phi,
+            base.idiosyncratic_alpha_adjustment_xi,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_campbell_vuolteenaho_bad_beta_good_beta_icapm(
+            &CampbellVuolteenahoBadGoodBetaIcapmSpec {
+                cash_flow_news_covariance_cov_cf: xd[0],
+                discount_rate_news_covariance_cov_dr: xd[1],
+                market_return_variance_var_m: xd[2],
+                investor_relative_risk_aversion_gamma: xd[3],
+                log_linearization_discount_rho: xd[4],
+                return_forecasting_var_persistence_phi: xd[5],
+                idiosyncratic_alpha_adjustment_xi: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_campbell_vuolteenaho_bad_beta_good_beta_icapm(
+                &CampbellVuolteenahoBadGoodBetaIcapmSpec {
+                    cash_flow_news_covariance_cov_cf: xp[0],
+                    discount_rate_news_covariance_cov_dr: xp[1],
+                    market_return_variance_var_m: xp[2],
+                    investor_relative_risk_aversion_gamma: xp[3],
+                    log_linearization_discount_rho: xp[4],
+                    return_forecasting_var_persistence_phi: xp[5],
+                    idiosyncratic_alpha_adjustment_xi: xp[6],
+                },
+            );
+            let rm = evaluate_campbell_vuolteenaho_bad_beta_good_beta_icapm(
+                &CampbellVuolteenahoBadGoodBetaIcapmSpec {
+                    cash_flow_news_covariance_cov_cf: xm[0],
+                    discount_rate_news_covariance_cov_dr: xm[1],
+                    market_return_variance_var_m: xm[2],
+                    investor_relative_risk_aversion_gamma: xm[3],
+                    log_linearization_discount_rho: xm[4],
+                    return_forecasting_var_persistence_phi: xm[5],
+                    idiosyncratic_alpha_adjustment_xi: xm[6],
+                },
+            );
+            let fd = (rp.icapm_two_beta_required_risk_premium
+                - rm.icapm_two_beta_required_risk_premium)
+                / (2.0 * h);
+            assert!(rad.icapm_two_beta_required_risk_premium.d[i].abs() > 1e-9);
+            assert!((rad.icapm_two_beta_required_risk_premium.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

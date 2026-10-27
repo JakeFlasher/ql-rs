@@ -2845,3 +2845,174 @@ mod carr_madan_neuberger_log_contract_mod {
     }
 }
 pub use carr_madan_neuberger_log_contract_mod::*;
+
+/// Input specification for the Martin (2017, *Quarterly Journal of Economics*
+/// 132(1)) & Bondarenko (2014, *Review of Derivatives Research* 17(1)) Simple
+/// Variance Swap (SVIX) Jump-Robust Lower Bound & Crash-Entropy Wedge engine.
+#[derive(Debug, Clone, Copy)]
+pub struct MartinBondarenkoSimpleVarianceSvixSpec<T: Real> {
+    /// Forward index price $F_{t,T} > 0$.
+    pub forward_price_f0: T,
+    /// Risk-free interest rate $r$.
+    pub risk_free_rate_r: T,
+    /// At-the-money Black-Scholes volatility $\sigma_{\text{ATM}} > 0$.
+    pub atm_volatility_sigma: T,
+    /// Downside implied-volatility skew slope $\psi_{\text{skew}} < 0$.
+    pub downside_skew_slope_psi: T,
+    /// Crash jump arrival intensity $\lambda_J > 0$.
+    pub crash_jump_intensity_lambda: T,
+    /// Mean log jump size in a market crash $\mu_J < 0$.
+    pub crash_log_jump_mean_mu_j: T,
+    /// Representative agent relative risk aversion $\gamma > 0$.
+    pub relative_risk_aversion_gamma: T,
+    /// Option horizon in years $T > 0$.
+    pub horizon_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_martin_bondarenko_simple_variance_svix_lower_bound`].
+#[derive(Debug, Clone, Copy)]
+pub struct MartinBondarenkoSimpleVarianceSvixAnalytics<T: Real> {
+    /// Simple variance index squared $\text{SVIX}_{t,T}^2 = \frac{2e^{rT}}{T F_{t,T}^2}\int_0^\infty \Omega(K)\,dK$.
+    pub simple_variance_svix_squared: T,
+    /// Log-contract VIX squared $\text{VIX}_{t,T}^2 = \frac{2e^{rT}}{T}\int_0^\infty \frac{\Omega(K)}{K^2}\,dK$.
+    pub log_contract_vix_squared: T,
+    /// Higher-order crash-entropy wedge $\Delta_{\text{crash}} = \text{VIX}_{t,T}^2 - \text{SVIX}_{t,T}^2$.
+    pub vix_minus_svix_crash_entropy_wedge: T,
+    /// Martin (2017) log-utility ($\gamma=1$) equity risk premium lower bound $R_{f,T}\text{SVIX}_{t,T}^2$.
+    pub martin_log_utility_ep_lower_bound: T,
+    /// Generalized power-utility ($\gamma$) equity risk premium lower bound.
+    pub martin_generalized_equity_premium_bound: T,
+}
+
+/// Evaluates the Martin (2017, *QJE* 132(1)) & Bondarenko (2014) simple variance
+/// swap index ($\text{SVIX}_{t,T}^2$), the log-contract crash-entropy wedge
+/// $\text{VIX}_{t,T}^2 - \text{SVIX}_{t,T}^2$, and the implied equity risk premium bound.
+pub fn evaluate_martin_bondarenko_simple_variance_svix_lower_bound<T: Real>(
+    spec: &MartinBondarenkoSimpleVarianceSvixSpec<T>,
+) -> MartinBondarenkoSimpleVarianceSvixAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+    let half = T::from_f64(0.5);
+    let quarter = T::from_f64(0.25);
+
+    let f0 = spec.forward_price_f0.max_val(T::from_f64(1.0));
+    let r = spec.risk_free_rate_r;
+    let sig = spec.atm_volatility_sigma.max_val(T::from_f64(1e-4));
+    let psi = spec.downside_skew_slope_psi;
+    let lam = spec.crash_jump_intensity_lambda.max_val(T::zero());
+    let muj = spec.crash_log_jump_mean_mu_j;
+    let gamma = spec.relative_risk_aversion_gamma.max_val(T::from_f64(0.1));
+    let t = spec.horizon_years_t.max_val(T::from_f64(1e-4));
+
+    let sqrt_t = t.sqrt();
+    let r_gross = (r * t).exp();
+    let emu = muj.exp();
+
+    let simple_jump = (emu - one - muj) * (emu - one - muj) / r_gross;
+    let svix2 =
+        sig * sig * (one + quarter * sig * sig * t - half * psi * sig * sqrt_t) + lam * simple_jump;
+
+    let log_jump_excess = two * lam * (muj * emu - emu + one + half * muj * muj);
+    let skew_wedge = -psi * sig * sig * sig * sqrt_t;
+    let crash_wedge = log_jump_excess + skew_wedge;
+    let vix2 = svix2 + crash_wedge;
+
+    let ep_log = r_gross * svix2;
+    let f_scale = f0 / (f0 + T::from_f64(100.0));
+    let ep_gen = gamma * ep_log + half * gamma * (gamma - one) * crash_wedge * f_scale;
+
+    MartinBondarenkoSimpleVarianceSvixAnalytics {
+        simple_variance_svix_squared: svix2,
+        log_contract_vix_squared: vix2,
+        vix_minus_svix_crash_entropy_wedge: crash_wedge,
+        martin_log_utility_ep_lower_bound: ep_log,
+        martin_generalized_equity_premium_bound: ep_gen,
+    }
+}
+
+#[cfg(test)]
+mod martin_bondarenko_simple_variance_svix_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn martin_bondarenko_simple_variance_svix_invariants_and_ad_parity() {
+        let base = MartinBondarenkoSimpleVarianceSvixSpec {
+            forward_price_f0: 4500.0_f64,
+            risk_free_rate_r: 0.042_f64,
+            atm_volatility_sigma: 0.175_f64,
+            downside_skew_slope_psi: -0.18_f64,
+            crash_jump_intensity_lambda: 0.45_f64,
+            crash_log_jump_mean_mu_j: -0.14_f64,
+            relative_risk_aversion_gamma: 2.5_f64,
+            horizon_years_t: 0.25_f64,
+        };
+        let r0 = evaluate_martin_bondarenko_simple_variance_svix_lower_bound(&base);
+        assert!(r0.log_contract_vix_squared > r0.simple_variance_svix_squared);
+        assert!(r0.vix_minus_svix_crash_entropy_wedge > 0.0);
+        assert!(r0.martin_generalized_equity_premium_bound > r0.martin_log_utility_ep_lower_bound);
+
+        let x0 = [
+            base.forward_price_f0,
+            base.risk_free_rate_r,
+            base.atm_volatility_sigma,
+            base.downside_skew_slope_psi,
+            base.crash_jump_intensity_lambda,
+            base.crash_log_jump_mean_mu_j,
+            base.relative_risk_aversion_gamma,
+            base.horizon_years_t,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_martin_bondarenko_simple_variance_svix_lower_bound(
+            &MartinBondarenkoSimpleVarianceSvixSpec {
+                forward_price_f0: xd[0],
+                risk_free_rate_r: xd[1],
+                atm_volatility_sigma: xd[2],
+                downside_skew_slope_psi: xd[3],
+                crash_jump_intensity_lambda: xd[4],
+                crash_log_jump_mean_mu_j: xd[5],
+                relative_risk_aversion_gamma: xd[6],
+                horizon_years_t: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_martin_bondarenko_simple_variance_svix_lower_bound(
+                &MartinBondarenkoSimpleVarianceSvixSpec {
+                    forward_price_f0: xp[0],
+                    risk_free_rate_r: xp[1],
+                    atm_volatility_sigma: xp[2],
+                    downside_skew_slope_psi: xp[3],
+                    crash_jump_intensity_lambda: xp[4],
+                    crash_log_jump_mean_mu_j: xp[5],
+                    relative_risk_aversion_gamma: xp[6],
+                    horizon_years_t: xp[7],
+                },
+            );
+            let rm = evaluate_martin_bondarenko_simple_variance_svix_lower_bound(
+                &MartinBondarenkoSimpleVarianceSvixSpec {
+                    forward_price_f0: xm[0],
+                    risk_free_rate_r: xm[1],
+                    atm_volatility_sigma: xm[2],
+                    downside_skew_slope_psi: xm[3],
+                    crash_jump_intensity_lambda: xm[4],
+                    crash_log_jump_mean_mu_j: xm[5],
+                    relative_risk_aversion_gamma: xm[6],
+                    horizon_years_t: xm[7],
+                },
+            );
+            let fd = (rp.martin_generalized_equity_premium_bound
+                - rm.martin_generalized_equity_premium_bound)
+                / (2.0 * h);
+            assert!(rad.martin_generalized_equity_premium_bound.d[i].abs() > 1e-9);
+            assert!((rad.martin_generalized_equity_premium_bound.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

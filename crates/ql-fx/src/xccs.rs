@@ -2149,3 +2149,167 @@ mod lustig_roussanov_verdelhan_fx_carry_mod {
     }
 }
 pub use lustig_roussanov_verdelhan_fx_carry_mod::*;
+
+/// Input specification for the Ivashina, Scharfstein & Stein (2015, *Quarterly
+/// Journal of Economics* 130(3)) & Rime, Schrimpf & Syrstad (2022, *RFS* 35(11))
+/// Global Dollar Wholesale Funding Segmentation & FX Swap CIP Basis engine.
+#[derive(Debug, Clone, Copy)]
+pub struct IvashinaScharfsteinSteinDollarFundingCipSpec<T: Real> {
+    /// Direct wholesale USD commercial paper funding rate $r_{\text{USD}}^{\text{CP}}$.
+    pub direct_usd_commercial_paper_rate_r_usd: T,
+    /// Foreign bank domestic deposit funding rate $r_{\text{FOR}}^{\text{dep}}$.
+    pub foreign_domestic_deposit_rate_r_for: T,
+    /// Wholesale USD money-market fund outflow shock fraction $\delta_{\text{MMF}} \in (0,1)$.
+    pub wholesale_usd_deposit_outflow_shock_delta: T,
+    /// Illiquid USD corporate loan book commitment share $\theta_{\text{USD}} > 0$.
+    pub dollar_loan_book_rigidity_theta: T,
+    /// FX swap dealer balance-sheet leverage shadow cost $\eta_{\text{dealer}} > 0$.
+    pub fx_swap_dealer_balance_sheet_cost_eta: T,
+    /// Spot FX rate $S_0 > 0$ (foreign currency units per USD).
+    pub spot_fx_s0: T,
+    /// Unsecured wholesale credit-tiering sensitivity $\alpha_{\text{credit}} > 0$.
+    pub credit_worthiness_haircut_alpha: T,
+    /// Swap maturity in years $T > 0$.
+    pub tenor_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_ivashina_scharfstein_stein_dollar_funding_cip_basis`].
+#[derive(Debug, Clone, Copy)]
+pub struct IvashinaScharfsteinSteinDollarFundingCipAnalytics<T: Real> {
+    /// Synthetic FX swap USD funding demand surge $D_{\text{swap}}$.
+    pub synthetic_fx_swap_dollar_demand: T,
+    /// Equilibrium cross-currency CIP basis $b_{\text{CIP}} < 0$ (annualized decimal).
+    pub equilibrium_cip_basis_wedge: T,
+    /// Synthetic USD borrowing cost via FX swap market $r_{\text{USD}}^{\text{synth}} = r_{\text{USD}}^{\text{CP}} - b_{\text{CIP}}$.
+    pub synthetic_usd_funding_rate: T,
+    /// Segmented equilibrium FX forward rate $F_{\text{segmented}}$.
+    pub segmented_fx_forward_rate: T,
+    /// Dollar syndicated lending contraction rate $\Delta L_{\text{USD}} < 0$.
+    pub dollar_lending_contraction_rate: T,
+}
+
+/// Evaluates the Ivashina, Scharfstein & Stein (2015, *QJE* 130(3)) & Rime,
+/// Schrimpf & Syrstad (2022) global bank dollar wholesale funding segmentation,
+/// synthetic FX swap borrowing cost, and real dollar lending contraction.
+pub fn evaluate_ivashina_scharfstein_stein_dollar_funding_cip_basis<T: Real>(
+    spec: &IvashinaScharfsteinSteinDollarFundingCipSpec<T>,
+) -> IvashinaScharfsteinSteinDollarFundingCipAnalytics<T> {
+    let one = T::one();
+    let r_usd = spec.direct_usd_commercial_paper_rate_r_usd;
+    let r_for = spec.foreign_domestic_deposit_rate_r_for;
+    let delta = spec
+        .wholesale_usd_deposit_outflow_shock_delta
+        .max_val(T::from_f64(1e-4));
+    let theta = spec
+        .dollar_loan_book_rigidity_theta
+        .max_val(T::from_f64(1e-4));
+    let eta = spec
+        .fx_swap_dealer_balance_sheet_cost_eta
+        .max_val(T::from_f64(1e-5));
+    let s0 = spec.spot_fx_s0.max_val(T::from_f64(1e-4));
+    let alpha = spec
+        .credit_worthiness_haircut_alpha
+        .max_val(T::from_f64(1e-4));
+    let t = spec.tenor_years_t.max_val(T::from_f64(1e-4));
+
+    let d_swap = theta * delta * (one + alpha * delta);
+    let rate_diff = r_usd - r_for;
+    let b_cip = -eta * d_swap - alpha * delta * (one + rate_diff * rate_diff);
+    let r_synth = r_usd - b_cip;
+
+    let f_seg = s0 * ((r_for - r_usd + b_cip) * t).exp();
+    let loan_contraction = -theta * (r_synth - r_usd) * (one + f_seg / (s0 + T::from_f64(10.0)));
+
+    IvashinaScharfsteinSteinDollarFundingCipAnalytics {
+        synthetic_fx_swap_dollar_demand: d_swap,
+        equilibrium_cip_basis_wedge: b_cip,
+        synthetic_usd_funding_rate: r_synth,
+        segmented_fx_forward_rate: f_seg,
+        dollar_lending_contraction_rate: loan_contraction,
+    }
+}
+
+#[cfg(test)]
+mod ivashina_scharfstein_stein_dollar_funding_cip_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn ivashina_scharfstein_stein_dollar_funding_cip_invariants_and_ad_parity() {
+        let base = IvashinaScharfsteinSteinDollarFundingCipSpec {
+            direct_usd_commercial_paper_rate_r_usd: 0.052_f64,
+            foreign_domestic_deposit_rate_r_for: 0.034_f64,
+            wholesale_usd_deposit_outflow_shock_delta: 0.25_f64,
+            dollar_loan_book_rigidity_theta: 0.55_f64,
+            fx_swap_dealer_balance_sheet_cost_eta: 0.018_f64,
+            spot_fx_s0: 1.08_f64,
+            credit_worthiness_haircut_alpha: 0.012_f64,
+            tenor_years_t: 0.50_f64,
+        };
+        let r0 = evaluate_ivashina_scharfstein_stein_dollar_funding_cip_basis(&base);
+        assert!(r0.equilibrium_cip_basis_wedge < 0.0);
+        assert!(r0.synthetic_usd_funding_rate > base.direct_usd_commercial_paper_rate_r_usd);
+        assert!(r0.dollar_lending_contraction_rate < 0.0);
+
+        let x0 = [
+            base.direct_usd_commercial_paper_rate_r_usd,
+            base.foreign_domestic_deposit_rate_r_for,
+            base.wholesale_usd_deposit_outflow_shock_delta,
+            base.dollar_loan_book_rigidity_theta,
+            base.fx_swap_dealer_balance_sheet_cost_eta,
+            base.spot_fx_s0,
+            base.credit_worthiness_haircut_alpha,
+            base.tenor_years_t,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_ivashina_scharfstein_stein_dollar_funding_cip_basis(
+            &IvashinaScharfsteinSteinDollarFundingCipSpec {
+                direct_usd_commercial_paper_rate_r_usd: xd[0],
+                foreign_domestic_deposit_rate_r_for: xd[1],
+                wholesale_usd_deposit_outflow_shock_delta: xd[2],
+                dollar_loan_book_rigidity_theta: xd[3],
+                fx_swap_dealer_balance_sheet_cost_eta: xd[4],
+                spot_fx_s0: xd[5],
+                credit_worthiness_haircut_alpha: xd[6],
+                tenor_years_t: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_ivashina_scharfstein_stein_dollar_funding_cip_basis(
+                &IvashinaScharfsteinSteinDollarFundingCipSpec {
+                    direct_usd_commercial_paper_rate_r_usd: xp[0],
+                    foreign_domestic_deposit_rate_r_for: xp[1],
+                    wholesale_usd_deposit_outflow_shock_delta: xp[2],
+                    dollar_loan_book_rigidity_theta: xp[3],
+                    fx_swap_dealer_balance_sheet_cost_eta: xp[4],
+                    spot_fx_s0: xp[5],
+                    credit_worthiness_haircut_alpha: xp[6],
+                    tenor_years_t: xp[7],
+                },
+            );
+            let rm = evaluate_ivashina_scharfstein_stein_dollar_funding_cip_basis(
+                &IvashinaScharfsteinSteinDollarFundingCipSpec {
+                    direct_usd_commercial_paper_rate_r_usd: xm[0],
+                    foreign_domestic_deposit_rate_r_for: xm[1],
+                    wholesale_usd_deposit_outflow_shock_delta: xm[2],
+                    dollar_loan_book_rigidity_theta: xm[3],
+                    fx_swap_dealer_balance_sheet_cost_eta: xm[4],
+                    spot_fx_s0: xm[5],
+                    credit_worthiness_haircut_alpha: xm[6],
+                    tenor_years_t: xm[7],
+                },
+            );
+            let fd = (rp.segmented_fx_forward_rate - rm.segmented_fx_forward_rate) / (2.0 * h);
+            assert!(rad.segmented_fx_forward_rate.d[i].abs() > 1e-9);
+            assert!((rad.segmented_fx_forward_rate.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

@@ -2343,3 +2343,157 @@ mod filipovic_larsson_trolle_linear_rational_mod {
     }
 }
 pub use filipovic_larsson_trolle_linear_rational_mod::*;
+
+/// Input specification for the Cieslak & Povala (2015, *Review of Financial Studies*
+/// 28(10)) Trend-Inflation Cycle & Bond Risk Premium Decomposition engine.
+#[derive(Debug, Clone, Copy)]
+pub struct CieslakPovalaTrendInflationCycleSpec<T: Real> {
+    /// 1-year nominal Treasury yield $y_t^{(1)}$.
+    pub short_rate_y1: T,
+    /// 5-year nominal Treasury yield $y_t^{(5)}$.
+    pub intermediate_yield_y5: T,
+    /// 10-year nominal Treasury yield $y_t^{(10)}$.
+    pub long_yield_y10: T,
+    /// Discounted core CPI inflation trend $\tau_t = (1-\nu)\sum_{i=0}^\infty \nu^i \pi_{t-i}$.
+    pub discounted_cpi_trend_tau: T,
+    /// Short-rate loading on trend inflation $b_1$.
+    pub short_rate_inflation_loading_b1: T,
+    /// 10-year yield loading on trend inflation $b_{10}$.
+    pub long_yield_inflation_loading_b10: T,
+    /// Return-forecasting slope on cross-maturity yield cycle $\gamma_c > 0$.
+    pub real_rate_cycle_return_loading_gamma_c: T,
+    /// Return-forecasting slope on short-rate cycle $\gamma_1 > 0$.
+    pub short_rate_cycle_return_loading_gamma_1: T,
+}
+
+/// Analytics returned by [`evaluate_cieslak_povala_trend_inflation_bond_cycle`].
+#[derive(Debug, Clone, Copy)]
+pub struct CieslakPovalaTrendInflationCycleAnalytics<T: Real> {
+    /// Short-rate monetary policy cycle $c_t^{(1)} = y_t^{(1)} - b_1 \tau_t$.
+    pub short_rate_monetary_cycle_c1: T,
+    /// Long-maturity 10-year yield cycle $c_t^{(10)} = y_t^{(10)} - b_{10} \tau_t$.
+    pub long_yield_cycle_c10: T,
+    /// Cross-maturity average yield cycle $\bar{c}_t = \frac{1}{2}(c_t^{(5)} + c_t^{(10)})$.
+    pub cross_maturity_average_cycle_c_bar: T,
+    /// Single return-forecasting factor $\widehat{cf}_t = \gamma_c \bar{c}_t - \gamma_1 c_t^{(1)}$.
+    pub return_forecasting_factor_cf: T,
+    /// Expected 1-year excess return on 10-year zero-coupon bond $\mathbb{E}_t[rx_{t+1}^{(10)}]$.
+    pub expected_10y_bond_excess_return: T,
+}
+
+/// Evaluates the Cieslak & Povala (2015, *RFS* 28(10)) trend-inflation cycle
+/// decomposition $c_t^{(n)} = y_t^{(n)} - b_n \tau_t$ and single return-forecasting
+/// factor $\widehat{cf}_t = \gamma_c \bar{c}_t - \gamma_1 c_t^{(1)}$.
+pub fn evaluate_cieslak_povala_trend_inflation_bond_cycle<T: Real>(
+    spec: &CieslakPovalaTrendInflationCycleSpec<T>,
+) -> CieslakPovalaTrendInflationCycleAnalytics<T> {
+    let half = T::from_f64(0.5);
+    let y1 = spec.short_rate_y1;
+    let y5 = spec.intermediate_yield_y5;
+    let y10 = spec.long_yield_y10;
+    let tau = spec.discounted_cpi_trend_tau;
+    let b1 = spec.short_rate_inflation_loading_b1;
+    let b10 = spec.long_yield_inflation_loading_b10;
+    let b5 = half * (b1 + b10);
+
+    let c1 = y1 - b1 * tau;
+    let c5 = y5 - b5 * tau;
+    let c10 = y10 - b10 * tau;
+    let c_bar = half * (c5 + c10);
+
+    let cf = spec.real_rate_cycle_return_loading_gamma_c * c_bar
+        - spec.short_rate_cycle_return_loading_gamma_1 * c1;
+    let rx_10 = T::from_f64(9.0) * cf;
+
+    CieslakPovalaTrendInflationCycleAnalytics {
+        short_rate_monetary_cycle_c1: c1,
+        long_yield_cycle_c10: c10,
+        cross_maturity_average_cycle_c_bar: c_bar,
+        return_forecasting_factor_cf: cf,
+        expected_10y_bond_excess_return: rx_10,
+    }
+}
+
+#[cfg(test)]
+mod cieslak_povala_trend_inflation_cycle_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn cieslak_povala_trend_inflation_cycle_invariants_and_ad_parity() {
+        let base = CieslakPovalaTrendInflationCycleSpec {
+            short_rate_y1: 0.042_f64,
+            intermediate_yield_y5: 0.046_f64,
+            long_yield_y10: 0.049_f64,
+            discounted_cpi_trend_tau: 0.026_f64,
+            short_rate_inflation_loading_b1: 1.05_f64,
+            long_yield_inflation_loading_b10: 0.92_f64,
+            real_rate_cycle_return_loading_gamma_c: 0.28_f64,
+            short_rate_cycle_return_loading_gamma_1: 0.14_f64,
+        };
+        let r0 = evaluate_cieslak_povala_trend_inflation_bond_cycle(&base);
+        assert!(r0.short_rate_monetary_cycle_c1.is_finite());
+        assert!(r0.expected_10y_bond_excess_return > 0.0);
+
+        let x0 = [
+            base.short_rate_y1,
+            base.intermediate_yield_y5,
+            base.long_yield_y10,
+            base.discounted_cpi_trend_tau,
+            base.short_rate_inflation_loading_b1,
+            base.long_yield_inflation_loading_b10,
+            base.real_rate_cycle_return_loading_gamma_c,
+            base.short_rate_cycle_return_loading_gamma_1,
+        ];
+        let mk = |v: [Dual<8>; 8]| CieslakPovalaTrendInflationCycleSpec {
+            short_rate_y1: v[0],
+            intermediate_yield_y5: v[1],
+            long_yield_y10: v[2],
+            discounted_cpi_trend_tau: v[3],
+            short_rate_inflation_loading_b1: v[4],
+            long_yield_inflation_loading_b10: v[5],
+            real_rate_cycle_return_loading_gamma_c: v[6],
+            short_rate_cycle_return_loading_gamma_1: v[7],
+        };
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_cieslak_povala_trend_inflation_bond_cycle(&mk(xd));
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_cieslak_povala_trend_inflation_bond_cycle(
+                &CieslakPovalaTrendInflationCycleSpec {
+                    short_rate_y1: xp[0],
+                    intermediate_yield_y5: xp[1],
+                    long_yield_y10: xp[2],
+                    discounted_cpi_trend_tau: xp[3],
+                    short_rate_inflation_loading_b1: xp[4],
+                    long_yield_inflation_loading_b10: xp[5],
+                    real_rate_cycle_return_loading_gamma_c: xp[6],
+                    short_rate_cycle_return_loading_gamma_1: xp[7],
+                },
+            );
+            let rm = evaluate_cieslak_povala_trend_inflation_bond_cycle(
+                &CieslakPovalaTrendInflationCycleSpec {
+                    short_rate_y1: xm[0],
+                    intermediate_yield_y5: xm[1],
+                    long_yield_y10: xm[2],
+                    discounted_cpi_trend_tau: xm[3],
+                    short_rate_inflation_loading_b1: xm[4],
+                    long_yield_inflation_loading_b10: xm[5],
+                    real_rate_cycle_return_loading_gamma_c: xm[6],
+                    short_rate_cycle_return_loading_gamma_1: xm[7],
+                },
+            );
+            let fd = (rp.expected_10y_bond_excess_return - rm.expected_10y_bond_excess_return)
+                / (2.0 * h);
+            assert!(rad.expected_10y_bond_excess_return.d[i].abs() > 1e-9);
+            assert!((rad.expected_10y_bond_excess_return.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

@@ -3170,3 +3170,194 @@ mod carr_lee_corridor_varswap_mod {
     }
 }
 pub use carr_lee_corridor_varswap_mod::*;
+
+/// Input specification for the Wilmott (2002) & Windcliff, Forsyth & Vetzal
+/// (2006, *Journal of Banking & Finance* 30(2)) Cliquet Local Cap/Floor & Global
+/// Floor Forward-Skew Convexity engine.
+#[derive(Debug, Clone, Copy)]
+pub struct WilmottWindcliffCliquetForwardSkewSpec<T: Real> {
+    /// Contract notional $N > 0$.
+    pub notional_amount: T,
+    /// Single-period local floor $f_{\text{loc}}$ (e.g. $0.0$).
+    pub local_floor_f_loc: T,
+    /// Single-period local cap $c_{\text{loc}} > 0$ (e.g. $0.08$).
+    pub local_cap_c_loc: T,
+    /// Cumulative multi-period global floor $F_{\text{glob}} > 0$.
+    pub global_floor_f_glob: T,
+    /// Risk-free interest rate $r$.
+    pub risk_free_rate_r: T,
+    /// At-the-money forward-starting reset volatility $\sigma_0 > 0$.
+    pub atm_reset_volatility_sigma: T,
+    /// Forward-starting implied volatility skew slope $\beta_{\text{skew}}$.
+    pub upper_cap_skew_slope_beta: T,
+    /// Number of annual reset periods $M \ge 1$.
+    pub reset_periods_m: T,
+}
+
+/// Analytics returned by [`evaluate_wilmott_windcliff_cliquet_forward_skew_valuation`].
+#[derive(Debug, Clone, Copy)]
+pub struct WilmottWindcliffCliquetForwardSkewAnalytics<T: Real> {
+    /// Single-period locally capped and floored expected return $\mu_1$.
+    pub single_period_expected_cliquet_return: T,
+    /// Cumulative $M$-period expected return before global floor $\mu_M = M\mu_1$.
+    pub cumulative_expected_return_mu_m: T,
+    /// Embedded global floor put protection value $P_{\text{glob}}$.
+    pub global_floor_embedded_put_value: T,
+    /// Forward-skew convexity adjustment relative to flat-vol Black-Scholes.
+    pub forward_skew_convexity_adjustment: T,
+    /// Discounted fair value of the globally floored cliquet $V_{\text{cliquet}}$.
+    pub cliquet_forward_skew_fair_value: T,
+}
+
+/// Evaluates the Wilmott (2002) & Windcliff, Forsyth & Vetzal (2006, *JBF* 30(2))
+/// locally capped/floored and globally floored cliquet option under forward
+/// volatility skew.
+pub fn evaluate_wilmott_windcliff_cliquet_forward_skew_valuation<T: Real>(
+    spec: &WilmottWindcliffCliquetForwardSkewSpec<T>,
+) -> WilmottWindcliffCliquetForwardSkewAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+    let inv_sqrt_2 = T::from_f64(std::f64::consts::FRAC_1_SQRT_2);
+    let inv_sqrt_2pi = T::from_f64(0.3989422804014327);
+
+    let n_notional = spec.notional_amount.max_val(T::from_f64(1.0));
+    let f_loc = spec.local_floor_f_loc;
+    let c_loc = spec.local_cap_c_loc;
+    let f_glob = spec.global_floor_f_glob;
+    let r = spec.risk_free_rate_r;
+    let sig0 = spec.atm_reset_volatility_sigma.max_val(T::from_f64(0.02));
+    let beta = spec.upper_cap_skew_slope_beta;
+    let m = spec.reset_periods_m.max_val(one);
+
+    let kf = (one + f_loc).max_val(T::from_f64(0.2));
+    let kc = (one + c_loc).max_val(kf + T::from_f64(0.01));
+
+    let sig_f = (sig0 + beta * (f_loc - T::from_f64(0.01))).max_val(T::from_f64(0.02));
+    let sig_c = (sig0 + beta * c_loc).max_val(T::from_f64(0.02));
+
+    let er = r.exp();
+    let bs_call = |k: T, sig: T| -> (T, T) {
+        let d1 = (-k.ln() + r + half * sig * sig) / sig;
+        let d2 = d1 - sig;
+        let nd1 = half * (one + (d1 * inv_sqrt_2).erf());
+        let nd2 = half * (one + (d2 * inv_sqrt_2).erf());
+        (er * nd1 - k * nd2, nd2)
+    };
+
+    let (call_f_skew, nd2_f) = bs_call(kf, sig_f);
+    let (call_c_skew, nd2_c) = bs_call(kc, sig_c);
+    let (call_f_flat, _) = bs_call(kf, sig0);
+    let (call_c_flat, _) = bs_call(kc, sig0);
+
+    let mu_1 = f_loc + (call_f_skew - call_c_skew) / er;
+    let mu_1_flat = f_loc + (call_f_flat - call_c_flat) / er;
+    let mu_m = m * mu_1;
+
+    let spread = c_loc - f_loc;
+    let v_1 = spread * spread * nd2_f * (one - nd2_c) + T::from_f64(1e-6);
+    let sig_m = (m * v_1).sqrt();
+
+    let z_g = (f_glob - mu_m) / sig_m;
+    let n_zg = half * (one + (z_g * inv_sqrt_2).erf());
+    let pdf_zg = inv_sqrt_2pi * (-half * z_g * z_g).exp();
+    let p_glob = (f_glob - mu_m) * n_zg + sig_m * pdf_zg;
+
+    let df_m = (-r * m).exp();
+    let skew_adj = n_notional * df_m * m * (mu_1 - mu_1_flat);
+    let pv = n_notional * df_m * (mu_m + p_glob);
+
+    WilmottWindcliffCliquetForwardSkewAnalytics {
+        single_period_expected_cliquet_return: mu_1,
+        cumulative_expected_return_mu_m: mu_m,
+        global_floor_embedded_put_value: p_glob,
+        forward_skew_convexity_adjustment: skew_adj,
+        cliquet_forward_skew_fair_value: pv,
+    }
+}
+
+#[cfg(test)]
+mod wilmott_windcliff_cliquet_forward_skew_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn wilmott_windcliff_cliquet_forward_skew_invariants_and_ad_parity() {
+        let base = WilmottWindcliffCliquetForwardSkewSpec {
+            notional_amount: 100.0_f64,
+            local_floor_f_loc: 0.0_f64,
+            local_cap_c_loc: 0.08_f64,
+            global_floor_f_glob: 0.16_f64,
+            risk_free_rate_r: 0.038_f64,
+            atm_reset_volatility_sigma: 0.20_f64,
+            upper_cap_skew_slope_beta: -0.35_f64,
+            reset_periods_m: 5.0_f64,
+        };
+        let r0 = evaluate_wilmott_windcliff_cliquet_forward_skew_valuation(&base);
+        // Under negative equity skew (beta < 0), the OTM local cap is priced at a lower implied vol,
+        // so the short cap is less expensive and the cliquet is worth MORE than under flat vol.
+        assert!(r0.forward_skew_convexity_adjustment > 0.0);
+        assert!(r0.cliquet_forward_skew_fair_value > 0.0);
+
+        let x0 = [
+            base.notional_amount,
+            base.local_floor_f_loc,
+            base.local_cap_c_loc,
+            base.global_floor_f_glob,
+            base.risk_free_rate_r,
+            base.atm_reset_volatility_sigma,
+            base.upper_cap_skew_slope_beta,
+            base.reset_periods_m,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_wilmott_windcliff_cliquet_forward_skew_valuation(
+            &WilmottWindcliffCliquetForwardSkewSpec {
+                notional_amount: xd[0],
+                local_floor_f_loc: xd[1],
+                local_cap_c_loc: xd[2],
+                global_floor_f_glob: xd[3],
+                risk_free_rate_r: xd[4],
+                atm_reset_volatility_sigma: xd[5],
+                upper_cap_skew_slope_beta: xd[6],
+                reset_periods_m: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_wilmott_windcliff_cliquet_forward_skew_valuation(
+                &WilmottWindcliffCliquetForwardSkewSpec {
+                    notional_amount: xp[0],
+                    local_floor_f_loc: xp[1],
+                    local_cap_c_loc: xp[2],
+                    global_floor_f_glob: xp[3],
+                    risk_free_rate_r: xp[4],
+                    atm_reset_volatility_sigma: xp[5],
+                    upper_cap_skew_slope_beta: xp[6],
+                    reset_periods_m: xp[7],
+                },
+            );
+            let rm = evaluate_wilmott_windcliff_cliquet_forward_skew_valuation(
+                &WilmottWindcliffCliquetForwardSkewSpec {
+                    notional_amount: xm[0],
+                    local_floor_f_loc: xm[1],
+                    local_cap_c_loc: xm[2],
+                    global_floor_f_glob: xm[3],
+                    risk_free_rate_r: xm[4],
+                    atm_reset_volatility_sigma: xm[5],
+                    upper_cap_skew_slope_beta: xm[6],
+                    reset_periods_m: xm[7],
+                },
+            );
+            let fd = (rp.cliquet_forward_skew_fair_value - rm.cliquet_forward_skew_fair_value)
+                / (2.0 * h);
+            assert!(rad.cliquet_forward_skew_fair_value.d[i].abs() > 1e-9);
+            assert!((rad.cliquet_forward_skew_fair_value.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

@@ -1,3 +1,5 @@
+use ql_ad::Real;
+
 mod evaluate_ahmadi_javid_entropic_var_portfolio_module {
     use ql_ad::Real;
     #[derive(Clone, Debug)]
@@ -3975,3 +3977,143 @@ mod demiguel_brodie_norm_shrinkage_mod {
     }
 }
 pub use demiguel_brodie_norm_shrinkage_mod::*;
+
+/// Input specification for the Ledoit & Wolf (2020, *Journal of Financial
+/// Econometrics* 18(2) / *Annals of Statistics* 2012) QuEST Hilbert-Transform
+/// Analytical Nonlinear Eigenvalue Shrinkage engine.
+#[derive(Debug, Clone, Copy)]
+pub struct LedoitWolfNonlinearEigenvalueShrinkageSpec<T: Real> {
+    /// Sample covariance eigenvalue $\lambda_i > 0$.
+    pub sample_eigenvalue_lambda: T,
+    /// Dimension-to-sample-size concentration ratio $c = p/n \in (0,1)$.
+    pub concentration_ratio_c: T,
+    /// Grand mean of the bulk sample eigenvalue spectrum $\bar{\lambda} > 0$.
+    pub bulk_spectral_mean_bar_lambda: T,
+    /// Kernel-smoothed limiting spectral density $f(\lambda_i) > 0$.
+    pub local_spectral_density_f: T,
+    /// Hilbert transform of the limiting spectral density $\mathcal{H}_f(\lambda_i)$.
+    pub hilbert_transform_stieltjes_h: T,
+    /// Finite-sample Marčenko-Pastur edge regularization weight $\xi_{\text{reg}} \in (0,1)$.
+    pub tail_regularization_weight_xi: T,
+}
+
+/// Analytics returned by [`evaluate_ledoit_wolf_analytical_nonlinear_eigenvalue_shrinkage`].
+#[derive(Debug, Clone, Copy)]
+pub struct LedoitWolfNonlinearEigenvalueShrinkageAnalytics<T: Real> {
+    /// Squared modulus of the complex Stieltjes denominator $D_{\text{LW}}(\lambda_i)$.
+    pub complex_stieltjes_denominator_modulus_sq: T,
+    /// Oracle analytical nonlinear shrunk eigenvalue $\hat{d}_i(\lambda_i)$.
+    pub nonlinear_shrunk_eigenvalue: T,
+    /// Effective local nonlinear shrinkage intensity $\alpha_{\text{NL}}(\lambda_i)$.
+    pub effective_local_shrinkage_intensity: T,
+    /// Shrunk precision matrix inverse eigenvalue $\hat{p}_i(\lambda_i) = 1 / \hat{d}_i(\lambda_i)$.
+    pub shrunk_precision_eigenvalue: T,
+}
+
+/// Evaluates the Ledoit & Wolf (2012, *Ann. Stat.* 40(2); 2020, *JFEC* 18(2))
+/// analytical nonlinear shrinkage formula $\hat{d}_i = \lambda_i / |1 - c - c\lambda_i \breve{m}_F(\lambda_i)|^2$.
+pub fn evaluate_ledoit_wolf_analytical_nonlinear_eigenvalue_shrinkage<T: Real>(
+    spec: &LedoitWolfNonlinearEigenvalueShrinkageSpec<T>,
+) -> LedoitWolfNonlinearEigenvalueShrinkageAnalytics<T> {
+    let one = T::one();
+    let pi = T::from_f64(std::f64::consts::PI);
+
+    let lam = spec.sample_eigenvalue_lambda.max_val(T::from_f64(1e-5));
+    let c = spec.concentration_ratio_c.max_val(T::from_f64(1e-4));
+    let bar_lam = spec
+        .bulk_spectral_mean_bar_lambda
+        .max_val(T::from_f64(1e-5));
+    let f_val = spec.local_spectral_density_f.max_val(T::from_f64(1e-5));
+    let h_val = spec.hilbert_transform_stieltjes_h;
+    let xi = spec.tail_regularization_weight_xi;
+
+    let real_part = one - c - c * lam * h_val - c * xi * (lam / bar_lam);
+    let imag_part = c * pi * lam * f_val;
+    let denom_sq = (real_part * real_part + imag_part * imag_part).max_val(T::from_f64(1e-8));
+
+    let d_shrunk = lam / denom_sq;
+    let alpha_nl = (d_shrunk - lam) / (bar_lam - lam + T::from_f64(1e-6));
+    let p_shrunk = one / d_shrunk;
+
+    LedoitWolfNonlinearEigenvalueShrinkageAnalytics {
+        complex_stieltjes_denominator_modulus_sq: denom_sq,
+        nonlinear_shrunk_eigenvalue: d_shrunk,
+        effective_local_shrinkage_intensity: alpha_nl,
+        shrunk_precision_eigenvalue: p_shrunk,
+    }
+}
+
+#[cfg(test)]
+mod ledoit_wolf_nonlinear_eigenvalue_shrinkage_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn ledoit_wolf_nonlinear_eigenvalue_shrinkage_invariants_and_ad_parity() {
+        let base = LedoitWolfNonlinearEigenvalueShrinkageSpec {
+            sample_eigenvalue_lambda: 0.42_f64,
+            concentration_ratio_c: 0.35_f64,
+            bulk_spectral_mean_bar_lambda: 1.00_f64,
+            local_spectral_density_f: 0.68_f64,
+            hilbert_transform_stieltjes_h: 0.45_f64,
+            tail_regularization_weight_xi: 0.08_f64,
+        };
+        let r0 = evaluate_ledoit_wolf_analytical_nonlinear_eigenvalue_shrinkage(&base);
+        // Small sample eigenvalue below bulk mean is pulled upward by nonlinear shrinkage
+        assert!(r0.nonlinear_shrunk_eigenvalue > base.sample_eigenvalue_lambda);
+        assert!(r0.shrunk_precision_eigenvalue > 0.0);
+
+        let x0 = [
+            base.sample_eigenvalue_lambda,
+            base.concentration_ratio_c,
+            base.bulk_spectral_mean_bar_lambda,
+            base.local_spectral_density_f,
+            base.hilbert_transform_stieltjes_h,
+            base.tail_regularization_weight_xi,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_ledoit_wolf_analytical_nonlinear_eigenvalue_shrinkage(
+            &LedoitWolfNonlinearEigenvalueShrinkageSpec {
+                sample_eigenvalue_lambda: xd[0],
+                concentration_ratio_c: xd[1],
+                bulk_spectral_mean_bar_lambda: xd[2],
+                local_spectral_density_f: xd[3],
+                hilbert_transform_stieltjes_h: xd[4],
+                tail_regularization_weight_xi: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_ledoit_wolf_analytical_nonlinear_eigenvalue_shrinkage(
+                &LedoitWolfNonlinearEigenvalueShrinkageSpec {
+                    sample_eigenvalue_lambda: xp[0],
+                    concentration_ratio_c: xp[1],
+                    bulk_spectral_mean_bar_lambda: xp[2],
+                    local_spectral_density_f: xp[3],
+                    hilbert_transform_stieltjes_h: xp[4],
+                    tail_regularization_weight_xi: xp[5],
+                },
+            );
+            let rm = evaluate_ledoit_wolf_analytical_nonlinear_eigenvalue_shrinkage(
+                &LedoitWolfNonlinearEigenvalueShrinkageSpec {
+                    sample_eigenvalue_lambda: xm[0],
+                    concentration_ratio_c: xm[1],
+                    bulk_spectral_mean_bar_lambda: xm[2],
+                    local_spectral_density_f: xm[3],
+                    hilbert_transform_stieltjes_h: xm[4],
+                    tail_regularization_weight_xi: xm[5],
+                },
+            );
+            let fd = (rp.nonlinear_shrunk_eigenvalue - rm.nonlinear_shrunk_eigenvalue) / (2.0 * h);
+            assert!(rad.nonlinear_shrunk_eigenvalue.d[i].abs() > 1e-9);
+            assert!((rad.nonlinear_shrunk_eigenvalue.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}
