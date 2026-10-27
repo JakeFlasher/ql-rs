@@ -2655,3 +2655,175 @@ mod hanson_stein_greenwood_vayanos_duration_tests {
         }
     }
 }
+
+/// Input specification for the Bauer & Rudebusch (2014, *Review of Economics and
+/// Statistics* 96(4), "The Signaling Channel for Federal Reserve Bond Purchases")
+/// & Christensen & Rudebusch (2012, *Economic Journal* 122(564)) Shadow-Rate
+/// Arbitrage-Free Nelson-Siegel (B-AFNS) QE Signaling vs. Portfolio-Balance
+/// Term-Premium Decomposition engine.
+#[derive(Debug, Clone, Copy)]
+pub struct BauerRudebuschQeSignalingTermPremiumSpec<T: Real> {
+    /// Current shadow short rate $s_t$ (can be negative near the effective lower bound).
+    pub shadow_short_rate_s0: T,
+    /// Effective lower bound rate $r_{\text{ELB}} \ge 0$.
+    pub effective_lower_bound_r_elb: T,
+    /// Expected liftoff horizon volatility scale $\sigma_{\text{shadow}} > 0$ governing the Black (1995) call option value of money.
+    pub shadow_rate_volatility_sigma_s: T,
+    /// Central bank large-scale asset purchase (LSAP / QE) shock size $Q_{\text{LSAP}} > 0$ (% of GDP).
+    pub lsap_purchase_shock_q: T,
+    /// Signaling channel sensitivity $\beta_{\text{sig}} > 0$ (months of liftoff delay / lower expected path per QE unit).
+    pub signaling_path_sensitivity_beta_sig: T,
+    /// Portfolio-balance duration extraction sensitivity $\beta_{\text{pb}} > 0$ (term premium compression per QE unit).
+    pub portfolio_balance_sensitivity_beta_pb: T,
+    /// Baseline pre-QE term premium $TP_0(\tau)$.
+    pub baseline_term_premium_tp0: T,
+    /// Bond maturity in years $\tau > 0$.
+    pub maturity_years_tau: T,
+}
+
+/// Analytics returned by [`evaluate_bauer_rudebusch_qe_signaling_term_premium`].
+#[derive(Debug, Clone, Copy)]
+pub struct BauerRudebuschQeSignalingTermPremiumAnalytics<T: Real> {
+    /// Observed ELB-constrained expected average short-rate component $EY_t(\tau) = \frac{1}{\tau}\int_t^{t+\tau} \mathbb{E}_t[\max(s_u, r_{\text{ELB}})]\,du$.
+    pub constrained_expectations_component_yield: T,
+    /// QE announcement signaling-channel reduction in expected future policy rates $\Delta EY_{\text{sig}} < 0$ (in bps).
+    pub qe_signaling_channel_change_bps: T,
+    /// QE announcement portfolio-balance reduction in term premium $\Delta TP_{\text{pb}} < 0$ (in bps).
+    pub qe_portfolio_balance_change_bps: T,
+    /// Post-QE shadow-rate AFNS long bond yield $y_t^{\text{B-AFNS}}(\tau)$.
+    pub post_qe_long_bond_yield: T,
+}
+
+/// Evaluates the Bauer & Rudebusch (2014, *REStat* 96(4)) and Christensen &
+/// Rudebusch (2012, *EJ* 122(564)) shadow-rate arbitrage-free Nelson-Siegel
+/// (B-AFNS) decomposition of central bank asset purchase announcements into the
+/// expectations/signaling channel ($\Delta EY_{\text{sig}}$) and the
+/// portfolio-balance term-premium channel ($\Delta TP_{\text{pb}}$).
+pub fn evaluate_bauer_rudebusch_qe_signaling_term_premium<T: Real>(
+    spec: &BauerRudebuschQeSignalingTermPremiumSpec<T>,
+) -> BauerRudebuschQeSignalingTermPremiumAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+
+    let s0 = spec.shadow_short_rate_s0;
+    let r_elb = spec.effective_lower_bound_r_elb;
+    let sig_s = spec
+        .shadow_rate_volatility_sigma_s
+        .max_val(T::from_f64(1e-3));
+    let q_lsap = spec.lsap_purchase_shock_q.max_val(T::from_f64(1e-4));
+    let beta_sig = spec
+        .signaling_path_sensitivity_beta_sig
+        .max_val(T::from_f64(1e-4));
+    let beta_pb = spec
+        .portfolio_balance_sensitivity_beta_pb
+        .max_val(T::from_f64(1e-4));
+    let tp0 = spec.baseline_term_premium_tp0;
+    let tau = spec.maturity_years_tau.max_val(T::from_f64(0.5));
+
+    // Smooth Black (1995) / Krippner shadow-rate option value above r_ELB over horizon tau
+    let vol_tau = sig_s * tau.sqrt();
+    let diff = s0 - r_elb;
+    let elb_floor_lift = half * (diff + (diff * diff + vol_tau * vol_tau).sqrt());
+    let ey_pre = r_elb + elb_floor_lift;
+
+    // QE signaling channel lowers expected future policy rate path via liftoff guidance
+    let delta_ey =
+        -beta_sig * q_lsap * (one - (-T::from_f64(0.35) * tau).exp()) / (T::from_f64(0.35) * tau);
+    // QE portfolio-balance channel compresses duration term premium
+    let delta_tp = -beta_pb * q_lsap * (one - (-T::from_f64(0.20) * tau).exp());
+
+    let ey_post = ey_pre + delta_ey;
+    let y_post = ey_post + tp0 + delta_tp;
+
+    BauerRudebuschQeSignalingTermPremiumAnalytics {
+        constrained_expectations_component_yield: ey_post,
+        qe_signaling_channel_change_bps: delta_ey * T::from_f64(10_000.0),
+        qe_portfolio_balance_change_bps: delta_tp * T::from_f64(10_000.0),
+        post_qe_long_bond_yield: y_post,
+    }
+}
+
+#[cfg(test)]
+mod bauer_rudebusch_qe_signaling_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn bauer_rudebusch_qe_signaling_invariants_and_ad_parity() {
+        let base = BauerRudebuschQeSignalingTermPremiumSpec {
+            shadow_short_rate_s0: -0.008_f64,
+            effective_lower_bound_r_elb: 0.00125_f64,
+            shadow_rate_volatility_sigma_s: 0.011_f64,
+            lsap_purchase_shock_q: 2.50_f64,
+            signaling_path_sensitivity_beta_sig: 0.0018_f64,
+            portfolio_balance_sensitivity_beta_pb: 0.0022_f64,
+            baseline_term_premium_tp0: 0.0120_f64,
+            maturity_years_tau: 10.0_f64,
+        };
+        let r0 = evaluate_bauer_rudebusch_qe_signaling_term_premium(&base);
+        assert!(r0.constrained_expectations_component_yield > base.shadow_short_rate_s0);
+        assert!(r0.qe_signaling_channel_change_bps < 0.0);
+        assert!(r0.qe_portfolio_balance_change_bps < 0.0);
+
+        let x0 = [
+            base.shadow_short_rate_s0,
+            base.effective_lower_bound_r_elb,
+            base.shadow_rate_volatility_sigma_s,
+            base.lsap_purchase_shock_q,
+            base.signaling_path_sensitivity_beta_sig,
+            base.portfolio_balance_sensitivity_beta_pb,
+            base.baseline_term_premium_tp0,
+            base.maturity_years_tau,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_bauer_rudebusch_qe_signaling_term_premium(
+            &BauerRudebuschQeSignalingTermPremiumSpec {
+                shadow_short_rate_s0: xd[0],
+                effective_lower_bound_r_elb: xd[1],
+                shadow_rate_volatility_sigma_s: xd[2],
+                lsap_purchase_shock_q: xd[3],
+                signaling_path_sensitivity_beta_sig: xd[4],
+                portfolio_balance_sensitivity_beta_pb: xd[5],
+                baseline_term_premium_tp0: xd[6],
+                maturity_years_tau: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_bauer_rudebusch_qe_signaling_term_premium(
+                &BauerRudebuschQeSignalingTermPremiumSpec {
+                    shadow_short_rate_s0: xp[0],
+                    effective_lower_bound_r_elb: xp[1],
+                    shadow_rate_volatility_sigma_s: xp[2],
+                    lsap_purchase_shock_q: xp[3],
+                    signaling_path_sensitivity_beta_sig: xp[4],
+                    portfolio_balance_sensitivity_beta_pb: xp[5],
+                    baseline_term_premium_tp0: xp[6],
+                    maturity_years_tau: xp[7],
+                },
+            );
+            let rm = evaluate_bauer_rudebusch_qe_signaling_term_premium(
+                &BauerRudebuschQeSignalingTermPremiumSpec {
+                    shadow_short_rate_s0: xm[0],
+                    effective_lower_bound_r_elb: xm[1],
+                    shadow_rate_volatility_sigma_s: xm[2],
+                    lsap_purchase_shock_q: xm[3],
+                    signaling_path_sensitivity_beta_sig: xm[4],
+                    portfolio_balance_sensitivity_beta_pb: xm[5],
+                    baseline_term_premium_tp0: xm[6],
+                    maturity_years_tau: xm[7],
+                },
+            );
+            let fd = (rp.post_qe_long_bond_yield - rm.post_qe_long_bond_yield) / (2.0 * h);
+            assert!(rad.post_qe_long_bond_yield.d[i].abs() > 1e-9);
+            assert!((rad.post_qe_long_bond_yield.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

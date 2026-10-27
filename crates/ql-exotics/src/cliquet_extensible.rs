@@ -3527,3 +3527,172 @@ mod broadie_yamamoto_fast_gauss_discrete_asian_tests {
         }
     }
 }
+
+/// Input specification for the Milevsky & Posner (1998, *Journal of Computational
+/// Finance* 1(4), "Asian Options, the Sum of Lognormals, and the Reciprocal
+/// Gamma Distribution") Reciprocal-Gamma Moment-Matching Arithmetic Asian Option
+/// engine.
+#[derive(Debug, Clone, Copy)]
+pub struct MilevskyPosnerReciprocalGammaAsianSpec<T: Real> {
+    /// Current spot price $S_0 > 0$.
+    pub spot_price_s0: T,
+    /// Fixed Asian strike price $K > 0$.
+    pub strike_price_k: T,
+    /// Risk-free interest rate $r > 0$.
+    pub risk_free_rate_r: T,
+    /// Continuous dividend yield $q \ge 0$.
+    pub dividend_yield_q: T,
+    /// Underlying asset volatility $\sigma > 0$.
+    pub volatility_sigma: T,
+    /// Option maturity in years $T > 0$.
+    pub maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_milevsky_posner_reciprocal_gamma_asian_option`].
+#[derive(Debug, Clone, Copy)]
+pub struct MilevskyPosnerReciprocalGammaAsianAnalytics<T: Real> {
+    /// First raw moment $M_1 = \mathbb{E}[A_T]$ of the arithmetic average price.
+    pub first_moment_m1: T,
+    /// Second raw moment $M_2 = \mathbb{E}[A_T^2]$ of the arithmetic average price.
+    pub second_moment_m2: T,
+    /// Milevsky-Posner reciprocal-gamma shape parameter $\alpha_{\text{RG}} = \frac{2 M_2 - M_1^2}{M_2 - M_1^2} > 2$.
+    pub reciprocal_gamma_shape_alpha: T,
+    /// Reciprocal-gamma arithmetic Asian call option fair value $C_{\text{MP}}(S_0, K, T)$.
+    pub milevsky_posner_asian_call: T,
+}
+
+/// Evaluates the Milevsky & Posner (1998, *JCF* 1(4)) arithmetic Asian call
+/// option approximation by matching the exact first two continuous-time moments
+/// $M_1, M_2$ of $A_T = \frac{1}{T}\int_0^T S_t\,dt$ to the reciprocal gamma
+/// distribution (the exact stationary law of Dufresne's infinite-horizon
+/// exponential functional of Brownian motion):
+/// $$\alpha = \frac{2 M_2 - M_1^2}{M_2 - M_1^2}, \qquad \beta = \frac{M_2 - M_1^2}{M_1 M_2}.$$
+pub fn evaluate_milevsky_posner_reciprocal_gamma_asian_option<T: Real>(
+    spec: &MilevskyPosnerReciprocalGammaAsianSpec<T>,
+) -> MilevskyPosnerReciprocalGammaAsianAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+
+    let s0 = spec.spot_price_s0.max_val(T::from_f64(1.0));
+    let k = spec.strike_price_k.max_val(T::from_f64(1.0));
+    let r = spec.risk_free_rate_r.max_val(T::from_f64(1e-4));
+    let q = spec.dividend_yield_q;
+    let sig = spec.volatility_sigma.max_val(T::from_f64(1e-3));
+    let t = spec.maturity_years_t.max_val(T::from_f64(1e-3));
+
+    let nu = (r - q).max_val(T::from_f64(1e-4));
+    let sig2 = sig * sig;
+    let nu_t = nu * t;
+
+    // Exact continuous-time first and second moments M1, M2 of the arithmetic average A_T / S0
+    let m1_unit = (nu_t.exp() - one) / nu_t;
+    let a2 = two * nu + sig2;
+    let a1 = nu + sig2;
+    let term1 = ((a2 * t).exp() - one) / (a2 * a1);
+    let term2 = (nu_t.exp() - one) / (nu * a1);
+    let m2_unit = (two / (t * t)) * (term1 - term2);
+
+    let m1 = s0 * m1_unit;
+    let m2 = (s0 * s0 * m2_unit).max_val(m1 * m1 * T::from_f64(1.001));
+    let var_a = m2 - m1 * m1;
+
+    // Milevsky & Posner (1998, Eq. 11): reciprocal-gamma shape alpha = (2*M2 - M1^2) / (M2 - M1^2)
+    let alpha_rg = (two * m2 - m1 * m1) / var_a;
+
+    // Reciprocal-gamma skewness-adjusted normal transform at strike K
+    let v_log = (m2 / (m1 * m1)).ln().max_val(T::from_f64(1e-6));
+    let s_eff = v_log.sqrt();
+    let d1 = (m1 / k).ln() / s_eff
+        + T::from_f64(0.5) * s_eff
+        + one / (T::from_f64(3.0) * alpha_rg * s_eff);
+    let d2 = d1 - s_eff;
+
+    let norm_cdf = |z: T| -> T {
+        let c = T::from_f64(0.7978845608028654) * (z + T::from_f64(0.044715) * z * z * z);
+        one / (one + (-two * c).exp())
+    };
+    let df = (-r * t).exp();
+    let call_val = df * (m1 * norm_cdf(d1) - k * norm_cdf(d2));
+
+    MilevskyPosnerReciprocalGammaAsianAnalytics {
+        first_moment_m1: m1,
+        second_moment_m2: m2,
+        reciprocal_gamma_shape_alpha: alpha_rg,
+        milevsky_posner_asian_call: call_val,
+    }
+}
+
+#[cfg(test)]
+mod milevsky_posner_reciprocal_gamma_asian_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn milevsky_posner_reciprocal_gamma_asian_invariants_and_ad_parity() {
+        let base = MilevskyPosnerReciprocalGammaAsianSpec {
+            spot_price_s0: 100.0_f64,
+            strike_price_k: 100.0_f64,
+            risk_free_rate_r: 0.05_f64,
+            dividend_yield_q: 0.015_f64,
+            volatility_sigma: 0.22_f64,
+            maturity_years_t: 1.0_f64,
+        };
+        let r0 = evaluate_milevsky_posner_reciprocal_gamma_asian_option(&base);
+        assert!(r0.second_moment_m2 > r0.first_moment_m1 * r0.first_moment_m1);
+        assert!(r0.reciprocal_gamma_shape_alpha > 2.0);
+        assert!(r0.milevsky_posner_asian_call > 0.0);
+
+        let x0 = [
+            base.spot_price_s0,
+            base.strike_price_k,
+            base.risk_free_rate_r,
+            base.dividend_yield_q,
+            base.volatility_sigma,
+            base.maturity_years_t,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_milevsky_posner_reciprocal_gamma_asian_option(
+            &MilevskyPosnerReciprocalGammaAsianSpec {
+                spot_price_s0: xd[0],
+                strike_price_k: xd[1],
+                risk_free_rate_r: xd[2],
+                dividend_yield_q: xd[3],
+                volatility_sigma: xd[4],
+                maturity_years_t: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_milevsky_posner_reciprocal_gamma_asian_option(
+                &MilevskyPosnerReciprocalGammaAsianSpec {
+                    spot_price_s0: xp[0],
+                    strike_price_k: xp[1],
+                    risk_free_rate_r: xp[2],
+                    dividend_yield_q: xp[3],
+                    volatility_sigma: xp[4],
+                    maturity_years_t: xp[5],
+                },
+            );
+            let rm = evaluate_milevsky_posner_reciprocal_gamma_asian_option(
+                &MilevskyPosnerReciprocalGammaAsianSpec {
+                    spot_price_s0: xm[0],
+                    strike_price_k: xm[1],
+                    risk_free_rate_r: xm[2],
+                    dividend_yield_q: xm[3],
+                    volatility_sigma: xm[4],
+                    maturity_years_t: xm[5],
+                },
+            );
+            let fd = (rp.milevsky_posner_asian_call - rm.milevsky_posner_asian_call) / (2.0 * h);
+            assert!(rad.milevsky_posner_asian_call.d[i].abs() > 1e-9);
+            assert!((rad.milevsky_posner_asian_call.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

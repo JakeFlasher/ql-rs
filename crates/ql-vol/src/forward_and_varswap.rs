@@ -3177,3 +3177,180 @@ mod todorov_option_implied_spot_volatility_tests {
         }
     }
 }
+
+/// Input specification for the Bollerslev & Todorov (2011, *Journal of Finance*
+/// 66(6), "Tails, Fears, and Risk Premia") Rare-Jump Fear Index, Left- vs.
+/// Right-Tail Option-Implied Jump Intensity & Variance Risk Premium Decomposition
+/// engine.
+#[derive(Debug, Clone, Copy)]
+pub struct BollerslevTodorovJumpTailFearPremiumSpec<T: Real> {
+    /// Physical left-tail jump intensity scale $\phi_t^{-,\mathbb{P}} > 0$.
+    pub physical_left_tail_scale_phi_minus_p: T,
+    /// Risk-neutral option-implied left-tail jump intensity scale $\phi_t^{-,\mathbb{Q}} > \phi_t^{-,\mathbb{P}}$.
+    pub risk_neutral_left_tail_scale_phi_minus_q: T,
+    /// Physical right-tail jump intensity scale $\phi_t^{+,\mathbb{P}} > 0$.
+    pub physical_right_tail_scale_phi_plus_p: T,
+    /// Risk-neutral right-tail jump intensity scale $\phi_t^{+,\mathbb{Q}} > 0$.
+    pub risk_neutral_right_tail_scale_phi_plus_q: T,
+    /// Left-tail Pareto power-law decay exponent $\alpha_- > 2$.
+    pub left_tail_decay_exponent_alpha_minus: T,
+    /// Right-tail Pareto power-law decay exponent $\alpha_+ > 2$.
+    pub right_tail_decay_exponent_alpha_plus: T,
+    /// Tail jump log-return threshold $k_0 > 0$ (e.g. 5% move).
+    pub tail_jump_cutoff_k0: T,
+    /// Diffusive continuous variance risk premium $VRP_t^{\text{diff}}$.
+    pub diffusive_variance_risk_premium_vrp_c: T,
+}
+
+/// Analytics returned by [`evaluate_bollerslev_todorov_jump_tail_fear_premium`].
+#[derive(Debug, Clone, Copy)]
+pub struct BollerslevTodorovJumpTailFearPremiumAnalytics<T: Real> {
+    /// Left-tail crash jump variance risk premium $JVRP_t^- = QV_t^{-,\mathbb{Q}} - QV_t^{-,\mathbb{P}} > 0$.
+    pub left_tail_jump_variance_risk_premium: T,
+    /// Right-tail jump variance risk premium $JVRP_t^+ = QV_t^{+,\mathbb{Q}} - QV_t^{+,\mathbb{P}}$.
+    pub right_tail_jump_variance_risk_premium: T,
+    /// Bollerslev-Todorov Investor Fear Index $FI_t = JVRP_t^- - JVRP_t^+ > 0$.
+    pub bollerslev_todorov_fear_index: T,
+    /// Total variance risk premium $VRP_t^{\text{total}}$ and tail-fear share $FI_t / VRP_t^{\text{total}}$.
+    pub total_variance_risk_premium: T,
+}
+
+/// Evaluates the Bollerslev & Todorov (2011, *JF* 66(6)) extreme-value jump tail
+/// decomposition of the Variance Risk Premium, where tail quadratic variation
+/// above cutoff $k_0$ scales as $\int_{k_0}^\infty x^2 \nu(dx) \propto \phi \frac{k_0^{2-\alpha}}{\alpha - 2}$,
+/// and the Investor Fear Index $FI_t = (QV_t^{-,\mathbb{Q}} - QV_t^{-,\mathbb{P}}) - (QV_t^{+,\mathbb{Q}} - QV_t^{+,\mathbb{P}})$
+/// accounts for the majority of the aggregate equity variance risk premium.
+pub fn evaluate_bollerslev_todorov_jump_tail_fear_premium<T: Real>(
+    spec: &BollerslevTodorovJumpTailFearPremiumSpec<T>,
+) -> BollerslevTodorovJumpTailFearPremiumAnalytics<T> {
+    let two = T::from_f64(2.0);
+    let phi_mp = spec
+        .physical_left_tail_scale_phi_minus_p
+        .max_val(T::from_f64(1e-5));
+    let phi_mq = spec
+        .risk_neutral_left_tail_scale_phi_minus_q
+        .max_val(phi_mp * T::from_f64(1.05));
+    let phi_pp = spec
+        .physical_right_tail_scale_phi_plus_p
+        .max_val(T::from_f64(1e-5));
+    let phi_pq = spec
+        .risk_neutral_right_tail_scale_phi_plus_q
+        .max_val(T::from_f64(1e-5));
+    let a_m = spec
+        .left_tail_decay_exponent_alpha_minus
+        .max_val(T::from_f64(2.15));
+    let a_p = spec
+        .right_tail_decay_exponent_alpha_plus
+        .max_val(T::from_f64(2.15));
+    let k0 = spec.tail_jump_cutoff_k0.max_val(T::from_f64(0.01));
+    let vrp_c = spec.diffusive_variance_risk_premium_vrp_c;
+
+    let tail_qv_factor = |alpha: T| -> T {
+        let pow_term = ((two - alpha) * k0.ln()).exp();
+        two * pow_term / (alpha - two)
+    };
+
+    let f_minus = tail_qv_factor(a_m);
+    let f_plus = tail_qv_factor(a_p);
+
+    let jvrp_minus = (phi_mq - phi_mp) * f_minus;
+    let jvrp_plus = (phi_pq - phi_pp) * f_plus;
+    let fear_idx = jvrp_minus - jvrp_plus;
+    let total_vrp = vrp_c + jvrp_minus + jvrp_plus;
+
+    BollerslevTodorovJumpTailFearPremiumAnalytics {
+        left_tail_jump_variance_risk_premium: jvrp_minus,
+        right_tail_jump_variance_risk_premium: jvrp_plus,
+        bollerslev_todorov_fear_index: fear_idx,
+        total_variance_risk_premium: total_vrp,
+    }
+}
+
+#[cfg(test)]
+mod bollerslev_todorov_jump_tail_fear_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn bollerslev_todorov_jump_tail_fear_invariants_and_ad_parity() {
+        let base = BollerslevTodorovJumpTailFearPremiumSpec {
+            physical_left_tail_scale_phi_minus_p: 0.0012_f64,
+            risk_neutral_left_tail_scale_phi_minus_q: 0.0048_f64,
+            physical_right_tail_scale_phi_plus_p: 0.0010_f64,
+            risk_neutral_right_tail_scale_phi_plus_q: 0.0009_f64,
+            left_tail_decay_exponent_alpha_minus: 2.85_f64,
+            right_tail_decay_exponent_alpha_plus: 3.40_f64,
+            tail_jump_cutoff_k0: 0.05_f64,
+            diffusive_variance_risk_premium_vrp_c: 0.0065_f64,
+        };
+        let r0 = evaluate_bollerslev_todorov_jump_tail_fear_premium(&base);
+        assert!(r0.left_tail_jump_variance_risk_premium > 0.0);
+        assert!(r0.bollerslev_todorov_fear_index > 0.0);
+        assert!(r0.total_variance_risk_premium > base.diffusive_variance_risk_premium_vrp_c);
+
+        let x0 = [
+            base.physical_left_tail_scale_phi_minus_p,
+            base.risk_neutral_left_tail_scale_phi_minus_q,
+            base.physical_right_tail_scale_phi_plus_p,
+            base.risk_neutral_right_tail_scale_phi_plus_q,
+            base.left_tail_decay_exponent_alpha_minus,
+            base.right_tail_decay_exponent_alpha_plus,
+            base.tail_jump_cutoff_k0,
+            base.diffusive_variance_risk_premium_vrp_c,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_bollerslev_todorov_jump_tail_fear_premium(
+            &BollerslevTodorovJumpTailFearPremiumSpec {
+                physical_left_tail_scale_phi_minus_p: xd[0],
+                risk_neutral_left_tail_scale_phi_minus_q: xd[1],
+                physical_right_tail_scale_phi_plus_p: xd[2],
+                risk_neutral_right_tail_scale_phi_plus_q: xd[3],
+                left_tail_decay_exponent_alpha_minus: xd[4],
+                right_tail_decay_exponent_alpha_plus: xd[5],
+                tail_jump_cutoff_k0: xd[6],
+                diffusive_variance_risk_premium_vrp_c: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_bollerslev_todorov_jump_tail_fear_premium(
+                &BollerslevTodorovJumpTailFearPremiumSpec {
+                    physical_left_tail_scale_phi_minus_p: xp[0],
+                    risk_neutral_left_tail_scale_phi_minus_q: xp[1],
+                    physical_right_tail_scale_phi_plus_p: xp[2],
+                    risk_neutral_right_tail_scale_phi_plus_q: xp[3],
+                    left_tail_decay_exponent_alpha_minus: xp[4],
+                    right_tail_decay_exponent_alpha_plus: xp[5],
+                    tail_jump_cutoff_k0: xp[6],
+                    diffusive_variance_risk_premium_vrp_c: xp[7],
+                },
+            );
+            let rm = evaluate_bollerslev_todorov_jump_tail_fear_premium(
+                &BollerslevTodorovJumpTailFearPremiumSpec {
+                    physical_left_tail_scale_phi_minus_p: xm[0],
+                    risk_neutral_left_tail_scale_phi_minus_q: xm[1],
+                    physical_right_tail_scale_phi_plus_p: xm[2],
+                    risk_neutral_right_tail_scale_phi_plus_q: xm[3],
+                    left_tail_decay_exponent_alpha_minus: xm[4],
+                    right_tail_decay_exponent_alpha_plus: xm[5],
+                    tail_jump_cutoff_k0: xm[6],
+                    diffusive_variance_risk_premium_vrp_c: xm[7],
+                },
+            );
+            let gp = rp.total_variance_risk_premium + 0.5 * rp.bollerslev_todorov_fear_index;
+            let gm = rm.total_variance_risk_premium + 0.5 * rm.bollerslev_todorov_fear_index;
+            let gad = rad.total_variance_risk_premium
+                + Dual::from_f64(0.5) * rad.bollerslev_todorov_fear_index;
+            let fd = (gp - gm) / (2.0 * h);
+            assert!(gad.d[i].abs() > 1e-9);
+            assert!((gad.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

@@ -2477,3 +2477,162 @@ mod brunnermeier_nagel_pedersen_fx_carry_crash_tests {
         }
     }
 }
+
+/// Input specification for the Menkhoff, Sarno, Schmeling & Schrimpf (2012,
+/// *Journal of Finance* 67(2), "Carry Trades and Global Foreign Exchange
+/// Volatility") Global FX Volatility Innovations, Carry-Trade Beta Asymmetry &
+/// Liquidity-Adjusted Currency Excess Return engine.
+#[derive(Debug, Clone, Copy)]
+pub struct MenkhoffSarnoSchmelingSchrimpfFxCarryVolSpec<T: Real> {
+    /// Current global cross-currency average absolute daily return volatility $\sigma_{t}^{\text{FX}} > 0$.
+    pub current_global_fx_volatility_sigma_t: T,
+    /// AR(1) expected global FX volatility $\hat{\sigma}_{t}^{\text{FX}} = \alpha_0 + \rho_\sigma \sigma_{t-1}^{\text{FX}} > 0$.
+    pub expected_global_fx_volatility_sigma_hat: T,
+    /// Portfolio forward-discount rank $z_{\text{carry}} \in [-1, 1]$ ($+1$ for high-interest investment currencies, $-1$ for funding currencies).
+    pub carry_portfolio_rank_z: T,
+    /// Asymmetric volatility-innovation beta sensitivity $\gamma_{\text{vol}} > 0$ (high-carry currencies have $\beta_{\Delta\sigma} < 0$).
+    pub volatility_beta_asymmetry_gamma: T,
+    /// Market-wide price of global FX volatility risk $\lambda_{\text{vol}} < 0$ (investors accept lower returns on volatility-hedge funding currencies).
+    pub global_vol_risk_price_lambda_v: T,
+    /// Global FX bid-ask illiquidity innovation $\Delta \text{BA}_{t}^{\text{FX}}$.
+    pub global_fx_bid_ask_shock_dba: T,
+    /// Dollar factor unconditional expected return $\mu_{\text{DOL}}$.
+    pub dollar_factor_expected_return_mu_dol: T,
+}
+
+/// Analytics returned by [`evaluate_menkhoff_sarno_schmeling_schrimpf_fx_carry_vol`].
+#[derive(Debug, Clone, Copy)]
+pub struct MenkhoffSarnoSchmelingSchrimpfFxCarryVolAnalytics<T: Real> {
+    /// Global FX volatility innovation $\Delta \sigma_{t}^{\text{FX}} = \sigma_{t}^{\text{FX}} - \hat{\sigma}_{t}^{\text{FX}}$.
+    pub global_fx_volatility_innovation: T,
+    /// Currency portfolio beta on global FX volatility innovations $\beta_{\Delta \sigma}(z_{\text{carry}})$.
+    pub global_volatility_beta: T,
+    /// Unconditional cross-sectional carry risk premium $\mathbb{E}[rx^{\text{carry}}] = \mu_{\text{DOL}} + \beta_{\Delta \sigma} \lambda_{\text{vol}}$.
+    pub unconditional_volatility_priced_carry_premium: T,
+    /// Realized state-dependent currency excess return including global volatility and bid-ask shocks.
+    pub conditional_realized_fx_excess_return: T,
+}
+
+/// Evaluates the Menkhoff, Sarno, Schmeling & Schrimpf (2012, *JF* 67(2)) two-factor
+/// global FX asset pricing model where high-interest-rate carry currencies load
+/// negatively on global FX volatility innovations ($\beta_{\Delta\sigma} < 0$)
+/// and a negative price of global volatility risk ($\lambda_{\text{vol}} < 0$)
+/// rationalizes the positive unconditional carry trade excess return.
+pub fn evaluate_menkhoff_sarno_schmeling_schrimpf_fx_carry_vol<T: Real>(
+    spec: &MenkhoffSarnoSchmelingSchrimpfFxCarryVolSpec<T>,
+) -> MenkhoffSarnoSchmelingSchrimpfFxCarryVolAnalytics<T> {
+    let sig_t = spec
+        .current_global_fx_volatility_sigma_t
+        .max_val(T::from_f64(1e-4));
+    let sig_hat = spec
+        .expected_global_fx_volatility_sigma_hat
+        .max_val(T::from_f64(1e-4));
+    let z_c = spec.carry_portfolio_rank_z;
+    let gam_v = spec
+        .volatility_beta_asymmetry_gamma
+        .max_val(T::from_f64(1e-4));
+    let lam_v = spec
+        .global_vol_risk_price_lambda_v
+        .min_val(T::from_f64(-1e-4));
+    let dba = spec.global_fx_bid_ask_shock_dba;
+    let mu_dol = spec.dollar_factor_expected_return_mu_dol;
+
+    let d_sig = sig_t - sig_hat;
+    // High-interest currencies (z_c > 0) have negative beta on global FX vol shocks
+    let beta_vol = -gam_v * z_c;
+    // Unconditional expected excess return: E[rx_i] = mu_DOL + beta_{i,VOL} * lambda_VOL
+    let uncond_prem = mu_dol + beta_vol * lam_v;
+    let cond_rx = uncond_prem + beta_vol * (d_sig + T::from_f64(0.5) * dba);
+
+    MenkhoffSarnoSchmelingSchrimpfFxCarryVolAnalytics {
+        global_fx_volatility_innovation: d_sig,
+        global_volatility_beta: beta_vol,
+        unconditional_volatility_priced_carry_premium: uncond_prem,
+        conditional_realized_fx_excess_return: cond_rx,
+    }
+}
+
+#[cfg(test)]
+mod menkhoff_sarno_schmeling_schrimpf_fx_vol_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn menkhoff_sarno_schmeling_schrimpf_fx_vol_invariants_and_ad_parity() {
+        let base = MenkhoffSarnoSchmelingSchrimpfFxCarryVolSpec {
+            current_global_fx_volatility_sigma_t: 0.095_f64,
+            expected_global_fx_volatility_sigma_hat: 0.082_f64,
+            carry_portfolio_rank_z: 0.85_f64,
+            volatility_beta_asymmetry_gamma: 1.40_f64,
+            global_vol_risk_price_lambda_v: -0.052_f64,
+            global_fx_bid_ask_shock_dba: 0.004_f64,
+            dollar_factor_expected_return_mu_dol: 0.015_f64,
+        };
+        let r0 = evaluate_menkhoff_sarno_schmeling_schrimpf_fx_carry_vol(&base);
+        // High-carry currencies have negative beta on global FX vol and positive unconditional risk premium
+        assert!(r0.global_volatility_beta < 0.0);
+        assert!(
+            r0.unconditional_volatility_priced_carry_premium
+                > base.dollar_factor_expected_return_mu_dol
+        );
+
+        let x0 = [
+            base.current_global_fx_volatility_sigma_t,
+            base.expected_global_fx_volatility_sigma_hat,
+            base.carry_portfolio_rank_z,
+            base.volatility_beta_asymmetry_gamma,
+            base.global_vol_risk_price_lambda_v,
+            base.global_fx_bid_ask_shock_dba,
+            base.dollar_factor_expected_return_mu_dol,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_menkhoff_sarno_schmeling_schrimpf_fx_carry_vol(
+            &MenkhoffSarnoSchmelingSchrimpfFxCarryVolSpec {
+                current_global_fx_volatility_sigma_t: xd[0],
+                expected_global_fx_volatility_sigma_hat: xd[1],
+                carry_portfolio_rank_z: xd[2],
+                volatility_beta_asymmetry_gamma: xd[3],
+                global_vol_risk_price_lambda_v: xd[4],
+                global_fx_bid_ask_shock_dba: xd[5],
+                dollar_factor_expected_return_mu_dol: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_menkhoff_sarno_schmeling_schrimpf_fx_carry_vol(
+                &MenkhoffSarnoSchmelingSchrimpfFxCarryVolSpec {
+                    current_global_fx_volatility_sigma_t: xp[0],
+                    expected_global_fx_volatility_sigma_hat: xp[1],
+                    carry_portfolio_rank_z: xp[2],
+                    volatility_beta_asymmetry_gamma: xp[3],
+                    global_vol_risk_price_lambda_v: xp[4],
+                    global_fx_bid_ask_shock_dba: xp[5],
+                    dollar_factor_expected_return_mu_dol: xp[6],
+                },
+            );
+            let rm = evaluate_menkhoff_sarno_schmeling_schrimpf_fx_carry_vol(
+                &MenkhoffSarnoSchmelingSchrimpfFxCarryVolSpec {
+                    current_global_fx_volatility_sigma_t: xm[0],
+                    expected_global_fx_volatility_sigma_hat: xm[1],
+                    carry_portfolio_rank_z: xm[2],
+                    volatility_beta_asymmetry_gamma: xm[3],
+                    global_vol_risk_price_lambda_v: xm[4],
+                    global_fx_bid_ask_shock_dba: xm[5],
+                    dollar_factor_expected_return_mu_dol: xm[6],
+                },
+            );
+            let fd = (rp.conditional_realized_fx_excess_return
+                - rm.conditional_realized_fx_excess_return)
+                / (2.0 * h);
+            assert!(rad.conditional_realized_fx_excess_return.d[i].abs() > 1e-9);
+            assert!((rad.conditional_realized_fx_excess_return.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

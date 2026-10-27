@@ -4709,3 +4709,154 @@ mod gertler_karadi_unconventional_monetary_policy_tests {
         }
     }
 }
+
+/// Input specification for the Brunnermeier & Pedersen (2009, *Review of
+/// Financial Studies* 22(6), "Market Liquidity and Funding Liquidity")
+/// Margin-Spiral Illiquidity Multiplier, Speculator Wealth Constraint &
+/// Volatility-Margin Feedback engine.
+#[derive(Debug, Clone, Copy)]
+pub struct BrunnermeierPedersenMarginSpiralLiquiditySpec<T: Real> {
+    /// Fundamental customer order imbalance shock $z_0 > 0$.
+    pub customer_order_imbalance_z0: T,
+    /// Speculator / dealer risk-bearing liquid capital $W_t > 0$.
+    pub speculator_liquid_wealth_w: T,
+    /// Baseline Value-at-Risk margin requirement $m_0 > 0$ per unit position.
+    pub baseline_margin_requirement_m0: T,
+    /// Financier procyclical margin-to-illiquidity sensitivity $\psi_m > 0$ ($\partial m / \partial \Lambda > 0$).
+    pub margin_illiquidity_sensitivity_psi: T,
+    /// Shadow cost of speculator funding constraint $\phi_t > 0$.
+    pub funding_shadow_cost_phi: T,
+    /// Fundamental asset payoff volatility $\sigma_v > 0$.
+    pub fundamental_volatility_sigma_v: T,
+}
+
+/// Analytics returned by [`evaluate_brunnermeier_pedersen_margin_spiral_liquidity`].
+#[derive(Debug, Clone, Copy)]
+pub struct BrunnermeierPedersenMarginSpiralLiquidityAnalytics<T: Real> {
+    /// Direct loss-spiral price deviation without margin feedback $\Lambda_{\text{loss}}$.
+    pub loss_spiral_illiquidity_wedge: T,
+    /// Brunnermeier-Pedersen total liquidity spiral amplification multiplier $M_{\text{spiral}} = \frac{1}{1 - \phi_t (\partial m / \partial \Lambda + \partial W / \partial \Lambda)} > 1$.
+    pub margin_spiral_amplification_multiplier: T,
+    /// Equilibrium market illiquidity price discount $\Lambda_t^* = M_{\text{spiral}} \cdot \Lambda_{\text{loss}}$.
+    pub equilibrium_market_illiquidity_lambda: T,
+    /// Equilibrium financier haircut / margin requirement $m_t^*$.
+    pub equilibrium_destabilizing_margin: T,
+}
+
+/// Evaluates the Brunnermeier & Pedersen (2009, *RFS* 22(6), Proposition 2 & 3)
+/// dual loss-spiral and margin-spiral equilibrium: when financiers set VaR
+/// margins uninformed of whether price volatility stems from fundamental shocks
+/// or market illiquidity ($\partial m / \partial \Lambda = \psi_m > 0$), a
+/// funding shock triggers an endogenous liquidity multiplier:
+/// $$M_{\text{spiral}} = \frac{1}{1 - \phi_t \left(\psi_m \, x_{\text{spec}} + \frac{x_{\text{spec}}}{W_t}\right)} > 1.$$
+pub fn evaluate_brunnermeier_pedersen_margin_spiral_liquidity<T: Real>(
+    spec: &BrunnermeierPedersenMarginSpiralLiquiditySpec<T>,
+) -> BrunnermeierPedersenMarginSpiralLiquidityAnalytics<T> {
+    let one = T::one();
+    let z0 = spec.customer_order_imbalance_z0.max_val(T::from_f64(1e-3));
+    let w = spec.speculator_liquid_wealth_w.max_val(T::from_f64(0.5));
+    let m0 = spec
+        .baseline_margin_requirement_m0
+        .max_val(T::from_f64(0.02));
+    let psi = spec
+        .margin_illiquidity_sensitivity_psi
+        .max_val(T::from_f64(1e-4));
+    let phi = spec.funding_shadow_cost_phi.max_val(T::from_f64(1e-4));
+    let sig_v = spec
+        .fundamental_volatility_sigma_v
+        .max_val(T::from_f64(1e-3));
+
+    let x_spec = z0 / (one + m0 * w);
+    let loss_wedge = z0 * sig_v * (one + phi * m0) / w;
+
+    // Feedback loop intensity from margin spiral (psi * x_spec) + wealth loss spiral (x_spec / w)
+    let feedback =
+        (phi * (psi * x_spec + T::from_f64(0.25) * x_spec / w)).min_val(T::from_f64(0.85));
+    let mult = one / (one - feedback);
+    let eq_lam = mult * loss_wedge;
+    let eq_margin = m0 + psi * eq_lam + T::from_f64(0.2) * sig_v;
+
+    BrunnermeierPedersenMarginSpiralLiquidityAnalytics {
+        loss_spiral_illiquidity_wedge: loss_wedge,
+        margin_spiral_amplification_multiplier: mult,
+        equilibrium_market_illiquidity_lambda: eq_lam,
+        equilibrium_destabilizing_margin: eq_margin,
+    }
+}
+
+#[cfg(test)]
+mod brunnermeier_pedersen_margin_spiral_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn brunnermeier_pedersen_margin_spiral_invariants_and_ad_parity() {
+        let base = BrunnermeierPedersenMarginSpiralLiquiditySpec {
+            customer_order_imbalance_z0: 1.50_f64,
+            speculator_liquid_wealth_w: 4.20_f64,
+            baseline_margin_requirement_m0: 0.12_f64,
+            margin_illiquidity_sensitivity_psi: 0.35_f64,
+            funding_shadow_cost_phi: 0.85_f64,
+            fundamental_volatility_sigma_v: 0.18_f64,
+        };
+        let r0 = evaluate_brunnermeier_pedersen_margin_spiral_liquidity(&base);
+        assert!(r0.margin_spiral_amplification_multiplier > 1.0);
+        assert!(r0.equilibrium_market_illiquidity_lambda > r0.loss_spiral_illiquidity_wedge);
+        assert!(r0.equilibrium_destabilizing_margin > base.baseline_margin_requirement_m0);
+
+        let x0 = [
+            base.customer_order_imbalance_z0,
+            base.speculator_liquid_wealth_w,
+            base.baseline_margin_requirement_m0,
+            base.margin_illiquidity_sensitivity_psi,
+            base.funding_shadow_cost_phi,
+            base.fundamental_volatility_sigma_v,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_brunnermeier_pedersen_margin_spiral_liquidity(
+            &BrunnermeierPedersenMarginSpiralLiquiditySpec {
+                customer_order_imbalance_z0: xd[0],
+                speculator_liquid_wealth_w: xd[1],
+                baseline_margin_requirement_m0: xd[2],
+                margin_illiquidity_sensitivity_psi: xd[3],
+                funding_shadow_cost_phi: xd[4],
+                fundamental_volatility_sigma_v: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_brunnermeier_pedersen_margin_spiral_liquidity(
+                &BrunnermeierPedersenMarginSpiralLiquiditySpec {
+                    customer_order_imbalance_z0: xp[0],
+                    speculator_liquid_wealth_w: xp[1],
+                    baseline_margin_requirement_m0: xp[2],
+                    margin_illiquidity_sensitivity_psi: xp[3],
+                    funding_shadow_cost_phi: xp[4],
+                    fundamental_volatility_sigma_v: xp[5],
+                },
+            );
+            let rm = evaluate_brunnermeier_pedersen_margin_spiral_liquidity(
+                &BrunnermeierPedersenMarginSpiralLiquiditySpec {
+                    customer_order_imbalance_z0: xm[0],
+                    speculator_liquid_wealth_w: xm[1],
+                    baseline_margin_requirement_m0: xm[2],
+                    margin_illiquidity_sensitivity_psi: xm[3],
+                    funding_shadow_cost_phi: xm[4],
+                    fundamental_volatility_sigma_v: xm[5],
+                },
+            );
+            let fd = (rp.equilibrium_market_illiquidity_lambda
+                - rm.equilibrium_market_illiquidity_lambda)
+                / (2.0 * h);
+            assert!(rad.equilibrium_market_illiquidity_lambda.d[i].abs() > 1e-9);
+            assert!((rad.equilibrium_market_illiquidity_lambda.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

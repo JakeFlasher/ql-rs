@@ -3785,3 +3785,188 @@ mod collin_dufresne_goldstein_yang_super_senior_cdo_tests {
         }
     }
 }
+
+/// Input specification for the Azizpour, Giesecke & Schwenkler (2018, *Journal
+/// of Financial Economics* 129(1), "Exploring the Sources of Default Clustering")
+/// Self-Exciting Contagion, Unobserved Frailty & Macroeconomic Default
+/// Clustering Tranche Loss engine.
+#[derive(Debug, Clone, Copy)]
+pub struct AzizpourGieseckeSchwenklerDefaultClusteringSpec<T: Real> {
+    /// Baseline macroeconomic covariate default intensity $\lambda_{\text{macro},0} > 0$.
+    pub baseline_macro_intensity_lambda0: T,
+    /// Unobserved latent frailty factor realization $Y_{\text{frailty}} > 0$.
+    pub latent_frailty_intensity_y: T,
+    /// Self-exciting contagion jump impact per default $\delta_{\text{cont}} > 0$.
+    pub contagion_self_excitation_delta: T,
+    /// Contagion decay speed $\kappa_{\text{cont}} > \delta_{\text{cont}}$.
+    pub contagion_decay_speed_kappa: T,
+    /// Recent realized default cluster count / loss shock $N_{\text{recent}} > 0$.
+    pub recent_default_cluster_shock_n: T,
+    /// Mean loss given default $\ell_{\text{LGD}} \in (0, 1)$.
+    pub loss_given_default_lgd: T,
+    /// Senior tranche attachment point $K_{\text{att}} \in (0, 1)$.
+    pub senior_tranche_attachment_k: T,
+    /// Horizon in years $T > 0$.
+    pub horizon_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_azizpour_giesecke_schwenkler_default_clustering`].
+#[derive(Debug, Clone, Copy)]
+pub struct AzizpourGieseckeSchwenklerDefaultClusteringAnalytics<T: Real> {
+    /// Instantaneous aggregate default intensity $\Lambda_t = \lambda_{\text{macro},0} + Y_{\text{frailty}} + \delta_{\text{cont}} N_{\text{recent}}$.
+    pub aggregate_clustered_intensity: T,
+    /// Expected cumulative default count $\mathbb{E}_t[N_{t+T} - N_t]$ amplified by self-exciting branching.
+    pub expected_clustered_default_count: T,
+    /// Share of excess tail default clustering attributable to contagion + frailty vs. observable macro factors.
+    pub contagion_frailty_clustering_share: T,
+    /// Clustered senior tranche expected excess loss rate in basis points.
+    pub senior_tranche_clustered_loss_bps: T,
+}
+
+/// Evaluates the Azizpour, Giesecke & Schwenkler (2018, *JFE* 129(1)) decomposes
+/// corporate default clustering into observable macroeconomic covariates,
+/// unobserved frailty ($Y_{\text{frailty}}$), and self-exciting Hawkes contagion
+/// ($\delta_{\text{cont}}, \kappa_{\text{cont}}$), pricing the resulting tail
+/// loss on senior portfolio credit tranches.
+pub fn evaluate_azizpour_giesecke_schwenkler_default_clustering<T: Real>(
+    spec: &AzizpourGieseckeSchwenklerDefaultClusteringSpec<T>,
+) -> AzizpourGieseckeSchwenklerDefaultClusteringAnalytics<T> {
+    let one = T::one();
+    let lam_m = spec
+        .baseline_macro_intensity_lambda0
+        .max_val(T::from_f64(1e-4));
+    let y_fr = spec.latent_frailty_intensity_y.max_val(T::from_f64(1e-4));
+    let delta_c = spec
+        .contagion_self_excitation_delta
+        .max_val(T::from_f64(1e-4));
+    let kap_c = spec
+        .contagion_decay_speed_kappa
+        .max_val(delta_c + T::from_f64(0.15));
+    let n_rec = spec
+        .recent_default_cluster_shock_n
+        .max_val(T::from_f64(0.05));
+    let lgd = spec
+        .loss_given_default_lgd
+        .min_val(T::from_f64(0.95))
+        .max_val(T::from_f64(0.05));
+    let k_att = spec
+        .senior_tranche_attachment_k
+        .min_val(T::from_f64(0.50))
+        .max_val(T::from_f64(0.02));
+    let t = spec.horizon_years_t.max_val(T::from_f64(0.25));
+
+    let c_cont = delta_c * n_rec;
+    let agg_lam = lam_m + y_fr + c_cont;
+
+    // Net mean-reversion speed (kap_c - delta_c) under self-exciting branching
+    let net_kap = kap_c - delta_c;
+    let decay_factor = (one - (-net_kap * t).exp()) / net_kap;
+    let base_drift = (lam_m + y_fr) * (t + (delta_c / net_kap) * (t - decay_factor));
+    let exp_defaults = base_drift + c_cont * decay_factor;
+
+    let macro_only_defaults = lam_m * t;
+    let cf_share = (exp_defaults - macro_only_defaults) / exp_defaults;
+
+    let exp_portfolio_loss = lgd * (one - (-exp_defaults * T::from_f64(0.04)).exp());
+    let tranche_loss_bps =
+        (exp_portfolio_loss * (-k_att / exp_portfolio_loss).exp()) * T::from_f64(10_000.0) / t;
+
+    AzizpourGieseckeSchwenklerDefaultClusteringAnalytics {
+        aggregate_clustered_intensity: agg_lam,
+        expected_clustered_default_count: exp_defaults,
+        contagion_frailty_clustering_share: cf_share,
+        senior_tranche_clustered_loss_bps: tranche_loss_bps,
+    }
+}
+
+#[cfg(test)]
+mod azizpour_giesecke_schwenkler_clustering_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn azizpour_giesecke_schwenkler_clustering_invariants_and_ad_parity() {
+        let base = AzizpourGieseckeSchwenklerDefaultClusteringSpec {
+            baseline_macro_intensity_lambda0: 0.45_f64,
+            latent_frailty_intensity_y: 0.32_f64,
+            contagion_self_excitation_delta: 0.55_f64,
+            contagion_decay_speed_kappa: 1.40_f64,
+            recent_default_cluster_shock_n: 1.20_f64,
+            loss_given_default_lgd: 0.60_f64,
+            senior_tranche_attachment_k: 0.12_f64,
+            horizon_years_t: 5.0_f64,
+        };
+        let r0 = evaluate_azizpour_giesecke_schwenkler_default_clustering(&base);
+        assert!(
+            r0.expected_clustered_default_count
+                > base.baseline_macro_intensity_lambda0 * base.horizon_years_t
+        );
+        assert!(
+            r0.contagion_frailty_clustering_share > 0.30
+                && r0.contagion_frailty_clustering_share < 1.0
+        );
+        assert!(r0.senior_tranche_clustered_loss_bps > 0.0);
+
+        let x0 = [
+            base.baseline_macro_intensity_lambda0,
+            base.latent_frailty_intensity_y,
+            base.contagion_self_excitation_delta,
+            base.contagion_decay_speed_kappa,
+            base.recent_default_cluster_shock_n,
+            base.loss_given_default_lgd,
+            base.senior_tranche_attachment_k,
+            base.horizon_years_t,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_azizpour_giesecke_schwenkler_default_clustering(
+            &AzizpourGieseckeSchwenklerDefaultClusteringSpec {
+                baseline_macro_intensity_lambda0: xd[0],
+                latent_frailty_intensity_y: xd[1],
+                contagion_self_excitation_delta: xd[2],
+                contagion_decay_speed_kappa: xd[3],
+                recent_default_cluster_shock_n: xd[4],
+                loss_given_default_lgd: xd[5],
+                senior_tranche_attachment_k: xd[6],
+                horizon_years_t: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_azizpour_giesecke_schwenkler_default_clustering(
+                &AzizpourGieseckeSchwenklerDefaultClusteringSpec {
+                    baseline_macro_intensity_lambda0: xp[0],
+                    latent_frailty_intensity_y: xp[1],
+                    contagion_self_excitation_delta: xp[2],
+                    contagion_decay_speed_kappa: xp[3],
+                    recent_default_cluster_shock_n: xp[4],
+                    loss_given_default_lgd: xp[5],
+                    senior_tranche_attachment_k: xp[6],
+                    horizon_years_t: xp[7],
+                },
+            );
+            let rm = evaluate_azizpour_giesecke_schwenkler_default_clustering(
+                &AzizpourGieseckeSchwenklerDefaultClusteringSpec {
+                    baseline_macro_intensity_lambda0: xm[0],
+                    latent_frailty_intensity_y: xm[1],
+                    contagion_self_excitation_delta: xm[2],
+                    contagion_decay_speed_kappa: xm[3],
+                    recent_default_cluster_shock_n: xm[4],
+                    loss_given_default_lgd: xm[5],
+                    senior_tranche_attachment_k: xm[6],
+                    horizon_years_t: xm[7],
+                },
+            );
+            let fd = (rp.senior_tranche_clustered_loss_bps - rm.senior_tranche_clustered_loss_bps)
+                / (2.0 * h);
+            assert!(rad.senior_tranche_clustered_loss_bps.d[i].abs() > 1e-9);
+            assert!((rad.senior_tranche_clustered_loss_bps.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

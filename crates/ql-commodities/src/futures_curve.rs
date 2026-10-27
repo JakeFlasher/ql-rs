@@ -2328,3 +2328,158 @@ mod acharya_lochstoer_ramadorai_hedging_pressure_tests {
         }
     }
 }
+
+/// Input specification for the Szymanowska, de Roon, Nijman & Van den Goorbergh
+/// (2014, *Journal of Finance* 69(1), "An Anatomy of Commodity Futures Risk
+/// Premia") Spot Premia vs. Term Premia Decomposition of Commodity Futures Curves
+/// engine.
+#[derive(Debug, Clone, Copy)]
+pub struct SzymanowskaDeRoonNijmanCommodityPremiaSpec<T: Real> {
+    /// Nearby prompt log futures basis $y_{t,1} = f_{t}^{(1)} - s_t$.
+    pub nearby_log_basis_y1: T,
+    /// Deferred-to-nearby log spreading basis $y_{t,2}^{(n)} = f_{t}^{(n)} - f_{t}^{(1)} - (n - 1) y_{t,1}$.
+    pub curve_curvature_spreading_basis_y2: T,
+    /// Cross-sectional single-factor spot risk premium loading $\beta_{\text{spot}}$ on nearby basis.
+    pub spot_premium_basis_loading_beta_s: T,
+    /// Term-structure spreading risk premium loading $\beta_{\text{term},1}$ on curvature basis.
+    pub term_premium_curvature_loading_beta_t1: T,
+    /// Cross-commodity carry factor realization $f_{\text{carry},t}$.
+    pub high_minus_low_basis_factor_f_carry: T,
+    /// Deferred futures maturity index $n \ge 2$ (in contract periods).
+    pub contract_maturity_periods_n: T,
+}
+
+/// Analytics returned by [`evaluate_szymanowska_de_roon_nijman_commodity_premia`].
+#[derive(Debug, Clone, Copy)]
+pub struct SzymanowskaDeRoonNijmanCommodityPremiaAnalytics<T: Real> {
+    /// Expected nearby commodity spot risk premium $\pi_{s,t} = \mathbb{E}_t[r_{\text{fut},t+1}^{(1)}]$.
+    pub spot_futures_risk_premium: T,
+    /// Expected calendar-spread term risk premium $\pi_{y,t}^{(n)} = \mathbb{E}_t[r_{\text{fut},t+1}^{(n)} - r_{\text{fut},t+1}^{(1)}]$.
+    pub spreading_term_risk_premium: T,
+    /// Total expected deferred commodity futures excess return $\mathbb{E}_t[r_{\text{fut},t+1}^{(n)}] = \pi_{s,t} + \pi_{y,t}^{(n)}$.
+    pub total_deferred_futures_risk_premium: T,
+    /// Spot-premium share of total commodity futures risk premium $|\pi_{s,t}| / (|\pi_{s,t}| + |\pi_{y,t}^{(n)}|)$.
+    pub spot_premium_dominance_share: T,
+}
+
+/// Evaluates the Szymanowska, de Roon, Nijman & Van den Goorbergh (2014, *JF*
+/// 69(1)) exact decomposition of deferred commodity futures excess returns into
+/// the spot risk premium $\pi_{s,t}$ (spanned by a single cross-sectional basis
+/// factor) and the spreading term premium $\pi_{y,t}^{(n)}$ along the curve:
+/// $$r_{\text{fut},t+1}^{(n)} = r_{\text{fut},t+1}^{(1)} + \left(r_{\text{fut},t+1}^{(n)} - r_{\text{fut},t+1}^{(1)}\right).$$
+pub fn evaluate_szymanowska_de_roon_nijman_commodity_premia<T: Real>(
+    spec: &SzymanowskaDeRoonNijmanCommodityPremiaSpec<T>,
+) -> SzymanowskaDeRoonNijmanCommodityPremiaAnalytics<T> {
+    let one = T::one();
+    let y1 = spec.nearby_log_basis_y1;
+    let y2 = spec.curve_curvature_spreading_basis_y2;
+    let beta_s = spec
+        .spot_premium_basis_loading_beta_s
+        .max_val(T::from_f64(1e-4));
+    let beta_t1 = spec
+        .term_premium_curvature_loading_beta_t1
+        .max_val(T::from_f64(1e-4));
+    let f_carry = spec.high_minus_low_basis_factor_f_carry;
+    let n_per = spec.contract_maturity_periods_n.max_val(T::from_f64(2.0));
+
+    // Backwardation (y1 < 0) + positive carry factor f_carry generates positive spot premium
+    let pi_spot = -beta_s * y1 + T::from_f64(0.65) * f_carry;
+    // Term premium scales with curve curvature y2 and maturity slope (n - 1)
+    let mat_scale = (n_per - one) / (n_per + one);
+    let pi_term = beta_t1 * y2 * mat_scale + T::from_f64(0.12) * f_carry * mat_scale;
+    let total_prem = pi_spot + pi_term;
+
+    let abs_s = (pi_spot * pi_spot + T::from_f64(1e-10)).sqrt();
+    let abs_t = (pi_term * pi_term + T::from_f64(1e-10)).sqrt();
+    let spot_share = abs_s / (abs_s + abs_t);
+
+    SzymanowskaDeRoonNijmanCommodityPremiaAnalytics {
+        spot_futures_risk_premium: pi_spot,
+        spreading_term_risk_premium: pi_term,
+        total_deferred_futures_risk_premium: total_prem,
+        spot_premium_dominance_share: spot_share,
+    }
+}
+
+#[cfg(test)]
+mod szymanowska_de_roon_nijman_commodity_premia_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn szymanowska_de_roon_nijman_commodity_premia_invariants_and_ad_parity() {
+        let base = SzymanowskaDeRoonNijmanCommodityPremiaSpec {
+            nearby_log_basis_y1: -0.042_f64,
+            curve_curvature_spreading_basis_y2: 0.015_f64,
+            spot_premium_basis_loading_beta_s: 1.35_f64,
+            term_premium_curvature_loading_beta_t1: 0.75_f64,
+            high_minus_low_basis_factor_f_carry: 0.068_f64,
+            contract_maturity_periods_n: 4.0_f64,
+        };
+        let r0 = evaluate_szymanowska_de_roon_nijman_commodity_premia(&base);
+        // Szymanowska et al. (2014): spot risk premium dominates the cross-section (>50% share)
+        assert!(r0.spot_futures_risk_premium > 0.0);
+        assert!(r0.spot_premium_dominance_share > 0.50);
+        assert!(
+            (r0.total_deferred_futures_risk_premium
+                - (r0.spot_futures_risk_premium + r0.spreading_term_risk_premium))
+                .abs()
+                < 1e-12
+        );
+
+        let x0 = [
+            base.nearby_log_basis_y1,
+            base.curve_curvature_spreading_basis_y2,
+            base.spot_premium_basis_loading_beta_s,
+            base.term_premium_curvature_loading_beta_t1,
+            base.high_minus_low_basis_factor_f_carry,
+            base.contract_maturity_periods_n,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_szymanowska_de_roon_nijman_commodity_premia(
+            &SzymanowskaDeRoonNijmanCommodityPremiaSpec {
+                nearby_log_basis_y1: xd[0],
+                curve_curvature_spreading_basis_y2: xd[1],
+                spot_premium_basis_loading_beta_s: xd[2],
+                term_premium_curvature_loading_beta_t1: xd[3],
+                high_minus_low_basis_factor_f_carry: xd[4],
+                contract_maturity_periods_n: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_szymanowska_de_roon_nijman_commodity_premia(
+                &SzymanowskaDeRoonNijmanCommodityPremiaSpec {
+                    nearby_log_basis_y1: xp[0],
+                    curve_curvature_spreading_basis_y2: xp[1],
+                    spot_premium_basis_loading_beta_s: xp[2],
+                    term_premium_curvature_loading_beta_t1: xp[3],
+                    high_minus_low_basis_factor_f_carry: xp[4],
+                    contract_maturity_periods_n: xp[5],
+                },
+            );
+            let rm = evaluate_szymanowska_de_roon_nijman_commodity_premia(
+                &SzymanowskaDeRoonNijmanCommodityPremiaSpec {
+                    nearby_log_basis_y1: xm[0],
+                    curve_curvature_spreading_basis_y2: xm[1],
+                    spot_premium_basis_loading_beta_s: xm[2],
+                    term_premium_curvature_loading_beta_t1: xm[3],
+                    high_minus_low_basis_factor_f_carry: xm[4],
+                    contract_maturity_periods_n: xm[5],
+                },
+            );
+            let fd = (rp.total_deferred_futures_risk_premium
+                - rm.total_deferred_futures_risk_premium)
+                / (2.0 * h);
+            assert!(rad.total_deferred_futures_risk_premium.d[i].abs() > 1e-9);
+            assert!((rad.total_deferred_futures_risk_premium.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

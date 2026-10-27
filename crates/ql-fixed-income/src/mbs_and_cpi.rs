@@ -4370,3 +4370,174 @@ mod fleckenstein_longstaff_lustig_tips_puzzle_tests {
         }
     }
 }
+
+/// Input specification for the Boyarchenko, Fuster & Lucca (2019, *Journal of
+/// Financial Economics* 133(2), "Understanding Mortgage Spreads") Prepayment-Risk
+/// Smile, Convexity-Induced MBS Option-Adjusted Spread (OAS) & Primary-Secondary
+/// Mortgage Spread engine.
+#[derive(Debug, Clone, Copy)]
+pub struct BoyarchenkoFusterLuccaMortgageSpreadOasSpec<T: Real> {
+    /// Current MBS coupon moneyness $m = c_{\text{MBS}} - r_{\text{par}}$ (in decimal rate units).
+    pub coupon_moneyness_m: T,
+    /// Interest rate swaption implied volatility $\sigma_r > 0$.
+    pub interest_rate_volatility_sigma_r: T,
+    /// Prepayment incentive S-curve responsiveness $\gamma_{\text{prep}} > 0$.
+    pub prepayment_incentive_slope_gamma: T,
+    /// Unspanned prepayment model-risk / smile pricing factor $\xi_{\text{smile}} > 0$.
+    pub prepayment_risk_smile_factor_xi: T,
+    /// Dealer balance-sheet / regulatory capital warehousing cost $s_{\text{cap}} > 0$.
+    pub dealer_balance_sheet_cost_s_cap: T,
+    /// Originator servicing and pipeline hedging markup $s_{\text{orig}} > 0$.
+    pub originator_pipeline_markup_s_orig: T,
+    /// Effective MBS pass-through duration $D_{\text{MBS}} > 0$.
+    pub effective_mbs_duration_d: T,
+}
+
+/// Analytics returned by [`evaluate_boyarchenko_fuster_lucca_mortgage_spread_oas`].
+#[derive(Debug, Clone, Copy)]
+pub struct BoyarchenkoFusterLuccaMortgageSpreadOasAnalytics<T: Real> {
+    /// Embedded prepayment call option yield spread cost $s_{\text{opt}}(m, \sigma_r)$ in basis points.
+    pub embedded_prepayment_option_spread_bps: T,
+    /// Smile-shaped Option-Adjusted Spread $\text{OAS}(m)$ across the coupon stack in basis points.
+    pub option_adjusted_spread_oas_bps: T,
+    /// Secondary-market TBA MBS yield spread over Treasuries $S_{\text{TBA}} = s_{\text{opt}} + \text{OAS}$ in bps.
+    pub secondary_tba_yield_spread_bps: T,
+    /// Primary-secondary mortgage rate spread $S_{\text{prim-sec}}$ in basis points.
+    pub primary_secondary_mortgage_spread_bps: T,
+}
+
+/// Evaluates the Boyarchenko, Fuster & Lucca (2019, *JFE* 133(2)) cross-sectional
+/// MBS pricing model in which unspanned prepayment risk generates a convex
+/// "smile" in Option-Adjusted Spreads (OAS) across coupon moneyness $m = c - r_{\text{par}}$,
+/// alongside the embedded prepayment option cost and primary-secondary spread.
+pub fn evaluate_boyarchenko_fuster_lucca_mortgage_spread_oas<T: Real>(
+    spec: &BoyarchenkoFusterLuccaMortgageSpreadOasSpec<T>,
+) -> BoyarchenkoFusterLuccaMortgageSpreadOasAnalytics<T> {
+    let one = T::one();
+    let m = spec.coupon_moneyness_m;
+    let sig_r = spec
+        .interest_rate_volatility_sigma_r
+        .max_val(T::from_f64(1e-4));
+    let gam_p = spec
+        .prepayment_incentive_slope_gamma
+        .max_val(T::from_f64(0.1));
+    let xi_sm = spec
+        .prepayment_risk_smile_factor_xi
+        .max_val(T::from_f64(1e-4));
+    let s_cap = spec
+        .dealer_balance_sheet_cost_s_cap
+        .max_val(T::from_f64(1e-5));
+    let s_orig = spec
+        .originator_pipeline_markup_s_orig
+        .max_val(T::from_f64(1e-5));
+    let d_mbs = spec.effective_mbs_duration_d.max_val(T::from_f64(0.5));
+
+    // Prepayment option cost increases with rate vol and S-curve moneyness activation
+    let s_curve_weight = one / (one + (-gam_p * m).exp());
+    let opt_spread = sig_r * s_curve_weight * (one + T::from_f64(0.15) * d_mbs);
+
+    // BFL (2019): OAS exhibits a convex smile in moneyness m due to unspanned prepayment risk + balance-sheet cost
+    let oas =
+        s_cap + xi_sm * (T::from_f64(0.0020) + T::from_f64(12.0) * m * m) * (one + sig_r * d_mbs);
+    let tba_spread = opt_spread + oas;
+    let prim_sec = s_orig * (one + T::from_f64(8.0) * sig_r) + T::from_f64(0.25) * oas;
+
+    let bps = T::from_f64(10_000.0);
+    BoyarchenkoFusterLuccaMortgageSpreadOasAnalytics {
+        embedded_prepayment_option_spread_bps: opt_spread * bps,
+        option_adjusted_spread_oas_bps: oas * bps,
+        secondary_tba_yield_spread_bps: tba_spread * bps,
+        primary_secondary_mortgage_spread_bps: prim_sec * bps,
+    }
+}
+
+#[cfg(test)]
+mod boyarchenko_fuster_lucca_mortgage_oas_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn boyarchenko_fuster_lucca_mortgage_oas_invariants_and_ad_parity() {
+        let base = BoyarchenkoFusterLuccaMortgageSpreadOasSpec {
+            coupon_moneyness_m: 0.0085_f64,
+            interest_rate_volatility_sigma_r: 0.0095_f64,
+            prepayment_incentive_slope_gamma: 35.0_f64,
+            prepayment_risk_smile_factor_xi: 0.85_f64,
+            dealer_balance_sheet_cost_s_cap: 0.0022_f64,
+            originator_pipeline_markup_s_orig: 0.0065_f64,
+            effective_mbs_duration_d: 4.8_f64,
+        };
+        let r0 = evaluate_boyarchenko_fuster_lucca_mortgage_spread_oas(&base);
+        let atm = evaluate_boyarchenko_fuster_lucca_mortgage_spread_oas(
+            &BoyarchenkoFusterLuccaMortgageSpreadOasSpec {
+                coupon_moneyness_m: 0.0,
+                ..base
+            },
+        );
+        // OAS smile: ITM/OTM coupons have strictly higher OAS than par (m = 0)
+        assert!(r0.option_adjusted_spread_oas_bps > atm.option_adjusted_spread_oas_bps);
+        assert!(r0.secondary_tba_yield_spread_bps > r0.option_adjusted_spread_oas_bps);
+        assert!(r0.primary_secondary_mortgage_spread_bps > 0.0);
+
+        let x0 = [
+            base.coupon_moneyness_m,
+            base.interest_rate_volatility_sigma_r,
+            base.prepayment_incentive_slope_gamma,
+            base.prepayment_risk_smile_factor_xi,
+            base.dealer_balance_sheet_cost_s_cap,
+            base.originator_pipeline_markup_s_orig,
+            base.effective_mbs_duration_d,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_boyarchenko_fuster_lucca_mortgage_spread_oas(
+            &BoyarchenkoFusterLuccaMortgageSpreadOasSpec {
+                coupon_moneyness_m: xd[0],
+                interest_rate_volatility_sigma_r: xd[1],
+                prepayment_incentive_slope_gamma: xd[2],
+                prepayment_risk_smile_factor_xi: xd[3],
+                dealer_balance_sheet_cost_s_cap: xd[4],
+                originator_pipeline_markup_s_orig: xd[5],
+                effective_mbs_duration_d: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_boyarchenko_fuster_lucca_mortgage_spread_oas(
+                &BoyarchenkoFusterLuccaMortgageSpreadOasSpec {
+                    coupon_moneyness_m: xp[0],
+                    interest_rate_volatility_sigma_r: xp[1],
+                    prepayment_incentive_slope_gamma: xp[2],
+                    prepayment_risk_smile_factor_xi: xp[3],
+                    dealer_balance_sheet_cost_s_cap: xp[4],
+                    originator_pipeline_markup_s_orig: xp[5],
+                    effective_mbs_duration_d: xp[6],
+                },
+            );
+            let rm = evaluate_boyarchenko_fuster_lucca_mortgage_spread_oas(
+                &BoyarchenkoFusterLuccaMortgageSpreadOasSpec {
+                    coupon_moneyness_m: xm[0],
+                    interest_rate_volatility_sigma_r: xm[1],
+                    prepayment_incentive_slope_gamma: xm[2],
+                    prepayment_risk_smile_factor_xi: xm[3],
+                    dealer_balance_sheet_cost_s_cap: xm[4],
+                    originator_pipeline_markup_s_orig: xm[5],
+                    effective_mbs_duration_d: xm[6],
+                },
+            );
+            let gp = rp.secondary_tba_yield_spread_bps + rp.primary_secondary_mortgage_spread_bps;
+            let gm = rm.secondary_tba_yield_spread_bps + rm.primary_secondary_mortgage_spread_bps;
+            let gad =
+                rad.secondary_tba_yield_spread_bps + rad.primary_secondary_mortgage_spread_bps;
+            let fd = (gp - gm) / (2.0 * h);
+            assert!(gad.d[i].abs() > 1e-9);
+            assert!((gad.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

@@ -3515,6 +3515,7 @@ pub fn run_all_benchmarks(scale: usize) -> Vec<ComparisonRow> {
         benchmark_bianchetti_mercurio_multi_curve_fra_quanto_acharya_amihud_bharath_liquidity_stress_brigo_alfonsi_correlated_cir_cds_fukasawa_asymptotic_skew_varswap_andersen_duffie_song_debt_overhang_fva_pirrong_structural_inventory_spread_lipton_castagna_fx_dnt_vanna_volga_linetsky_step_barrier_koijen_yogo_demand_system_kyle_obizhaeva_invariance_gu_kelly_xiu_oos_r2_drechsler_savov_schnabl_deposit_channel(scale),
         benchmark_hanson_stein_greenwood_vayanos_duration_supply_fleckenstein_longstaff_lustig_tips_puzzle_collin_dufresne_goldstein_yang_super_senior_cdo_todorov_option_spot_volatility_albanese_caenazzo_crepey_bilateral_kva_acharya_lochstoer_ramadorai_hedging_pressure_brunnermeier_nagel_pedersen_fx_crash_broadie_yamamoto_fgt_asian_kelly_pruitt_su_ipca_brownlees_engle_srisk_andersen_bollerslev_diebold_labys_arfima_farhi_gabaix_disaster_fx(scale),
         benchmark_klingler_syrstad_sofr_repo_spike_longstaff_mithal_neis_cds_bond_basis_pan_singleton_sovereign_cds_medvedev_scaillet_short_maturity_smile_duffie_zhu_ccp_netting_gorton_hayashi_rouwenhorst_inventory_basis_della_corte_ramadorai_sarno_fx_vrp_pelsser_laplace_double_barrier_moreira_muir_volatility_managed_budish_cramton_shim_fba_ait_sahalia_mykland_zhang_tsrv_gertler_karadi_credit_policy(scale),
+        benchmark_bauer_rudebusch_qe_signaling_boyarchenko_fuster_lucca_mbs_oas_azizpour_giesecke_schwenkler_default_clustering_bollerslev_todorov_jump_fear_ghamami_glasserman_clearing_mva_szymanowska_de_roon_nijman_commodity_premia_menkhoff_sarno_schmeling_schrimpf_fx_vol_milevsky_posner_reciprocal_gamma_asian_kozak_nagel_santosh_sdf_shrinkage_acharya_pedersen_philippon_richardson_ses_bnhls_realized_kernel_brunnermeier_pedersen_margin_spiral(scale),
     ]
 }
 
@@ -15534,6 +15535,215 @@ pub fn benchmark_klingler_syrstad_sofr_repo_spike_longstaff_mithal_neis_cds_bond
     run_comparison(
         "79_klingler_syrstad_sofr_repo_spike_longstaff_mithal_neis_cds_bond_basis_pan_singleton_sovereign_cds_medvedev_scaillet_short_maturity_smile_duffie_zhu_ccp_netting_gorton_hayashi_rouwenhorst_inventory_basis_della_corte_ramadorai_sarno_fx_vrp_pelsser_laplace_double_barrier_moreira_muir_volatility_managed_budish_cramton_shim_fba_ait_sahalia_mykland_zhang_tsrv_gertler_karadi_credit_policy",
         "Klingler-Syrstad-SOFR-Spike / Longstaff-Mithal-Neis-CDS-Bond / Pan-Singleton-Sovereign-CDS / Medvedev-Scaillet-Short-Smile / Duffie-Zhu-CCP-Netting / Gorton-Hayashi-Rouwenhorst-Inventory / Della-Corte-Ramadorai-Sarno-FX-VRP / Pelsser-Laplace-Double-Barrier / Moreira-Muir-Vol-Managed / Budish-Cramton-Shim-FBA / AMZ-Two-Scales-RV / Gertler-Karadi-QE AD",
+        cfg,
+        1e-3,
+        baseline,
+        sota,
+    )
+}
+
+pub fn suite80_workloads<T: Real>(x: [T; 4]) -> [T; 12] {
+    let dx0 = x[0] * T::from_f64(0.01);
+    let dx1 = x[1] * T::from_f64(0.01);
+    let dx2 = x[2] * T::from_f64(0.01);
+    let dx3 = x[3] * T::from_f64(0.01);
+
+    let br_qe = ql_curves::evaluate_bauer_rudebusch_qe_signaling_term_premium(
+        &ql_curves::BauerRudebuschQeSignalingTermPremiumSpec {
+            shadow_short_rate_s0: T::from_f64(0.005) + dx0,
+            effective_lower_bound_r_elb: T::zero(),
+            shadow_rate_volatility_sigma_s: T::from_f64(0.02) + dx1.abs(),
+            lsap_purchase_shock_q: T::from_f64(0.35) + dx2,
+            signaling_path_sensitivity_beta_sig: T::from_f64(0.45) + dx3,
+            portfolio_balance_sensitivity_beta_pb: T::from_f64(0.012),
+            baseline_term_premium_tp0: T::from_f64(0.02),
+            maturity_years_tau: T::from_f64(10.0),
+        },
+    );
+
+    let bfl_mbs = ql_fixed_income::evaluate_boyarchenko_fuster_lucca_mortgage_spread_oas(
+        &ql_fixed_income::BoyarchenkoFusterLuccaMortgageSpreadOasSpec {
+            coupon_moneyness_m: T::from_f64(0.020) + dx0,
+            interest_rate_volatility_sigma_r: T::from_f64(0.0115) + dx1.abs(),
+            prepayment_incentive_slope_gamma: T::from_f64(12.5),
+            prepayment_risk_smile_factor_xi: T::from_f64(0.42) + dx2,
+            dealer_balance_sheet_cost_s_cap: T::from_f64(0.0055) + dx3.abs(),
+            originator_pipeline_markup_s_orig: T::from_f64(0.0065),
+            effective_mbs_duration_d: T::from_f64(5.0),
+        },
+    );
+
+    let ags_cdo = ql_credit::evaluate_azizpour_giesecke_schwenkler_default_clustering(
+        &ql_credit::AzizpourGieseckeSchwenklerDefaultClusteringSpec {
+            baseline_macro_intensity_lambda0: T::from_f64(0.015) + dx0 * T::from_f64(0.1),
+            latent_frailty_intensity_y: T::from_f64(0.012) + dx1 * T::from_f64(0.1),
+            contagion_self_excitation_delta: T::from_f64(0.035) + dx2 * T::from_f64(0.2),
+            contagion_decay_speed_kappa: T::from_f64(1.25),
+            recent_default_cluster_shock_n: T::from_f64(3.0),
+            loss_given_default_lgd: T::from_f64(0.60),
+            senior_tranche_attachment_k: T::from_f64(0.60),
+            horizon_years_t: T::from_f64(5.0) + dx3 * T::from_f64(2.0),
+        },
+    );
+
+    let bt_fear = ql_vol::evaluate_bollerslev_todorov_jump_tail_fear_premium(
+        &ql_vol::BollerslevTodorovJumpTailFearPremiumSpec {
+            physical_left_tail_scale_phi_minus_p: T::from_f64(0.0085) + dx0 * T::from_f64(0.05),
+            risk_neutral_left_tail_scale_phi_minus_q: T::from_f64(0.014) + dx1 * T::from_f64(0.05),
+            physical_right_tail_scale_phi_plus_p: T::from_f64(0.006) + dx2 * T::from_f64(0.03),
+            risk_neutral_right_tail_scale_phi_plus_q: T::from_f64(0.008) + dx3 * T::from_f64(0.03),
+            left_tail_decay_exponent_alpha_minus: T::from_f64(2.60),
+            right_tail_decay_exponent_alpha_plus: T::from_f64(3.10),
+            tail_jump_cutoff_k0: T::from_f64(0.045),
+            diffusive_variance_risk_premium_vrp_c: T::from_f64(0.0065),
+        },
+    );
+
+    let gg_mva = ql_xva::evaluate_ghamami_glasserman_clearing_incentive_mva(
+        &ql_xva::GhamamiGlassermanClearingIncentiveMvaSpec {
+            bilateral_netting_set_volatility_sigma_b: T::from_f64(140.0) + x[0],
+            ccp_multilateral_volatility_sigma_c: T::from_f64(95.0) + x[1],
+            bilateral_mpor_days_m_b: T::from_f64(10.0),
+            ccp_mpor_days_m_c: T::from_f64(5.0),
+            im_funding_spread_s_im: T::from_f64(0.0085) + dx2 * T::from_f64(0.05),
+            ccp_default_fund_cost_rate_c_df: T::from_f64(0.0040),
+            bilateral_capital_surcharge_c_kva: T::from_f64(0.0095) + dx3 * T::from_f64(0.05),
+        },
+    );
+
+    let sdrn_comm = ql_commodities::evaluate_szymanowska_de_roon_nijman_commodity_premia(
+        &ql_commodities::SzymanowskaDeRoonNijmanCommodityPremiaSpec {
+            nearby_log_basis_y1: T::from_f64(-0.042) + dx0,
+            curve_curvature_spreading_basis_y2: T::from_f64(0.015) + dx1,
+            spot_premium_basis_loading_beta_s: T::from_f64(1.35) + dx2,
+            term_premium_curvature_loading_beta_t1: T::from_f64(0.75),
+            high_minus_low_basis_factor_f_carry: T::from_f64(0.068) + dx3,
+            contract_maturity_periods_n: T::from_f64(4.0),
+        },
+    );
+
+    let msss_fx = ql_fx::evaluate_menkhoff_sarno_schmeling_schrimpf_fx_carry_vol(
+        &ql_fx::MenkhoffSarnoSchmelingSchrimpfFxCarryVolSpec {
+            current_global_fx_volatility_sigma_t: T::from_f64(0.095) + dx0,
+            expected_global_fx_volatility_sigma_hat: T::from_f64(0.082),
+            carry_portfolio_rank_z: T::from_f64(0.85) + dx1,
+            volatility_beta_asymmetry_gamma: T::from_f64(1.40) + dx2,
+            global_vol_risk_price_lambda_v: T::from_f64(-0.052) + dx3 * T::from_f64(0.2),
+            global_fx_bid_ask_shock_dba: T::from_f64(0.004),
+            dollar_factor_expected_return_mu_dol: T::from_f64(0.015),
+        },
+    );
+
+    let mp_asian = ql_exotics::evaluate_milevsky_posner_reciprocal_gamma_asian_option(
+        &ql_exotics::MilevskyPosnerReciprocalGammaAsianSpec {
+            spot_price_s0: T::from_f64(100.0) + x[0],
+            strike_price_k: T::from_f64(100.0) + x[1],
+            risk_free_rate_r: T::from_f64(0.05) + dx2 * T::from_f64(0.2),
+            dividend_yield_q: T::from_f64(0.015),
+            volatility_sigma: T::from_f64(0.22) + dx3,
+            maturity_years_t: T::one(),
+        },
+    );
+
+    let kns_sdf = ql_portfolio::evaluate_kozak_nagel_santosh_sdf_eigen_shrinkage(
+        &ql_portfolio::KozakNagelSantoshSdfEigenShrinkageSpec {
+            pc1_eigenvalue_d1: T::from_f64(0.085) + dx0 * T::from_f64(0.2),
+            pc2_eigenvalue_d2: T::from_f64(0.008) + dx1 * T::from_f64(0.05),
+            pc1_mean_return_mu1: T::from_f64(0.092) + dx2 * T::from_f64(0.2),
+            pc2_mean_return_mu2: T::from_f64(0.035),
+            ridge_l2_penalty_gamma2: T::from_f64(0.025) + dx3 * T::from_f64(0.1),
+            lasso_l1_penalty_gamma1: T::from_f64(0.008),
+        },
+    );
+
+    let appr_ses = ql_portfolio::evaluate_acharya_pedersen_philippon_richardson_ses(
+        &ql_portfolio::AcharyaPedersenPhilipponRichardsonSesSpec {
+            initial_equity_capital_w0: T::from_f64(90.0) + x[0],
+            quasi_market_leverage_ratio_l0: T::from_f64(14.5) + x[1] * T::from_f64(0.2),
+            required_capital_ratio_z: T::from_f64(0.08),
+            normal_tail_mes_5pct: T::from_f64(0.038) + dx2 * T::from_f64(0.1),
+            systemic_crisis_tail_multiplier_k: T::from_f64(12.5) + x[3] * T::from_f64(0.2),
+            systemic_crisis_probability_pi: T::from_f64(0.035),
+            systemic_externality_weight_tau: T::from_f64(0.45),
+        },
+    );
+
+    let bnhls_rk = ql_dml::evaluate_barndorff_nielsen_hansen_lunde_shephard_realized_kernel(
+        &ql_dml::BarndorffNielsenHansenLundeShephardRealizedKernelSpec {
+            lag0_realized_variance_gamma0: T::from_f64(0.00048) + dx0 * T::from_f64(1e-4),
+            lag1_realized_autocovariance_gamma1: T::from_f64(-0.00014) + dx1 * T::from_f64(1e-5),
+            lag2_realized_autocovariance_gamma2: T::from_f64(-0.00002) + dx2 * T::from_f64(1e-5),
+            parzen_kernel_bandwidth_h: T::from_f64(18.0) + x[3],
+            intraday_sample_size_n: T::from_f64(4680.0),
+            integrated_quarticity_iq: T::from_f64(1.4e-7),
+        },
+    );
+
+    let bp_spiral = ql_models::evaluate_brunnermeier_pedersen_margin_spiral_liquidity(
+        &ql_models::BrunnermeierPedersenMarginSpiralLiquiditySpec {
+            customer_order_imbalance_z0: T::from_f64(1.50) + dx0,
+            speculator_liquid_wealth_w: T::from_f64(4.20) + x[1] * T::from_f64(0.1),
+            baseline_margin_requirement_m0: T::from_f64(0.12),
+            margin_illiquidity_sensitivity_psi: T::from_f64(0.35) + dx2,
+            funding_shadow_cost_phi: T::from_f64(0.85),
+            fundamental_volatility_sigma_v: T::from_f64(0.18) + dx3,
+        },
+    );
+
+    let coupling = (x[0] + x[1] + x[2] + x[3]) * T::from_f64(1e-3);
+    [
+        br_qe.qe_signaling_channel_change_bps
+            + br_qe.qe_portfolio_balance_change_bps * T::from_f64(0.05)
+            + coupling,
+        bfl_mbs.primary_secondary_mortgage_spread_bps * T::from_f64(0.05) + coupling,
+        ags_cdo.senior_tranche_clustered_loss_bps * T::from_f64(0.01) + coupling,
+        bt_fear.total_variance_risk_premium * T::from_f64(100.0) + coupling,
+        gg_mva.central_clearing_cost_saving * T::from_f64(5.0) + coupling,
+        sdrn_comm.total_deferred_futures_risk_premium * T::from_f64(10.0) + coupling,
+        msss_fx.conditional_realized_fx_excess_return * T::from_f64(10.0) + coupling,
+        mp_asian.milevsky_posner_asian_call * T::from_f64(0.2) + coupling,
+        kns_sdf.regularized_sdf_sharpe_ratio * T::from_f64(2.0) + coupling,
+        appr_ses.pigouvian_systemic_risk_tax * T::from_f64(1.0) + coupling,
+        bnhls_rk.annualized_realized_kernel_volatility * T::from_f64(10.0) + coupling,
+        bp_spiral.equilibrium_market_illiquidity_lambda * T::from_f64(10.0) + coupling,
+    ]
+}
+
+pub fn benchmark_bauer_rudebusch_qe_signaling_boyarchenko_fuster_lucca_mbs_oas_azizpour_giesecke_schwenkler_default_clustering_bollerslev_todorov_jump_fear_ghamami_glasserman_clearing_mva_szymanowska_de_roon_nijman_commodity_premia_menkhoff_sarno_schmeling_schrimpf_fx_vol_milevsky_posner_reciprocal_gamma_asian_kozak_nagel_santosh_sdf_shrinkage_acharya_pedersen_philippon_richardson_ses_bnhls_realized_kernel_brunnermeier_pedersen_margin_spiral(
+    scale: usize,
+) -> ComparisonRow {
+    let cfg = config(scale);
+    let x0 = [0.2, -0.1, 0.3, -0.2];
+    let baseline = move || {
+        let f = |x: [f64; 4]| suite80_workloads(x).iter().copied().sum::<f64>();
+        let mut z = f(x0);
+        for i in 0..4 {
+            let mut u = x0;
+            let mut d = x0;
+            u[i] += 1e-5;
+            d[i] -= 1e-5;
+            z += (f(u) - f(d)) / (2e-5);
+        }
+        for _ in 0..20 {
+            std::hint::black_box(f(x0));
+        }
+        z
+    };
+    let sota = move || {
+        let x: [Dual<4>; 4] = [
+            Dual::variable(x0[0], 0),
+            Dual::variable(x0[1], 1),
+            Dual::variable(x0[2], 2),
+            Dual::variable(x0[3], 3),
+        ];
+        suite80_workloads(x)
+            .iter()
+            .map(|v| v.val + v.d.iter().sum::<f64>())
+            .sum::<f64>()
+    };
+    run_comparison(
+        "80_bauer_rudebusch_qe_signaling_boyarchenko_fuster_lucca_mbs_oas_azizpour_giesecke_schwenkler_default_clustering_bollerslev_todorov_jump_fear_ghamami_glasserman_clearing_mva_szymanowska_de_roon_nijman_commodity_premia_menkhoff_sarno_schmeling_schrimpf_fx_vol_milevsky_posner_reciprocal_gamma_asian_kozak_nagel_santosh_sdf_shrinkage_acharya_pedersen_philippon_richardson_ses_bnhls_realized_kernel_brunnermeier_pedersen_margin_spiral",
+        "Bauer-Rudebusch-QE / Boyarchenko-Fuster-Lucca-MBS-OAS / Azizpour-Giesecke-Schwenkler-Clustering / Bollerslev-Todorov-Jump-Fear / Ghamami-Glasserman-Clearing-MVA / Szymanowska-de-Roon-Nijman-Commodity / Menkhoff-Sarno-Schmeling-Schrimpf-FX-Vol / Milevsky-Posner-Reciprocal-Gamma-Asian / Kozak-Nagel-Santosh-SDF-Shrinkage / APPR-Systemic-SES / BNHLS-Realized-Kernel / Brunnermeier-Pedersen-Margin-Spiral AD",
         cfg,
         1e-3,
         baseline,

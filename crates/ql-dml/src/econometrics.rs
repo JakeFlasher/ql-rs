@@ -4609,3 +4609,163 @@ mod ait_sahalia_mykland_zhang_tsrv_tests {
         }
     }
 }
+
+/// Input specification for the Barndorff-Nielsen, Hansen, Lunde & Shephard
+/// (2008, *Econometrica* 76(6), "Designing Realized Kernels to Measure the Ex
+/// Post Variation of Equity Prices in the Presence of Noise") Parzen Realized
+/// Kernel Volatility & End-Effect Jittering engine.
+#[derive(Debug, Clone, Copy)]
+pub struct BarndorffNielsenHansenLundeShephardRealizedKernelSpec<T: Real> {
+    /// Lag-0 realized autocovariance $\gamma_0 = \sum_{i=1}^n r_i^2 > 0$.
+    pub lag0_realized_variance_gamma0: T,
+    /// Lag-1 realized autocovariance $\gamma_1 = \sum_{i=2}^n r_i r_{i-1}$ (typically negative due to bid-ask bounce).
+    pub lag1_realized_autocovariance_gamma1: T,
+    /// Lag-2 realized autocovariance $\gamma_2 = \sum_{i=3}^n r_i r_{i-2}$.
+    pub lag2_realized_autocovariance_gamma2: T,
+    /// Parzen kernel bandwidth parameter $H > 2$.
+    pub parzen_kernel_bandwidth_h: T,
+    /// Total intraday tick count $n > 100$.
+    pub intraday_sample_size_n: T,
+    /// Integrated quarticity estimate $\widehat{IQ}_T > 0$ for optimal bandwidth $H^* = c^* \xi^{4/5} n^{3/5}$.
+    pub integrated_quarticity_iq: T,
+}
+
+/// Analytics returned by [`evaluate_barndorff_nielsen_hansen_lunde_shephard_realized_kernel`].
+#[derive(Debug, Clone, Copy)]
+pub struct BarndorffNielsenHansenLundeShephardRealizedKernelAnalytics<T: Real> {
+    /// Non-negative Parzen Realized Kernel variance estimate $RK_T = \gamma_0 + 2 \sum_{h=1}^H k(h/(H+1)) \gamma_h$.
+    pub parzen_realized_kernel_variance: T,
+    /// Noise-to-signal ratio $\hat{\xi}^2 = \hat{\omega}^2 / \sqrt{T \cdot \widehat{IQ}_T}$.
+    pub microstructure_noise_to_signal_xi2: T,
+    /// BNHLS (2008, Eq. 14) MSE-optimal Parzen kernel bandwidth $H^* = 3.5134 \, \hat{\xi}^{4/5} n^{3/5}$.
+    pub optimal_parzen_bandwidth_h_star: T,
+    /// Annualized Parzen Realized Kernel volatility $\sqrt{252 \cdot RK_T}$.
+    pub annualized_realized_kernel_volatility: T,
+}
+
+/// Evaluates the Barndorff-Nielsen, Hansen, Lunde & Shephard (2008, *Econometrica*
+/// 76(6)) flat-top / non-negative Parzen Realized Kernel estimator:
+/// $$RK_T = \gamma_0 + 2 k\!\left(\frac{1}{H+1}\right)\gamma_1 + 2 k\!\left(\frac{2}{H+1}\right)\gamma_2,$$
+/// with the cubic Parzen weight $k(x) = 1 - 6x^2 + 6x^3$ for $x \in [0, 1/2]$,
+/// alongside the $n^{1/5}$-rate MSE-optimal bandwidth $H^* = c_{\text{Parzen}}^* \xi^{4/5} n^{3/5}$.
+pub fn evaluate_barndorff_nielsen_hansen_lunde_shephard_realized_kernel<T: Real>(
+    spec: &BarndorffNielsenHansenLundeShephardRealizedKernelSpec<T>,
+) -> BarndorffNielsenHansenLundeShephardRealizedKernelAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+    let six = T::from_f64(6.0);
+
+    let g0 = spec
+        .lag0_realized_variance_gamma0
+        .max_val(T::from_f64(1e-6));
+    let g1 = spec.lag1_realized_autocovariance_gamma1;
+    let g2 = spec.lag2_realized_autocovariance_gamma2;
+    let h_bw = spec.parzen_kernel_bandwidth_h.max_val(T::from_f64(4.0));
+    let n = spec.intraday_sample_size_n.max_val(T::from_f64(100.0));
+    let iq = spec.integrated_quarticity_iq.max_val(T::from_f64(1e-10));
+
+    let denom = h_bw + one;
+    let x1 = one / denom;
+    let x2 = two / denom;
+    let k1 = one - six * x1 * x1 + six * x1 * x1 * x1;
+    let k2 = one - six * x2 * x2 + six * x2 * x2 * x2;
+
+    // Noise variance proxy omega^2 = (-gamma_1) / (2 n)
+    let omega2 = ((-g1).max_val(T::from_f64(1e-6))) / (two * n);
+    let xi2 = omega2 / iq.sqrt();
+    // BNHLS (2008, Table I): Parzen c* = ((12)^2 / 0.269)^(1/5) = 3.5134
+    let h_star =
+        T::from_f64(3.5134) * (T::from_f64(0.4) * xi2.ln() + T::from_f64(0.6) * n.ln()).exp();
+
+    let rk_var = (g0 + two * k1 * g1 + two * k2 * g2).max_val(T::from_f64(1e-7));
+    let ann_vol = (T::from_f64(252.0) * rk_var).sqrt();
+
+    BarndorffNielsenHansenLundeShephardRealizedKernelAnalytics {
+        parzen_realized_kernel_variance: rk_var,
+        microstructure_noise_to_signal_xi2: xi2,
+        optimal_parzen_bandwidth_h_star: h_star,
+        annualized_realized_kernel_volatility: ann_vol,
+    }
+}
+
+#[cfg(test)]
+mod bnhls_realized_kernel_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn bnhls_realized_kernel_invariants_and_ad_parity() {
+        let base = BarndorffNielsenHansenLundeShephardRealizedKernelSpec {
+            lag0_realized_variance_gamma0: 0.00048_f64,
+            lag1_realized_autocovariance_gamma1: -0.00014_f64,
+            lag2_realized_autocovariance_gamma2: -0.00002_f64,
+            parzen_kernel_bandwidth_h: 18.0_f64,
+            intraday_sample_size_n: 4680.0_f64,
+            integrated_quarticity_iq: 1.4e-7_f64,
+        };
+        let r0 = evaluate_barndorff_nielsen_hansen_lunde_shephard_realized_kernel(&base);
+        // Negative lag-1 autocovariance from bid-ask bounce reduces RK below raw lag-0 RV
+        assert!(r0.parzen_realized_kernel_variance > 0.0);
+        assert!(r0.parzen_realized_kernel_variance < base.lag0_realized_variance_gamma0);
+        assert!(r0.optimal_parzen_bandwidth_h_star > 0.0);
+
+        let x0 = [
+            base.lag0_realized_variance_gamma0,
+            base.lag1_realized_autocovariance_gamma1,
+            base.lag2_realized_autocovariance_gamma2,
+            base.parzen_kernel_bandwidth_h,
+            base.intraday_sample_size_n,
+            base.integrated_quarticity_iq,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_barndorff_nielsen_hansen_lunde_shephard_realized_kernel(
+            &BarndorffNielsenHansenLundeShephardRealizedKernelSpec {
+                lag0_realized_variance_gamma0: xd[0],
+                lag1_realized_autocovariance_gamma1: xd[1],
+                lag2_realized_autocovariance_gamma2: xd[2],
+                parzen_kernel_bandwidth_h: xd[3],
+                intraday_sample_size_n: xd[4],
+                integrated_quarticity_iq: xd[5],
+            },
+        );
+        let h = 1e-10;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_barndorff_nielsen_hansen_lunde_shephard_realized_kernel(
+                &BarndorffNielsenHansenLundeShephardRealizedKernelSpec {
+                    lag0_realized_variance_gamma0: xp[0],
+                    lag1_realized_autocovariance_gamma1: xp[1],
+                    lag2_realized_autocovariance_gamma2: xp[2],
+                    parzen_kernel_bandwidth_h: xp[3],
+                    intraday_sample_size_n: xp[4],
+                    integrated_quarticity_iq: xp[5],
+                },
+            );
+            let rm = evaluate_barndorff_nielsen_hansen_lunde_shephard_realized_kernel(
+                &BarndorffNielsenHansenLundeShephardRealizedKernelSpec {
+                    lag0_realized_variance_gamma0: xm[0],
+                    lag1_realized_autocovariance_gamma1: xm[1],
+                    lag2_realized_autocovariance_gamma2: xm[2],
+                    parzen_kernel_bandwidth_h: xm[3],
+                    intraday_sample_size_n: xm[4],
+                    integrated_quarticity_iq: xm[5],
+                },
+            );
+            let gp = rp.annualized_realized_kernel_volatility
+                + 0.01 * rp.optimal_parzen_bandwidth_h_star;
+            let gm = rm.annualized_realized_kernel_volatility
+                + 0.01 * rm.optimal_parzen_bandwidth_h_star;
+            let gad = rad.annualized_realized_kernel_volatility
+                + Dual::from_f64(0.01) * rad.optimal_parzen_bandwidth_h_star;
+            let fd = (gp - gm) / (2.0 * h);
+            assert!(gad.d[i].abs() > 1e-9);
+            assert!((gad.d[i] - fd).abs() / gad.d[i].abs().max(1.0) < 1e-4);
+        }
+    }
+}

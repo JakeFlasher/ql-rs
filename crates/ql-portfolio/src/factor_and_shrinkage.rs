@@ -4272,3 +4272,152 @@ mod kelly_pruitt_su_instrumented_pca_tests {
         }
     }
 }
+
+/// Input specification for the Kozak, Nagel & Santosh (2020, *Journal of
+/// Financial Economics* 135(2), "Shrinking the Cross Section") Principal-Component
+/// SDF L1/L2 Elastic-Net Eigenvalue Shrinkage & Out-of-Sample Pricing Kernel
+/// engine.
+#[derive(Debug, Clone, Copy)]
+pub struct KozakNagelSantoshSdfEigenShrinkageSpec<T: Real> {
+    /// Dominant PC1 eigenvalue $d_1 > 0$ of the characteristic-managed portfolio covariance matrix.
+    pub pc1_eigenvalue_d1: T,
+    /// Low-variance PC2 eigenvalue $d_2 \in (0, d_1)$.
+    pub pc2_eigenvalue_d2: T,
+    /// Sample PC1 mean excess return $\mu_{P,1} > 0$.
+    pub pc1_mean_return_mu1: T,
+    /// Sample PC2 mean excess return $\mu_{P,2} > 0$.
+    pub pc2_mean_return_mu2: T,
+    /// L2 ridge prior penalty $\gamma_2 > 0$ linking expected returns to eigenvalues ($\mathbb{E}[\mu_k^2] \propto d_k^2$).
+    pub ridge_l2_penalty_gamma2: T,
+    /// L1 lasso sparsity threshold $\gamma_1 > 0$ shrinking minor PCs toward zero.
+    pub lasso_l1_penalty_gamma1: T,
+}
+
+/// Analytics returned by [`evaluate_kozak_nagel_santosh_sdf_eigen_shrinkage`].
+#[derive(Debug, Clone, Copy)]
+pub struct KozakNagelSantoshSdfEigenShrinkageAnalytics<T: Real> {
+    /// Dual-penalized SDF weight on dominant PC1 $\hat{b}_1$.
+    pub shrunk_pc1_sdf_weight: T,
+    /// Dual-penalized SDF weight on minor PC2 $\hat{b}_2$ (heavily shrunk relative to unregularized $\mu_2 / d_2$).
+    pub shrunk_pc2_sdf_weight: T,
+    /// Unregularized in-sample squared Sharpe ratio $SR_{\text{IS}}^2 = \mu_1^2/d_1 + \mu_2^2/d_2$.
+    pub unregularized_squared_sharpe: T,
+    /// Regularized out-of-sample SDF maximum Sharpe ratio $SR_{\text{KNS}}$.
+    pub regularized_sdf_sharpe_ratio: T,
+}
+
+/// Evaluates the Kozak, Nagel & Santosh (2020, *JFE* 135(2)) dual-penalty (L1 + L2)
+/// stochastic discount factor estimator in the principal-component basis:
+/// $$\hat{b}_k = \frac{\text{soft}(\mu_{P,k}, \gamma_1)}{d_k + \gamma_2},$$
+/// demonstrating that high-variance eigenvalues $d_1$ retain their pricing weight
+/// while low-variance PCs ($d_2 \ll d_1$) are strongly shrunk to prevent
+/// near-arbitrage overfitting.
+pub fn evaluate_kozak_nagel_santosh_sdf_eigen_shrinkage<T: Real>(
+    spec: &KozakNagelSantoshSdfEigenShrinkageSpec<T>,
+) -> KozakNagelSantoshSdfEigenShrinkageAnalytics<T> {
+    let d1 = spec.pc1_eigenvalue_d1.max_val(T::from_f64(1e-3));
+    let d2 = spec.pc2_eigenvalue_d2.max_val(T::from_f64(1e-4));
+    let mu1 = spec.pc1_mean_return_mu1.max_val(T::from_f64(1e-4));
+    let mu2 = spec.pc2_mean_return_mu2.max_val(T::from_f64(1e-4));
+    let gam2 = spec.ridge_l2_penalty_gamma2.max_val(T::from_f64(1e-4));
+    let gam1 = spec.lasso_l1_penalty_gamma1.max_val(T::from_f64(1e-5));
+
+    // Smooth soft-thresholding operator sqrt((mu - gam1)^2 + eps)
+    let soft = |m: T| -> T {
+        let diff = m - gam1;
+        T::from_f64(0.5) * (diff + (diff * diff + T::from_f64(1e-8)).sqrt())
+    };
+
+    let b1 = soft(mu1) / (d1 + gam2);
+    let b2 = soft(mu2) / (d2 + gam2);
+
+    let sr2_unreg = (mu1 * mu1) / d1 + (mu2 * mu2) / d2;
+    let port_ret = b1 * mu1 + b2 * mu2;
+    let port_var = b1 * b1 * d1 + b2 * b2 * d2;
+    let sr_reg = port_ret / port_var.sqrt();
+
+    KozakNagelSantoshSdfEigenShrinkageAnalytics {
+        shrunk_pc1_sdf_weight: b1,
+        shrunk_pc2_sdf_weight: b2,
+        unregularized_squared_sharpe: sr2_unreg,
+        regularized_sdf_sharpe_ratio: sr_reg,
+    }
+}
+
+#[cfg(test)]
+mod kozak_nagel_santosh_sdf_shrinkage_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn kozak_nagel_santosh_sdf_shrinkage_invariants_and_ad_parity() {
+        let base = KozakNagelSantoshSdfEigenShrinkageSpec {
+            pc1_eigenvalue_d1: 0.085_f64,
+            pc2_eigenvalue_d2: 0.008_f64,
+            pc1_mean_return_mu1: 0.092_f64,
+            pc2_mean_return_mu2: 0.035_f64,
+            ridge_l2_penalty_gamma2: 0.025_f64,
+            lasso_l1_penalty_gamma1: 0.008_f64,
+        };
+        let r0 = evaluate_kozak_nagel_santosh_sdf_eigen_shrinkage(&base);
+        // Low-eigenvalue PC2 experiences much stronger proportional shrinkage than dominant PC1
+        let unreg_b1 = base.pc1_mean_return_mu1 / base.pc1_eigenvalue_d1;
+        let unreg_b2 = base.pc2_mean_return_mu2 / base.pc2_eigenvalue_d2;
+        assert!(r0.shrunk_pc2_sdf_weight / unreg_b2 < r0.shrunk_pc1_sdf_weight / unreg_b1);
+        assert!(r0.regularized_sdf_sharpe_ratio > 0.0);
+
+        let x0 = [
+            base.pc1_eigenvalue_d1,
+            base.pc2_eigenvalue_d2,
+            base.pc1_mean_return_mu1,
+            base.pc2_mean_return_mu2,
+            base.ridge_l2_penalty_gamma2,
+            base.lasso_l1_penalty_gamma1,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_kozak_nagel_santosh_sdf_eigen_shrinkage(
+            &KozakNagelSantoshSdfEigenShrinkageSpec {
+                pc1_eigenvalue_d1: xd[0],
+                pc2_eigenvalue_d2: xd[1],
+                pc1_mean_return_mu1: xd[2],
+                pc2_mean_return_mu2: xd[3],
+                ridge_l2_penalty_gamma2: xd[4],
+                lasso_l1_penalty_gamma1: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_kozak_nagel_santosh_sdf_eigen_shrinkage(
+                &KozakNagelSantoshSdfEigenShrinkageSpec {
+                    pc1_eigenvalue_d1: xp[0],
+                    pc2_eigenvalue_d2: xp[1],
+                    pc1_mean_return_mu1: xp[2],
+                    pc2_mean_return_mu2: xp[3],
+                    ridge_l2_penalty_gamma2: xp[4],
+                    lasso_l1_penalty_gamma1: xp[5],
+                },
+            );
+            let rm = evaluate_kozak_nagel_santosh_sdf_eigen_shrinkage(
+                &KozakNagelSantoshSdfEigenShrinkageSpec {
+                    pc1_eigenvalue_d1: xm[0],
+                    pc2_eigenvalue_d2: xm[1],
+                    pc1_mean_return_mu1: xm[2],
+                    pc2_mean_return_mu2: xm[3],
+                    ridge_l2_penalty_gamma2: xm[4],
+                    lasso_l1_penalty_gamma1: xm[5],
+                },
+            );
+            let fd =
+                (rp.regularized_sdf_sharpe_ratio - rm.regularized_sdf_sharpe_ratio) / (2.0 * h);
+            assert!(rad.regularized_sdf_sharpe_ratio.d[i].abs() > 1e-9);
+            assert!((rad.regularized_sdf_sharpe_ratio.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

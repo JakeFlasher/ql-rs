@@ -6867,3 +6867,160 @@ mod brownlees_engle_srisk_capital_shortfall_tests {
         }
     }
 }
+
+/// Input specification for the Acharya, Pedersen, Philippon & Richardson (2017,
+/// *Review of Financial Studies* 30(1), "Measuring Systemic Risk") Systemic
+/// Expected Shortfall (SES), Marginal Expected Shortfall (MES) & Ex-Ante
+/// Pigouvian Systemic Tax engine.
+#[derive(Debug, Clone, Copy)]
+pub struct AcharyaPedersenPhilipponRichardsonSesSpec<T: Real> {
+    /// Initial market value of bank equity $w_0^i > 0$.
+    pub initial_equity_capital_w0: T,
+    /// Quasi-market leverage ratio $L_0^i = A_0^i / w_0^i > 1$.
+    pub quasi_market_leverage_ratio_l0: T,
+    /// Prudential required capital-to-assets threshold $z_{\text{req}} \in (0, 1)$.
+    pub required_capital_ratio_z: T,
+    /// Normal-time daily 5% Marginal Expected Shortfall $\text{MES}_{5\%}^i > 0$ (as a positive loss fraction).
+    pub normal_tail_mes_5pct: T,
+    /// Power-law tail scaling multiplier $k_{\text{EVT}} > 1$ extrapolate normal MES to systemic crisis shortfall.
+    pub systemic_crisis_tail_multiplier_k: T,
+    /// Aggregate banking-sector crisis probability $\pi_{\text{crisis}} \in (0, 1)$.
+    pub systemic_crisis_probability_pi: T,
+    /// Externality deadweight cost multiplier $\tau_{\text{ext}} > 0$ per dollar of systemic shortfall.
+    pub systemic_externality_weight_tau: T,
+}
+
+/// Analytics returned by [`evaluate_acharya_pedersen_philippon_richardson_ses`].
+#[derive(Debug, Clone, Copy)]
+pub struct AcharyaPedersenPhilipponRichardsonSesAnalytics<T: Real> {
+    /// Extrapolated systemic crisis equity loss fraction $k_{\text{EVT}} \cdot \text{MES}_{5\%}^i$.
+    pub crisis_equity_loss_fraction: T,
+    /// Systemic Expected Shortfall per unit of initial equity $\text{SES}^i / w_0^i$.
+    pub normalized_ses_per_equity: T,
+    /// Dollar Systemic Expected Shortfall $\text{SES}^i = \mathbb{E}[z_{\text{req}} A_1^i - w_1^i \mid \text{crisis}]$.
+    pub dollar_systemic_expected_shortfall_ses: T,
+    /// OptimalAPPR ex-ante Pigouvian systemic risk tax / insurance premium $T_{\text{Pigou}}^i$.
+    pub pigouvian_systemic_risk_tax: T,
+}
+
+/// Evaluates the Acharya, Pedersen, Philippon & Richardson (2017, *RFS* 30(1))
+/// Systemic Expected Shortfall (SES) structural formula:
+/// $$\frac{\text{SES}^i}{w_0^i} = z_{\text{req}} L_0^i - 1 + k_{\text{EVT}} (1 - z_{\text{req}}) \text{MES}_{5\%}^i,$$
+/// and the corresponding ex-ante Pigouvian systemic risk charge $\pi_{\text{crisis}} \tau_{\text{ext}} \text{SES}^i$.
+pub fn evaluate_acharya_pedersen_philippon_richardson_ses<T: Real>(
+    spec: &AcharyaPedersenPhilipponRichardsonSesSpec<T>,
+) -> AcharyaPedersenPhilipponRichardsonSesAnalytics<T> {
+    let one = T::one();
+    let w0 = spec.initial_equity_capital_w0.max_val(T::from_f64(1.0));
+    let l0 = spec
+        .quasi_market_leverage_ratio_l0
+        .max_val(T::from_f64(1.5));
+    let z_req = spec
+        .required_capital_ratio_z
+        .min_val(T::from_f64(0.30))
+        .max_val(T::from_f64(0.02));
+    let mes5 = spec.normal_tail_mes_5pct.max_val(T::from_f64(1e-4));
+    let k_evt = spec
+        .systemic_crisis_tail_multiplier_k
+        .max_val(T::from_f64(1.1));
+    let pi_cr = spec
+        .systemic_crisis_probability_pi
+        .min_val(T::from_f64(0.50))
+        .max_val(T::from_f64(1e-4));
+    let tau_ext = spec
+        .systemic_externality_weight_tau
+        .max_val(T::from_f64(1e-4));
+
+    let crisis_loss_frac = k_evt * mes5;
+    // APPR (2017, Proposition 2 / Eq. 11)
+    let ses_per_w0 = z_req * l0 - one + (one - z_req) * crisis_loss_frac;
+    let dollar_ses = w0 * ses_per_w0;
+    let pigou_tax = pi_cr * tau_ext * dollar_ses;
+
+    AcharyaPedersenPhilipponRichardsonSesAnalytics {
+        crisis_equity_loss_fraction: crisis_loss_frac,
+        normalized_ses_per_equity: ses_per_w0,
+        dollar_systemic_expected_shortfall_ses: dollar_ses,
+        pigouvian_systemic_risk_tax: pigou_tax,
+    }
+}
+
+#[cfg(test)]
+mod acharya_pedersen_philippon_richardson_ses_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn acharya_pedersen_philippon_richardson_ses_invariants_and_ad_parity() {
+        let base = AcharyaPedersenPhilipponRichardsonSesSpec {
+            initial_equity_capital_w0: 90.0_f64,
+            quasi_market_leverage_ratio_l0: 14.5_f64,
+            required_capital_ratio_z: 0.08_f64,
+            normal_tail_mes_5pct: 0.038_f64,
+            systemic_crisis_tail_multiplier_k: 12.5_f64,
+            systemic_crisis_probability_pi: 0.035_f64,
+            systemic_externality_weight_tau: 0.45_f64,
+        };
+        let r0 = evaluate_acharya_pedersen_philippon_richardson_ses(&base);
+        assert!(r0.normalized_ses_per_equity > 0.0);
+        assert!(r0.dollar_systemic_expected_shortfall_ses > 0.0);
+        assert!(r0.pigouvian_systemic_risk_tax > 0.0);
+
+        let x0 = [
+            base.initial_equity_capital_w0,
+            base.quasi_market_leverage_ratio_l0,
+            base.required_capital_ratio_z,
+            base.normal_tail_mes_5pct,
+            base.systemic_crisis_tail_multiplier_k,
+            base.systemic_crisis_probability_pi,
+            base.systemic_externality_weight_tau,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_acharya_pedersen_philippon_richardson_ses(
+            &AcharyaPedersenPhilipponRichardsonSesSpec {
+                initial_equity_capital_w0: xd[0],
+                quasi_market_leverage_ratio_l0: xd[1],
+                required_capital_ratio_z: xd[2],
+                normal_tail_mes_5pct: xd[3],
+                systemic_crisis_tail_multiplier_k: xd[4],
+                systemic_crisis_probability_pi: xd[5],
+                systemic_externality_weight_tau: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_acharya_pedersen_philippon_richardson_ses(
+                &AcharyaPedersenPhilipponRichardsonSesSpec {
+                    initial_equity_capital_w0: xp[0],
+                    quasi_market_leverage_ratio_l0: xp[1],
+                    required_capital_ratio_z: xp[2],
+                    normal_tail_mes_5pct: xp[3],
+                    systemic_crisis_tail_multiplier_k: xp[4],
+                    systemic_crisis_probability_pi: xp[5],
+                    systemic_externality_weight_tau: xp[6],
+                },
+            );
+            let rm = evaluate_acharya_pedersen_philippon_richardson_ses(
+                &AcharyaPedersenPhilipponRichardsonSesSpec {
+                    initial_equity_capital_w0: xm[0],
+                    quasi_market_leverage_ratio_l0: xm[1],
+                    required_capital_ratio_z: xm[2],
+                    normal_tail_mes_5pct: xm[3],
+                    systemic_crisis_tail_multiplier_k: xm[4],
+                    systemic_crisis_probability_pi: xm[5],
+                    systemic_externality_weight_tau: xm[6],
+                },
+            );
+            let fd = (rp.pigouvian_systemic_risk_tax - rm.pigouvian_systemic_risk_tax) / (2.0 * h);
+            assert!(rad.pigouvian_systemic_risk_tax.d[i].abs() > 1e-9);
+            assert!((rad.pigouvian_systemic_risk_tax.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

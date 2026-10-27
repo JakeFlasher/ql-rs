@@ -5076,3 +5076,161 @@ mod duffie_zhu_central_clearing_netting_tests {
         }
     }
 }
+
+/// Input specification for the Ghamami & Glasserman (2017, *Management Science*
+/// 63(9), "Does OTC Derivatives Reform Incentivize Central Clearing?") Bilateral
+/// SIMM Initial Margin vs. CCP Default-Fund Cost Comparison & Clearing Incentive
+/// engine.
+#[derive(Debug, Clone, Copy)]
+pub struct GhamamiGlassermanClearingIncentiveMvaSpec<T: Real> {
+    /// Bilateral portfolio exposure volatility $\sigma_{\text{bilat}} > 0$ across uncleared netting sets.
+    pub bilateral_netting_set_volatility_sigma_b: T,
+    /// Multilateral CCP cleared portfolio volatility $\sigma_{\text{CCP}} > 0$.
+    pub ccp_multilateral_volatility_sigma_c: T,
+    /// Bilateral Margin Period of Risk $\Delta_{\text{MPOR}}^{\text{bilat}}$ in days (e.g. 10 days).
+    pub bilateral_mpor_days_m_b: T,
+    /// CCP Margin Period of Risk $\Delta_{\text{MPOR}}^{\text{CCP}}$ in days (e.g. 5 days).
+    pub ccp_mpor_days_m_c: T,
+    /// Initial margin funding spread $s_{\text{IM}} > 0$.
+    pub im_funding_spread_s_im: T,
+    /// CCP default fund contribution ratio $\delta_{\text{DF}} > 0$ and capital cost rate $s_{\text{DF}} > 0$ combined product.
+    pub ccp_default_fund_cost_rate_c_df: T,
+    /// Uncleared bilateral CVA / regulatory capital surcharge rate $c_{\text{bilat,KVA}} > 0$.
+    pub bilateral_capital_surcharge_c_kva: T,
+}
+
+/// Analytics returned by [`evaluate_ghamami_glasserman_clearing_incentive_mva`].
+#[derive(Debug, Clone, Copy)]
+pub struct GhamamiGlassermanClearingIncentiveMvaAnalytics<T: Real> {
+    /// Total all-in bilateral uncleared IM MVA + capital cost $C_{\text{bilat}}$.
+    pub total_bilateral_uncleared_cost: T,
+    /// Total all-in CCP cleared IM MVA + default fund cost $C_{\text{CCP}}$.
+    pub total_ccp_cleared_cost: T,
+    /// Net central clearing cost saving $S_{\text{clear}} = C_{\text{bilat}} - C_{\text{CCP}}$.
+    pub central_clearing_cost_saving: T,
+    /// Ghamami-Glasserman clearing incentive ratio $C_{\text{CCP}} / C_{\text{bilat}}$.
+    pub clearing_cost_ratio: T,
+}
+
+/// Evaluates the Ghamami & Glasserman (2017, *Management Science* 63(9)) total
+/// collateral and capital cost comparison between bilateral uncleared OTC
+/// trading (10-day MPOR SIMM + bilateral CVA/KVA capital) and CCP central
+/// clearing (5-day MPOR IM + CCP default fund contribution), quantifying when
+/// post-crisis margin rules incentivize central clearing.
+pub fn evaluate_ghamami_glasserman_clearing_incentive_mva<T: Real>(
+    spec: &GhamamiGlassermanClearingIncentiveMvaSpec<T>,
+) -> GhamamiGlassermanClearingIncentiveMvaAnalytics<T> {
+    let z_99 = T::from_f64(2.3263478740408408);
+    let inv_days = T::from_f64(1.0 / 252.0);
+
+    let sig_b = spec
+        .bilateral_netting_set_volatility_sigma_b
+        .max_val(T::from_f64(1e-3));
+    let sig_c = spec
+        .ccp_multilateral_volatility_sigma_c
+        .max_val(T::from_f64(1e-3));
+    let m_b = spec.bilateral_mpor_days_m_b.max_val(T::one());
+    let m_c = spec.ccp_mpor_days_m_c.max_val(T::one());
+    let s_im = spec.im_funding_spread_s_im.max_val(T::from_f64(1e-5));
+    let c_df = spec
+        .ccp_default_fund_cost_rate_c_df
+        .max_val(T::from_f64(1e-5));
+    let c_kva = spec
+        .bilateral_capital_surcharge_c_kva
+        .max_val(T::from_f64(1e-5));
+
+    let im_bilat = z_99 * sig_b * (m_b * inv_days).sqrt();
+    let im_ccp = z_99 * sig_c * (m_c * inv_days).sqrt();
+
+    let cost_bilat = (s_im + c_kva) * im_bilat;
+    let cost_ccp = (s_im + c_df) * im_ccp;
+    let saving = cost_bilat - cost_ccp;
+    let ratio = cost_ccp / cost_bilat;
+
+    GhamamiGlassermanClearingIncentiveMvaAnalytics {
+        total_bilateral_uncleared_cost: cost_bilat,
+        total_ccp_cleared_cost: cost_ccp,
+        central_clearing_cost_saving: saving,
+        clearing_cost_ratio: ratio,
+    }
+}
+
+#[cfg(test)]
+mod ghamami_glasserman_clearing_incentive_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn ghamami_glasserman_clearing_incentive_invariants_and_ad_parity() {
+        let base = GhamamiGlassermanClearingIncentiveMvaSpec {
+            bilateral_netting_set_volatility_sigma_b: 140.0_f64,
+            ccp_multilateral_volatility_sigma_c: 95.0_f64,
+            bilateral_mpor_days_m_b: 10.0_f64,
+            ccp_mpor_days_m_c: 5.0_f64,
+            im_funding_spread_s_im: 0.0085_f64,
+            ccp_default_fund_cost_rate_c_df: 0.0040_f64,
+            bilateral_capital_surcharge_c_kva: 0.0095_f64,
+        };
+        let r0 = evaluate_ghamami_glasserman_clearing_incentive_mva(&base);
+        assert!(r0.central_clearing_cost_saving > 0.0);
+        assert!(r0.clearing_cost_ratio < 1.0);
+
+        let x0 = [
+            base.bilateral_netting_set_volatility_sigma_b,
+            base.ccp_multilateral_volatility_sigma_c,
+            base.bilateral_mpor_days_m_b,
+            base.ccp_mpor_days_m_c,
+            base.im_funding_spread_s_im,
+            base.ccp_default_fund_cost_rate_c_df,
+            base.bilateral_capital_surcharge_c_kva,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_ghamami_glasserman_clearing_incentive_mva(
+            &GhamamiGlassermanClearingIncentiveMvaSpec {
+                bilateral_netting_set_volatility_sigma_b: xd[0],
+                ccp_multilateral_volatility_sigma_c: xd[1],
+                bilateral_mpor_days_m_b: xd[2],
+                ccp_mpor_days_m_c: xd[3],
+                im_funding_spread_s_im: xd[4],
+                ccp_default_fund_cost_rate_c_df: xd[5],
+                bilateral_capital_surcharge_c_kva: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_ghamami_glasserman_clearing_incentive_mva(
+                &GhamamiGlassermanClearingIncentiveMvaSpec {
+                    bilateral_netting_set_volatility_sigma_b: xp[0],
+                    ccp_multilateral_volatility_sigma_c: xp[1],
+                    bilateral_mpor_days_m_b: xp[2],
+                    ccp_mpor_days_m_c: xp[3],
+                    im_funding_spread_s_im: xp[4],
+                    ccp_default_fund_cost_rate_c_df: xp[5],
+                    bilateral_capital_surcharge_c_kva: xp[6],
+                },
+            );
+            let rm = evaluate_ghamami_glasserman_clearing_incentive_mva(
+                &GhamamiGlassermanClearingIncentiveMvaSpec {
+                    bilateral_netting_set_volatility_sigma_b: xm[0],
+                    ccp_multilateral_volatility_sigma_c: xm[1],
+                    bilateral_mpor_days_m_b: xm[2],
+                    ccp_mpor_days_m_c: xm[3],
+                    im_funding_spread_s_im: xm[4],
+                    ccp_default_fund_cost_rate_c_df: xm[5],
+                    bilateral_capital_surcharge_c_kva: xm[6],
+                },
+            );
+            let fd =
+                (rp.central_clearing_cost_saving - rm.central_clearing_cost_saving) / (2.0 * h);
+            assert!(rad.central_clearing_cost_saving.d[i].abs() > 1e-9);
+            assert!((rad.central_clearing_cost_saving.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}
