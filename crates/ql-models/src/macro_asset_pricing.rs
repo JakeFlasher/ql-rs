@@ -4208,3 +4208,172 @@ mod campbell_vuolteenaho_bad_good_beta_icapm_tests {
         }
     }
 }
+
+/// Input specification for the Drechsler, Savov & Schnabl (2017, *Quarterly
+/// Journal of Economics* 132(4); 2018, *Journal of Finance* 73(1)) Deposit
+/// Franchise Market Power & Monetary Policy Liquidity Premium Transmission engine.
+#[derive(Debug, Clone, Copy)]
+pub struct DrechslerSavovSchnablDepositChannelSpec<T: Real> {
+    /// Nominal central bank policy rate $f_t > 0$.
+    pub fed_funds_policy_rate_f: T,
+    /// Local bank branch deposit concentration index $\text{HHI}_b \in (0,1)$.
+    pub bank_branch_herfindahl_hhi: T,
+    /// Household cash-deposit substitution elasticity $\varepsilon_c > 0$.
+    pub household_cash_substitution_elasticity_eps: T,
+    /// Bank operating liquidity management cost $c_{\text{liq}} > 0$.
+    pub bank_liquidity_management_cost_c: T,
+    /// Wholesale funding replacement fraction $\delta_{\text{wf}} \in (0,1)$.
+    pub wholesale_funding_sensitivity_delta: T,
+    /// Illiquid loan portfolio credit/liquidity spread $\alpha_{\text{loan}} > 0$.
+    pub loan_illiquidity_spread_alpha: T,
+    /// Aggregate economy-wide liquidity premium multiplier $\kappa_{\text{liq}} > 0$.
+    pub aggregate_liquidity_demand_kappa: T,
+    /// Monetary policy rate tightening shock $\Delta f > 0$.
+    pub policy_rate_hike_shock_df: T,
+}
+
+/// Analytics returned by [`evaluate_drechsler_savov_schnabl_deposit_channel_liquidity_premium`].
+#[derive(Debug, Clone, Copy)]
+pub struct DrechslerSavovSchnablDepositChannelAnalytics<T: Real> {
+    /// Deposit spread pass-through coefficient $\beta_{\text{spread}} = \partial s_{\text{dep}} / \partial f_t$.
+    pub deposit_spread_passthrough_beta: T,
+    /// Equilibrium bank deposit spread $s_{\text{dep}} = f_t - r_{\text{dep}}$.
+    pub equilibrium_deposit_spread: T,
+    /// Log bank credit supply contraction $\Delta\ln L_{\text{bank}} < 0$ from policy tightening $\Delta f$.
+    pub bank_lending_contraction_rate: T,
+    /// Equilibrium economy-wide liquidity premium wedge $\Pi_{\text{liq}}$.
+    pub equilibrium_liquidity_premium_wedge: T,
+}
+
+/// Evaluates the Drechsler, Savov & Schnabl (2017, *QJE* 132(4); 2018, *JF* 73(1))
+/// deposits channel of monetary policy: oligopolistic banks widen deposit
+/// spreads when $f_t$ rises, triggering deposit outflows, credit contraction,
+/// and a wider aggregate liquidity premium.
+pub fn evaluate_drechsler_savov_schnabl_deposit_channel_liquidity_premium<T: Real>(
+    spec: &DrechslerSavovSchnablDepositChannelSpec<T>,
+) -> DrechslerSavovSchnablDepositChannelAnalytics<T> {
+    let one = T::one();
+    let f_rate = spec.fed_funds_policy_rate_f.max_val(T::from_f64(1e-4));
+    let hhi = spec
+        .bank_branch_herfindahl_hhi
+        .min_val(T::from_f64(0.99))
+        .max_val(T::from_f64(0.01));
+    let eps = spec
+        .household_cash_substitution_elasticity_eps
+        .max_val(T::from_f64(0.05));
+    let c_liq = spec.bank_liquidity_management_cost_c.max_val(T::zero());
+    let delta_wf = spec
+        .wholesale_funding_sensitivity_delta
+        .min_val(T::from_f64(0.99))
+        .max_val(T::zero());
+    let alpha_loan = spec
+        .loan_illiquidity_spread_alpha
+        .max_val(T::from_f64(1e-4));
+    let kappa_liq = spec
+        .aggregate_liquidity_demand_kappa
+        .max_val(T::from_f64(0.1));
+    let df = spec.policy_rate_hike_shock_df.max_val(T::from_f64(1e-5));
+
+    let beta_spread = hhi / (hhi + eps * (one - hhi));
+    let s_dep = beta_spread * f_rate + c_liq;
+
+    let d_ln_dep = -eps * (one - hhi) * beta_spread * df;
+    let d_ln_loan = (one - delta_wf) * d_ln_dep;
+    let pi_liq = kappa_liq * s_dep * (one + alpha_loan * (one - delta_wf) * eps * df);
+
+    DrechslerSavovSchnablDepositChannelAnalytics {
+        deposit_spread_passthrough_beta: beta_spread,
+        equilibrium_deposit_spread: s_dep,
+        bank_lending_contraction_rate: d_ln_loan,
+        equilibrium_liquidity_premium_wedge: pi_liq,
+    }
+}
+
+#[cfg(test)]
+mod drechsler_savov_schnabl_deposit_channel_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn drechsler_savov_schnabl_deposit_channel_invariants_and_ad_parity() {
+        let base = DrechslerSavovSchnablDepositChannelSpec {
+            fed_funds_policy_rate_f: 0.0525_f64,
+            bank_branch_herfindahl_hhi: 0.24_f64,
+            household_cash_substitution_elasticity_eps: 0.55_f64,
+            bank_liquidity_management_cost_c: 0.0045_f64,
+            wholesale_funding_sensitivity_delta: 0.35_f64,
+            loan_illiquidity_spread_alpha: 1.80_f64,
+            aggregate_liquidity_demand_kappa: 1.25_f64,
+            policy_rate_hike_shock_df: 0.010_f64,
+        };
+        let r0 = evaluate_drechsler_savov_schnabl_deposit_channel_liquidity_premium(&base);
+        assert!(
+            r0.deposit_spread_passthrough_beta > 0.0 && r0.deposit_spread_passthrough_beta < 1.0
+        );
+        assert!(r0.bank_lending_contraction_rate < 0.0);
+        assert!(r0.equilibrium_liquidity_premium_wedge > 0.0);
+
+        let x0 = [
+            base.fed_funds_policy_rate_f,
+            base.bank_branch_herfindahl_hhi,
+            base.household_cash_substitution_elasticity_eps,
+            base.bank_liquidity_management_cost_c,
+            base.wholesale_funding_sensitivity_delta,
+            base.loan_illiquidity_spread_alpha,
+            base.aggregate_liquidity_demand_kappa,
+            base.policy_rate_hike_shock_df,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_drechsler_savov_schnabl_deposit_channel_liquidity_premium(
+            &DrechslerSavovSchnablDepositChannelSpec {
+                fed_funds_policy_rate_f: xd[0],
+                bank_branch_herfindahl_hhi: xd[1],
+                household_cash_substitution_elasticity_eps: xd[2],
+                bank_liquidity_management_cost_c: xd[3],
+                wholesale_funding_sensitivity_delta: xd[4],
+                loan_illiquidity_spread_alpha: xd[5],
+                aggregate_liquidity_demand_kappa: xd[6],
+                policy_rate_hike_shock_df: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_drechsler_savov_schnabl_deposit_channel_liquidity_premium(
+                &DrechslerSavovSchnablDepositChannelSpec {
+                    fed_funds_policy_rate_f: xp[0],
+                    bank_branch_herfindahl_hhi: xp[1],
+                    household_cash_substitution_elasticity_eps: xp[2],
+                    bank_liquidity_management_cost_c: xp[3],
+                    wholesale_funding_sensitivity_delta: xp[4],
+                    loan_illiquidity_spread_alpha: xp[5],
+                    aggregate_liquidity_demand_kappa: xp[6],
+                    policy_rate_hike_shock_df: xp[7],
+                },
+            );
+            let rm = evaluate_drechsler_savov_schnabl_deposit_channel_liquidity_premium(
+                &DrechslerSavovSchnablDepositChannelSpec {
+                    fed_funds_policy_rate_f: xm[0],
+                    bank_branch_herfindahl_hhi: xm[1],
+                    household_cash_substitution_elasticity_eps: xm[2],
+                    bank_liquidity_management_cost_c: xm[3],
+                    wholesale_funding_sensitivity_delta: xm[4],
+                    loan_illiquidity_spread_alpha: xm[5],
+                    aggregate_liquidity_demand_kappa: xm[6],
+                    policy_rate_hike_shock_df: xm[7],
+                },
+            );
+            let fd = (rp.equilibrium_liquidity_premium_wedge
+                - rm.equilibrium_liquidity_premium_wedge)
+                / (2.0 * h);
+            assert!(rad.equilibrium_liquidity_premium_wedge.d[i].abs() > 1e-9);
+            assert!((rad.equilibrium_liquidity_premium_wedge.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

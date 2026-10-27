@@ -4585,3 +4585,172 @@ mod crepey_bichuch_capponi_nonlinear_xva_bsde_tests {
         }
     }
 }
+
+/// Input specification for the Andersen, Duffie & Song (2019, *Journal of
+/// Finance* 74(1), "Funding Value Adjustments") Debt-Overhang Shareholder
+/// Preference & Market-Value FVA engine.
+#[derive(Debug, Clone, Copy)]
+pub struct AndersenDuffieSongShareholderFvaOverhangSpec<T: Real> {
+    /// Net uncollateralized upfront funding requirement $\Phi_0 > 0$.
+    pub uncollateralized_funding_need_phi: T,
+    /// Dealer unsecured credit spread $s_d > 0$.
+    pub dealer_credit_spread_s_d: T,
+    /// Fraction of funding requirement financed via unsecured debt $q_{\text{debt}} \in [0,1]$.
+    pub upfront_marginal_debt_issuance_share_q: T,
+    /// Recovery dilution share borne by legacy pari-passu creditors $\alpha_{\text{dil}} \in [0,1]$.
+    pub existing_creditor_recovery_dilution_alpha: T,
+    /// Normalized covariance between derivative payoff and dealer default $\beta_{V,D}$.
+    pub asset_swap_covariance_beta_v: T,
+    /// Risk-free interest rate $r$.
+    pub risk_free_rate_r: T,
+    /// Deadweight equity issuance friction cost $\eta_{\text{eq}} > 0$.
+    pub marginal_capital_return_hurdle_eta: T,
+    /// Trade maturity in years $T > 0$.
+    pub maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_andersen_duffie_song_debt_overhang_fva`].
+#[derive(Debug, Clone, Copy)]
+pub struct AndersenDuffieSongShareholderFvaOverhangAnalytics<T: Real> {
+    /// Shareholder indifference Funding Value Adjustment $\text{FVA}_{\text{ADS}}$.
+    pub shareholder_indifference_fva: T,
+    /// Debt-overhang wealth transfer to legacy pari-passu bondholders $W_{\text{legacy}}$.
+    pub legacy_creditor_windfall_transfer: T,
+    /// Deadweight firm-wide valuation cost $\Delta V_{\text{firm}}$.
+    pub firm_wide_deadweight_funding_cost: T,
+    /// Shareholder-required breakeven trade spread (bps per year).
+    pub shareholder_breakeven_spread_bps: T,
+}
+
+/// Evaluates the Andersen, Duffie & Song (2019, *JF* 74(1)) shareholder
+/// indifference Funding Value Adjustment ($\text{FVA}_{\text{ADS}}$) as a
+/// Myers (1977) debt-overhang transfer from dealer shareholders to legacy
+/// unsecured bondholders.
+pub fn evaluate_andersen_duffie_song_debt_overhang_fva<T: Real>(
+    spec: &AndersenDuffieSongShareholderFvaOverhangSpec<T>,
+) -> AndersenDuffieSongShareholderFvaOverhangAnalytics<T> {
+    let one = T::one();
+    let phi = spec
+        .uncollateralized_funding_need_phi
+        .max_val(T::from_f64(1e-4));
+    let sd = spec.dealer_credit_spread_s_d.max_val(T::from_f64(1e-5));
+    let q = spec
+        .upfront_marginal_debt_issuance_share_q
+        .min_val(one)
+        .max_val(T::zero());
+    let alpha = spec
+        .existing_creditor_recovery_dilution_alpha
+        .min_val(one)
+        .max_val(T::zero());
+    let beta_vd = spec.asset_swap_covariance_beta_v;
+    let r = spec.risk_free_rate_r.max_val(T::from_f64(1e-4));
+    let eta = spec.marginal_capital_return_hurdle_eta.max_val(T::zero());
+    let t = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+
+    let pv_annuity = (one - (-r * t).exp()) / r;
+    let creditor_transfer_rate = q * (one - alpha) * sd - beta_vd * sd;
+    let deadweight_rate = (one - q) * eta;
+
+    let w_legacy = phi * pv_annuity * creditor_transfer_rate;
+    let firm_cost = phi * pv_annuity * deadweight_rate;
+    let fva_ads = w_legacy + firm_cost;
+    let breakeven_bps = (creditor_transfer_rate + deadweight_rate) * T::from_f64(10_000.0);
+
+    AndersenDuffieSongShareholderFvaOverhangAnalytics {
+        shareholder_indifference_fva: fva_ads,
+        legacy_creditor_windfall_transfer: w_legacy,
+        firm_wide_deadweight_funding_cost: firm_cost,
+        shareholder_breakeven_spread_bps: breakeven_bps,
+    }
+}
+
+#[cfg(test)]
+mod andersen_duffie_song_debt_overhang_fva_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn andersen_duffie_song_debt_overhang_fva_invariants_and_ad_parity() {
+        let base = AndersenDuffieSongShareholderFvaOverhangSpec {
+            uncollateralized_funding_need_phi: 100.0_f64,
+            dealer_credit_spread_s_d: 0.0125_f64,
+            upfront_marginal_debt_issuance_share_q: 0.80_f64,
+            existing_creditor_recovery_dilution_alpha: 0.25_f64,
+            asset_swap_covariance_beta_v: 0.08_f64,
+            risk_free_rate_r: 0.038_f64,
+            marginal_capital_return_hurdle_eta: 0.018_f64,
+            maturity_years_t: 5.0_f64,
+        };
+        let r0 = evaluate_andersen_duffie_song_debt_overhang_fva(&base);
+        assert!(r0.shareholder_indifference_fva > 0.0);
+        assert!(r0.legacy_creditor_windfall_transfer > 0.0);
+        assert!(
+            (r0.shareholder_indifference_fva
+                - (r0.legacy_creditor_windfall_transfer + r0.firm_wide_deadweight_funding_cost))
+                .abs()
+                < 1e-12
+        );
+
+        let x0 = [
+            base.uncollateralized_funding_need_phi,
+            base.dealer_credit_spread_s_d,
+            base.upfront_marginal_debt_issuance_share_q,
+            base.existing_creditor_recovery_dilution_alpha,
+            base.asset_swap_covariance_beta_v,
+            base.risk_free_rate_r,
+            base.marginal_capital_return_hurdle_eta,
+            base.maturity_years_t,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_andersen_duffie_song_debt_overhang_fva(
+            &AndersenDuffieSongShareholderFvaOverhangSpec {
+                uncollateralized_funding_need_phi: xd[0],
+                dealer_credit_spread_s_d: xd[1],
+                upfront_marginal_debt_issuance_share_q: xd[2],
+                existing_creditor_recovery_dilution_alpha: xd[3],
+                asset_swap_covariance_beta_v: xd[4],
+                risk_free_rate_r: xd[5],
+                marginal_capital_return_hurdle_eta: xd[6],
+                maturity_years_t: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_andersen_duffie_song_debt_overhang_fva(
+                &AndersenDuffieSongShareholderFvaOverhangSpec {
+                    uncollateralized_funding_need_phi: xp[0],
+                    dealer_credit_spread_s_d: xp[1],
+                    upfront_marginal_debt_issuance_share_q: xp[2],
+                    existing_creditor_recovery_dilution_alpha: xp[3],
+                    asset_swap_covariance_beta_v: xp[4],
+                    risk_free_rate_r: xp[5],
+                    marginal_capital_return_hurdle_eta: xp[6],
+                    maturity_years_t: xp[7],
+                },
+            );
+            let rm = evaluate_andersen_duffie_song_debt_overhang_fva(
+                &AndersenDuffieSongShareholderFvaOverhangSpec {
+                    uncollateralized_funding_need_phi: xm[0],
+                    dealer_credit_spread_s_d: xm[1],
+                    upfront_marginal_debt_issuance_share_q: xm[2],
+                    existing_creditor_recovery_dilution_alpha: xm[3],
+                    asset_swap_covariance_beta_v: xm[4],
+                    risk_free_rate_r: xm[5],
+                    marginal_capital_return_hurdle_eta: xm[6],
+                    maturity_years_t: xm[7],
+                },
+            );
+            let fd =
+                (rp.shareholder_indifference_fva - rm.shareholder_indifference_fva) / (2.0 * h);
+            assert!(rad.shareholder_indifference_fva.d[i].abs() > 1e-9);
+            assert!((rad.shareholder_indifference_fva.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

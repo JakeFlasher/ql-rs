@@ -4853,3 +4853,162 @@ pub use gatheral_schied_slynko_transient_impact_mod::{
     GatheralSchiedSlynkoTransientImpactAnalytics, GatheralSchiedSlynkoTransientImpactSpec,
     evaluate_gatheral_schied_slynko_transient_impact_execution,
 };
+
+/// Input specification for the Kyle & Obizhaeva (2016, *Econometrica* 84(4),
+/// "Market Microstructure Invariance: Empirical Hypotheses") Bets-Dimensionality
+/// Invariance & Optimal Execution Cost Scaling engine.
+#[derive(Debug, Clone, Copy)]
+pub struct KyleObizhaevaMicrostructureInvarianceSpec<T: Real> {
+    /// Meta-order size in shares $Q > 0$.
+    pub order_size_shares_q: T,
+    /// Average daily trading volume in shares $V > 0$.
+    pub daily_trading_volume_v: T,
+    /// Share price in dollars $P > 0$.
+    pub stock_price_p: T,
+    /// Daily return volatility $\sigma_d > 0$.
+    pub daily_return_volatility_sigma: T,
+    /// Universal microstructure invariance dollar bet variance $I^* > 0$.
+    pub invariance_dollar_bet_var_i_star: T,
+    /// Kyle-Obizhaeva linear price-impact constant $c_\lambda > 0$.
+    pub linear_impact_calibration_c_lambda: T,
+    /// Kyle-Obizhaeva effective half-spread constant $c_s > 0$.
+    pub bid_ask_spread_calibration_c_s: T,
+}
+
+/// Analytics returned by [`evaluate_kyle_obizhaeva_microstructure_invariance_execution`].
+#[derive(Debug, Clone, Copy)]
+pub struct KyleObizhaevaMicrostructureInvarianceAnalytics<T: Real> {
+    /// Daily trading activity ("business time" dollar volatility) $W = \sigma_d P V$.
+    pub trading_activity_dollar_volatility_w: T,
+    /// Cube-root microstructure activity scaling factor $(W / I^*)^{1/3}$.
+    pub invariance_cube_root_activity_scale: T,
+    /// Proportional transaction cost in basis points $C_{\text{KO}}(Q) \times 10^4$.
+    pub invariance_proportional_cost_bps: T,
+    /// Total expected dollar implementation shortfall $\text{IS}_{\text{dollar}}(Q)$.
+    pub invariance_total_dollar_execution_cost: T,
+}
+
+/// Evaluates the Kyle & Obizhaeva (2016, *Econometrica* 84(4)) market
+/// microstructure invariance scaling laws for bid-ask spread ($(W/I^*)^{-1/3}$)
+/// and linear market impact ($(W/I^*)^{1/3} Q/V$).
+pub fn evaluate_kyle_obizhaeva_microstructure_invariance_execution<T: Real>(
+    spec: &KyleObizhaevaMicrostructureInvarianceSpec<T>,
+) -> KyleObizhaevaMicrostructureInvarianceAnalytics<T> {
+    let third = T::from_f64(1.0 / 3.0);
+    let bps = T::from_f64(10_000.0);
+
+    let q = spec.order_size_shares_q.max_val(T::from_f64(1.0));
+    let v = spec.daily_trading_volume_v.max_val(T::from_f64(100.0));
+    let p = spec.stock_price_p.max_val(T::from_f64(0.5));
+    let sig = spec
+        .daily_return_volatility_sigma
+        .max_val(T::from_f64(1e-4));
+    let i_star = spec
+        .invariance_dollar_bet_var_i_star
+        .max_val(T::from_f64(1.0));
+    let c_lam = spec
+        .linear_impact_calibration_c_lambda
+        .max_val(T::from_f64(1e-5));
+    let c_s = spec
+        .bid_ask_spread_calibration_c_s
+        .max_val(T::from_f64(1e-5));
+
+    let w = sig * p * v;
+    let m_ratio = (w / i_star).max_val(T::from_f64(1e-6));
+    let m_cbrt = (third * m_ratio.ln()).exp();
+
+    let frac_cost = sig * (c_s / m_cbrt + c_lam * m_cbrt * (q / v));
+    let cost_bps = frac_cost * bps;
+    let dollar_cost = p * q * frac_cost;
+
+    KyleObizhaevaMicrostructureInvarianceAnalytics {
+        trading_activity_dollar_volatility_w: w,
+        invariance_cube_root_activity_scale: m_cbrt,
+        invariance_proportional_cost_bps: cost_bps,
+        invariance_total_dollar_execution_cost: dollar_cost,
+    }
+}
+
+#[cfg(test)]
+mod kyle_obizhaeva_microstructure_invariance_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn kyle_obizhaeva_microstructure_invariance_invariants_and_ad_parity() {
+        let base = KyleObizhaevaMicrostructureInvarianceSpec {
+            order_size_shares_q: 25_000.0_f64,
+            daily_trading_volume_v: 1_200_000.0_f64,
+            stock_price_p: 85.0_f64,
+            daily_return_volatility_sigma: 0.018_f64,
+            invariance_dollar_bet_var_i_star: 25_000.0_f64,
+            linear_impact_calibration_c_lambda: 0.32_f64,
+            bid_ask_spread_calibration_c_s: 0.08_f64,
+        };
+        let r0 = evaluate_kyle_obizhaeva_microstructure_invariance_execution(&base);
+        assert!(r0.invariance_proportional_cost_bps > 0.0);
+        assert!(r0.invariance_total_dollar_execution_cost > 0.0);
+
+        let x0 = [
+            base.order_size_shares_q,
+            base.daily_trading_volume_v,
+            base.stock_price_p,
+            base.daily_return_volatility_sigma,
+            base.invariance_dollar_bet_var_i_star,
+            base.linear_impact_calibration_c_lambda,
+            base.bid_ask_spread_calibration_c_s,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_kyle_obizhaeva_microstructure_invariance_execution(
+            &KyleObizhaevaMicrostructureInvarianceSpec {
+                order_size_shares_q: xd[0],
+                daily_trading_volume_v: xd[1],
+                stock_price_p: xd[2],
+                daily_return_volatility_sigma: xd[3],
+                invariance_dollar_bet_var_i_star: xd[4],
+                linear_impact_calibration_c_lambda: xd[5],
+                bid_ask_spread_calibration_c_s: xd[6],
+            },
+        );
+        let h = 1e-4;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_kyle_obizhaeva_microstructure_invariance_execution(
+                &KyleObizhaevaMicrostructureInvarianceSpec {
+                    order_size_shares_q: xp[0],
+                    daily_trading_volume_v: xp[1],
+                    stock_price_p: xp[2],
+                    daily_return_volatility_sigma: xp[3],
+                    invariance_dollar_bet_var_i_star: xp[4],
+                    linear_impact_calibration_c_lambda: xp[5],
+                    bid_ask_spread_calibration_c_s: xp[6],
+                },
+            );
+            let rm = evaluate_kyle_obizhaeva_microstructure_invariance_execution(
+                &KyleObizhaevaMicrostructureInvarianceSpec {
+                    order_size_shares_q: xm[0],
+                    daily_trading_volume_v: xm[1],
+                    stock_price_p: xm[2],
+                    daily_return_volatility_sigma: xm[3],
+                    invariance_dollar_bet_var_i_star: xm[4],
+                    linear_impact_calibration_c_lambda: xm[5],
+                    bid_ask_spread_calibration_c_s: xm[6],
+                },
+            );
+            let fd = (rp.invariance_total_dollar_execution_cost
+                - rm.invariance_total_dollar_execution_cost)
+                / (2.0 * h);
+            assert!(rad.invariance_total_dollar_execution_cost.d[i].abs() > 1e-6);
+            assert!(
+                (rad.invariance_total_dollar_execution_cost.d[i] - fd).abs()
+                    <= 1e-4 * fd.abs().max_val(1.0)
+            );
+        }
+    }
+}

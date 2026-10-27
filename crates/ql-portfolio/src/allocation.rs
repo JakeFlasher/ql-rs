@@ -5939,3 +5939,171 @@ pub use brandt_santa_clara_valkanov_crra_tilt_mod::{
     BrandtSantaClaraValkanovCharacteristicTiltSpec,
     evaluate_brandt_santa_clara_valkanov_crra_characteristic_tilt,
 };
+
+/// Input specification for the Koijen & Yogo (2019, *Journal of Political
+/// Economy* 127(4), "A Demand System Approach to Asset Pricing")
+/// Characteristic-Based Logit Institutional Demand System & Price Inelasticity
+/// engine.
+#[derive(Debug, Clone, Copy)]
+pub struct KoijenYogoDemandSystemAssetPricingSpec<T: Real> {
+    /// Log market-to-book ratio $\ln(ME_i / BE_i)$.
+    pub log_market_to_book_me_be: T,
+    /// Market beta characteristic $\beta_{i,m}$.
+    pub beta_loading_beta_m: T,
+    /// Operating profitability characteristic $\text{Prof}_i$.
+    pub profitability_characteristic_prof: T,
+    /// Institutional demand coefficient on log market equity $\beta_0 < 1$.
+    pub institutional_price_elasticity_coeff_beta0: T,
+    /// Characteristic tilt sensitivity $\beta_x > 0$.
+    pub characteristic_tilt_strength_beta_x: T,
+    /// Outside asset portfolio share $w_{i,0} \in (0,1)$.
+    pub outside_asset_portfolio_weight_w0: T,
+    /// Active institutional AUM market share $\theta_{\text{inst}} \in (0,1)$.
+    pub active_institutional_aum_share_theta: T,
+    /// Exogenous inelastic flow shock as fraction of market cap $\Delta f_i$.
+    pub inelastic_passive_flow_shock_f: T,
+}
+
+/// Analytics returned by [`evaluate_koijen_yogo_characteristic_demand_system_elasticity`].
+#[derive(Debug, Clone, Copy)]
+pub struct KoijenYogoDemandSystemAssetPricingAnalytics<T: Real> {
+    /// Characteristic-driven institutional logit portfolio weight $w_i$.
+    pub institutional_logit_portfolio_weight: T,
+    /// Aggregate price elasticity of demand $\mathcal{E}_i = -\partial\ln q_i/\partial\ln P_i$.
+    pub aggregate_demand_price_elasticity: T,
+    /// Macro price-inelasticity multiplier $M_i = 1 / \mathcal{E}_i$.
+    pub price_inelasticity_multiplier: T,
+    /// Equilibrium log price impact $\Delta\ln P_i$ from flow and characteristic demand.
+    pub equilibrium_log_price_impact: T,
+}
+
+/// Evaluates the Koijen & Yogo (2019, *JPE* 127(4)) characteristic-based logit
+/// institutional demand system, aggregate price elasticity of demand, and
+/// inelastic flow price multiplier.
+pub fn evaluate_koijen_yogo_characteristic_demand_system_elasticity<T: Real>(
+    spec: &KoijenYogoDemandSystemAssetPricingSpec<T>,
+) -> KoijenYogoDemandSystemAssetPricingAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+
+    let me_be = spec.log_market_to_book_me_be;
+    let beta_m = spec.beta_loading_beta_m;
+    let prof = spec.profitability_characteristic_prof;
+    let beta0 = spec
+        .institutional_price_elasticity_coeff_beta0
+        .min_val(T::from_f64(0.95));
+    let beta_x = spec.characteristic_tilt_strength_beta_x;
+    let w0 = spec
+        .outside_asset_portfolio_weight_w0
+        .min_val(T::from_f64(0.95))
+        .max_val(T::from_f64(0.01));
+    let theta = spec
+        .active_institutional_aum_share_theta
+        .min_val(T::from_f64(0.99))
+        .max_val(T::from_f64(0.05));
+    let df = spec.inelastic_passive_flow_shock_f;
+
+    let delta_i = beta0 * me_be + beta_x * (prof - half * beta_m);
+    let e_delta = delta_i.exp();
+    let w_i = (one - w0) * (e_delta / (one + e_delta));
+
+    let elast = (one - theta * beta0 * (one - w_i)).max_val(T::from_f64(0.05));
+    let mult = one / elast;
+    let d_ln_p = mult * (df + T::from_f64(0.10) * (w_i - w0));
+
+    KoijenYogoDemandSystemAssetPricingAnalytics {
+        institutional_logit_portfolio_weight: w_i,
+        aggregate_demand_price_elasticity: elast,
+        price_inelasticity_multiplier: mult,
+        equilibrium_log_price_impact: d_ln_p,
+    }
+}
+
+#[cfg(test)]
+mod koijen_yogo_demand_system_asset_pricing_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn koijen_yogo_demand_system_asset_pricing_invariants_and_ad_parity() {
+        let base = KoijenYogoDemandSystemAssetPricingSpec {
+            log_market_to_book_me_be: 0.65_f64,
+            beta_loading_beta_m: 1.05_f64,
+            profitability_characteristic_prof: 0.32_f64,
+            institutional_price_elasticity_coeff_beta0: -0.45_f64,
+            characteristic_tilt_strength_beta_x: 1.20_f64,
+            outside_asset_portfolio_weight_w0: 0.22_f64,
+            active_institutional_aum_share_theta: 0.68_f64,
+            inelastic_passive_flow_shock_f: 0.025_f64,
+        };
+        let r0 = evaluate_koijen_yogo_characteristic_demand_system_elasticity(&base);
+        assert!(
+            r0.institutional_logit_portfolio_weight > 0.0
+                && r0.institutional_logit_portfolio_weight < 1.0
+        );
+        assert!(r0.aggregate_demand_price_elasticity > 0.0);
+        assert!(r0.equilibrium_log_price_impact > 0.0);
+
+        let x0 = [
+            base.log_market_to_book_me_be,
+            base.beta_loading_beta_m,
+            base.profitability_characteristic_prof,
+            base.institutional_price_elasticity_coeff_beta0,
+            base.characteristic_tilt_strength_beta_x,
+            base.outside_asset_portfolio_weight_w0,
+            base.active_institutional_aum_share_theta,
+            base.inelastic_passive_flow_shock_f,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_koijen_yogo_characteristic_demand_system_elasticity(
+            &KoijenYogoDemandSystemAssetPricingSpec {
+                log_market_to_book_me_be: xd[0],
+                beta_loading_beta_m: xd[1],
+                profitability_characteristic_prof: xd[2],
+                institutional_price_elasticity_coeff_beta0: xd[3],
+                characteristic_tilt_strength_beta_x: xd[4],
+                outside_asset_portfolio_weight_w0: xd[5],
+                active_institutional_aum_share_theta: xd[6],
+                inelastic_passive_flow_shock_f: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_koijen_yogo_characteristic_demand_system_elasticity(
+                &KoijenYogoDemandSystemAssetPricingSpec {
+                    log_market_to_book_me_be: xp[0],
+                    beta_loading_beta_m: xp[1],
+                    profitability_characteristic_prof: xp[2],
+                    institutional_price_elasticity_coeff_beta0: xp[3],
+                    characteristic_tilt_strength_beta_x: xp[4],
+                    outside_asset_portfolio_weight_w0: xp[5],
+                    active_institutional_aum_share_theta: xp[6],
+                    inelastic_passive_flow_shock_f: xp[7],
+                },
+            );
+            let rm = evaluate_koijen_yogo_characteristic_demand_system_elasticity(
+                &KoijenYogoDemandSystemAssetPricingSpec {
+                    log_market_to_book_me_be: xm[0],
+                    beta_loading_beta_m: xm[1],
+                    profitability_characteristic_prof: xm[2],
+                    institutional_price_elasticity_coeff_beta0: xm[3],
+                    characteristic_tilt_strength_beta_x: xm[4],
+                    outside_asset_portfolio_weight_w0: xm[5],
+                    active_institutional_aum_share_theta: xm[6],
+                    inelastic_passive_flow_shock_f: xm[7],
+                },
+            );
+            let fd =
+                (rp.equilibrium_log_price_impact - rm.equilibrium_log_price_impact) / (2.0 * h);
+            assert!(rad.equilibrium_log_price_impact.d[i].abs() > 1e-9);
+            assert!((rad.equilibrium_log_price_impact.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

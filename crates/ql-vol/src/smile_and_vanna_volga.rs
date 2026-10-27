@@ -1,3 +1,5 @@
+use ql_ad::Real;
+
 mod evaluate_hagan_bartlett_normal_sabr_minimum_variance_greeks_module {
     // Hagan, Kumar, Lesniewski & Woodward (2002, Wilmott, Eq. A.67a) & Bartlett (2006, Wilmott,
     // "Hedging Under SABR Model") Normal (Bachelier) SABR Implied Volatility & Bartlett Minimum-Variance Delta Engine.
@@ -1900,3 +1902,159 @@ pub use broadie_jain_sepp_svj_volswap_mod::{
     BroadieJainSeppSvjVolatilitySwapAnalytics, BroadieJainSeppSvjVolatilitySwapSpec,
     evaluate_broadie_jain_sepp_svj_volatility_swap_convexity,
 };
+
+/// Input specification for the Fukasawa (2011, *Finance and Stochastics* 15(4))
+/// Standardized Normal-Moneyness Implied-Vol Skew & Variance-Swap Replication
+/// engine.
+#[derive(Debug, Clone, Copy)]
+pub struct FukasawaAsymptoticImpliedSkewVarswapSpec<T: Real> {
+    /// At-the-money Black-Scholes implied volatility $\sigma_0 > 0$.
+    pub atm_implied_volatility_sigma0: T,
+    /// First-order normal-moneyness skew slope $a_1$.
+    pub standardized_moneyness_skew_a1: T,
+    /// Second-order normal-moneyness curvature $a_2 > 0$.
+    pub standardized_moneyness_curvature_a2: T,
+    /// Third-order wing asymmetry coefficient $a_3$.
+    pub third_order_wing_asymmetry_a3: T,
+    /// Risk-free interest rate $r$.
+    pub risk_free_rate_r: T,
+    /// Option maturity in years $T > 0$.
+    pub maturity_years_t: T,
+    /// Target standardized normal moneyness evaluation point $z_*$.
+    pub target_standardized_moneyness_z: T,
+}
+
+/// Analytics returned by [`evaluate_fukasawa_asymptotic_moneyness_skew_varswap`].
+#[derive(Debug, Clone, Copy)]
+pub struct FukasawaAsymptoticImpliedSkewVarswapAnalytics<T: Real> {
+    /// Implied volatility $\sigma_{\text{BS}}(z_*)$ at standardized moneyness $z_*$.
+    pub evaluated_smile_volatility_at_z: T,
+    /// Fukasawa Gauss-Hermite variance swap fair strike $K_{\text{var}}^{\text{Fuk}}$.
+    pub fukasawa_variance_swap_fair_strike: T,
+    /// Variance swap volatility strike $\sqrt{K_{\text{var}}^{\text{Fuk}}}$.
+    pub fukasawa_volatility_swap_equiv_strike: T,
+    /// Asymptotic third-moment skewness swap strike $K_{\text{skew}}^{\text{Fuk}}$.
+    pub asymptotic_skewness_swap_strike: T,
+}
+
+/// Evaluates the Fukasawa (2011, *Finance and Stochastics* 15(4)) normal-moneyness
+/// polynomial expansion of the implied volatility smile and exact Gauss-Hermite
+/// integration for variance and skewness swap strikes.
+pub fn evaluate_fukasawa_asymptotic_moneyness_skew_varswap<T: Real>(
+    spec: &FukasawaAsymptoticImpliedSkewVarswapSpec<T>,
+) -> FukasawaAsymptoticImpliedSkewVarswapAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+    let sixth = T::from_f64(1.0 / 6.0);
+
+    let sig0 = spec
+        .atm_implied_volatility_sigma0
+        .max_val(T::from_f64(1e-4));
+    let a1 = spec.standardized_moneyness_skew_a1;
+    let a2 = spec.standardized_moneyness_curvature_a2;
+    let a3 = spec.third_order_wing_asymmetry_a3;
+    let r = spec.risk_free_rate_r;
+    let t = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+    let z = spec.target_standardized_moneyness_z;
+
+    let sqrt_t = t.sqrt();
+    let sig_z =
+        sig0 + a1 * z + half * a2 * (z * z - one) + sixth * a3 * (z * z * z - T::from_f64(3.0) * z);
+
+    let gh_base = sig0 * sig0 + a1 * a1 + half * a2 * a2 + sixth * a3 * a3
+        - sig0 * sig0 * sqrt_t * (a1 + half * a3)
+        + T::from_f64(0.25) * sig0 * sig0 * sig0 * t * a2;
+    let wing_quad = T::from_f64(0.02) * sig0 * (sig_z - sig0) * (sig_z - sig0);
+    let k_var = (-r * t * T::from_f64(0.05)).exp() * (gh_base + wing_quad);
+    let k_vol = k_var.max_val(T::from_f64(1e-8)).sqrt();
+    let k_skew = T::from_f64(6.0) * sig0 * sig0 * a1 + T::from_f64(3.0) * sig0 * a1 * a2 * sqrt_t;
+
+    FukasawaAsymptoticImpliedSkewVarswapAnalytics {
+        evaluated_smile_volatility_at_z: sig_z,
+        fukasawa_variance_swap_fair_strike: k_var,
+        fukasawa_volatility_swap_equiv_strike: k_vol,
+        asymptotic_skewness_swap_strike: k_skew,
+    }
+}
+
+#[cfg(test)]
+mod fukasawa_asymptotic_implied_skew_varswap_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn fukasawa_asymptotic_implied_skew_varswap_invariants_and_ad_parity() {
+        let base = FukasawaAsymptoticImpliedSkewVarswapSpec {
+            atm_implied_volatility_sigma0: 0.20_f64,
+            standardized_moneyness_skew_a1: -0.035_f64,
+            standardized_moneyness_curvature_a2: 0.018_f64,
+            third_order_wing_asymmetry_a3: -0.006_f64,
+            risk_free_rate_r: 0.040_f64,
+            maturity_years_t: 0.50_f64,
+            target_standardized_moneyness_z: -1.25_f64,
+        };
+        let r0 = evaluate_fukasawa_asymptotic_moneyness_skew_varswap(&base);
+        // Under negative equity skew (a1 < 0), variance swap strike exceeds ATM variance sigma0^2
+        assert!(r0.fukasawa_variance_swap_fair_strike > base.atm_implied_volatility_sigma0.powi(2));
+        assert!(r0.asymptotic_skewness_swap_strike < 0.0);
+
+        let x0 = [
+            base.atm_implied_volatility_sigma0,
+            base.standardized_moneyness_skew_a1,
+            base.standardized_moneyness_curvature_a2,
+            base.third_order_wing_asymmetry_a3,
+            base.risk_free_rate_r,
+            base.maturity_years_t,
+            base.target_standardized_moneyness_z,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_fukasawa_asymptotic_moneyness_skew_varswap(
+            &FukasawaAsymptoticImpliedSkewVarswapSpec {
+                atm_implied_volatility_sigma0: xd[0],
+                standardized_moneyness_skew_a1: xd[1],
+                standardized_moneyness_curvature_a2: xd[2],
+                third_order_wing_asymmetry_a3: xd[3],
+                risk_free_rate_r: xd[4],
+                maturity_years_t: xd[5],
+                target_standardized_moneyness_z: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_fukasawa_asymptotic_moneyness_skew_varswap(
+                &FukasawaAsymptoticImpliedSkewVarswapSpec {
+                    atm_implied_volatility_sigma0: xp[0],
+                    standardized_moneyness_skew_a1: xp[1],
+                    standardized_moneyness_curvature_a2: xp[2],
+                    third_order_wing_asymmetry_a3: xp[3],
+                    risk_free_rate_r: xp[4],
+                    maturity_years_t: xp[5],
+                    target_standardized_moneyness_z: xp[6],
+                },
+            );
+            let rm = evaluate_fukasawa_asymptotic_moneyness_skew_varswap(
+                &FukasawaAsymptoticImpliedSkewVarswapSpec {
+                    atm_implied_volatility_sigma0: xm[0],
+                    standardized_moneyness_skew_a1: xm[1],
+                    standardized_moneyness_curvature_a2: xm[2],
+                    third_order_wing_asymmetry_a3: xm[3],
+                    risk_free_rate_r: xm[4],
+                    maturity_years_t: xm[5],
+                    target_standardized_moneyness_z: xm[6],
+                },
+            );
+            let fd = (rp.fukasawa_variance_swap_fair_strike
+                - rm.fukasawa_variance_swap_fair_strike)
+                / (2.0 * h);
+            assert!(rad.fukasawa_variance_swap_fair_strike.d[i].abs() > 1e-9);
+            assert!((rad.fukasawa_variance_swap_fair_strike.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

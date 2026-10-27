@@ -4134,3 +4134,162 @@ mod bollerslev_tauchen_zhou_variance_risk_premium_tests {
         }
     }
 }
+
+/// Input specification for the Gu, Kelly & Xiu (2020, *Review of Financial
+/// Studies* 33(5), "Empirical Asset Pricing via Machine Learning")
+/// Out-of-Sample Predictive $R^2_{\text{OOS}}$ & Nonlinear Characteristic
+/// Interaction engine.
+#[derive(Debug, Clone, Copy)]
+pub struct GuKellyXiuPredictiveOosR2InteractionSpec<T: Real> {
+    /// Cross-sectional rank-normalized momentum signal $z_{\text{mom}}$.
+    pub momentum_signal_z_mom: T,
+    /// Cross-sectional rank-normalized value signal $z_{\text{val}}$.
+    pub value_signal_z_val: T,
+    /// Macroeconomic conditioning predictor $x_{m,t} > 0$.
+    pub macro_equity_premium_spread_x_m: T,
+    /// Linear additive feature weight $w_1 > 0$.
+    pub linear_feature_weight_w1: T,
+    /// Nonlinear tree/neural characteristic interaction weight $w_{12} > 0$.
+    pub nonlinear_interaction_weight_w12: T,
+    /// Out-of-sample L2 complexity regularization parameter $\lambda_{\text{reg}} > 0$.
+    pub l2_ridge_penalization_lambda: T,
+    /// Realized out-of-sample excess stock return $r_{i,t+1}$.
+    pub realized_excess_return_r_next: T,
+    /// Uncentered cross-sectional return dispersion benchmark $S_{\text{tot}}^2 > 0$.
+    pub cross_sectional_return_dispersion_s2: T,
+}
+
+/// Analytics returned by [`evaluate_gu_kelly_xiu_nonlinear_characteristic_oos_r2`].
+#[derive(Debug, Clone, Copy)]
+pub struct GuKellyXiuPredictiveOosR2InteractionAnalytics<T: Real> {
+    /// Linear-only benchmark return forecast $g_{\text{lin}}$.
+    pub linear_benchmark_return_forecast: T,
+    /// Regularized nonlinear interaction return forecast $g_{\text{nonlin}}$.
+    pub nonlinear_interaction_return_forecast: T,
+    /// Gu-Kelly-Xiu uncentered out-of-sample predictive $R^2_{\text{OOS}}$.
+    pub out_of_sample_predictive_r2: T,
+    /// Marginal out-of-sample $R^2$ gain from nonlinear characteristic interactions $\Delta R^2_{\text{inter}}$.
+    pub marginal_interaction_r2_gain: T,
+}
+
+/// Evaluates the Gu, Kelly & Xiu (2020, *RFS* 33(5)) regularized nonlinear
+/// characteristic-macro interaction forecast and uncentered out-of-sample
+/// predictive $R^2_{\text{OOS}} = 1 - \sum(r_{i,t+1} - \hat{r}_{i,t+1})^2 / \sum r_{i,t+1}^2$.
+pub fn evaluate_gu_kelly_xiu_nonlinear_characteristic_oos_r2<T: Real>(
+    spec: &GuKellyXiuPredictiveOosR2InteractionSpec<T>,
+) -> GuKellyXiuPredictiveOosR2InteractionAnalytics<T> {
+    let one = T::one();
+    let zm = spec.momentum_signal_z_mom;
+    let zv = spec.value_signal_z_val;
+    let xm = spec.macro_equity_premium_spread_x_m;
+    let w1 = spec.linear_feature_weight_w1;
+    let w12 = spec.nonlinear_interaction_weight_w12;
+    let lam = spec.l2_ridge_penalization_lambda.max_val(T::zero());
+    let r_next = spec.realized_excess_return_r_next;
+    let s2 = spec
+        .cross_sectional_return_dispersion_s2
+        .max_val(T::from_f64(1e-5));
+
+    let shrink = one / (one + lam);
+    let g_lin = shrink * w1 * (zm + T::from_f64(0.8) * zv) * xm;
+    let inter_term = w12 * (zm * zv * xm) / (one + zm * zm + zv * zv).sqrt();
+    let g_nonlin = g_lin + shrink * inter_term;
+
+    let err_nonlin_sq = (r_next - g_nonlin) * (r_next - g_nonlin);
+    let err_lin_sq = (r_next - g_lin) * (r_next - g_lin);
+    let denom = s2 + r_next * r_next;
+
+    let r2_oos = one - err_nonlin_sq / denom;
+    let delta_r2 = (err_lin_sq - err_nonlin_sq) / denom;
+
+    GuKellyXiuPredictiveOosR2InteractionAnalytics {
+        linear_benchmark_return_forecast: g_lin,
+        nonlinear_interaction_return_forecast: g_nonlin,
+        out_of_sample_predictive_r2: r2_oos,
+        marginal_interaction_r2_gain: delta_r2,
+    }
+}
+
+#[cfg(test)]
+mod gu_kelly_xiu_predictive_oos_r2_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn gu_kelly_xiu_predictive_oos_r2_invariants_and_ad_parity() {
+        let base = GuKellyXiuPredictiveOosR2InteractionSpec {
+            momentum_signal_z_mom: 0.75_f64,
+            value_signal_z_val: 0.55_f64,
+            macro_equity_premium_spread_x_m: 0.028_f64,
+            linear_feature_weight_w1: 0.42_f64,
+            nonlinear_interaction_weight_w12: 0.35_f64,
+            l2_ridge_penalization_lambda: 0.15_f64,
+            realized_excess_return_r_next: 0.019_f64,
+            cross_sectional_return_dispersion_s2: 0.0085_f64,
+        };
+        let r0 = evaluate_gu_kelly_xiu_nonlinear_characteristic_oos_r2(&base);
+        assert!(r0.out_of_sample_predictive_r2 > 0.0);
+        assert!(r0.marginal_interaction_r2_gain > 0.0);
+
+        let x0 = [
+            base.momentum_signal_z_mom,
+            base.value_signal_z_val,
+            base.macro_equity_premium_spread_x_m,
+            base.linear_feature_weight_w1,
+            base.nonlinear_interaction_weight_w12,
+            base.l2_ridge_penalization_lambda,
+            base.realized_excess_return_r_next,
+            base.cross_sectional_return_dispersion_s2,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_gu_kelly_xiu_nonlinear_characteristic_oos_r2(
+            &GuKellyXiuPredictiveOosR2InteractionSpec {
+                momentum_signal_z_mom: xd[0],
+                value_signal_z_val: xd[1],
+                macro_equity_premium_spread_x_m: xd[2],
+                linear_feature_weight_w1: xd[3],
+                nonlinear_interaction_weight_w12: xd[4],
+                l2_ridge_penalization_lambda: xd[5],
+                realized_excess_return_r_next: xd[6],
+                cross_sectional_return_dispersion_s2: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_gu_kelly_xiu_nonlinear_characteristic_oos_r2(
+                &GuKellyXiuPredictiveOosR2InteractionSpec {
+                    momentum_signal_z_mom: xp[0],
+                    value_signal_z_val: xp[1],
+                    macro_equity_premium_spread_x_m: xp[2],
+                    linear_feature_weight_w1: xp[3],
+                    nonlinear_interaction_weight_w12: xp[4],
+                    l2_ridge_penalization_lambda: xp[5],
+                    realized_excess_return_r_next: xp[6],
+                    cross_sectional_return_dispersion_s2: xp[7],
+                },
+            );
+            let rm = evaluate_gu_kelly_xiu_nonlinear_characteristic_oos_r2(
+                &GuKellyXiuPredictiveOosR2InteractionSpec {
+                    momentum_signal_z_mom: xm[0],
+                    value_signal_z_val: xm[1],
+                    macro_equity_premium_spread_x_m: xm[2],
+                    linear_feature_weight_w1: xm[3],
+                    nonlinear_interaction_weight_w12: xm[4],
+                    l2_ridge_penalization_lambda: xm[5],
+                    realized_excess_return_r_next: xm[6],
+                    cross_sectional_return_dispersion_s2: xm[7],
+                },
+            );
+            let fd = (rp.out_of_sample_predictive_r2 - rm.out_of_sample_predictive_r2) / (2.0 * h);
+            assert!(rad.out_of_sample_predictive_r2.d[i].abs() > 1e-9);
+            assert!((rad.out_of_sample_predictive_r2.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

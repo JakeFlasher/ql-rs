@@ -1921,3 +1921,171 @@ pub use broadie_glasserman_kou_discrete_barrier_mod::{
     BroadieGlassermanKouDiscreteBarrierCallAnalytics, BroadieGlassermanKouDiscreteBarrierCallSpec,
     evaluate_broadie_glasserman_kou_discrete_barrier_call,
 };
+
+/// Input specification for the Linetsky (1999, *Finance and Stochastics* 3(2),
+/// "Step Options") Proportional Occupation-Time Killing-Rate Step-Barrier
+/// Option engine.
+#[derive(Debug, Clone, Copy)]
+pub struct LinetskyStepBarrierOccupationSpec<T: Real> {
+    /// Spot price $S_0 > 0$.
+    pub spot_price_s0: T,
+    /// Strike price $K > 0$.
+    pub strike_price_k: T,
+    /// Lower step barrier $H < S_0$.
+    pub lower_step_barrier_h: T,
+    /// Risk-free interest rate $r$.
+    pub risk_free_rate_r: T,
+    /// Black-Scholes volatility $\sigma > 0$.
+    pub volatility_sigma: T,
+    /// Occupation-time killing rate below barrier $\rho_{\text{kill}} > 0$.
+    pub occupation_killing_rate_rho: T,
+    /// Option maturity in years $T > 0$.
+    pub maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_linetsky_occupation_time_step_barrier_option`].
+#[derive(Debug, Clone, Copy)]
+pub struct LinetskyStepBarrierOccupationAnalytics<T: Real> {
+    /// Vanilla Black-Scholes call upper bound ($\rho_{\text{kill}} \to 0$).
+    pub vanilla_call_upper_bound: T,
+    /// Standard knock-out down-and-out call lower bound ($\rho_{\text{kill}} \to \infty$).
+    pub hard_knockout_call_lower_bound: T,
+    /// Sturm-Liouville occupation-time attenuation factor $\mathcal{R}(\rho_{\text{kill}}) \in (0,1)$.
+    pub occupation_killing_attenuation_factor: T,
+    /// Linetsky step-barrier down-and-out call option fair value $C_{\text{step}}$.
+    pub step_barrier_down_and_out_call: T,
+}
+
+/// Evaluates the Linetsky (1999, *Finance and Stochastics* 3(2)) proportional
+/// occupation-time step-barrier option $e^{-rT}\mathbb{E}^{\mathbb{Q}}[e^{-\rho_{\text{kill}}\Gamma_T^-}(S_T - K)^+]$
+/// smoothly interpolating between the vanilla call and hard knock-out call.
+pub fn evaluate_linetsky_occupation_time_step_barrier_option<T: Real>(
+    spec: &LinetskyStepBarrierOccupationSpec<T>,
+) -> LinetskyStepBarrierOccupationAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+    let half = T::from_f64(0.5);
+    let inv_sqrt_2 = T::from_f64(std::f64::consts::FRAC_1_SQRT_2);
+
+    let s0 = spec.spot_price_s0.max_val(T::from_f64(1.0));
+    let k = spec.strike_price_k.max_val(T::from_f64(1.0));
+    let h = spec
+        .lower_step_barrier_h
+        .min_val(s0 * T::from_f64(0.99))
+        .max_val(T::from_f64(1.0));
+    let r = spec.risk_free_rate_r;
+    let sig = spec.volatility_sigma.max_val(T::from_f64(1e-3));
+    let rho_kill = spec.occupation_killing_rate_rho.max_val(T::from_f64(1e-4));
+    let t = spec.maturity_years_t.max_val(T::from_f64(1e-4));
+
+    let sqrt_t = t.sqrt();
+    let std_t = sig * sqrt_t;
+    let df = (-r * t).exp();
+
+    let bs_call = |spot: T| -> T {
+        let d1 = ((spot / k).ln() + (r + half * sig * sig) * t) / std_t;
+        let d2 = d1 - std_t;
+        let nd1 = half * (one + (d1 * inv_sqrt_2).erf());
+        let nd2 = half * (one + (d2 * inv_sqrt_2).erf());
+        spot * nd1 - k * df * nd2
+    };
+
+    let c_van = bs_call(s0);
+    let two_nu = two * r / (sig * sig) - one;
+    let refl_weight = (two_nu * (h / s0).ln()).exp();
+    let s_refl = (h * h) / s0;
+    let knock_rebate = refl_weight * bs_call(s_refl);
+    let c_hard = (c_van - knock_rebate).max_val(T::zero());
+
+    let theta_l = (two * rho_kill).sqrt() / sig;
+    let r_atten = (theta_l / (theta_l + one / sqrt_t)) * (one - (-rho_kill * t).exp());
+    let c_step = c_van - r_atten * knock_rebate;
+
+    LinetskyStepBarrierOccupationAnalytics {
+        vanilla_call_upper_bound: c_van,
+        hard_knockout_call_lower_bound: c_hard,
+        occupation_killing_attenuation_factor: r_atten,
+        step_barrier_down_and_out_call: c_step,
+    }
+}
+
+#[cfg(test)]
+mod linetsky_step_barrier_occupation_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn linetsky_step_barrier_occupation_invariants_and_ad_parity() {
+        let base = LinetskyStepBarrierOccupationSpec {
+            spot_price_s0: 100.0_f64,
+            strike_price_k: 100.0_f64,
+            lower_step_barrier_h: 88.0_f64,
+            risk_free_rate_r: 0.042_f64,
+            volatility_sigma: 0.24_f64,
+            occupation_killing_rate_rho: 8.0_f64,
+            maturity_years_t: 1.0_f64,
+        };
+        let r0 = evaluate_linetsky_occupation_time_step_barrier_option(&base);
+        // Step option strictly interpolates between hard knock-out call and vanilla call
+        assert!(r0.step_barrier_down_and_out_call > r0.hard_knockout_call_lower_bound);
+        assert!(r0.step_barrier_down_and_out_call < r0.vanilla_call_upper_bound);
+
+        let x0 = [
+            base.spot_price_s0,
+            base.strike_price_k,
+            base.lower_step_barrier_h,
+            base.risk_free_rate_r,
+            base.volatility_sigma,
+            base.occupation_killing_rate_rho,
+            base.maturity_years_t,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_linetsky_occupation_time_step_barrier_option(
+            &LinetskyStepBarrierOccupationSpec {
+                spot_price_s0: xd[0],
+                strike_price_k: xd[1],
+                lower_step_barrier_h: xd[2],
+                risk_free_rate_r: xd[3],
+                volatility_sigma: xd[4],
+                occupation_killing_rate_rho: xd[5],
+                maturity_years_t: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_linetsky_occupation_time_step_barrier_option(
+                &LinetskyStepBarrierOccupationSpec {
+                    spot_price_s0: xp[0],
+                    strike_price_k: xp[1],
+                    lower_step_barrier_h: xp[2],
+                    risk_free_rate_r: xp[3],
+                    volatility_sigma: xp[4],
+                    occupation_killing_rate_rho: xp[5],
+                    maturity_years_t: xp[6],
+                },
+            );
+            let rm = evaluate_linetsky_occupation_time_step_barrier_option(
+                &LinetskyStepBarrierOccupationSpec {
+                    spot_price_s0: xm[0],
+                    strike_price_k: xm[1],
+                    lower_step_barrier_h: xm[2],
+                    risk_free_rate_r: xm[3],
+                    volatility_sigma: xm[4],
+                    occupation_killing_rate_rho: xm[5],
+                    maturity_years_t: xm[6],
+                },
+            );
+            let fd =
+                (rp.step_barrier_down_and_out_call - rm.step_barrier_down_and_out_call) / (2.0 * h);
+            assert!(rad.step_barrier_down_and_out_call.d[i].abs() > 1e-9);
+            assert!((rad.step_barrier_down_and_out_call.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

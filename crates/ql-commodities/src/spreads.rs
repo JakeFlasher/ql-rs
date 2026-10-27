@@ -3424,3 +3424,180 @@ pub use routledge_seppi_spatt_storage_mod::{
     RoutledgeSeppiSpattCompetitiveStorageAnalytics, RoutledgeSeppiSpattCompetitiveStorageSpec,
     evaluate_routledge_seppi_spatt_competitive_storage_equilibrium,
 };
+
+/// Input specification for the Pirrong (2012, *Commodity Price Dynamics: A
+/// Structural Approach*) Endogenous Inventory-Scarcity Variance-Skewness Spread
+/// Option engine.
+#[derive(Debug, Clone, Copy)]
+pub struct PirrongStructuralInventorySkewSpreadSpec<T: Real> {
+    /// Prompt futures price $F_1 > 0$.
+    pub prompt_futures_f1: T,
+    /// Deferred futures price $F_2 > 0$.
+    pub deferred_futures_f2: T,
+    /// Calendar spread strike $K$.
+    pub spread_strike_k: T,
+    /// Normalized inventory scarcity index $z_{\text{inv}} = I^*/I_t > 0$.
+    pub normalized_inventory_scarcity_z_inv: T,
+    /// Baseline abundant-inventory prompt volatility $\sigma_1 > 0$.
+    pub baseline_prompt_vol_sigma1: T,
+    /// Deferred futures volatility $\sigma_2 > 0$.
+    pub deferred_vol_sigma2: T,
+    /// Baseline abundant-inventory calendar correlation $\rho_0 \in (-1,1)$.
+    pub baseline_correlation_rho0: T,
+    /// Stockout scarcity decorrelation sensitivity $\psi_{\text{decorr}} > 0$.
+    pub scarcity_decorrelation_sensitivity_psi: T,
+}
+
+/// Analytics returned by [`evaluate_pirrong_structural_inventory_skew_spread_option`].
+#[derive(Debug, Clone, Copy)]
+pub struct PirrongStructuralInventorySkewSpreadAnalytics<T: Real> {
+    /// Scarcity-amplified prompt futures volatility $\sigma_{1,\text{eff}}$.
+    pub scarcity_amplified_prompt_volatility: T,
+    /// Scarcity-attenuated calendar correlation $\rho_{\text{eff}}$.
+    pub scarcity_attenuated_correlation: T,
+    /// Effective calendar spread dollar volatility $\sigma_{\text{spread}}$.
+    pub effective_calendar_spread_volatility: T,
+    /// Scarcity-induced positive skewness premium $\Delta_{\text{skew}}$.
+    pub stockout_skewness_spread_premium: T,
+    /// Pirrong structural calendar spread call option value $C_{\text{Pirrong}}$.
+    pub pirrong_calendar_spread_call_value: T,
+}
+
+/// Evaluates the Pirrong (2012, *Commodity Price Dynamics: A Structural Approach*)
+/// endogenous inventory-scarcity calendar spread option model capturing both
+/// stockout prompt volatility spikes and forward-curve decorrelation.
+pub fn evaluate_pirrong_structural_inventory_skew_spread_option<T: Real>(
+    spec: &PirrongStructuralInventorySkewSpreadSpec<T>,
+) -> PirrongStructuralInventorySkewSpreadAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+    let half = T::from_f64(0.5);
+    let inv_sqrt_2 = T::from_f64(std::f64::consts::FRAC_1_SQRT_2);
+    let inv_sqrt_2pi = T::from_f64(0.3989422804014327);
+
+    let f1 = spec.prompt_futures_f1.max_val(T::from_f64(1.0));
+    let f2 = spec.deferred_futures_f2.max_val(T::from_f64(1.0));
+    let k = spec.spread_strike_k;
+    let z_inv = spec
+        .normalized_inventory_scarcity_z_inv
+        .max_val(T::from_f64(1e-4));
+    let sig1 = spec.baseline_prompt_vol_sigma1.max_val(T::from_f64(1e-4));
+    let sig2 = spec.deferred_vol_sigma2.max_val(T::from_f64(1e-4));
+    let rho0 = spec
+        .baseline_correlation_rho0
+        .min_val(T::from_f64(0.995))
+        .max_val(T::from_f64(-0.995));
+    let psi = spec
+        .scarcity_decorrelation_sensitivity_psi
+        .max_val(T::from_f64(1e-4));
+
+    let sig1_eff = sig1 * (one + T::from_f64(0.35) * z_inv * z_inv);
+    let rho_eff = rho0 * (-psi * z_inv).exp();
+
+    let v1 = sig1_eff * f1;
+    let v2 = sig2 * f2;
+    let var_spread = (v1 * v1 + v2 * v2 - two * rho_eff * v1 * v2).max_val(T::from_f64(1e-6));
+    let sig_spread = var_spread.sqrt();
+
+    let skew_prem = T::from_f64(0.08) * z_inv * (v1 - v2) * (v1 - v2) / sig_spread;
+    let m_eff = f1 - f2 - k + skew_prem;
+    let d = m_eff / sig_spread;
+    let nd = half * (one + (d * inv_sqrt_2).erf());
+    let pdf_d = inv_sqrt_2pi * (-half * d * d).exp();
+    let call_val = m_eff * nd + sig_spread * pdf_d;
+
+    PirrongStructuralInventorySkewSpreadAnalytics {
+        scarcity_amplified_prompt_volatility: sig1_eff,
+        scarcity_attenuated_correlation: rho_eff,
+        effective_calendar_spread_volatility: sig_spread,
+        stockout_skewness_spread_premium: skew_prem,
+        pirrong_calendar_spread_call_value: call_val,
+    }
+}
+
+#[cfg(test)]
+mod pirrong_structural_inventory_skew_spread_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn pirrong_structural_inventory_skew_spread_invariants_and_ad_parity() {
+        let base = PirrongStructuralInventorySkewSpreadSpec {
+            prompt_futures_f1: 82.0_f64,
+            deferred_futures_f2: 79.5_f64,
+            spread_strike_k: 2.0_f64,
+            normalized_inventory_scarcity_z_inv: 1.15_f64,
+            baseline_prompt_vol_sigma1: 0.28_f64,
+            deferred_vol_sigma2: 0.22_f64,
+            baseline_correlation_rho0: 0.92_f64,
+            scarcity_decorrelation_sensitivity_psi: 0.18_f64,
+        };
+        let r0 = evaluate_pirrong_structural_inventory_skew_spread_option(&base);
+        assert!(r0.scarcity_amplified_prompt_volatility > base.baseline_prompt_vol_sigma1);
+        assert!(r0.scarcity_attenuated_correlation < base.baseline_correlation_rho0);
+        assert!(r0.pirrong_calendar_spread_call_value > 0.0);
+
+        let x0 = [
+            base.prompt_futures_f1,
+            base.deferred_futures_f2,
+            base.spread_strike_k,
+            base.normalized_inventory_scarcity_z_inv,
+            base.baseline_prompt_vol_sigma1,
+            base.deferred_vol_sigma2,
+            base.baseline_correlation_rho0,
+            base.scarcity_decorrelation_sensitivity_psi,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_pirrong_structural_inventory_skew_spread_option(
+            &PirrongStructuralInventorySkewSpreadSpec {
+                prompt_futures_f1: xd[0],
+                deferred_futures_f2: xd[1],
+                spread_strike_k: xd[2],
+                normalized_inventory_scarcity_z_inv: xd[3],
+                baseline_prompt_vol_sigma1: xd[4],
+                deferred_vol_sigma2: xd[5],
+                baseline_correlation_rho0: xd[6],
+                scarcity_decorrelation_sensitivity_psi: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_pirrong_structural_inventory_skew_spread_option(
+                &PirrongStructuralInventorySkewSpreadSpec {
+                    prompt_futures_f1: xp[0],
+                    deferred_futures_f2: xp[1],
+                    spread_strike_k: xp[2],
+                    normalized_inventory_scarcity_z_inv: xp[3],
+                    baseline_prompt_vol_sigma1: xp[4],
+                    deferred_vol_sigma2: xp[5],
+                    baseline_correlation_rho0: xp[6],
+                    scarcity_decorrelation_sensitivity_psi: xp[7],
+                },
+            );
+            let rm = evaluate_pirrong_structural_inventory_skew_spread_option(
+                &PirrongStructuralInventorySkewSpreadSpec {
+                    prompt_futures_f1: xm[0],
+                    deferred_futures_f2: xm[1],
+                    spread_strike_k: xm[2],
+                    normalized_inventory_scarcity_z_inv: xm[3],
+                    baseline_prompt_vol_sigma1: xm[4],
+                    deferred_vol_sigma2: xm[5],
+                    baseline_correlation_rho0: xm[6],
+                    scarcity_decorrelation_sensitivity_psi: xm[7],
+                },
+            );
+            let fd = (rp.pirrong_calendar_spread_call_value
+                - rm.pirrong_calendar_spread_call_value)
+                / (2.0 * h);
+            assert!(rad.pirrong_calendar_spread_call_value.d[i].abs() > 1e-9);
+            assert!((rad.pirrong_calendar_spread_call_value.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

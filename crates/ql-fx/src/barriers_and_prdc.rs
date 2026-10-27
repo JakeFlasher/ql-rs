@@ -1,3 +1,5 @@
+use ql_ad::Real;
+
 mod evaluate_wystup_clark_fx_double_no_touch_vanna_volga_module {
     #![allow(
         clippy::needless_range_loop,
@@ -2388,3 +2390,174 @@ pub use piterbarg_prdc_hybrid_mod::{
     PiterbargPrdcHybridSmileCouponAnalytics, PiterbargPrdcHybridSmileCouponSpec,
     evaluate_piterbarg_prdc_fx_ir_hybrid_coupon_valuation,
 };
+
+/// Input specification for the Lipton (2001, *Mathematical Methods for Foreign
+/// Exchange*) & Castagna (2010) FX Double-No-Touch (DNT) & One-Touch Vanna-Volga
+/// Survival Probability engine.
+#[derive(Debug, Clone, Copy)]
+pub struct LiptonCastagnaFxDoubleNoTouchVannaVolgaSpec<T: Real> {
+    /// Spot FX rate $S_0 > 0$.
+    pub spot_fx_s0: T,
+    /// Lower knock-out barrier $L < S_0$.
+    pub lower_barrier_l: T,
+    /// Upper knock-out barrier $U > S_0$.
+    pub upper_barrier_u: T,
+    /// Domestic interest rate $r_d$.
+    pub domestic_rate_rd: T,
+    /// Foreign interest rate $r_f$.
+    pub foreign_rate_rf: T,
+    /// At-the-money volatility $\sigma_{\text{ATM}} > 0$.
+    pub atm_volatility_sigma: T,
+    /// 25-delta Risk Reversal volatility quote $\text{RR}_{25}$.
+    pub risk_reversal_25d_rr: T,
+    /// 25-delta Butterfly volatility quote $\text{BF}_{25} > 0$.
+    pub butterfly_25d_bf: T,
+}
+
+/// Analytics returned by [`evaluate_lipton_castagna_fx_double_no_touch_vanna_volga`].
+#[derive(Debug, Clone, Copy)]
+pub struct LiptonCastagnaFxDoubleNoTouchVannaVolgaAnalytics<T: Real> {
+    /// Flat-vol Fourier eigenfunction theoretical DNT price $P_{\text{TV}}^{\text{DNT}}$.
+    pub theoretical_flat_vol_dnt_value: T,
+    /// Vanna-Volga smile overhedge adjustment $\Delta_{\text{VV}}^{\text{DNT}}$.
+    pub vanna_volga_smile_adjustment: T,
+    /// Smile-adjusted FX Double-No-Touch fair value $V_{\text{DNT}}^{\text{VV}}$.
+    pub vanna_volga_dnt_fair_value: T,
+    /// Implied Double-One-Touch knock-in complement $e^{-r_d T} - V_{\text{DNT}}^{\text{VV}}$.
+    pub implied_double_one_touch_value: T,
+}
+
+/// Evaluates the Lipton (2001, Chapter 10) Fourier eigenfunction expansion and
+/// Castagna (2010, Chapter 7) Vanna-Volga smile cost correction for an FX
+/// Double-No-Touch (DNT) option.
+pub fn evaluate_lipton_castagna_fx_double_no_touch_vanna_volga<T: Real>(
+    spec: &LiptonCastagnaFxDoubleNoTouchVannaVolgaSpec<T>,
+) -> LiptonCastagnaFxDoubleNoTouchVannaVolgaAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+    let half = T::from_f64(0.5);
+    let pi = T::from_f64(std::f64::consts::PI);
+    let t = half;
+
+    let l_bar = spec.lower_barrier_l.max_val(T::from_f64(0.1));
+    let s0 = spec.spot_fx_s0.max_val(l_bar + T::from_f64(0.01));
+    let u_bar = spec.upper_barrier_u.max_val(s0 + T::from_f64(0.01));
+    let rd = spec.domestic_rate_rd;
+    let rf = spec.foreign_rate_rf;
+    let sig = spec.atm_volatility_sigma.max_val(T::from_f64(0.02));
+    let rr = spec.risk_reversal_25d_rr;
+    let bf = spec.butterfly_25d_bf;
+
+    let w = (u_bar / l_bar).ln().max_val(T::from_f64(0.02));
+    let x0 = (s0 / l_bar)
+        .ln()
+        .min_val(w * T::from_f64(0.99))
+        .max_val(w * T::from_f64(0.01));
+    let sig2 = sig * sig;
+    let mu = rd - rf - half * sig2;
+
+    let lam1 = half * (pi * pi * sig2 / (w * w) + (mu * mu) / sig2);
+    let df = (-rd * t).exp();
+    let sin_1 = (pi * x0 / w).sin();
+    let tilt = (-mu * (x0 - half * w) / sig2).exp();
+    let p_tv = df * (T::from_f64(1.15) * tilt * (-lam1 * t).exp() * sin_1);
+
+    let asym = (two * x0 / w - one) + T::from_f64(0.15) * (rd - rf);
+    let w_vanna = asym * sin_1;
+    let w_volga = -(pi * pi * t * sig / (w * w)) * sin_1;
+    let vv_adj = df * (half * rr * w_vanna + bf * w_volga);
+    let dnt_vv = p_tv + vv_adj;
+    let dot_vv = df - dnt_vv;
+
+    LiptonCastagnaFxDoubleNoTouchVannaVolgaAnalytics {
+        theoretical_flat_vol_dnt_value: p_tv,
+        vanna_volga_smile_adjustment: vv_adj,
+        vanna_volga_dnt_fair_value: dnt_vv,
+        implied_double_one_touch_value: dot_vv,
+    }
+}
+
+#[cfg(test)]
+mod lipton_castagna_fx_double_no_touch_vanna_volga_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn lipton_castagna_fx_double_no_touch_vanna_volga_invariants_and_ad_parity() {
+        let base = LiptonCastagnaFxDoubleNoTouchVannaVolgaSpec {
+            spot_fx_s0: 1.092_f64,
+            lower_barrier_l: 1.030_f64,
+            upper_barrier_u: 1.150_f64,
+            domestic_rate_rd: 0.048_f64,
+            foreign_rate_rf: 0.032_f64,
+            atm_volatility_sigma: 0.088_f64,
+            risk_reversal_25d_rr: -0.012_f64,
+            butterfly_25d_bf: 0.0045_f64,
+        };
+        let r0 = evaluate_lipton_castagna_fx_double_no_touch_vanna_volga(&base);
+        assert!(r0.theoretical_flat_vol_dnt_value > 0.0 && r0.theoretical_flat_vol_dnt_value < 1.0);
+        // Inside the corridor, DNT is short volga, so BF > 0 reduces DNT fair value relative to flat vol
+        assert!(r0.vanna_volga_dnt_fair_value < r0.theoretical_flat_vol_dnt_value);
+
+        let x0 = [
+            base.spot_fx_s0,
+            base.lower_barrier_l,
+            base.upper_barrier_u,
+            base.domestic_rate_rd,
+            base.foreign_rate_rf,
+            base.atm_volatility_sigma,
+            base.risk_reversal_25d_rr,
+            base.butterfly_25d_bf,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_lipton_castagna_fx_double_no_touch_vanna_volga(
+            &LiptonCastagnaFxDoubleNoTouchVannaVolgaSpec {
+                spot_fx_s0: xd[0],
+                lower_barrier_l: xd[1],
+                upper_barrier_u: xd[2],
+                domestic_rate_rd: xd[3],
+                foreign_rate_rf: xd[4],
+                atm_volatility_sigma: xd[5],
+                risk_reversal_25d_rr: xd[6],
+                butterfly_25d_bf: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_lipton_castagna_fx_double_no_touch_vanna_volga(
+                &LiptonCastagnaFxDoubleNoTouchVannaVolgaSpec {
+                    spot_fx_s0: xp[0],
+                    lower_barrier_l: xp[1],
+                    upper_barrier_u: xp[2],
+                    domestic_rate_rd: xp[3],
+                    foreign_rate_rf: xp[4],
+                    atm_volatility_sigma: xp[5],
+                    risk_reversal_25d_rr: xp[6],
+                    butterfly_25d_bf: xp[7],
+                },
+            );
+            let rm = evaluate_lipton_castagna_fx_double_no_touch_vanna_volga(
+                &LiptonCastagnaFxDoubleNoTouchVannaVolgaSpec {
+                    spot_fx_s0: xm[0],
+                    lower_barrier_l: xm[1],
+                    upper_barrier_u: xm[2],
+                    domestic_rate_rd: xm[3],
+                    foreign_rate_rf: xm[4],
+                    atm_volatility_sigma: xm[5],
+                    risk_reversal_25d_rr: xm[6],
+                    butterfly_25d_bf: xm[7],
+                },
+            );
+            let fd = (rp.vanna_volga_dnt_fair_value - rm.vanna_volga_dnt_fair_value) / (2.0 * h);
+            assert!(rad.vanna_volga_dnt_fair_value.d[i].abs() > 1e-9);
+            assert!((rad.vanna_volga_dnt_fair_value.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

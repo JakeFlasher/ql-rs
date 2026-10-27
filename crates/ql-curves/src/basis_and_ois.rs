@@ -1,3 +1,5 @@
+use ql_ad::Real;
+
 mod evaluate_adb_rbi_ndirs_and_asset_swap_basis_module {
     use ql_ad::Real;
     #[derive(Clone, Debug)]
@@ -2697,3 +2699,164 @@ pub use lyashenko_mercurio_rfr_in_arrears_mod::{
     LyashenkoMercurioRfrInArrearsCapletAnalytics, LyashenkoMercurioRfrInArrearsCapletSpec,
     evaluate_lyashenko_mercurio_rfr_in_arrears_caplet_convexity,
 };
+
+/// Input specification for the Bianchetti (2010, *Risk* 23(8)) & Mercurio
+/// (2010, *International Journal of Theoretical and Applied Finance* 13(1))
+/// Multi-Curve FRA Quanto-Basis Convexity Adjustment engine.
+#[derive(Debug, Clone, Copy)]
+pub struct BianchettiMercurioMultiCurveFraQuantoSpec<T: Real> {
+    /// OIS discounting forward rate $F_D(0; T_1, T_2)$ over $[T_1, T_2]$.
+    pub ois_forward_rate_f_d: T,
+    /// Multi-curve IBOR-OIS forward funding spread $S_0(T_1, T_2) > 0$.
+    pub ibor_funding_spread_s0: T,
+    /// Fixed FRA contract rate $K$.
+    pub fixed_fra_rate_k: T,
+    /// OIS forward rate volatility $\sigma_D > 0$.
+    pub ois_forward_volatility_sigma_d: T,
+    /// Multi-curve funding spread volatility $\sigma_S > 0$.
+    pub spread_volatility_sigma_s: T,
+    /// Correlation between OIS forward rate and funding spread $\rho_{DS} \in (-1,1)$.
+    pub ois_spread_correlation_rho: T,
+    /// Fixing time in years $T_1 > 0$.
+    pub fixing_time_years_t1: T,
+    /// Accrual year fraction $\tau = T_2 - T_1 > 0$.
+    pub accrual_fraction_tau: T,
+}
+
+/// Analytics returned by [`evaluate_bianchetti_mercurio_multi_curve_fra_quanto_convexity`].
+#[derive(Debug, Clone, Copy)]
+pub struct BianchettiMercurioMultiCurveFraQuantoAnalytics<T: Real> {
+    /// Classical single-curve textbook forward IBOR rate $L_0 = F_D + S_0$.
+    pub textbook_forward_ibor_rate: T,
+    /// Bianchetti-Mercurio multi-curve quanto-basis convexity adjustment $\Delta_{\text{BM}}$.
+    pub multi_curve_quanto_convexity_adjustment: T,
+    /// Convexity-adjusted par FRA rate $R_{\text{FRA}}^{\text{BM}}$.
+    pub adjusted_par_fra_rate: T,
+    /// OIS-discounted payer FRA present value per unit notional.
+    pub multi_curve_payer_fra_pv: T,
+}
+
+/// Evaluates the Bianchetti (2010, *Risk* 23(8)) & Mercurio (2010, *IJTAF* 13(1))
+/// multi-curve FRA valuation and quanto-like basis convexity adjustment arising
+/// from the mismatch between IBOR settlement discounting and OIS collateral discounting.
+pub fn evaluate_bianchetti_mercurio_multi_curve_fra_quanto_convexity<T: Real>(
+    spec: &BianchettiMercurioMultiCurveFraQuantoSpec<T>,
+) -> BianchettiMercurioMultiCurveFraQuantoAnalytics<T> {
+    let one = T::one();
+    let fd = spec.ois_forward_rate_f_d.max_val(T::from_f64(1e-4));
+    let s0 = spec.ibor_funding_spread_s0.max_val(T::from_f64(1e-5));
+    let k = spec.fixed_fra_rate_k;
+    let sig_d = spec
+        .ois_forward_volatility_sigma_d
+        .max_val(T::from_f64(1e-4));
+    let sig_s = spec.spread_volatility_sigma_s.max_val(T::from_f64(1e-4));
+    let rho = spec
+        .ois_spread_correlation_rho
+        .min_val(T::from_f64(0.99))
+        .max_val(T::from_f64(-0.99));
+    let t1 = spec.fixing_time_years_t1.max_val(T::from_f64(1e-4));
+    let tau = spec.accrual_fraction_tau.max_val(T::from_f64(1e-4));
+
+    let l0 = fd + s0;
+    let denom_l = one + tau * l0;
+    let denom_d = one + tau * fd;
+
+    let cov_term =
+        sig_s * sig_s * s0 + rho * sig_d * sig_s * fd + (tau * fd / denom_d) * sig_d * sig_d * s0;
+    let delta_bm = (tau * l0 / denom_l) * cov_term * t1;
+    let par_fra = l0 - delta_bm;
+
+    let p_d_t2 = (-fd * (t1 + tau)).exp();
+    let pv = p_d_t2 * (tau * denom_d / denom_l) * (par_fra - k);
+
+    BianchettiMercurioMultiCurveFraQuantoAnalytics {
+        textbook_forward_ibor_rate: l0,
+        multi_curve_quanto_convexity_adjustment: delta_bm,
+        adjusted_par_fra_rate: par_fra,
+        multi_curve_payer_fra_pv: pv,
+    }
+}
+
+#[cfg(test)]
+mod bianchetti_mercurio_multi_curve_fra_quanto_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn bianchetti_mercurio_multi_curve_fra_quanto_invariants_and_ad_parity() {
+        let base = BianchettiMercurioMultiCurveFraQuantoSpec {
+            ois_forward_rate_f_d: 0.038_f64,
+            ibor_funding_spread_s0: 0.0045_f64,
+            fixed_fra_rate_k: 0.040_f64,
+            ois_forward_volatility_sigma_d: 0.22_f64,
+            spread_volatility_sigma_s: 0.35_f64,
+            ois_spread_correlation_rho: -0.25_f64,
+            fixing_time_years_t1: 1.5_f64,
+            accrual_fraction_tau: 0.50_f64,
+        };
+        let r0 = evaluate_bianchetti_mercurio_multi_curve_fra_quanto_convexity(&base);
+        assert!(r0.multi_curve_quanto_convexity_adjustment.abs() > 1e-8);
+        assert!(r0.multi_curve_payer_fra_pv > 0.0);
+
+        let x0 = [
+            base.ois_forward_rate_f_d,
+            base.ibor_funding_spread_s0,
+            base.fixed_fra_rate_k,
+            base.ois_forward_volatility_sigma_d,
+            base.spread_volatility_sigma_s,
+            base.ois_spread_correlation_rho,
+            base.fixing_time_years_t1,
+            base.accrual_fraction_tau,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_bianchetti_mercurio_multi_curve_fra_quanto_convexity(
+            &BianchettiMercurioMultiCurveFraQuantoSpec {
+                ois_forward_rate_f_d: xd[0],
+                ibor_funding_spread_s0: xd[1],
+                fixed_fra_rate_k: xd[2],
+                ois_forward_volatility_sigma_d: xd[3],
+                spread_volatility_sigma_s: xd[4],
+                ois_spread_correlation_rho: xd[5],
+                fixing_time_years_t1: xd[6],
+                accrual_fraction_tau: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_bianchetti_mercurio_multi_curve_fra_quanto_convexity(
+                &BianchettiMercurioMultiCurveFraQuantoSpec {
+                    ois_forward_rate_f_d: xp[0],
+                    ibor_funding_spread_s0: xp[1],
+                    fixed_fra_rate_k: xp[2],
+                    ois_forward_volatility_sigma_d: xp[3],
+                    spread_volatility_sigma_s: xp[4],
+                    ois_spread_correlation_rho: xp[5],
+                    fixing_time_years_t1: xp[6],
+                    accrual_fraction_tau: xp[7],
+                },
+            );
+            let rm = evaluate_bianchetti_mercurio_multi_curve_fra_quanto_convexity(
+                &BianchettiMercurioMultiCurveFraQuantoSpec {
+                    ois_forward_rate_f_d: xm[0],
+                    ibor_funding_spread_s0: xm[1],
+                    fixed_fra_rate_k: xm[2],
+                    ois_forward_volatility_sigma_d: xm[3],
+                    spread_volatility_sigma_s: xm[4],
+                    ois_spread_correlation_rho: xm[5],
+                    fixing_time_years_t1: xm[6],
+                    accrual_fraction_tau: xm[7],
+                },
+            );
+            let fd = (rp.multi_curve_payer_fra_pv - rm.multi_curve_payer_fra_pv) / (2.0 * h);
+            assert!(rad.multi_curve_payer_fra_pv.d[i].abs() > 1e-10);
+            assert!((rad.multi_curve_payer_fra_pv.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

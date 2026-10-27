@@ -2960,3 +2960,163 @@ mod duffie_krishnamurthy_special_repo_mod {
     }
 }
 pub use duffie_krishnamurthy_special_repo_mod::*;
+
+/// Input specification for the Acharya, Amihud & Bharath (2013, *Journal of
+/// Financial Economics* 110(2)) Stress-Regime Flight-to-Liquidity Corporate Bond
+/// Beta & Spread engine.
+#[derive(Debug, Clone, Copy)]
+pub struct AcharyaAmihudBharathLiquidityStressBondSpec<T: Real> {
+    /// Baseline structural default credit spread $s_{\text{def}} > 0$.
+    pub structural_default_spread_s_def: T,
+    /// Amihud/bid-ask bond illiquidity level $\text{ILLIQ}_i > 0$.
+    pub bond_illiquidity_level_illiq: T,
+    /// Normal-regime liquidity beta $\beta_{i,\text{liq}}^{(1)}$.
+    pub normal_regime_liquidity_beta_1: T,
+    /// Incremental stress-regime liquidity beta $\beta_{i,\text{liq}}^{(2)}$.
+    pub stress_regime_liquidity_beta_2: T,
+    /// Filtered Markov probability of financial stress regime $\pi_S \in (0,1)$.
+    pub stress_regime_probability_pi_s: T,
+    /// Market price of aggregate illiquidity risk $\lambda_{\text{liq}} > 0$.
+    pub market_illiquidity_risk_price_lambda_l: T,
+    /// Flight-to-quality spread compression wedge $\psi_{\text{FTQ}}$.
+    pub flight_to_quality_treasury_wedge_psi: T,
+    /// Corporate bond modified duration $D_{\text{mod}} > 0$.
+    pub modified_duration_d: T,
+}
+
+/// Analytics returned by [`evaluate_acharya_amihud_bharath_liquidity_stress_bond_spread`].
+#[derive(Debug, Clone, Copy)]
+pub struct AcharyaAmihudBharathLiquidityStressBondAnalytics<T: Real> {
+    /// Effective regime-weighted liquidity beta $\beta_{i,\text{liq}}^{\text{eff}} = \beta_{i,\text{liq}}^{(1)} + \pi_S\beta_{i,\text{liq}}^{(2)}$.
+    pub regime_weighted_liquidity_beta: T,
+    /// Liquidity risk premium spread component $s_{\text{liq}}$.
+    pub liquidity_risk_premium_spread: T,
+    /// Total stress-adjusted corporate bond yield spread $s_{\text{total}} = s_{\text{def}} + s_{\text{liq}}$.
+    pub stress_adjusted_corporate_bond_spread: T,
+    /// Expected bond excess return shock under stress regime transition $\Delta R_{\text{stress}}$.
+    pub expected_stress_return_impact: T,
+}
+
+/// Evaluates the Acharya, Amihud & Bharath (2013, *JFE* 110(2)) regime-switching
+/// corporate bond liquidity beta, flight-to-quality spread bifurcation, and
+/// stress-regime corporate yield spread.
+pub fn evaluate_acharya_amihud_bharath_liquidity_stress_bond_spread<T: Real>(
+    spec: &AcharyaAmihudBharathLiquidityStressBondSpec<T>,
+) -> AcharyaAmihudBharathLiquidityStressBondAnalytics<T> {
+    let s_def = spec
+        .structural_default_spread_s_def
+        .max_val(T::from_f64(1e-5));
+    let illiq = spec.bond_illiquidity_level_illiq.max_val(T::from_f64(1e-5));
+    let b1 = spec.normal_regime_liquidity_beta_1;
+    let b2 = spec.stress_regime_liquidity_beta_2;
+    let pi_s = spec
+        .stress_regime_probability_pi_s
+        .min_val(T::from_f64(0.999))
+        .max_val(T::from_f64(1e-4));
+    let lam_l = spec
+        .market_illiquidity_risk_price_lambda_l
+        .max_val(T::from_f64(1e-5));
+    let psi = spec.flight_to_quality_treasury_wedge_psi;
+    let d_mod = spec.modified_duration_d.max_val(T::from_f64(0.2));
+
+    let beta_eff = b1 + pi_s * b2;
+    let ftq_term = psi * (-illiq).exp();
+    let s_liq = (illiq / d_mod) * (T::one() + T::from_f64(5.0) * s_def) + lam_l * beta_eff
+        - pi_s * ftq_term;
+    let s_tot = s_def + s_liq;
+    let stress_ret = -d_mod * (lam_l * b2 - ftq_term + illiq * s_def) * pi_s;
+
+    AcharyaAmihudBharathLiquidityStressBondAnalytics {
+        regime_weighted_liquidity_beta: beta_eff,
+        liquidity_risk_premium_spread: s_liq,
+        stress_adjusted_corporate_bond_spread: s_tot,
+        expected_stress_return_impact: stress_ret,
+    }
+}
+
+#[cfg(test)]
+mod acharya_amihud_bharath_liquidity_stress_bond_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn acharya_amihud_bharath_liquidity_stress_bond_invariants_and_ad_parity() {
+        let base = AcharyaAmihudBharathLiquidityStressBondSpec {
+            structural_default_spread_s_def: 0.018_f64,
+            bond_illiquidity_level_illiq: 0.012_f64,
+            normal_regime_liquidity_beta_1: 0.25_f64,
+            stress_regime_liquidity_beta_2: 0.85_f64,
+            stress_regime_probability_pi_s: 0.30_f64,
+            market_illiquidity_risk_price_lambda_l: 0.015_f64,
+            flight_to_quality_treasury_wedge_psi: 0.004_f64,
+            modified_duration_d: 6.2_f64,
+        };
+        let r0 = evaluate_acharya_amihud_bharath_liquidity_stress_bond_spread(&base);
+        assert!(r0.regime_weighted_liquidity_beta > base.normal_regime_liquidity_beta_1);
+        assert!(r0.stress_adjusted_corporate_bond_spread > base.structural_default_spread_s_def);
+        assert!(r0.expected_stress_return_impact < 0.0);
+
+        let x0 = [
+            base.structural_default_spread_s_def,
+            base.bond_illiquidity_level_illiq,
+            base.normal_regime_liquidity_beta_1,
+            base.stress_regime_liquidity_beta_2,
+            base.stress_regime_probability_pi_s,
+            base.market_illiquidity_risk_price_lambda_l,
+            base.flight_to_quality_treasury_wedge_psi,
+            base.modified_duration_d,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_acharya_amihud_bharath_liquidity_stress_bond_spread(
+            &AcharyaAmihudBharathLiquidityStressBondSpec {
+                structural_default_spread_s_def: xd[0],
+                bond_illiquidity_level_illiq: xd[1],
+                normal_regime_liquidity_beta_1: xd[2],
+                stress_regime_liquidity_beta_2: xd[3],
+                stress_regime_probability_pi_s: xd[4],
+                market_illiquidity_risk_price_lambda_l: xd[5],
+                flight_to_quality_treasury_wedge_psi: xd[6],
+                modified_duration_d: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_acharya_amihud_bharath_liquidity_stress_bond_spread(
+                &AcharyaAmihudBharathLiquidityStressBondSpec {
+                    structural_default_spread_s_def: xp[0],
+                    bond_illiquidity_level_illiq: xp[1],
+                    normal_regime_liquidity_beta_1: xp[2],
+                    stress_regime_liquidity_beta_2: xp[3],
+                    stress_regime_probability_pi_s: xp[4],
+                    market_illiquidity_risk_price_lambda_l: xp[5],
+                    flight_to_quality_treasury_wedge_psi: xp[6],
+                    modified_duration_d: xp[7],
+                },
+            );
+            let rm = evaluate_acharya_amihud_bharath_liquidity_stress_bond_spread(
+                &AcharyaAmihudBharathLiquidityStressBondSpec {
+                    structural_default_spread_s_def: xm[0],
+                    bond_illiquidity_level_illiq: xm[1],
+                    normal_regime_liquidity_beta_1: xm[2],
+                    stress_regime_liquidity_beta_2: xm[3],
+                    stress_regime_probability_pi_s: xm[4],
+                    market_illiquidity_risk_price_lambda_l: xm[5],
+                    flight_to_quality_treasury_wedge_psi: xm[6],
+                    modified_duration_d: xm[7],
+                },
+            );
+            let fd = (rp.stress_adjusted_corporate_bond_spread
+                - rm.stress_adjusted_corporate_bond_spread)
+                / (2.0 * h);
+            assert!(rad.stress_adjusted_corporate_bond_spread.d[i].abs() > 1e-9);
+            assert!((rad.stress_adjusted_corporate_bond_spread.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

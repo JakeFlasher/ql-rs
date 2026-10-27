@@ -3150,3 +3150,184 @@ pub use pedersen_brigo_cds_index_option_fep_mod::{
     PedersenBrigoCdsIndexOptionFepAnalytics, PedersenBrigoCdsIndexOptionFepSpec,
     evaluate_pedersen_brigo_cds_index_option_fep_swaption,
 };
+
+/// Input specification for the Brigo & Alfonsi (2005, *Finance and Stochastics*
+/// 9(1)) Correlated CIR++ Short-Rate & Stochastic-Intensity (SSRD) CDS Valuation
+/// engine.
+#[derive(Debug, Clone, Copy)]
+pub struct BrigoAlfonsiCorrelatedCirCdsSpec<T: Real> {
+    /// Initial risk-free short rate $r_0 > 0$.
+    pub initial_short_rate_r0: T,
+    /// Initial CIR default intensity $\lambda_0 > 0$.
+    pub initial_default_intensity_lambda0: T,
+    /// Intensity mean-reversion speed $\kappa_\lambda > 0$.
+    pub intensity_mean_reversion_kappa: T,
+    /// Long-run mean default intensity $\theta_\lambda > 0$.
+    pub intensity_long_run_theta: T,
+    /// Volatility of default intensity $\sigma_\lambda > 0$.
+    pub intensity_volatility_sigma_lambda: T,
+    /// Volatility of short rate $\sigma_r > 0$.
+    pub rate_volatility_sigma_r: T,
+    /// Instantaneous correlation between short rate and default intensity $\rho_{r\lambda} \in (-1,1)$.
+    pub rate_intensity_correlation_rho: T,
+    /// Loss given default $\text{LGD} \in (0,1)$.
+    pub loss_given_default_lgd: T,
+}
+
+/// Analytics returned by [`evaluate_brigo_alfonsi_correlated_cir_stochastic_intensity_cds`].
+#[derive(Debug, Clone, Copy)]
+pub struct BrigoAlfonsiCorrelatedCirCdsAnalytics<T: Real> {
+    /// Standalone CIR 5-year survival probability $Q_{\text{CIR}}(0,T)$.
+    pub standalone_cir_survival_probability: T,
+    /// Brigo-Alfonsi Gaussian-mapped correlation decoupling factor $\mathcal{C}_{r\lambda}(T)$.
+    pub rate_intensity_correlation_correction: T,
+    /// Correlated SSRD risky RPV01 annuity $A_{\text{SSRD}}(0,T)$.
+    pub correlated_risky_rpv01_annuity: T,
+    /// Correlated SSRD par CDS spread in basis points.
+    pub correlated_ssrd_par_cds_spread_bps: T,
+}
+
+/// Evaluates the Brigo & Alfonsi (2005, *Finance and Stochastics* 9(1)) two-factor
+/// Shifted Square-Root Diffusion (SSRD) correlated stochastic interest-rate and
+/// stochastic default-intensity CDS valuation model.
+pub fn evaluate_brigo_alfonsi_correlated_cir_stochastic_intensity_cds<T: Real>(
+    spec: &BrigoAlfonsiCorrelatedCirCdsSpec<T>,
+) -> BrigoAlfonsiCorrelatedCirCdsAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+    let half = T::from_f64(0.5);
+    let t = T::from_f64(5.0);
+    let bps = T::from_f64(10_000.0);
+
+    let r0 = spec.initial_short_rate_r0.max_val(T::from_f64(1e-4));
+    let lam0 = spec
+        .initial_default_intensity_lambda0
+        .max_val(T::from_f64(1e-4));
+    let kappa = spec
+        .intensity_mean_reversion_kappa
+        .max_val(T::from_f64(0.05));
+    let theta = spec.intensity_long_run_theta.max_val(T::from_f64(1e-4));
+    let sig_l = spec
+        .intensity_volatility_sigma_lambda
+        .max_val(T::from_f64(1e-4));
+    let sig_r = spec.rate_volatility_sigma_r.max_val(T::from_f64(1e-4));
+    let rho = spec
+        .rate_intensity_correlation_rho
+        .min_val(T::from_f64(0.99))
+        .max_val(T::from_f64(-0.99));
+    let lgd = spec.loss_given_default_lgd.max_val(T::from_f64(0.05));
+
+    let gam = (kappa * kappa + two * sig_l * sig_l).sqrt();
+    let eg = (gam * t).exp();
+    let denom = (gam + kappa) * (eg - one) + two * gam;
+    let b_cir = two * (eg - one) / denom;
+    let log_a_cir = (two * kappa * theta / (sig_l * sig_l))
+        * (two * gam * (half * (kappa + gam) * t).exp() / denom).ln();
+    let q_cir = (log_a_cir - b_cir * lam0).exp();
+
+    let cov_exponent =
+        -rho * sig_r * sig_l * (r0 * lam0).sqrt() * (t * t) / (two * (one + kappa * t));
+    let corr_factor = cov_exponent.exp();
+
+    let h_eff = -(q_cir * corr_factor).ln() / t;
+    let r_eff = r0 + half * sig_r * sig_r * t * T::from_f64(0.1);
+    let rpv01 = (one - (-(r_eff + h_eff) * t).exp()) / (r_eff + h_eff);
+    let protection_leg = lgd * h_eff * rpv01 * (one + T::from_f64(0.02) * r_eff);
+    let par_cds_bps = (protection_leg / rpv01) * bps;
+
+    BrigoAlfonsiCorrelatedCirCdsAnalytics {
+        standalone_cir_survival_probability: q_cir,
+        rate_intensity_correlation_correction: corr_factor,
+        correlated_risky_rpv01_annuity: rpv01,
+        correlated_ssrd_par_cds_spread_bps: par_cds_bps,
+    }
+}
+
+#[cfg(test)]
+mod brigo_alfonsi_correlated_cir_cds_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn brigo_alfonsi_correlated_cir_cds_invariants_and_ad_parity() {
+        let base = BrigoAlfonsiCorrelatedCirCdsSpec {
+            initial_short_rate_r0: 0.036_f64,
+            initial_default_intensity_lambda0: 0.022_f64,
+            intensity_mean_reversion_kappa: 0.65_f64,
+            intensity_long_run_theta: 0.028_f64,
+            intensity_volatility_sigma_lambda: 0.18_f64,
+            rate_volatility_sigma_r: 0.08_f64,
+            rate_intensity_correlation_rho: -0.35_f64,
+            loss_given_default_lgd: 0.60_f64,
+        };
+        let r0 = evaluate_brigo_alfonsi_correlated_cir_stochastic_intensity_cds(&base);
+        assert!(
+            r0.standalone_cir_survival_probability > 0.0
+                && r0.standalone_cir_survival_probability < 1.0
+        );
+        assert!(r0.correlated_ssrd_par_cds_spread_bps > 0.0);
+
+        let x0 = [
+            base.initial_short_rate_r0,
+            base.initial_default_intensity_lambda0,
+            base.intensity_mean_reversion_kappa,
+            base.intensity_long_run_theta,
+            base.intensity_volatility_sigma_lambda,
+            base.rate_volatility_sigma_r,
+            base.rate_intensity_correlation_rho,
+            base.loss_given_default_lgd,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_brigo_alfonsi_correlated_cir_stochastic_intensity_cds(
+            &BrigoAlfonsiCorrelatedCirCdsSpec {
+                initial_short_rate_r0: xd[0],
+                initial_default_intensity_lambda0: xd[1],
+                intensity_mean_reversion_kappa: xd[2],
+                intensity_long_run_theta: xd[3],
+                intensity_volatility_sigma_lambda: xd[4],
+                rate_volatility_sigma_r: xd[5],
+                rate_intensity_correlation_rho: xd[6],
+                loss_given_default_lgd: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_brigo_alfonsi_correlated_cir_stochastic_intensity_cds(
+                &BrigoAlfonsiCorrelatedCirCdsSpec {
+                    initial_short_rate_r0: xp[0],
+                    initial_default_intensity_lambda0: xp[1],
+                    intensity_mean_reversion_kappa: xp[2],
+                    intensity_long_run_theta: xp[3],
+                    intensity_volatility_sigma_lambda: xp[4],
+                    rate_volatility_sigma_r: xp[5],
+                    rate_intensity_correlation_rho: xp[6],
+                    loss_given_default_lgd: xp[7],
+                },
+            );
+            let rm = evaluate_brigo_alfonsi_correlated_cir_stochastic_intensity_cds(
+                &BrigoAlfonsiCorrelatedCirCdsSpec {
+                    initial_short_rate_r0: xm[0],
+                    initial_default_intensity_lambda0: xm[1],
+                    intensity_mean_reversion_kappa: xm[2],
+                    intensity_long_run_theta: xm[3],
+                    intensity_volatility_sigma_lambda: xm[4],
+                    rate_volatility_sigma_r: xm[5],
+                    rate_intensity_correlation_rho: xm[6],
+                    loss_given_default_lgd: xm[7],
+                },
+            );
+            let fd = (rp.correlated_ssrd_par_cds_spread_bps
+                - rm.correlated_ssrd_par_cds_spread_bps)
+                / (2.0 * h);
+            assert!(rad.correlated_ssrd_par_cds_spread_bps.d[i].abs() > 1e-9);
+            assert!((rad.correlated_ssrd_par_cds_spread_bps.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}
