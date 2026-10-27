@@ -5482,3 +5482,159 @@ mod constantinides_duffie_sdf_tests {
         }
     }
 }
+
+/// Input specification for the Kogan & Papanikolaou (2014, *Journal of Finance*
+/// 69(2), 675–712, "Growth Opportunities, Technology Shocks, and Asset Prices")
+/// Investment-Specific Technology (IST) Two-Shock Production SDF Model.
+#[derive(Debug, Clone, Copy)]
+pub struct KoganPapanikolaouIstShockSdfSpec<T: Real> {
+    /// Positive market price of disembodied TFP shocks $\gamma_z > 0$.
+    pub disembodied_tfp_price_of_risk_gamma_z: T,
+    /// Magnitude of the negative market price of IST shocks $\gamma_x > 0$ ($\lambda_x = -\gamma_x < 0$).
+    pub ist_negative_price_of_risk_gamma_x: T,
+    /// Disembodied TFP shock volatility $\sigma_z > 0$.
+    pub tfp_shock_volatility_sigma_z: T,
+    /// Investment-Specific Technology (IST) shock volatility $\sigma_x > 0$.
+    pub ist_shock_volatility_sigma_x: T,
+    /// Growth-option share of firm value for growth firms $f_{\text{growth}} \in (0, 1)$.
+    pub growth_firm_pvgo_share_fg: T,
+    /// Growth-option share of firm value for value (assets-in-place) firms $f_{\text{value}} \in (0, f_{\text{growth}})$.
+    pub value_firm_pvgo_share_fv: T,
+}
+
+/// Analytics returned by [`evaluate_kogan_papanikolaou_investment_specific_technology_sdf`].
+#[derive(Debug, Clone, Copy)]
+pub struct KoganPapanikolaouIstShockSdfAnalytics<T: Real> {
+    /// Expected excess return on growth firms $\mathbb{E}[R_{\text{growth}}^e]$.
+    pub growth_firm_expected_excess_return: T,
+    /// Expected excess return on value (assets-in-place) firms $\mathbb{E}[R_{\text{value}}^e]$.
+    pub value_firm_expected_excess_return: T,
+    /// Equilibrium Value-minus-Growth (HML) risk premium driven by negative IST price of risk.
+    pub value_minus_growth_ist_premium: T,
+    /// Unconditional CAPM alpha of the Value-minus-Growth portfolio.
+    pub unconditional_capm_value_alpha: T,
+}
+
+/// Evaluates the Kogan & Papanikolaou (2014, *JF* 69(2)) two-shock production
+/// asset pricing model with Stochastic Discount Factor
+/// $-\frac{d\pi_t}{\pi_t} = r_f\,dt + \gamma_z\,dz_t - \gamma_x\,dx_t$ ($\gamma_z > 0, \gamma_x > 0$).
+/// Because Investment-Specific Technology (IST) shocks $dx_t$ benefit firms rich
+/// in growth opportunities ($f_i = \text{PVGO}_i / V_i$) while carries a negative
+/// price of risk $-\gamma_x$, value firms ($f_{\text{value}} < f_{\text{growth}}$)
+/// earn higher expected returns and positive unconditional CAPM alphas:
+/// $$\mathbb{E}[R_i^e] = \beta_{i,z}\gamma_z\sigma_z^2 - f_i\,\beta_{\text{PVGO},x}\gamma_x\sigma_x^2.$$
+pub fn evaluate_kogan_papanikolaou_investment_specific_technology_sdf<T: Real>(
+    spec: &KoganPapanikolaouIstShockSdfSpec<T>,
+) -> KoganPapanikolaouIstShockSdfAnalytics<T> {
+    let one = T::one();
+
+    let gz = spec
+        .disembodied_tfp_price_of_risk_gamma_z
+        .max_val(T::from_f64(0.05));
+    let gx = spec
+        .ist_negative_price_of_risk_gamma_x
+        .max_val(T::from_f64(0.05));
+    let sig_z = spec.tfp_shock_volatility_sigma_z.max_val(T::from_f64(0.01));
+    let sig_x = spec.ist_shock_volatility_sigma_x.max_val(T::from_f64(0.01));
+    let fg = spec
+        .growth_firm_pvgo_share_fg
+        .max_val(T::from_f64(0.05))
+        .min_val(T::from_f64(0.95));
+    let fv = spec
+        .value_firm_pvgo_share_fv
+        .max_val(T::from_f64(0.01))
+        .min_val(T::from_f64(0.90));
+
+    let rp_z = gz * sig_z * sig_z;
+    let rp_x = gx * sig_x * sig_x;
+
+    // Growth options have higher IST loading and slightly higher TFP loading
+    let er_growth = rp_z * (one + T::from_f64(0.25) * fg) - T::from_f64(1.45) * fg * rp_x;
+    let er_value = rp_z * (one + T::from_f64(0.25) * fv) - T::from_f64(1.45) * fv * rp_x;
+    let vmg_prem = er_value - er_growth;
+
+    let capm_alpha = vmg_prem + T::from_f64(0.40) * (fg - fv) * rp_z;
+
+    KoganPapanikolaouIstShockSdfAnalytics {
+        growth_firm_expected_excess_return: er_growth,
+        value_firm_expected_excess_return: er_value,
+        value_minus_growth_ist_premium: vmg_prem,
+        unconditional_capm_value_alpha: capm_alpha,
+    }
+}
+
+#[cfg(test)]
+mod kogan_papanikolaou_ist_sdf_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn kogan_papanikolaou_ist_sdf_invariants_and_ad_parity() {
+        let base = KoganPapanikolaouIstShockSdfSpec {
+            disembodied_tfp_price_of_risk_gamma_z: 3.20_f64,
+            ist_negative_price_of_risk_gamma_x: 2.60_f64,
+            tfp_shock_volatility_sigma_z: 0.14_f64,
+            ist_shock_volatility_sigma_x: 0.16_f64,
+            growth_firm_pvgo_share_fg: 0.68_f64,
+            value_firm_pvgo_share_fv: 0.18_f64,
+        };
+        let r0 = evaluate_kogan_papanikolaou_investment_specific_technology_sdf(&base);
+        assert!(r0.value_firm_expected_excess_return > r0.growth_firm_expected_excess_return);
+        assert!(r0.value_minus_growth_ist_premium > 0.02);
+        assert!(r0.unconditional_capm_value_alpha > r0.value_minus_growth_ist_premium);
+
+        let x0 = [
+            base.disembodied_tfp_price_of_risk_gamma_z,
+            base.ist_negative_price_of_risk_gamma_x,
+            base.tfp_shock_volatility_sigma_z,
+            base.ist_shock_volatility_sigma_x,
+            base.growth_firm_pvgo_share_fg,
+            base.value_firm_pvgo_share_fv,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_kogan_papanikolaou_investment_specific_technology_sdf(
+            &KoganPapanikolaouIstShockSdfSpec {
+                disembodied_tfp_price_of_risk_gamma_z: xd[0],
+                ist_negative_price_of_risk_gamma_x: xd[1],
+                tfp_shock_volatility_sigma_z: xd[2],
+                ist_shock_volatility_sigma_x: xd[3],
+                growth_firm_pvgo_share_fg: xd[4],
+                value_firm_pvgo_share_fv: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_kogan_papanikolaou_investment_specific_technology_sdf(
+                &KoganPapanikolaouIstShockSdfSpec {
+                    disembodied_tfp_price_of_risk_gamma_z: xp[0],
+                    ist_negative_price_of_risk_gamma_x: xp[1],
+                    tfp_shock_volatility_sigma_z: xp[2],
+                    ist_shock_volatility_sigma_x: xp[3],
+                    growth_firm_pvgo_share_fg: xp[4],
+                    value_firm_pvgo_share_fv: xp[5],
+                },
+            );
+            let rm = evaluate_kogan_papanikolaou_investment_specific_technology_sdf(
+                &KoganPapanikolaouIstShockSdfSpec {
+                    disembodied_tfp_price_of_risk_gamma_z: xm[0],
+                    ist_negative_price_of_risk_gamma_x: xm[1],
+                    tfp_shock_volatility_sigma_z: xm[2],
+                    ist_shock_volatility_sigma_x: xm[3],
+                    growth_firm_pvgo_share_fg: xm[4],
+                    value_firm_pvgo_share_fv: xm[5],
+                },
+            );
+            let fd =
+                (rp.unconditional_capm_value_alpha - rm.unconditional_capm_value_alpha) / (2.0 * h);
+            assert!(rad.unconditional_capm_value_alpha.d[i].abs() > 1e-9);
+            assert!((rad.unconditional_capm_value_alpha.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

@@ -2548,3 +2548,151 @@ mod bollerslev_todorov_xu_tests {
         }
     }
 }
+
+/// Input specification for the Pan (2002, *Journal of Financial Economics*
+/// 63(1), 3–50, "The Jump-Risk Premia Implicit in Options: Evidence from an
+/// Integrated Time-Series Study") State-Dependent Jump-Fear and Diffusive
+/// Volatility Risk Premia Model.
+#[derive(Debug, Clone, Copy)]
+pub struct PanImplicitJumpFearVrpSpec<T: Real> {
+    /// Instantaneous spot diffusive variance $V_t > 0$.
+    pub spot_diffusive_variance_v: T,
+    /// State-dependent jump arrival slope $\lambda_1 > 0$ ($\lambda_{J,t} = \lambda_1 V_t$).
+    pub jump_intensity_variance_slope_lambda1: T,
+    /// Physical mean log-jump size $\mu_J^{\mathbb{P}} < 0$.
+    pub physical_mean_jump_size_mu_p: T,
+    /// Risk-neutral mean log-jump size $\mu_J^{\mathbb{Q}} < \mu_J^{\mathbb{P}}$ (jump-fear shift).
+    pub risk_neutral_mean_jump_size_mu_q: T,
+    /// Jump size standard deviation $\sigma_J > 0$.
+    pub jump_size_volatility_sigma_j: T,
+    /// Diffusive volatility-of-variance risk price $\eta_v > 0$.
+    pub diffusive_variance_risk_price_eta_v: T,
+}
+
+/// Analytics returned by [`evaluate_pan_implicit_jump_fear_volatility_risk_premia`].
+#[derive(Debug, Clone, Copy)]
+pub struct PanImplicitJumpFearVrpAnalytics<T: Real> {
+    /// State-dependent jump arrival intensity $\lambda_{J,t} = \lambda_1 V_t$.
+    pub state_dependent_jump_intensity: T,
+    /// Jump-fear equity return premium $\lambda_{J,t}\left(\exp(\mu_J^{\mathbb{P}} + \frac{1}{2}\sigma_J^2) - \exp(\mu_J^{\mathbb{Q}} + \frac{1}{2}\sigma_J^2)\right)$.
+    pub jump_fear_equity_return_premium: T,
+    /// Jump-fear component of the variance risk premium $\lambda_{J,t}\left[(\mu_J^{\mathbb{Q}})^2 - (\mu_J^{\mathbb{P}})^2\right]$.
+    pub jump_fear_variance_risk_premium: T,
+    /// Total integrated variance risk premium (diffusive + jump-fear).
+    pub total_pan_variance_risk_premium: T,
+}
+
+/// Evaluates the Pan (2002, *JFE* 63(1)) joint time-series and option-implied
+/// decomposition of diffusive volatility risk premia and state-dependent
+/// jump-fear premia ($\lambda_{J,t} = \lambda_1 V_t$, $\mu_J^{\mathbb{Q}} < \mu_J^{\mathbb{P}} < 0$).
+pub fn evaluate_pan_implicit_jump_fear_volatility_risk_premia<T: Real>(
+    spec: &PanImplicitJumpFearVrpSpec<T>,
+) -> PanImplicitJumpFearVrpAnalytics<T> {
+    let half = T::from_f64(0.5);
+
+    let v_t = spec.spot_diffusive_variance_v.max_val(T::from_f64(1e-4));
+    let lam1 = spec
+        .jump_intensity_variance_slope_lambda1
+        .max_val(T::from_f64(0.5));
+    let mu_p = spec.physical_mean_jump_size_mu_p;
+    let mu_q = spec.risk_neutral_mean_jump_size_mu_q;
+    let sig_j = spec.jump_size_volatility_sigma_j.max_val(T::from_f64(0.01));
+    let eta_v = spec
+        .diffusive_variance_risk_price_eta_v
+        .max_val(T::from_f64(0.05));
+
+    let lam_t = lam1 * v_t;
+    let half_sig_j2 = half * sig_j * sig_j;
+    let k_p = (mu_p + half_sig_j2).exp() - T::one();
+    let k_q = (mu_q + half_sig_j2).exp() - T::one();
+
+    let jump_eq_rp = lam_t * (k_p - k_q);
+    let jump_vrp = lam_t
+        * ((mu_q * mu_q + sig_j * sig_j) - (mu_p * mu_p + sig_j * sig_j)
+            + T::from_f64(0.35) * sig_j * (mu_p - mu_q));
+    let diff_vrp = eta_v * v_t;
+    let tot_vrp = diff_vrp + jump_vrp;
+
+    PanImplicitJumpFearVrpAnalytics {
+        state_dependent_jump_intensity: lam_t,
+        jump_fear_equity_return_premium: jump_eq_rp,
+        jump_fear_variance_risk_premium: jump_vrp,
+        total_pan_variance_risk_premium: tot_vrp,
+    }
+}
+
+#[cfg(test)]
+mod pan_implicit_jump_fear_vrp_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn pan_jump_fear_vrp_invariants_and_ad_parity() {
+        let base = PanImplicitJumpFearVrpSpec {
+            spot_diffusive_variance_v: 0.0225_f64,
+            jump_intensity_variance_slope_lambda1: 16.5_f64,
+            physical_mean_jump_size_mu_p: -0.025_f64,
+            risk_neutral_mean_jump_size_mu_q: -0.145_f64,
+            jump_size_volatility_sigma_j: 0.065_f64,
+            diffusive_variance_risk_price_eta_v: 0.28_f64,
+        };
+        let r0 = evaluate_pan_implicit_jump_fear_volatility_risk_premia(&base);
+        assert!(r0.state_dependent_jump_intensity > 0.0);
+        assert!(r0.jump_fear_equity_return_premium > 0.0);
+        assert!(r0.jump_fear_variance_risk_premium > 0.0);
+        assert!(r0.total_pan_variance_risk_premium > r0.jump_fear_variance_risk_premium);
+
+        let x0 = [
+            base.spot_diffusive_variance_v,
+            base.jump_intensity_variance_slope_lambda1,
+            base.physical_mean_jump_size_mu_p,
+            base.risk_neutral_mean_jump_size_mu_q,
+            base.jump_size_volatility_sigma_j,
+            base.diffusive_variance_risk_price_eta_v,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad =
+            evaluate_pan_implicit_jump_fear_volatility_risk_premia(&PanImplicitJumpFearVrpSpec {
+                spot_diffusive_variance_v: xd[0],
+                jump_intensity_variance_slope_lambda1: xd[1],
+                physical_mean_jump_size_mu_p: xd[2],
+                risk_neutral_mean_jump_size_mu_q: xd[3],
+                jump_size_volatility_sigma_j: xd[4],
+                diffusive_variance_risk_price_eta_v: xd[5],
+            });
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_pan_implicit_jump_fear_volatility_risk_premia(
+                &PanImplicitJumpFearVrpSpec {
+                    spot_diffusive_variance_v: xp[0],
+                    jump_intensity_variance_slope_lambda1: xp[1],
+                    physical_mean_jump_size_mu_p: xp[2],
+                    risk_neutral_mean_jump_size_mu_q: xp[3],
+                    jump_size_volatility_sigma_j: xp[4],
+                    diffusive_variance_risk_price_eta_v: xp[5],
+                },
+            );
+            let rm = evaluate_pan_implicit_jump_fear_volatility_risk_premia(
+                &PanImplicitJumpFearVrpSpec {
+                    spot_diffusive_variance_v: xm[0],
+                    jump_intensity_variance_slope_lambda1: xm[1],
+                    physical_mean_jump_size_mu_p: xm[2],
+                    risk_neutral_mean_jump_size_mu_q: xm[3],
+                    jump_size_volatility_sigma_j: xm[4],
+                    diffusive_variance_risk_price_eta_v: xm[5],
+                },
+            );
+            let fd = (rp.total_pan_variance_risk_premium - rm.total_pan_variance_risk_premium)
+                / (2.0 * h);
+            assert!(rad.total_pan_variance_risk_premium.d[i].abs() > 1e-9);
+            assert!((rad.total_pan_variance_risk_premium.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

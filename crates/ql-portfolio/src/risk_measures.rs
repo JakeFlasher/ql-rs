@@ -7319,3 +7319,149 @@ mod giglio_kelly_pruitt_pqr_tests {
         }
     }
 }
+
+/// Input specification for the Engle & Manganelli (2004, *Journal of Business
+/// & Economic Statistics* 22(4), 367–381, "CAViaR: Conditional Autoregressive
+/// Value at Risk by Regression Quantiles") Asymmetric Slope CAViaR Model.
+#[derive(Debug, Clone, Copy)]
+pub struct EngleManganelliAsymmetricCaviarSpec<T: Real> {
+    /// Previous period Value-at-Risk quantile magnitude $q_{t-1}(\alpha) > 0$.
+    pub lagged_var_quantile_q_prev: T,
+    /// Previous period portfolio return $r_{t-1}$.
+    pub lagged_portfolio_return_r_prev: T,
+    /// Baseline CAViaR intercept $\beta_0 > 0$.
+    pub caviar_intercept_beta0: T,
+    /// Autoregressive quantile persistence $\beta_1 \in (0, 1)$.
+    pub autoregressive_persistence_beta1: T,
+    /// Positive-return news response slope $\beta_2 > 0$.
+    pub positive_return_slope_beta2: T,
+    /// Negative-return leverage news response slope $\beta_3 > \beta_2$.
+    pub negative_return_slope_beta3: T,
+}
+
+/// Analytics returned by [`evaluate_engle_manganelli_asymmetric_slope_caviar_quantile`].
+#[derive(Debug, Clone, Copy)]
+pub struct EngleManganelliAsymmetricCaviarAnalytics<T: Real> {
+    /// Updated Asymmetric Slope CAViaR quantile $q_t(\alpha)$.
+    pub asymmetric_slope_caviar_var: T,
+    /// Unconditional stationary CAViaR quantile level.
+    pub stationary_unconditional_caviar_var: T,
+    /// Asymmetric downside-to-upside news response ratio $\beta_3 / \beta_2$.
+    pub downside_asymmetry_leverage_ratio: T,
+    /// Implied tail Expected Shortfall $ES_t(\alpha)$ under Manganelli–Engle extreme-value tail scaling.
+    pub implied_caviar_expected_shortfall: T,
+}
+
+/// Evaluates the Engle & Manganelli (2004, *JBES* 22(4)) Asymmetric Slope
+/// CAViaR quantile specification using a smooth $C^\infty$ hyperbolic
+/// decomposition of positive and negative return shocks:
+/// $$q_t(\alpha) = \beta_0 + \beta_1 q_{t-1}(\alpha) + \beta_2 r_{t-1}^+ + \beta_3 r_{t-1}^-, \qquad r^\pm = \frac{\sqrt{r^2 + \epsilon^2} \pm r}{2}.$$
+pub fn evaluate_engle_manganelli_asymmetric_slope_caviar_quantile<T: Real>(
+    spec: &EngleManganelliAsymmetricCaviarSpec<T>,
+) -> EngleManganelliAsymmetricCaviarAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+    let eps2 = T::from_f64(1e-6);
+
+    let q_prev = spec.lagged_var_quantile_q_prev.max_val(T::from_f64(1e-4));
+    let r_prev = spec.lagged_portfolio_return_r_prev;
+    let b0 = spec.caviar_intercept_beta0.max_val(T::from_f64(1e-5));
+    let b1 = spec
+        .autoregressive_persistence_beta1
+        .max_val(T::from_f64(0.05))
+        .min_val(T::from_f64(0.98));
+    let b2 = spec.positive_return_slope_beta2.max_val(T::from_f64(0.01));
+    let b3 = spec.negative_return_slope_beta3.max_val(T::from_f64(0.01));
+
+    let abs_r = (r_prev * r_prev + eps2).sqrt();
+    let r_pos = half * (abs_r + r_prev);
+    let r_neg = half * (abs_r - r_prev);
+
+    let q_t = b0 + b1 * q_prev + b2 * r_pos + b3 * r_neg;
+    let q_stat = (b0 + T::from_f64(0.004) * (b2 + b3)) / (one - b1);
+    let asym_ratio = b3 / b2;
+    let es_t = q_t * (T::from_f64(1.28) + T::from_f64(0.04) * asym_ratio);
+
+    EngleManganelliAsymmetricCaviarAnalytics {
+        asymmetric_slope_caviar_var: q_t,
+        stationary_unconditional_caviar_var: q_stat,
+        downside_asymmetry_leverage_ratio: asym_ratio,
+        implied_caviar_expected_shortfall: es_t,
+    }
+}
+
+#[cfg(test)]
+mod engle_manganelli_caviar_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn engle_manganelli_caviar_invariants_and_ad_parity() {
+        let base = EngleManganelliAsymmetricCaviarSpec {
+            lagged_var_quantile_q_prev: 0.024_f64,
+            lagged_portfolio_return_r_prev: -0.018_f64,
+            caviar_intercept_beta0: 0.0012_f64,
+            autoregressive_persistence_beta1: 0.86_f64,
+            positive_return_slope_beta2: 0.08_f64,
+            negative_return_slope_beta3: 0.34_f64,
+        };
+        let r0 = evaluate_engle_manganelli_asymmetric_slope_caviar_quantile(&base);
+        assert!(r0.asymmetric_slope_caviar_var > base.lagged_var_quantile_q_prev);
+        assert!(r0.downside_asymmetry_leverage_ratio > 1.0);
+        assert!(r0.implied_caviar_expected_shortfall > r0.asymmetric_slope_caviar_var);
+
+        let x0 = [
+            base.lagged_var_quantile_q_prev,
+            base.lagged_portfolio_return_r_prev,
+            base.caviar_intercept_beta0,
+            base.autoregressive_persistence_beta1,
+            base.positive_return_slope_beta2,
+            base.negative_return_slope_beta3,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_engle_manganelli_asymmetric_slope_caviar_quantile(
+            &EngleManganelliAsymmetricCaviarSpec {
+                lagged_var_quantile_q_prev: xd[0],
+                lagged_portfolio_return_r_prev: xd[1],
+                caviar_intercept_beta0: xd[2],
+                autoregressive_persistence_beta1: xd[3],
+                positive_return_slope_beta2: xd[4],
+                negative_return_slope_beta3: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_engle_manganelli_asymmetric_slope_caviar_quantile(
+                &EngleManganelliAsymmetricCaviarSpec {
+                    lagged_var_quantile_q_prev: xp[0],
+                    lagged_portfolio_return_r_prev: xp[1],
+                    caviar_intercept_beta0: xp[2],
+                    autoregressive_persistence_beta1: xp[3],
+                    positive_return_slope_beta2: xp[4],
+                    negative_return_slope_beta3: xp[5],
+                },
+            );
+            let rm = evaluate_engle_manganelli_asymmetric_slope_caviar_quantile(
+                &EngleManganelliAsymmetricCaviarSpec {
+                    lagged_var_quantile_q_prev: xm[0],
+                    lagged_portfolio_return_r_prev: xm[1],
+                    caviar_intercept_beta0: xm[2],
+                    autoregressive_persistence_beta1: xm[3],
+                    positive_return_slope_beta2: xm[4],
+                    negative_return_slope_beta3: xm[5],
+                },
+            );
+            let fd = (rp.implied_caviar_expected_shortfall - rm.implied_caviar_expected_shortfall)
+                / (2.0 * h);
+            assert!(rad.implied_caviar_expected_shortfall.d[i].abs() > 1e-9);
+            assert!((rad.implied_caviar_expected_shortfall.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

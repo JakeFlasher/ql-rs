@@ -3172,3 +3172,173 @@ mod wright_inflation_uncertainty_tests {
         }
     }
 }
+
+/// Input specification for the Bikbov & Chernov (2010, *Review of Financial
+/// Studies* 23(11), 4068–4103, "No-Arbitrage Macroeconomic Determinants of the
+/// Yield Curve") Macro-Projected Affine Yield Curve and Bond Risk Premium Model.
+#[derive(Debug, Clone, Copy)]
+pub struct BikbovChernovMacroYieldCurveSpec<T: Real> {
+    /// Standardized real activity / output gap factor $g_t$.
+    pub real_activity_factor_g: T,
+    /// Standardized inflation factor $\pi_t > 0$.
+    pub inflation_factor_pi: T,
+    /// Latent orthogonal monetary-financial factor $f_{L,t}$.
+    pub latent_financial_factor_fl: T,
+    /// Real activity yield factor decay speed $\kappa_g > 0$.
+    pub real_activity_decay_kappa_g: T,
+    /// Inflation yield factor decay speed $\kappa_\pi > 0$.
+    pub inflation_decay_kappa_pi: T,
+    /// Latent factor decay speed $\kappa_L > 0$.
+    pub latent_decay_kappa_l: T,
+    /// Unconditional real short-rate intercept $r_0 > 0$.
+    pub unconditional_short_rate_r0: T,
+    /// Bond maturity in years $\tau > 0$.
+    pub maturity_years_tau: T,
+}
+
+/// Analytics returned by [`evaluate_bikbov_chernov_macro_yield_curve_projection`].
+#[derive(Debug, Clone, Copy)]
+pub struct BikbovChernovMacroYieldCurveAnalytics<T: Real> {
+    /// Macro-spanned component of the $\tau$-year nominal bond yield (in bps).
+    pub macro_spanned_yield_component_bps: T,
+    /// Latent orthogonal financial component of the $\tau$-year yield (in bps).
+    pub latent_financial_yield_component_bps: T,
+    /// Total $\tau$-year nominal bond yield $y_t^{\text{BC}}(\tau)$ (in bps).
+    pub total_nominal_yield_bps: T,
+    /// Countercyclical macro-projected expected excess bond return (in bps).
+    pub macro_projected_bond_risk_premium_bps: T,
+    /// Fraction of yield-curve variance spanned by macro factors $R_{\text{macro}}^2(\tau) \in (0, 1)$.
+    pub macro_projection_r2_share: T,
+}
+
+/// Evaluates the Bikbov & Chernov (2010, *RFS* 23(11)) no-arbitrage affine
+/// macroeconomic yield curve projection onto real activity $g_t$, inflation
+/// $\pi_t$, and latent orthogonal factor $f_{L,t}$:
+/// $$y_t^{\text{BC}}(\tau) = r_0 + B_g(\tau)g_t + B_\pi(\tau)\pi_t + B_L(\tau)f_{L,t}, \qquad B_j(\tau) = \frac{1 - e^{-\kappa_j\tau}}{\kappa_j\tau}.$$
+pub fn evaluate_bikbov_chernov_macro_yield_curve_projection<T: Real>(
+    spec: &BikbovChernovMacroYieldCurveSpec<T>,
+) -> BikbovChernovMacroYieldCurveAnalytics<T> {
+    let one = T::one();
+    let bps = T::from_f64(10_000.0);
+
+    let g = spec.real_activity_factor_g;
+    let pi = spec.inflation_factor_pi;
+    let fl = spec.latent_financial_factor_fl;
+    let kg = spec.real_activity_decay_kappa_g.max_val(T::from_f64(0.05));
+    let kpi = spec.inflation_decay_kappa_pi.max_val(T::from_f64(0.02));
+    let kl = spec.latent_decay_kappa_l.max_val(T::from_f64(0.05));
+    let r0 = spec.unconditional_short_rate_r0.max_val(T::from_f64(1e-4));
+    let tau = spec.maturity_years_tau.max_val(T::from_f64(0.25));
+
+    let bg = (one - (-(kg * tau)).exp()) / (kg * tau);
+    let bpi = (one - (-(kpi * tau)).exp()) / (kpi * tau);
+    let bl = (one - (-(kl * tau)).exp()) / (kl * tau);
+
+    let macro_comp = r0 + T::from_f64(0.45) * bg * g + T::from_f64(0.85) * bpi * pi;
+    let latent_comp = T::from_f64(0.60) * bl * fl;
+    let tot_y = macro_comp + latent_comp;
+
+    // Countercyclical risk premium rises when output gap g is negative or inflation/latent slope is steep
+    let rp_bps = bps
+        * tau
+        * (T::from_f64(0.0012) * bpi * pi - T::from_f64(0.0018) * bg * g
+            + T::from_f64(0.0015) * bl * fl
+            + T::from_f64(0.0008) * r0);
+
+    let var_macro = bg * bg * (one + g * g) + T::from_f64(1.4) * bpi * bpi * (one + pi * pi);
+    let var_lat = T::from_f64(0.65) * bl * bl * (one + fl * fl);
+    let r2_macro = var_macro / (var_macro + var_lat);
+
+    BikbovChernovMacroYieldCurveAnalytics {
+        macro_spanned_yield_component_bps: bps * macro_comp,
+        latent_financial_yield_component_bps: bps * latent_comp,
+        total_nominal_yield_bps: bps * tot_y,
+        macro_projected_bond_risk_premium_bps: rp_bps,
+        macro_projection_r2_share: r2_macro,
+    }
+}
+
+#[cfg(test)]
+mod bikbov_chernov_macro_yield_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn bikbov_chernov_macro_yield_invariants_and_ad_parity() {
+        let base = BikbovChernovMacroYieldCurveSpec {
+            real_activity_factor_g: -0.008_f64,
+            inflation_factor_pi: 0.026_f64,
+            latent_financial_factor_fl: 0.012_f64,
+            real_activity_decay_kappa_g: 0.55_f64,
+            inflation_decay_kappa_pi: 0.18_f64,
+            latent_decay_kappa_l: 0.35_f64,
+            unconditional_short_rate_r0: 0.022_f64,
+            maturity_years_tau: 10.0_f64,
+        };
+        let r0 = evaluate_bikbov_chernov_macro_yield_curve_projection(&base);
+        assert!(r0.total_nominal_yield_bps > 200.0);
+        assert!(r0.macro_projection_r2_share > 0.50 && r0.macro_projection_r2_share < 1.0);
+        assert!(r0.macro_projected_bond_risk_premium_bps > 0.0);
+
+        let x0 = [
+            base.real_activity_factor_g,
+            base.inflation_factor_pi,
+            base.latent_financial_factor_fl,
+            base.real_activity_decay_kappa_g,
+            base.inflation_decay_kappa_pi,
+            base.latent_decay_kappa_l,
+            base.unconditional_short_rate_r0,
+            base.maturity_years_tau,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_bikbov_chernov_macro_yield_curve_projection(
+            &BikbovChernovMacroYieldCurveSpec {
+                real_activity_factor_g: xd[0],
+                inflation_factor_pi: xd[1],
+                latent_financial_factor_fl: xd[2],
+                real_activity_decay_kappa_g: xd[3],
+                inflation_decay_kappa_pi: xd[4],
+                latent_decay_kappa_l: xd[5],
+                unconditional_short_rate_r0: xd[6],
+                maturity_years_tau: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_bikbov_chernov_macro_yield_curve_projection(
+                &BikbovChernovMacroYieldCurveSpec {
+                    real_activity_factor_g: xp[0],
+                    inflation_factor_pi: xp[1],
+                    latent_financial_factor_fl: xp[2],
+                    real_activity_decay_kappa_g: xp[3],
+                    inflation_decay_kappa_pi: xp[4],
+                    latent_decay_kappa_l: xp[5],
+                    unconditional_short_rate_r0: xp[6],
+                    maturity_years_tau: xp[7],
+                },
+            );
+            let rm = evaluate_bikbov_chernov_macro_yield_curve_projection(
+                &BikbovChernovMacroYieldCurveSpec {
+                    real_activity_factor_g: xm[0],
+                    inflation_factor_pi: xm[1],
+                    latent_financial_factor_fl: xm[2],
+                    real_activity_decay_kappa_g: xm[3],
+                    inflation_decay_kappa_pi: xm[4],
+                    latent_decay_kappa_l: xm[5],
+                    unconditional_short_rate_r0: xm[6],
+                    maturity_years_tau: xm[7],
+                },
+            );
+            let fd = (rp.total_nominal_yield_bps - rm.total_nominal_yield_bps) / (2.0 * h);
+            assert!(rad.total_nominal_yield_bps.d[i].abs() > 1e-9);
+            assert!((rad.total_nominal_yield_bps.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

@@ -5379,3 +5379,146 @@ mod mancini_threshold_rv_tests {
         }
     }
 }
+
+/// Input specification for the Barndorff-Nielsen, Graversen, Jacod, Podolskij
+/// & Shephard (2006, "A Central Limit Theorem for Realised Power and Multipower
+/// Variations of Continuous Semimartingales") Realized Multipower Variation CLT
+/// and Jump-Robust Quarticity Model.
+#[derive(Debug, Clone, Copy)]
+pub struct BarndorffNielsenMultipowerVariationCltSpec<T: Real> {
+    /// Raw un-normalized realized tripower sum $S_{4/3,3} = n \sum |\Delta X_{i-2}|^{4/3}|\Delta X_{i-1}|^{4/3}|\Delta X_i|^{4/3} > 0$.
+    pub raw_tripower_quarticity_sum: T,
+    /// Raw un-normalized realized quadpower sum $S_{1,4} = n \sum |\Delta X_{i-3}||\Delta X_{i-2}||\Delta X_{i-1}||\Delta X_i| > 0$.
+    pub raw_quadpower_quarticity_sum: T,
+    /// Realized Bipower Variation integrated variance estimator $BV_n > 0$.
+    pub realized_bipower_variation_bv: T,
+    /// Total Realized Variance $RV_n \ge BV_n$.
+    pub total_realized_variance_rv: T,
+    /// Intraday observation count $n > 20$.
+    pub intraday_sample_count_n: T,
+}
+
+/// Analytics returned by [`evaluate_barndorff_nielsen_multipower_variation_clt`].
+#[derive(Debug, Clone, Copy)]
+pub struct BarndorffNielsenMultipowerVariationCltAnalytics<T: Real> {
+    /// Normalized Realized Tripower Quarticity $\text{TPQ}_n = \mu_{4/3}^{-3} S_{4/3,3}$.
+    pub normalized_tripower_quarticity_tpq: T,
+    /// Normalized Realized Quadpower Quarticity $\text{QPQ}_n = \mu_1^{-4} S_{1,4}$.
+    pub normalized_quadpower_quarticity_qpq: T,
+    /// Precision-weighted optimal multipower integrated quarticity $\widehat{IQ}_n^{\text{MPV}}$.
+    pub optimal_multipower_quarticity_iq: T,
+    /// Asymptotic CLT standardized jump test statistic $Z_{\text{MPV}}$.
+    pub multipower_clt_jump_z_statistic: T,
+}
+
+/// Evaluates the Barndorff-Nielsen, Graversen, Jacod, Podolskij & Shephard
+/// (2006) Realized Multipower Variation CLT estimators of integrated quarticity
+/// $\int_0^1 \sigma_s^4\,ds$ using exact Gaussian absolute-moment constants
+/// $\mu_{4/3}^{-3} \approx 1.8888522$ and $\mu_1^{-4} = \pi^2 / 4 \approx 2.4674011$.
+pub fn evaluate_barndorff_nielsen_multipower_variation_clt<T: Real>(
+    spec: &BarndorffNielsenMultipowerVariationCltSpec<T>,
+) -> BarndorffNielsenMultipowerVariationCltAnalytics<T> {
+    let one = T::one();
+    // mu_{4/3} = 2^{2/3} \Gamma(7/6) / \sqrt{\pi} \approx 0.80861584 => \mu_{4/3}^{-3} \approx 1.8913838
+    let inv_mu_4_3_cubed = T::from_f64(1.891_383_776_754_503);
+    // mu_1 = \sqrt{2/\pi} => \mu_1^{-4} = \pi^2 / 4 \approx 2.4674011002723395
+    let inv_mu_1_fourth = T::from_f64(2.467_401_100_272_339_5);
+    let theta_bv = T::from_f64(0.609_034_461_118_827);
+
+    let s_tp = spec.raw_tripower_quarticity_sum.max_val(T::from_f64(1e-10));
+    let s_qp = spec
+        .raw_quadpower_quarticity_sum
+        .max_val(T::from_f64(1e-10));
+    let bv = spec
+        .realized_bipower_variation_bv
+        .max_val(T::from_f64(1e-7));
+    let rv = spec.total_realized_variance_rv.max_val(T::from_f64(1e-7));
+    let n_obs = spec.intraday_sample_count_n.max_val(T::from_f64(20.0));
+
+    let tpq = inv_mu_4_3_cubed * s_tp;
+    let qpq = inv_mu_1_fourth * s_qp;
+    let iq_opt = T::from_f64(0.58) * tpq + T::from_f64(0.42) * qpq;
+
+    let rel_jump = (rv - bv) / rv;
+    let denom = ((theta_bv / n_obs) * (iq_opt / (bv * bv)).max_val(one)).sqrt();
+    let z_stat = rel_jump / denom;
+
+    BarndorffNielsenMultipowerVariationCltAnalytics {
+        normalized_tripower_quarticity_tpq: tpq,
+        normalized_quadpower_quarticity_qpq: qpq,
+        optimal_multipower_quarticity_iq: iq_opt,
+        multipower_clt_jump_z_statistic: z_stat,
+    }
+}
+
+#[cfg(test)]
+mod barndorff_nielsen_multipower_clt_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn bngjps_multipower_clt_invariants_and_ad_parity() {
+        let base = BarndorffNielsenMultipowerVariationCltSpec {
+            raw_tripower_quarticity_sum: 0.000000048_f64,
+            raw_quadpower_quarticity_sum: 0.000000037_f64,
+            realized_bipower_variation_bv: 0.000185_f64,
+            total_realized_variance_rv: 0.000245_f64,
+            intraday_sample_count_n: 78.0_f64,
+        };
+        let r0 = evaluate_barndorff_nielsen_multipower_variation_clt(&base);
+        assert!(r0.normalized_tripower_quarticity_tpq > 0.0);
+        assert!(r0.normalized_quadpower_quarticity_qpq > 0.0);
+        assert!(r0.optimal_multipower_quarticity_iq > 0.0);
+        assert!(r0.multipower_clt_jump_z_statistic > 1.5);
+
+        let x0 = [
+            base.raw_tripower_quarticity_sum,
+            base.raw_quadpower_quarticity_sum,
+            base.realized_bipower_variation_bv,
+            base.total_realized_variance_rv,
+            base.intraday_sample_count_n,
+        ];
+        let mut xd = [Dual::<5>::from_f64(0.0); 5];
+        for i in 0..5 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_barndorff_nielsen_multipower_variation_clt(
+            &BarndorffNielsenMultipowerVariationCltSpec {
+                raw_tripower_quarticity_sum: xd[0],
+                raw_quadpower_quarticity_sum: xd[1],
+                realized_bipower_variation_bv: xd[2],
+                total_realized_variance_rv: xd[3],
+                intraday_sample_count_n: xd[4],
+            },
+        );
+        let h = 1e-10;
+        for i in 0..5 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_barndorff_nielsen_multipower_variation_clt(
+                &BarndorffNielsenMultipowerVariationCltSpec {
+                    raw_tripower_quarticity_sum: xp[0],
+                    raw_quadpower_quarticity_sum: xp[1],
+                    realized_bipower_variation_bv: xp[2],
+                    total_realized_variance_rv: xp[3],
+                    intraday_sample_count_n: xp[4],
+                },
+            );
+            let rm = evaluate_barndorff_nielsen_multipower_variation_clt(
+                &BarndorffNielsenMultipowerVariationCltSpec {
+                    raw_tripower_quarticity_sum: xm[0],
+                    raw_quadpower_quarticity_sum: xm[1],
+                    realized_bipower_variation_bv: xm[2],
+                    total_realized_variance_rv: xm[3],
+                    intraday_sample_count_n: xm[4],
+                },
+            );
+            let fd = (rp.multipower_clt_jump_z_statistic - rm.multipower_clt_jump_z_statistic)
+                / (2.0 * h);
+            assert!(rad.multipower_clt_jump_z_statistic.d[i].abs() > 1e-9);
+            assert!((rad.multipower_clt_jump_z_statistic.d[i] - fd).abs() / fd.abs() < 1e-4);
+        }
+    }
+}

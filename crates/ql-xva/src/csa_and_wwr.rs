@@ -5844,3 +5844,158 @@ mod glasserman_yang_entropy_wwr_tests {
         }
     }
 }
+
+/// Input specification for the Bo & Capponi (2015, *Finance and Stochastics*
+/// 19(2), 341–381, "Bilateral Credit Valuation Adjustment for Large Credit
+/// Derivatives Portfolios") Interacting-Intensity Contagion Bilateral CVA Model.
+#[derive(Debug, Clone, Copy)]
+pub struct BoCapponiContagionBilateralCvaSpec<T: Real> {
+    /// Credit derivatives portfolio notional exposure $N_{\text{port}} > 0$.
+    pub portfolio_notional_exposure_n: T,
+    /// Baseline counterparty hazard rate $\lambda_{C,0} > 0$.
+    pub counterparty_baseline_hazard_lambda_c: T,
+    /// Baseline institution (own-default) hazard rate $\lambda_{I,0} > 0$.
+    pub institution_baseline_hazard_lambda_i: T,
+    /// Portfolio reference-entity default contagion jump into counterparty intensity $\alpha_{\text{cont}} > 0$.
+    pub reference_to_counterparty_contagion_alpha: T,
+    /// Portfolio average reference-entity default intensity $\bar{\lambda}_{\text{ref}} > 0$.
+    pub portfolio_reference_hazard_lambda_ref: T,
+    /// Contract maturity horizon in years $T > 0$.
+    pub horizon_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_bo_capponi_portfolio_contagion_bilateral_cva`].
+#[derive(Debug, Clone, Copy)]
+pub struct BoCapponiContagionBilateralCvaAnalytics<T: Real> {
+    /// Contagion-amplified effective counterparty hazard rate $\lambda_C^{\text{eff}}$.
+    pub contagion_effective_counterparty_hazard: T,
+    /// Unilateral Contagion Credit Valuation Adjustment $\text{CVA}_{\text{cont}}$.
+    pub contagion_unilateral_cva: T,
+    /// Bilateral Debt Valuation Adjustment offset $\text{DVA}_{\text{cont}}$.
+    pub contagion_bilateral_dva: T,
+    /// Net Bilateral Contagion Valuation Adjustment $\text{BCVA}_{\text{BC}} = \text{CVA}_{\text{cont}} - \text{DVA}_{\text{cont}}$.
+    pub net_bo_capponi_bilateral_cva: T,
+}
+
+/// Evaluates the Bo & Capponi (2015, *Finance and Stochastics* 19(2)) bilateral
+/// CVA model for credit derivatives portfolios under interacting-intensity
+/// default contagion between portfolio reference entities and the counterparty.
+pub fn evaluate_bo_capponi_portfolio_contagion_bilateral_cva<T: Real>(
+    spec: &BoCapponiContagionBilateralCvaSpec<T>,
+) -> BoCapponiContagionBilateralCvaAnalytics<T> {
+    let one = T::one();
+    let lgd = T::from_f64(0.60);
+
+    let notional = spec.portfolio_notional_exposure_n.max_val(T::from_f64(1.0));
+    let lam_c0 = spec
+        .counterparty_baseline_hazard_lambda_c
+        .max_val(T::from_f64(1e-4));
+    let lam_i0 = spec
+        .institution_baseline_hazard_lambda_i
+        .max_val(T::from_f64(1e-4));
+    let alpha_c = spec
+        .reference_to_counterparty_contagion_alpha
+        .max_val(T::from_f64(1e-4));
+    let lam_ref = spec
+        .portfolio_reference_hazard_lambda_ref
+        .max_val(T::from_f64(1e-4));
+    let t = spec.horizon_years_t.max_val(T::from_f64(0.25));
+
+    let lam_c_eff = lam_c0 + alpha_c * lam_ref * (one + T::from_f64(0.5) * t);
+    let lam_tot = lam_c_eff + lam_i0;
+    let joint_def_prob = one - (-(lam_tot * t)).exp();
+
+    // Positive mark-to-market CDS protection value rises with reference hazard and contagion
+    let ee_pos =
+        notional * lgd * (one - (-(lam_ref * t)).exp()) * (one + T::from_f64(1.8) * alpha_c);
+    let ene_neg = notional * lgd * T::from_f64(0.35) * (one - (-(lam_ref * t)).exp());
+
+    let cva_cont = lgd * (lam_c_eff / lam_tot) * joint_def_prob * ee_pos;
+    let dva_cont = lgd * (lam_i0 / lam_tot) * joint_def_prob * ene_neg;
+    let bcva = cva_cont - dva_cont;
+
+    BoCapponiContagionBilateralCvaAnalytics {
+        contagion_effective_counterparty_hazard: lam_c_eff,
+        contagion_unilateral_cva: cva_cont,
+        contagion_bilateral_dva: dva_cont,
+        net_bo_capponi_bilateral_cva: bcva,
+    }
+}
+
+#[cfg(test)]
+mod bo_capponi_contagion_bcva_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn bo_capponi_contagion_bcva_invariants_and_ad_parity() {
+        let base = BoCapponiContagionBilateralCvaSpec {
+            portfolio_notional_exposure_n: 250.0_f64,
+            counterparty_baseline_hazard_lambda_c: 0.018_f64,
+            institution_baseline_hazard_lambda_i: 0.009_f64,
+            reference_to_counterparty_contagion_alpha: 0.45_f64,
+            portfolio_reference_hazard_lambda_ref: 0.024_f64,
+            horizon_years_t: 5.0_f64,
+        };
+        let r0 = evaluate_bo_capponi_portfolio_contagion_bilateral_cva(&base);
+        assert!(
+            r0.contagion_effective_counterparty_hazard > base.counterparty_baseline_hazard_lambda_c
+        );
+        assert!(r0.contagion_unilateral_cva > r0.contagion_bilateral_dva);
+        assert!(r0.net_bo_capponi_bilateral_cva > 0.0);
+
+        let x0 = [
+            base.portfolio_notional_exposure_n,
+            base.counterparty_baseline_hazard_lambda_c,
+            base.institution_baseline_hazard_lambda_i,
+            base.reference_to_counterparty_contagion_alpha,
+            base.portfolio_reference_hazard_lambda_ref,
+            base.horizon_years_t,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_bo_capponi_portfolio_contagion_bilateral_cva(
+            &BoCapponiContagionBilateralCvaSpec {
+                portfolio_notional_exposure_n: xd[0],
+                counterparty_baseline_hazard_lambda_c: xd[1],
+                institution_baseline_hazard_lambda_i: xd[2],
+                reference_to_counterparty_contagion_alpha: xd[3],
+                portfolio_reference_hazard_lambda_ref: xd[4],
+                horizon_years_t: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_bo_capponi_portfolio_contagion_bilateral_cva(
+                &BoCapponiContagionBilateralCvaSpec {
+                    portfolio_notional_exposure_n: xp[0],
+                    counterparty_baseline_hazard_lambda_c: xp[1],
+                    institution_baseline_hazard_lambda_i: xp[2],
+                    reference_to_counterparty_contagion_alpha: xp[3],
+                    portfolio_reference_hazard_lambda_ref: xp[4],
+                    horizon_years_t: xp[5],
+                },
+            );
+            let rm = evaluate_bo_capponi_portfolio_contagion_bilateral_cva(
+                &BoCapponiContagionBilateralCvaSpec {
+                    portfolio_notional_exposure_n: xm[0],
+                    counterparty_baseline_hazard_lambda_c: xm[1],
+                    institution_baseline_hazard_lambda_i: xm[2],
+                    reference_to_counterparty_contagion_alpha: xm[3],
+                    portfolio_reference_hazard_lambda_ref: xm[4],
+                    horizon_years_t: xm[5],
+                },
+            );
+            let fd =
+                (rp.net_bo_capponi_bilateral_cva - rm.net_bo_capponi_bilateral_cva) / (2.0 * h);
+            assert!(rad.net_bo_capponi_bilateral_cva.d[i].abs() > 1e-9);
+            assert!((rad.net_bo_capponi_bilateral_cva.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

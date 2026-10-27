@@ -4715,3 +4715,152 @@ mod damico_fan_kitsul_tips_tests {
         }
     }
 }
+
+/// Input specification for the Krishnamurthy & Vissing-Jorgensen (2012,
+/// *Journal of Political Economy* 120(2), 233–267, "The Aggregate Demand for
+/// Treasury Debt") Treasury Safety and Liquidity Convenience Yield Model.
+#[derive(Debug, Clone, Copy)]
+pub struct KrishnamurthyVissingJorgensenTreasuryConvenienceSpec<T: Real> {
+    /// Publicly held US Treasury Debt-to-GDP ratio $d_t = B_t / Y_t > 0$.
+    pub treasury_debt_to_gdp_ratio_d: T,
+    /// Maximum convenience yield asymptote at scarce debt supply $b_{\text{conv}} > 0$ (in bps).
+    pub convenience_asymptote_bps_b: T,
+    /// Exponential saturation decay slope in Debt-to-GDP $\eta_{\text{supply}} > 0$.
+    pub debt_supply_saturation_slope_eta: T,
+    /// Share of convenience yield attributable to liquidity vs. absolute safety $\omega_{\text{liq}} \in (0, 1)$.
+    pub liquidity_share_of_convenience_omega: T,
+    /// Aggregate financial market volatility / flight-to-safety demand shifter $v_{\text{vix}} > 0$.
+    pub volatility_demand_shifter_v: T,
+    /// Cyclical Baa-minus-AAA default credit component in bps $s_{\text{def,bps}} > 0$.
+    pub cyclical_default_spread_bps: T,
+}
+
+/// Analytics returned by [`evaluate_krishnamurthy_vissing_jorgensen_treasury_convenience_yield`].
+#[derive(Debug, Clone, Copy)]
+pub struct KrishnamurthyVissingJorgensenTreasuryConvenienceAnalytics<T: Real> {
+    /// Total equilibrium Treasury convenience yield $\mathcal{Y}_{\text{conv}}(d_t)$ (in bps).
+    pub total_treasury_convenience_yield_bps: T,
+    /// Liquidity component of the Treasury convenience yield $\mathcal{Y}_{\text{liq}}(d_t)$ (in bps).
+    pub liquidity_convenience_yield_bps: T,
+    /// Default-free safety component of the Treasury convenience yield $\mathcal{Y}_{\text{safe}}(d_t)$ (in bps).
+    pub safety_convenience_yield_bps: T,
+    /// Predicted Baa–Treasury corporate yield spread (in bps).
+    pub predicted_baa_treasury_spread_bps: T,
+    /// Marginal semi-elasticity of convenience yield with respect to Debt-to-GDP $-\partial\mathcal{Y}_{\text{conv}}/\partial d_t$ (in bps).
+    pub marginal_supply_semi_elasticity_bps: T,
+}
+
+/// Evaluates the Krishnamurthy & Vissing-Jorgensen (2012, *JPE* 120(2))
+/// downward-sloping aggregate demand curve for US Treasury debt convenience:
+/// $$\mathcal{Y}_{\text{conv}}(d_t) = b_{\text{conv}}\exp(-\eta_{\text{supply}} d_t)(1 + 0.65\,v_{\text{vix}}),$$
+/// decomposing the convenience yield into a liquidity premium (reflected in
+/// AAA–Treasury spreads) and a safety attribute (reflected in both AAA–Treasury
+/// and Baa–AAA spreads).
+pub fn evaluate_krishnamurthy_vissing_jorgensen_treasury_convenience_yield<T: Real>(
+    spec: &KrishnamurthyVissingJorgensenTreasuryConvenienceSpec<T>,
+) -> KrishnamurthyVissingJorgensenTreasuryConvenienceAnalytics<T> {
+    let one = T::one();
+
+    let d_gdp = spec.treasury_debt_to_gdp_ratio_d.max_val(T::from_f64(0.05));
+    let b_asy = spec.convenience_asymptote_bps_b.max_val(T::from_f64(10.0));
+    let eta = spec
+        .debt_supply_saturation_slope_eta
+        .max_val(T::from_f64(0.1));
+    let om_liq = spec
+        .liquidity_share_of_convenience_omega
+        .max_val(T::from_f64(0.05))
+        .min_val(T::from_f64(0.95));
+    let v_shift = spec.volatility_demand_shifter_v.max_val(T::from_f64(0.01));
+    let s_def = spec.cyclical_default_spread_bps.max_val(T::from_f64(5.0));
+
+    let decay = (-(eta * d_gdp)).exp();
+    let tot_conv = b_asy * decay * (one + T::from_f64(0.65) * v_shift);
+    let liq_conv = om_liq * tot_conv;
+    let safe_conv = (one - om_liq) * tot_conv;
+    let baa_tsy = tot_conv + T::from_f64(0.45) * safe_conv + s_def;
+    let marg_slope = eta * tot_conv;
+
+    KrishnamurthyVissingJorgensenTreasuryConvenienceAnalytics {
+        total_treasury_convenience_yield_bps: tot_conv,
+        liquidity_convenience_yield_bps: liq_conv,
+        safety_convenience_yield_bps: safe_conv,
+        predicted_baa_treasury_spread_bps: baa_tsy,
+        marginal_supply_semi_elasticity_bps: marg_slope,
+    }
+}
+
+#[cfg(test)]
+mod krishnamurthy_vissing_jorgensen_convenience_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn kvj_treasury_convenience_invariants_and_ad_parity() {
+        let base = KrishnamurthyVissingJorgensenTreasuryConvenienceSpec {
+            treasury_debt_to_gdp_ratio_d: 0.65_f64,
+            convenience_asymptote_bps_b: 165.0_f64,
+            debt_supply_saturation_slope_eta: 1.45_f64,
+            liquidity_share_of_convenience_omega: 0.62_f64,
+            volatility_demand_shifter_v: 0.22_f64,
+            cyclical_default_spread_bps: 115.0_f64,
+        };
+        let r0 = evaluate_krishnamurthy_vissing_jorgensen_treasury_convenience_yield(&base);
+        assert!(r0.total_treasury_convenience_yield_bps > 40.0);
+        assert!(r0.liquidity_convenience_yield_bps > r0.safety_convenience_yield_bps);
+        assert!(r0.predicted_baa_treasury_spread_bps > r0.total_treasury_convenience_yield_bps);
+
+        let x0 = [
+            base.treasury_debt_to_gdp_ratio_d,
+            base.convenience_asymptote_bps_b,
+            base.debt_supply_saturation_slope_eta,
+            base.liquidity_share_of_convenience_omega,
+            base.volatility_demand_shifter_v,
+            base.cyclical_default_spread_bps,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_krishnamurthy_vissing_jorgensen_treasury_convenience_yield(
+            &KrishnamurthyVissingJorgensenTreasuryConvenienceSpec {
+                treasury_debt_to_gdp_ratio_d: xd[0],
+                convenience_asymptote_bps_b: xd[1],
+                debt_supply_saturation_slope_eta: xd[2],
+                liquidity_share_of_convenience_omega: xd[3],
+                volatility_demand_shifter_v: xd[4],
+                cyclical_default_spread_bps: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_krishnamurthy_vissing_jorgensen_treasury_convenience_yield(
+                &KrishnamurthyVissingJorgensenTreasuryConvenienceSpec {
+                    treasury_debt_to_gdp_ratio_d: xp[0],
+                    convenience_asymptote_bps_b: xp[1],
+                    debt_supply_saturation_slope_eta: xp[2],
+                    liquidity_share_of_convenience_omega: xp[3],
+                    volatility_demand_shifter_v: xp[4],
+                    cyclical_default_spread_bps: xp[5],
+                },
+            );
+            let rm = evaluate_krishnamurthy_vissing_jorgensen_treasury_convenience_yield(
+                &KrishnamurthyVissingJorgensenTreasuryConvenienceSpec {
+                    treasury_debt_to_gdp_ratio_d: xm[0],
+                    convenience_asymptote_bps_b: xm[1],
+                    debt_supply_saturation_slope_eta: xm[2],
+                    liquidity_share_of_convenience_omega: xm[3],
+                    volatility_demand_shifter_v: xm[4],
+                    cyclical_default_spread_bps: xm[5],
+                },
+            );
+            let fd = (rp.predicted_baa_treasury_spread_bps - rm.predicted_baa_treasury_spread_bps)
+                / (2.0 * h);
+            assert!(rad.predicted_baa_treasury_spread_bps.d[i].abs() > 1e-9);
+            assert!((rad.predicted_baa_treasury_spread_bps.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

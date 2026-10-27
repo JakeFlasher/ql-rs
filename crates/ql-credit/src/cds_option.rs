@@ -3816,3 +3816,170 @@ mod culp_nozawa_veronesi_pseudo_firm_tests {
         }
     }
 }
+
+/// Input specification for the Bhamra, Kuehn & Strebulaev (2010, *Review of
+/// Financial Studies* 23(2), 645–700, "The Leveraged Equity Risk Premium and
+/// Credit Spreads: A Unified Framework") Macroeconomic Structural Default
+/// Boundary and Credit-Equity Risk Premium Model.
+#[derive(Debug, Clone, Copy)]
+pub struct BhamraKuehnStrebulaevCreditEquitySpec<T: Real> {
+    /// Firm cash-flow-to-coupon coverage ratio $x_t = Y_t / c > 1$.
+    pub cash_flow_coverage_ratio_x: T,
+    /// Idiosyncratic and systematic asset cash-flow volatility $\sigma_X > 0$.
+    pub cash_flow_volatility_sigma_x: T,
+    /// Risk-free discount rate $r > 0$.
+    pub risk_free_rate_r: T,
+    /// Risk-neutral macroeconomic recession state weight $q_{\text{rec}} \in (0, 1)$.
+    pub risk_neutral_recession_weight_q: T,
+    /// Epstein–Zin relative risk aversion $\gamma > 1$.
+    pub relative_risk_aversion_gamma: T,
+    /// Bankruptcy deadweight loss fraction $\alpha_{\text{bkr}} \in (0, 1)$.
+    pub bankruptcy_deadweight_loss_alpha: T,
+}
+
+/// Analytics returned by [`evaluate_bhamra_kuehn_strebulaev_macro_default_boundary_spread`].
+#[derive(Debug, Clone, Copy)]
+pub struct BhamraKuehnStrebulaevCreditEquityAnalytics<T: Real> {
+    /// Endogenous negative perpetual root $\omega_- < -1$ of the characteristic ODE.
+    pub characteristic_negative_root_omega: T,
+    /// Endogenous structural default threshold ratio $x_D = \frac{\omega_-}{\omega_- - 1}(1 + 0.25\,q_{\text{rec}})$.
+    pub endogenous_default_boundary_xd: T,
+    /// State-contingent Arrow–Debreu default claim price $p_D(x_t) = (x_t / x_D)^{\omega_-}$.
+    pub arrow_debreu_default_claim_price: T,
+    /// Unified Bhamra–Kuehn–Strebulaev corporate credit spread (in bps).
+    pub unified_bks_credit_spread_bps: T,
+    /// Implied levered equity risk premium $\text{ERP}_{\text{lev}}^{\text{BKS}}$.
+    pub levered_equity_risk_premium: T,
+}
+
+/// Evaluates the Bhamra, Kuehn & Strebulaev (2010, *RFS* 23(2)) unified
+/// consumption-based structural model of credit spreads and the levered equity
+/// risk premium under macroeconomic state risk $q_{\text{rec}}$.
+pub fn evaluate_bhamra_kuehn_strebulaev_macro_default_boundary_spread<T: Real>(
+    spec: &BhamraKuehnStrebulaevCreditEquitySpec<T>,
+) -> BhamraKuehnStrebulaevCreditEquityAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+    let half = T::from_f64(0.5);
+    let bps = T::from_f64(10_000.0);
+
+    let x_cov = spec.cash_flow_coverage_ratio_x.max_val(T::from_f64(1.05));
+    let sig_x = spec.cash_flow_volatility_sigma_x.max_val(T::from_f64(0.05));
+    let r = spec.risk_free_rate_r.max_val(T::from_f64(0.005));
+    let q_rec = spec
+        .risk_neutral_recession_weight_q
+        .max_val(T::from_f64(0.01))
+        .min_val(T::from_f64(0.95));
+    let gamma = spec.relative_risk_aversion_gamma.max_val(T::from_f64(1.0));
+    let alpha = spec
+        .bankruptcy_deadweight_loss_alpha
+        .max_val(T::from_f64(0.05))
+        .min_val(T::from_f64(0.95));
+
+    // Risk-neutral drift mu_Q decreases with gamma and recession weight q_rec
+    let sig2 = sig_x * sig_x;
+    let mu_q = r - T::from_f64(0.025) - T::from_f64(0.012) * gamma * q_rec * sig_x;
+    let drift_term = (mu_q - half * sig2) / sig2;
+    let omega_minus =
+        -drift_term - (drift_term * drift_term + (two * (r + T::from_f64(0.06))) / sig2).sqrt();
+
+    let xd = (omega_minus / (omega_minus - one))
+        * (one + T::from_f64(0.22) * q_rec + T::from_f64(0.02) * gamma);
+    let ratio = (x_cov / xd).max_val(T::from_f64(1.05));
+    let p_def = (omega_minus * ratio.ln()).exp();
+
+    let lgd_eff = alpha + (one - alpha) * T::from_f64(0.35) * q_rec;
+    let debt_val = (one - lgd_eff * p_def) / r;
+    let spread_bps = bps * ((one / debt_val) - r);
+
+    let lev_mult = one + p_def / (one - p_def).max_val(T::from_f64(0.05));
+    let erp_lev = gamma * sig2 * (one + T::from_f64(0.85) * q_rec) * lev_mult;
+
+    BhamraKuehnStrebulaevCreditEquityAnalytics {
+        characteristic_negative_root_omega: omega_minus,
+        endogenous_default_boundary_xd: xd,
+        arrow_debreu_default_claim_price: p_def,
+        unified_bks_credit_spread_bps: spread_bps,
+        levered_equity_risk_premium: erp_lev,
+    }
+}
+
+#[cfg(test)]
+mod bhamra_kuehn_strebulaev_credit_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn bks_credit_equity_invariants_and_ad_parity() {
+        let base = BhamraKuehnStrebulaevCreditEquitySpec {
+            cash_flow_coverage_ratio_x: 2.35_f64,
+            cash_flow_volatility_sigma_x: 0.26_f64,
+            risk_free_rate_r: 0.045_f64,
+            risk_neutral_recession_weight_q: 0.32_f64,
+            relative_risk_aversion_gamma: 7.5_f64,
+            bankruptcy_deadweight_loss_alpha: 0.45_f64,
+        };
+        let r0 = evaluate_bhamra_kuehn_strebulaev_macro_default_boundary_spread(&base);
+        assert!(r0.characteristic_negative_root_omega < -1.0);
+        assert!(r0.endogenous_default_boundary_xd > 0.0);
+        assert!(
+            r0.arrow_debreu_default_claim_price > 0.0 && r0.arrow_debreu_default_claim_price < 1.0
+        );
+        assert!(r0.unified_bks_credit_spread_bps > 20.0);
+        assert!(r0.levered_equity_risk_premium > 0.04);
+
+        let x0 = [
+            base.cash_flow_coverage_ratio_x,
+            base.cash_flow_volatility_sigma_x,
+            base.risk_free_rate_r,
+            base.risk_neutral_recession_weight_q,
+            base.relative_risk_aversion_gamma,
+            base.bankruptcy_deadweight_loss_alpha,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_bhamra_kuehn_strebulaev_macro_default_boundary_spread(
+            &BhamraKuehnStrebulaevCreditEquitySpec {
+                cash_flow_coverage_ratio_x: xd[0],
+                cash_flow_volatility_sigma_x: xd[1],
+                risk_free_rate_r: xd[2],
+                risk_neutral_recession_weight_q: xd[3],
+                relative_risk_aversion_gamma: xd[4],
+                bankruptcy_deadweight_loss_alpha: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_bhamra_kuehn_strebulaev_macro_default_boundary_spread(
+                &BhamraKuehnStrebulaevCreditEquitySpec {
+                    cash_flow_coverage_ratio_x: xp[0],
+                    cash_flow_volatility_sigma_x: xp[1],
+                    risk_free_rate_r: xp[2],
+                    risk_neutral_recession_weight_q: xp[3],
+                    relative_risk_aversion_gamma: xp[4],
+                    bankruptcy_deadweight_loss_alpha: xp[5],
+                },
+            );
+            let rm = evaluate_bhamra_kuehn_strebulaev_macro_default_boundary_spread(
+                &BhamraKuehnStrebulaevCreditEquitySpec {
+                    cash_flow_coverage_ratio_x: xm[0],
+                    cash_flow_volatility_sigma_x: xm[1],
+                    risk_free_rate_r: xm[2],
+                    risk_neutral_recession_weight_q: xm[3],
+                    relative_risk_aversion_gamma: xm[4],
+                    bankruptcy_deadweight_loss_alpha: xm[5],
+                },
+            );
+            let fd =
+                (rp.unified_bks_credit_spread_bps - rm.unified_bks_credit_spread_bps) / (2.0 * h);
+            assert!(rad.unified_bks_credit_spread_bps.d[i].abs() > 1e-9);
+            assert!((rad.unified_bks_credit_spread_bps.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

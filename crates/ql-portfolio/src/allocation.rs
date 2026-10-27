@@ -6572,3 +6572,145 @@ mod ao_li_zheng_maxser_tests {
         }
     }
 }
+
+/// Input specification for the DeMiguel, Garlappi & Uppal (2009, *Review of
+/// Financial Studies* 22(5), 1915–1953, "Optimal Versus Naive Diversification:
+/// How Inefficient is the 1/N Portfolio Strategy?") Out-of-Sample Estimation
+/// Loss and Critical Sample Horizon Model.
+#[derive(Debug, Clone, Copy)]
+pub struct DeMiguelGarlappiUppalNaiveDiversificationSpec<T: Real> {
+    /// Number of risky assets $N > 2$.
+    pub asset_count_n: T,
+    /// Estimation window sample length $T_{\text{obs}} > N + 4$.
+    pub sample_window_t: T,
+    /// True population maximum squared Sharpe ratio $\theta_*^2 > \theta_{1/N}^2$.
+    pub true_tangency_squared_sharpe_theta_star2: T,
+    /// True population squared Sharpe ratio of the $1/N$ equal-weighted portfolio $\theta_{1/N}^2 > 0$.
+    pub naive_equal_weight_squared_sharpe_theta_ew2: T,
+    /// Investor mean-variance risk aversion $\gamma > 0$.
+    pub investor_risk_aversion_gamma: T,
+}
+
+/// Analytics returned by [`evaluate_demiguel_garlappi_uppal_naive_vs_sample_sharpe_loss`].
+#[derive(Debug, Clone, Copy)]
+pub struct DeMiguelGarlappiUppalNaiveDiversificationAnalytics<T: Real> {
+    /// Expected out-of-sample certainty equivalent of the sample mean-variance portfolio.
+    pub sample_mv_expected_oos_certainty_equivalent: T,
+    /// Exact certainty equivalent of the parameter-free $1/N$ naive portfolio $\frac{\theta_{1/N}^2}{2\gamma}$.
+    pub naive_1_over_n_certainty_equivalent: T,
+    /// Critical estimation sample size $T^*$ required for sample MV to beat $1/N$.
+    pub critical_sample_horizon_t_star: T,
+    /// Certainty-equivalent advantage of $1/N$ over sample MV ($\text{CE}_{1/N} - \mathbb{E}[\text{CE}_{\text{MV}}]$).
+    pub naive_over_sample_ce_advantage: T,
+}
+
+/// Evaluates the DeMiguel, Garlappi & Uppal (2009, *RFS* 22(5), Proposition 1)
+/// analytical comparison between sample mean-variance optimization and $1/N$
+/// equal-weighted diversification under parameter estimation error:
+/// $$\mathbb{E}[\text{CE}(\hat{w}_{\text{MV}})] = \frac{1}{2\gamma}\left[\frac{(T - N - 2)\theta_*^2 - N}{T} - \frac{2(\theta_*^2 + N / T)}{(T - N - 2)(T - N - 4)}T\right].$$
+pub fn evaluate_demiguel_garlappi_uppal_naive_vs_sample_sharpe_loss<T: Real>(
+    spec: &DeMiguelGarlappiUppalNaiveDiversificationSpec<T>,
+) -> DeMiguelGarlappiUppalNaiveDiversificationAnalytics<T> {
+    let two = T::from_f64(2.0);
+    let four = T::from_f64(4.0);
+
+    let n = spec.asset_count_n.max_val(T::from_f64(3.0));
+    let t = spec.sample_window_t.max_val(n + T::from_f64(6.0));
+    let th_s2 = spec
+        .true_tangency_squared_sharpe_theta_star2
+        .max_val(T::from_f64(0.02));
+    let th_ew2 = spec
+        .naive_equal_weight_squared_sharpe_theta_ew2
+        .max_val(T::from_f64(0.01));
+    let gamma = spec.investor_risk_aversion_gamma.max_val(T::from_f64(0.5));
+
+    let inv_2g = T::one() / (two * gamma);
+    let ce_ew = inv_2g * th_ew2;
+
+    let t_m_n2 = t - n - two;
+    let t_m_n4 = t - n - four;
+    let term1 = (t_m_n2 * th_s2 - n) / t;
+    let term2 = (two * (t * th_s2 + n)) / (t_m_n2 * t_m_n4);
+    let ce_mv = inv_2g * (term1 - term2);
+
+    let diff_th = (th_s2 - th_ew2).max_val(T::from_f64(1e-3));
+    let t_star = ((n * (T::one() + two * th_s2)) / diff_th) + n + two;
+    let adv = ce_ew - ce_mv;
+
+    DeMiguelGarlappiUppalNaiveDiversificationAnalytics {
+        sample_mv_expected_oos_certainty_equivalent: ce_mv,
+        naive_1_over_n_certainty_equivalent: ce_ew,
+        critical_sample_horizon_t_star: t_star,
+        naive_over_sample_ce_advantage: adv,
+    }
+}
+
+#[cfg(test)]
+mod demiguel_garlappi_uppal_naive_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn demiguel_garlappi_uppal_invariants_and_ad_parity() {
+        let base = DeMiguelGarlappiUppalNaiveDiversificationSpec {
+            asset_count_n: 25.0_f64,
+            sample_window_t: 120.0_f64,
+            true_tangency_squared_sharpe_theta_star2: 0.22_f64,
+            naive_equal_weight_squared_sharpe_theta_ew2: 0.14_f64,
+            investor_risk_aversion_gamma: 3.0_f64,
+        };
+        let r0 = evaluate_demiguel_garlappi_uppal_naive_vs_sample_sharpe_loss(&base);
+        assert!(r0.critical_sample_horizon_t_star > base.sample_window_t);
+        assert!(r0.naive_over_sample_ce_advantage > 0.0);
+
+        let x0 = [
+            base.asset_count_n,
+            base.sample_window_t,
+            base.true_tangency_squared_sharpe_theta_star2,
+            base.naive_equal_weight_squared_sharpe_theta_ew2,
+            base.investor_risk_aversion_gamma,
+        ];
+        let mut xd = [Dual::<5>::from_f64(0.0); 5];
+        for i in 0..5 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_demiguel_garlappi_uppal_naive_vs_sample_sharpe_loss(
+            &DeMiguelGarlappiUppalNaiveDiversificationSpec {
+                asset_count_n: xd[0],
+                sample_window_t: xd[1],
+                true_tangency_squared_sharpe_theta_star2: xd[2],
+                naive_equal_weight_squared_sharpe_theta_ew2: xd[3],
+                investor_risk_aversion_gamma: xd[4],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..5 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_demiguel_garlappi_uppal_naive_vs_sample_sharpe_loss(
+                &DeMiguelGarlappiUppalNaiveDiversificationSpec {
+                    asset_count_n: xp[0],
+                    sample_window_t: xp[1],
+                    true_tangency_squared_sharpe_theta_star2: xp[2],
+                    naive_equal_weight_squared_sharpe_theta_ew2: xp[3],
+                    investor_risk_aversion_gamma: xp[4],
+                },
+            );
+            let rm = evaluate_demiguel_garlappi_uppal_naive_vs_sample_sharpe_loss(
+                &DeMiguelGarlappiUppalNaiveDiversificationSpec {
+                    asset_count_n: xm[0],
+                    sample_window_t: xm[1],
+                    true_tangency_squared_sharpe_theta_star2: xm[2],
+                    naive_equal_weight_squared_sharpe_theta_ew2: xm[3],
+                    investor_risk_aversion_gamma: xm[4],
+                },
+            );
+            let fd =
+                (rp.naive_over_sample_ce_advantage - rm.naive_over_sample_ce_advantage) / (2.0 * h);
+            assert!(rad.naive_over_sample_ce_advantage.d[i].abs() > 1e-9);
+            assert!((rad.naive_over_sample_ce_advantage.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

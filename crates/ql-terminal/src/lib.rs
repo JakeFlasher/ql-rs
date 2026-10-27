@@ -170,7 +170,8 @@ pub mod prelude {
         GertlerKaradiUnconventionalMonetaryPolicySpec, HeKrishnamurthyIntermediarySdfAnalytics,
         HeKrishnamurthyIntermediarySdfSpec, JermannQuadriniFinancialShockAnalytics,
         JermannQuadriniFinancialShockSpec, KiyotakiMooreCollateralCycleReport,
-        KiyotakiMooreCollateralCycleSpec, KollerMckinseyKvdEvaValuationReport,
+        KiyotakiMooreCollateralCycleSpec, KoganPapanikolaouIstShockSdfAnalytics,
+        KoganPapanikolaouIstShockSdfSpec, KollerMckinseyKvdEvaValuationReport,
         KollerMckinseyKvdEvaValuationSpec, LaubachWilliamsNaturalRateRStarReport,
         LaubachWilliamsNaturalRateRStarSpec, LettauLudvigsonCayConditionalRiskPremiumAnalytics,
         LettauLudvigsonCayConditionalRiskPremiumSpec, LettauLudvigsonCayForecastReport,
@@ -211,6 +212,7 @@ pub mod prelude {
         evaluate_he_krishnamurthy_intermediary_capital_constraint_sdf,
         evaluate_jermann_quadrini_financial_shocks_enforcement_constraint_credit_cycle,
         evaluate_kiyotaki_moore_collateral_credit_cycle_multiplier,
+        evaluate_kogan_papanikolaou_investment_specific_technology_sdf,
         evaluate_koller_mckinsey_kvd_dcf_and_eva_valuation,
         evaluate_laubach_williams_natural_rate_r_star,
         evaluate_lettau_ludvigson_cay_conditional_equity_premium,
@@ -764,10 +766,11 @@ pub enum TabId {
     NakamuraSteinssonFomcInfoDickNielsenFeldhutterLandoIlliquidityBerndtDuffieCreditPremiaChristoffersenHestonJacobsVarianceKernel,
     WrightInflationUncertaintyDamicoFanKitsulTipsLiquidityCulpNozawaVeronesiPseudoFirmBollerslevTodorovXuTailPredictability,
     DuffieSingletonSwapSpreadChenLesmondWeiLotIlliquidityGieseckeLongstaffSchaeferStrebulaevDefaultRegimeDrechslerYaronUncertaintyJumpVrp,
+    BikbovChernovMacroYieldKrishnamurthyVissingJorgensenTreasuryConvenienceBhamraKuehnStrebulaevCreditEquityPanImplicitJumpFearVrp,
 }
 impl TabId {
-    pub const TAB_COUNT: usize = 82;
-    pub const ALL: [Self; 82] = [
+    pub const TAB_COUNT: usize = 83;
+    pub const ALL: [Self; 83] = [
         Self::Market,
         Self::Rates,
         Self::Credit,
@@ -850,6 +853,7 @@ impl TabId {
         Self::NakamuraSteinssonFomcInfoDickNielsenFeldhutterLandoIlliquidityBerndtDuffieCreditPremiaChristoffersenHestonJacobsVarianceKernel,
         Self::WrightInflationUncertaintyDamicoFanKitsulTipsLiquidityCulpNozawaVeronesiPseudoFirmBollerslevTodorovXuTailPredictability,
         Self::DuffieSingletonSwapSpreadChenLesmondWeiLotIlliquidityGieseckeLongstaffSchaeferStrebulaevDefaultRegimeDrechslerYaronUncertaintyJumpVrp,
+        Self::BikbovChernovMacroYieldKrishnamurthyVissingJorgensenTreasuryConvenienceBhamraKuehnStrebulaevCreditEquityPanImplicitJumpFearVrp,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -1042,6 +1046,9 @@ impl TabId {
             }
             Self::DuffieSingletonSwapSpreadChenLesmondWeiLotIlliquidityGieseckeLongstaffSchaeferStrebulaevDefaultRegimeDrechslerYaronUncertaintyJumpVrp => {
                 "82 Duffie-Singleton-Swap-Spread / Chen-Lesmond-Wei-LOT-Illiquidity / GLSS-Default-Regime / Drechsler-Yaron-Uncertainty-Jump-VRP / Glasserman-Yang-Entropy-WWR-CVA / Hamilton-Wu-Affine-Commodity-Premia / Hassan-Country-Size-Currency-Safety / Linetsky-Whittaker-Spectral-Asian / Barillas-Shanken-Factor-Squared-Sharpe / Giglio-Kelly-Pruitt-Systemic-PQR / Mancini-Threshold-Realized-Variance / Constantinides-Duffie-Heterogeneous-SDF"
+            }
+            Self::BikbovChernovMacroYieldKrishnamurthyVissingJorgensenTreasuryConvenienceBhamraKuehnStrebulaevCreditEquityPanImplicitJumpFearVrp => {
+                "83 Bikbov-Chernov-Macro-Yield / KVJ-Treasury-Convenience / BKS-Credit-Equity / Pan-Implicit-Jump-Fear-VRP / Bo-Capponi-Contagion-BCVA / Singleton-Commodity-Investor-Flows / Verdelhan-Habit-FX-Premium / Davydov-Linetsky-CEV-Barrier / DeMiguel-Garlappi-Uppal-Naive-1N / Engle-Manganelli-Asymmetric-CAViaR / BNGJPS-Multipower-Variation-CLT / Kogan-Papanikolaou-IST-Shock-SDF"
             }
         }
     }
@@ -1442,6 +1449,8 @@ pub struct WorkstationFrameData {
     pub wright_inflation_uncertainty_damico_fan_kitsul_tips_liquidity_culp_nozawa_veronesi_pseudo_firm_bollerslev_todorov_xu_tail_predictability_metric:
         f64,
     pub duffie_singleton_swap_spread_chen_lesmond_wei_lot_illiquidity_giesecke_longstaff_schaefer_strebulaev_default_regime_drechsler_yaron_uncertainty_jump_vrp_metric:
+        f64,
+    pub bikbov_chernov_macro_yield_krishnamurthy_vissing_jorgensen_treasury_convenience_bhamra_kuehn_strebulaev_credit_equity_pan_implicit_jump_fear_vrp_metric:
         f64,
     pub blotter_rows: Vec<(String, f64, String)>,
 }
@@ -10179,6 +10188,164 @@ impl DeskWorkstation {
             bump,
         )
     }
+    pub fn bikbov_chernov_macro_yield_krishnamurthy_vissing_jorgensen_treasury_convenience_bhamra_kuehn_strebulaev_credit_equity_pan_implicit_jump_fear_vrp_live_metric_from_market(
+        m: &MarketSnapshot,
+        credit_bump: f64,
+    ) -> f64 {
+        let inflation = m.inflation_quotes.first().map(|(_, v)| *v).unwrap_or(0.02);
+        let r = m.ois_quotes.first().copied().unwrap_or(0.03) + credit_bump + inflation * 0.05;
+        let spot = m.eq_spot.max(50.0);
+        let vol = m.eq_vol.max(0.15);
+
+        let bc_yield = ql_curves::evaluate_bikbov_chernov_macro_yield_curve_projection(
+            &ql_curves::BikbovChernovMacroYieldCurveSpec {
+                real_activity_factor_g: -0.008 - credit_bump,
+                inflation_factor_pi: inflation + 0.006,
+                latent_financial_factor_fl: 0.012 + credit_bump * 0.8,
+                real_activity_decay_kappa_g: 0.55,
+                inflation_decay_kappa_pi: 0.18,
+                latent_decay_kappa_l: 0.35,
+                unconditional_short_rate_r0: r,
+                maturity_years_tau: 10.0,
+            },
+        );
+        let kvj_tsy =
+            ql_fixed_income::evaluate_krishnamurthy_vissing_jorgensen_treasury_convenience_yield(
+                &ql_fixed_income::KrishnamurthyVissingJorgensenTreasuryConvenienceSpec {
+                    treasury_debt_to_gdp_ratio_d: 0.65 + credit_bump * 2.0,
+                    convenience_asymptote_bps_b: 165.0 + credit_bump * 500.0,
+                    debt_supply_saturation_slope_eta: 1.45,
+                    liquidity_share_of_convenience_omega: 0.62,
+                    volatility_demand_shifter_v: vol + credit_bump * 2.0,
+                    cyclical_default_spread_bps: 115.0 + credit_bump * 3_000.0,
+                },
+            );
+        let bks_cred = ql_credit::evaluate_bhamra_kuehn_strebulaev_macro_default_boundary_spread(
+            &ql_credit::BhamraKuehnStrebulaevCreditEquitySpec {
+                cash_flow_coverage_ratio_x: 2.35 - credit_bump * 10.0,
+                cash_flow_volatility_sigma_x: vol + 0.04,
+                risk_free_rate_r: r + 0.01,
+                risk_neutral_recession_weight_q: 0.32 + credit_bump * 5.0,
+                relative_risk_aversion_gamma: 7.5,
+                bankruptcy_deadweight_loss_alpha: 0.45,
+            },
+        );
+        let pan_vrp = ql_vol::evaluate_pan_implicit_jump_fear_volatility_risk_premia(
+            &ql_vol::PanImplicitJumpFearVrpSpec {
+                spot_diffusive_variance_v: vol * vol * 0.55,
+                jump_intensity_variance_slope_lambda1: 16.5 + credit_bump * 100.0,
+                physical_mean_jump_size_mu_p: -0.025,
+                risk_neutral_mean_jump_size_mu_q: -0.145 - credit_bump * 2.0,
+                jump_size_volatility_sigma_j: 0.065,
+                diffusive_variance_risk_price_eta_v: 0.28,
+            },
+        );
+        let bc_cva = ql_xva::evaluate_bo_capponi_portfolio_contagion_bilateral_cva(
+            &ql_xva::BoCapponiContagionBilateralCvaSpec {
+                portfolio_notional_exposure_n: 250.0 + credit_bump * 1_000.0,
+                counterparty_baseline_hazard_lambda_c: 0.018 + credit_bump,
+                institution_baseline_hazard_lambda_i: 0.009,
+                reference_to_counterparty_contagion_alpha: 0.45 + credit_bump * 5.0,
+                portfolio_reference_hazard_lambda_ref: 0.024 + credit_bump,
+                horizon_years_t: 5.0,
+            },
+        );
+        let sing_flow = ql_commodities::evaluate_singleton_commodity_investor_flow_boom_bust(
+            &ql_commodities::SingletonCommodityInvestorFlowSpec {
+                thirteen_week_index_flow_growth_di: 0.14 + inflation,
+                dealer_margin_repo_growth_dr: 0.09 - credit_bump * 2.0,
+                money_manager_spread_position_smm: 0.18 + credit_bump,
+                physical_inventory_tightness_z: 0.08,
+                baseline_convenience_slope_b0: 0.035,
+                informational_dispersion_multiplier_psi: 1.35 + credit_bump * 5.0,
+            },
+        );
+        let verd_fx = ql_fx::evaluate_verdelhan_external_habit_fx_forward_premium(
+            &ql_fx::VerdelhanHabitExchangeRateSpec {
+                domestic_surplus_consumption_ratio_sd: 0.048 - credit_bump * 0.5,
+                foreign_surplus_consumption_ratio_sf: 0.068,
+                steady_state_surplus_ratio_sbar: 0.058,
+                utility_curvature_gamma: 2.20 + credit_bump * 10.0,
+                consumption_volatility_sigma_c: 0.015,
+                international_trade_cost_wedge_tau: 0.25,
+            },
+        );
+        let dl_cev = ql_exotics::evaluate_davydov_linetsky_cev_eigenfunction_barrier_option(
+            &ql_exotics::DavydovLinetskyCevBarrierSpec {
+                spot_price_s0: spot,
+                strike_price_k: spot * 0.98,
+                upper_knockout_barrier_u: spot * 1.28,
+                risk_free_rate_r: r + 0.015,
+                local_volatility_at_spot_sigma0: vol,
+                cev_elasticity_beta: -0.65 - credit_bump * 5.0,
+                maturity_years_t: 1.0,
+            },
+        );
+        let dgu_naive = ql_portfolio::evaluate_demiguel_garlappi_uppal_naive_vs_sample_sharpe_loss(
+            &ql_portfolio::DeMiguelGarlappiUppalNaiveDiversificationSpec {
+                asset_count_n: 25.0,
+                sample_window_t: 120.0,
+                true_tangency_squared_sharpe_theta_star2: 0.22 + credit_bump * 2.0,
+                naive_equal_weight_squared_sharpe_theta_ew2: 0.14 + credit_bump * 3.0,
+                investor_risk_aversion_gamma: 3.0,
+            },
+        );
+        let em_caviar = ql_portfolio::evaluate_engle_manganelli_asymmetric_slope_caviar_quantile(
+            &ql_portfolio::EngleManganelliAsymmetricCaviarSpec {
+                lagged_var_quantile_q_prev: 0.024 + credit_bump,
+                lagged_portfolio_return_r_prev: -0.018 - credit_bump * 2.0,
+                caviar_intercept_beta0: 0.0012,
+                autoregressive_persistence_beta1: 0.86,
+                positive_return_slope_beta2: 0.08,
+                negative_return_slope_beta3: 0.34 + credit_bump * 2.0,
+            },
+        );
+        let bn_mpv = ql_dml::evaluate_barndorff_nielsen_multipower_variation_clt(
+            &ql_dml::BarndorffNielsenMultipowerVariationCltSpec {
+                raw_tripower_quarticity_sum: 0.000000048,
+                raw_quadpower_quarticity_sum: 0.000000037,
+                realized_bipower_variation_bv: 0.000185 + credit_bump * 0.001,
+                total_realized_variance_rv: 0.000245 + credit_bump * 0.003,
+                intraday_sample_count_n: 78.0,
+            },
+        );
+        let kp_ist = ql_models::evaluate_kogan_papanikolaou_investment_specific_technology_sdf(
+            &ql_models::KoganPapanikolaouIstShockSdfSpec {
+                disembodied_tfp_price_of_risk_gamma_z: 3.20 + credit_bump * 10.0,
+                ist_negative_price_of_risk_gamma_x: 2.60 + credit_bump * 15.0,
+                tfp_shock_volatility_sigma_z: 0.14,
+                ist_shock_volatility_sigma_x: 0.16 + credit_bump,
+                growth_firm_pvgo_share_fg: 0.68,
+                value_firm_pvgo_share_fv: 0.18,
+            },
+        );
+
+        bc_yield.total_nominal_yield_bps * 0.01
+            + kvj_tsy.predicted_baa_treasury_spread_bps * 0.02
+            + bks_cred.unified_bks_credit_spread_bps * 0.02
+            + pan_vrp.total_pan_variance_risk_premium * 20.0
+            + bc_cva.net_bo_capponi_bilateral_cva * 0.5
+            + sing_flow.flow_predicted_futures_excess_return * 10.0
+            + verd_fx.expected_habit_fx_excess_return_bps * 0.02
+            + dl_cev.davydov_linetsky_cev_up_and_out_call_price * 0.2
+            + dgu_naive.naive_over_sample_ce_advantage * 10.0
+            + em_caviar.implied_caviar_expected_shortfall * 20.0
+            + bn_mpv.multipower_clt_jump_z_statistic * 0.5
+            + kp_ist.unconditional_capm_value_alpha * 10.0
+    }
+    pub fn bikbov_chernov_macro_yield_krishnamurthy_vissing_jorgensen_treasury_convenience_bhamra_kuehn_strebulaev_credit_equity_pan_implicit_jump_fear_vrp_live_metric(
+        &self,
+    ) -> f64 {
+        let bump = match self.scenario {
+            ScenarioKind::CreditWideningPlus100Bp => 0.01,
+            ScenarioKind::StagflationPlus150Bp => 0.005,
+            _ => 0.0,
+        };
+        Self::bikbov_chernov_macro_yield_krishnamurthy_vissing_jorgensen_treasury_convenience_bhamra_kuehn_strebulaev_credit_equity_pan_implicit_jump_fear_vrp_live_metric_from_market(
+            &self.scenario_market(),
+            bump,
+        )
+    }
 
     pub fn klingler_syrstad_sofr_repo_spike_longstaff_mithal_neis_cds_bond_basis_pan_singleton_sovereign_cds_medvedev_scaillet_short_maturity_smile_live_metric_from_market(
         m: &MarketSnapshot,
@@ -13504,6 +13671,11 @@ impl DeskWorkstation {
                     &market,
                     credit_bump,
                 ),
+            bikbov_chernov_macro_yield_krishnamurthy_vissing_jorgensen_treasury_convenience_bhamra_kuehn_strebulaev_credit_equity_pan_implicit_jump_fear_vrp_metric:
+                Self::bikbov_chernov_macro_yield_krishnamurthy_vissing_jorgensen_treasury_convenience_bhamra_kuehn_strebulaev_credit_equity_pan_implicit_jump_fear_vrp_live_metric_from_market(
+                    &market,
+                    credit_bump,
+                ),
             bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_metric: Self::bcbs_irrbb_turfus_rfr_baran_mtm_bourgey_bg_live_metric_from_market_with_bump(
                 &market,
                 if self.scenario == ScenarioKind::CreditWideningPlus100Bp {
@@ -13823,6 +13995,7 @@ impl DeskWorkstation {
             format!("80 Nakamura-Steinsson-FOMC-Info/Dick-Nielsen-Feldhutter-Lando-Illiquidity/Berndt-Duffie-Credit-Premia/Christoffersen-Heston-Jacobs-Variance-Kernel/Brigo-Francischello-Pallavicini-Closeout-XVA/Boons-Prado-Basis-Momentum/Colacito-Croce-Gavazzoni-Ready-Recursive-FX/Fusai-Meucci-Erlang-Asian/Freyberger-Neuhierl-Weber-Characteristics/Kelly-Jiang-Tail-Risk/JLMPV-Preaveraging/Adrian-Etula-Muir-Broker-Dealer-SDF: {:.2}", frame.nakamura_steinsson_fomc_info_dick_nielsen_feldhutter_lando_illiquidity_berndt_duffie_credit_premia_christoffersen_heston_jacobs_variance_kernel_metric),
             format!("81 Wright-Inflation-Uncertainty/DAmico-Fan-Kitsul-TIPS-Liquidity/Culp-Nozawa-Veronesi-Pseudo-Firm/Bollerslev-Todorov-Xu-Tail-Predictability/Piterbarg-Lou-Multicurrency-CSA-CTD/Basak-Pavlova-Commodity-Financialization/Mueller-Tahbaz-Salehi-Vedolin-FOMC-FX/Kou-Wang-Jump-First-Passage-Barrier/Ao-Li-Zheng-MAXSER-Portfolio/Menkveld-Multi-Venue-HFT/Patton-Sheppard-Realized-Semivariance/BKSY-Macro-Volatility-LRR: {:.2}", frame.wright_inflation_uncertainty_damico_fan_kitsul_tips_liquidity_culp_nozawa_veronesi_pseudo_firm_bollerslev_todorov_xu_tail_predictability_metric),
             format!("82 Duffie-Singleton-Swap-Spread/Chen-Lesmond-Wei-LOT-Illiquidity/GLSS-Default-Regime/Drechsler-Yaron-Uncertainty-Jump-VRP/Glasserman-Yang-Entropy-WWR-CVA/Hamilton-Wu-Affine-Commodity-Premia/Hassan-Country-Size-Currency-Safety/Linetsky-Whittaker-Spectral-Asian/Barillas-Shanken-Factor-Squared-Sharpe/Giglio-Kelly-Pruitt-Systemic-PQR/Mancini-Threshold-Realized-Variance/Constantinides-Duffie-Heterogeneous-SDF: {:.2}", frame.duffie_singleton_swap_spread_chen_lesmond_wei_lot_illiquidity_giesecke_longstaff_schaefer_strebulaev_default_regime_drechsler_yaron_uncertainty_jump_vrp_metric),
+            format!("83 Bikbov-Chernov-Macro-Yield/KVJ-Treasury-Convenience/BKS-Credit-Equity/Pan-Implicit-Jump-Fear-VRP/Bo-Capponi-Contagion-BCVA/Singleton-Commodity-Investor-Flows/Verdelhan-Habit-FX-Premium/Davydov-Linetsky-CEV-Barrier/DeMiguel-Garlappi-Uppal-Naive-1N/Engle-Manganelli-Asymmetric-CAViaR/BNGJPS-Multipower-Variation-CLT/Kogan-Papanikolaou-IST-Shock-SDF: {:.2}", frame.bikbov_chernov_macro_yield_krishnamurthy_vissing_jorgensen_treasury_convenience_bhamra_kuehn_strebulaev_credit_equity_pan_implicit_jump_fear_vrp_metric),
             format!(
                 "DAG recomputed: {}/{}",
                 frame.dag_recomputed_trades, frame.dag_total_trades
@@ -13911,6 +14084,7 @@ impl DeskWorkstation {
         right_bottom.push(format!("80 Nakamura-Steinsson-FOMC-Info/Dick-Nielsen-Feldhutter-Lando-Illiquidity/Berndt-Duffie-Credit-Premia/Christoffersen-Heston-Jacobs-Variance-Kernel/Brigo-Francischello-Pallavicini-Closeout-XVA/Boons-Prado-Basis-Momentum/Colacito-Croce-Gavazzoni-Ready-Recursive-FX/Fusai-Meucci-Erlang-Asian/Freyberger-Neuhierl-Weber-Characteristics/Kelly-Jiang-Tail-Risk/JLMPV-Preaveraging/Adrian-Etula-Muir-Broker-Dealer-SDF: {:.4}", self.nakamura_steinsson_fomc_info_dick_nielsen_feldhutter_lando_illiquidity_berndt_duffie_credit_premia_christoffersen_heston_jacobs_variance_kernel_live_metric()));
         right_bottom.push(format!("81 Wright-Inflation-Uncertainty/DAmico-Fan-Kitsul-TIPS-Liquidity/Culp-Nozawa-Veronesi-Pseudo-Firm/Bollerslev-Todorov-Xu-Tail-Predictability/Piterbarg-Lou-Multicurrency-CSA-CTD/Basak-Pavlova-Commodity-Financialization/Mueller-Tahbaz-Salehi-Vedolin-FOMC-FX/Kou-Wang-Jump-First-Passage-Barrier/Ao-Li-Zheng-MAXSER-Portfolio/Menkveld-Multi-Venue-HFT/Patton-Sheppard-Realized-Semivariance/BKSY-Macro-Volatility-LRR: {:.4}", self.wright_inflation_uncertainty_damico_fan_kitsul_tips_liquidity_culp_nozawa_veronesi_pseudo_firm_bollerslev_todorov_xu_tail_predictability_live_metric()));
         right_bottom.push(format!("82 Duffie-Singleton-Swap-Spread/Chen-Lesmond-Wei-LOT-Illiquidity/GLSS-Default-Regime/Drechsler-Yaron-Uncertainty-Jump-VRP/Glasserman-Yang-Entropy-WWR-CVA/Hamilton-Wu-Affine-Commodity-Premia/Hassan-Country-Size-Currency-Safety/Linetsky-Whittaker-Spectral-Asian/Barillas-Shanken-Factor-Squared-Sharpe/Giglio-Kelly-Pruitt-Systemic-PQR/Mancini-Threshold-Realized-Variance/Constantinides-Duffie-Heterogeneous-SDF: {:.4}", self.duffie_singleton_swap_spread_chen_lesmond_wei_lot_illiquidity_giesecke_longstaff_schaefer_strebulaev_default_regime_drechsler_yaron_uncertainty_jump_vrp_live_metric()));
+        right_bottom.push(format!("83 Bikbov-Chernov-Macro-Yield/KVJ-Treasury-Convenience/BKS-Credit-Equity/Pan-Implicit-Jump-Fear-VRP/Bo-Capponi-Contagion-BCVA/Singleton-Commodity-Investor-Flows/Verdelhan-Habit-FX-Premium/Davydov-Linetsky-CEV-Barrier/DeMiguel-Garlappi-Uppal-Naive-1N/Engle-Manganelli-Asymmetric-CAViaR/BNGJPS-Multipower-Variation-CLT/Kogan-Papanikolaou-IST-Shock-SDF: {:.4}", self.bikbov_chernov_macro_yield_krishnamurthy_vissing_jorgensen_treasury_convenience_bhamra_kuehn_strebulaev_credit_equity_pan_implicit_jump_fear_vrp_live_metric()));
         let bottom_rows = left_bottom.len().max(right_bottom.len());
         left_bottom.resize(bottom_rows, String::new());
         right_bottom.resize(bottom_rows, String::new());
@@ -13959,7 +14133,7 @@ mod domain_suite_26_tests {
     use super::*;
     #[test]
     fn suite26_tab_is_registered() {
-        assert_eq!(TabId::ALL.len(), 82);
+        assert_eq!(TabId::ALL.len(), 83);
         assert!(TabId::ALL.contains(&TabId::DoubleHestonTarfCocoHrp));
         assert!(TabId::ALL.contains(&TabId::JyInflationTbaBergomiNco));
         let mut ws = DeskWorkstation::new();
@@ -14000,7 +14174,7 @@ mod domain_suite_28_tests {
 
     #[test]
     fn suite28_tab_and_metric_are_live() {
-        assert_eq!(TabId::ALL.len(), 82);
+        assert_eq!(TabId::ALL.len(), 83);
         assert!(TabId::ALL.contains(&TabId::CheyetteCmoQrhBaseCorrCdar));
         let mut ws = DeskWorkstation::new();
         let frame = ws.step_tick();
@@ -14024,7 +14198,7 @@ mod domain_suite_29_tests {
 
     #[test]
     fn suite29_tab_metric_dashboard_and_rates_reactivity() {
-        assert_eq!(TabId::ALL.len(), 82);
+        assert_eq!(TabId::ALL.len(), 83);
         assert!(TabId::ALL.contains(&TabId::AswMf1fAndreasenHugeBessEp));
         assert_eq!(
             TabId::AswMf1fAndreasenHugeBessEp.label(),
@@ -14063,7 +14237,7 @@ mod domain_suite_30_tests {
     use super::*;
     #[test]
     fn suite30_tab_metric_dashboard_and_stress_reactivity() {
-        assert_eq!(TabId::ALL.len(), 82);
+        assert_eq!(TabId::ALL.len(), 83);
         assert_eq!(
             TabId::MtmXccsColvaZabrPdvWeatherEnb.label(),
             "28 MtM-XCCS / CTD-COLVA / ZABR-PDV / Weather / ENB"
@@ -14106,7 +14280,7 @@ mod domain_suite_31_tests {
 
     #[test]
     fn suite31_tab29_terminal_renders_and_ticks_cleanly() {
-        assert_eq!(TabId::ALL.len(), 82);
+        assert_eq!(TabId::ALL.len(), 83);
         assert_eq!(
             TabId::BurnoutCmcdsQuinticAfvCsSchur.label(),
             "29 Burnout-MBS / CMCDS / Quintic-OU / AFV-CB / CS-Swaption / Schur-HRP"
@@ -14144,7 +14318,7 @@ mod domain_suite_32_tests {
 
     #[test]
     fn suite32_tab_metric_dashboard_and_stress_reactivity() {
-        assert_eq!(TabId::ALL.len(), 82);
+        assert_eq!(TabId::ALL.len(), 83);
         assert!(TabId::ALL.contains(&TabId::SinHouMbRBergomiChoiAfsExpectile));
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
@@ -14184,7 +14358,7 @@ mod domain_suite_33_tests {
 
     #[test]
     fn suite33_terminal_reactivity() {
-        assert_eq!(TabId::ALL.len(), 82);
+        assert_eq!(TabId::ALL.len(), 83);
         let mut ws = DeskWorkstation::new();
         let normal = ws.step_tick();
         let next = ws.step_tick();
@@ -14291,7 +14465,7 @@ mod domain_suite_36_tests {
     use super::*;
     #[test]
     fn suite36_tab_metric_tick_and_rate_reactivity() {
-        assert_eq!(TabId::ALL.len(), 82);
+        assert_eq!(TabId::ALL.len(), 83);
         assert!(
             TabId::MbsIoPoRmvMoXvaDilutionSigGarchPot
                 .label()
@@ -14423,8 +14597,8 @@ mod domain_suite_38_tests {
         assert!(ws.render_dashboard(&stressed, false).contains(
             "36 MF-Rates/Wildcard/TARF/Bergomi/Schönbucher/FRTB-CVA/Lookback/VTA/FLAM/ACD/HLZ/MLMC"
         ));
-        assert_eq!(crate::TabId::TAB_COUNT, 82);
-        assert_eq!(TabId::ALL.len(), 82);
+        assert_eq!(crate::TabId::TAB_COUNT, 83);
+        assert_eq!(TabId::ALL.len(), 83);
         assert!(TabId::ALL.contains(&TabId::MfRatesWildcardCtdPivotTarfBergomi));
     }
 }
@@ -14455,8 +14629,8 @@ mod domain_suite_39_tests {
                 "37 FTPL/G2/eSSVI/CB/CoCo/MPOR/Double-Heston/Curran/Warin/Roll/Busseti/KKT"
             )
         );
-        assert_eq!(crate::TabId::TAB_COUNT, 82);
-        assert_eq!(TabId::ALL.len(), 82);
+        assert_eq!(crate::TabId::TAB_COUNT, 83);
+        assert_eq!(TabId::ALL.len(), 83);
         assert!(TabId::ALL.contains(&TabId::CochraneFtplG2TwistEssviOffshoreCb));
     }
 
@@ -14499,7 +14673,7 @@ mod domain_suite_40_tests {
         ws.scenario = ScenarioKind::CreditWideningPlus100Bp;
         let stressed_frame = ws.step_tick();
         let stressed = ws.render_dashboard(&stressed_frame, false);
-        assert_eq!(TabId::ALL.len(), 82);
+        assert_eq!(TabId::ALL.len(), 83);
         assert!(TabId::ALL.contains(&TabId::BcbsIrrbbTurfusRfrBaranMtmBourgeyBg));
         assert!(
             normal
@@ -14532,7 +14706,7 @@ mod domain_suite_41_tests {
     use super::*;
     #[test]
     fn suite41_tab39_terminal_renders_and_reacts() {
-        assert_eq!(crate::TabId::TAB_COUNT, 82);
+        assert_eq!(crate::TabId::TAB_COUNT, 83);
         assert!(TabId::VeronesiConvLandoGenGatheralCorridor.label().starts_with("39 Veronesi / Lando-Log / Corridor-Var / Russian / Bates-SVJ / Koziol-CB / MFG / BCBS-Floor / CJP-LOB / ETF-AP / IC-Decay / Glasserman-IS"));
         let mut ws = DeskWorkstation::default();
         let a = ws.step_tick();
@@ -14557,8 +14731,8 @@ mod domain_suite_42_tests {
 
     #[test]
     fn suite42_tab40_terminal_renders_and_reacts() {
-        assert_eq!(crate::TabId::TAB_COUNT, 82);
-        assert_eq!(TabId::ALL.len(), 82);
+        assert_eq!(crate::TabId::TAB_COUNT, 83);
+        assert_eq!(TabId::ALL.len(), 83);
         assert!(
             TabId::RomerTaylorDamodaranCrpChristoffersenVar
                 .label()
@@ -14595,8 +14769,8 @@ mod domain_suite_43_tests {
 
     #[test]
     fn suite43_tab41_terminal_renders_and_reacts() {
-        assert_eq!(crate::TabId::TAB_COUNT, 82);
-        assert_eq!(TabId::ALL.len(), 82);
+        assert_eq!(crate::TabId::TAB_COUNT, 83);
+        assert_eq!(TabId::ALL.len(), 83);
         assert!(
             TabId::FabozziKrdCmoPacAsquithCbAsc470Colva
                 .label()
@@ -14638,8 +14812,8 @@ mod domain_suite_44_tests {
     use super::*;
     #[test]
     fn suite44_tab42_terminal_renders_and_reacts() {
-        assert_eq!(crate::TabId::TAB_COUNT, 82);
-        assert_eq!(TabId::ALL.len(), 82);
+        assert_eq!(crate::TabId::TAB_COUNT, 83);
+        assert_eq!(TabId::ALL.len(), 83);
         assert!(
             TabId::CheyetteCapletAdbNdirsZabrQrhCmcdsAdi
                 .label()
@@ -14679,8 +14853,8 @@ mod domain_suite_45_tests {
     use super::*;
     #[test]
     fn suite45_tab43_terminal_renders_and_reacts() {
-        assert_eq!(crate::TabId::TAB_COUNT, 82);
-        assert_eq!(TabId::ALL.len(), 82);
+        assert_eq!(crate::TabId::TAB_COUNT, 83);
+        assert_eq!(TabId::ALL.len(), 83);
         assert!(
             TabId::RebonatoCmsLelandToftAscotPoolRollRie
                 .label()
@@ -14711,7 +14885,7 @@ mod domain_suite_46_tests {
     use super::*;
     #[test]
     fn suite46_tab44_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::TuckmanRepoBkFvaDecsIoPoKylePinGjrLppl
                 .label()
@@ -14737,7 +14911,7 @@ mod domain_suite_47_tests {
     use super::*;
     #[test]
     fn suite47_tab45_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::HaganWestCtdSwitchAfvCbKthDefaultSaCva
                 .label()
@@ -14763,7 +14937,7 @@ mod domain_suite_48_tests {
     use super::*;
     #[test]
     fn suite48_tab46_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::BrigoCsaCtdCallableOasJltCorridorLsm
                 .label()
@@ -14789,7 +14963,7 @@ mod domain_suite_49_tests {
     use super::*;
     #[test]
     fn suite49_tab47_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::BrigoNssKrdTipsFloorRmvTriangleStickyLv
                 .label()
@@ -14812,7 +14986,7 @@ mod domain_suite_50_tests {
     use super::*;
     #[test]
     fn suite50_tab48_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::HaganWestTensionPacCmoFamaMacBethAsviBgk
                 .label()
@@ -14838,7 +15012,7 @@ mod domain_suite_51_tests {
     use super::*;
     #[test]
     fn suite51_tab49_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::BrigoXccyMtmSpecPoolMarshallOlkinVixVvix
                 .label()
@@ -14861,7 +15035,7 @@ mod domain_suite_52_tests {
     use super::*;
     #[test]
     fn suite52_tab50_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::BrigoOisFallbackCollaredFrnCdsFepSparkPrdc
                 .label()
@@ -14887,7 +15061,7 @@ mod domain_suite_53_tests {
     use super::*;
     #[test]
     fn suite53_tab51_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::AndersenCmsSpecialRepoCdsUpfrontSsrKvaCrack
                 .label()
@@ -14910,7 +15084,7 @@ mod domain_suite_54_tests {
     use super::*;
     #[test]
     fn suite54_tab52_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::DarbyshireStepOisCbSoftCallCdxSkewMalzFly
                 .label()
@@ -14936,7 +15110,7 @@ mod domain_suite_55_tests {
     use super::*;
     #[test]
     fn suite55_tab53_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::HenrardTenorBasisMsrRecaptureCdoBaseCorrKiko
                 .label()
@@ -14962,7 +15136,7 @@ mod domain_suite_56_tests {
     use super::*;
     #[test]
     fn suite56_tab54_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::BrigoDiffSwapCallableMuniBkmSkewBreakCva
                 .label()
@@ -14988,7 +15162,7 @@ mod domain_suite_57_tests {
     use super::*;
     #[test]
     fn suite57_tab55_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::AndersenSofrFutHayreMbsPedersenCdxDupireLv
                 .label()
@@ -15014,7 +15188,7 @@ mod domain_suite_58_tests {
     use super::*;
     #[test]
     fn suite58_tab56_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::LittermanScheinkmanPcaFlyTfSplitCbDoubleTCdoLeeWings
                 .label()
@@ -15040,7 +15214,7 @@ mod domain_suite_59_tests {
     use super::*;
     #[test]
     fn suite59_tab57_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::PiterbargCollateralOptTuckmanRolldownMertonKmvBartlettSabr
                 .label()
@@ -15067,7 +15241,7 @@ mod domain_suite_60_tests {
     use super::*;
     #[test]
     fn suite60_tab58_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::GswSvenssonCurveFabozziMbsEsfVasicekGordyIrbCarrWuVol
                 .label()
@@ -15093,7 +15267,7 @@ mod domain_suite_61_tests {
     use super::*;
     #[test]
     fn suite61_tab59_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::KimWrightShadowBrennanSchwartzCbDuffieSingletonRmvFukasawaGamma
                 .label()
@@ -15125,7 +15299,7 @@ mod domain_suite_62_tests {
     use super::*;
     #[test]
     fn suite62_tab60_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::JpsUnspannedMacroKalotayRefundingHullWhiteNtdDermanSticky
                 .label()
@@ -15152,7 +15326,7 @@ mod domain_suite_63_tests {
     use super::*;
     #[test]
     fn suite63_tab61_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::LyashenkoFmmCapletTuckmanCpiSeasonalityBrigoAlfonsiCirFouqueSv
                 .label()
@@ -15181,7 +15355,7 @@ mod domain_suite_64_tests {
     use super::*;
     #[test]
     fn suite64_tab62_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::JszCanonicalGdtsmTsiveriotisFernandesCbLaurentGregoryCdoBroadieJainVarswap
                 .label()
@@ -15207,7 +15381,7 @@ mod domain_suite_65_tests {
     use super::*;
     #[test]
     fn suite65_tab63_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::BianchettiTwoCurveQuantoBdtCallableBondSchonbucherCdsSwaptionBatesSvj
                 .label()
@@ -15233,7 +15407,7 @@ mod domain_suite_66_tests {
     use super::*;
     #[test]
     fn suite66_tab64_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::AndersenPiterbargCmsSpreadFabozziZBondCmoDuffieGarleanuAffineCdoCarrLee
                 .label()
@@ -15259,7 +15433,7 @@ mod domain_suite_67_tests {
     use super::*;
     #[test]
     fn suite67_tab65_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::PiterbargCtdCollateralTuckmanMakeWholeBondBrigoMoriniCmcdsHaganShiftedSabr
                 .label()
@@ -15285,7 +15459,7 @@ mod domain_suite_68_tests {
     use super::*;
     #[test]
     fn suite68_tab66_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::MercurioFvaMultiCurveSwapIngersollContingentCallCbHullWhiteImpliedCopulaCdoGatheralJacquierSviJw
                 .label()
@@ -15311,7 +15485,7 @@ mod domain_suite_69_tests {
     use super::*;
     #[test]
     fn suite69_tab67_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::AmetranoBianchettiTenorBasisFabozziHayreIoPoStripHullBrigoWwrCdsBossensVannaVolgaBarrier
                 .label()
@@ -15337,7 +15511,7 @@ mod domain_suite_70_tests {
     use super::*;
     #[test]
     fn suite70_tab68_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::SmithWilsonUfrKalotayWilliamsFabozziCallableSchonbucherClaytonCdoBuehlerVarianceCurve
                 .label()
@@ -15363,7 +15537,7 @@ mod domain_suite_71_tests {
     use super::*;
     #[test]
     fn suite71_tab69_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::McCullochTaxCurveAndersenBuffumCbOkaneRecoveryLockCdsDermanKaniImpliedTree
                 .label()
@@ -15389,7 +15563,7 @@ mod domain_suite_72_tests {
     use super::*;
     #[test]
     fn suite72_tab70_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::HaganWestMonotoneConvexFabozziEffectiveDurationOasFryeAltmanDownturnLgdGatheralJacquierSviArbitrage
                 .label()
@@ -15415,7 +15589,7 @@ mod domain_suite_73_tests {
     use super::*;
     #[test]
     fn suite73_tab71_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::MercurioRussoIborOisBasisJarrowYildirimYoyInflationDuffieLandoHybridCdsBayerFrizGatheralRoughSkew
                 .label()
@@ -15441,7 +15615,7 @@ mod domain_suite_74_tests {
     use super::*;
     #[test]
     fn suite74_tab72_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::FilipovicLarssonTrolleLinearRationalDuffieKrishnamurthySpecialRepoDuffieSaitaWangStochasticDefaultCarrMadanNeubergerLogContract
                 .label()
@@ -15467,7 +15641,7 @@ mod domain_suite_75_tests {
     use super::*;
     #[test]
     fn suite75_tab73_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::LyashenkoMercurioRfrInArrearsPennacchiSundaresanCocoAt1PedersenBrigoCdsIndexFepBroadieJainSeppSvjVolswap
                 .label()
@@ -15493,7 +15667,7 @@ mod domain_suite_76_tests {
     use super::*;
     #[test]
     fn suite76_tab74_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::CieslakPovalaTrendInflationCycleGabaixKrishnamurthyVigneronMbsOasErraisGieseckeGoldbergHawkesCreditMartinBondarenkoSvixLowerBound
                 .label()
@@ -15519,7 +15693,7 @@ mod domain_suite_77_tests {
     use super::*;
     #[test]
     fn suite77_tab75_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::BianchettiMercurioMultiCurveFraQuantoAcharyaAmihudBharathLiquidityStressBrigoAlfonsiCorrelatedCirCdsFukasawaAsymptoticSkewVarswap
                 .label()
@@ -15545,7 +15719,7 @@ mod domain_suite_78_tests {
     use super::*;
     #[test]
     fn suite78_tab76_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::HansonSteinGreenwoodVayanosDurationSupplyFleckensteinLongstaffLustigTipsPuzzleCollinDufresneGoldsteinYangSuperSeniorCdoTodorovOptionSpotVolatility
                 .label()
@@ -15571,7 +15745,7 @@ mod domain_suite_79_tests {
     use super::*;
     #[test]
     fn suite79_tab77_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::KlinglerSyrstadSofrRepoSpikeLongstaffMithalNeisCdsBondBasisPanSingletonSovereignCdsMedvedevScailletShortMaturitySmile
                 .label()
@@ -15597,7 +15771,7 @@ mod domain_suite_81_tests {
     use super::*;
     #[test]
     fn suite81_tab79_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::GurkaynakSackSwansonFomcPathBaoPanWangBondIlliquidityCollinDufresneGoldsteinMartinCreditDeterminantsAndersenFusariTodorovLeftTail
                 .label()
@@ -15623,7 +15797,7 @@ mod domain_suite_82_tests {
     use super::*;
     #[test]
     fn suite82_tab80_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::NakamuraSteinssonFomcInfoDickNielsenFeldhutterLandoIlliquidityBerndtDuffieCreditPremiaChristoffersenHestonJacobsVarianceKernel
                 .label()
@@ -15650,7 +15824,7 @@ mod domain_suite_83_tests {
     use super::*;
     #[test]
     fn suite83_tab81_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::WrightInflationUncertaintyDamicoFanKitsulTipsLiquidityCulpNozawaVeronesiPseudoFirmBollerslevTodorovXuTailPredictability
                 .label()
@@ -15676,7 +15850,7 @@ mod domain_suite_84_tests {
     use super::*;
     #[test]
     fn suite84_tab82_terminal_renders_and_reacts() {
-        assert_eq!(TabId::TAB_COUNT, 82);
+        assert_eq!(TabId::TAB_COUNT, 83);
         assert!(
             TabId::DuffieSingletonSwapSpreadChenLesmondWeiLotIlliquidityGieseckeLongstaffSchaeferStrebulaevDefaultRegimeDrechslerYaronUncertaintyJumpVrp
                 .label()
@@ -15693,6 +15867,32 @@ mod domain_suite_84_tests {
         assert!(
             ws.render_dashboard(&frame, false)
                 .contains("82 Duffie-Singleton-Swap-Spread/Chen-Lesmond-Wei-LOT-Illiquidity")
+        );
+    }
+}
+
+#[cfg(test)]
+mod domain_suite_85_tests {
+    use super::*;
+    #[test]
+    fn suite85_tab83_terminal_renders_and_reacts() {
+        assert_eq!(TabId::TAB_COUNT, 83);
+        assert!(
+            TabId::BikbovChernovMacroYieldKrishnamurthyVissingJorgensenTreasuryConvenienceBhamraKuehnStrebulaevCreditEquityPanImplicitJumpFearVrp
+                .label()
+                .starts_with("83 Bikbov-Chernov-Macro-Yield")
+        );
+        let mut ws = DeskWorkstation::default();
+        let a = ws.bikbov_chernov_macro_yield_krishnamurthy_vissing_jorgensen_treasury_convenience_bhamra_kuehn_strebulaev_credit_equity_pan_implicit_jump_fear_vrp_live_metric();
+        ws.set_scenario(ScenarioKind::CreditWideningPlus100Bp);
+        let c = ws.bikbov_chernov_macro_yield_krishnamurthy_vissing_jorgensen_treasury_convenience_bhamra_kuehn_strebulaev_credit_equity_pan_implicit_jump_fear_vrp_live_metric();
+        ws.set_scenario(ScenarioKind::StagflationPlus150Bp);
+        let st = ws.bikbov_chernov_macro_yield_krishnamurthy_vissing_jorgensen_treasury_convenience_bhamra_kuehn_strebulaev_credit_equity_pan_implicit_jump_fear_vrp_live_metric();
+        assert!(a.is_finite() && (a - c).abs() > 1e-12 && (c - st).abs() > 1e-12);
+        let frame = ws.step_tick();
+        assert!(
+            ws.render_dashboard(&frame, false)
+                .contains("83 Bikbov-Chernov-Macro-Yield/KVJ-Treasury-Convenience")
         );
     }
 }

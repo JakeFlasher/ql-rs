@@ -7,7 +7,7 @@ fn benchmarks_verify_parity_and_optional_sota_speedups() {
     // parity paths during normal `cargo test`; timing gates are inherently
     // host-dependent and opt in through QL_RUN_TIMING_GATES=1.
     let rows = run_all_benchmark_suites_with_config(1, 3);
-    assert_eq!(rows.len(), 84);
+    assert_eq!(rows.len(), 85);
     for row in &rows {
         assert!(!row.id.is_empty());
         assert!(!row.description.is_empty());
@@ -427,5 +427,12 @@ fn suite83_workload_is_registered() {
 fn suite84_workload_is_registered() {
     assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("84_")));
     let row = ql_benches::benchmark_duffie_singleton_swap_spread_chen_lesmond_wei_lot_illiquidity_giesecke_longstaff_schaefer_strebulaev_default_regime_drechsler_yaron_uncertainty_jump_vrp_glasserman_yang_entropy_wwr_cva_hamilton_wu_affine_commodity_premia_hassan_country_size_currency_safety_linetsky_whittaker_spectral_asian_barillas_shanken_factor_squared_sharpe_giglio_kelly_pruitt_systemic_pqr_mancini_threshold_realized_variance_constantinides_duffie_heterogeneous_sdf(1);
+    assert!(row.parity_ok && row.max_abs_diff < 1e-3);
+}
+
+#[test]
+fn suite85_workload_is_registered() {
+    assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("85_")));
+    let row = ql_benches::benchmark_bikbov_chernov_macro_yield_krishnamurthy_vissing_jorgensen_treasury_convenience_bhamra_kuehn_strebulaev_credit_equity_pan_implicit_jump_fear_vrp_bo_capponi_contagion_bilateral_cva_singleton_commodity_investor_flows_verdelhan_habit_fx_premium_davydov_linetsky_cev_barrier_demiguel_garlappi_uppal_naive_diversification_engle_manganelli_asymmetric_caviar_barndorff_nielsen_multipower_variation_clt_kogan_papanikolaou_ist_shock_sdf(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-3);
 }

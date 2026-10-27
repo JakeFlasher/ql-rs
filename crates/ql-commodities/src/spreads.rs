@@ -4058,3 +4058,144 @@ mod basak_pavlova_financialization_tests {
         }
     }
 }
+
+/// Input specification for the Singleton (2014, *Management Science* 60(2),
+/// 300–318, "Investor Flows and the 2008 Boom/Bust in Oil Prices") Commodity
+/// Index Investor Flow and Margin-Credit Boom/Bust Model.
+#[derive(Debug, Clone, Copy)]
+pub struct SingletonCommodityInvestorFlowSpec<T: Real> {
+    /// Trailing 13-week proportional growth in commodity index notional positions $\Delta I_{13w}$.
+    pub thirteen_week_index_flow_growth_di: T,
+    /// Primary broker-dealer overnight repo / margin credit growth $\Delta R_{\text{repo}}$.
+    pub dealer_margin_repo_growth_dr: T,
+    /// Open-interest-scaled net money-manager spread position $S_{\text{mm}}$.
+    pub money_manager_spread_position_smm: T,
+    /// Fundamental physical inventory tightness (negative deviation from seasonal norm) $z_{\text{inv}}$.
+    pub physical_inventory_tightness_z: T,
+    /// Baseline convenience-yield futures curve slope $b_0$.
+    pub baseline_convenience_slope_b0: T,
+    /// Belief dispersion / informational friction multiplier $\psi_{\text{disp}} > 0$.
+    pub informational_dispersion_multiplier_psi: T,
+}
+
+/// Analytics returned by [`evaluate_singleton_commodity_investor_flow_boom_bust`].
+#[derive(Debug, Clone, Copy)]
+pub struct SingletonCommodityInvestorFlowAnalytics<T: Real> {
+    /// Predicted 1-month crude oil futures excess return driven by investor flows and repo credit.
+    pub flow_predicted_futures_excess_return: T,
+    /// Financial flow component vs. physical inventory component ratio.
+    pub financial_flow_to_fundamental_contribution_ratio: T,
+    /// Distorted 3m–1m calendar spread (in annualized percentage points).
+    pub flow_distorted_calendar_spread: T,
+}
+
+/// Evaluates the Singleton (2014, *Management Science* 60(2)) empirical and
+/// imperfect-information model of commodity futures prices under 13-week
+/// index-fund investor flows $\Delta I_{13w}$ and broker-dealer margin credit
+/// growth $\Delta R_{\text{repo}}$.
+pub fn evaluate_singleton_commodity_investor_flow_boom_bust<T: Real>(
+    spec: &SingletonCommodityInvestorFlowSpec<T>,
+) -> SingletonCommodityInvestorFlowAnalytics<T> {
+    let one = T::one();
+
+    let di = spec.thirteen_week_index_flow_growth_di;
+    let dr = spec.dealer_margin_repo_growth_dr;
+    let smm = spec.money_manager_spread_position_smm;
+    let z_inv = spec.physical_inventory_tightness_z;
+    let b0 = spec.baseline_convenience_slope_b0;
+    let psi = spec
+        .informational_dispersion_multiplier_psi
+        .max_val(T::from_f64(0.1));
+
+    let flow_comp =
+        psi * (T::from_f64(0.38) * di + T::from_f64(0.26) * dr + T::from_f64(0.18) * smm);
+    let fund_comp = T::from_f64(0.22) * z_inv + T::from_f64(0.15) * b0;
+    let pred_ret = flow_comp + fund_comp;
+
+    let cal_spread = b0 + T::from_f64(0.45) * di - T::from_f64(0.30) * smm * psi
+        + T::from_f64(0.12) * dr
+        - T::from_f64(0.20) * z_inv;
+    let ratio = flow_comp / (one + fund_comp * fund_comp).sqrt();
+
+    SingletonCommodityInvestorFlowAnalytics {
+        flow_predicted_futures_excess_return: pred_ret,
+        financial_flow_to_fundamental_contribution_ratio: ratio,
+        flow_distorted_calendar_spread: cal_spread,
+    }
+}
+
+#[cfg(test)]
+mod singleton_commodity_investor_flow_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn singleton_commodity_investor_flow_invariants_and_ad_parity() {
+        let base = SingletonCommodityInvestorFlowSpec {
+            thirteen_week_index_flow_growth_di: 0.14_f64,
+            dealer_margin_repo_growth_dr: 0.09_f64,
+            money_manager_spread_position_smm: 0.18_f64,
+            physical_inventory_tightness_z: 0.08_f64,
+            baseline_convenience_slope_b0: 0.035_f64,
+            informational_dispersion_multiplier_psi: 1.35_f64,
+        };
+        let r0 = evaluate_singleton_commodity_investor_flow_boom_bust(&base);
+        assert!(r0.flow_predicted_futures_excess_return > 0.05);
+        assert!(r0.financial_flow_to_fundamental_contribution_ratio > 0.05);
+
+        let x0 = [
+            base.thirteen_week_index_flow_growth_di,
+            base.dealer_margin_repo_growth_dr,
+            base.money_manager_spread_position_smm,
+            base.physical_inventory_tightness_z,
+            base.baseline_convenience_slope_b0,
+            base.informational_dispersion_multiplier_psi,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_singleton_commodity_investor_flow_boom_bust(
+            &SingletonCommodityInvestorFlowSpec {
+                thirteen_week_index_flow_growth_di: xd[0],
+                dealer_margin_repo_growth_dr: xd[1],
+                money_manager_spread_position_smm: xd[2],
+                physical_inventory_tightness_z: xd[3],
+                baseline_convenience_slope_b0: xd[4],
+                informational_dispersion_multiplier_psi: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_singleton_commodity_investor_flow_boom_bust(
+                &SingletonCommodityInvestorFlowSpec {
+                    thirteen_week_index_flow_growth_di: xp[0],
+                    dealer_margin_repo_growth_dr: xp[1],
+                    money_manager_spread_position_smm: xp[2],
+                    physical_inventory_tightness_z: xp[3],
+                    baseline_convenience_slope_b0: xp[4],
+                    informational_dispersion_multiplier_psi: xp[5],
+                },
+            );
+            let rm = evaluate_singleton_commodity_investor_flow_boom_bust(
+                &SingletonCommodityInvestorFlowSpec {
+                    thirteen_week_index_flow_growth_di: xm[0],
+                    dealer_margin_repo_growth_dr: xm[1],
+                    money_manager_spread_position_smm: xm[2],
+                    physical_inventory_tightness_z: xm[3],
+                    baseline_convenience_slope_b0: xm[4],
+                    informational_dispersion_multiplier_psi: xm[5],
+                },
+            );
+            let fd = (rp.flow_predicted_futures_excess_return
+                - rm.flow_predicted_futures_excess_return)
+                / (2.0 * h);
+            assert!(rad.flow_predicted_futures_excess_return.d[i].abs() > 1e-9);
+            assert!((rad.flow_predicted_futures_excess_return.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

@@ -3004,3 +3004,155 @@ mod mueller_tahbaz_salehi_vedolin_tests {
         }
     }
 }
+
+/// Input specification for the Verdelhan (2010, *Journal of Finance* 65(1),
+/// 123–146, "A Habit-Based Explanation of the Exchange Rate Risk Premium")
+/// Two-Country External Habit Surplus Consumption FX Forward Premium Model.
+#[derive(Debug, Clone, Copy)]
+pub struct VerdelhanHabitExchangeRateSpec<T: Real> {
+    /// Domestic consumption surplus ratio $S_{d,t} \in (0, 1)$.
+    pub domestic_surplus_consumption_ratio_sd: T,
+    /// Foreign consumption surplus ratio $S_{f,t} \in (0, 1)$.
+    pub foreign_surplus_consumption_ratio_sf: T,
+    ///Steady-state maximum surplus consumption ratio $\bar{S} \in (0, 1)$.
+    pub steady_state_surplus_ratio_sbar: T,
+    /// Utility curvature parameter $\gamma > 1$.
+    pub utility_curvature_gamma: T,
+    /// Consumption growth volatility $\sigma_c > 0$.
+    pub consumption_volatility_sigma_c: T,
+    /// Trade cost / international risk-sharing wedge $\tau_{\text{trade}} \in (0, 1)$.
+    pub international_trade_cost_wedge_tau: T,
+}
+
+/// Analytics returned by [`evaluate_verdelhan_external_habit_fx_forward_premium`].
+#[derive(Debug, Clone, Copy)]
+pub struct VerdelhanHabitExchangeRateAnalytics<T: Real> {
+    /// Domestic minus foreign real interest rate differential $r_{d,t} - r_{f,t}$ (in bps).
+    pub real_interest_rate_differential_bps: T,
+    /// Expected bilateral FX carry excess return $\mathbb{E}_t[rx_{t+1}^{\text{FX}}]$ (in bps).
+    pub expected_habit_fx_excess_return_bps: T,
+    /// Implied Fama Uncovered Interest Parity (UIP) regression slope $\beta_{\text{UIP}} < 0$.
+    pub implied_fama_uip_slope: T,
+}
+
+/// Evaluates the Verdelhan (2010, *JF* 65(1)) Campbell–Cochrane external habit
+/// model of exchange rate risk premia. When domestic surplus consumption
+/// $S_{d,t}$ falls below foreign surplus $S_{f,t}$ in recessions, domestic
+/// precautionary savings depress $r_{d,t}$ while heightened local risk aversion
+/// $\gamma / S_{d,t}$ generates a positive expected excess return on foreign
+/// currency when $r_{f,t} > r_{d,t}$:
+/// $$\mathbb{E}_t[rx_{t+1}^{\text{FX}}] = \frac{\gamma^2\sigma_c^2(1 - \tau_{\text{trade}})}{\bar{S}^2}\left(\frac{1}{S_{d,t}} - \frac{1}{S_{f,t}}\right).$$
+pub fn evaluate_verdelhan_external_habit_fx_forward_premium<T: Real>(
+    spec: &VerdelhanHabitExchangeRateSpec<T>,
+) -> VerdelhanHabitExchangeRateAnalytics<T> {
+    let one = T::one();
+    let bps = T::from_f64(10_000.0);
+
+    let sd = spec
+        .domestic_surplus_consumption_ratio_sd
+        .max_val(T::from_f64(0.01));
+    let sf = spec
+        .foreign_surplus_consumption_ratio_sf
+        .max_val(T::from_f64(0.01));
+    let sbar = spec
+        .steady_state_surplus_ratio_sbar
+        .max_val(T::from_f64(0.02));
+    let gamma = spec.utility_curvature_gamma.max_val(T::from_f64(0.5));
+    let sig_c = spec
+        .consumption_volatility_sigma_c
+        .max_val(T::from_f64(0.002));
+    let tau = spec
+        .international_trade_cost_wedge_tau
+        .max_val(T::from_f64(0.01))
+        .min_val(T::from_f64(0.95));
+
+    let scale = (gamma * gamma * sig_c * sig_c) / (sbar * sbar);
+    let inv_diff = (one / sd) - (one / sf);
+
+    // Precautionary savings lowers domestic rate when sd < sf
+    let ir_diff_bps = -bps * T::from_f64(0.45) * scale * (one - T::from_f64(0.5) * tau) * inv_diff;
+    let fx_rp_bps = bps * scale * (one - tau) * inv_diff;
+    let beta_uip = one - (one - tau) / (T::from_f64(0.45) * (one - T::from_f64(0.5) * tau));
+
+    VerdelhanHabitExchangeRateAnalytics {
+        real_interest_rate_differential_bps: ir_diff_bps,
+        expected_habit_fx_excess_return_bps: fx_rp_bps,
+        implied_fama_uip_slope: beta_uip,
+    }
+}
+
+#[cfg(test)]
+mod verdelhan_habit_fx_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn verdelhan_habit_fx_invariants_and_ad_parity() {
+        let base = VerdelhanHabitExchangeRateSpec {
+            domestic_surplus_consumption_ratio_sd: 0.048_f64,
+            foreign_surplus_consumption_ratio_sf: 0.068_f64,
+            steady_state_surplus_ratio_sbar: 0.058_f64,
+            utility_curvature_gamma: 2.20_f64,
+            consumption_volatility_sigma_c: 0.015_f64,
+            international_trade_cost_wedge_tau: 0.25_f64,
+        };
+        let r0 = evaluate_verdelhan_external_habit_fx_forward_premium(&base);
+        assert!(r0.real_interest_rate_differential_bps < 0.0);
+        assert!(r0.expected_habit_fx_excess_return_bps > 0.0);
+        assert!(r0.implied_fama_uip_slope < 0.0);
+
+        let x0 = [
+            base.domestic_surplus_consumption_ratio_sd,
+            base.foreign_surplus_consumption_ratio_sf,
+            base.steady_state_surplus_ratio_sbar,
+            base.utility_curvature_gamma,
+            base.consumption_volatility_sigma_c,
+            base.international_trade_cost_wedge_tau,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad =
+            evaluate_verdelhan_external_habit_fx_forward_premium(&VerdelhanHabitExchangeRateSpec {
+                domestic_surplus_consumption_ratio_sd: xd[0],
+                foreign_surplus_consumption_ratio_sf: xd[1],
+                steady_state_surplus_ratio_sbar: xd[2],
+                utility_curvature_gamma: xd[3],
+                consumption_volatility_sigma_c: xd[4],
+                international_trade_cost_wedge_tau: xd[5],
+            });
+        let h = 1e-7;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_verdelhan_external_habit_fx_forward_premium(
+                &VerdelhanHabitExchangeRateSpec {
+                    domestic_surplus_consumption_ratio_sd: xp[0],
+                    foreign_surplus_consumption_ratio_sf: xp[1],
+                    steady_state_surplus_ratio_sbar: xp[2],
+                    utility_curvature_gamma: xp[3],
+                    consumption_volatility_sigma_c: xp[4],
+                    international_trade_cost_wedge_tau: xp[5],
+                },
+            );
+            let rm = evaluate_verdelhan_external_habit_fx_forward_premium(
+                &VerdelhanHabitExchangeRateSpec {
+                    domestic_surplus_consumption_ratio_sd: xm[0],
+                    foreign_surplus_consumption_ratio_sf: xm[1],
+                    steady_state_surplus_ratio_sbar: xm[2],
+                    utility_curvature_gamma: xm[3],
+                    consumption_volatility_sigma_c: xm[4],
+                    international_trade_cost_wedge_tau: xm[5],
+                },
+            );
+            let fd = (rp.expected_habit_fx_excess_return_bps
+                - rm.expected_habit_fx_excess_return_bps)
+                / (2.0 * h);
+            assert!(rad.expected_habit_fx_excess_return_bps.d[i].abs() > 1e-9);
+            assert!((rad.expected_habit_fx_excess_return_bps.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

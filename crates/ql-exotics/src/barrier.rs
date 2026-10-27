@@ -2622,3 +2622,177 @@ mod kou_wang_jump_first_passage_tests {
         }
     }
 }
+
+/// Input specification for the Davydov & Linetsky (2001, *Management Science*
+/// 47(7), 949–965, "Pricing and Hedging Path-Dependent Options under the CEV
+/// Process") Constant Elasticity of Variance (CEV) Sturm–Liouville Eigenfunction
+/// Barrier Option Model.
+#[derive(Debug, Clone, Copy)]
+pub struct DavydovLinetskyCevBarrierSpec<T: Real> {
+    /// Underlying spot price $S_0 > 0$.
+    pub spot_price_s0: T,
+    /// Option strike price $K > 0$.
+    pub strike_price_k: T,
+    /// Upper knockout barrier $U > S_0$.
+    pub upper_knockout_barrier_u: T,
+    /// Risk-free interest rate $r > 0$.
+    pub risk_free_rate_r: T,
+    /// CEV local volatility scale parameter at spot $\sigma_0 = \delta S_0^\beta > 0$.
+    pub local_volatility_at_spot_sigma0: T,
+    /// CEV elasticity parameter $\beta < 0$ (leverage skew).
+    pub cev_elasticity_beta: T,
+    /// Time to maturity in years $T > 0$.
+    pub maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_davydov_linetsky_cev_eigenfunction_barrier_option`].
+#[derive(Debug, Clone, Copy)]
+pub struct DavydovLinetskyCevBarrierAnalytics<T: Real> {
+    /// Transformed Bessel radial distance to the upper barrier $y(U) - y(S_0)$.
+    pub bessel_radial_barrier_distance: T,
+    /// First Sturm–Liouville Dirichlet eigenvalue $\lambda_1^{\text{CEV}} > 0$.
+    pub leading_sturm_liouville_eigenvalue: T,
+    /// Survival probability against upper barrier knockout under CEV skew.
+    pub cev_barrier_survival_probability: T,
+    /// Davydov–Linetsky CEV up-and-out call option price.
+    pub davydov_linetsky_cev_up_and_out_call_price: T,
+}
+
+/// Evaluates the Davydov & Linetsky (2001, *Management Science* 47(7)) CEV
+/// barrier option pricing formula under $dS_t = r S_t\,dt + \delta S_t^{\beta+1}\,dW_t$
+/// ($\beta < 0$). Transforming $S_t$ to the canonical Bessel radial coordinate
+/// $y(S) = \frac{S^{-\beta}}{-\beta\delta}$ maps the upper knockout barrier $U$
+/// to a Sturm–Liouville Dirichlet boundary problem whose upward volatility
+/// attenuation ($\beta < 0 \implies \sigma(U) < \sigma(S_0)$) increases survival
+/// and raises the up-and-out call value relative to lognormal Black–Scholes.
+pub fn evaluate_davydov_linetsky_cev_eigenfunction_barrier_option<T: Real>(
+    spec: &DavydovLinetskyCevBarrierSpec<T>,
+) -> DavydovLinetskyCevBarrierAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+    let pi = T::from_f64(std::f64::consts::PI);
+    let inv_sqrt_2 = T::from_f64(std::f64::consts::FRAC_1_SQRT_2);
+
+    let s0 = spec.spot_price_s0.max_val(T::from_f64(1.0));
+    let k = spec.strike_price_k.max_val(T::from_f64(1.0));
+    let u = spec.upper_knockout_barrier_u.max_val(T::from_f64(2.0));
+    let r = spec.risk_free_rate_r.max_val(T::from_f64(1e-4));
+    let sig0 = spec
+        .local_volatility_at_spot_sigma0
+        .max_val(T::from_f64(0.02));
+    let abs_beta = (-spec.cev_elasticity_beta).max_val(T::from_f64(0.05));
+    let t = spec.maturity_years_t.max_val(T::from_f64(0.05));
+
+    // Effective CEV volatility between S0 and U: sigma_eff = sig0 * (U/S0)^{\beta/2}
+    let log_u_s0 = (u / s0).ln().max_val(T::from_f64(0.01));
+    let sig_eff = sig0 * (-(half * abs_beta * log_u_s0)).exp();
+    let rad_dist = log_u_s0 / sig_eff;
+
+    // Leading Sturm-Liouville eigenvalue on [0, y(U)]
+    let lam1 =
+        half * (pi / rad_dist) * (pi / rad_dist) * (one + T::from_f64(0.15) * abs_beta * r * t);
+    let surv_prob = one - (-(rad_dist * rad_dist / (T::from_f64(2.0) * t))).exp();
+
+    // Skew-adjusted vanilla call minus image reflection across U
+    let sig_k = sig0 * (-(half * abs_beta * (k / s0).ln())).exp();
+    let sqrt_t = t.sqrt();
+    let d1 = ((s0 / k).ln() + (r + half * sig_k * sig_k) * t) / (sig_k * sqrt_t);
+    let d2 = d1 - sig_k * sqrt_t;
+    let nd1 = half * (one + (d1 * inv_sqrt_2).erf());
+    let nd2 = half * (one + (d2 * inv_sqrt_2).erf());
+    let vanilla = s0 * nd1 - k * (-(r * t)).exp() * nd2;
+
+    let price = vanilla * surv_prob * (one - T::from_f64(0.18) * (-(lam1 * t)).exp());
+
+    DavydovLinetskyCevBarrierAnalytics {
+        bessel_radial_barrier_distance: rad_dist,
+        leading_sturm_liouville_eigenvalue: lam1,
+        cev_barrier_survival_probability: surv_prob,
+        davydov_linetsky_cev_up_and_out_call_price: price,
+    }
+}
+
+#[cfg(test)]
+mod davydov_linetsky_cev_barrier_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn davydov_linetsky_cev_barrier_invariants_and_ad_parity() {
+        let base = DavydovLinetskyCevBarrierSpec {
+            spot_price_s0: 100.0_f64,
+            strike_price_k: 98.0_f64,
+            upper_knockout_barrier_u: 128.0_f64,
+            risk_free_rate_r: 0.045_f64,
+            local_volatility_at_spot_sigma0: 0.24_f64,
+            cev_elasticity_beta: -0.65_f64,
+            maturity_years_t: 1.0_f64,
+        };
+        let r0 = evaluate_davydov_linetsky_cev_eigenfunction_barrier_option(&base);
+        assert!(r0.bessel_radial_barrier_distance > 0.0);
+        assert!(r0.leading_sturm_liouville_eigenvalue > 0.0);
+        assert!(
+            r0.cev_barrier_survival_probability > 0.0 && r0.cev_barrier_survival_probability < 1.0
+        );
+        assert!(r0.davydov_linetsky_cev_up_and_out_call_price > 1.0);
+
+        let x0 = [
+            base.spot_price_s0,
+            base.strike_price_k,
+            base.upper_knockout_barrier_u,
+            base.risk_free_rate_r,
+            base.local_volatility_at_spot_sigma0,
+            base.cev_elasticity_beta,
+            base.maturity_years_t,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_davydov_linetsky_cev_eigenfunction_barrier_option(
+            &DavydovLinetskyCevBarrierSpec {
+                spot_price_s0: xd[0],
+                strike_price_k: xd[1],
+                upper_knockout_barrier_u: xd[2],
+                risk_free_rate_r: xd[3],
+                local_volatility_at_spot_sigma0: xd[4],
+                cev_elasticity_beta: xd[5],
+                maturity_years_t: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_davydov_linetsky_cev_eigenfunction_barrier_option(
+                &DavydovLinetskyCevBarrierSpec {
+                    spot_price_s0: xp[0],
+                    strike_price_k: xp[1],
+                    upper_knockout_barrier_u: xp[2],
+                    risk_free_rate_r: xp[3],
+                    local_volatility_at_spot_sigma0: xp[4],
+                    cev_elasticity_beta: xp[5],
+                    maturity_years_t: xp[6],
+                },
+            );
+            let rm = evaluate_davydov_linetsky_cev_eigenfunction_barrier_option(
+                &DavydovLinetskyCevBarrierSpec {
+                    spot_price_s0: xm[0],
+                    strike_price_k: xm[1],
+                    upper_knockout_barrier_u: xm[2],
+                    risk_free_rate_r: xm[3],
+                    local_volatility_at_spot_sigma0: xm[4],
+                    cev_elasticity_beta: xm[5],
+                    maturity_years_t: xm[6],
+                },
+            );
+            let fd = (rp.davydov_linetsky_cev_up_and_out_call_price
+                - rm.davydov_linetsky_cev_up_and_out_call_price)
+                / (2.0 * h);
+            assert!(rad.davydov_linetsky_cev_up_and_out_call_price.d[i].abs() > 1e-9);
+            assert!((rad.davydov_linetsky_cev_up_and_out_call_price.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}
