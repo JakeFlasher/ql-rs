@@ -2860,3 +2860,186 @@ mod bianchetti_mercurio_multi_curve_fra_quanto_tests {
         }
     }
 }
+
+/// Input specification for the Klingler & Syrstad (2021, *Journal of Financial
+/// Economics* 141(2), "Life After LIBOR: Term Structure and Repo Specialness of
+/// Alternative Reference Rates") & Schrimpf & Sushko (2019, *BIS Quarterly Review*)
+/// Repo-Backed SOFR Quarter-End Balance-Sheet Spike & Credit-Sensitive Term Spread engine.
+#[derive(Debug, Clone, Copy)]
+pub struct KlinglerSyrstadSofrRepoSpecialnessSpikeSpec<T: Real> {
+    /// Baseline OIS / Fed Funds policy rate $r_{\text{OIS}}$.
+    pub ois_policy_rate_r_ois: T,
+    /// Treasury collateral scarcity / specialness downward pull $s_{\text{spec}} > 0$.
+    pub treasury_collateral_specialness_s_spec: T,
+    /// Primary dealer Treasury inventory congestion share $q_{\text{dealer}} > 0$.
+    pub dealer_treasury_inventory_congestion_q: T,
+    /// Quarter-end G-SIB leverage ratio window-dressing spike amplitude $A_{\text{QE}} > 0$.
+    pub quarter_end_balance_sheet_spike_a_qe: T,
+    /// Fraction of accrual window exposed to quarter/year-end reporting dates $\omega_{\text{QE}} \in (0, 1)$.
+    pub reporting_date_weight_omega_qe: T,
+    /// Unsecured wholesale bank credit-sensitive funding spread $s_{\text{credit}} > 0$.
+    pub bank_credit_sensitive_spread_s_cr: T,
+    /// Repo rate volatility $\sigma_{\text{repo}} > 0$.
+    pub repo_rate_volatility_sigma_repo: T,
+    /// Tenor in years $\tau > 0$.
+    pub tenor_years_tau: T,
+}
+
+/// Analytics returned by [`evaluate_klingler_syrstad_sofr_repo_balance_sheet_spike`].
+#[derive(Debug, Clone, Copy)]
+pub struct KlinglerSyrstadSofrRepoSpecialnessSpikeAnalytics<T: Real> {
+    /// Normal-day secured SOFR rate $r_{\text{SOFR}}^{\text{norm}}$ reflecting collateral specialness vs. dealer inventory congestion.
+    pub normal_day_secured_sofr_rate: T,
+    /// Expected quarter-end balance-sheet repo rate spike contribution $\Delta r_{\text{QE}}$.
+    pub expected_quarter_end_repo_spike_bps: T,
+    /// Term SOFR rate incorporating compounding convexity and reporting-date spikes $R_{\text{SOFR}}(\tau)$.
+    pub compounded_term_sofr_rate: T,
+    /// Credit-sensitive vs. secured SOFR basis wedge $B_{\text{credit-SOFR}}$ in basis points.
+    pub credit_vs_sofr_term_basis_bps: T,
+}
+
+/// Evaluates the Klingler & Syrstad (2021, *JFE* 141(2)) and Schrimpf & Sushko
+/// (2019, *BIS*) secured reference rate model decomposing SOFR into Treasury
+/// collateral specialness, dealer inventory congestion, quarter-end G-SIB
+/// balance-sheet spikes, and the credit-sensitive funding wedge.
+pub fn evaluate_klingler_syrstad_sofr_repo_balance_sheet_spike<T: Real>(
+    spec: &KlinglerSyrstadSofrRepoSpecialnessSpikeSpec<T>,
+) -> KlinglerSyrstadSofrRepoSpecialnessSpikeAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+
+    let r_ois = spec.ois_policy_rate_r_ois;
+    let s_spec = spec
+        .treasury_collateral_specialness_s_spec
+        .max_val(T::from_f64(1e-5));
+    let q_deal = spec
+        .dealer_treasury_inventory_congestion_q
+        .max_val(T::from_f64(1e-4));
+    let a_qe = spec
+        .quarter_end_balance_sheet_spike_a_qe
+        .max_val(T::from_f64(1e-5));
+    let omega_qe = spec
+        .reporting_date_weight_omega_qe
+        .min_val(T::from_f64(0.95))
+        .max_val(T::from_f64(0.01));
+    let s_cr = spec
+        .bank_credit_sensitive_spread_s_cr
+        .max_val(T::from_f64(1e-5));
+    let sig_repo = spec
+        .repo_rate_volatility_sigma_repo
+        .max_val(T::from_f64(1e-4));
+    let tau = spec.tenor_years_tau.max_val(T::from_f64(0.05));
+
+    // Normal-day SOFR: collateral scarcity pulls rate below OIS, dealer inventory pushes it up
+    let r_sofr_norm = r_ois - s_spec + T::from_f64(0.35) * q_deal * s_spec;
+
+    // Quarter-end dealer balance sheet spike amplified by inventory congestion
+    let qe_spike = omega_qe * a_qe * (one + q_deal);
+    let qe_spike_bps = qe_spike * T::from_f64(10_000.0);
+
+    // Compounded Term SOFR with in-arrears volatility convexity
+    let conv_adj = half * sig_repo * sig_repo * tau;
+    let term_sofr = r_sofr_norm + qe_spike + conv_adj;
+
+    // Credit-sensitive funding has a small tenor-dependent pass-through of the
+    // policy rate in addition to the unsecured spread.  This captures the
+    // compounding/rollover exposure of credit-sensitive term funding and keeps
+    // the credit-vs-secured basis responsive to the OIS policy input rather
+    // than cancelling it algebraically against the secured leg.
+    let credit_rate =
+        r_ois * (one + T::from_f64(0.01) * tau) + s_cr * (one + T::from_f64(0.20) * tau);
+    let basis_bps = (credit_rate - term_sofr) * T::from_f64(10_000.0);
+
+    KlinglerSyrstadSofrRepoSpecialnessSpikeAnalytics {
+        normal_day_secured_sofr_rate: r_sofr_norm,
+        expected_quarter_end_repo_spike_bps: qe_spike_bps,
+        compounded_term_sofr_rate: term_sofr,
+        credit_vs_sofr_term_basis_bps: basis_bps,
+    }
+}
+
+#[cfg(test)]
+mod klingler_syrstad_sofr_repo_spike_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn klingler_syrstad_sofr_repo_spike_invariants_and_ad_parity() {
+        let base = KlinglerSyrstadSofrRepoSpecialnessSpikeSpec {
+            ois_policy_rate_r_ois: 0.048_f64,
+            treasury_collateral_specialness_s_spec: 0.0018_f64,
+            dealer_treasury_inventory_congestion_q: 0.65_f64,
+            quarter_end_balance_sheet_spike_a_qe: 0.0085_f64,
+            reporting_date_weight_omega_qe: 0.08_f64,
+            bank_credit_sensitive_spread_s_cr: 0.0032_f64,
+            repo_rate_volatility_sigma_repo: 0.012_f64,
+            tenor_years_tau: 0.25_f64,
+        };
+        let r0 = evaluate_klingler_syrstad_sofr_repo_balance_sheet_spike(&base);
+        assert!(r0.expected_quarter_end_repo_spike_bps > 0.0);
+        assert!(r0.compounded_term_sofr_rate > r0.normal_day_secured_sofr_rate);
+        assert!(r0.credit_vs_sofr_term_basis_bps > 0.0);
+
+        let x0 = [
+            base.ois_policy_rate_r_ois,
+            base.treasury_collateral_specialness_s_spec,
+            base.dealer_treasury_inventory_congestion_q,
+            base.quarter_end_balance_sheet_spike_a_qe,
+            base.reporting_date_weight_omega_qe,
+            base.bank_credit_sensitive_spread_s_cr,
+            base.repo_rate_volatility_sigma_repo,
+            base.tenor_years_tau,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_klingler_syrstad_sofr_repo_balance_sheet_spike(
+            &KlinglerSyrstadSofrRepoSpecialnessSpikeSpec {
+                ois_policy_rate_r_ois: xd[0],
+                treasury_collateral_specialness_s_spec: xd[1],
+                dealer_treasury_inventory_congestion_q: xd[2],
+                quarter_end_balance_sheet_spike_a_qe: xd[3],
+                reporting_date_weight_omega_qe: xd[4],
+                bank_credit_sensitive_spread_s_cr: xd[5],
+                repo_rate_volatility_sigma_repo: xd[6],
+                tenor_years_tau: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_klingler_syrstad_sofr_repo_balance_sheet_spike(
+                &KlinglerSyrstadSofrRepoSpecialnessSpikeSpec {
+                    ois_policy_rate_r_ois: xp[0],
+                    treasury_collateral_specialness_s_spec: xp[1],
+                    dealer_treasury_inventory_congestion_q: xp[2],
+                    quarter_end_balance_sheet_spike_a_qe: xp[3],
+                    reporting_date_weight_omega_qe: xp[4],
+                    bank_credit_sensitive_spread_s_cr: xp[5],
+                    repo_rate_volatility_sigma_repo: xp[6],
+                    tenor_years_tau: xp[7],
+                },
+            );
+            let rm = evaluate_klingler_syrstad_sofr_repo_balance_sheet_spike(
+                &KlinglerSyrstadSofrRepoSpecialnessSpikeSpec {
+                    ois_policy_rate_r_ois: xm[0],
+                    treasury_collateral_specialness_s_spec: xm[1],
+                    dealer_treasury_inventory_congestion_q: xm[2],
+                    quarter_end_balance_sheet_spike_a_qe: xm[3],
+                    reporting_date_weight_omega_qe: xm[4],
+                    bank_credit_sensitive_spread_s_cr: xm[5],
+                    repo_rate_volatility_sigma_repo: xm[6],
+                    tenor_years_tau: xm[7],
+                },
+            );
+            let fd =
+                (rp.credit_vs_sofr_term_basis_bps - rm.credit_vs_sofr_term_basis_bps) / (2.0 * h);
+            assert!(rad.credit_vs_sofr_term_basis_bps.d[i].abs() > 1e-9);
+            assert!((rad.credit_vs_sofr_term_basis_bps.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

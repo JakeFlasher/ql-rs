@@ -3331,3 +3331,179 @@ mod brigo_alfonsi_correlated_cir_cds_tests {
         }
     }
 }
+
+/// Input specification for the Pan & Singleton (2008, *Journal of Finance* 63(5),
+/// "Default and Recovery Implicit in the Term Structure of Sovereign CDS Spreads")
+/// Lognormal Sovereign Default Intensity, Market Price of Distress Risk &
+/// Recovery Identification engine.
+#[derive(Debug, Clone, Copy)]
+pub struct PanSingletonSovereignCdsDistressRiskSpec<T: Real> {
+    /// Initial physical sovereign default intensity $\lambda_0^{\mathbb{P}} > 0$.
+    pub physical_hazard_rate_lambda0_p: T,
+    /// Physical log-intensity mean reversion speed $\kappa^{\mathbb{P}} > 0$.
+    pub physical_mean_reversion_kappa_p: T,
+    /// Log-intensity volatility $\sigma_\lambda > 0$.
+    pub log_intensity_volatility_sigma: T,
+    /// Market price of sovereign distress risk $\eta_{\text{distress}} > 0$.
+    pub distress_risk_price_eta: T,
+    /// Fractional loss given default under face-value recovery $L^{\mathbb{Q}} \in (0, 1)$.
+    pub risk_neutral_loss_given_default_lgd: T,
+    /// Short-maturity sovereign CDS tenor $T_1 > 0$ (e.g. 1Y).
+    pub short_cds_tenor_t1: T,
+    /// Long-maturity sovereign CDS tenor $T_2 > T_1$ (e.g. 5Y).
+    pub long_cds_tenor_t2: T,
+    /// Risk-free discount rate $r > 0$.
+    pub risk_free_rate_r: T,
+}
+
+/// Analytics returned by [`evaluate_pan_singleton_sovereign_cds_distress_risk_premium`].
+#[derive(Debug, Clone, Copy)]
+pub struct PanSingletonSovereignCdsDistressRiskAnalytics<T: Real> {
+    /// Risk-neutral mean-reversion speed $\kappa^{\mathbb{Q}} = \kappa^{\mathbb{P}} - \eta_{\text{distress}} \sigma_\lambda$.
+    pub risk_neutral_mean_reversion_kappa_q: T,
+    /// 1-year sovereign CDS par spread in basis points $S_{\text{CDS}}(T_1)$.
+    pub short_tenor_sovereign_cds_bps: T,
+    /// Long-tenor (5Y) sovereign CDS par spread in basis points $S_{\text{CDS}}(T_2)$.
+    pub long_tenor_sovereign_cds_bps: T,
+    /// Sovereign distress risk premium ratio $S_{\text{CDS}}^{\mathbb{Q}}(T_2) / S_{\text{CDS}}^{\mathbb{P}}(T_2) > 1$.
+    pub sovereign_distress_risk_premium_ratio: T,
+}
+
+/// Evaluates the Pan & Singleton (2008, *JF* 63(5)) lognormal sovereign default
+/// intensity term structure model identifying risk-neutral persistence distortion
+/// ($\kappa^{\mathbb{Q}} = \kappa^{\mathbb{P}} - \eta_{\text{distress}}\sigma_\lambda$),
+/// lognormal convexity, and the sovereign distress risk premium across 1Y and 5Y CDS tenors.
+pub fn evaluate_pan_singleton_sovereign_cds_distress_risk_premium<T: Real>(
+    spec: &PanSingletonSovereignCdsDistressRiskSpec<T>,
+) -> PanSingletonSovereignCdsDistressRiskAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+
+    let lam0 = spec
+        .physical_hazard_rate_lambda0_p
+        .max_val(T::from_f64(1e-4));
+    let kap_p = spec
+        .physical_mean_reversion_kappa_p
+        .max_val(T::from_f64(0.05));
+    let sig = spec
+        .log_intensity_volatility_sigma
+        .max_val(T::from_f64(1e-3));
+    let eta = spec.distress_risk_price_eta.max_val(T::from_f64(1e-4));
+    let lgd = spec
+        .risk_neutral_loss_given_default_lgd
+        .min_val(T::from_f64(0.95))
+        .max_val(T::from_f64(0.05));
+    let t1 = spec.short_cds_tenor_t1.max_val(T::from_f64(0.25));
+    let t2 = spec.long_cds_tenor_t2.max_val(t1 + T::from_f64(0.5));
+    let r = spec.risk_free_rate_r.max_val(T::from_f64(1e-4));
+
+    let kap_q = (kap_p - eta * sig).max_val(T::from_f64(0.02));
+
+    let spread_at = |tenor: T, kappa_eff: T, drift_boost: T| -> T {
+        let b_t = (one - (-kappa_eff * tenor).exp()) / kappa_eff;
+        let var_conv = half * sig * sig * b_t * b_t;
+        let disc_adj = one / (one + r * T::from_f64(0.25) * tenor);
+        let eff_lam = lam0 * (drift_boost * b_t + var_conv).exp() * disc_adj;
+        lgd * eff_lam * T::from_f64(10_000.0)
+    };
+
+    let s1_q = spread_at(t1, kap_q, eta * sig);
+    let s2_q = spread_at(t2, kap_q, eta * sig);
+    let s2_p = spread_at(t2, kap_p, T::zero());
+    let prem_ratio = s2_q / s2_p;
+
+    PanSingletonSovereignCdsDistressRiskAnalytics {
+        risk_neutral_mean_reversion_kappa_q: kap_q,
+        short_tenor_sovereign_cds_bps: s1_q,
+        long_tenor_sovereign_cds_bps: s2_q,
+        sovereign_distress_risk_premium_ratio: prem_ratio,
+    }
+}
+
+#[cfg(test)]
+mod pan_singleton_sovereign_cds_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn pan_singleton_sovereign_cds_invariants_and_ad_parity() {
+        let base = PanSingletonSovereignCdsDistressRiskSpec {
+            physical_hazard_rate_lambda0_p: 0.018_f64,
+            physical_mean_reversion_kappa_p: 0.55_f64,
+            log_intensity_volatility_sigma: 0.42_f64,
+            distress_risk_price_eta: 0.45_f64,
+            risk_neutral_loss_given_default_lgd: 0.75_f64,
+            short_cds_tenor_t1: 1.0_f64,
+            long_cds_tenor_t2: 5.0_f64,
+            risk_free_rate_r: 0.038_f64,
+        };
+        let r0 = evaluate_pan_singleton_sovereign_cds_distress_risk_premium(&base);
+        assert!(r0.risk_neutral_mean_reversion_kappa_q < base.physical_mean_reversion_kappa_p);
+        assert!(r0.long_tenor_sovereign_cds_bps > 0.0);
+        assert!(r0.sovereign_distress_risk_premium_ratio > 1.0);
+
+        let x0 = [
+            base.physical_hazard_rate_lambda0_p,
+            base.physical_mean_reversion_kappa_p,
+            base.log_intensity_volatility_sigma,
+            base.distress_risk_price_eta,
+            base.risk_neutral_loss_given_default_lgd,
+            base.short_cds_tenor_t1,
+            base.long_cds_tenor_t2,
+            base.risk_free_rate_r,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_pan_singleton_sovereign_cds_distress_risk_premium(
+            &PanSingletonSovereignCdsDistressRiskSpec {
+                physical_hazard_rate_lambda0_p: xd[0],
+                physical_mean_reversion_kappa_p: xd[1],
+                log_intensity_volatility_sigma: xd[2],
+                distress_risk_price_eta: xd[3],
+                risk_neutral_loss_given_default_lgd: xd[4],
+                short_cds_tenor_t1: xd[5],
+                long_cds_tenor_t2: xd[6],
+                risk_free_rate_r: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_pan_singleton_sovereign_cds_distress_risk_premium(
+                &PanSingletonSovereignCdsDistressRiskSpec {
+                    physical_hazard_rate_lambda0_p: xp[0],
+                    physical_mean_reversion_kappa_p: xp[1],
+                    log_intensity_volatility_sigma: xp[2],
+                    distress_risk_price_eta: xp[3],
+                    risk_neutral_loss_given_default_lgd: xp[4],
+                    short_cds_tenor_t1: xp[5],
+                    long_cds_tenor_t2: xp[6],
+                    risk_free_rate_r: xp[7],
+                },
+            );
+            let rm = evaluate_pan_singleton_sovereign_cds_distress_risk_premium(
+                &PanSingletonSovereignCdsDistressRiskSpec {
+                    physical_hazard_rate_lambda0_p: xm[0],
+                    physical_mean_reversion_kappa_p: xm[1],
+                    log_intensity_volatility_sigma: xm[2],
+                    distress_risk_price_eta: xm[3],
+                    risk_neutral_loss_given_default_lgd: xm[4],
+                    short_cds_tenor_t1: xm[5],
+                    long_cds_tenor_t2: xm[6],
+                    risk_free_rate_r: xm[7],
+                },
+            );
+            let gp = rp.long_tenor_sovereign_cds_bps + rp.short_tenor_sovereign_cds_bps;
+            let gm = rm.long_tenor_sovereign_cds_bps + rm.short_tenor_sovereign_cds_bps;
+            let gad = rad.long_tenor_sovereign_cds_bps + rad.short_tenor_sovereign_cds_bps;
+            let fd = (gp - gm) / (2.0 * h);
+            assert!(gad.d[i].abs() > 1e-9);
+            assert!((gad.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

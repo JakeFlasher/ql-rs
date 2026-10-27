@@ -2058,3 +2058,174 @@ mod fukasawa_asymptotic_implied_skew_varswap_tests {
         }
     }
 }
+
+/// Input specification for the Medvedev & Scaillet (2007, *Review of Financial
+/// Studies* 20(2); 2010, *Journal of Financial Economics* 98(1), "Pricing
+/// American Options Under Stochastic Volatility and Stochastic Interest Rates")
+/// Short-Maturity Normalized-Moneyness Implied Volatility & Early-Exercise
+/// Boundary Expansion engine.
+#[derive(Debug, Clone, Copy)]
+pub struct MedvedevScailletShortMaturitySmileExpansionSpec<T: Real> {
+    /// Initial instantaneous spot volatility $\sigma_0 > 0$.
+    pub spot_volatility_sigma0: T,
+    /// Volatility-of-volatility $\nu > 0$.
+    pub vol_of_vol_nu: T,
+    /// Spot-volatility correlation $\rho \in (-1, 1)$.
+    pub spot_vol_correlation_rho: T,
+    /// Volatility mean-reversion drift $\kappa(\theta - \sigma_0)$.
+    pub volatility_drift_mu_v: T,
+    /// Normalized moneyness $\theta_m = \ln(K / S_0) / (\sigma_0 \sqrt{\tau})$.
+    pub normalized_moneyness_theta: T,
+    /// Time to maturity in years $\tau > 0$.
+    pub maturity_years_tau: T,
+    /// Risk-free interest rate $r > 0$.
+    pub risk_free_rate_r: T,
+    /// Continuous dividend yield $q \ge 0$.
+    pub dividend_yield_q: T,
+}
+
+/// Analytics returned by [`evaluate_medvedev_scaillet_short_maturity_smile_expansion`].
+#[derive(Debug, Clone, Copy)]
+pub struct MedvedevScailletShortMaturitySmileExpansionAnalytics<T: Real> {
+    /// First-order $O(\sqrt{\tau})$ implied volatility skew term $I_1(\theta_m) \sqrt{\tau}$.
+    pub first_order_smile_skew_term: T,
+    /// Second-order $O(\tau)$ smile curvature and vol-drift correction $I_2(\theta_m) \tau$.
+    pub second_order_smile_curvature_term: T,
+    /// Medvedev-Scaillet asymptotic implied volatility $\hat{\sigma}_{\text{MS}}(\theta_m, \tau)$.
+    pub asymptotic_implied_volatility: T,
+    /// Short-maturity American put early-exercise normalized boundary proxy $\theta_m^*(\tau) < 0$.
+    pub american_put_exercise_normalized_boundary: T,
+}
+
+/// Evaluates the Medvedev & Scaillet (2007, *RFS* 20(2); 2010, *JFE* 98(1))
+/// short-maturity asymptotic expansion of implied volatility and American
+/// early-exercise moneyness under stochastic volatility:
+/// $$\hat{\sigma}(\theta_m, \tau) = \sigma_0 + \frac{1}{2}\rho \nu \sigma_0 \theta_m \sqrt{\tau}
+///   + \left[\frac{\mu_v}{2} + \frac{\nu^2}{24}\left((2 - 3\rho^2)\theta_m^2 + (4 - 3\rho^2)\right)\right]\tau.$$
+pub fn evaluate_medvedev_scaillet_short_maturity_smile_expansion<T: Real>(
+    spec: &MedvedevScailletShortMaturitySmileExpansionSpec<T>,
+) -> MedvedevScailletShortMaturitySmileExpansionAnalytics<T> {
+    let half = T::from_f64(0.5);
+
+    let sig0 = spec.spot_volatility_sigma0.max_val(T::from_f64(1e-3));
+    let nu = spec.vol_of_vol_nu.max_val(T::from_f64(1e-4));
+    let rho = spec
+        .spot_vol_correlation_rho
+        .min_val(T::from_f64(0.99))
+        .max_val(T::from_f64(-0.99));
+    let mu_v = spec.volatility_drift_mu_v;
+    let theta_m = spec.normalized_moneyness_theta;
+    let tau = spec.maturity_years_tau.max_val(T::from_f64(1e-4));
+    let r = spec.risk_free_rate_r.max_val(T::from_f64(1e-4));
+    let q = spec.dividend_yield_q.max_val(T::zero());
+
+    let sqrt_tau = tau.sqrt();
+    let i1_term = half * rho * nu * sig0 * theta_m * sqrt_tau;
+
+    let rho2 = rho * rho;
+    let theta2 = theta_m * theta_m;
+    let curv_coeff = (T::from_f64(2.0) - T::from_f64(3.0) * rho2) * theta2
+        + (T::from_f64(4.0) - T::from_f64(3.0) * rho2);
+    let i2_term = (half * mu_v + (nu * nu / T::from_f64(24.0)) * curv_coeff) * tau;
+
+    let imp_vol =
+        (sig0 + i1_term + i2_term + T::from_f64(0.05) * (r - q) * tau).max_val(T::from_f64(1e-4));
+
+    let net_carry = r / (r + q + sig0 * sig0);
+    let am_boundary =
+        -(T::from_f64(1.25) + net_carry) * (T::one() - T::from_f64(0.25) * rho * nu * sqrt_tau);
+
+    MedvedevScailletShortMaturitySmileExpansionAnalytics {
+        first_order_smile_skew_term: i1_term,
+        second_order_smile_curvature_term: i2_term,
+        asymptotic_implied_volatility: imp_vol,
+        american_put_exercise_normalized_boundary: am_boundary,
+    }
+}
+
+#[cfg(test)]
+mod medvedev_scaillet_short_maturity_smile_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn medvedev_scaillet_short_maturity_smile_invariants_and_ad_parity() {
+        let base = MedvedevScailletShortMaturitySmileExpansionSpec {
+            spot_volatility_sigma0: 0.21_f64,
+            vol_of_vol_nu: 0.55_f64,
+            spot_vol_correlation_rho: -0.68_f64,
+            volatility_drift_mu_v: 0.015_f64,
+            normalized_moneyness_theta: -1.20_f64,
+            maturity_years_tau: 0.25_f64,
+            risk_free_rate_r: 0.045_f64,
+            dividend_yield_q: 0.015_f64,
+        };
+        let r0 = evaluate_medvedev_scaillet_short_maturity_smile_expansion(&base);
+        // Negative correlation rho < 0 and downside strike theta_m < 0 produce positive OTM put skew
+        assert!(r0.first_order_smile_skew_term > 0.0);
+        assert!(r0.asymptotic_implied_volatility > base.spot_volatility_sigma0);
+        assert!(r0.american_put_exercise_normalized_boundary < 0.0);
+
+        let x0 = [
+            base.spot_volatility_sigma0,
+            base.vol_of_vol_nu,
+            base.spot_vol_correlation_rho,
+            base.volatility_drift_mu_v,
+            base.normalized_moneyness_theta,
+            base.maturity_years_tau,
+            base.risk_free_rate_r,
+            base.dividend_yield_q,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_medvedev_scaillet_short_maturity_smile_expansion(
+            &MedvedevScailletShortMaturitySmileExpansionSpec {
+                spot_volatility_sigma0: xd[0],
+                vol_of_vol_nu: xd[1],
+                spot_vol_correlation_rho: xd[2],
+                volatility_drift_mu_v: xd[3],
+                normalized_moneyness_theta: xd[4],
+                maturity_years_tau: xd[5],
+                risk_free_rate_r: xd[6],
+                dividend_yield_q: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_medvedev_scaillet_short_maturity_smile_expansion(
+                &MedvedevScailletShortMaturitySmileExpansionSpec {
+                    spot_volatility_sigma0: xp[0],
+                    vol_of_vol_nu: xp[1],
+                    spot_vol_correlation_rho: xp[2],
+                    volatility_drift_mu_v: xp[3],
+                    normalized_moneyness_theta: xp[4],
+                    maturity_years_tau: xp[5],
+                    risk_free_rate_r: xp[6],
+                    dividend_yield_q: xp[7],
+                },
+            );
+            let rm = evaluate_medvedev_scaillet_short_maturity_smile_expansion(
+                &MedvedevScailletShortMaturitySmileExpansionSpec {
+                    spot_volatility_sigma0: xm[0],
+                    vol_of_vol_nu: xm[1],
+                    spot_vol_correlation_rho: xm[2],
+                    volatility_drift_mu_v: xm[3],
+                    normalized_moneyness_theta: xm[4],
+                    maturity_years_tau: xm[5],
+                    risk_free_rate_r: xm[6],
+                    dividend_yield_q: xm[7],
+                },
+            );
+            let fd =
+                (rp.asymptotic_implied_volatility - rm.asymptotic_implied_volatility) / (2.0 * h);
+            assert!(rad.asymptotic_implied_volatility.d[i].abs() > 1e-9);
+            assert!((rad.asymptotic_implied_volatility.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

@@ -3601,3 +3601,163 @@ mod pirrong_structural_inventory_skew_spread_tests {
         }
     }
 }
+
+/// Input specification for the Gorton, Hayashi & Rouwenhorst (2013, *Review of
+/// Finance* 17(1), "The Fundamentals of Commodity Futures Returns")
+/// Inventory-Linked Basis-Momentum, Convenience Yield Convexity & Futures Risk
+/// Premium engine.
+#[derive(Debug, Clone, Copy)]
+pub struct GortonHayashiRouwenhorstInventoryBasisSpec<T: Real> {
+    /// Normalized physical inventory ratio $I_t / I^* > 0$ ($< 1$ indicates scarcity).
+    pub normalized_inventory_level_i: T,
+    /// Convenience yield scarcity curvature parameter $\alpha_y > 0$.
+    pub convenience_yield_scarcity_alpha: T,
+    /// Convenience yield nonlinear stockout exponent $\beta_y > 0$.
+    pub stockout_convexity_exponent_beta: T,
+    /// Physical storage and interest cost rate $r + c_{\text{store}} > 0$.
+    pub interest_plus_storage_cost_rc: T,
+    /// Prior 12-month commodity futures momentum signal $M_{\text{mom}}$.
+    pub prior_futures_momentum_signal_m: T,
+    /// Inventory-conditional futures risk premium sensitivity $\lambda_{\text{inv}} > 0$.
+    pub inventory_risk_premium_loading_lambda: T,
+    /// Spot price volatility $\sigma_S > 0$.
+    pub spot_volatility_sigma_s: T,
+}
+
+/// Analytics returned by [`evaluate_gorton_hayashi_rouwenhorst_commodity_inventory_basis`].
+#[derive(Debug, Clone, Copy)]
+pub struct GortonHayashiRouwenhorstInventoryBasisAnalytics<T: Real> {
+    /// Convex inventory-implied marginal convenience yield $y(I_t)$.
+    pub marginal_convenience_yield: T,
+    /// Percentage futures basis (roll yield) $B_t = y(I_t) - (r + c_{\text{store}})$.
+    pub equilibrium_futures_basis_roll_yield: T,
+    /// Scarcity-induced spot return volatility $\sigma_{\text{spot}}(I_t)$.
+    pub inventory_conditional_spot_volatility: T,
+    /// Expected commodity futures excess return $\mathbb{E}_t[r_{\text{fut},t+1}^{\text{GHR}}]$.
+    pub expected_commodity_futures_excess_return: T,
+}
+
+/// Evaluates the Gorton, Hayashi & Rouwenhorst (2013, *Review of Finance* 17(1))
+/// theory of storage equilibrium where low physical inventories $I_t / I^*$
+/// generate a convex surge in marginal convenience yield $y(I_t)$, positive
+/// futures backwardation basis, elevated spot volatility, and a positive
+/// futures risk premium reinforced by prior momentum.
+pub fn evaluate_gorton_hayashi_rouwenhorst_commodity_inventory_basis<T: Real>(
+    spec: &GortonHayashiRouwenhorstInventoryBasisSpec<T>,
+) -> GortonHayashiRouwenhorstInventoryBasisAnalytics<T> {
+    let one = T::one();
+    let inv_ratio = spec.normalized_inventory_level_i.max_val(T::from_f64(0.15));
+    let alpha_y = spec
+        .convenience_yield_scarcity_alpha
+        .max_val(T::from_f64(1e-4));
+    let beta_y = spec
+        .stockout_convexity_exponent_beta
+        .max_val(T::from_f64(0.2));
+    let rc = spec.interest_plus_storage_cost_rc;
+    let mom = spec.prior_futures_momentum_signal_m;
+    let lam_inv = spec
+        .inventory_risk_premium_loading_lambda
+        .max_val(T::from_f64(1e-4));
+    let sig_s = spec.spot_volatility_sigma_s.max_val(T::from_f64(1e-3));
+
+    // Convex convenience yield y(I) = alpha_y * (I / I*)^(-beta_y)
+    let conv_yield = alpha_y * (-beta_y * inv_ratio.ln()).exp();
+    let basis = conv_yield - rc;
+
+    // Samuelson / GHR scarcity volatility amplification
+    let cond_vol = sig_s * (one + T::from_f64(0.5) * (one / inv_ratio));
+
+    // Expected futures excess return combining basis-scarcity premium and momentum
+    let exp_ret = lam_inv * (conv_yield - alpha_y)
+        + T::from_f64(0.35) * basis
+        + T::from_f64(0.20) * mom * cond_vol;
+
+    GortonHayashiRouwenhorstInventoryBasisAnalytics {
+        marginal_convenience_yield: conv_yield,
+        equilibrium_futures_basis_roll_yield: basis,
+        inventory_conditional_spot_volatility: cond_vol,
+        expected_commodity_futures_excess_return: exp_ret,
+    }
+}
+
+#[cfg(test)]
+mod gorton_hayashi_rouwenhorst_inventory_basis_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn gorton_hayashi_rouwenhorst_inventory_basis_invariants_and_ad_parity() {
+        let base = GortonHayashiRouwenhorstInventoryBasisSpec {
+            normalized_inventory_level_i: 0.72_f64,
+            convenience_yield_scarcity_alpha: 0.085_f64,
+            stockout_convexity_exponent_beta: 1.65_f64,
+            interest_plus_storage_cost_rc: 0.075_f64,
+            prior_futures_momentum_signal_m: 0.14_f64,
+            inventory_risk_premium_loading_lambda: 0.80_f64,
+            spot_volatility_sigma_s: 0.26_f64,
+        };
+        let r0 = evaluate_gorton_hayashi_rouwenhorst_commodity_inventory_basis(&base);
+        // Low inventory (< 1.0) produces convenience yield > cost of carry (backwardation) and positive expected futures return
+        assert!(r0.equilibrium_futures_basis_roll_yield > 0.0);
+        assert!(r0.expected_commodity_futures_excess_return > 0.0);
+
+        let x0 = [
+            base.normalized_inventory_level_i,
+            base.convenience_yield_scarcity_alpha,
+            base.stockout_convexity_exponent_beta,
+            base.interest_plus_storage_cost_rc,
+            base.prior_futures_momentum_signal_m,
+            base.inventory_risk_premium_loading_lambda,
+            base.spot_volatility_sigma_s,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_gorton_hayashi_rouwenhorst_commodity_inventory_basis(
+            &GortonHayashiRouwenhorstInventoryBasisSpec {
+                normalized_inventory_level_i: xd[0],
+                convenience_yield_scarcity_alpha: xd[1],
+                stockout_convexity_exponent_beta: xd[2],
+                interest_plus_storage_cost_rc: xd[3],
+                prior_futures_momentum_signal_m: xd[4],
+                inventory_risk_premium_loading_lambda: xd[5],
+                spot_volatility_sigma_s: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_gorton_hayashi_rouwenhorst_commodity_inventory_basis(
+                &GortonHayashiRouwenhorstInventoryBasisSpec {
+                    normalized_inventory_level_i: xp[0],
+                    convenience_yield_scarcity_alpha: xp[1],
+                    stockout_convexity_exponent_beta: xp[2],
+                    interest_plus_storage_cost_rc: xp[3],
+                    prior_futures_momentum_signal_m: xp[4],
+                    inventory_risk_premium_loading_lambda: xp[5],
+                    spot_volatility_sigma_s: xp[6],
+                },
+            );
+            let rm = evaluate_gorton_hayashi_rouwenhorst_commodity_inventory_basis(
+                &GortonHayashiRouwenhorstInventoryBasisSpec {
+                    normalized_inventory_level_i: xm[0],
+                    convenience_yield_scarcity_alpha: xm[1],
+                    stockout_convexity_exponent_beta: xm[2],
+                    interest_plus_storage_cost_rc: xm[3],
+                    prior_futures_momentum_signal_m: xm[4],
+                    inventory_risk_premium_loading_lambda: xm[5],
+                    spot_volatility_sigma_s: xm[6],
+                },
+            );
+            let fd = (rp.expected_commodity_futures_excess_return
+                - rm.expected_commodity_futures_excess_return)
+                / (2.0 * h);
+            assert!(rad.expected_commodity_futures_excess_return.d[i].abs() > 1e-9);
+            assert!((rad.expected_commodity_futures_excess_return.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

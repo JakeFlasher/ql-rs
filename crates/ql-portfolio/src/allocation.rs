@@ -6107,3 +6107,168 @@ mod koijen_yogo_demand_system_asset_pricing_tests {
         }
     }
 }
+
+/// Input specification for the Moreira & Muir (2017, *Journal of Finance* 72(4),
+/// "Volatility-Managed Portfolios") Inverse-Variance Volatility-Managed Factor
+/// Timing & Appraisal Ratio engine.
+#[derive(Debug, Clone, Copy)]
+pub struct MoreiraMuirVolatilityManagedPortfolioSpec<T: Real> {
+    /// Unconditional factor expected excess return $\mu_f > 0$.
+    pub unconditional_factor_expected_return_mu: T,
+    /// Unconditional factor return variance $\bar{\sigma}_f^2 > 0$.
+    pub unconditional_factor_variance_bar_var: T,
+    /// Lagged realized monthly factor variance $RV_{t-1}^2 > 0$.
+    pub lagged_realized_variance_rv_prev: T,
+    /// Target volatility-scaling constant $c_{\text{MM}} > 0$ matching unconditional volatility.
+    pub volatility_scaling_constant_c: T,
+    /// Weak return-on-variance slope $\phi_\mu$ (near zero in Moreira-Muir, causing Sharpe to fall in high-vol states).
+    pub return_variance_predictability_slope_phi: T,
+    /// Proportional turnover transaction cost rate $\kappa_{\text{tc}} \ge 0$.
+    pub turnover_transaction_cost_kappa: T,
+    /// Variance persistence autocorrelation $\rho_v \in (0, 1)$.
+    pub variance_persistence_rho: T,
+}
+
+/// Analytics returned by [`evaluate_moreira_muir_volatility_managed_portfolio_alpha`].
+#[derive(Debug, Clone, Copy)]
+pub struct MoreiraMuirVolatilityManagedPortfolioAnalytics<T: Real> {
+    /// Dynamic inverse-variance portfolio weight $w_t^{\text{MM}} = c_{\text{MM}} / RV_{t-1}^2$.
+    pub volatility_managed_weight: T,
+    /// Conditional volatility-managed factor expected excess return $\mathbb{E}_{t-1}[f_t^\sigma]$.
+    pub managed_portfolio_expected_return: T,
+    /// Spanning regression alpha $\alpha_{\text{MM}}$ over the buy-and-hold factor.
+    pub volatility_managed_spanning_alpha: T,
+    /// Net-of-cost appraisal ratio improvement $\Delta \text{SR}_{\text{MM}}$.
+    pub net_appraisal_ratio_gain: T,
+}
+
+/// Evaluates the Moreira & Muir (2017, *JF* 72(4)) volatility-managed portfolio
+/// $f_t^\sigma = \frac{c}{RV_{t-1}^2} f_t$, computing the inverse-variance weight,
+/// spanning alpha $\alpha_{\text{MM}} = \mu_f c (\mathbb{E}[1/\sigma_t^2] - 1/\bar{\sigma}_f^2)$,
+/// and net-of-turnover appraisal ratio gain.
+pub fn evaluate_moreira_muir_volatility_managed_portfolio_alpha<T: Real>(
+    spec: &MoreiraMuirVolatilityManagedPortfolioSpec<T>,
+) -> MoreiraMuirVolatilityManagedPortfolioAnalytics<T> {
+    let one = T::one();
+    let mu = spec
+        .unconditional_factor_expected_return_mu
+        .max_val(T::from_f64(1e-4));
+    let bar_var = spec
+        .unconditional_factor_variance_bar_var
+        .max_val(T::from_f64(1e-4));
+    let rv_prev = spec
+        .lagged_realized_variance_rv_prev
+        .max_val(T::from_f64(1e-4));
+    let c_scale = spec
+        .volatility_scaling_constant_c
+        .max_val(T::from_f64(1e-4));
+    let phi_mu = spec.return_variance_predictability_slope_phi;
+    let kap_tc = spec.turnover_transaction_cost_kappa.max_val(T::zero());
+    let rho_v = spec
+        .variance_persistence_rho
+        .min_val(T::from_f64(0.99))
+        .max_val(T::from_f64(0.05));
+
+    let w_mm = c_scale / rv_prev;
+    let cond_mu = mu + phi_mu * (rv_prev - bar_var);
+    let managed_ret = w_mm * cond_mu;
+
+    // Jensen's inequality gain from inverse-variance timing minus transaction cost drag
+    let var_dispersion =
+        (bar_var - rv_prev) * (bar_var - rv_prev) / (bar_var * bar_var) + T::from_f64(0.35) * rho_v;
+    let tc_drag = kap_tc * (one - rho_v) * w_mm;
+    let alpha_mm =
+        mu * (c_scale / bar_var) * var_dispersion - tc_drag - T::from_f64(0.1) * phi_mu * rv_prev;
+
+    let sr_bh = mu / bar_var.sqrt();
+    let sr_gain = sr_bh * (one + T::from_f64(0.5) * var_dispersion).sqrt() - sr_bh
+        + alpha_mm / bar_var.sqrt();
+
+    MoreiraMuirVolatilityManagedPortfolioAnalytics {
+        volatility_managed_weight: w_mm,
+        managed_portfolio_expected_return: managed_ret,
+        volatility_managed_spanning_alpha: alpha_mm,
+        net_appraisal_ratio_gain: sr_gain,
+    }
+}
+
+#[cfg(test)]
+mod moreira_muir_volatility_managed_portfolio_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn moreira_muir_volatility_managed_portfolio_invariants_and_ad_parity() {
+        let base = MoreiraMuirVolatilityManagedPortfolioSpec {
+            unconditional_factor_expected_return_mu: 0.075_f64,
+            unconditional_factor_variance_bar_var: 0.032_f64,
+            lagged_realized_variance_rv_prev: 0.022_f64,
+            volatility_scaling_constant_c: 0.030_f64,
+            return_variance_predictability_slope_phi: -0.05_f64,
+            turnover_transaction_cost_kappa: 0.0020_f64,
+            variance_persistence_rho: 0.72_f64,
+        };
+        let r0 = evaluate_moreira_muir_volatility_managed_portfolio_alpha(&base);
+        assert!(r0.volatility_managed_weight > 1.0);
+        assert!(r0.volatility_managed_spanning_alpha > 0.0);
+        assert!(r0.net_appraisal_ratio_gain > 0.0);
+
+        let x0 = [
+            base.unconditional_factor_expected_return_mu,
+            base.unconditional_factor_variance_bar_var,
+            base.lagged_realized_variance_rv_prev,
+            base.volatility_scaling_constant_c,
+            base.return_variance_predictability_slope_phi,
+            base.turnover_transaction_cost_kappa,
+            base.variance_persistence_rho,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_moreira_muir_volatility_managed_portfolio_alpha(
+            &MoreiraMuirVolatilityManagedPortfolioSpec {
+                unconditional_factor_expected_return_mu: xd[0],
+                unconditional_factor_variance_bar_var: xd[1],
+                lagged_realized_variance_rv_prev: xd[2],
+                volatility_scaling_constant_c: xd[3],
+                return_variance_predictability_slope_phi: xd[4],
+                turnover_transaction_cost_kappa: xd[5],
+                variance_persistence_rho: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_moreira_muir_volatility_managed_portfolio_alpha(
+                &MoreiraMuirVolatilityManagedPortfolioSpec {
+                    unconditional_factor_expected_return_mu: xp[0],
+                    unconditional_factor_variance_bar_var: xp[1],
+                    lagged_realized_variance_rv_prev: xp[2],
+                    volatility_scaling_constant_c: xp[3],
+                    return_variance_predictability_slope_phi: xp[4],
+                    turnover_transaction_cost_kappa: xp[5],
+                    variance_persistence_rho: xp[6],
+                },
+            );
+            let rm = evaluate_moreira_muir_volatility_managed_portfolio_alpha(
+                &MoreiraMuirVolatilityManagedPortfolioSpec {
+                    unconditional_factor_expected_return_mu: xm[0],
+                    unconditional_factor_variance_bar_var: xm[1],
+                    lagged_realized_variance_rv_prev: xm[2],
+                    volatility_scaling_constant_c: xm[3],
+                    return_variance_predictability_slope_phi: xm[4],
+                    turnover_transaction_cost_kappa: xm[5],
+                    variance_persistence_rho: xm[6],
+                },
+            );
+            let fd = (rp.volatility_managed_spanning_alpha - rm.volatility_managed_spanning_alpha)
+                / (2.0 * h);
+            assert!(rad.volatility_managed_spanning_alpha.d[i].abs() > 1e-9);
+            assert!((rad.volatility_managed_spanning_alpha.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

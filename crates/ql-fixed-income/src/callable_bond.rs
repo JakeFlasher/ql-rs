@@ -3120,3 +3120,165 @@ mod acharya_amihud_bharath_liquidity_stress_bond_tests {
         }
     }
 }
+
+/// Input specification for the Longstaff, Mithal & Neis (2005, *Journal of
+/// Finance* 60(5), "Corporate Yield Spreads: Default Risk or Liquidity? New
+/// Evidence from the Credit Default Swap Market") CDS-Bond Basis Non-Default
+/// Liquidity & Tax-Coupon Wedge engine.
+#[derive(Debug, Clone, Copy)]
+pub struct LongstaffMithalNeisCdsBondLiquidityBasisSpec<T: Real> {
+    /// Observed corporate bond yield $y_{\text{corp}} > 0$.
+    pub corporate_bond_yield_y_corp: T,
+    /// Maturity-matched Treasury benchmark yield $y_{\text{tsy}} > 0$.
+    pub treasury_benchmark_yield_y_tsy: T,
+    /// Pure default-risk CDS spread $s_{\text{CDS}} > 0$.
+    pub cds_default_spread_s_cds: T,
+    /// Corporate bond coupon rate $c_{\text{corp}} > 0$.
+    pub corporate_coupon_rate_c: T,
+    /// Marginal state/local tax differential on corporate vs. Treasury coupons $\tau_{\text{tax}} \in (0, 0.20)$.
+    pub state_tax_differential_tau: T,
+    /// Corporate bond bid-ask illiquidity spread $s_{\text{bid-ask}} > 0$.
+    pub bond_bid_ask_spread_s_ba: T,
+    /// Outstanding bond issue size / turnover liquidity factor $\ell_{\text{size}} > 0$.
+    pub issue_turnover_liquidity_factor_l: T,
+    /// Bond modified duration $D_{\text{mod}} > 0$.
+    pub modified_duration_d: T,
+}
+
+/// Analytics returned by [`evaluate_longstaff_mithal_neis_cds_bond_liquidity_basis`].
+#[derive(Debug, Clone, Copy)]
+pub struct LongstaffMithalNeisCdsBondLiquidityBasisAnalytics<T: Real> {
+    /// Total observed corporate yield spread over Treasuries $S_{\text{total}} = y_{\text{corp}} - y_{\text{tsy}}$.
+    pub total_corporate_treasury_spread: T,
+    /// Default-related fraction of corporate spread $s_{\text{CDS}} / S_{\text{total}}$.
+    pub default_component_share: T,
+    /// Non-default illiquidity and tax-asymmetry yield wedge $S_{\text{non-def}}$ in basis points.
+    pub non_default_liquidity_tax_wedge_bps: T,
+    /// Implied negative CDS-bond basis $(s_{\text{CDS}} - S_{\text{corp,adj}})$ in basis points.
+    pub adjusted_cds_bond_basis_bps: T,
+}
+
+/// Evaluates the Longstaff, Mithal & Neis (2005, *JF* 60(5)) decomposition of
+/// corporate bond yield spreads into pure default risk (spanned by CDS spreads),
+/// state/local coupon tax asymmetry, and bond-specific market illiquidity.
+pub fn evaluate_longstaff_mithal_neis_cds_bond_liquidity_basis<T: Real>(
+    spec: &LongstaffMithalNeisCdsBondLiquidityBasisSpec<T>,
+) -> LongstaffMithalNeisCdsBondLiquidityBasisAnalytics<T> {
+    let one = T::one();
+    let y_corp = spec.corporate_bond_yield_y_corp;
+    let y_tsy = spec.treasury_benchmark_yield_y_tsy;
+    let s_cds = spec.cds_default_spread_s_cds.max_val(T::from_f64(1e-5));
+    let c_corp = spec.corporate_coupon_rate_c.max_val(T::from_f64(1e-4));
+    let tau_tax = spec
+        .state_tax_differential_tau
+        .min_val(T::from_f64(0.25))
+        .max_val(T::from_f64(1e-4));
+    let s_ba = spec.bond_bid_ask_spread_s_ba.max_val(T::from_f64(1e-5));
+    let l_turn = spec
+        .issue_turnover_liquidity_factor_l
+        .max_val(T::from_f64(0.05));
+    let d_mod = spec.modified_duration_d.max_val(T::from_f64(0.5));
+
+    let s_total = (y_corp - y_tsy).max_val(T::from_f64(1e-4));
+    let def_share = (s_cds / s_total).min_val(one);
+
+    // Tax wedge from state/local taxation of corporate coupons relative to exempt Treasuries
+    let tax_wedge = tau_tax * c_corp;
+    // Illiquidity yield component amortized over duration and dampened by turnover
+    let liq_wedge = (s_ba / d_mod) * (one + T::from_f64(0.5) / l_turn);
+    let non_def_bps = (tax_wedge + liq_wedge) * T::from_f64(10_000.0);
+
+    let basis_bps = (s_cds - (s_total - tax_wedge - liq_wedge)) * T::from_f64(10_000.0);
+
+    LongstaffMithalNeisCdsBondLiquidityBasisAnalytics {
+        total_corporate_treasury_spread: s_total,
+        default_component_share: def_share,
+        non_default_liquidity_tax_wedge_bps: non_def_bps,
+        adjusted_cds_bond_basis_bps: basis_bps,
+    }
+}
+
+#[cfg(test)]
+mod longstaff_mithal_neis_cds_bond_basis_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn longstaff_mithal_neis_cds_bond_basis_invariants_and_ad_parity() {
+        let base = LongstaffMithalNeisCdsBondLiquidityBasisSpec {
+            corporate_bond_yield_y_corp: 0.058_f64,
+            treasury_benchmark_yield_y_tsy: 0.040_f64,
+            cds_default_spread_s_cds: 0.0115_f64,
+            corporate_coupon_rate_c: 0.055_f64,
+            state_tax_differential_tau: 0.065_f64,
+            bond_bid_ask_spread_s_ba: 0.0048_f64,
+            issue_turnover_liquidity_factor_l: 1.25_f64,
+            modified_duration_d: 6.0_f64,
+        };
+        let r0 = evaluate_longstaff_mithal_neis_cds_bond_liquidity_basis(&base);
+        // LMN (2005): default component is the majority (>50%) of corporate spread, with positive non-default liquidity/tax wedge
+        assert!(r0.default_component_share > 0.50 && r0.default_component_share < 1.0);
+        assert!(r0.non_default_liquidity_tax_wedge_bps > 0.0);
+
+        let x0 = [
+            base.corporate_bond_yield_y_corp,
+            base.treasury_benchmark_yield_y_tsy,
+            base.cds_default_spread_s_cds,
+            base.corporate_coupon_rate_c,
+            base.state_tax_differential_tau,
+            base.bond_bid_ask_spread_s_ba,
+            base.issue_turnover_liquidity_factor_l,
+            base.modified_duration_d,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_longstaff_mithal_neis_cds_bond_liquidity_basis(
+            &LongstaffMithalNeisCdsBondLiquidityBasisSpec {
+                corporate_bond_yield_y_corp: xd[0],
+                treasury_benchmark_yield_y_tsy: xd[1],
+                cds_default_spread_s_cds: xd[2],
+                corporate_coupon_rate_c: xd[3],
+                state_tax_differential_tau: xd[4],
+                bond_bid_ask_spread_s_ba: xd[5],
+                issue_turnover_liquidity_factor_l: xd[6],
+                modified_duration_d: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_longstaff_mithal_neis_cds_bond_liquidity_basis(
+                &LongstaffMithalNeisCdsBondLiquidityBasisSpec {
+                    corporate_bond_yield_y_corp: xp[0],
+                    treasury_benchmark_yield_y_tsy: xp[1],
+                    cds_default_spread_s_cds: xp[2],
+                    corporate_coupon_rate_c: xp[3],
+                    state_tax_differential_tau: xp[4],
+                    bond_bid_ask_spread_s_ba: xp[5],
+                    issue_turnover_liquidity_factor_l: xp[6],
+                    modified_duration_d: xp[7],
+                },
+            );
+            let rm = evaluate_longstaff_mithal_neis_cds_bond_liquidity_basis(
+                &LongstaffMithalNeisCdsBondLiquidityBasisSpec {
+                    corporate_bond_yield_y_corp: xm[0],
+                    treasury_benchmark_yield_y_tsy: xm[1],
+                    cds_default_spread_s_cds: xm[2],
+                    corporate_coupon_rate_c: xm[3],
+                    state_tax_differential_tau: xm[4],
+                    bond_bid_ask_spread_s_ba: xm[5],
+                    issue_turnover_liquidity_factor_l: xm[6],
+                    modified_duration_d: xm[7],
+                },
+            );
+            let fd = (rp.adjusted_cds_bond_basis_bps - rm.adjusted_cds_bond_basis_bps) / (2.0 * h);
+            assert!(rad.adjusted_cds_bond_basis_bps.d[i].abs() > 1e-9);
+            assert!((rad.adjusted_cds_bond_basis_bps.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

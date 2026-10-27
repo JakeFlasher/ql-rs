@@ -5012,3 +5012,165 @@ mod kyle_obizhaeva_microstructure_invariance_tests {
         }
     }
 }
+
+/// Input specification for the Budish, Cramton & Shim (2015, *Quarterly Journal
+/// of Economics* 130(4), "The High-Frequency Trading Arms Race: Frequent Batch
+/// Auctions as a Market Design Response") Continuous Limit-Order-Book Sniping
+/// Latency Tax vs. Frequent Batch Auction Equilibrium Spread engine.
+#[derive(Debug, Clone, Copy)]
+pub struct BudishCramtonShimFrequentBatchAuctionSpec<T: Real> {
+    /// Poisson arrival rate of public value jumps $\lambda_{\text{jump}} > 0$.
+    pub fundamental_jump_intensity_lambda_j: T,
+    /// Poisson arrival rate of liquidity-motivated investor trades $\lambda_{\text{invest}} > 0$.
+    pub investor_arrival_intensity_lambda_i: T,
+    /// Mean absolute size of fundamental value jumps $\sigma_{\text{jump}} > 0$.
+    pub mean_jump_size_sigma_j: T,
+    /// Number of competing high-frequency traders $N_{\text{HFT}} \ge 2$.
+    pub competing_hft_count_n: T,
+    /// Per-trader speed technology investment cost $c_{\text{speed}} > 0$.
+    pub speed_technology_cost_c_speed: T,
+    /// Communication/reaction latency window $\delta_{\text{lat}} > 0$.
+    pub reaction_latency_delta: T,
+    /// Frequent Batch Auction interval $\tau_{\text{batch}} > \delta_{\text{lat}}$.
+    pub batch_auction_interval_tau: T,
+}
+
+/// Analytics returned by [`evaluate_budish_cramton_shim_frequent_batch_auction_sniping`].
+#[derive(Debug, Clone, Copy)]
+pub struct BudishCramtonShimFrequentBatchAuctionAnalytics<T: Real> {
+    /// Continuous limit-order-book equilibrium bid-ask spread $s_{\text{CLOB}}^*$.
+    pub continuous_lob_equilibrium_spread: T,
+    /// Probability that a jump event is resolved inside a batch auction rather than sniped $\pi_{\text{safe}}$.
+    pub batch_auction_unsniped_fraction: T,
+    /// Frequent Batch Auction equilibrium bid-ask spread $s_{\text{FBA}}^* < s_{\text{CLOB}}^*$.
+    pub frequent_batch_auction_spread: T,
+    /// Investor welfare / spread reduction gain $s_{\text{CLOB}}^* - s_{\text{FBA}}^*$.
+    pub sniping_latency_tax_elimination_gain: T,
+}
+
+/// Evaluates the Budish, Cramton & Shim (2015, *QJE* 130(4)) continuous limit
+/// order book (CLOB) vs. Frequent Batch Auction (FBA) equilibrium:
+/// $$\lambda_{\text{invest}} \frac{s_{\text{CLOB}}^*}{2}
+///   = \lambda_{\text{jump}} \frac{N-1}{N}\left(\sigma_{\text{jump}} - \frac{s_{\text{CLOB}}^*}{2}\right) + c_{\text{speed}},$$
+/// whereas batching over interval $\tau_{\text{batch}}$ reduces the sniping zone to $\delta_{\text{lat}} / \tau_{\text{batch}}$.
+pub fn evaluate_budish_cramton_shim_frequent_batch_auction_sniping<T: Real>(
+    spec: &BudishCramtonShimFrequentBatchAuctionSpec<T>,
+) -> BudishCramtonShimFrequentBatchAuctionAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+
+    let lam_j = spec
+        .fundamental_jump_intensity_lambda_j
+        .max_val(T::from_f64(1e-4));
+    let lam_i = spec
+        .investor_arrival_intensity_lambda_i
+        .max_val(T::from_f64(1e-3));
+    let sig_j = spec.mean_jump_size_sigma_j.max_val(T::from_f64(1e-4));
+    let n_hft = spec.competing_hft_count_n.max_val(two);
+    let c_spd = spec.speed_technology_cost_c_speed.max_val(T::zero());
+    let delta_lat = spec.reaction_latency_delta.max_val(T::from_f64(1e-6));
+    let tau_b = spec
+        .batch_auction_interval_tau
+        .max_val(delta_lat * T::from_f64(1.2));
+
+    let snipe_share = (n_hft - one) / n_hft;
+    // Zero-profit market-making condition in CLOB:
+    // (lam_i + lam_j * (N-1)/N) * (s_CLOB / 2) = lam_j * (N-1)/N * sig_j + c_speed
+    let s_clob = two * (lam_j * snipe_share * sig_j + c_spd) / (lam_i + lam_j * snipe_share);
+
+    // In Frequent Batch Auctions, only jumps occurring in the final delta_lat / tau_b window are snipeable
+    let snipe_prob_fba = delta_lat / tau_b;
+    let p_safe = one - snipe_prob_fba;
+    let eff_lam_j = lam_j * snipe_prob_fba;
+    let s_fba = two * (eff_lam_j * snipe_share * sig_j + snipe_prob_fba * c_spd)
+        / (lam_i + eff_lam_j * snipe_share);
+    let welfare_gain = s_clob - s_fba;
+
+    BudishCramtonShimFrequentBatchAuctionAnalytics {
+        continuous_lob_equilibrium_spread: s_clob,
+        batch_auction_unsniped_fraction: p_safe,
+        frequent_batch_auction_spread: s_fba,
+        sniping_latency_tax_elimination_gain: welfare_gain,
+    }
+}
+
+#[cfg(test)]
+mod budish_cramton_shim_frequent_batch_auction_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn budish_cramton_shim_frequent_batch_auction_invariants_and_ad_parity() {
+        let base = BudishCramtonShimFrequentBatchAuctionSpec {
+            fundamental_jump_intensity_lambda_j: 1.8_f64,
+            investor_arrival_intensity_lambda_i: 8.5_f64,
+            mean_jump_size_sigma_j: 0.045_f64,
+            competing_hft_count_n: 6.0_f64,
+            speed_technology_cost_c_speed: 0.012_f64,
+            reaction_latency_delta: 0.001_f64,
+            batch_auction_interval_tau: 0.100_f64,
+        };
+        let r0 = evaluate_budish_cramton_shim_frequent_batch_auction_sniping(&base);
+        assert!(r0.frequent_batch_auction_spread < r0.continuous_lob_equilibrium_spread);
+        assert!(r0.sniping_latency_tax_elimination_gain > 0.0);
+
+        let x0 = [
+            base.fundamental_jump_intensity_lambda_j,
+            base.investor_arrival_intensity_lambda_i,
+            base.mean_jump_size_sigma_j,
+            base.competing_hft_count_n,
+            base.speed_technology_cost_c_speed,
+            base.reaction_latency_delta,
+            base.batch_auction_interval_tau,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_budish_cramton_shim_frequent_batch_auction_sniping(
+            &BudishCramtonShimFrequentBatchAuctionSpec {
+                fundamental_jump_intensity_lambda_j: xd[0],
+                investor_arrival_intensity_lambda_i: xd[1],
+                mean_jump_size_sigma_j: xd[2],
+                competing_hft_count_n: xd[3],
+                speed_technology_cost_c_speed: xd[4],
+                reaction_latency_delta: xd[5],
+                batch_auction_interval_tau: xd[6],
+            },
+        );
+        let h = 1e-7;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_budish_cramton_shim_frequent_batch_auction_sniping(
+                &BudishCramtonShimFrequentBatchAuctionSpec {
+                    fundamental_jump_intensity_lambda_j: xp[0],
+                    investor_arrival_intensity_lambda_i: xp[1],
+                    mean_jump_size_sigma_j: xp[2],
+                    competing_hft_count_n: xp[3],
+                    speed_technology_cost_c_speed: xp[4],
+                    reaction_latency_delta: xp[5],
+                    batch_auction_interval_tau: xp[6],
+                },
+            );
+            let rm = evaluate_budish_cramton_shim_frequent_batch_auction_sniping(
+                &BudishCramtonShimFrequentBatchAuctionSpec {
+                    fundamental_jump_intensity_lambda_j: xm[0],
+                    investor_arrival_intensity_lambda_i: xm[1],
+                    mean_jump_size_sigma_j: xm[2],
+                    competing_hft_count_n: xm[3],
+                    speed_technology_cost_c_speed: xm[4],
+                    reaction_latency_delta: xm[5],
+                    batch_auction_interval_tau: xm[6],
+                },
+            );
+            let fd = (rp.sniping_latency_tax_elimination_gain
+                - rm.sniping_latency_tax_elimination_gain)
+                / (2.0 * h);
+            assert!(rad.sniping_latency_tax_elimination_gain.d[i].abs() > 1e-9);
+            assert!((rad.sniping_latency_tax_elimination_gain.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

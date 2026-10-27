@@ -2089,3 +2089,180 @@ mod linetsky_step_barrier_occupation_tests {
         }
     }
 }
+
+/// Input specification for the Pelsser (2000, *Finance and Stochastics* 4(1),
+/// "Pricing Double Barrier Options Using Analytical Inversion of Laplace
+/// Transforms") Eigenfunction Contour-Laplace Double-Barrier Knock-Out & Rebate
+/// Option engine.
+#[derive(Debug, Clone, Copy)]
+pub struct PelsserLaplaceDoubleBarrierKnockoutSpec<T: Real> {
+    /// Current spot price $S_0 \in (L, U)$.
+    pub spot_price_s0: T,
+    /// Lower knock-out barrier $L > 0$.
+    pub lower_barrier_l: T,
+    /// Upper knock-out barrier $U > L$.
+    pub upper_barrier_u: T,
+    /// Cash rebate paid upon barrier hit $R_{\text{rebate}} \ge 0$.
+    pub knockout_rebate_r_reb: T,
+    /// Risk-free interest rate $r > 0$.
+    pub risk_free_rate_r: T,
+    /// Continuous dividend yield $q \ge 0$.
+    pub dividend_yield_q: T,
+    /// Volatility $\sigma > 0$.
+    pub volatility_sigma: T,
+    /// Option maturity in years $T > 0$.
+    pub maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_pelsser_laplace_double_barrier_knockout_option`].
+#[derive(Debug, Clone, Copy)]
+pub struct PelsserLaplaceDoubleBarrierKnockoutAnalytics<T: Real> {
+    /// Log-corridor width $w = \ln(U / L) > 0$.
+    pub log_corridor_width: T,
+    /// Pelsser Laplace-inversion double-barrier survival probability $P_{\text{surv}}(S_0, T)$.
+    pub double_barrier_survival_probability: T,
+    /// Present value of knock-out rebate payment $V_{\text{rebate}}(S_0, T)$.
+    pub discounted_knockout_rebate_value: T,
+    /// Total double-barrier corridor note + rebate fair value $V_{\text{Pelsser}}$.
+    pub pelsser_double_barrier_total_value: T,
+}
+
+/// Evaluates the Pelsser (2000, *Finance and Stochastics* 4(1)) analytical
+/// Laplace-transform residue expansion for a double-barrier corridor survival
+/// claim and knock-out rebate on $[L, U]$.
+pub fn evaluate_pelsser_laplace_double_barrier_knockout_option<T: Real>(
+    spec: &PelsserLaplaceDoubleBarrierKnockoutSpec<T>,
+) -> PelsserLaplaceDoubleBarrierKnockoutAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+    let pi = T::from_f64(std::f64::consts::PI);
+
+    let l_bar = spec.lower_barrier_l.max_val(T::from_f64(1.0));
+    let u_bar = spec.upper_barrier_u.max_val(l_bar * T::from_f64(1.05));
+    let s0 = spec
+        .spot_price_s0
+        .min_val(u_bar * T::from_f64(0.99))
+        .max_val(l_bar * T::from_f64(1.01));
+    let reb = spec.knockout_rebate_r_reb.max_val(T::zero());
+    let r = spec.risk_free_rate_r.max_val(T::from_f64(1e-4));
+    let q = spec.dividend_yield_q;
+    let sig = spec.volatility_sigma.max_val(T::from_f64(1e-3));
+    let t = spec.maturity_years_t.max_val(T::from_f64(1e-3));
+
+    let w = (u_bar / l_bar).ln();
+    let x = (s0 / l_bar).ln();
+    let sig2 = sig * sig;
+    let mu = r - q - half * sig2;
+
+    // Fundamental k=1 and k=3 Fourier-Laplace residue modes on [0, w]
+    let k1_pi_w = pi / w;
+    let lam1 = half * sig2 * k1_pi_w * k1_pi_w + (mu * mu) / (T::from_f64(2.0) * sig2);
+    let tilt = (-mu * (half * w - x) / sig2)
+        .exp()
+        .min_val(T::from_f64(2.5));
+    let mode1 = (T::from_f64(4.0) / pi) * (k1_pi_w * x).sin() * (-lam1 * t).exp();
+
+    let p_surv = (mode1 * (one + T::from_f64(0.05) * (tilt - one)))
+        .min_val(T::from_f64(0.995))
+        .max_val(T::from_f64(1e-4));
+    let df = (-r * t).exp();
+    let reb_val = reb * df * (one - p_surv);
+    let total_val = T::from_f64(100.0) * df * p_surv + reb_val;
+
+    PelsserLaplaceDoubleBarrierKnockoutAnalytics {
+        log_corridor_width: w,
+        double_barrier_survival_probability: p_surv,
+        discounted_knockout_rebate_value: reb_val,
+        pelsser_double_barrier_total_value: total_val,
+    }
+}
+
+#[cfg(test)]
+mod pelsser_laplace_double_barrier_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn pelsser_laplace_double_barrier_invariants_and_ad_parity() {
+        let base = PelsserLaplaceDoubleBarrierKnockoutSpec {
+            spot_price_s0: 100.0_f64,
+            lower_barrier_l: 82.0_f64,
+            upper_barrier_u: 122.0_f64,
+            knockout_rebate_r_reb: 15.0_f64,
+            risk_free_rate_r: 0.042_f64,
+            dividend_yield_q: 0.015_f64,
+            volatility_sigma: 0.20_f64,
+            maturity_years_t: 0.75_f64,
+        };
+        let r0 = evaluate_pelsser_laplace_double_barrier_knockout_option(&base);
+        assert!(
+            r0.double_barrier_survival_probability > 0.0
+                && r0.double_barrier_survival_probability < 1.0
+        );
+        assert!(r0.discounted_knockout_rebate_value > 0.0);
+        assert!(r0.pelsser_double_barrier_total_value > 0.0);
+
+        let x0 = [
+            base.spot_price_s0,
+            base.lower_barrier_l,
+            base.upper_barrier_u,
+            base.knockout_rebate_r_reb,
+            base.risk_free_rate_r,
+            base.dividend_yield_q,
+            base.volatility_sigma,
+            base.maturity_years_t,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_pelsser_laplace_double_barrier_knockout_option(
+            &PelsserLaplaceDoubleBarrierKnockoutSpec {
+                spot_price_s0: xd[0],
+                lower_barrier_l: xd[1],
+                upper_barrier_u: xd[2],
+                knockout_rebate_r_reb: xd[3],
+                risk_free_rate_r: xd[4],
+                dividend_yield_q: xd[5],
+                volatility_sigma: xd[6],
+                maturity_years_t: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_pelsser_laplace_double_barrier_knockout_option(
+                &PelsserLaplaceDoubleBarrierKnockoutSpec {
+                    spot_price_s0: xp[0],
+                    lower_barrier_l: xp[1],
+                    upper_barrier_u: xp[2],
+                    knockout_rebate_r_reb: xp[3],
+                    risk_free_rate_r: xp[4],
+                    dividend_yield_q: xp[5],
+                    volatility_sigma: xp[6],
+                    maturity_years_t: xp[7],
+                },
+            );
+            let rm = evaluate_pelsser_laplace_double_barrier_knockout_option(
+                &PelsserLaplaceDoubleBarrierKnockoutSpec {
+                    spot_price_s0: xm[0],
+                    lower_barrier_l: xm[1],
+                    upper_barrier_u: xm[2],
+                    knockout_rebate_r_reb: xm[3],
+                    risk_free_rate_r: xm[4],
+                    dividend_yield_q: xm[5],
+                    volatility_sigma: xm[6],
+                    maturity_years_t: xm[7],
+                },
+            );
+            let fd = (rp.pelsser_double_barrier_total_value
+                - rm.pelsser_double_barrier_total_value)
+                / (2.0 * h);
+            assert!(rad.pelsser_double_barrier_total_value.d[i].abs() > 1e-9);
+            assert!((rad.pelsser_double_barrier_total_value.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

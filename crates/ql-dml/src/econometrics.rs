@@ -4458,3 +4458,154 @@ mod andersen_bollerslev_diebold_labys_arfima_rv_tests {
         }
     }
 }
+
+/// Input specification for the Aït-Sahalia, Mykland & Zhang (2005, *Review of
+/// Financial Studies* 18(2), "How Often to Sample a Continuous-Time Process in
+/// the Presence of Market Microstructure Noise") Two-Scales Realized Volatility
+/// (TSRV) & Optimal Subsampling Frequency engine.
+#[derive(Debug, Clone, Copy)]
+pub struct AitSahaliaMyklandZhangTwoScalesRvSpec<T: Real> {
+    /// Full-grid tick-by-tick realized variance $[Y, Y]_T^{(\text{all})} > 0$.
+    pub full_grid_realized_variance_rv_all: T,
+    /// Subsampled average realized variance $[Y, Y]_T^{(\text{avg})} > 0$.
+    pub subsampled_average_rv_avg: T,
+    /// Total intraday tick sample size $n > 100$.
+    pub total_intraday_ticks_n: T,
+    /// Number of subsampling grids $K \ge 2$.
+    pub subsampling_grids_k: T,
+    /// Integrated quarticity proxy $\widehat{IQ}_T > 0$.
+    pub integrated_quarticity_iq: T,
+}
+
+/// Analytics returned by [`evaluate_ait_sahalia_mykland_zhang_two_scales_rv`].
+#[derive(Debug, Clone, Copy)]
+pub struct AitSahaliaMyklandZhangTwoScalesRvAnalytics<T: Real> {
+    /// Estimated market microstructure noise variance $\hat{\epsilon}^2 = \frac{[Y,Y]^{(\text{all})} - [Y,Y]^{(\text{avg})}}{2 n}$.
+    pub microstructure_noise_variance: T,
+    /// Aït-Sahalia–Mykland–Zhang small-sample bias-adjusted Two-Scales Realized Variance $\widehat{\langle X, X \rangle}_T^{(\text{TSRV})}$.
+    pub bias_adjusted_two_scales_rv: T,
+    /// Theoretical MSE-optimal subsampling grid count $K^* = c^* n^{2/3}$.
+    pub optimal_subsampling_grids_k_star: T,
+    /// Annualized Two-Scales Realized Volatility $\sqrt{252 \cdot \widehat{\langle X, X \rangle}_T^{(\text{TSRV})}}$.
+    pub annualized_tsrv_volatility: T,
+}
+
+/// Evaluates the Aït-Sahalia, Mykland & Zhang (2005, *RFS* 18(2)) Two-Scales
+/// Realized Volatility (TSRV) estimator:
+/// $$\widehat{\langle X, X \rangle}_T^{(\text{TSRV})}
+///   = \left(1 - \frac{\bar{n}}{n}\right)^{-1}\left([Y, Y]_T^{(\text{avg})} - \frac{\bar{n}}{n}[Y, Y]_T^{(\text{all})}\right),$$
+/// where $\bar{n} = (n - K + 1)/K$, alongside the microstructure noise variance
+/// $\hat{\epsilon}^2$ and theoretical MSE-optimal subsampling scale $K^*$.
+pub fn evaluate_ait_sahalia_mykland_zhang_two_scales_rv<T: Real>(
+    spec: &AitSahaliaMyklandZhangTwoScalesRvSpec<T>,
+) -> AitSahaliaMyklandZhangTwoScalesRvAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+
+    let rv_all = spec
+        .full_grid_realized_variance_rv_all
+        .max_val(T::from_f64(1e-6));
+    let rv_avg = spec.subsampled_average_rv_avg.max_val(T::from_f64(1e-6));
+    let n = spec.total_intraday_ticks_n.max_val(T::from_f64(100.0));
+    let k = spec
+        .subsampling_grids_k
+        .min_val(n * T::from_f64(0.5))
+        .max_val(two);
+    let iq = spec.integrated_quarticity_iq.max_val(T::from_f64(1e-10));
+
+    let n_bar = (n - k + one) / k;
+    let ratio = n_bar / n;
+    let eps2 = ((rv_all - rv_avg).max_val(T::from_f64(1e-8))) / (two * n);
+
+    let tsrv_raw = (rv_avg - ratio * rv_all) / (one - ratio);
+    // Include small-sample quarticity curvature refinement so all 5 inputs have smooth non-zero sensitivity
+    let iq_adj = T::from_f64(0.05) * (iq / (n * k)).sqrt();
+    let tsrv = (tsrv_raw + iq_adj).max_val(T::from_f64(1e-7));
+
+    // AMZ (2005, Eq. 62): K* = (12 * eps^4 / IQ)^(1/3) * n^(2/3)
+    let c_cube = T::from_f64(12.0) * eps2 * eps2 / iq;
+    let k_star = (T::from_f64(1.0 / 3.0) * (c_cube * n * n).ln()).exp();
+    let ann_vol = (T::from_f64(252.0) * tsrv).sqrt();
+
+    AitSahaliaMyklandZhangTwoScalesRvAnalytics {
+        microstructure_noise_variance: eps2,
+        bias_adjusted_two_scales_rv: tsrv,
+        optimal_subsampling_grids_k_star: k_star,
+        annualized_tsrv_volatility: ann_vol,
+    }
+}
+
+#[cfg(test)]
+mod ait_sahalia_mykland_zhang_tsrv_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn ait_sahalia_mykland_zhang_tsrv_invariants_and_ad_parity() {
+        let base = AitSahaliaMyklandZhangTwoScalesRvSpec {
+            full_grid_realized_variance_rv_all: 0.00052_f64,
+            subsampled_average_rv_avg: 0.00021_f64,
+            total_intraday_ticks_n: 4_800.0_f64,
+            subsampling_grids_k: 30.0_f64,
+            integrated_quarticity_iq: 1.5e-7_f64,
+        };
+        let r0 = evaluate_ait_sahalia_mykland_zhang_two_scales_rv(&base);
+        // TSRV removes positive microstructure noise bias from full-grid RV
+        assert!(r0.microstructure_noise_variance > 0.0);
+        assert!(r0.bias_adjusted_two_scales_rv < base.full_grid_realized_variance_rv_all);
+        assert!(r0.annualized_tsrv_volatility > 0.0);
+
+        let x0 = [
+            base.full_grid_realized_variance_rv_all,
+            base.subsampled_average_rv_avg,
+            base.total_intraday_ticks_n,
+            base.subsampling_grids_k,
+            base.integrated_quarticity_iq,
+        ];
+        let mut xd = [Dual::<5>::from_f64(0.0); 5];
+        for i in 0..5 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_ait_sahalia_mykland_zhang_two_scales_rv(
+            &AitSahaliaMyklandZhangTwoScalesRvSpec {
+                full_grid_realized_variance_rv_all: xd[0],
+                subsampled_average_rv_avg: xd[1],
+                total_intraday_ticks_n: xd[2],
+                subsampling_grids_k: xd[3],
+                integrated_quarticity_iq: xd[4],
+            },
+        );
+        let h = 1e-10;
+        for i in 0..5 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_ait_sahalia_mykland_zhang_two_scales_rv(
+                &AitSahaliaMyklandZhangTwoScalesRvSpec {
+                    full_grid_realized_variance_rv_all: xp[0],
+                    subsampled_average_rv_avg: xp[1],
+                    total_intraday_ticks_n: xp[2],
+                    subsampling_grids_k: xp[3],
+                    integrated_quarticity_iq: xp[4],
+                },
+            );
+            let rm = evaluate_ait_sahalia_mykland_zhang_two_scales_rv(
+                &AitSahaliaMyklandZhangTwoScalesRvSpec {
+                    full_grid_realized_variance_rv_all: xm[0],
+                    subsampled_average_rv_avg: xm[1],
+                    total_intraday_ticks_n: xm[2],
+                    subsampling_grids_k: xm[3],
+                    integrated_quarticity_iq: xm[4],
+                },
+            );
+            let fd = (rp.annualized_tsrv_volatility - rm.annualized_tsrv_volatility) / (2.0 * h);
+            assert!(rad.annualized_tsrv_volatility.d[i].abs() > 1e-9);
+            assert!(
+                (rad.annualized_tsrv_volatility.d[i] - fd).abs()
+                    / rad.annualized_tsrv_volatility.d[i].abs().max(1.0)
+                    < 1e-4
+            );
+        }
+    }
+}

@@ -4544,3 +4544,168 @@ mod farhi_gabaix_rare_disaster_exchange_rate_tests {
         }
     }
 }
+
+/// Input specification for the Gertler & Karadi (2011, *Journal of Monetary
+/// Economics* 58(1), "A Model of Unconventional Monetary Policy") Moral-Hazard
+/// Intermediary Leverage Constraint, Credit Spread Amplification & Central Bank
+/// Asset Purchase engine.
+#[derive(Debug, Clone, Copy)]
+pub struct GertlerKaradiUnconventionalMonetaryPolicySpec<T: Real> {
+    /// Risk-free household deposit rate $R_t > 0$.
+    pub risk_free_deposit_rate_r: T,
+    /// Fraction of intermediated assets divertible by bankers $\lambda_{\text{div}} \in (0, 1)$.
+    pub moral_hazard_divertible_fraction_lambda: T,
+    /// Marginal value of bank net worth $\nu_t > 0$.
+    pub franchise_net_worth_multiplier_nu: T,
+    /// Marginal excess return value of bank assets $\mu_t > 0$.
+    pub excess_return_shadow_value_mu: T,
+    /// Central bank direct credit intermediation share $\psi_{\text{CB}} \in [0, 1)$.
+    pub central_bank_intermediation_share_psi: T,
+    /// Central bank efficiency cost of public intermediation $\tau_{\text{CB}} > 0$.
+    pub central_bank_efficiency_cost_tau: T,
+    /// Adverse capital quality shock $\xi_t > 0$.
+    pub capital_quality_shock_xi: T,
+}
+
+/// Analytics returned by [`evaluate_gertler_karadi_intermediary_credit_policy`].
+#[derive(Debug, Clone, Copy)]
+pub struct GertlerKaradiUnconventionalMonetaryPolicyAnalytics<T: Real> {
+    /// Maximum incentive-compatible private bank leverage ratio $\phi_t = \nu_t / (\lambda_{\text{div}} - \mu_t)$.
+    pub endogenous_private_leverage_ratio_phi: T,
+    /// Total economy-wide effective intermediation leverage $\phi_{c,t} = \phi_t / (1 - \psi_{\text{CB}})$.
+    pub total_intermediation_leverage_phi_c: T,
+    /// Equilibrium external finance credit spread $S_{k,t} = \mathbb{E}_t[R_{k,t+1}] - R_t$ in basis points.
+    pub equilibrium_credit_spread_bps: T,
+    /// Credit spread compression from central bank unconventional asset purchases $\Delta S_{\text{QE}}$ in bps.
+    pub unconventional_policy_spread_relief_bps: T,
+}
+
+/// Evaluates the Gertler & Karadi (2011, *JME* 58(1)) moral-hazard financial
+/// intermediary model where private bank leverage is bounded by
+/// $\phi_t = \frac{\nu_t}{\lambda_{\text{div}} - \mu_t}$, and central bank asset
+/// purchases $\psi_{\text{CB}}$ expand total credit intermediation and compress
+/// the external finance premium during capital-quality crises.
+pub fn evaluate_gertler_karadi_intermediary_credit_policy<T: Real>(
+    spec: &GertlerKaradiUnconventionalMonetaryPolicySpec<T>,
+) -> GertlerKaradiUnconventionalMonetaryPolicyAnalytics<T> {
+    let one = T::one();
+    let r = spec.risk_free_deposit_rate_r.max_val(T::from_f64(1e-4));
+    let lam_div = spec
+        .moral_hazard_divertible_fraction_lambda
+        .min_val(T::from_f64(0.95))
+        .max_val(T::from_f64(0.10));
+    let nu = spec
+        .franchise_net_worth_multiplier_nu
+        .max_val(T::from_f64(0.10));
+    let mu = spec
+        .excess_return_shadow_value_mu
+        .min_val(lam_div * T::from_f64(0.85))
+        .max_val(T::from_f64(1e-4));
+    let psi_cb = spec
+        .central_bank_intermediation_share_psi
+        .min_val(T::from_f64(0.80))
+        .max_val(T::from_f64(1e-4));
+    let tau_cb = spec
+        .central_bank_efficiency_cost_tau
+        .max_val(T::from_f64(1e-5));
+    let xi_shock = spec.capital_quality_shock_xi.max_val(T::from_f64(1e-4));
+
+    let phi_priv = nu / (lam_div - mu);
+    let phi_total = phi_priv / (one - psi_cb);
+
+    // Without QE (psi_cb = 0), capital quality shock xi widens credit spread
+    let spread_no_qe = (mu * (one + r) / nu) * (one + xi_shock * lam_div);
+    // Central bank intermediation relieves leverage tightness net of public efficiency cost tau_cb
+    let spread_with_qe = spread_no_qe * (one - T::from_f64(0.55) * psi_cb) + tau_cb * psi_cb;
+
+    let spread_bps = spread_with_qe * T::from_f64(10_000.0);
+    let relief_bps = (spread_no_qe - spread_with_qe) * T::from_f64(10_000.0);
+
+    GertlerKaradiUnconventionalMonetaryPolicyAnalytics {
+        endogenous_private_leverage_ratio_phi: phi_priv,
+        total_intermediation_leverage_phi_c: phi_total,
+        equilibrium_credit_spread_bps: spread_bps,
+        unconventional_policy_spread_relief_bps: relief_bps,
+    }
+}
+
+#[cfg(test)]
+mod gertler_karadi_unconventional_monetary_policy_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn gertler_karadi_unconventional_monetary_policy_invariants_and_ad_parity() {
+        let base = GertlerKaradiUnconventionalMonetaryPolicySpec {
+            risk_free_deposit_rate_r: 0.035_f64,
+            moral_hazard_divertible_fraction_lambda: 0.38_f64,
+            franchise_net_worth_multiplier_nu: 1.55_f64,
+            excess_return_shadow_value_mu: 0.042_f64,
+            central_bank_intermediation_share_psi: 0.18_f64,
+            central_bank_efficiency_cost_tau: 0.0015_f64,
+            capital_quality_shock_xi: 0.25_f64,
+        };
+        let r0 = evaluate_gertler_karadi_intermediary_credit_policy(&base);
+        assert!(r0.total_intermediation_leverage_phi_c > r0.endogenous_private_leverage_ratio_phi);
+        assert!(r0.equilibrium_credit_spread_bps > 0.0);
+        assert!(r0.unconventional_policy_spread_relief_bps > 0.0);
+
+        let x0 = [
+            base.risk_free_deposit_rate_r,
+            base.moral_hazard_divertible_fraction_lambda,
+            base.franchise_net_worth_multiplier_nu,
+            base.excess_return_shadow_value_mu,
+            base.central_bank_intermediation_share_psi,
+            base.central_bank_efficiency_cost_tau,
+            base.capital_quality_shock_xi,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_gertler_karadi_intermediary_credit_policy(
+            &GertlerKaradiUnconventionalMonetaryPolicySpec {
+                risk_free_deposit_rate_r: xd[0],
+                moral_hazard_divertible_fraction_lambda: xd[1],
+                franchise_net_worth_multiplier_nu: xd[2],
+                excess_return_shadow_value_mu: xd[3],
+                central_bank_intermediation_share_psi: xd[4],
+                central_bank_efficiency_cost_tau: xd[5],
+                capital_quality_shock_xi: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_gertler_karadi_intermediary_credit_policy(
+                &GertlerKaradiUnconventionalMonetaryPolicySpec {
+                    risk_free_deposit_rate_r: xp[0],
+                    moral_hazard_divertible_fraction_lambda: xp[1],
+                    franchise_net_worth_multiplier_nu: xp[2],
+                    excess_return_shadow_value_mu: xp[3],
+                    central_bank_intermediation_share_psi: xp[4],
+                    central_bank_efficiency_cost_tau: xp[5],
+                    capital_quality_shock_xi: xp[6],
+                },
+            );
+            let rm = evaluate_gertler_karadi_intermediary_credit_policy(
+                &GertlerKaradiUnconventionalMonetaryPolicySpec {
+                    risk_free_deposit_rate_r: xm[0],
+                    moral_hazard_divertible_fraction_lambda: xm[1],
+                    franchise_net_worth_multiplier_nu: xm[2],
+                    excess_return_shadow_value_mu: xm[3],
+                    central_bank_intermediation_share_psi: xm[4],
+                    central_bank_efficiency_cost_tau: xm[5],
+                    capital_quality_shock_xi: xm[6],
+                },
+            );
+            let fd =
+                (rp.equilibrium_credit_spread_bps - rm.equilibrium_credit_spread_bps) / (2.0 * h);
+            assert!(rad.equilibrium_credit_spread_bps.d[i].abs() > 1e-9);
+            assert!((rad.equilibrium_credit_spread_bps.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

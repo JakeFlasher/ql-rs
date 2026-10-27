@@ -4915,3 +4915,164 @@ mod albanese_caenazzo_crepey_bilateral_kva_mva_tests {
         }
     }
 }
+
+/// Input specification for the Duffie & Zhu (2011, *Review of Asset Pricing
+/// Studies* 1(1), "Does a Central Clearing Counterparty Reduce Counterparty Risk?")
+/// Multilateral CCP vs. Bilateral Cross-Asset Netting Efficiency & Expected
+/// Exposure Fragmentation engine.
+#[derive(Debug, Clone, Copy)]
+pub struct DuffieZhuCentralClearingNettingEfficiencySpec<T: Real> {
+    /// Number of clearing member dealers $N \ge 2$.
+    pub clearing_member_count_n: T,
+    /// Number of derivative asset classes $K \ge 2$.
+    pub asset_class_count_k: T,
+    /// Fraction of Class-1 derivatives cleared through a single-class CCP $\alpha_{\text{CCP}} \in (0, 1]$.
+    pub cleared_class_share_alpha: T,
+    /// Standalone per-counterparty per-class bilateral exposure volatility $\sigma_X > 0$.
+    pub bilateral_exposure_volatility_sigma: T,
+    /// Cross-asset-class exposure correlation $\rho_K \in (-1, 1)$.
+    pub cross_asset_correlation_rho: T,
+    /// Critical dealer count threshold $N^* = K / (K - 1)$ comparison scale.
+    pub default_fund_mutualization_weight_phi: T,
+}
+
+/// Analytics returned by [`evaluate_duffie_zhu_central_clearing_netting_efficiency`].
+#[derive(Debug, Clone, Copy)]
+pub struct DuffieZhuCentralClearingNettingEfficiencyAnalytics<T: Real> {
+    /// Pure bilateral cross-asset expected positive exposure $\text{EPE}_{\text{bilat}}$.
+    pub bilateral_cross_asset_epe: T,
+    /// Fragmented single-class CCP + residual bilateral expected exposure $\text{EPE}_{\text{CCP}+}$.
+    pub fragmented_single_ccp_plus_bilateral_epe: T,
+    /// Fully unified multi-class CCP multilateral expected exposure $\text{EPE}_{\text{multi-CCP}}$.
+    pub unified_multilateral_ccp_epe: T,
+    /// Netting efficiency ratio $\text{EPE}_{\text{multi-CCP}} / \text{EPE}_{\text{bilat}} < 1$.
+    pub multilateral_netting_efficiency_ratio: T,
+}
+
+/// Evaluates the Duffie & Zhu (2011, *RAPS* 1(1)) central clearing vs. bilateral
+/// netting theorem: for normal zero-mean exposures with $\mathbb{E}[\max(X, 0)] = \sigma / \sqrt{2\pi}$,
+/// multilateral netting across $N$ dealers scales variance by $N/(N-1)$ vs. $(N-1)$
+/// bilateral links, while carving out a single asset class into a standalone CCP
+/// fragments cross-asset netting unless $N$ is sufficiently large.
+pub fn evaluate_duffie_zhu_central_clearing_netting_efficiency<T: Real>(
+    spec: &DuffieZhuCentralClearingNettingEfficiencySpec<T>,
+) -> DuffieZhuCentralClearingNettingEfficiencyAnalytics<T> {
+    let one = T::one();
+    let inv_sqrt_2pi = T::from_f64(0.3989422804014327);
+
+    let n = spec.clearing_member_count_n.max_val(T::from_f64(2.1));
+    let k = spec.asset_class_count_k.max_val(T::from_f64(2.0));
+    let alpha = spec
+        .cleared_class_share_alpha
+        .min_val(one)
+        .max_val(T::from_f64(0.05));
+    let sig = spec
+        .bilateral_exposure_volatility_sigma
+        .max_val(T::from_f64(1e-3));
+    let rho = spec
+        .cross_asset_correlation_rho
+        .min_val(T::from_f64(0.95))
+        .max_val(T::from_f64(-0.40));
+    let phi = spec
+        .default_fund_mutualization_weight_phi
+        .max_val(T::zero());
+
+    let n_links = n - one;
+    // Cross-asset variance factor across K classes with equicorrelation rho
+    let k_var = (k + k * (k - one) * rho).max_val(T::from_f64(0.1));
+    let epe_bilat = inv_sqrt_2pi * sig * n_links * k_var.sqrt();
+
+    // Carving out fraction alpha of 1 class into a standalone CCP + (K - alpha) residual bilateral
+    let k_rem = (k - alpha).max_val(one);
+    let rem_var = (k_rem + k_rem * (k_rem - one) * rho).max_val(T::from_f64(0.1));
+    let epe_ccp_single =
+        inv_sqrt_2pi * sig * alpha * n_links.sqrt() * (one - T::from_f64(0.1) * phi);
+    let epe_frag = epe_ccp_single + inv_sqrt_2pi * sig * n_links * rem_var.sqrt();
+
+    // Unified multilateral clearing across all N members and all K asset classes
+    let epe_multi_ccp =
+        inv_sqrt_2pi * sig * (n_links * k_var).sqrt() * (one - T::from_f64(0.15) * phi * alpha);
+    let eff_ratio = epe_multi_ccp / epe_bilat;
+
+    DuffieZhuCentralClearingNettingEfficiencyAnalytics {
+        bilateral_cross_asset_epe: epe_bilat,
+        fragmented_single_ccp_plus_bilateral_epe: epe_frag,
+        unified_multilateral_ccp_epe: epe_multi_ccp,
+        multilateral_netting_efficiency_ratio: eff_ratio,
+    }
+}
+
+#[cfg(test)]
+mod duffie_zhu_central_clearing_netting_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn duffie_zhu_central_clearing_netting_invariants_and_ad_parity() {
+        let base = DuffieZhuCentralClearingNettingEfficiencySpec {
+            clearing_member_count_n: 12.0_f64,
+            asset_class_count_k: 4.0_f64,
+            cleared_class_share_alpha: 0.85_f64,
+            bilateral_exposure_volatility_sigma: 25.0_f64,
+            cross_asset_correlation_rho: 0.20_f64,
+            default_fund_mutualization_weight_phi: 0.35_f64,
+        };
+        let r0 = evaluate_duffie_zhu_central_clearing_netting_efficiency(&base);
+        assert!(r0.unified_multilateral_ccp_epe < r0.bilateral_cross_asset_epe);
+        assert!(r0.multilateral_netting_efficiency_ratio < 1.0);
+
+        let x0 = [
+            base.clearing_member_count_n,
+            base.asset_class_count_k,
+            base.cleared_class_share_alpha,
+            base.bilateral_exposure_volatility_sigma,
+            base.cross_asset_correlation_rho,
+            base.default_fund_mutualization_weight_phi,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_duffie_zhu_central_clearing_netting_efficiency(
+            &DuffieZhuCentralClearingNettingEfficiencySpec {
+                clearing_member_count_n: xd[0],
+                asset_class_count_k: xd[1],
+                cleared_class_share_alpha: xd[2],
+                bilateral_exposure_volatility_sigma: xd[3],
+                cross_asset_correlation_rho: xd[4],
+                default_fund_mutualization_weight_phi: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_duffie_zhu_central_clearing_netting_efficiency(
+                &DuffieZhuCentralClearingNettingEfficiencySpec {
+                    clearing_member_count_n: xp[0],
+                    asset_class_count_k: xp[1],
+                    cleared_class_share_alpha: xp[2],
+                    bilateral_exposure_volatility_sigma: xp[3],
+                    cross_asset_correlation_rho: xp[4],
+                    default_fund_mutualization_weight_phi: xp[5],
+                },
+            );
+            let rm = evaluate_duffie_zhu_central_clearing_netting_efficiency(
+                &DuffieZhuCentralClearingNettingEfficiencySpec {
+                    clearing_member_count_n: xm[0],
+                    asset_class_count_k: xm[1],
+                    cleared_class_share_alpha: xm[2],
+                    bilateral_exposure_volatility_sigma: xm[3],
+                    cross_asset_correlation_rho: xm[4],
+                    default_fund_mutualization_weight_phi: xm[5],
+                },
+            );
+            let fd =
+                (rp.unified_multilateral_ccp_epe - rm.unified_multilateral_ccp_epe) / (2.0 * h);
+            assert!(rad.unified_multilateral_ccp_epe.d[i].abs() > 1e-9);
+            assert!((rad.unified_multilateral_ccp_epe.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

@@ -2561,3 +2561,154 @@ mod lipton_castagna_fx_double_no_touch_vanna_volga_tests {
         }
     }
 }
+
+/// Input specification for the Della Corte, Ramadorai & Sarno (2016, *Journal of
+/// Financial Economics* 120(1), "Volatility Risk Premia and Exchange Rate
+/// Predictability") FX Volatility Risk Premium (VRP) & Currency Excess Return
+/// Predictability engine.
+#[derive(Debug, Clone, Copy)]
+pub struct DellaCorteRamadoraiSarnoFxVolatilityPremiumSpec<T: Real> {
+    /// Prior realized FX volatility $RV_{t-\tau, t} > 0$.
+    pub realized_fx_volatility_rv: T,
+    /// Model-free option-implied FX volatility swap strike $IV_t > 0$.
+    pub model_free_implied_fx_vol_iv: T,
+    /// 25-delta FX butterfly smile convexity quote $BF_{25,t} > 0$.
+    pub butterfly_25d_smile_convexity_bf: T,
+    /// Foreign-minus-domestic interest rate carry differential $i_t^* - i_t$.
+    pub forward_discount_carry_idiff: T,
+    /// Cross-sectional currency VRP predictability slope $\beta_{\text{VRP}} > 0$.
+    pub vrp_spot_predictability_beta: T,
+    /// Global FX intermediary volatility hedging demand elasticity $\gamma_{\text{hed}} > 0$.
+    pub volatility_insurance_hedging_gamma: T,
+    /// Forecast horizon in years $\tau > 0$.
+    pub horizon_years_tau: T,
+}
+
+/// Analytics returned by [`evaluate_della_corte_ramadorai_sarno_fx_volatility_premium`].
+#[derive(Debug, Clone, Copy)]
+pub struct DellaCorteRamadoraiSarnoFxVolatilityPremiumAnalytics<T: Real> {
+    /// Smile-adjusted model-free FX volatility swap rate $SW_t^{\text{FX}}$.
+    pub model_free_fx_volatility_swap_rate: T,
+    /// FX Volatility Risk Premium $\text{VRP}_t^{\text{FX}} = RV_t - SW_t^{\text{FX}}$ (negative when insurance is expensive).
+    pub fx_volatility_risk_premium_vrp: T,
+    /// Predicted spot exchange rate appreciation $\mathbb{E}_t[\Delta s_{t+\tau}]$.
+    pub predicted_spot_fx_appreciation: T,
+    /// VRP-timed currency strategy expected excess return $\mathbb{E}_t[rx_{t+\tau}^{\text{VRP}}]$.
+    pub vrp_strategy_expected_excess_return: T,
+}
+
+/// Evaluates the Della Corte, Ramadorai & Sarno (2016, *JFE* 120(1)) FX
+/// volatility risk premium ($\text{VRP}_t^{\text{FX}} = RV_t - IV_t$) model in
+/// which currencies with cheap volatility insurance (high $\text{VRP}_t^{\text{FX}}$)
+/// appreciate in the spot market independently of traditional carry.
+pub fn evaluate_della_corte_ramadorai_sarno_fx_volatility_premium<T: Real>(
+    spec: &DellaCorteRamadoraiSarnoFxVolatilityPremiumSpec<T>,
+) -> DellaCorteRamadoraiSarnoFxVolatilityPremiumAnalytics<T> {
+    let rv = spec.realized_fx_volatility_rv.max_val(T::from_f64(1e-3));
+    let iv = spec.model_free_implied_fx_vol_iv.max_val(T::from_f64(1e-3));
+    let bf = spec.butterfly_25d_smile_convexity_bf.max_val(T::zero());
+    let idiff = spec.forward_discount_carry_idiff;
+    let beta_vrp = spec.vrp_spot_predictability_beta.max_val(T::from_f64(1e-4));
+    let gam_h = spec
+        .volatility_insurance_hedging_gamma
+        .max_val(T::from_f64(1e-4));
+    let tau = spec.horizon_years_tau.max_val(T::from_f64(0.05));
+
+    // Britten-Jones & Neuberger / Jiang & Tian smile convexity adjustment to FX vol swap strike
+    let sw_fx = iv + T::from_f64(1.5) * bf * (T::one() + gam_h * iv);
+    let vrp_fx = rv - sw_fx;
+
+    // Currencies with higher VRP (lower implied vol relative to realized) appreciate in spot
+    let exp_spot_app = beta_vrp * vrp_fx * tau;
+    let total_rx = (idiff * tau + exp_spot_app) - gam_h * bf * tau;
+
+    DellaCorteRamadoraiSarnoFxVolatilityPremiumAnalytics {
+        model_free_fx_volatility_swap_rate: sw_fx,
+        fx_volatility_risk_premium_vrp: vrp_fx,
+        predicted_spot_fx_appreciation: exp_spot_app,
+        vrp_strategy_expected_excess_return: total_rx,
+    }
+}
+
+#[cfg(test)]
+mod della_corte_ramadorai_sarno_fx_vrp_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn della_corte_ramadorai_sarno_fx_vrp_invariants_and_ad_parity() {
+        let base = DellaCorteRamadoraiSarnoFxVolatilityPremiumSpec {
+            realized_fx_volatility_rv: 0.118_f64,
+            model_free_implied_fx_vol_iv: 0.092_f64,
+            butterfly_25d_smile_convexity_bf: 0.0038_f64,
+            forward_discount_carry_idiff: 0.025_f64,
+            vrp_spot_predictability_beta: 0.65_f64,
+            volatility_insurance_hedging_gamma: 0.40_f64,
+            horizon_years_tau: 0.50_f64,
+        };
+        let r0 = evaluate_della_corte_ramadorai_sarno_fx_volatility_premium(&base);
+        // Cheap volatility insurance (RV > SW_FX) implies positive VRP and positive predicted spot appreciation
+        assert!(r0.fx_volatility_risk_premium_vrp > 0.0);
+        assert!(r0.predicted_spot_fx_appreciation > 0.0);
+        assert!(r0.vrp_strategy_expected_excess_return > 0.0);
+
+        let x0 = [
+            base.realized_fx_volatility_rv,
+            base.model_free_implied_fx_vol_iv,
+            base.butterfly_25d_smile_convexity_bf,
+            base.forward_discount_carry_idiff,
+            base.vrp_spot_predictability_beta,
+            base.volatility_insurance_hedging_gamma,
+            base.horizon_years_tau,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_della_corte_ramadorai_sarno_fx_volatility_premium(
+            &DellaCorteRamadoraiSarnoFxVolatilityPremiumSpec {
+                realized_fx_volatility_rv: xd[0],
+                model_free_implied_fx_vol_iv: xd[1],
+                butterfly_25d_smile_convexity_bf: xd[2],
+                forward_discount_carry_idiff: xd[3],
+                vrp_spot_predictability_beta: xd[4],
+                volatility_insurance_hedging_gamma: xd[5],
+                horizon_years_tau: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_della_corte_ramadorai_sarno_fx_volatility_premium(
+                &DellaCorteRamadoraiSarnoFxVolatilityPremiumSpec {
+                    realized_fx_volatility_rv: xp[0],
+                    model_free_implied_fx_vol_iv: xp[1],
+                    butterfly_25d_smile_convexity_bf: xp[2],
+                    forward_discount_carry_idiff: xp[3],
+                    vrp_spot_predictability_beta: xp[4],
+                    volatility_insurance_hedging_gamma: xp[5],
+                    horizon_years_tau: xp[6],
+                },
+            );
+            let rm = evaluate_della_corte_ramadorai_sarno_fx_volatility_premium(
+                &DellaCorteRamadoraiSarnoFxVolatilityPremiumSpec {
+                    realized_fx_volatility_rv: xm[0],
+                    model_free_implied_fx_vol_iv: xm[1],
+                    butterfly_25d_smile_convexity_bf: xm[2],
+                    forward_discount_carry_idiff: xm[3],
+                    vrp_spot_predictability_beta: xm[4],
+                    volatility_insurance_hedging_gamma: xm[5],
+                    horizon_years_tau: xm[6],
+                },
+            );
+            let fd = (rp.vrp_strategy_expected_excess_return
+                - rm.vrp_strategy_expected_excess_return)
+                / (2.0 * h);
+            assert!(rad.vrp_strategy_expected_excess_return.d[i].abs() > 1e-9);
+            assert!((rad.vrp_strategy_expected_excess_return.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}
