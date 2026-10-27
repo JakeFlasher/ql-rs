@@ -4449,8 +4449,9 @@ pub fn evaluate_farhi_gabaix_rare_disaster_exchange_rate_uip<T: Real>(
 
     let rx_fx = pt * b_star * (f_hj - f_hi) * (one + (phi_h / denom_r) * gi.exp());
     let r_diff = r_dom - r_for;
-    let beta_uip =
-        one - (pt * b_star) / (pt * b_star + phi_h * r_diff * r_diff + T::from_f64(0.005));
+    let beta_uip = one
+        - T::from_f64(2.0) * (pt * b_star)
+            / (pt * b_star + phi_h * r_diff * r_diff + T::from_f64(0.005));
 
     FarhiGabaixRareDisasterExchangeRatePuzzleAnalytics {
         domestic_real_interest_rate: r_dom,
@@ -4481,6 +4482,7 @@ mod farhi_gabaix_rare_disaster_exchange_rate_tests {
         // Home country has lower disaster resilience (0.15 < 0.45), so higher interest rate and positive carry premium
         assert!(r0.domestic_real_interest_rate > r0.foreign_real_interest_rate);
         assert!(r0.expected_disaster_fx_carry_excess_return > 0.0);
+        assert!(r0.implied_fama_uip_regression_slope < 0.0);
 
         let x0 = [
             base.global_disaster_probability_p,
