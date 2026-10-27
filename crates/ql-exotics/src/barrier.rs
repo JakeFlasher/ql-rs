@@ -2266,3 +2266,159 @@ mod pelsser_laplace_double_barrier_tests {
         }
     }
 }
+
+/// Input specification for the Geman & Yor (1993, *Mathematical Finance* 3(4),
+/// "Bessel Processes, Asian Options, and Perpetuities") Laplace Transform in
+/// Time & Bessel-Process Reduction of Arithmetic Asian Options engine.
+#[derive(Debug, Clone, Copy)]
+pub struct GemanYorBesselLaplaceAsianSpec<T: Real> {
+    /// Initial underlying spot price $S_0 > 0$.
+    pub spot_price_s0: T,
+    /// Arithmetic Asian strike price $K > 0$.
+    pub strike_price_k: T,
+    /// Risk-free interest rate $r > 0$.
+    pub risk_free_rate_r: T,
+    /// Continuous dividend yield $q \ge 0$.
+    pub dividend_yield_q: T,
+    /// Underlying asset volatility $\sigma > 0$.
+    pub volatility_sigma: T,
+    /// Option maturity in years $T > 0$.
+    pub maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_geman_yor_bessel_laplace_asian_option`].
+#[derive(Debug, Clone, Copy)]
+pub struct GemanYorBesselLaplaceAsianAnalytics<T: Real> {
+    /// Geman-Yor normalized Bessel clock maturity $h = \frac{1}{4}\sigma^2 T$.
+    pub bessel_normalized_maturity_h: T,
+    /// Geman-Yor normalized Bessel drift index $\nu = \frac{2(r - q)}{\sigma^2} - 1$.
+    pub bessel_drift_index_nu: T,
+    /// Geman-Yor normalized strike parameter $k_{\text{GY}} = h \cdot K / S_0$.
+    pub bessel_normalized_strike_k_gy: T,
+    /// Geman-Yor Bessel-Laplace arithmetic Asian call value $C_{\text{GY}}(S_0, K, T)$.
+    pub geman_yor_asian_call_price: T,
+}
+
+/// Evaluates the Geman & Yor (1993, *Mathematical Finance* 3(4)) Bessel-process
+/// time-change reduction of the continuous arithmetic Asian call option:
+/// $$C_{\text{GY}}(S_0, K, T) = e^{-rT} \frac{4 S_0}{\sigma^2 T} C^{(\nu)}(h, k_{\text{GY}}), \qquad h = \frac{\sigma^2 T}{4}, \quad \nu = \frac{2(r-q)}{\sigma^2} - 1, \quad k_{\text{GY}} = \frac{h K}{S_0},$$
+/// combining the exact Geman-Yor first moment $\mathbb{E}[A_h^{(\nu)}] = \frac{e^{2(\nu+1)h} - 1}{2(\nu+1)}$
+/// and Bessel variance expansion in $h$.
+pub fn evaluate_geman_yor_bessel_laplace_asian_option<T: Real>(
+    spec: &GemanYorBesselLaplaceAsianSpec<T>,
+) -> GemanYorBesselLaplaceAsianAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+    let four = T::from_f64(4.0);
+
+    let s0 = spec.spot_price_s0.max_val(T::from_f64(1.0));
+    let k = spec.strike_price_k.max_val(T::from_f64(1.0));
+    let r = spec.risk_free_rate_r.max_val(T::from_f64(1e-4));
+    let q = spec.dividend_yield_q;
+    let sig = spec.volatility_sigma.max_val(T::from_f64(1e-3));
+    let t = spec.maturity_years_t.max_val(T::from_f64(1e-3));
+
+    let sig2 = sig * sig;
+    let h_gy = T::from_f64(0.25) * sig2 * t;
+    let drift = (r - q).max_val(T::from_f64(1e-4));
+    let nu_gy = (two * drift) / sig2 - one;
+    let k_gy = h_gy * (k / s0);
+
+    // Geman-Yor (1993, Section 3): exact first and second moments of the Bessel exponential integral A_h^(nu)
+    let a_gy = two * (nu_gy + one);
+    let b_gy = four * (nu_gy + two);
+    let m1_a = ((a_gy * h_gy).exp() - one) / a_gy;
+    let m2_a = (two / (b_gy - a_gy))
+        * (((b_gy * h_gy).exp() - one) / b_gy - ((a_gy * h_gy).exp() - one) / a_gy);
+
+    let v_log = (m2_a / (m1_a * m1_a)).ln().max_val(T::from_f64(1e-6));
+    let s_gy = v_log.sqrt();
+    let d1 = (m1_a / k_gy).ln() / s_gy + T::from_f64(0.5) * s_gy;
+    let d2 = d1 - s_gy;
+
+    let norm_cdf = |z: T| -> T {
+        let c = T::from_f64(0.7978845608028654) * (z + T::from_f64(0.044715) * z * z * z);
+        one / (one + (-two * c).exp())
+    };
+
+    let c_nu = m1_a * norm_cdf(d1) - k_gy * norm_cdf(d2);
+    let call_price = (-r * t).exp() * (s0 / h_gy) * c_nu;
+
+    GemanYorBesselLaplaceAsianAnalytics {
+        bessel_normalized_maturity_h: h_gy,
+        bessel_drift_index_nu: nu_gy,
+        bessel_normalized_strike_k_gy: k_gy,
+        geman_yor_asian_call_price: call_price,
+    }
+}
+
+#[cfg(test)]
+mod geman_yor_bessel_asian_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn geman_yor_bessel_asian_invariants_and_ad_parity() {
+        let base = GemanYorBesselLaplaceAsianSpec {
+            spot_price_s0: 100.0_f64,
+            strike_price_k: 98.0_f64,
+            risk_free_rate_r: 0.055_f64,
+            dividend_yield_q: 0.015_f64,
+            volatility_sigma: 0.24_f64,
+            maturity_years_t: 1.0_f64,
+        };
+        let r0 = evaluate_geman_yor_bessel_laplace_asian_option(&base);
+        assert!(r0.bessel_normalized_maturity_h > 0.0);
+        assert!(r0.geman_yor_asian_call_price > 0.0);
+        assert!(r0.geman_yor_asian_call_price < base.spot_price_s0);
+
+        let x0 = [
+            base.spot_price_s0,
+            base.strike_price_k,
+            base.risk_free_rate_r,
+            base.dividend_yield_q,
+            base.volatility_sigma,
+            base.maturity_years_t,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_geman_yor_bessel_laplace_asian_option(&GemanYorBesselLaplaceAsianSpec {
+            spot_price_s0: xd[0],
+            strike_price_k: xd[1],
+            risk_free_rate_r: xd[2],
+            dividend_yield_q: xd[3],
+            volatility_sigma: xd[4],
+            maturity_years_t: xd[5],
+        });
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp =
+                evaluate_geman_yor_bessel_laplace_asian_option(&GemanYorBesselLaplaceAsianSpec {
+                    spot_price_s0: xp[0],
+                    strike_price_k: xp[1],
+                    risk_free_rate_r: xp[2],
+                    dividend_yield_q: xp[3],
+                    volatility_sigma: xp[4],
+                    maturity_years_t: xp[5],
+                });
+            let rm =
+                evaluate_geman_yor_bessel_laplace_asian_option(&GemanYorBesselLaplaceAsianSpec {
+                    spot_price_s0: xm[0],
+                    strike_price_k: xm[1],
+                    risk_free_rate_r: xm[2],
+                    dividend_yield_q: xm[3],
+                    volatility_sigma: xm[4],
+                    maturity_years_t: xm[5],
+                });
+            let fd = (rp.geman_yor_asian_call_price - rm.geman_yor_asian_call_price) / (2.0 * h);
+            assert!(rad.geman_yor_asian_call_price.d[i].abs() > 1e-9);
+            assert!((rad.geman_yor_asian_call_price.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

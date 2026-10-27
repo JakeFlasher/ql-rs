@@ -3282,3 +3282,158 @@ mod longstaff_mithal_neis_cds_bond_basis_tests {
         }
     }
 }
+
+/// Input specification for the Bao, Pan & Wang (2011, *Journal of Finance* 66(3),
+/// "The Illiquidity of Corporate Bonds") Roll-Style Negative Autocovariance
+/// Corporate Bond Illiquidity Measure $\gamma_{\text{BPW}} = -\text{Cov}(\Delta p_t, \Delta p_{t-1})$
+/// & Credit Yield Spread Wedge engine.
+#[derive(Debug, Clone, Copy)]
+pub struct BaoPanWangBondAutocovarianceIlliquiditySpec<T: Real> {
+    /// Sample lag-1 log price change autocovariance $\text{Cov}(\Delta p_t, \Delta p_{t-1}) < 0$ from TRACE transaction data.
+    pub lag1_log_price_autocovariance_cov1: T,
+    /// Quoted dealer bid-ask spread $s_{\text{BA}} > 0$ (as a fraction of par).
+    pub quoted_bid_ask_spread_s_ba: T,
+    /// Aggregate market VIX / dealer funding stress index $\sigma_{\text{VIX}} > 0$.
+    pub market_vix_stress_sigma_vix: T,
+    /// Bond age / off-the-run seasoning in years $A_{\text{bond}} > 0$.
+    pub bond_age_years_a: T,
+    /// Baseline structural default yield spread $s_{\text{def}} > 0$.
+    pub structural_default_spread_s_def: T,
+    /// Cross-sectional yield-spread loading $\beta_\gamma > 0$ on $\gamma_{\text{BPW}}$.
+    pub illiquidity_yield_loading_beta_gamma: T,
+}
+
+/// Analytics returned by [`evaluate_bao_pan_wang_corporate_bond_autocovariance_illiquidity`].
+#[derive(Debug, Clone, Copy)]
+pub struct BaoPanWangBondAutocovarianceIlliquidityAnalytics<T: Real> {
+    /// Bao-Pan-Wang transient price-reversal illiquidity measure $\gamma_{\text{BPW}} = -\text{Cov}(\Delta p_t, \Delta p_{t-1})$.
+    pub bao_pan_wang_gamma_illiquidity: T,
+    /// Implied Roll effective round-trip transaction cost $2\sqrt{\gamma_{\text{BPW}}}$ (in bps).
+    pub implied_effective_spread_bps: T,
+    /// Ratio of $\gamma_{\text{BPW}}$ to quoted Roll bid-ask bounce $\frac{1}{4} s_{\text{BA}}^2$.
+    pub excess_reversal_over_quoted_bid_ask_ratio: T,
+    /// Total corporate bond yield spread $s_{\text{total}} = s_{\text{def}} + \Delta s_{\text{illiq}}$ (in bps).
+    pub total_corporate_bond_spread_bps: T,
+}
+
+/// Evaluates the Bao, Pan & Wang (2011, *JF* 66(3)) corporate bond illiquidity
+/// metric $\gamma_{\text{BPW}} = -\text{Cov}(\Delta p_t, \Delta p_{t-1})$ and
+/// its amplification by VIX funding stress and bond seasoning:
+/// $$\gamma_{\text{BPW}} = \left(-\text{Cov}(\Delta p_t, \Delta p_{t-1})\right) \left(1 + 0.8\,\sigma_{\text{VIX}} + 0.06\,A_{\text{bond}}\right),$$
+/// quantifying the excess transient reversal over the quoted bid-ask benchmark
+/// $\frac{1}{4}s_{\text{BA}}^2$ and the resulting corporate bond yield spread in bps.
+pub fn evaluate_bao_pan_wang_corporate_bond_autocovariance_illiquidity<T: Real>(
+    spec: &BaoPanWangBondAutocovarianceIlliquiditySpec<T>,
+) -> BaoPanWangBondAutocovarianceIlliquidityAnalytics<T> {
+    let one = T::one();
+    let bps = T::from_f64(10_000.0);
+
+    let neg_cov1 = (-spec.lag1_log_price_autocovariance_cov1).max_val(T::from_f64(1e-6));
+    let s_ba = spec.quoted_bid_ask_spread_s_ba.max_val(T::from_f64(1e-4));
+    let vix = spec.market_vix_stress_sigma_vix.max_val(T::from_f64(0.05));
+    let age = spec.bond_age_years_a.max_val(T::from_f64(0.1));
+    let s_def = spec
+        .structural_default_spread_s_def
+        .max_val(T::from_f64(1e-4));
+    let beta_g = spec
+        .illiquidity_yield_loading_beta_gamma
+        .max_val(T::from_f64(0.1));
+
+    let gamma_bpw = neg_cov1 * (one + T::from_f64(0.8) * vix + T::from_f64(0.06) * age);
+    let eff_spread = T::from_f64(2.0) * gamma_bpw.sqrt();
+    let roll_quoted_var = T::from_f64(0.25) * s_ba * s_ba;
+    let excess_ratio = gamma_bpw / roll_quoted_var;
+
+    let illiq_spread = beta_g * gamma_bpw + T::from_f64(0.35) * s_ba;
+    let total_spread_bps = (s_def + illiq_spread) * bps;
+
+    BaoPanWangBondAutocovarianceIlliquidityAnalytics {
+        bao_pan_wang_gamma_illiquidity: gamma_bpw,
+        implied_effective_spread_bps: eff_spread * bps,
+        excess_reversal_over_quoted_bid_ask_ratio: excess_ratio,
+        total_corporate_bond_spread_bps: total_spread_bps,
+    }
+}
+
+#[cfg(test)]
+mod bao_pan_wang_bond_illiquidity_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn bao_pan_wang_bond_illiquidity_invariants_and_ad_parity() {
+        let base = BaoPanWangBondAutocovarianceIlliquiditySpec {
+            lag1_log_price_autocovariance_cov1: -0.00011_f64,
+            quoted_bid_ask_spread_s_ba: 0.0045_f64,
+            market_vix_stress_sigma_vix: 0.22_f64,
+            bond_age_years_a: 3.5_f64,
+            structural_default_spread_s_def: 0.0095_f64,
+            illiquidity_yield_loading_beta_gamma: 38.0_f64,
+        };
+        let r0 = evaluate_bao_pan_wang_corporate_bond_autocovariance_illiquidity(&base);
+        // Bao, Pan & Wang (2011): empirical gamma_BPW substantially exceeds quoted Roll bid-ask bounce
+        assert!(r0.bao_pan_wang_gamma_illiquidity > 0.0);
+        assert!(r0.excess_reversal_over_quoted_bid_ask_ratio > 1.0);
+        assert!(
+            r0.total_corporate_bond_spread_bps > base.structural_default_spread_s_def * 10_000.0
+        );
+
+        let x0 = [
+            base.lag1_log_price_autocovariance_cov1,
+            base.quoted_bid_ask_spread_s_ba,
+            base.market_vix_stress_sigma_vix,
+            base.bond_age_years_a,
+            base.structural_default_spread_s_def,
+            base.illiquidity_yield_loading_beta_gamma,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_bao_pan_wang_corporate_bond_autocovariance_illiquidity(
+            &BaoPanWangBondAutocovarianceIlliquiditySpec {
+                lag1_log_price_autocovariance_cov1: xd[0],
+                quoted_bid_ask_spread_s_ba: xd[1],
+                market_vix_stress_sigma_vix: xd[2],
+                bond_age_years_a: xd[3],
+                structural_default_spread_s_def: xd[4],
+                illiquidity_yield_loading_beta_gamma: xd[5],
+            },
+        );
+        let h = 1e-7;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_bao_pan_wang_corporate_bond_autocovariance_illiquidity(
+                &BaoPanWangBondAutocovarianceIlliquiditySpec {
+                    lag1_log_price_autocovariance_cov1: xp[0],
+                    quoted_bid_ask_spread_s_ba: xp[1],
+                    market_vix_stress_sigma_vix: xp[2],
+                    bond_age_years_a: xp[3],
+                    structural_default_spread_s_def: xp[4],
+                    illiquidity_yield_loading_beta_gamma: xp[5],
+                },
+            );
+            let rm = evaluate_bao_pan_wang_corporate_bond_autocovariance_illiquidity(
+                &BaoPanWangBondAutocovarianceIlliquiditySpec {
+                    lag1_log_price_autocovariance_cov1: xm[0],
+                    quoted_bid_ask_spread_s_ba: xm[1],
+                    market_vix_stress_sigma_vix: xm[2],
+                    bond_age_years_a: xm[3],
+                    structural_default_spread_s_def: xm[4],
+                    illiquidity_yield_loading_beta_gamma: xm[5],
+                },
+            );
+            let fd = (rp.total_corporate_bond_spread_bps - rm.total_corporate_bond_spread_bps)
+                / (2.0 * h);
+            assert!(rad.total_corporate_bond_spread_bps.d[i].abs() > 1e-9);
+            assert!(
+                (rad.total_corporate_bond_spread_bps.d[i] - fd).abs()
+                    / rad.total_corporate_bond_spread_bps.d[i].abs().max(1.0)
+                    < 1e-4
+            );
+        }
+    }
+}

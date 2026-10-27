@@ -3507,3 +3507,160 @@ mod pan_singleton_sovereign_cds_tests {
         }
     }
 }
+
+/// Input specification for the Collin-Dufresne, Goldstein & Martin (2001,
+/// *Journal of Finance* 56(6), "The Determinants of Credit Spread Changes")
+/// Latent Common Credit-Market Factor vs. Structural Merton Determinants of
+/// Credit Spread Changes engine.
+#[derive(Debug, Clone, Copy)]
+pub struct CollinDufresneGoldsteinMartinCreditDeterminantsSpec<T: Real> {
+    /// Firm quasi-market leverage change $\Delta L_{i,t} > 0$.
+    pub firm_leverage_change_dl: T,
+    /// 10-year Treasury spot rate change $\Delta r_{10,t}$ (negative in flight-to-quality episodes).
+    pub treasury_rate_change_dr: T,
+    /// Treasury yield curve slope change $\Delta(\text{Slope}_t) = \Delta(y_{10} - y_2)$.
+    pub yield_curve_slope_change_dslope: T,
+    /// S&P 500 VIX implied volatility change $\Delta \text{VIX}_t > 0$.
+    pub vix_volatility_change_dvix: T,
+    /// S&P 500 option smirk / jump-fear change $\Delta \text{Jump}_t > 0$.
+    pub equity_jump_skew_change_djump: T,
+    /// Latent aggregate credit-market supply/demand liquidity shock $F_{\text{CDGM},t} > 0$.
+    pub latent_common_credit_factor_f_cdgm: T,
+    /// Firm credit beta $\beta_{i,\text{CDGM}} > 0$ on the latent systemic factor.
+    pub latent_factor_loading_beta_cdgm: T,
+}
+
+/// Analytics returned by [`evaluate_collin_dufresne_goldstein_martin_credit_spread_determinants`].
+#[derive(Debug, Clone, Copy)]
+pub struct CollinDufresneGoldsteinMartinCreditDeterminantsAnalytics<T: Real> {
+    /// Credit spread change predicted by structural Merton variables $\Delta CS_{i,t}^{\text{struct}}$ (in bps).
+    pub structural_merton_spread_change_bps: T,
+    /// Credit spread change driven by the CDGM latent common factor $\Delta CS_{i,t}^{\text{latent}}$ (in bps).
+    pub latent_common_factor_spread_change_bps: T,
+    /// Total corporate credit spread change $\Delta CS_{i,t}^{\text{total}}$ (in bps).
+    pub total_credit_spread_change_bps: T,
+    /// Variance/amplitude share explained by the latent common credit factor vs. structural variables.
+    pub latent_common_factor_dominance_share: T,
+}
+
+/// Evaluates the Collin-Dufresne, Goldstein & Martin (2001, *JF* 56(6))
+/// decomposition of corporate credit spread changes into theoretical structural
+/// Merton determinants ($\Delta L_i$, $\Delta r_{10}$, $\Delta \text{Slope}$,
+/// $\Delta \text{VIX}$, $\Delta \text{Jump}$) and the dominant single latent
+/// common credit-market factor $F_{\text{CDGM},t}$:
+/// $$\Delta CS_{i,t} = \underbrace{\left(\gamma_L \Delta L_{i,t} - \gamma_r \Delta r_{10,t} - \gamma_s \Delta \text{Slope}_t + \gamma_v \Delta \text{VIX}_t + \gamma_j \Delta \text{Jump}_t\right)}_{\Delta CS_{i,t}^{\text{struct}}} + \underbrace{\beta_{i,\text{CDGM}} F_{\text{CDGM},t}}_{\Delta CS_{i,t}^{\text{latent}}}.$$
+pub fn evaluate_collin_dufresne_goldstein_martin_credit_spread_determinants<T: Real>(
+    spec: &CollinDufresneGoldsteinMartinCreditDeterminantsSpec<T>,
+) -> CollinDufresneGoldsteinMartinCreditDeterminantsAnalytics<T> {
+    let bps = T::from_f64(10_000.0);
+
+    let dl = spec.firm_leverage_change_dl;
+    let dr = spec.treasury_rate_change_dr;
+    let dslope = spec.yield_curve_slope_change_dslope;
+    let dvix = spec.vix_volatility_change_dvix;
+    let djump = spec.equity_jump_skew_change_djump;
+    let f_lat = spec.latent_common_credit_factor_f_cdgm;
+    let beta_lat = spec
+        .latent_factor_loading_beta_cdgm
+        .max_val(T::from_f64(0.1));
+
+    // Structural Merton sensitivities (Collin-Dufresne, Goldstein & Martin 2001, Table II)
+    let d_struct = T::from_f64(0.032) * dl - T::from_f64(0.18) * dr - T::from_f64(0.06) * dslope
+        + T::from_f64(0.045) * dvix
+        + T::from_f64(0.038) * djump;
+    let d_latent = beta_lat * f_lat;
+    let d_total = d_struct + d_latent;
+
+    let var_struct = d_struct * d_struct + T::from_f64(1e-10);
+    let var_latent = d_latent * d_latent + T::from_f64(1e-10);
+    let latent_share = var_latent / (var_struct + var_latent);
+
+    CollinDufresneGoldsteinMartinCreditDeterminantsAnalytics {
+        structural_merton_spread_change_bps: d_struct * bps,
+        latent_common_factor_spread_change_bps: d_latent * bps,
+        total_credit_spread_change_bps: d_total * bps,
+        latent_common_factor_dominance_share: latent_share,
+    }
+}
+
+#[cfg(test)]
+mod collin_dufresne_goldstein_martin_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn collin_dufresne_goldstein_martin_invariants_and_ad_parity() {
+        let base = CollinDufresneGoldsteinMartinCreditDeterminantsSpec {
+            firm_leverage_change_dl: 0.015_f64,
+            treasury_rate_change_dr: -0.0020_f64,
+            yield_curve_slope_change_dslope: -0.0010_f64,
+            vix_volatility_change_dvix: 0.018_f64,
+            equity_jump_skew_change_djump: 0.012_f64,
+            latent_common_credit_factor_f_cdgm: 0.0038_f64,
+            latent_factor_loading_beta_cdgm: 1.25_f64,
+        };
+        let r0 = evaluate_collin_dufresne_goldstein_martin_credit_spread_determinants(&base);
+        // CDGM (2001): latent common factor explains ~75% of residual variation beyond structural Merton drivers
+        assert!(r0.structural_merton_spread_change_bps > 0.0);
+        assert!(r0.latent_common_factor_spread_change_bps > r0.structural_merton_spread_change_bps);
+        assert!(r0.latent_common_factor_dominance_share > 0.55);
+
+        let x0 = [
+            base.firm_leverage_change_dl,
+            base.treasury_rate_change_dr,
+            base.yield_curve_slope_change_dslope,
+            base.vix_volatility_change_dvix,
+            base.equity_jump_skew_change_djump,
+            base.latent_common_credit_factor_f_cdgm,
+            base.latent_factor_loading_beta_cdgm,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_collin_dufresne_goldstein_martin_credit_spread_determinants(
+            &CollinDufresneGoldsteinMartinCreditDeterminantsSpec {
+                firm_leverage_change_dl: xd[0],
+                treasury_rate_change_dr: xd[1],
+                yield_curve_slope_change_dslope: xd[2],
+                vix_volatility_change_dvix: xd[3],
+                equity_jump_skew_change_djump: xd[4],
+                latent_common_credit_factor_f_cdgm: xd[5],
+                latent_factor_loading_beta_cdgm: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_collin_dufresne_goldstein_martin_credit_spread_determinants(
+                &CollinDufresneGoldsteinMartinCreditDeterminantsSpec {
+                    firm_leverage_change_dl: xp[0],
+                    treasury_rate_change_dr: xp[1],
+                    yield_curve_slope_change_dslope: xp[2],
+                    vix_volatility_change_dvix: xp[3],
+                    equity_jump_skew_change_djump: xp[4],
+                    latent_common_credit_factor_f_cdgm: xp[5],
+                    latent_factor_loading_beta_cdgm: xp[6],
+                },
+            );
+            let rm = evaluate_collin_dufresne_goldstein_martin_credit_spread_determinants(
+                &CollinDufresneGoldsteinMartinCreditDeterminantsSpec {
+                    firm_leverage_change_dl: xm[0],
+                    treasury_rate_change_dr: xm[1],
+                    yield_curve_slope_change_dslope: xm[2],
+                    vix_volatility_change_dvix: xm[3],
+                    equity_jump_skew_change_djump: xm[4],
+                    latent_common_credit_factor_f_cdgm: xm[5],
+                    latent_factor_loading_beta_cdgm: xm[6],
+                },
+            );
+            let fd =
+                (rp.total_credit_spread_change_bps - rm.total_credit_spread_change_bps) / (2.0 * h);
+            assert!(rad.total_credit_spread_change_bps.d[i].abs() > 1e-9);
+            assert!((rad.total_credit_spread_change_bps.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

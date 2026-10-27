@@ -3761,3 +3761,149 @@ mod gorton_hayashi_rouwenhorst_inventory_basis_tests {
         }
     }
 }
+
+/// Input specification for the Kang, Rouwenhorst & Tang (2020, *Journal of
+/// Finance* 75(1), "A Tale of Two Premiums: The Role of Hedgers and Speculators
+/// in Commodity Futures Markets") Long-Horizon Commercial Hedging Pressure Risk
+/// Premium vs. Short-Horizon Speculator Liquidity Provision engine.
+#[derive(Debug, Clone, Copy)]
+pub struct KangRouwenhorstTangTwoPremiumsSpec<T: Real> {
+    /// Smoothed 52-week commercial net short hedging pressure $HP_{i,t}^{\text{long}} \in (0, 1)$.
+    pub long_horizon_commercial_hedging_pressure_hp: T,
+    /// Short-horizon weekly change in speculator net long position $\Delta Q_{i,t}^{\text{spec}}$ (demand for immediacy).
+    pub short_horizon_speculator_flow_dq: T,
+    /// Long-horizon insurance risk-premium slope $\beta_{\text{HP}} > 0$.
+    pub hedging_pressure_risk_premium_beta_hp: T,
+    /// Short-horizon price-impact / liquidity provision reversal slope $\beta_{\text{liq}} > 0$.
+    pub liquidity_provision_reversal_beta_liq: T,
+    /// Commodity futures log basis $B_{i,t} = (F_{i,t} - S_{i,t}) / S_{i,t}$ (negative in backwardation).
+    pub commodity_futures_basis_b: T,
+    /// Commodity annualized return volatility $\sigma_{i} > 0$.
+    pub commodity_volatility_sigma: T,
+}
+
+/// Analytics returned by [`evaluate_kang_rouwenhorst_tang_hedger_speculator_commodity_premia`].
+#[derive(Debug, Clone, Copy)]
+pub struct KangRouwenhorstTangTwoPremiumsAnalytics<T: Real> {
+    /// Low-frequency risk premium paid by commercial hedgers $\pi_{\text{hedger}}^{\text{long}} > 0$.
+    pub long_horizon_hedger_risk_premium: T,
+    /// High-frequency liquidity-provision compensation paid by impatient speculators $\pi_{\text{liq}}^{\text{short}}$.
+    pub short_horizon_liquidity_provision_premium: T,
+    /// Total expected commodity futures excess return $\mathbb{E}_t[r_{\text{fut},t+1}]$.
+    pub total_expected_futures_excess_return: T,
+    /// Expected Sharpe ratio of the combined two-premiums strategy.
+    pub two_premiums_sharpe_ratio: T,
+}
+
+/// Evaluates the Kang, Rouwenhorst & Tang (2020, *JF* 75(1)) frequency
+/// decomposition of CFTC trader positions: at long horizons, commercial
+/// producers pay a positive insurance risk premium proportional to smoothed
+/// 52-week hedging pressure $HP_{i,t}^{\text{long}}$; at short weekly horizons,
+/// non-commercial speculators demand immediacy and pay a transient liquidity
+/// premium $\beta_{\text{liq}}\Delta Q_{i,t}^{\text{spec}}$ to commercial
+/// liquidity providers.
+pub fn evaluate_kang_rouwenhorst_tang_hedger_speculator_commodity_premia<T: Real>(
+    spec: &KangRouwenhorstTangTwoPremiumsSpec<T>,
+) -> KangRouwenhorstTangTwoPremiumsAnalytics<T> {
+    let hp_long = spec
+        .long_horizon_commercial_hedging_pressure_hp
+        .max_val(T::from_f64(1e-4));
+    let dq_spec = spec.short_horizon_speculator_flow_dq;
+    let beta_hp = spec
+        .hedging_pressure_risk_premium_beta_hp
+        .max_val(T::from_f64(1e-4));
+    let beta_liq = spec
+        .liquidity_provision_reversal_beta_liq
+        .max_val(T::from_f64(1e-4));
+    let basis = spec.commodity_futures_basis_b;
+    let sig = spec.commodity_volatility_sigma.max_val(T::from_f64(0.05));
+
+    // Long-horizon hedger risk premium (positive for high commercial net short HP and backwardation)
+    let pi_long = beta_hp * hp_long - T::from_f64(0.35) * basis;
+    // Short-horizon liquidity premium earned by contrarian liquidity providers absorbing speculator flow
+    let pi_short = beta_liq * dq_spec;
+    let total_ret = pi_long + pi_short;
+    let sharpe = total_ret / sig;
+
+    KangRouwenhorstTangTwoPremiumsAnalytics {
+        long_horizon_hedger_risk_premium: pi_long,
+        short_horizon_liquidity_provision_premium: pi_short,
+        total_expected_futures_excess_return: total_ret,
+        two_premiums_sharpe_ratio: sharpe,
+    }
+}
+
+#[cfg(test)]
+mod kang_rouwenhorst_tang_two_premiums_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn kang_rouwenhorst_tang_two_premiums_invariants_and_ad_parity() {
+        let base = KangRouwenhorstTangTwoPremiumsSpec {
+            long_horizon_commercial_hedging_pressure_hp: 0.28_f64,
+            short_horizon_speculator_flow_dq: 0.045_f64,
+            hedging_pressure_risk_premium_beta_hp: 0.18_f64,
+            liquidity_provision_reversal_beta_liq: 0.42_f64,
+            commodity_futures_basis_b: -0.035_f64,
+            commodity_volatility_sigma: 0.24_f64,
+        };
+        let r0 = evaluate_kang_rouwenhorst_tang_hedger_speculator_commodity_premia(&base);
+        assert!(r0.long_horizon_hedger_risk_premium > 0.0);
+        assert!(r0.short_horizon_liquidity_provision_premium > 0.0);
+        assert!(r0.two_premiums_sharpe_ratio > 0.20);
+
+        let x0 = [
+            base.long_horizon_commercial_hedging_pressure_hp,
+            base.short_horizon_speculator_flow_dq,
+            base.hedging_pressure_risk_premium_beta_hp,
+            base.liquidity_provision_reversal_beta_liq,
+            base.commodity_futures_basis_b,
+            base.commodity_volatility_sigma,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_kang_rouwenhorst_tang_hedger_speculator_commodity_premia(
+            &KangRouwenhorstTangTwoPremiumsSpec {
+                long_horizon_commercial_hedging_pressure_hp: xd[0],
+                short_horizon_speculator_flow_dq: xd[1],
+                hedging_pressure_risk_premium_beta_hp: xd[2],
+                liquidity_provision_reversal_beta_liq: xd[3],
+                commodity_futures_basis_b: xd[4],
+                commodity_volatility_sigma: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_kang_rouwenhorst_tang_hedger_speculator_commodity_premia(
+                &KangRouwenhorstTangTwoPremiumsSpec {
+                    long_horizon_commercial_hedging_pressure_hp: xp[0],
+                    short_horizon_speculator_flow_dq: xp[1],
+                    hedging_pressure_risk_premium_beta_hp: xp[2],
+                    liquidity_provision_reversal_beta_liq: xp[3],
+                    commodity_futures_basis_b: xp[4],
+                    commodity_volatility_sigma: xp[5],
+                },
+            );
+            let rm = evaluate_kang_rouwenhorst_tang_hedger_speculator_commodity_premia(
+                &KangRouwenhorstTangTwoPremiumsSpec {
+                    long_horizon_commercial_hedging_pressure_hp: xm[0],
+                    short_horizon_speculator_flow_dq: xm[1],
+                    hedging_pressure_risk_premium_beta_hp: xm[2],
+                    liquidity_provision_reversal_beta_liq: xm[3],
+                    commodity_futures_basis_b: xm[4],
+                    commodity_volatility_sigma: xm[5],
+                },
+            );
+            let fd = (rp.two_premiums_sharpe_ratio - rm.two_premiums_sharpe_ratio) / (2.0 * h);
+            assert!(rad.two_premiums_sharpe_ratio.d[i].abs() > 1e-9);
+            assert!((rad.two_premiums_sharpe_ratio.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

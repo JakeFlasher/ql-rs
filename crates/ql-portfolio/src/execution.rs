@@ -5174,3 +5174,153 @@ mod budish_cramton_shim_frequent_batch_auction_tests {
         }
     }
 }
+
+/// Input specification for the Biais, Foucault & Moinas (2015, *Journal of
+/// Financial Economics* 116(2), "Equilibrium Fast Trading") Fast-Trading Arms
+/// Race, Adverse-Selection Externality & Pigouvian Microwave-Technology Tax
+/// engine.
+#[derive(Debug, Clone, Copy)]
+pub struct BiaisFoucaultMoinasFastTradingSpec<T: Real> {
+    /// Private valuation / hedging gains-from-trade surplus $G_{\text{trade}} > 0$ of speed-assisted search.
+    pub fast_search_gains_from_trade_g: T,
+    /// Adverse-selection rent $A_{\text{adv}} > 0$ extracted by fast traders from slow liquidity providers.
+    pub adverse_selection_rent_a: T,
+    /// Fixed technology subscription cost $C_{\text{fast}} > 0$ of low-latency microwave/co-location access.
+    pub fast_trading_technology_cost_c: T,
+    /// Cross-sectional heterogeneity dispersion $\sigma_{\text{type}} > 0$ of institutional trading needs.
+    pub institutional_type_dispersion_sigma: T,
+    /// Market illiquidity deadweight loss multiplier $\lambda_{\text{dw}} > 0$ per unit of adverse selection.
+    pub illiquidity_deadweight_multiplier_lambda: T,
+}
+
+/// Analytics returned by [`evaluate_biais_foucault_moinas_equilibrium_fast_trading`].
+#[derive(Debug, Clone, Copy)]
+pub struct BiaisFoucaultMoinasFastTradingAnalytics<T: Real> {
+    /// Laissez-faire equilibrium fraction of fast institutions $\alpha_{\text{eq}} \in (0, 1)$.
+    pub laissez_faire_fast_fraction_alpha_eq: T,
+    /// Socially optimal planner fraction of fast institutions $\alpha_{\text{opt}} < \alpha_{\text{eq}}$.
+    pub socially_optimal_fast_fraction_alpha_opt: T,
+    /// Overinvestment wedge in fast-trading technology $\alpha_{\text{eq}} - \alpha_{\text{opt}} > 0$.
+    pub fast_trading_overinvestment_wedge: T,
+    /// Optimal Biais-Foucault-Moinas Pigouvian fast-trading tax $\tau_{\text{BFM}}^*$ restoring social optimality.
+    pub pigouvian_fast_trading_tax: T,
+}
+
+/// Evaluates the Biais, Foucault & Moinas (2015, *JFE* 116(2), Propositions 2–4)
+/// equilibrium vs. socially optimal investment in fast-trading technology:
+/// because institutions internalize private adverse-selection rents $A_{\text{adv}}$
+/// in addition to fundamental gains from trade $G_{\text{trade}}$, laissez-faire
+/// equilibrium yields excessive investment ($\alpha_{\text{eq}} > \alpha_{\text{opt}}$),
+/// which is corrected by a Pigouvian tax $\tau_{\text{BFM}}^* = A_{\text{adv}}(1 + \lambda_{\text{dw}}\alpha_{\text{opt}})$.
+pub fn evaluate_biais_foucault_moinas_equilibrium_fast_trading<T: Real>(
+    spec: &BiaisFoucaultMoinasFastTradingSpec<T>,
+) -> BiaisFoucaultMoinasFastTradingAnalytics<T> {
+    let one = T::one();
+    let g_trade = spec
+        .fast_search_gains_from_trade_g
+        .max_val(T::from_f64(1e-3));
+    let a_adv = spec.adverse_selection_rent_a.max_val(T::from_f64(1e-3));
+    let c_fast = spec
+        .fast_trading_technology_cost_c
+        .max_val(T::from_f64(1e-3));
+    let sig_type = spec
+        .institutional_type_dispersion_sigma
+        .max_val(T::from_f64(0.05));
+    let lam_dw = spec
+        .illiquidity_deadweight_multiplier_lambda
+        .max_val(T::from_f64(0.05));
+
+    // Private net benefit of becoming fast includes adverse selection rent a_adv
+    let z_eq = (g_trade + a_adv - c_fast) / sig_type;
+    let alpha_eq = one / (one + (-z_eq).exp());
+
+    // Social planner internalizes that adverse-selection rent is a transfer + deadweight loss lam_dw * a_adv
+    let z_opt = (g_trade - lam_dw * a_adv - c_fast) / sig_type;
+    let alpha_opt = one / (one + (-z_opt).exp());
+
+    let overinvest = alpha_eq - alpha_opt;
+    let pigou_tax = a_adv * (one + lam_dw * (one + alpha_opt));
+
+    BiaisFoucaultMoinasFastTradingAnalytics {
+        laissez_faire_fast_fraction_alpha_eq: alpha_eq,
+        socially_optimal_fast_fraction_alpha_opt: alpha_opt,
+        fast_trading_overinvestment_wedge: overinvest,
+        pigouvian_fast_trading_tax: pigou_tax,
+    }
+}
+
+#[cfg(test)]
+mod biais_foucault_moinas_fast_trading_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn biais_foucault_moinas_fast_trading_invariants_and_ad_parity() {
+        let base = BiaisFoucaultMoinasFastTradingSpec {
+            fast_search_gains_from_trade_g: 0.42_f64,
+            adverse_selection_rent_a: 0.28_f64,
+            fast_trading_technology_cost_c: 0.38_f64,
+            institutional_type_dispersion_sigma: 0.25_f64,
+            illiquidity_deadweight_multiplier_lambda: 0.35_f64,
+        };
+        let r0 = evaluate_biais_foucault_moinas_equilibrium_fast_trading(&base);
+        // BFM (2015, Proposition 3): laissez-faire fast fraction exceeds social optimum
+        assert!(
+            r0.laissez_faire_fast_fraction_alpha_eq > r0.socially_optimal_fast_fraction_alpha_opt
+        );
+        assert!(r0.fast_trading_overinvestment_wedge > 0.0);
+        assert!(r0.pigouvian_fast_trading_tax > base.adverse_selection_rent_a);
+
+        let x0 = [
+            base.fast_search_gains_from_trade_g,
+            base.adverse_selection_rent_a,
+            base.fast_trading_technology_cost_c,
+            base.institutional_type_dispersion_sigma,
+            base.illiquidity_deadweight_multiplier_lambda,
+        ];
+        let mut xd = [Dual::<5>::from_f64(0.0); 5];
+        for i in 0..5 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_biais_foucault_moinas_equilibrium_fast_trading(
+            &BiaisFoucaultMoinasFastTradingSpec {
+                fast_search_gains_from_trade_g: xd[0],
+                adverse_selection_rent_a: xd[1],
+                fast_trading_technology_cost_c: xd[2],
+                institutional_type_dispersion_sigma: xd[3],
+                illiquidity_deadweight_multiplier_lambda: xd[4],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..5 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_biais_foucault_moinas_equilibrium_fast_trading(
+                &BiaisFoucaultMoinasFastTradingSpec {
+                    fast_search_gains_from_trade_g: xp[0],
+                    adverse_selection_rent_a: xp[1],
+                    fast_trading_technology_cost_c: xp[2],
+                    institutional_type_dispersion_sigma: xp[3],
+                    illiquidity_deadweight_multiplier_lambda: xp[4],
+                },
+            );
+            let rm = evaluate_biais_foucault_moinas_equilibrium_fast_trading(
+                &BiaisFoucaultMoinasFastTradingSpec {
+                    fast_search_gains_from_trade_g: xm[0],
+                    adverse_selection_rent_a: xm[1],
+                    fast_trading_technology_cost_c: xm[2],
+                    institutional_type_dispersion_sigma: xm[3],
+                    illiquidity_deadweight_multiplier_lambda: xm[4],
+                },
+            );
+            let gp = rp.fast_trading_overinvestment_wedge + rp.pigouvian_fast_trading_tax;
+            let gm = rm.fast_trading_overinvestment_wedge + rm.pigouvian_fast_trading_tax;
+            let gad = rad.fast_trading_overinvestment_wedge + rad.pigouvian_fast_trading_tax;
+            let fd = (gp - gm) / (2.0 * h);
+            assert!(gad.d[i].abs() > 1e-9);
+            assert!((gad.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

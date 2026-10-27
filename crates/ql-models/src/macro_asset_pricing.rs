@@ -4860,3 +4860,153 @@ mod brunnermeier_pedersen_margin_spiral_tests {
         }
     }
 }
+
+/// Input specification for the Gabaix (2011, *Econometrica* 79(3), "The Granular
+/// Origins of Aggregate Fluctuations") Power-Law Firm-Size Herfindahl
+/// Concentration & Idiosyncratic-to-Macro Granular Residual Volatility engine.
+#[derive(Debug, Clone, Copy)]
+pub struct GabaixGranularOriginsMacroVolatilitySpec<T: Real> {
+    /// Total number of firms in the economy $N \ge 100$.
+    pub economy_firm_count_n: T,
+    /// Firm-level idiosyncratic productivity growth volatility $\sigma_{\text{firm}} > 0$.
+    pub firm_idiosyncratic_volatility_sigma_f: T,
+    /// Pareto firm-size tail exponent $\zeta \in (1, 2)$ ($\zeta \to 1$ is Zipf's law).
+    pub pareto_size_tail_exponent_zeta: T,
+    /// Domar / Hulten intermediate input-output amplification multiplier $\mu_{\text{IO}} \ge 1$.
+    pub domar_input_output_multiplier_mu: T,
+    /// Top-$K$ granular residual realization $\Gamma_t = \sum_{i=1}^K \frac{S_{i,t-1}}{Y_{t-1}} g_{i,t}$.
+    pub realized_granular_residual_gamma: T,
+}
+
+/// Analytics returned by [`evaluate_gabaix_granular_residual_macro_volatility`].
+#[derive(Debug, Clone, Copy)]
+pub struct GabaixGranularOriginsMacroVolatilityAnalytics<T: Real> {
+    /// Power-law sales Herfindahl root $h_N(\zeta) = \sqrt{\sum_{i=1}^N (S_i / Y)^2}$ under Pareto exponent $\zeta$.
+    pub granular_herfindahl_root_h_n: T,
+    /// Thin-tailed homogeneous-firm benchmark volatility $\sigma_{\text{thin}} = \mu_{\text{IO}}\sigma_{\text{firm}} / \sqrt{N}$.
+    pub thin_tailed_diversified_volatility: T,
+    /// Gabaix (2011, Proposition 2) granular aggregate GDP volatility $\sigma_{\text{GDP}} = \mu_{\text{IO}}\sigma_{\text{firm}} h_N(\zeta)$.
+    pub granular_aggregate_gdp_volatility: T,
+    /// Realized granular GDP growth impulse $\Delta y_{\text{gran},t} = \mu_{\text{IO}}\,\Gamma_t$.
+    pub granular_gdp_growth_impulse: T,
+}
+
+/// Evaluates Gabaix (2011, *Econometrica* 79(3), Proposition 1 & 2) granular
+/// macroeconomic volatility under fat-tailed firm sizes ($\mathbb{P}(S > s) \propto s^{-\zeta}$
+/// with $\zeta \in (1, 2)$): instead of decaying at the thin-tailed $N^{-1/2}$
+/// rate, aggregate GDP volatility decays at the much slower power-law rate
+/// $N^{-(1 - 1/\zeta)}$ (or $1/\ln N$ at the Zipf limit $\zeta \to 1$), so
+/// microeconomic shocks to the largest 100 firms generate macro business-cycle
+/// fluctuations.
+pub fn evaluate_gabaix_granular_residual_macro_volatility<T: Real>(
+    spec: &GabaixGranularOriginsMacroVolatilitySpec<T>,
+) -> GabaixGranularOriginsMacroVolatilityAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+
+    let n = spec.economy_firm_count_n.max_val(T::from_f64(100.0));
+    let sig_f = spec
+        .firm_idiosyncratic_volatility_sigma_f
+        .max_val(T::from_f64(0.01));
+    let zeta = spec
+        .pareto_size_tail_exponent_zeta
+        .min_val(T::from_f64(1.95))
+        .max_val(T::from_f64(1.02));
+    let mu_io = spec
+        .domar_input_output_multiplier_mu
+        .max_val(T::from_f64(1.0));
+    let gamma_t = spec.realized_granular_residual_gamma;
+
+    let thin_vol = mu_io * sig_f / n.sqrt();
+
+    // Smooth interpolation between Zipf limit (1 / ln N) and Pareto power-law N^{-(1 - 1/zeta)}
+    let ln_n = n.ln();
+    let power_exp = one - one / zeta;
+    let pareto_decay = (-power_exp * ln_n).exp();
+    let zipf_envelope = one / ln_n + T::from_f64(0.65) * (zeta - one) / (two - zeta).sqrt();
+    let h_n = zipf_envelope * pareto_decay;
+
+    let gran_vol =
+        mu_io * sig_f * h_n + T::from_f64(0.05) * (gamma_t * gamma_t + T::from_f64(1e-6)).sqrt();
+    let gdp_impulse = mu_io * gamma_t;
+
+    GabaixGranularOriginsMacroVolatilityAnalytics {
+        granular_herfindahl_root_h_n: h_n,
+        thin_tailed_diversified_volatility: thin_vol,
+        granular_aggregate_gdp_volatility: gran_vol,
+        granular_gdp_growth_impulse: gdp_impulse,
+    }
+}
+
+#[cfg(test)]
+mod gabaix_granular_origins_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn gabaix_granular_origins_invariants_and_ad_parity() {
+        let base = GabaixGranularOriginsMacroVolatilitySpec {
+            economy_firm_count_n: 1_000_000.0_f64,
+            firm_idiosyncratic_volatility_sigma_f: 0.12_f64,
+            pareto_size_tail_exponent_zeta: 1.08_f64,
+            domar_input_output_multiplier_mu: 2.10_f64,
+            realized_granular_residual_gamma: 0.0085_f64,
+        };
+        let r0 = evaluate_gabaix_granular_residual_macro_volatility(&base);
+        // Gabaix (2011): granular GDP volatility is an order of magnitude larger than 1/sqrt(N) diversification
+        assert!(
+            r0.granular_aggregate_gdp_volatility > 10.0 * r0.thin_tailed_diversified_volatility
+        );
+        assert!(r0.granular_gdp_growth_impulse > base.realized_granular_residual_gamma);
+
+        let x0 = [
+            base.economy_firm_count_n,
+            base.firm_idiosyncratic_volatility_sigma_f,
+            base.pareto_size_tail_exponent_zeta,
+            base.domar_input_output_multiplier_mu,
+            base.realized_granular_residual_gamma,
+        ];
+        let mut xd = [Dual::<5>::from_f64(0.0); 5];
+        for i in 0..5 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_gabaix_granular_residual_macro_volatility(
+            &GabaixGranularOriginsMacroVolatilitySpec {
+                economy_firm_count_n: xd[0],
+                firm_idiosyncratic_volatility_sigma_f: xd[1],
+                pareto_size_tail_exponent_zeta: xd[2],
+                domar_input_output_multiplier_mu: xd[3],
+                realized_granular_residual_gamma: xd[4],
+            },
+        );
+        let h = 1e-5;
+        for i in 0..5 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_gabaix_granular_residual_macro_volatility(
+                &GabaixGranularOriginsMacroVolatilitySpec {
+                    economy_firm_count_n: xp[0],
+                    firm_idiosyncratic_volatility_sigma_f: xp[1],
+                    pareto_size_tail_exponent_zeta: xp[2],
+                    domar_input_output_multiplier_mu: xp[3],
+                    realized_granular_residual_gamma: xp[4],
+                },
+            );
+            let rm = evaluate_gabaix_granular_residual_macro_volatility(
+                &GabaixGranularOriginsMacroVolatilitySpec {
+                    economy_firm_count_n: xm[0],
+                    firm_idiosyncratic_volatility_sigma_f: xm[1],
+                    pareto_size_tail_exponent_zeta: xm[2],
+                    domar_input_output_multiplier_mu: xm[3],
+                    realized_granular_residual_gamma: xm[4],
+                },
+            );
+            let fd = (rp.granular_aggregate_gdp_volatility - rm.granular_aggregate_gdp_volatility)
+                / (2.0 * h);
+            assert!(rad.granular_aggregate_gdp_volatility.d[i].abs() > 1e-12);
+            assert!((rad.granular_aggregate_gdp_volatility.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

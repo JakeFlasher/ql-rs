@@ -5234,3 +5234,154 @@ mod ghamami_glasserman_clearing_incentive_tests {
         }
     }
 }
+
+/// Input specification for the Capponi & Cheng (2018, *Journal of Financial
+/// Economics* 128(3), "Clearinghouse Margin Requirements") Optimal CCP Initial
+/// Margin vs. Default-Fund Skin-in-the-Game Welfare & Clearing Member Incentives
+/// engine.
+#[derive(Debug, Clone, Copy)]
+pub struct CapponiChengClearinghouseMarginSpec<T: Real> {
+    /// Clearing member portfolio exposure scale $\sigma_{\text{pos}} > 0$.
+    pub member_position_volatility_sigma: T,
+    ///Exponential tail loss decay rate $\alpha_{\text{tail}} > 0$ of defaulted member exposure.
+    pub tail_loss_decay_alpha: T,
+    /// Clearing member default probability $\pi_{\text{def}} \in (0, 1)$.
+    pub member_default_probability_pi: T,
+    /// Collateral funding cost spread $\lambda_{\text{coll}} > 0$ per unit of posted initial margin.
+    pub collateral_funding_cost_lambda_c: T,
+    /// Default waterfall fire-sale / systemic deadweight penalty $\gamma_{\text{def}} > \lambda_{\text{coll}}$.
+    pub default_waterfall_penalty_gamma_d: T,
+    /// CCP skin-in-the-game capital commitment share $s_{\text{SITG}} \in (0, 1)$.
+    pub ccp_skin_in_the_game_share_s: T,
+}
+
+/// Analytics returned by [`evaluate_capponi_cheng_clearinghouse_margin_skin_in_game`].
+#[derive(Debug, Clone, Copy)]
+pub struct CapponiChengClearinghouseMarginAnalytics<T: Real> {
+    /// Capponi-Cheng optimal initial margin requirement $IM^*$ balancing funding cost and tail default loss.
+    pub optimal_initial_margin_requirement: T,
+    /// Expected uncollateralized default fund loss $\mathbb{E}[(L - IM^*)^+]$ absorbed by SITG and surviving members.
+    pub expected_default_waterfall_shortfall: T,
+    /// CCP skin-in-the-game capital at risk $SITG_{\text{risk}} = s_{\text{SITG}} \cdot \mathbb{E}[(L - IM^*)^+]$.
+    pub ccp_skin_in_the_game_exposure: T,
+    /// Total clearinghouse social cost (collateral funding cost + expected default deadweight cost).
+    pub total_clearing_social_cost: T,
+}
+
+/// Evaluates the Capponi & Cheng (2018, *JFE* 128(3)) clearinghouse optimal
+/// initial margin requirement:
+/// $$IM^* = \frac{\sigma_{\text{pos}}}{\alpha_{\text{tail}}} \ln\!\left(\frac{\pi_{\text{def}}\,\gamma_{\text{def}}(1 + 0.5\,s_{\text{SITG}})}{\lambda_{\text{coll}}}\right),$$
+/// where higher default deadweight cost $\gamma_{\text{def}}$, higher default
+/// probability $\pi_{\text{def}}$, and higher CCP skin-in-the-game $s_{\text{SITG}}$
+/// raise the optimal initial margin $IM^*$ and compress tail default waterfall losses.
+pub fn evaluate_capponi_cheng_clearinghouse_margin_skin_in_game<T: Real>(
+    spec: &CapponiChengClearinghouseMarginSpec<T>,
+) -> CapponiChengClearinghouseMarginAnalytics<T> {
+    let one = T::one();
+    let sig = spec
+        .member_position_volatility_sigma
+        .max_val(T::from_f64(1.0));
+    let alpha = spec.tail_loss_decay_alpha.max_val(T::from_f64(0.1));
+    let pi_d = spec
+        .member_default_probability_pi
+        .max_val(T::from_f64(1e-4));
+    let lam_c = spec
+        .collateral_funding_cost_lambda_c
+        .max_val(T::from_f64(1e-4));
+    let gam_d = spec
+        .default_waterfall_penalty_gamma_d
+        .max_val(T::from_f64(1e-3));
+    let s_sitg = spec.ccp_skin_in_the_game_share_s.max_val(T::from_f64(0.01));
+
+    let hazard_ratio =
+        (pi_d * gam_d * (one + T::from_f64(0.5) * s_sitg) / lam_c).max_val(T::from_f64(1.05));
+    let scale = sig / alpha;
+    let im_star = scale * hazard_ratio.ln();
+
+    // Expected tail shortfall E[(L - IM*)^+] = pi_def * (sigma / alpha) * exp(-alpha * IM* / sigma)
+    let tail_shortfall = pi_d * scale * (-im_star / scale).exp();
+    let sitg_exp = s_sitg * tail_shortfall;
+    let total_cost = lam_c * im_star + gam_d * tail_shortfall;
+
+    CapponiChengClearinghouseMarginAnalytics {
+        optimal_initial_margin_requirement: im_star,
+        expected_default_waterfall_shortfall: tail_shortfall,
+        ccp_skin_in_the_game_exposure: sitg_exp,
+        total_clearing_social_cost: total_cost,
+    }
+}
+
+#[cfg(test)]
+mod capponi_cheng_clearinghouse_margin_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn capponi_cheng_clearinghouse_margin_invariants_and_ad_parity() {
+        let base = CapponiChengClearinghouseMarginSpec {
+            member_position_volatility_sigma: 85.0_f64,
+            tail_loss_decay_alpha: 1.40_f64,
+            member_default_probability_pi: 0.025_f64,
+            collateral_funding_cost_lambda_c: 0.0080_f64,
+            default_waterfall_penalty_gamma_d: 1.65_f64,
+            ccp_skin_in_the_game_share_s: 0.25_f64,
+        };
+        let r0 = evaluate_capponi_cheng_clearinghouse_margin_skin_in_game(&base);
+        assert!(r0.optimal_initial_margin_requirement > 0.0);
+        assert!(r0.expected_default_waterfall_shortfall > 0.0);
+        assert!(r0.ccp_skin_in_the_game_exposure < r0.expected_default_waterfall_shortfall);
+
+        let x0 = [
+            base.member_position_volatility_sigma,
+            base.tail_loss_decay_alpha,
+            base.member_default_probability_pi,
+            base.collateral_funding_cost_lambda_c,
+            base.default_waterfall_penalty_gamma_d,
+            base.ccp_skin_in_the_game_share_s,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_capponi_cheng_clearinghouse_margin_skin_in_game(
+            &CapponiChengClearinghouseMarginSpec {
+                member_position_volatility_sigma: xd[0],
+                tail_loss_decay_alpha: xd[1],
+                member_default_probability_pi: xd[2],
+                collateral_funding_cost_lambda_c: xd[3],
+                default_waterfall_penalty_gamma_d: xd[4],
+                ccp_skin_in_the_game_share_s: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_capponi_cheng_clearinghouse_margin_skin_in_game(
+                &CapponiChengClearinghouseMarginSpec {
+                    member_position_volatility_sigma: xp[0],
+                    tail_loss_decay_alpha: xp[1],
+                    member_default_probability_pi: xp[2],
+                    collateral_funding_cost_lambda_c: xp[3],
+                    default_waterfall_penalty_gamma_d: xp[4],
+                    ccp_skin_in_the_game_share_s: xp[5],
+                },
+            );
+            let rm = evaluate_capponi_cheng_clearinghouse_margin_skin_in_game(
+                &CapponiChengClearinghouseMarginSpec {
+                    member_position_volatility_sigma: xm[0],
+                    tail_loss_decay_alpha: xm[1],
+                    member_default_probability_pi: xm[2],
+                    collateral_funding_cost_lambda_c: xm[3],
+                    default_waterfall_penalty_gamma_d: xm[4],
+                    ccp_skin_in_the_game_share_s: xm[5],
+                },
+            );
+            let fd = (rp.total_clearing_social_cost - rm.total_clearing_social_cost) / (2.0 * h);
+            assert!(rad.total_clearing_social_cost.d[i].abs() > 1e-9);
+            assert!((rad.total_clearing_social_cost.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

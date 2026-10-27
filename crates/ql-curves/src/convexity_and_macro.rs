@@ -2827,3 +2827,166 @@ mod bauer_rudebusch_qe_signaling_tests {
         }
     }
 }
+
+/// Input specification for the Gürkaynak, Sack & Swanson (2005, *International
+/// Journal of Central Banking* 1(1), "Do Actions Speak Louder Than Words? The
+/// Response of Asset Prices to Monetary Policy Actions and Statements") Target
+/// vs. Path Factor Decomposition of High-Frequency FOMC Yield Curve Shocks.
+#[derive(Debug, Clone, Copy)]
+pub struct GurkaynakSackSwansonFomcTargetPathSpec<T: Real> {
+    /// Pre-announcement τ-year Treasury yield $y_{\text{pre}}(\tau) > 0$.
+    pub pre_fomc_treasury_yield_y0: T,
+    /// High-frequency 30-minute window current-month Fed funds futures surprise $\Delta mp_1$ (in rate units).
+    pub fed_funds_target_surprise_dmp1: T,
+    /// High-frequency 30-minute window 4-quarter-ahead Eurodollar/SOFR futures surprise $\Delta ed_4$ (in rate units).
+    pub year_ahead_futures_surprise_ded4: T,
+    /// Orthogonalization projection slope $\alpha_{\text{proj}} > 0$ of $\Delta ed_4$ onto $\Delta mp_1$.
+    pub target_to_path_projection_alpha: T,
+    /// Short-end target factor decay rate $\kappa_{\text{target}} > 0$.
+    pub target_factor_decay_kappa_t: T,
+    /// Hump-shaped forward guidance path factor decay rate $\kappa_{\text{path}} > 0$.
+    pub path_factor_hump_decay_kappa_p: T,
+    /// Treasury bond maturity in years $\tau > 0$.
+    pub maturity_years_tau: T,
+}
+
+/// Analytics returned by [`evaluate_gurkaynak_sack_swanson_fomc_target_path_factors`].
+#[derive(Debug, Clone, Copy)]
+pub struct GurkaynakSackSwansonFomcTargetPathAnalytics<T: Real> {
+    /// Current policy rate Target Factor $Z_{\text{target}} = \Delta mp_1$ (in bps).
+    pub target_factor_shock_bps: T,
+    /// Orthogonal FOMC statement Path Factor $Z_{\text{path}} = \Delta ed_4 - \alpha_{\text{proj}} \Delta mp_1$ (in bps).
+    pub orthogonal_path_factor_shock_bps: T,
+    /// Total FOMC announcement yield change $\Delta y(\tau)$ at maturity $\tau$ (in bps).
+    pub total_treasury_yield_response_bps: T,
+    /// Post-FOMC announcement $\tau$-year Treasury yield $y_{\text{post}}(\tau)$.
+    pub post_fomc_treasury_yield: T,
+}
+
+/// Evaluates the Gürkaynak, Sack & Swanson (2005, *IJCB* 1(1)) two-factor
+/// rotation of intraday FOMC monetary policy surprises into the current federal
+/// funds rate **Target Factor** $Z_{\text{target}} = \Delta mp_1$ and the
+/// orthogonal FOMC statement **Path Factor**
+/// $Z_{\text{path}} = \Delta ed_4 - \alpha_{\text{proj}} \Delta mp_1$, mapping
+/// both factors into the $\tau$-year Treasury yield response via Nelson-Siegel
+/// level/slope and hump-shaped loadings:
+/// $$\Delta y(\tau) = \frac{1 - e^{-\kappa_{\text{target}}\tau}}{\kappa_{\text{target}}\tau} Z_{\text{target}} + \left(\frac{1 - e^{-\kappa_{\text{path}}\tau}}{\kappa_{\text{path}}\tau} - e^{-\kappa_{\text{path}}\tau}\right) \cdot 2.2 \, Z_{\text{path}}.$$
+pub fn evaluate_gurkaynak_sack_swanson_fomc_target_path_factors<T: Real>(
+    spec: &GurkaynakSackSwansonFomcTargetPathSpec<T>,
+) -> GurkaynakSackSwansonFomcTargetPathAnalytics<T> {
+    let one = T::one();
+    let bps = T::from_f64(10_000.0);
+
+    let y0 = spec.pre_fomc_treasury_yield_y0;
+    let dmp1 = spec.fed_funds_target_surprise_dmp1;
+    let ded4 = spec.year_ahead_futures_surprise_ded4;
+    let alpha = spec
+        .target_to_path_projection_alpha
+        .max_val(T::from_f64(0.05));
+    let kt = spec.target_factor_decay_kappa_t.max_val(T::from_f64(0.05));
+    let kp = spec
+        .path_factor_hump_decay_kappa_p
+        .max_val(T::from_f64(0.05));
+    let tau = spec.maturity_years_tau.max_val(T::from_f64(0.25));
+
+    let z_target = dmp1;
+    let z_path = ded4 - alpha * dmp1;
+
+    let kt_tau = kt * tau;
+    let loading_target = (one - (-kt_tau).exp()) / kt_tau;
+
+    let kp_tau = kp * tau;
+    let exp_kp = (-kp_tau).exp();
+    let loading_path = T::from_f64(2.2) * ((one - exp_kp) / kp_tau - exp_kp);
+
+    let dy = loading_target * z_target + loading_path * z_path;
+    let y_post = y0 + dy;
+
+    GurkaynakSackSwansonFomcTargetPathAnalytics {
+        target_factor_shock_bps: z_target * bps,
+        orthogonal_path_factor_shock_bps: z_path * bps,
+        total_treasury_yield_response_bps: dy * bps,
+        post_fomc_treasury_yield: y_post,
+    }
+}
+
+#[cfg(test)]
+mod gurkaynak_sack_swanson_fomc_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn gurkaynak_sack_swanson_fomc_invariants_and_ad_parity() {
+        let base = GurkaynakSackSwansonFomcTargetPathSpec {
+            pre_fomc_treasury_yield_y0: 0.0415_f64,
+            fed_funds_target_surprise_dmp1: 0.0005_f64,
+            year_ahead_futures_surprise_ded4: 0.0022_f64,
+            target_to_path_projection_alpha: 0.72_f64,
+            target_factor_decay_kappa_t: 0.65_f64,
+            path_factor_hump_decay_kappa_p: 0.35_f64,
+            maturity_years_tau: 5.0_f64,
+        };
+        let r0 = evaluate_gurkaynak_sack_swanson_fomc_target_path_factors(&base);
+        // Positive hawkish statement surprise (ded4 > alpha * dmp1) dominates intermediate/long yields
+        assert!(r0.orthogonal_path_factor_shock_bps > r0.target_factor_shock_bps);
+        assert!(r0.total_treasury_yield_response_bps > 0.0);
+        assert!(r0.post_fomc_treasury_yield > base.pre_fomc_treasury_yield_y0);
+
+        let x0 = [
+            base.pre_fomc_treasury_yield_y0,
+            base.fed_funds_target_surprise_dmp1,
+            base.year_ahead_futures_surprise_ded4,
+            base.target_to_path_projection_alpha,
+            base.target_factor_decay_kappa_t,
+            base.path_factor_hump_decay_kappa_p,
+            base.maturity_years_tau,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_gurkaynak_sack_swanson_fomc_target_path_factors(
+            &GurkaynakSackSwansonFomcTargetPathSpec {
+                pre_fomc_treasury_yield_y0: xd[0],
+                fed_funds_target_surprise_dmp1: xd[1],
+                year_ahead_futures_surprise_ded4: xd[2],
+                target_to_path_projection_alpha: xd[3],
+                target_factor_decay_kappa_t: xd[4],
+                path_factor_hump_decay_kappa_p: xd[5],
+                maturity_years_tau: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_gurkaynak_sack_swanson_fomc_target_path_factors(
+                &GurkaynakSackSwansonFomcTargetPathSpec {
+                    pre_fomc_treasury_yield_y0: xp[0],
+                    fed_funds_target_surprise_dmp1: xp[1],
+                    year_ahead_futures_surprise_ded4: xp[2],
+                    target_to_path_projection_alpha: xp[3],
+                    target_factor_decay_kappa_t: xp[4],
+                    path_factor_hump_decay_kappa_p: xp[5],
+                    maturity_years_tau: xp[6],
+                },
+            );
+            let rm = evaluate_gurkaynak_sack_swanson_fomc_target_path_factors(
+                &GurkaynakSackSwansonFomcTargetPathSpec {
+                    pre_fomc_treasury_yield_y0: xm[0],
+                    fed_funds_target_surprise_dmp1: xm[1],
+                    year_ahead_futures_surprise_ded4: xm[2],
+                    target_to_path_projection_alpha: xm[3],
+                    target_factor_decay_kappa_t: xm[4],
+                    path_factor_hump_decay_kappa_p: xm[5],
+                    maturity_years_tau: xm[6],
+                },
+            );
+            let fd = (rp.post_fomc_treasury_yield - rm.post_fomc_treasury_yield) / (2.0 * h);
+            assert!(rad.post_fomc_treasury_yield.d[i].abs() > 1e-9);
+            assert!((rad.post_fomc_treasury_yield.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

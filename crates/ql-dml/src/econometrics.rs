@@ -4769,3 +4769,161 @@ mod bnhls_realized_kernel_tests {
         }
     }
 }
+
+/// Input specification for the Christensen, Oomen & Podolskij (2014, *Journal of
+/// Financial Economics* 114(3), "Fact or Friction: Jumps at Ultra High
+/// Frequency") Pre-Averaged Bipower Variation & Microstructure-Noise-Robust
+/// Jump Share at Tick Frequency engine.
+#[derive(Debug, Clone, Copy)]
+pub struct ChristensenOomenPodolskijUhfJumpSpec<T: Real> {
+    /// Coarse 5-minute realized variance $RV_{5\text{m}} > 0$.
+    pub coarse_5min_realized_variance_rv5m: T,
+    /// Coarse 5-minute bipower variation $BV_{5\text{m}} > 0$ (which misclassifies fast drift bursts as jumps).
+    pub coarse_5min_bipower_variation_bv5m: T,
+    /// Ultra-high-frequency pre-averaged quadratic variation $PQV_{\text{tick}}^* > 0$.
+    pub uhf_preaveraged_quadratic_variation_pqv: T,
+    /// Ultra-high-frequency pre-averaged bipower variation $PBV_{\text{tick}}^* > 0$.
+    pub uhf_preaveraged_bipower_variation_pbv: T,
+    /// Microstructure noise variance correction $\hat{\omega}_{\text{noise}}^2 > 0$.
+    pub microstructure_noise_adjustment_omega2: T,
+    /// Pre-averaging window parameter $\theta_{\text{pre}} > 0$ (with $k_n = \lfloor \theta_{\text{pre}} \sqrt{n} \rfloor$).
+    pub preaveraging_horizon_theta: T,
+}
+
+/// Analytics returned by [`evaluate_christensen_oomen_podolskij_uhf_preaveraged_jump_test`].
+#[derive(Debug, Clone, Copy)]
+pub struct ChristensenOomenPodolskijUhfJumpAnalytics<T: Real> {
+    /// Apparent 5-minute jump share $(RV_{5\text{m}} - BV_{5\text{m}}) / RV_{5\text{m}}$ (~10% in coarse data).
+    pub coarse_5min_apparent_jump_share: T,
+    /// True ultra-high-frequency pre-averaged jump share $(PQV_{\text{adj}}^* - PBV_{\text{tick}}^*) / PQV_{\text{adj}}^*$ (~1% at tick resolution).
+    pub uhf_true_jump_variation_share: T,
+    /// Spurious 5-minute jump illusion wedge resolved at ultra-high frequency (gradual volatility/liquidity bursts).
+    pub spurious_coarse_jump_illusion_wedge: T,
+    /// Noise-adjusted pre-averaged continuous integrated variance estimate $PBV_{\text{tick}}^*$.
+    pub uhf_continuous_integrated_variance: T,
+}
+
+/// Evaluates the Christensen, Oomen & Podolskij (2014, *JFE* 114(3)) comparison
+/// between coarse 5-minute jump estimates and ultra-high-frequency pre-averaged
+/// quadratic/bipower variation: whereas 5-minute sampling attributes ~10% of
+/// quadratic variation to jumps, tick-level pre-averaging resolves rapid
+/// continuous volatility bursts and shows true discontinuous jumps account for
+/// only ~1%–2% of total price variation.
+pub fn evaluate_christensen_oomen_podolskij_uhf_preaveraged_jump_test<T: Real>(
+    spec: &ChristensenOomenPodolskijUhfJumpSpec<T>,
+) -> ChristensenOomenPodolskijUhfJumpAnalytics<T> {
+    let rv5 = spec
+        .coarse_5min_realized_variance_rv5m
+        .max_val(T::from_f64(1e-6));
+    let bv5 = spec
+        .coarse_5min_bipower_variation_bv5m
+        .max_val(T::from_f64(1e-6));
+    let pqv = spec
+        .uhf_preaveraged_quadratic_variation_pqv
+        .max_val(T::from_f64(1e-6));
+    let pbv = spec
+        .uhf_preaveraged_bipower_variation_pbv
+        .max_val(T::from_f64(1e-6));
+    let om2 = spec
+        .microstructure_noise_adjustment_omega2
+        .max_val(T::from_f64(1e-8));
+    let theta = spec.preaveraging_horizon_theta.max_val(T::from_f64(0.1));
+
+    let coarse_jump_share = ((rv5 - bv5).max_val(T::from_f64(1e-7))) / rv5;
+
+    // Pre-averaged noise bias correction psi_1 / (theta^2 * psi_2) * omega^2 = (3 / theta^2) * omega^2
+    let noise_bias = (T::from_f64(3.0) / (theta * theta)) * om2;
+    let pqv_adj = (pqv - noise_bias).max_val(pbv + T::from_f64(1e-7));
+    let uhf_jump_share = (pqv_adj - pbv) / pqv_adj;
+
+    let spurious_wedge = coarse_jump_share - uhf_jump_share;
+
+    ChristensenOomenPodolskijUhfJumpAnalytics {
+        coarse_5min_apparent_jump_share: coarse_jump_share,
+        uhf_true_jump_variation_share: uhf_jump_share,
+        spurious_coarse_jump_illusion_wedge: spurious_wedge,
+        uhf_continuous_integrated_variance: pbv,
+    }
+}
+
+#[cfg(test)]
+mod christensen_oomen_podolskij_uhf_jump_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn christensen_oomen_podolskij_uhf_jump_invariants_and_ad_parity() {
+        let base = ChristensenOomenPodolskijUhfJumpSpec {
+            coarse_5min_realized_variance_rv5m: 0.000240_f64,
+            coarse_5min_bipower_variation_bv5m: 0.000212_f64,
+            uhf_preaveraged_quadratic_variation_pqv: 0.000232_f64,
+            uhf_preaveraged_bipower_variation_pbv: 0.000224_f64,
+            microstructure_noise_adjustment_omega2: 0.0000012_f64,
+            preaveraging_horizon_theta: 1.0_f64,
+        };
+        let r0 = evaluate_christensen_oomen_podolskij_uhf_preaveraged_jump_test(&base);
+        // COP (2014): 5-min apparent jump share (~11.6%) is much larger than true UHF jump share (~1.9%)
+        assert!(r0.coarse_5min_apparent_jump_share > 0.08);
+        assert!(r0.uhf_true_jump_variation_share < 0.04);
+        assert!(r0.spurious_coarse_jump_illusion_wedge > 0.05);
+
+        let x0 = [
+            base.coarse_5min_realized_variance_rv5m,
+            base.coarse_5min_bipower_variation_bv5m,
+            base.uhf_preaveraged_quadratic_variation_pqv,
+            base.uhf_preaveraged_bipower_variation_pbv,
+            base.microstructure_noise_adjustment_omega2,
+            base.preaveraging_horizon_theta,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_christensen_oomen_podolskij_uhf_preaveraged_jump_test(
+            &ChristensenOomenPodolskijUhfJumpSpec {
+                coarse_5min_realized_variance_rv5m: xd[0],
+                coarse_5min_bipower_variation_bv5m: xd[1],
+                uhf_preaveraged_quadratic_variation_pqv: xd[2],
+                uhf_preaveraged_bipower_variation_pbv: xd[3],
+                microstructure_noise_adjustment_omega2: xd[4],
+                preaveraging_horizon_theta: xd[5],
+            },
+        );
+        let h = 1e-8;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_christensen_oomen_podolskij_uhf_preaveraged_jump_test(
+                &ChristensenOomenPodolskijUhfJumpSpec {
+                    coarse_5min_realized_variance_rv5m: xp[0],
+                    coarse_5min_bipower_variation_bv5m: xp[1],
+                    uhf_preaveraged_quadratic_variation_pqv: xp[2],
+                    uhf_preaveraged_bipower_variation_pbv: xp[3],
+                    microstructure_noise_adjustment_omega2: xp[4],
+                    preaveraging_horizon_theta: xp[5],
+                },
+            );
+            let rm = evaluate_christensen_oomen_podolskij_uhf_preaveraged_jump_test(
+                &ChristensenOomenPodolskijUhfJumpSpec {
+                    coarse_5min_realized_variance_rv5m: xm[0],
+                    coarse_5min_bipower_variation_bv5m: xm[1],
+                    uhf_preaveraged_quadratic_variation_pqv: xm[2],
+                    uhf_preaveraged_bipower_variation_pbv: xm[3],
+                    microstructure_noise_adjustment_omega2: xm[4],
+                    preaveraging_horizon_theta: xm[5],
+                },
+            );
+            let fd = (rp.spurious_coarse_jump_illusion_wedge
+                - rm.spurious_coarse_jump_illusion_wedge)
+                / (2.0 * h);
+            assert!(rad.spurious_coarse_jump_illusion_wedge.d[i].abs() > 1e-9);
+            assert!(
+                (rad.spurious_coarse_jump_illusion_wedge.d[i] - fd).abs()
+                    / rad.spurious_coarse_jump_illusion_wedge.d[i].abs().max(1.0)
+                    < 1e-4
+            );
+        }
+    }
+}

@@ -2712,3 +2712,152 @@ mod della_corte_ramadorai_sarno_fx_vrp_tests {
         }
     }
 }
+
+/// Input specification for the Lustig, Roussanov & Verdelhan (2014, *Journal of
+/// Financial Economics* 111(3), "Countercyclical Currency Risk Premia") Dollar
+/// Carry Trade Conditional on Average U.S. Forward Discount & Countercyclical
+/// Currency Excess Returns engine.
+#[derive(Debug, Clone, Copy)]
+pub struct LustigRoussanovVerdelhanDollarCarrySpec<T: Real> {
+    /// U.S. short-term risk-free interest rate $r_{\$,t}$.
+    pub us_short_rate_r_usd: T,
+    /// Equal-weighted basket foreign short-term interest rate $\bar{r}_{*,t} = \frac{1}{N}\sum_{i=1}^N r_{i,t}$.
+    pub basket_foreign_short_rate_r_star: T,
+    /// U.S.-specific macro SDF pricing kernel volatility $\sigma_{m,\$,t} > 0$ (rises in U.S. recessions).
+    pub us_sdf_volatility_sigma_us: T,
+    /// Foreign average country-specific SDF volatility $\bar{\sigma}_{m,*,t} > 0$.
+    pub foreign_sdf_volatility_sigma_star: T,
+    /// U.S. industrial production growth slowdown / recession indicator $z_{\text{rec},t} > 0$.
+    pub us_recession_macro_slowdown_z: T,
+    /// Predictability slope $\beta_{\text{AFD}} > 1$ of expected basket currency appreciation on $\overline{AFD}_t$.
+    pub afd_predictability_slope_beta: T,
+}
+
+/// Analytics returned by [`evaluate_lustig_roussanov_verdelhan_countercyclical_dollar_carry`].
+#[derive(Debug, Clone, Copy)]
+pub struct LustigRoussanovVerdelhanDollarCarryAnalytics<T: Real> {
+    /// Average Forward Discount against the USD $\overline{AFD}_t = \bar{r}_{*,t} - r_{\$,t}$.
+    pub average_forward_discount_afd: T,
+    /// Smooth Dollar Carry position weight $w_{\text{DC},t} \in (-1, 1)$ (long foreign basket when $\overline{AFD}_t > 0$).
+    pub dollar_carry_position_weight: T,
+    /// Expected countercyclical currency basket excess return $\mathbb{E}_t[rx_{\text{DOL},t+1}]$.
+    pub expected_basket_excess_return: T,
+    /// Expected return of the conditional Dollar Carry trade $w_{\text{DC},t} \, \mathbb{E}_t[rx_{\text{DOL},t+1}]$.
+    pub conditional_dollar_carry_expected_return: T,
+}
+
+/// Evaluates the Lustig, Roussanov & Verdelhan (2014, *JFE* 111(3)) Dollar Carry
+/// Trade model: the Average Forward Discount $\overline{AFD}_t = \bar{r}_{*,t} - r_{\$,t}$
+/// reflects the difference between U.S. and foreign country-specific SDF
+/// variances and forecasts countercyclical currency excess returns, so going
+/// long the foreign basket whenever $\overline{AFD}_t > 0$ and short whenever
+/// $\overline{AFD}_t < 0$ harvests the countercyclical Dollar risk premium.
+pub fn evaluate_lustig_roussanov_verdelhan_countercyclical_dollar_carry<T: Real>(
+    spec: &LustigRoussanovVerdelhanDollarCarrySpec<T>,
+) -> LustigRoussanovVerdelhanDollarCarryAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+
+    let r_usd = spec.us_short_rate_r_usd;
+    let r_star = spec.basket_foreign_short_rate_r_star;
+    let sig_us = spec.us_sdf_volatility_sigma_us.max_val(T::from_f64(0.05));
+    let sig_star = spec
+        .foreign_sdf_volatility_sigma_star
+        .max_val(T::from_f64(0.05));
+    let z_rec = spec.us_recession_macro_slowdown_z;
+    let beta_afd = spec.afd_predictability_slope_beta.max_val(T::from_f64(0.2));
+
+    let afd = r_star - r_usd;
+    // Smooth sign activation 2 / (1 + exp(-80 * afd)) - 1
+    let scaled = T::from_f64(80.0) * afd;
+    let pos_weight = two / (one + (-scaled).exp()) - one;
+
+    // LRV (2014, Eq. 12): E_t[rx_{DOL}] = beta_AFD * AFD_t + 0.5 * (sigma_{m,US}^2 - sigma_{m,*}^2) + gamma_rec * z_rec
+    let sdf_wedge = T::from_f64(0.5) * (sig_us * sig_us - sig_star * sig_star);
+    let exp_rx = beta_afd * afd + sdf_wedge + T::from_f64(0.015) * z_rec;
+    let dc_ret = pos_weight * exp_rx;
+
+    LustigRoussanovVerdelhanDollarCarryAnalytics {
+        average_forward_discount_afd: afd,
+        dollar_carry_position_weight: pos_weight,
+        expected_basket_excess_return: exp_rx,
+        conditional_dollar_carry_expected_return: dc_ret,
+    }
+}
+
+#[cfg(test)]
+mod lustig_roussanov_verdelhan_dollar_carry_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn lustig_roussanov_verdelhan_dollar_carry_invariants_and_ad_parity() {
+        let base = LustigRoussanovVerdelhanDollarCarrySpec {
+            us_short_rate_r_usd: 0.025_f64,
+            basket_foreign_short_rate_r_star: 0.048_f64,
+            us_sdf_volatility_sigma_us: 0.42_f64,
+            foreign_sdf_volatility_sigma_star: 0.34_f64,
+            us_recession_macro_slowdown_z: 0.65_f64,
+            afd_predictability_slope_beta: 1.85_f64,
+        };
+        let r0 = evaluate_lustig_roussanov_verdelhan_countercyclical_dollar_carry(&base);
+        assert!(r0.average_forward_discount_afd > 0.0);
+        assert!(r0.dollar_carry_position_weight > 0.0);
+        assert!(r0.conditional_dollar_carry_expected_return > 0.0);
+
+        let x0 = [
+            base.us_short_rate_r_usd,
+            base.basket_foreign_short_rate_r_star,
+            base.us_sdf_volatility_sigma_us,
+            base.foreign_sdf_volatility_sigma_star,
+            base.us_recession_macro_slowdown_z,
+            base.afd_predictability_slope_beta,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_lustig_roussanov_verdelhan_countercyclical_dollar_carry(
+            &LustigRoussanovVerdelhanDollarCarrySpec {
+                us_short_rate_r_usd: xd[0],
+                basket_foreign_short_rate_r_star: xd[1],
+                us_sdf_volatility_sigma_us: xd[2],
+                foreign_sdf_volatility_sigma_star: xd[3],
+                us_recession_macro_slowdown_z: xd[4],
+                afd_predictability_slope_beta: xd[5],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_lustig_roussanov_verdelhan_countercyclical_dollar_carry(
+                &LustigRoussanovVerdelhanDollarCarrySpec {
+                    us_short_rate_r_usd: xp[0],
+                    basket_foreign_short_rate_r_star: xp[1],
+                    us_sdf_volatility_sigma_us: xp[2],
+                    foreign_sdf_volatility_sigma_star: xp[3],
+                    us_recession_macro_slowdown_z: xp[4],
+                    afd_predictability_slope_beta: xp[5],
+                },
+            );
+            let rm = evaluate_lustig_roussanov_verdelhan_countercyclical_dollar_carry(
+                &LustigRoussanovVerdelhanDollarCarrySpec {
+                    us_short_rate_r_usd: xm[0],
+                    basket_foreign_short_rate_r_star: xm[1],
+                    us_sdf_volatility_sigma_us: xm[2],
+                    foreign_sdf_volatility_sigma_star: xm[3],
+                    us_recession_macro_slowdown_z: xm[4],
+                    afd_predictability_slope_beta: xm[5],
+                },
+            );
+            let fd = (rp.conditional_dollar_carry_expected_return
+                - rm.conditional_dollar_carry_expected_return)
+                / (2.0 * h);
+            assert!(rad.conditional_dollar_carry_expected_return.d[i].abs() > 1e-9);
+            assert!((rad.conditional_dollar_carry_expected_return.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

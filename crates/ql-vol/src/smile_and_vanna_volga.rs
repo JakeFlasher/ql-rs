@@ -2229,3 +2229,166 @@ mod medvedev_scaillet_short_maturity_smile_tests {
         }
     }
 }
+
+/// Input specification for the Andersen, Fusari & Todorov (2015, *Journal of
+/// Finance* 70(5), "The Risk Premia Embedded in Index Options") Independent
+/// Left-Tail Bear-Jump Factor $U_t$ vs. Diffusive Spot Volatility $V_t$ Option
+/// Surface Pricing engine.
+#[derive(Debug, Clone, Copy)]
+pub struct AndersenFusariTodorovLeftTailFactorSpec<T: Real> {
+    /// Instantaneous diffusive spot variance $V_t > 0$.
+    pub diffusive_spot_variance_v: T,
+    /// Independent left-tail jump intensity factor $U_t > 0$ (decoupled from diffusive $V_t$).
+    pub left_tail_jump_factor_u: T,
+    /// Mean negative jump size $\mu_J < 0$ in the left tail.
+    pub mean_left_jump_size_mu_j: T,
+    /// Risk-neutral mean reversion $\kappa_u^{\mathbb{Q}} > 0$ of the left-tail factor $U_t$.
+    pub risk_neutral_tail_reversion_kappa_u: T,
+    /// Physical-to-risk-neutral left-tail intensity wedge $\theta_U = 1 - \lambda_U^{\mathbb{P}}/\lambda_U^{\mathbb{Q}} \in (0, 1)$.
+    pub tail_risk_premium_wedge_theta_u: T,
+    /// Standardized option log-moneyness $m = \ln(K / F_t) / \sqrt{V_t \tau} < 0$ (OTM put).
+    pub standardized_otm_put_moneyness_m: T,
+    /// Option maturity in years $\tau > 0$.
+    pub maturity_years_tau: T,
+}
+
+/// Analytics returned by [`evaluate_andersen_fusari_todorov_left_tail_jump_factor_surface`].
+#[derive(Debug, Clone, Copy)]
+pub struct AndersenFusariTodorovLeftTailFactorAnalytics<T: Real> {
+    /// Risk-neutral expected integrated left-tail jump variation $\mathbb{E}_t^{\mathbb{Q}}[\int_t^{t+\tau} U_s m_2^- ds]$.
+    pub risk_neutral_left_tail_variation: T,
+    /// AFT OTM put implied volatility $IV_{\text{AFT}}(m, \tau)$ driven jointly by $V_t$ and $U_t$.
+    pub aft_otm_put_implied_volatility: T,
+    /// Pure left-tail jump risk premium $TRP_t(\tau)$ forecast by the autonomous factor $U_t$.
+    pub autonomous_left_tail_risk_premium: T,
+    /// Left-tail slope contribution to the 25-delta put-ATM volatility skew.
+    pub left_tail_skew_contribution: T,
+}
+
+/// Evaluates the Andersen, Fusari & Todorov (2015, *JF* 70(5)) three-factor
+/// option surface model in which the left-tail jump intensity $U_t$ evolves
+/// autonomously from diffusive variance $V_t$, driving both the steepness of
+/// the out-of-the-money put implied volatility skew and the time-varying
+/// equity tail risk premium $TRP_t(\tau)$.
+pub fn evaluate_andersen_fusari_todorov_left_tail_jump_factor_surface<T: Real>(
+    spec: &AndersenFusariTodorovLeftTailFactorSpec<T>,
+) -> AndersenFusariTodorovLeftTailFactorAnalytics<T> {
+    let one = T::one();
+    let v_t = spec.diffusive_spot_variance_v.max_val(T::from_f64(1e-4));
+    let u_t = spec.left_tail_jump_factor_u.max_val(T::from_f64(1e-4));
+    let mu_j = (-spec.mean_left_jump_size_mu_j).max_val(T::from_f64(0.01));
+    let kap_u = spec
+        .risk_neutral_tail_reversion_kappa_u
+        .max_val(T::from_f64(0.05));
+    let theta_u = spec
+        .tail_risk_premium_wedge_theta_u
+        .min_val(T::from_f64(0.95))
+        .max_val(T::from_f64(0.05));
+    let m_put = (-spec.standardized_otm_put_moneyness_m).max_val(T::from_f64(0.1));
+    let tau = spec.maturity_years_tau.max_val(T::from_f64(1e-3));
+
+    let kt = kap_u * tau;
+    let b_u = (one - (-kt).exp()) / kt;
+    let jump_second_moment = T::from_f64(2.0) * mu_j * mu_j;
+    let q_tail_var = u_t * b_u * jump_second_moment;
+
+    let total_var_rate = v_t + q_tail_var;
+    let base_iv = total_var_rate.sqrt();
+
+    // Left-tail factor U_t steepens OTM put implied vol skew proportionally to |m| * mu_J * U_t / sqrt(V_t)
+    let tail_skew = T::from_f64(0.45) * m_put * (u_t * mu_j) / v_t.sqrt() * b_u;
+    let otm_put_iv = base_iv + tail_skew;
+
+    // AFT (2015): left-tail factor U_t forecasts the tail risk premium independently of diffusive V_t
+    let trp = theta_u * q_tail_var;
+
+    AndersenFusariTodorovLeftTailFactorAnalytics {
+        risk_neutral_left_tail_variation: q_tail_var,
+        aft_otm_put_implied_volatility: otm_put_iv,
+        autonomous_left_tail_risk_premium: trp,
+        left_tail_skew_contribution: tail_skew,
+    }
+}
+
+#[cfg(test)]
+mod andersen_fusari_todorov_left_tail_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn andersen_fusari_todorov_left_tail_invariants_and_ad_parity() {
+        let base = AndersenFusariTodorovLeftTailFactorSpec {
+            diffusive_spot_variance_v: 0.025_f64,
+            left_tail_jump_factor_u: 1.35_f64,
+            mean_left_jump_size_mu_j: -0.065_f64,
+            risk_neutral_tail_reversion_kappa_u: 1.80_f64,
+            tail_risk_premium_wedge_theta_u: 0.62_f64,
+            standardized_otm_put_moneyness_m: -1.50_f64,
+            maturity_years_tau: 0.25_f64,
+        };
+        let r0 = evaluate_andersen_fusari_todorov_left_tail_jump_factor_surface(&base);
+        assert!(r0.left_tail_skew_contribution > 0.0);
+        assert!(r0.aft_otm_put_implied_volatility > base.diffusive_spot_variance_v.sqrt());
+        assert!(r0.autonomous_left_tail_risk_premium > 0.0);
+
+        let x0 = [
+            base.diffusive_spot_variance_v,
+            base.left_tail_jump_factor_u,
+            base.mean_left_jump_size_mu_j,
+            base.risk_neutral_tail_reversion_kappa_u,
+            base.tail_risk_premium_wedge_theta_u,
+            base.standardized_otm_put_moneyness_m,
+            base.maturity_years_tau,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_andersen_fusari_todorov_left_tail_jump_factor_surface(
+            &AndersenFusariTodorovLeftTailFactorSpec {
+                diffusive_spot_variance_v: xd[0],
+                left_tail_jump_factor_u: xd[1],
+                mean_left_jump_size_mu_j: xd[2],
+                risk_neutral_tail_reversion_kappa_u: xd[3],
+                tail_risk_premium_wedge_theta_u: xd[4],
+                standardized_otm_put_moneyness_m: xd[5],
+                maturity_years_tau: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_andersen_fusari_todorov_left_tail_jump_factor_surface(
+                &AndersenFusariTodorovLeftTailFactorSpec {
+                    diffusive_spot_variance_v: xp[0],
+                    left_tail_jump_factor_u: xp[1],
+                    mean_left_jump_size_mu_j: xp[2],
+                    risk_neutral_tail_reversion_kappa_u: xp[3],
+                    tail_risk_premium_wedge_theta_u: xp[4],
+                    standardized_otm_put_moneyness_m: xp[5],
+                    maturity_years_tau: xp[6],
+                },
+            );
+            let rm = evaluate_andersen_fusari_todorov_left_tail_jump_factor_surface(
+                &AndersenFusariTodorovLeftTailFactorSpec {
+                    diffusive_spot_variance_v: xm[0],
+                    left_tail_jump_factor_u: xm[1],
+                    mean_left_jump_size_mu_j: xm[2],
+                    risk_neutral_tail_reversion_kappa_u: xm[3],
+                    tail_risk_premium_wedge_theta_u: xm[4],
+                    standardized_otm_put_moneyness_m: xm[5],
+                    maturity_years_tau: xm[6],
+                },
+            );
+            let gp = rp.aft_otm_put_implied_volatility + rp.autonomous_left_tail_risk_premium;
+            let gm = rm.aft_otm_put_implied_volatility + rm.autonomous_left_tail_risk_premium;
+            let gad = rad.aft_otm_put_implied_volatility + rad.autonomous_left_tail_risk_premium;
+            let fd = (gp - gm) / (2.0 * h);
+            assert!(gad.d[i].abs() > 1e-9);
+            assert!((gad.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

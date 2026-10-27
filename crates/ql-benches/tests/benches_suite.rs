@@ -7,7 +7,7 @@ fn benchmarks_verify_parity_and_optional_sota_speedups() {
     // parity paths during normal `cargo test`; timing gates are inherently
     // host-dependent and opt in through QL_RUN_TIMING_GATES=1.
     let rows = run_all_benchmark_suites_with_config(1, 3);
-    assert_eq!(rows.len(), 80);
+    assert_eq!(rows.len(), 81);
     for row in &rows {
         assert!(!row.id.is_empty());
         assert!(!row.description.is_empty());
@@ -399,5 +399,12 @@ fn suite79_workload_is_registered() {
 fn suite80_workload_is_registered() {
     assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("80_")));
     let row = ql_benches::benchmark_bauer_rudebusch_qe_signaling_boyarchenko_fuster_lucca_mbs_oas_azizpour_giesecke_schwenkler_default_clustering_bollerslev_todorov_jump_fear_ghamami_glasserman_clearing_mva_szymanowska_de_roon_nijman_commodity_premia_menkhoff_sarno_schmeling_schrimpf_fx_vol_milevsky_posner_reciprocal_gamma_asian_kozak_nagel_santosh_sdf_shrinkage_acharya_pedersen_philippon_richardson_ses_bnhls_realized_kernel_brunnermeier_pedersen_margin_spiral(1);
+    assert!(row.parity_ok && row.max_abs_diff < 1e-3);
+}
+
+#[test]
+fn suite81_workload_is_registered() {
+    assert!(ql_benches::ALL_SUITES.iter().any(|s| s.starts_with("81_")));
+    let row = ql_benches::benchmark_gurkaynak_sack_swanson_fomc_path_bao_pan_wang_bond_illiquidity_collin_dufresne_goldstein_martin_credit_determinants_andersen_fusari_todorov_left_tail_capponi_cheng_ccp_margin_kang_rouwenhorst_tang_two_premiums_lustig_roussanov_verdelhan_dollar_carry_geman_yor_bessel_asian_tu_zhou_markowitz_talmud_biais_foucault_moinas_fast_trading_christensen_oomen_podolskij_uhf_jumps_gabaix_granular_residual(1);
     assert!(row.parity_ok && row.max_abs_diff < 1e-3);
 }

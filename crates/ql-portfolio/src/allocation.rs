@@ -6272,3 +6272,156 @@ mod moreira_muir_volatility_managed_portfolio_tests {
         }
     }
 }
+
+/// Input specification for the Tu & Zhou (2011, *Journal of Financial Economics*
+/// 99(1), "Markowitz Meets Talmud: A Combination of Sophisticated and Naive
+/// Diversification") Optimal Combination of $1/N$ Equally-Weighted and
+/// Markowitz / Kan-Zhou Portfolio Rules Under Estimation Error engine.
+#[derive(Debug, Clone, Copy)]
+pub struct TuZhouMarkowitzTalmudCombinationSpec<T: Real> {
+    /// Number of risky assets $N \ge 2$.
+    pub asset_count_n: T,
+    /// Historical estimation sample length $T_{\text{obs}} > N + 4$.
+    pub sample_size_t: T,
+    /// Investor relative risk aversion coefficient $\gamma > 0$.
+    pub risk_aversion_gamma: T,
+    /// Squared Sharpe ratio $\theta^2 = \boldsymbol{\mu}^\top \Sigma^{-1} \boldsymbol{\mu} > 0$ of the tangency portfolio.
+    pub true_tangency_squared_sharpe_theta2: T,
+    /// Squared Sharpe ratio $\theta_{1/N}^2$ of the naive $1/N$ Talmud rule.
+    pub naive_equal_weight_squared_sharpe_theta_ew2: T,
+    /// Cross-sectional variance of asset means around the $1/N$ benchmark $\Delta_\mu^2 > 0$.
+    pub cross_sectional_mean_dispersion_d2: T,
+}
+
+/// Analytics returned by [`evaluate_tu_zhou_markowitz_talmud_combination`].
+#[derive(Debug, Clone, Copy)]
+pub struct TuZhouMarkowitzTalmudCombinationAnalytics<T: Real> {
+    /// Expected utility loss of the naive $1/N$ portfolio $\pi_1 = (\mathbf{w}_{1/N} - \mathbf{w}^*)^\top \Sigma (\mathbf{w}_{1/N} - \mathbf{w}^*)$.
+    pub naive_talmud_bias_loss_pi1: T,
+    /// Expected estimation-error variance loss of the sophisticated Markowitz rule $\pi_2$.
+    pub markowitz_estimation_variance_loss_pi2: T,
+    /// Optimal Tu-Zhou weight $\hat{\delta}_{\text{TZ}} = \frac{\pi_1}{\pi_1 + \pi_2} \in (0, 1)$ placed on the sophisticated rule.
+    pub optimal_sophisticated_weight_delta: T,
+    /// Expected out-of-sample certainty-equivalent utility of the combined Tu-Zhou rule.
+    pub combined_expected_out_of_sample_utility: T,
+}
+
+/// Evaluates the Tu & Zhou (2011, *JFE* 99(1), Equations 11–18) optimal linear
+/// combination $\hat{\mathbf{w}}_c = (1 - \hat{\delta})\mathbf{w}_{1/N} + \hat{\delta}\tilde{\mathbf{w}}$
+/// between Talmud's $1/N$ rule and the sample Markowitz/Kan-Zhou portfolio:
+/// $$\hat{\delta}_{\text{TZ}} = \frac{\pi_1}{\pi_1 + \pi_2}, \qquad \pi_1 = \frac{\theta^2 - \theta_{1/N}^2 + \Delta_\mu^2}{\gamma^2}, \qquad \pi_2 = \frac{1}{\gamma^2}\frac{T_{\text{obs}} - 2}{(T_{\text{obs}} - N - 1)(T_{\text{obs}} - N - 4)}\left(N + T_{\text{obs}}\theta^2\right).$$
+pub fn evaluate_tu_zhou_markowitz_talmud_combination<T: Real>(
+    spec: &TuZhouMarkowitzTalmudCombinationSpec<T>,
+) -> TuZhouMarkowitzTalmudCombinationAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+    let four = T::from_f64(4.0);
+
+    let n = spec.asset_count_n.max_val(T::from_f64(2.0));
+    let t_obs = spec.sample_size_t.max_val(n + T::from_f64(6.0));
+    let gam = spec.risk_aversion_gamma.max_val(T::from_f64(0.5));
+    let theta2 = spec
+        .true_tangency_squared_sharpe_theta2
+        .max_val(T::from_f64(0.02));
+    let theta_ew2 = spec
+        .naive_equal_weight_squared_sharpe_theta_ew2
+        .max_val(T::from_f64(0.005));
+    let disp2 = spec
+        .cross_sectional_mean_dispersion_d2
+        .max_val(T::from_f64(1e-4));
+
+    let inv_gam2 = one / (gam * gam);
+    let pi1 = inv_gam2 * ((theta2 - theta_ew2).max_val(T::from_f64(0.005)) + disp2);
+
+    let k_wishart = (t_obs - two) / ((t_obs - n - one) * (t_obs - n - four));
+    let pi2 = inv_gam2 * k_wishart * (n / t_obs + theta2);
+
+    let delta_tz = pi1 / (pi1 + pi2);
+    // Out-of-sample expected utility: u* - (gamma / 2) * (pi1 * pi2) / (pi1 + pi2)
+    let u_star = theta2 / (two * gam);
+    let combined_loss = (pi1 * pi2) / (pi1 + pi2);
+    let oos_utility = u_star - T::from_f64(0.5) * gam * combined_loss;
+
+    TuZhouMarkowitzTalmudCombinationAnalytics {
+        naive_talmud_bias_loss_pi1: pi1,
+        markowitz_estimation_variance_loss_pi2: pi2,
+        optimal_sophisticated_weight_delta: delta_tz,
+        combined_expected_out_of_sample_utility: oos_utility,
+    }
+}
+
+#[cfg(test)]
+mod tu_zhou_markowitz_talmud_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn tu_zhou_markowitz_talmud_invariants_and_ad_parity() {
+        let base = TuZhouMarkowitzTalmudCombinationSpec {
+            asset_count_n: 25.0_f64,
+            sample_size_t: 120.0_f64,
+            risk_aversion_gamma: 3.0_f64,
+            true_tangency_squared_sharpe_theta2: 0.28_f64,
+            naive_equal_weight_squared_sharpe_theta_ew2: 0.11_f64,
+            cross_sectional_mean_dispersion_d2: 0.045_f64,
+        };
+        let r0 = evaluate_tu_zhou_markowitz_talmud_combination(&base);
+        assert!(r0.optimal_sophisticated_weight_delta > 0.0);
+        assert!(r0.optimal_sophisticated_weight_delta < 1.0);
+        assert!(r0.combined_expected_out_of_sample_utility > 0.0);
+
+        let x0 = [
+            base.asset_count_n,
+            base.sample_size_t,
+            base.risk_aversion_gamma,
+            base.true_tangency_squared_sharpe_theta2,
+            base.naive_equal_weight_squared_sharpe_theta_ew2,
+            base.cross_sectional_mean_dispersion_d2,
+        ];
+        let mut xd = [Dual::<6>::from_f64(0.0); 6];
+        for i in 0..6 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad =
+            evaluate_tu_zhou_markowitz_talmud_combination(&TuZhouMarkowitzTalmudCombinationSpec {
+                asset_count_n: xd[0],
+                sample_size_t: xd[1],
+                risk_aversion_gamma: xd[2],
+                true_tangency_squared_sharpe_theta2: xd[3],
+                naive_equal_weight_squared_sharpe_theta_ew2: xd[4],
+                cross_sectional_mean_dispersion_d2: xd[5],
+            });
+        let h = 1e-6;
+        for i in 0..6 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_tu_zhou_markowitz_talmud_combination(
+                &TuZhouMarkowitzTalmudCombinationSpec {
+                    asset_count_n: xp[0],
+                    sample_size_t: xp[1],
+                    risk_aversion_gamma: xp[2],
+                    true_tangency_squared_sharpe_theta2: xp[3],
+                    naive_equal_weight_squared_sharpe_theta_ew2: xp[4],
+                    cross_sectional_mean_dispersion_d2: xp[5],
+                },
+            );
+            let rm = evaluate_tu_zhou_markowitz_talmud_combination(
+                &TuZhouMarkowitzTalmudCombinationSpec {
+                    asset_count_n: xm[0],
+                    sample_size_t: xm[1],
+                    risk_aversion_gamma: xm[2],
+                    true_tangency_squared_sharpe_theta2: xm[3],
+                    naive_equal_weight_squared_sharpe_theta_ew2: xm[4],
+                    cross_sectional_mean_dispersion_d2: xm[5],
+                },
+            );
+            let fd = (rp.combined_expected_out_of_sample_utility
+                - rm.combined_expected_out_of_sample_utility)
+                / (2.0 * h);
+            assert!(rad.combined_expected_out_of_sample_utility.d[i].abs() > 1e-9);
+            assert!((rad.combined_expected_out_of_sample_utility.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}
