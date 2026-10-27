@@ -3609,3 +3609,179 @@ mod errais_giesecke_goldberg_hawkes_credit_tests {
         }
     }
 }
+
+/// Input specification for the Collin-Dufresne, Goldstein & Yang (2012, *Review
+/// of Financial Studies* 25(11)) Catastrophic Macro Jump & Super-Senior CDO
+/// Tranche Spread engine.
+#[derive(Debug, Clone, Copy)]
+pub struct CollinDufresneGoldsteinYangSuperSeniorCdoSpec<T: Real> {
+    /// Baseline diffusive idiosyncratic default intensity $\lambda_{\text{idio}} > 0$.
+    pub idiosyncratic_hazard_rate_lambda_i: T,
+    /// Risk-neutral arrival intensity of catastrophic macro crisis jump $\lambda_{\text{macro}} > 0$.
+    pub catastrophic_macro_jump_intensity_lambda_m: T,
+    /// Conditional portfolio default fraction in a macro crisis $p_{\text{crisis}} \in (0,1)$.
+    pub macro_crisis_conditional_default_prob_p_m: T,
+    /// Loss given default $\text{LGD} \in (0,1)$.
+    pub loss_given_default_lgd: T,
+    /// Super-senior tranche attachment point $K_a \in (0,1)$.
+    pub super_senior_attachment_a: T,
+    /// Super-senior tranche detachment point $K_d \in (K_a, 1)$.
+    pub super_senior_detachment_d: T,
+    /// Risk-free interest rate $r > 0$.
+    pub risk_free_rate_r: T,
+    /// Tranche maturity in years $T > 0$.
+    pub maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_collin_dufresne_goldstein_yang_super_senior_cdo`].
+#[derive(Debug, Clone, Copy)]
+pub struct CollinDufresneGoldsteinYangSuperSeniorCdoAnalytics<T: Real> {
+    /// Expected portfolio loss conditional on a macro catastrophe $L_{\text{macro}}$.
+    pub conditional_catastrophic_portfolio_loss: T,
+    /// Expected fractional wipeout of the super-senior tranche in a macro crisis $\ell_{\text{tr}}^{\text{macro}}$.
+    pub super_senior_conditional_tranche_loss_fraction: T,
+    /// Super-senior tranche risky RPV01 annuity $A_{\text{SS}}(T)$.
+    pub super_senior_risky_annuity: T,
+    /// Super-senior tranche par running spread in basis points $S_{\text{SS}}^{\text{CDGY}}$.
+    pub super_senior_tranche_par_spread_bps: T,
+}
+
+/// Evaluates the Collin-Dufresne, Goldstein & Yang (2012, *RFS* 25(11)) joint
+/// index-option and CDO catastrophe-jump model for super-senior tranche spreads.
+pub fn evaluate_collin_dufresne_goldstein_yang_super_senior_cdo<T: Real>(
+    spec: &CollinDufresneGoldsteinYangSuperSeniorCdoSpec<T>,
+) -> CollinDufresneGoldsteinYangSuperSeniorCdoAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+    let inv_sqrt_2 = T::from_f64(std::f64::consts::FRAC_1_SQRT_2);
+    let inv_sqrt_2pi = T::from_f64(0.3989422804014327);
+
+    let lam_i = spec
+        .idiosyncratic_hazard_rate_lambda_i
+        .max_val(T::from_f64(1e-4));
+    let lam_m = spec
+        .catastrophic_macro_jump_intensity_lambda_m
+        .max_val(T::from_f64(1e-5));
+    let p_m = spec
+        .macro_crisis_conditional_default_prob_p_m
+        .min_val(T::from_f64(0.99))
+        .max_val(T::from_f64(0.01));
+    let lgd = spec.loss_given_default_lgd.max_val(T::from_f64(0.05));
+    let ka = spec.super_senior_attachment_a.max_val(T::from_f64(0.01));
+    let kd = spec
+        .super_senior_detachment_d
+        .max_val(ka + T::from_f64(0.02));
+    let r = spec.risk_free_rate_r.max_val(T::from_f64(1e-4));
+    let t = spec.maturity_years_t.max_val(T::from_f64(0.25));
+
+    let l_macro = p_m * lgd + (one - p_m) * lam_i * lgd * half * t;
+    let sig_l = (lam_i * t).sqrt() * lgd * T::from_f64(0.35);
+
+    let bachelier_call = |strike: T| -> T {
+        let z = (l_macro - strike) / sig_l;
+        let nz = half * (one + (z * inv_sqrt_2).erf());
+        let pdf = inv_sqrt_2pi * (-half * z * z).exp();
+        (l_macro - strike) * nz + sig_l * pdf
+    };
+
+    let tr_loss_frac = ((bachelier_call(ka) - bachelier_call(kd)) / (kd - ka))
+        .min_val(one)
+        .max_val(T::from_f64(1e-6));
+    let h_tr = lam_m * tr_loss_frac;
+    let disc = r + h_tr;
+    let rpv01 = (one - (-disc * t).exp()) / disc;
+    let par_bps = T::from_f64(10_000.0) * h_tr * (one + (lam_i * lgd) / (r + lam_m));
+
+    CollinDufresneGoldsteinYangSuperSeniorCdoAnalytics {
+        conditional_catastrophic_portfolio_loss: l_macro,
+        super_senior_conditional_tranche_loss_fraction: tr_loss_frac,
+        super_senior_risky_annuity: rpv01,
+        super_senior_tranche_par_spread_bps: par_bps,
+    }
+}
+
+#[cfg(test)]
+mod collin_dufresne_goldstein_yang_super_senior_cdo_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn collin_dufresne_goldstein_yang_super_senior_cdo_invariants_and_ad_parity() {
+        let base = CollinDufresneGoldsteinYangSuperSeniorCdoSpec {
+            idiosyncratic_hazard_rate_lambda_i: 0.015_f64,
+            catastrophic_macro_jump_intensity_lambda_m: 0.018_f64,
+            macro_crisis_conditional_default_prob_p_m: 0.36_f64,
+            loss_given_default_lgd: 0.60_f64,
+            super_senior_attachment_a: 0.15_f64,
+            super_senior_detachment_d: 0.30_f64,
+            risk_free_rate_r: 0.036_f64,
+            maturity_years_t: 5.0_f64,
+        };
+        let r0 = evaluate_collin_dufresne_goldstein_yang_super_senior_cdo(&base);
+        assert!(r0.super_senior_conditional_tranche_loss_fraction > 0.0);
+        assert!(r0.super_senior_tranche_par_spread_bps > 0.0);
+
+        let x0 = [
+            base.idiosyncratic_hazard_rate_lambda_i,
+            base.catastrophic_macro_jump_intensity_lambda_m,
+            base.macro_crisis_conditional_default_prob_p_m,
+            base.loss_given_default_lgd,
+            base.super_senior_attachment_a,
+            base.super_senior_detachment_d,
+            base.risk_free_rate_r,
+            base.maturity_years_t,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_collin_dufresne_goldstein_yang_super_senior_cdo(
+            &CollinDufresneGoldsteinYangSuperSeniorCdoSpec {
+                idiosyncratic_hazard_rate_lambda_i: xd[0],
+                catastrophic_macro_jump_intensity_lambda_m: xd[1],
+                macro_crisis_conditional_default_prob_p_m: xd[2],
+                loss_given_default_lgd: xd[3],
+                super_senior_attachment_a: xd[4],
+                super_senior_detachment_d: xd[5],
+                risk_free_rate_r: xd[6],
+                maturity_years_t: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_collin_dufresne_goldstein_yang_super_senior_cdo(
+                &CollinDufresneGoldsteinYangSuperSeniorCdoSpec {
+                    idiosyncratic_hazard_rate_lambda_i: xp[0],
+                    catastrophic_macro_jump_intensity_lambda_m: xp[1],
+                    macro_crisis_conditional_default_prob_p_m: xp[2],
+                    loss_given_default_lgd: xp[3],
+                    super_senior_attachment_a: xp[4],
+                    super_senior_detachment_d: xp[5],
+                    risk_free_rate_r: xp[6],
+                    maturity_years_t: xp[7],
+                },
+            );
+            let rm = evaluate_collin_dufresne_goldstein_yang_super_senior_cdo(
+                &CollinDufresneGoldsteinYangSuperSeniorCdoSpec {
+                    idiosyncratic_hazard_rate_lambda_i: xm[0],
+                    catastrophic_macro_jump_intensity_lambda_m: xm[1],
+                    macro_crisis_conditional_default_prob_p_m: xm[2],
+                    loss_given_default_lgd: xm[3],
+                    super_senior_attachment_a: xm[4],
+                    super_senior_detachment_d: xm[5],
+                    risk_free_rate_r: xm[6],
+                    maturity_years_t: xm[7],
+                },
+            );
+            let fd = (rp.super_senior_tranche_par_spread_bps
+                - rm.super_senior_tranche_par_spread_bps)
+                / (2.0 * h);
+            assert!(rad.super_senior_tranche_par_spread_bps.d[i].abs() > 1e-9);
+            assert!((rad.super_senior_tranche_par_spread_bps.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

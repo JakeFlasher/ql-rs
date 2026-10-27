@@ -4754,3 +4754,164 @@ mod andersen_duffie_song_debt_overhang_fva_tests {
         }
     }
 }
+
+/// Input specification for the Albanese, Caenazzo & Crépey (2017, *Risk* /
+/// *Mathematical Finance*, "Credit, Funding, Margin, and Capital Valuation
+/// Adjustments for Bilateral Portfolios") Cost-of-Capital KVA & Shareholder
+/// Hurdle-Rate Netting engine.
+#[derive(Debug, Clone, Copy)]
+pub struct AlbaneseCaenazzoCrepeyBilateralKvaMvaSpec<T: Real> {
+    /// SA-CCR Exposure at Default $\text{EAD}_0 > 0$.
+    pub regulatory_capital_ead: T,
+    /// Counterparty credit risk weight $w_{\text{RW}} > 0$.
+    pub counterparty_risk_weight_rw: T,
+    /// Standalone CVA regulatory capital charge $K_{\text{CVA}} > 0$.
+    pub cva_capital_charge_k_cva: T,
+    /// Shareholder hurdle return rate on regulatory capital $h_{\text{sh}} > 0$.
+    pub shareholder_hurdle_rate_h: T,
+    /// Bilateral initial margin posted $\text{IM}_0 > 0$.
+    pub initial_margin_posted_im0: T,
+    /// Initial margin funding spread $s_{\text{IM}} > 0$.
+    pub im_funding_spread_s_im: T,
+    /// Portfolio capital amortization / survival decay rate $\lambda_K > 0$.
+    pub capital_decay_rate_lambda_k: T,
+    /// Portfolio horizon in years $T > 0$.
+    pub horizon_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_albanese_caenazzo_crepey_bilateral_kva_mva`].
+#[derive(Debug, Clone, Copy)]
+pub struct AlbaneseCaenazzoCrepeyBilateralKvaMvaAnalytics<T: Real> {
+    /// Total Pillar 1 required regulatory capital $K_{\text{req}}$.
+    pub total_required_regulatory_capital: T,
+    /// Bilateral Margin Valuation Adjustment $\text{MVA}_{\text{ACC}}$.
+    pub bilateral_margin_valuation_adjustment_mva: T,
+    /// Bilateral Capital Valuation Adjustment $\text{KVA}_{\text{ACC}}$.
+    pub bilateral_capital_valuation_adjustment_kva: T,
+    /// Combined bilateral KVA + MVA capital/margin cost $\text{KMVA}_{\text{total}}$.
+    pub total_bilateral_kva_plus_mva: T,
+}
+
+/// Evaluates the Albanese, Caenazzo & Crépey (2017) bilateral cost-of-capital
+/// KVA and initial-margin MVA with recursive retained-earnings capital discounting.
+pub fn evaluate_albanese_caenazzo_crepey_bilateral_kva_mva<T: Real>(
+    spec: &AlbaneseCaenazzoCrepeyBilateralKvaMvaSpec<T>,
+) -> AlbaneseCaenazzoCrepeyBilateralKvaMvaAnalytics<T> {
+    let one = T::one();
+    let ead = spec.regulatory_capital_ead.max_val(T::from_f64(1e-4));
+    let rw = spec.counterparty_risk_weight_rw.max_val(T::from_f64(1e-4));
+    let kcva = spec.cva_capital_charge_k_cva.max_val(T::zero());
+    let h_sh = spec.shareholder_hurdle_rate_h.max_val(T::from_f64(1e-4));
+    let im0 = spec.initial_margin_posted_im0.max_val(T::from_f64(1e-4));
+    let s_im = spec.im_funding_spread_s_im.max_val(T::from_f64(1e-5));
+    let lam_k = spec.capital_decay_rate_lambda_k.max_val(T::from_f64(1e-4));
+    let t = spec.horizon_years_t.max_val(T::from_f64(0.1));
+
+    let k_req = rw * ead + kcva;
+    let eff_rate = h_sh + lam_k;
+    let a_k = (one - (-eff_rate * t).exp()) / eff_rate;
+
+    let mva = s_im * im0 * a_k;
+    let im_offset = one - T::from_f64(0.15) * (im0 / (ead + im0));
+    let kva = h_sh * k_req * a_k * im_offset;
+    let total_kmva = kva + mva;
+
+    AlbaneseCaenazzoCrepeyBilateralKvaMvaAnalytics {
+        total_required_regulatory_capital: k_req,
+        bilateral_margin_valuation_adjustment_mva: mva,
+        bilateral_capital_valuation_adjustment_kva: kva,
+        total_bilateral_kva_plus_mva: total_kmva,
+    }
+}
+
+#[cfg(test)]
+mod albanese_caenazzo_crepey_bilateral_kva_mva_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn albanese_caenazzo_crepey_bilateral_kva_mva_invariants_and_ad_parity() {
+        let base = AlbaneseCaenazzoCrepeyBilateralKvaMvaSpec {
+            regulatory_capital_ead: 120.0_f64,
+            counterparty_risk_weight_rw: 0.08_f64,
+            cva_capital_charge_k_cva: 3.5_f64,
+            shareholder_hurdle_rate_h: 0.105_f64,
+            initial_margin_posted_im0: 45.0_f64,
+            im_funding_spread_s_im: 0.0085_f64,
+            capital_decay_rate_lambda_k: 0.18_f64,
+            horizon_years_t: 7.0_f64,
+        };
+        let r0 = evaluate_albanese_caenazzo_crepey_bilateral_kva_mva(&base);
+        assert!(r0.bilateral_capital_valuation_adjustment_kva > 0.0);
+        assert!(r0.bilateral_margin_valuation_adjustment_mva > 0.0);
+        assert!(
+            (r0.total_bilateral_kva_plus_mva
+                - (r0.bilateral_capital_valuation_adjustment_kva
+                    + r0.bilateral_margin_valuation_adjustment_mva))
+                .abs()
+                < 1e-12
+        );
+
+        let x0 = [
+            base.regulatory_capital_ead,
+            base.counterparty_risk_weight_rw,
+            base.cva_capital_charge_k_cva,
+            base.shareholder_hurdle_rate_h,
+            base.initial_margin_posted_im0,
+            base.im_funding_spread_s_im,
+            base.capital_decay_rate_lambda_k,
+            base.horizon_years_t,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_albanese_caenazzo_crepey_bilateral_kva_mva(
+            &AlbaneseCaenazzoCrepeyBilateralKvaMvaSpec {
+                regulatory_capital_ead: xd[0],
+                counterparty_risk_weight_rw: xd[1],
+                cva_capital_charge_k_cva: xd[2],
+                shareholder_hurdle_rate_h: xd[3],
+                initial_margin_posted_im0: xd[4],
+                im_funding_spread_s_im: xd[5],
+                capital_decay_rate_lambda_k: xd[6],
+                horizon_years_t: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_albanese_caenazzo_crepey_bilateral_kva_mva(
+                &AlbaneseCaenazzoCrepeyBilateralKvaMvaSpec {
+                    regulatory_capital_ead: xp[0],
+                    counterparty_risk_weight_rw: xp[1],
+                    cva_capital_charge_k_cva: xp[2],
+                    shareholder_hurdle_rate_h: xp[3],
+                    initial_margin_posted_im0: xp[4],
+                    im_funding_spread_s_im: xp[5],
+                    capital_decay_rate_lambda_k: xp[6],
+                    horizon_years_t: xp[7],
+                },
+            );
+            let rm = evaluate_albanese_caenazzo_crepey_bilateral_kva_mva(
+                &AlbaneseCaenazzoCrepeyBilateralKvaMvaSpec {
+                    regulatory_capital_ead: xm[0],
+                    counterparty_risk_weight_rw: xm[1],
+                    cva_capital_charge_k_cva: xm[2],
+                    shareholder_hurdle_rate_h: xm[3],
+                    initial_margin_posted_im0: xm[4],
+                    im_funding_spread_s_im: xm[5],
+                    capital_decay_rate_lambda_k: xm[6],
+                    horizon_years_t: xm[7],
+                },
+            );
+            let fd =
+                (rp.total_bilateral_kva_plus_mva - rm.total_bilateral_kva_plus_mva) / (2.0 * h);
+            assert!(rad.total_bilateral_kva_plus_mva.d[i].abs() > 1e-9);
+            assert!((rad.total_bilateral_kva_plus_mva.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

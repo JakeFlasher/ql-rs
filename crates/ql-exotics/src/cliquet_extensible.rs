@@ -3361,3 +3361,169 @@ mod wilmott_windcliff_cliquet_forward_skew_tests {
         }
     }
 }
+
+/// Input specification for the Broadie & Yamamoto (2003, *Management Science*
+/// 49(8), "Application of the Fast Gauss Transform to Option Pricing") Fast
+/// Gauss-Transform Discrete Asian & Cliquet Convexity engine.
+#[derive(Debug, Clone, Copy)]
+pub struct BroadieYamamotoFastGaussDiscreteAsianSpec<T: Real> {
+    /// Spot price $S_0 > 0$.
+    pub spot_price_s0: T,
+    /// Strike price $K > 0$.
+    pub strike_price_k: T,
+    /// Risk-free interest rate $r$.
+    pub risk_free_rate_r: T,
+    /// Continuous dividend yield $q$.
+    pub dividend_yield_q: T,
+    /// Black-Scholes volatility $\sigma > 0$.
+    pub volatility_sigma: T,
+    /// Number of discrete monitoring dates $M \ge 2$.
+    pub discrete_fixings_m: T,
+    /// Option maturity in years $T > 0$.
+    pub maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_broadie_yamamoto_fast_gauss_discrete_asian_option`].
+#[derive(Debug, Clone, Copy)]
+pub struct BroadieYamamotoFastGaussDiscreteAsianAnalytics<T: Real> {
+    /// Expected discrete arithmetic average forward price $M_1$.
+    pub discrete_average_forward_mean: T,
+    /// Effective discrete-monitoring log-volatility $\sqrt{V_{\text{disc}}}$.
+    pub effective_discrete_asian_volatility: T,
+    /// Fast Gauss Transform Hermite 3rd-order kernel curvature adjustment $\Delta_{\text{FGT}}$.
+    pub fgt_hermite_kernel_curvature_adjustment: T,
+    /// Discounted discrete Asian call option fair value $C_{\text{BY}}$.
+    pub fast_gauss_discrete_asian_call: T,
+}
+
+/// Evaluates the Broadie & Yamamoto (2003, *Management Science* 49(8)) Fast
+/// Gauss Transform Hermite kernel expansion for a discrete arithmetic Asian option.
+pub fn evaluate_broadie_yamamoto_fast_gauss_discrete_asian_option<T: Real>(
+    spec: &BroadieYamamotoFastGaussDiscreteAsianSpec<T>,
+) -> BroadieYamamotoFastGaussDiscreteAsianAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+    let half = T::from_f64(0.5);
+    let inv_sqrt_2 = T::from_f64(std::f64::consts::FRAC_1_SQRT_2);
+    let inv_sqrt_2pi = T::from_f64(0.3989422804014327);
+
+    let s0 = spec.spot_price_s0.max_val(T::from_f64(1.0));
+    let k = spec.strike_price_k.max_val(T::from_f64(1.0));
+    let r = spec.risk_free_rate_r;
+    let q = spec.dividend_yield_q;
+    let sig = spec.volatility_sigma.max_val(T::from_f64(1e-3));
+    let m = spec.discrete_fixings_m.max_val(two);
+    let t = spec.maturity_years_t.max_val(T::from_f64(1e-3));
+
+    let b = r - q;
+    let dt = t / m;
+    let m1 = s0 * (half * b * (t + dt)).exp();
+
+    let v_disc = sig * sig * t * (m + one) * (two * m + one) / (T::from_f64(6.0) * m * m);
+    let sig_eff = v_disc.sqrt();
+
+    let d1 = ((m1 / k).ln() + half * v_disc) / sig_eff;
+    let d2 = d1 - sig_eff;
+    let nd1 = half * (one + (d1 * inv_sqrt_2).erf());
+    let nd2 = half * (one + (d2 * inv_sqrt_2).erf());
+    let pdf_d1 = inv_sqrt_2pi * (-half * d1 * d1).exp();
+
+    let fgt_adj = T::from_f64(1.0 / 24.0)
+        * m1
+        * sig
+        * sig
+        * sig
+        * t
+        * t.sqrt()
+        * ((m - one) / (m + one))
+        * pdf_d1
+        * (one + d1 / sig_eff);
+    let call_pv = (-r * t).exp() * (m1 * nd1 - k * nd2 + fgt_adj);
+
+    BroadieYamamotoFastGaussDiscreteAsianAnalytics {
+        discrete_average_forward_mean: m1,
+        effective_discrete_asian_volatility: sig_eff,
+        fgt_hermite_kernel_curvature_adjustment: fgt_adj,
+        fast_gauss_discrete_asian_call: call_pv,
+    }
+}
+
+#[cfg(test)]
+mod broadie_yamamoto_fast_gauss_discrete_asian_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn broadie_yamamoto_fast_gauss_discrete_asian_invariants_and_ad_parity() {
+        let base = BroadieYamamotoFastGaussDiscreteAsianSpec {
+            spot_price_s0: 100.0_f64,
+            strike_price_k: 100.0_f64,
+            risk_free_rate_r: 0.045_f64,
+            dividend_yield_q: 0.015_f64,
+            volatility_sigma: 0.22_f64,
+            discrete_fixings_m: 12.0_f64,
+            maturity_years_t: 1.0_f64,
+        };
+        let r0 = evaluate_broadie_yamamoto_fast_gauss_discrete_asian_option(&base);
+        assert!(r0.fgt_hermite_kernel_curvature_adjustment > 0.0);
+        assert!(r0.fast_gauss_discrete_asian_call > 0.0);
+
+        let x0 = [
+            base.spot_price_s0,
+            base.strike_price_k,
+            base.risk_free_rate_r,
+            base.dividend_yield_q,
+            base.volatility_sigma,
+            base.discrete_fixings_m,
+            base.maturity_years_t,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_broadie_yamamoto_fast_gauss_discrete_asian_option(
+            &BroadieYamamotoFastGaussDiscreteAsianSpec {
+                spot_price_s0: xd[0],
+                strike_price_k: xd[1],
+                risk_free_rate_r: xd[2],
+                dividend_yield_q: xd[3],
+                volatility_sigma: xd[4],
+                discrete_fixings_m: xd[5],
+                maturity_years_t: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_broadie_yamamoto_fast_gauss_discrete_asian_option(
+                &BroadieYamamotoFastGaussDiscreteAsianSpec {
+                    spot_price_s0: xp[0],
+                    strike_price_k: xp[1],
+                    risk_free_rate_r: xp[2],
+                    dividend_yield_q: xp[3],
+                    volatility_sigma: xp[4],
+                    discrete_fixings_m: xp[5],
+                    maturity_years_t: xp[6],
+                },
+            );
+            let rm = evaluate_broadie_yamamoto_fast_gauss_discrete_asian_option(
+                &BroadieYamamotoFastGaussDiscreteAsianSpec {
+                    spot_price_s0: xm[0],
+                    strike_price_k: xm[1],
+                    risk_free_rate_r: xm[2],
+                    dividend_yield_q: xm[3],
+                    volatility_sigma: xm[4],
+                    discrete_fixings_m: xm[5],
+                    maturity_years_t: xm[6],
+                },
+            );
+            let fd =
+                (rp.fast_gauss_discrete_asian_call - rm.fast_gauss_discrete_asian_call) / (2.0 * h);
+            assert!(rad.fast_gauss_discrete_asian_call.d[i].abs() > 1e-9);
+            assert!((rad.fast_gauss_discrete_asian_call.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

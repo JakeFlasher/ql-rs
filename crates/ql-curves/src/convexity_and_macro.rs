@@ -2497,3 +2497,161 @@ mod cieslak_povala_trend_inflation_cycle_tests {
         }
     }
 }
+
+/// Input specification for the Hanson & Stein (2015, *Journal of Financial
+/// Economics* 115(3)) & Greenwood & Vayanos (2014, *Review of Financial Studies*
+/// 27(3)) Yield-Oriented Investor Duration Supply & Term-Premium Recruitment engine.
+#[derive(Debug, Clone, Copy)]
+pub struct HansonSteinGreenwoodVayanosDurationSupplySpec<T: Real> {
+    /// Current 1-year real short rate $r_t^{(1)}$.
+    pub short_real_rate_r1: T,
+    /// Expected future 1-year real short rate $\mathbb{E}_t[r_{t+1}^{(1)}]$.
+    pub expected_future_short_rate_er2: T,
+    /// Maturity-weighted net Treasury duration supply $S_t > 0$.
+    pub net_duration_supply_s: T,
+    /// Mortgage-backed convexity duration extension shock $M_t$.
+    pub mbs_convexity_supply_shock_m: T,
+    /// Risk aversion of duration arbitrageurs $\gamma_A > 0$.
+    pub arbitrageur_risk_aversion_gamma: T,
+    /// Real short-rate volatility $\sigma_r > 0$.
+    pub short_rate_volatility_sigma_r: T,
+    /// Market share of yield-oriented ("reaching-for-yield") investors $\alpha_{\text{YO}} \in (0,1)$.
+    pub yield_oriented_investor_share_alpha: T,
+    /// Reaching-for-yield duration demand sensitivity $\theta_{\text{YO}} > 0$.
+    pub reaching_for_yield_sensitivity_theta: T,
+}
+
+/// Analytics returned by [`evaluate_hanson_stein_greenwood_vayanos_duration_term_premium`].
+#[derive(Debug, Clone, Copy)]
+pub struct HansonSteinGreenwoodVayanosDurationSupplyAnalytics<T: Real> {
+    /// Residual duration supply absorbed by risk-averse arbitrageurs $Q_{\text{arb}}$.
+    pub arbitrageur_residual_duration_supply: T,
+    /// Equilibrium forward term premium $\text{TP}_t = f_t^{(2)} - \mathbb{E}_t[r_{t+1}^{(1)}]$.
+    pub equilibrium_forward_term_premium: T,
+    /// Hanson-Stein monetary policy duration recruitment slope $\partial f_t^{(2)} / \partial r_t^{(1)}$.
+    pub monetary_recruitment_term_premium_slope: T,
+    /// Equilibrium long-term real yield $y_t^{(2)}$.
+    pub equilibrium_long_real_yield: T,
+}
+
+/// Evaluates the Hanson & Stein (2015, *JFE* 115(3)) & Greenwood & Vayanos
+/// (2014, *RFS* 27(3)) duration-supply and reaching-for-yield term-premium model.
+pub fn evaluate_hanson_stein_greenwood_vayanos_duration_term_premium<T: Real>(
+    spec: &HansonSteinGreenwoodVayanosDurationSupplySpec<T>,
+) -> HansonSteinGreenwoodVayanosDurationSupplyAnalytics<T> {
+    let half = T::from_f64(0.5);
+    let r1 = spec.short_real_rate_r1;
+    let er2 = spec.expected_future_short_rate_er2;
+    let s_sup = spec.net_duration_supply_s;
+    let m_shock = spec.mbs_convexity_supply_shock_m;
+    let gamma = spec
+        .arbitrageur_risk_aversion_gamma
+        .max_val(T::from_f64(0.1));
+    let sig_r = spec
+        .short_rate_volatility_sigma_r
+        .max_val(T::from_f64(1e-4));
+    let alpha = spec
+        .yield_oriented_investor_share_alpha
+        .min_val(T::from_f64(0.99))
+        .max_val(T::from_f64(0.01));
+    let theta = spec
+        .reaching_for_yield_sensitivity_theta
+        .max_val(T::from_f64(0.01));
+
+    let q_arb = s_sup + m_shock + alpha * theta * (r1 - half * er2);
+    let sig2 = sig_r * sig_r;
+    let tp = gamma * sig2 * q_arb;
+    let hs_slope = gamma * sig2 * alpha * theta;
+    let y2 = half * (r1 + er2 + tp);
+
+    HansonSteinGreenwoodVayanosDurationSupplyAnalytics {
+        arbitrageur_residual_duration_supply: q_arb,
+        equilibrium_forward_term_premium: tp,
+        monetary_recruitment_term_premium_slope: hs_slope,
+        equilibrium_long_real_yield: y2,
+    }
+}
+
+#[cfg(test)]
+mod hanson_stein_greenwood_vayanos_duration_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn hanson_stein_greenwood_vayanos_duration_invariants_and_ad_parity() {
+        let base = HansonSteinGreenwoodVayanosDurationSupplySpec {
+            short_real_rate_r1: 0.018_f64,
+            expected_future_short_rate_er2: 0.020_f64,
+            net_duration_supply_s: 4.5_f64,
+            mbs_convexity_supply_shock_m: 0.85_f64,
+            arbitrageur_risk_aversion_gamma: 22.0_f64,
+            short_rate_volatility_sigma_r: 0.014_f64,
+            yield_oriented_investor_share_alpha: 0.45_f64,
+            reaching_for_yield_sensitivity_theta: 18.0_f64,
+        };
+        let r0 = evaluate_hanson_stein_greenwood_vayanos_duration_term_premium(&base);
+        assert!(r0.equilibrium_forward_term_premium > 0.0);
+        assert!(r0.monetary_recruitment_term_premium_slope > 0.0);
+
+        let x0 = [
+            base.short_real_rate_r1,
+            base.expected_future_short_rate_er2,
+            base.net_duration_supply_s,
+            base.mbs_convexity_supply_shock_m,
+            base.arbitrageur_risk_aversion_gamma,
+            base.short_rate_volatility_sigma_r,
+            base.yield_oriented_investor_share_alpha,
+            base.reaching_for_yield_sensitivity_theta,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_hanson_stein_greenwood_vayanos_duration_term_premium(
+            &HansonSteinGreenwoodVayanosDurationSupplySpec {
+                short_real_rate_r1: xd[0],
+                expected_future_short_rate_er2: xd[1],
+                net_duration_supply_s: xd[2],
+                mbs_convexity_supply_shock_m: xd[3],
+                arbitrageur_risk_aversion_gamma: xd[4],
+                short_rate_volatility_sigma_r: xd[5],
+                yield_oriented_investor_share_alpha: xd[6],
+                reaching_for_yield_sensitivity_theta: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_hanson_stein_greenwood_vayanos_duration_term_premium(
+                &HansonSteinGreenwoodVayanosDurationSupplySpec {
+                    short_real_rate_r1: xp[0],
+                    expected_future_short_rate_er2: xp[1],
+                    net_duration_supply_s: xp[2],
+                    mbs_convexity_supply_shock_m: xp[3],
+                    arbitrageur_risk_aversion_gamma: xp[4],
+                    short_rate_volatility_sigma_r: xp[5],
+                    yield_oriented_investor_share_alpha: xp[6],
+                    reaching_for_yield_sensitivity_theta: xp[7],
+                },
+            );
+            let rm = evaluate_hanson_stein_greenwood_vayanos_duration_term_premium(
+                &HansonSteinGreenwoodVayanosDurationSupplySpec {
+                    short_real_rate_r1: xm[0],
+                    expected_future_short_rate_er2: xm[1],
+                    net_duration_supply_s: xm[2],
+                    mbs_convexity_supply_shock_m: xm[3],
+                    arbitrageur_risk_aversion_gamma: xm[4],
+                    short_rate_volatility_sigma_r: xm[5],
+                    yield_oriented_investor_share_alpha: xm[6],
+                    reaching_for_yield_sensitivity_theta: xm[7],
+                },
+            );
+            let fd = (rp.equilibrium_long_real_yield - rm.equilibrium_long_real_yield) / (2.0 * h);
+            assert!(rad.equilibrium_long_real_yield.d[i].abs() > 1e-9);
+            assert!((rad.equilibrium_long_real_yield.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

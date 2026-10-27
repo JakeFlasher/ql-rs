@@ -3016,3 +3016,164 @@ mod martin_bondarenko_simple_variance_svix_tests {
         }
     }
 }
+
+/// Input specification for the Todorov (2010, *Journal of Econometrics* 157(2);
+/// 2019, *Econometrica* 87(1), "Nonparametric Spot Volatility From Options")
+/// Short-Maturity Characteristic-Function Option-Implied Spot Volatility & Jump
+/// Tail engine.
+#[derive(Debug, Clone, Copy)]
+pub struct TodorovOptionImpliedSpotVolatilityJumpSpec<T: Real> {
+    /// Short option time-to-maturity in years $\tau > 0$.
+    pub short_tenor_years_tau: T,
+    /// Normalized Fourier characteristic wavenumber $u > 0$.
+    pub characteristic_wavenumber_u: T,
+    /// Option-spanned log characteristic modulus $L_T(u) = -\ln|\hat{\mathcal{L}}_T(u/\sqrt{\tau})| > 0$.
+    pub empirical_log_characteristic_modulus_l_u: T,
+    /// Second-wavenumber jackknife multiplier $k_u > 1$.
+    pub high_frequency_wavenumber_ratio_k: T,
+    /// Blumenthal-Getoor jump activity index $\beta_{\text{BG}} \in (0,2)$.
+    pub jump_activity_blumenthal_getoor_beta: T,
+    /// Small-time jump Lévy intensity scale $c_J > 0$.
+    pub tail_jump_intensity_scale_c_j: T,
+    /// Risk-free interest rate $r$.
+    pub risk_free_rate_r: T,
+}
+
+/// Analytics returned by [`evaluate_todorov_characteristic_option_spot_volatility`].
+#[derive(Debug, Clone, Copy)]
+pub struct TodorovOptionImpliedSpotVolatilityJumpAnalytics<T: Real> {
+    /// Uncorrected single-wavenumber spot variance estimate $2 L_T(u) / u^2$.
+    pub uncorrected_characteristic_variance: T,
+    /// Small-time jump Lévy bias correction $J_{\text{bias}}(u)$.
+    pub jump_levy_characteristic_bias: T,
+    /// Todorov two-wavenumber jump-robust spot variance $\hat{V}_t^{\text{Tod}}$.
+    pub jump_robust_spot_variance: T,
+    /// Todorov jump-robust option-implied spot volatility $\hat{\sigma}_t^{\text{Tod}} = \sqrt{\hat{V}_t^{\text{Tod}}}$.
+    pub jump_robust_spot_volatility: T,
+}
+
+/// Evaluates the Todorov (2019, *Econometrica* 87(1)) option-spanned log
+/// characteristic function estimator of diffusive spot volatility eliminating
+/// infinite-activity jump contamination.
+pub fn evaluate_todorov_characteristic_option_spot_volatility<T: Real>(
+    spec: &TodorovOptionImpliedSpotVolatilityJumpSpec<T>,
+) -> TodorovOptionImpliedSpotVolatilityJumpAnalytics<T> {
+    let one = T::one();
+    let two = T::from_f64(2.0);
+    let half = T::from_f64(0.5);
+
+    let tau = spec.short_tenor_years_tau.max_val(T::from_f64(1e-4));
+    let u = spec.characteristic_wavenumber_u.max_val(T::from_f64(0.1));
+    let lu = spec
+        .empirical_log_characteristic_modulus_l_u
+        .max_val(T::from_f64(1e-4));
+    let ku = spec
+        .high_frequency_wavenumber_ratio_k
+        .max_val(T::from_f64(1.1));
+    let beta = spec
+        .jump_activity_blumenthal_getoor_beta
+        .min_val(T::from_f64(1.90))
+        .max_val(T::from_f64(0.10));
+    let cj = spec
+        .tail_jump_intensity_scale_c_j
+        .max_val(T::from_f64(1e-5));
+    let r = spec.risk_free_rate_r;
+
+    let u2 = u * u;
+    let raw_var = two * lu / u2;
+
+    let tau_pow = ((one - half * beta) * tau.ln()).exp();
+    let u_pow = (beta * u.ln()).exp();
+    let ku_pow = (beta * ku.ln()).exp();
+    let jackknife_ratio = (ku * ku - ku_pow) / (ku * ku - one);
+    let j_bias = tau_pow * cj * u_pow * jackknife_ratio;
+
+    let v_spot = (two * (lu - j_bias) / u2 - r * tau).max_val(T::from_f64(1e-6));
+    let sig_spot = v_spot.sqrt();
+
+    TodorovOptionImpliedSpotVolatilityJumpAnalytics {
+        uncorrected_characteristic_variance: raw_var,
+        jump_levy_characteristic_bias: j_bias,
+        jump_robust_spot_variance: v_spot,
+        jump_robust_spot_volatility: sig_spot,
+    }
+}
+
+#[cfg(test)]
+mod todorov_option_implied_spot_volatility_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn todorov_option_implied_spot_volatility_invariants_and_ad_parity() {
+        let base = TodorovOptionImpliedSpotVolatilityJumpSpec {
+            short_tenor_years_tau: 0.020_f64,
+            characteristic_wavenumber_u: 2.5_f64,
+            empirical_log_characteristic_modulus_l_u: 0.125_f64,
+            high_frequency_wavenumber_ratio_k: 1.6_f64,
+            jump_activity_blumenthal_getoor_beta: 1.25_f64,
+            tail_jump_intensity_scale_c_j: 0.035_f64,
+            risk_free_rate_r: 0.040_f64,
+        };
+        let r0 = evaluate_todorov_characteristic_option_spot_volatility(&base);
+        assert!(r0.jump_robust_spot_variance < r0.uncorrected_characteristic_variance);
+        assert!(r0.jump_robust_spot_volatility > 0.0);
+
+        let x0 = [
+            base.short_tenor_years_tau,
+            base.characteristic_wavenumber_u,
+            base.empirical_log_characteristic_modulus_l_u,
+            base.high_frequency_wavenumber_ratio_k,
+            base.jump_activity_blumenthal_getoor_beta,
+            base.tail_jump_intensity_scale_c_j,
+            base.risk_free_rate_r,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_todorov_characteristic_option_spot_volatility(
+            &TodorovOptionImpliedSpotVolatilityJumpSpec {
+                short_tenor_years_tau: xd[0],
+                characteristic_wavenumber_u: xd[1],
+                empirical_log_characteristic_modulus_l_u: xd[2],
+                high_frequency_wavenumber_ratio_k: xd[3],
+                jump_activity_blumenthal_getoor_beta: xd[4],
+                tail_jump_intensity_scale_c_j: xd[5],
+                risk_free_rate_r: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_todorov_characteristic_option_spot_volatility(
+                &TodorovOptionImpliedSpotVolatilityJumpSpec {
+                    short_tenor_years_tau: xp[0],
+                    characteristic_wavenumber_u: xp[1],
+                    empirical_log_characteristic_modulus_l_u: xp[2],
+                    high_frequency_wavenumber_ratio_k: xp[3],
+                    jump_activity_blumenthal_getoor_beta: xp[4],
+                    tail_jump_intensity_scale_c_j: xp[5],
+                    risk_free_rate_r: xp[6],
+                },
+            );
+            let rm = evaluate_todorov_characteristic_option_spot_volatility(
+                &TodorovOptionImpliedSpotVolatilityJumpSpec {
+                    short_tenor_years_tau: xm[0],
+                    characteristic_wavenumber_u: xm[1],
+                    empirical_log_characteristic_modulus_l_u: xm[2],
+                    high_frequency_wavenumber_ratio_k: xm[3],
+                    jump_activity_blumenthal_getoor_beta: xm[4],
+                    tail_jump_intensity_scale_c_j: xm[5],
+                    risk_free_rate_r: xm[6],
+                },
+            );
+            let fd = (rp.jump_robust_spot_volatility - rm.jump_robust_spot_volatility) / (2.0 * h);
+            assert!(rad.jump_robust_spot_volatility.d[i].abs() > 1e-9);
+            assert!((rad.jump_robust_spot_volatility.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

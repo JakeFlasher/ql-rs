@@ -2313,3 +2313,167 @@ mod ivashina_scharfstein_stein_dollar_funding_cip_tests {
         }
     }
 }
+
+/// Input specification for the Brunnermeier, Nagel & Pedersen (2008, *NBER
+/// Macroeconomics Annual* 23(1), "Carry Trades and Currency Crashes")
+/// Funding-Liquidity Crash Skewness & Unwinding Spiral FX Carry engine.
+#[derive(Debug, Clone, Copy)]
+pub struct BrunnermeierNagelPedersenFxCarryCrashSpec<T: Real> {
+    /// Target-minus-funding currency interest rate differential $i^* - i > 0$.
+    pub interest_rate_differential_idiff: T,
+    /// Aggregate speculative carry trade position intensity $X_{\text{carry}} > 0$.
+    pub speculator_carry_position_size_x: T,
+    /// Interbank TED / VIX funding illiquidity spread $s_{\text{TED}} > 0$.
+    pub funding_liquidity_ted_spread_s_ted: T,
+    /// Margin-haircut unwinding spiral amplification $\phi_{\text{spiral}} > 0$.
+    pub margin_spiral_amplification_phi: T,
+    /// Baseline FX spot volatility $\sigma_{\text{FX}} > 0$.
+    pub baseline_fx_volatility_sigma_fx: T,
+    /// Unwinding crash hazard sensitivity $\kappa_{\text{crash}} > 0$.
+    pub crash_arrival_sensitivity_kappa: T,
+    /// Out-of-the-money put protection cost sensitivity $c_{\text{RR}} > 0$.
+    pub risk_reversal_put_skew_cost_c_rr: T,
+    /// Holding horizon in years $T > 0$.
+    pub horizon_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_brunnermeier_nagel_pedersen_fx_carry_crash_skew`].
+#[derive(Debug, Clone, Copy)]
+pub struct BrunnermeierNagelPedersenFxCarryCrashAnalytics<T: Real> {
+    /// Endogenous carry unwinding crash intensity $\lambda_{\text{crash}}$.
+    pub endogenous_carry_crash_intensity: T,
+    /// Conditional negative return skewness $\text{Skew}_t(\Delta s_{t+T}) < 0$.
+    pub conditional_fx_return_skewness: T,
+    /// Implied 25-delta FX risk-reversal skew $\text{RR}_{25}^{\text{BNP}} < 0$.
+    pub implied_25d_risk_reversal_skew: T,
+    /// Crash-adjusted expected FX carry excess return $\mathbb{E}_t[rx_{\text{carry}}]$.
+    pub crash_adjusted_expected_carry_return: T,
+}
+
+/// Evaluates the Brunnermeier, Nagel & Pedersen (2008) currency crash model
+/// linking interest-rate differentials, crowded speculative carry positions,
+/// funding illiquidity (TED spread), negative skewness, and risk-reversal pricing.
+pub fn evaluate_brunnermeier_nagel_pedersen_fx_carry_crash_skew<T: Real>(
+    spec: &BrunnermeierNagelPedersenFxCarryCrashSpec<T>,
+) -> BrunnermeierNagelPedersenFxCarryCrashAnalytics<T> {
+    let one = T::one();
+    let idiff = spec.interest_rate_differential_idiff;
+    let x_pos = spec
+        .speculator_carry_position_size_x
+        .max_val(T::from_f64(1e-4));
+    let s_ted = spec
+        .funding_liquidity_ted_spread_s_ted
+        .max_val(T::from_f64(1e-5));
+    let phi = spec
+        .margin_spiral_amplification_phi
+        .max_val(T::from_f64(1e-4));
+    let sig_fx = spec
+        .baseline_fx_volatility_sigma_fx
+        .max_val(T::from_f64(1e-3));
+    let kappa = spec
+        .crash_arrival_sensitivity_kappa
+        .max_val(T::from_f64(1e-4));
+    let c_rr = spec
+        .risk_reversal_put_skew_cost_c_rr
+        .max_val(T::from_f64(1e-4));
+    let t = spec.horizon_years_t.max_val(T::from_f64(1e-4));
+
+    let lam_crash = kappa * x_pos * s_ted * (one + phi * s_ted);
+    let skew = -(lam_crash * phi * x_pos / sig_fx) * t.sqrt();
+    let rr_25 = c_rr * sig_fx * skew;
+    let exp_carry = (idiff - lam_crash * sig_fx * (one + c_rr)) * t;
+
+    BrunnermeierNagelPedersenFxCarryCrashAnalytics {
+        endogenous_carry_crash_intensity: lam_crash,
+        conditional_fx_return_skewness: skew,
+        implied_25d_risk_reversal_skew: rr_25,
+        crash_adjusted_expected_carry_return: exp_carry,
+    }
+}
+
+#[cfg(test)]
+mod brunnermeier_nagel_pedersen_fx_carry_crash_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn brunnermeier_nagel_pedersen_fx_carry_crash_invariants_and_ad_parity() {
+        let base = BrunnermeierNagelPedersenFxCarryCrashSpec {
+            interest_rate_differential_idiff: 0.045_f64,
+            speculator_carry_position_size_x: 1.40_f64,
+            funding_liquidity_ted_spread_s_ted: 0.018_f64,
+            margin_spiral_amplification_phi: 4.5_f64,
+            baseline_fx_volatility_sigma_fx: 0.115_f64,
+            crash_arrival_sensitivity_kappa: 2.2_f64,
+            risk_reversal_put_skew_cost_c_rr: 0.35_f64,
+            horizon_years_t: 0.50_f64,
+        };
+        let r0 = evaluate_brunnermeier_nagel_pedersen_fx_carry_crash_skew(&base);
+        assert!(r0.conditional_fx_return_skewness < 0.0);
+        assert!(r0.implied_25d_risk_reversal_skew < 0.0);
+        assert!(r0.crash_adjusted_expected_carry_return > 0.0);
+
+        let x0 = [
+            base.interest_rate_differential_idiff,
+            base.speculator_carry_position_size_x,
+            base.funding_liquidity_ted_spread_s_ted,
+            base.margin_spiral_amplification_phi,
+            base.baseline_fx_volatility_sigma_fx,
+            base.crash_arrival_sensitivity_kappa,
+            base.risk_reversal_put_skew_cost_c_rr,
+            base.horizon_years_t,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_brunnermeier_nagel_pedersen_fx_carry_crash_skew(
+            &BrunnermeierNagelPedersenFxCarryCrashSpec {
+                interest_rate_differential_idiff: xd[0],
+                speculator_carry_position_size_x: xd[1],
+                funding_liquidity_ted_spread_s_ted: xd[2],
+                margin_spiral_amplification_phi: xd[3],
+                baseline_fx_volatility_sigma_fx: xd[4],
+                crash_arrival_sensitivity_kappa: xd[5],
+                risk_reversal_put_skew_cost_c_rr: xd[6],
+                horizon_years_t: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_brunnermeier_nagel_pedersen_fx_carry_crash_skew(
+                &BrunnermeierNagelPedersenFxCarryCrashSpec {
+                    interest_rate_differential_idiff: xp[0],
+                    speculator_carry_position_size_x: xp[1],
+                    funding_liquidity_ted_spread_s_ted: xp[2],
+                    margin_spiral_amplification_phi: xp[3],
+                    baseline_fx_volatility_sigma_fx: xp[4],
+                    crash_arrival_sensitivity_kappa: xp[5],
+                    risk_reversal_put_skew_cost_c_rr: xp[6],
+                    horizon_years_t: xp[7],
+                },
+            );
+            let rm = evaluate_brunnermeier_nagel_pedersen_fx_carry_crash_skew(
+                &BrunnermeierNagelPedersenFxCarryCrashSpec {
+                    interest_rate_differential_idiff: xm[0],
+                    speculator_carry_position_size_x: xm[1],
+                    funding_liquidity_ted_spread_s_ted: xm[2],
+                    margin_spiral_amplification_phi: xm[3],
+                    baseline_fx_volatility_sigma_fx: xm[4],
+                    crash_arrival_sensitivity_kappa: xm[5],
+                    risk_reversal_put_skew_cost_c_rr: xm[6],
+                    horizon_years_t: xm[7],
+                },
+            );
+            let fd = (rp.crash_adjusted_expected_carry_return
+                - rm.crash_adjusted_expected_carry_return)
+                / (2.0 * h);
+            assert!(rad.crash_adjusted_expected_carry_return.d[i].abs() > 1e-9);
+            assert!((rad.crash_adjusted_expected_carry_return.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}

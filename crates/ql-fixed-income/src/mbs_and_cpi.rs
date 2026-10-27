@@ -4204,3 +4204,169 @@ mod gabaix_krishnamurthy_vigneron_mbs_oas_tests {
         }
     }
 }
+
+/// Input specification for the Fleckenstein, Longstaff & Lustig (2014, *Journal
+/// of Finance* 69(5), "The TIPS-Treasury Bond Puzzle") Nominal-vs-Synthetic
+/// Inflation-Swapped TIPS Arbitrage & Deflation Floor Wedge engine.
+#[derive(Debug, Clone, Copy)]
+pub struct FleckensteinLongstaffLustigTipsTreasuryPuzzleSpec<T: Real> {
+    /// Nominal Treasury yield $y_{\text{nom}}$.
+    pub nominal_treasury_yield_y_nom: T,
+    /// Maturity-matched TIPS real yield $y_{\text{TIPS}}$.
+    pub tips_real_yield_y_tips: T,
+    /// Zero-coupon CPI inflation swap fixed rate $s_{\text{ZCIIS}}$.
+    pub zero_coupon_inflation_swap_rate_s_cpi: T,
+    /// Cumulative deflation floor strike $K_{\text{floor}}$ (typically $0.0$).
+    pub tips_deflation_floor_strike_k_floor: T,
+    /// Annualized CPI inflation volatility $\sigma_\pi > 0$.
+    pub cpi_inflation_volatility_sigma_pi: T,
+    /// Nominal Treasury vs. TIPS special repo financing differential $\Delta r_{\text{repo}} > 0$.
+    pub repo_specialness_differential_delta_repo: T,
+    /// Dealer balance-sheet leverage cost shadow price $\eta_{\text{BS}} > 0$.
+    pub dealer_balance_sheet_leverage_cost_eta: T,
+    /// Maturity in years $T > 0$.
+    pub maturity_years_t: T,
+}
+
+/// Analytics returned by [`evaluate_fleckenstein_longstaff_lustig_tips_treasury_puzzle`].
+#[derive(Debug, Clone, Copy)]
+pub struct FleckensteinLongstaffLustigTipsTreasuryPuzzleAnalytics<T: Real> {
+    /// Synthetic inflation-swapped real yield $y_{\text{real}}^{\text{synth}} = y_{\text{nom}} - s_{\text{ZCIIS}}$.
+    pub synthetic_swapped_real_yield: T,
+    /// Raw TIPS-minus-Treasury breakeven mispricing in basis points.
+    pub raw_tips_treasury_mispricing_bps: T,
+    /// Annualized yield value of the embedded TIPS principal deflation floor $v_{\text{floor}}$.
+    pub embedded_deflation_floor_yield_value: T,
+    /// Net present-value TIPS-Treasury arbitrage wedge per $100 par $W_{\text{FLL}}$.
+    pub tips_treasury_arbitrage_wedge_per_100: T,
+}
+
+/// Evaluates the Fleckenstein, Longstaff & Lustig (2014, *JF* 69(5)) TIPS-Treasury
+/// bond puzzle arbitrage wedge decomposing raw breakeven mispricing into the
+/// embedded principal deflation floor, repo specialness, and intermediary balance-sheet cost.
+pub fn evaluate_fleckenstein_longstaff_lustig_tips_treasury_puzzle<T: Real>(
+    spec: &FleckensteinLongstaffLustigTipsTreasuryPuzzleSpec<T>,
+) -> FleckensteinLongstaffLustigTipsTreasuryPuzzleAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+    let inv_sqrt_2 = T::from_f64(std::f64::consts::FRAC_1_SQRT_2);
+    let inv_sqrt_2pi = T::from_f64(0.3989422804014327);
+
+    let y_nom = spec.nominal_treasury_yield_y_nom;
+    let y_tips = spec.tips_real_yield_y_tips;
+    let s_cpi = spec.zero_coupon_inflation_swap_rate_s_cpi;
+    let k_fl = spec.tips_deflation_floor_strike_k_floor;
+    let sig_pi = spec
+        .cpi_inflation_volatility_sigma_pi
+        .max_val(T::from_f64(1e-4));
+    let d_repo = spec.repo_specialness_differential_delta_repo;
+    let eta_bs = spec.dealer_balance_sheet_leverage_cost_eta;
+    let t = spec.maturity_years_t.max_val(T::from_f64(0.1));
+
+    let y_synth = y_nom - s_cpi;
+    let raw_bps = (y_tips - y_synth) * T::from_f64(10_000.0);
+
+    let sig_t = sig_pi * t.sqrt();
+    let d_fl = (k_fl - s_cpi * t) / sig_t;
+    let nd_fl = half * (one + (d_fl * inv_sqrt_2).erf());
+    let pdf_fl = inv_sqrt_2pi * (-half * d_fl * d_fl).exp();
+    let v_floor = ((k_fl - s_cpi * t) * nd_fl + sig_t * pdf_fl) / t;
+
+    let net_spread = y_tips - y_synth + v_floor - d_repo + half * eta_bs * d_repo;
+    let wedge_100 = T::from_f64(100.0) * t * (-y_nom * t).exp() * net_spread;
+
+    FleckensteinLongstaffLustigTipsTreasuryPuzzleAnalytics {
+        synthetic_swapped_real_yield: y_synth,
+        raw_tips_treasury_mispricing_bps: raw_bps,
+        embedded_deflation_floor_yield_value: v_floor,
+        tips_treasury_arbitrage_wedge_per_100: wedge_100,
+    }
+}
+
+#[cfg(test)]
+mod fleckenstein_longstaff_lustig_tips_puzzle_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn fleckenstein_longstaff_lustig_tips_puzzle_invariants_and_ad_parity() {
+        let base = FleckensteinLongstaffLustigTipsTreasuryPuzzleSpec {
+            nominal_treasury_yield_y_nom: 0.042_f64,
+            tips_real_yield_y_tips: 0.021_f64,
+            zero_coupon_inflation_swap_rate_s_cpi: 0.024_f64,
+            tips_deflation_floor_strike_k_floor: 0.0_f64,
+            cpi_inflation_volatility_sigma_pi: 0.015_f64,
+            repo_specialness_differential_delta_repo: 0.0012_f64,
+            dealer_balance_sheet_leverage_cost_eta: 0.35_f64,
+            maturity_years_t: 5.0_f64,
+        };
+        let r0 = evaluate_fleckenstein_longstaff_lustig_tips_treasury_puzzle(&base);
+        // TIPS real yield (2.1%) > synthetic real yield (4.2% - 2.4% = 1.8%), positive TIPS-Treasury puzzle
+        assert!(r0.raw_tips_treasury_mispricing_bps > 0.0);
+        assert!(r0.embedded_deflation_floor_yield_value > 0.0);
+        assert!(r0.tips_treasury_arbitrage_wedge_per_100 > 0.0);
+
+        let x0 = [
+            base.nominal_treasury_yield_y_nom,
+            base.tips_real_yield_y_tips,
+            base.zero_coupon_inflation_swap_rate_s_cpi,
+            base.tips_deflation_floor_strike_k_floor,
+            base.cpi_inflation_volatility_sigma_pi,
+            base.repo_specialness_differential_delta_repo,
+            base.dealer_balance_sheet_leverage_cost_eta,
+            base.maturity_years_t,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_fleckenstein_longstaff_lustig_tips_treasury_puzzle(
+            &FleckensteinLongstaffLustigTipsTreasuryPuzzleSpec {
+                nominal_treasury_yield_y_nom: xd[0],
+                tips_real_yield_y_tips: xd[1],
+                zero_coupon_inflation_swap_rate_s_cpi: xd[2],
+                tips_deflation_floor_strike_k_floor: xd[3],
+                cpi_inflation_volatility_sigma_pi: xd[4],
+                repo_specialness_differential_delta_repo: xd[5],
+                dealer_balance_sheet_leverage_cost_eta: xd[6],
+                maturity_years_t: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_fleckenstein_longstaff_lustig_tips_treasury_puzzle(
+                &FleckensteinLongstaffLustigTipsTreasuryPuzzleSpec {
+                    nominal_treasury_yield_y_nom: xp[0],
+                    tips_real_yield_y_tips: xp[1],
+                    zero_coupon_inflation_swap_rate_s_cpi: xp[2],
+                    tips_deflation_floor_strike_k_floor: xp[3],
+                    cpi_inflation_volatility_sigma_pi: xp[4],
+                    repo_specialness_differential_delta_repo: xp[5],
+                    dealer_balance_sheet_leverage_cost_eta: xp[6],
+                    maturity_years_t: xp[7],
+                },
+            );
+            let rm = evaluate_fleckenstein_longstaff_lustig_tips_treasury_puzzle(
+                &FleckensteinLongstaffLustigTipsTreasuryPuzzleSpec {
+                    nominal_treasury_yield_y_nom: xm[0],
+                    tips_real_yield_y_tips: xm[1],
+                    zero_coupon_inflation_swap_rate_s_cpi: xm[2],
+                    tips_deflation_floor_strike_k_floor: xm[3],
+                    cpi_inflation_volatility_sigma_pi: xm[4],
+                    repo_specialness_differential_delta_repo: xm[5],
+                    dealer_balance_sheet_leverage_cost_eta: xm[6],
+                    maturity_years_t: xm[7],
+                },
+            );
+            let fd = (rp.tips_treasury_arbitrage_wedge_per_100
+                - rm.tips_treasury_arbitrage_wedge_per_100)
+                / (2.0 * h);
+            assert!(rad.tips_treasury_arbitrage_wedge_per_100.d[i].abs() > 1e-9);
+            assert!((rad.tips_treasury_arbitrage_wedge_per_100.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

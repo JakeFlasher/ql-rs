@@ -4293,3 +4293,168 @@ mod gu_kelly_xiu_predictive_oos_r2_tests {
         }
     }
 }
+
+/// Input specification for the Andersen, Bollerslev, Diebold & Labys (2003,
+/// *Econometrica* 71(2), "Modeling and Forecasting Realized Volatility")
+/// Long-Memory ARFIMA Fractionally Integrated Log-Realized Volatility Forecast
+/// engine.
+#[derive(Debug, Clone, Copy)]
+pub struct AndersenBollerslevDieboldLabysArfimaRvSpec<T: Real> {
+    /// Current daily realized variance $RV_t > 0$.
+    pub current_realized_variance_rv0: T,
+    /// Lag-1 daily realized variance $RV_{t-1} > 0$.
+    pub lag1_realized_variance_rv1: T,
+    /// Unconditional mean of log realized variance $\mu_{\ln RV}$.
+    pub long_run_mean_log_rv_mu: T,
+    /// Fractional integration long-memory parameter $d_{\text{LM}} \in (0, 0.5)$.
+    pub fractional_differencing_d: T,
+    /// Short-run AR(1) persistence parameter $\phi_1 \in (-1, 1)$.
+    pub short_run_ar1_phi: T,
+    /// Innovation standard deviation of log realized variance $\sigma_u > 0$.
+    pub log_rv_innovation_std_sigma_u: T,
+    /// Multi-step forecast horizon in days $h \ge 1$.
+    pub forecast_horizon_days_h: T,
+}
+
+/// Analytics returned by [`evaluate_andersen_bollerslev_diebold_labys_fractional_rv`].
+#[derive(Debug, Clone, Copy)]
+pub struct AndersenBollerslevDieboldLabysArfimaRvAnalytics<T: Real> {
+    /// Conditional log realized variance forecast $\widehat{\ln RV}_{t+h|t}$.
+    pub conditional_log_rv_forecast: T,
+    /// Horizon-scaled log-RV forecast variance $\sigma_{u,h}^2$.
+    pub horizon_log_rv_forecast_variance: T,
+    /// Lognormal Jensen convexity-corrected realized variance forecast $\widehat{RV}_{t+h|t}$.
+    pub convexity_adjusted_rv_level_forecast: T,
+    /// AnnualizedARFIMA realized volatility forecast $\sqrt{252 \cdot \widehat{RV}_{t+h|t}}$.
+    pub annualized_arfima_volatility_forecast: T,
+}
+
+/// Evaluates the Andersen, Bollerslev, Diebold & Labys (2003, *Econometrica*
+/// 71(2)) fractionally integrated $\text{ARFIMA}(1, d_{\text{LM}}, 0)$ model for
+/// log realized variance with exact lognormal Jensen convexity correction.
+pub fn evaluate_andersen_bollerslev_diebold_labys_fractional_rv<T: Real>(
+    spec: &AndersenBollerslevDieboldLabysArfimaRvSpec<T>,
+) -> AndersenBollerslevDieboldLabysArfimaRvAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+
+    let rv0 = spec
+        .current_realized_variance_rv0
+        .max_val(T::from_f64(1e-7));
+    let rv1 = spec.lag1_realized_variance_rv1.max_val(T::from_f64(1e-7));
+    let mu = spec.long_run_mean_log_rv_mu;
+    let d = spec
+        .fractional_differencing_d
+        .min_val(T::from_f64(0.49))
+        .max_val(T::from_f64(0.01));
+    let phi1 = spec
+        .short_run_ar1_phi
+        .min_val(T::from_f64(0.95))
+        .max_val(T::from_f64(-0.95));
+    let sig_u = spec
+        .log_rv_innovation_std_sigma_u
+        .max_val(T::from_f64(1e-4));
+    let h = spec.forecast_horizon_days_h.max_val(one);
+
+    let y0 = rv0.ln() - mu;
+    let y1 = rv1.ln() - mu;
+
+    let pi1 = d;
+    let pi2 = half * d * (one - d);
+    let h_decay = ((d - one) * h.ln()).exp();
+
+    let y_hat = h_decay * ((pi1 + phi1) * y0 + (pi2 + phi1 * pi1) * y1);
+    let log_rv_hat = mu + y_hat;
+
+    let sig_u_h2 = sig_u * sig_u * (one + d * d * (one + T::from_f64(0.1) * h));
+    let rv_hat = (log_rv_hat + half * sig_u_h2).exp();
+    let ann_vol = (T::from_f64(252.0) * rv_hat).sqrt();
+
+    AndersenBollerslevDieboldLabysArfimaRvAnalytics {
+        conditional_log_rv_forecast: log_rv_hat,
+        horizon_log_rv_forecast_variance: sig_u_h2,
+        convexity_adjusted_rv_level_forecast: rv_hat,
+        annualized_arfima_volatility_forecast: ann_vol,
+    }
+}
+
+#[cfg(test)]
+mod andersen_bollerslev_diebold_labys_arfima_rv_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn andersen_bollerslev_diebold_labys_arfima_rv_invariants_and_ad_parity() {
+        let base = AndersenBollerslevDieboldLabysArfimaRvSpec {
+            current_realized_variance_rv0: 0.00022_f64,
+            lag1_realized_variance_rv1: 0.00018_f64,
+            long_run_mean_log_rv_mu: -8.85_f64,
+            fractional_differencing_d: 0.40_f64,
+            short_run_ar1_phi: 0.18_f64,
+            log_rv_innovation_std_sigma_u: 0.32_f64,
+            forecast_horizon_days_h: 5.0_f64,
+        };
+        let r0 = evaluate_andersen_bollerslev_diebold_labys_fractional_rv(&base);
+        assert!(r0.convexity_adjusted_rv_level_forecast > 0.0);
+        assert!(r0.annualized_arfima_volatility_forecast > 0.0);
+
+        let x0 = [
+            base.current_realized_variance_rv0,
+            base.lag1_realized_variance_rv1,
+            base.long_run_mean_log_rv_mu,
+            base.fractional_differencing_d,
+            base.short_run_ar1_phi,
+            base.log_rv_innovation_std_sigma_u,
+            base.forecast_horizon_days_h,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_andersen_bollerslev_diebold_labys_fractional_rv(
+            &AndersenBollerslevDieboldLabysArfimaRvSpec {
+                current_realized_variance_rv0: xd[0],
+                lag1_realized_variance_rv1: xd[1],
+                long_run_mean_log_rv_mu: xd[2],
+                fractional_differencing_d: xd[3],
+                short_run_ar1_phi: xd[4],
+                log_rv_innovation_std_sigma_u: xd[5],
+                forecast_horizon_days_h: xd[6],
+            },
+        );
+        let h = 1e-7;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_andersen_bollerslev_diebold_labys_fractional_rv(
+                &AndersenBollerslevDieboldLabysArfimaRvSpec {
+                    current_realized_variance_rv0: xp[0],
+                    lag1_realized_variance_rv1: xp[1],
+                    long_run_mean_log_rv_mu: xp[2],
+                    fractional_differencing_d: xp[3],
+                    short_run_ar1_phi: xp[4],
+                    log_rv_innovation_std_sigma_u: xp[5],
+                    forecast_horizon_days_h: xp[6],
+                },
+            );
+            let rm = evaluate_andersen_bollerslev_diebold_labys_fractional_rv(
+                &AndersenBollerslevDieboldLabysArfimaRvSpec {
+                    current_realized_variance_rv0: xm[0],
+                    lag1_realized_variance_rv1: xm[1],
+                    long_run_mean_log_rv_mu: xm[2],
+                    fractional_differencing_d: xm[3],
+                    short_run_ar1_phi: xm[4],
+                    log_rv_innovation_std_sigma_u: xm[5],
+                    forecast_horizon_days_h: xm[6],
+                },
+            );
+            let fd = (rp.annualized_arfima_volatility_forecast
+                - rm.annualized_arfima_volatility_forecast)
+                / (2.0 * h);
+            assert!(rad.annualized_arfima_volatility_forecast.d[i].abs() > 1e-9);
+            assert!((rad.annualized_arfima_volatility_forecast.d[i] - fd).abs() < 1e-4);
+        }
+    }
+}

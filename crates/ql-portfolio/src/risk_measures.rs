@@ -6711,3 +6711,159 @@ mod adrian_brunnermeier_systemic_covar_tests {
         }
     }
 }
+
+/// Input specification for the Brownlees & Engle (2017, *Review of Financial
+/// Studies* 30(1), "SRISK: A Conditional Capital Shortfall Measure of Systemic
+/// Risk") Long-Run Marginal Expected Shortfall ($\text{LRMES}$) & Prudential
+/// Capital Shortfall ($\text{SRISK}$) engine.
+#[derive(Debug, Clone, Copy)]
+pub struct BrownleesEngleSystemicSriskCapitalShortfallSpec<T: Real> {
+    /// Book value of total liabilities $D_{i,t} > 0$.
+    pub book_value_of_debt_d: T,
+    /// Market value of equity $W_{i,t} > 0$.
+    pub market_value_of_equity_w: T,
+    /// Required prudential capital ratio $k_{\text{prud}} \in (0,1)$ (e.g. $0.08$).
+    pub prudential_capital_ratio_k: T,
+    /// Dynamic conditional beta $\beta_{i,t}^{\text{DCC}} > 0$.
+    pub dynamic_conditional_beta_rho: T,
+    /// Systemic crisis 6-month market decline threshold $C_{\text{crisis}} \in (0,1)$ (e.g. $0.40$).
+    pub systemic_crisis_market_decline_c: T,
+    /// Asymmetric GJR-GARCH tail volatility amplification $\theta_{\text{tail}} > 0$.
+    pub idiosyncratic_tail_amplification_theta: T,
+    /// Short-term wholesale debt run penalty $\psi_{\text{run}} > 0$.
+    pub funding_run_haircut_psi: T,
+}
+
+/// Analytics returned by [`evaluate_brownlees_engle_srisk_capital_shortfall`].
+#[derive(Debug, Clone, Copy)]
+pub struct BrownleesEngleSystemicSriskCapitalShortfallAnalytics<T: Real> {
+    /// Long-Run Marginal Expected Shortfall $\text{LRMES}_{i,t} \in (0,1)$.
+    pub long_run_marginal_expected_shortfall_lrmes: T,
+    /// Quasi-market leverage ratio $L_{i,t} = (D_{i,t} + W_{i,t}) / W_{i,t}$.
+    pub quasi_market_leverage_ratio: T,
+    /// Post-crisis stressed equity market value $W_{i,t}(1 - \text{LRMES}_{i,t})$.
+    pub stressed_post_crisis_equity: T,
+    /// Conditional Capital Shortfall $\text{SRISK}_{i,t}$.
+    pub conditional_capital_shortfall_srisk: T,
+}
+
+/// Evaluates the Brownlees & Engle (2017, *RFS* 30(1)) Long-Run Marginal
+/// Expected Shortfall ($\text{LRMES}_{i,t}$) and Conditional Capital Shortfall
+/// ($\text{SRISK}_{i,t} = k D_{i,t} - (1 - k) W_{i,t}(1 - \text{LRMES}_{i,t})$).
+pub fn evaluate_brownlees_engle_srisk_capital_shortfall<T: Real>(
+    spec: &BrownleesEngleSystemicSriskCapitalShortfallSpec<T>,
+) -> BrownleesEngleSystemicSriskCapitalShortfallAnalytics<T> {
+    let one = T::one();
+    let d_debt = spec.book_value_of_debt_d.max_val(T::from_f64(1.0));
+    let w_eq = spec.market_value_of_equity_w.max_val(T::from_f64(0.1));
+    let k_prud = spec
+        .prudential_capital_ratio_k
+        .min_val(T::from_f64(0.50))
+        .max_val(T::from_f64(0.01));
+    let beta_dcc = spec.dynamic_conditional_beta_rho.max_val(T::from_f64(0.05));
+    let c_crisis = spec
+        .systemic_crisis_market_decline_c
+        .min_val(T::from_f64(0.95))
+        .max_val(T::from_f64(0.05));
+    let theta = spec
+        .idiosyncratic_tail_amplification_theta
+        .max_val(T::zero());
+    let psi_run = spec.funding_run_haircut_psi.max_val(T::zero());
+
+    let log_drop = -(one - c_crisis).ln();
+    let lrmes = one - (-beta_dcc * (one + theta) * log_drop).exp();
+    let lev = (d_debt + w_eq) / w_eq;
+    let w_stressed = w_eq * (one - lrmes);
+    let srisk = k_prud * d_debt * (one + psi_run) - (one - k_prud) * w_stressed;
+
+    BrownleesEngleSystemicSriskCapitalShortfallAnalytics {
+        long_run_marginal_expected_shortfall_lrmes: lrmes,
+        quasi_market_leverage_ratio: lev,
+        stressed_post_crisis_equity: w_stressed,
+        conditional_capital_shortfall_srisk: srisk,
+    }
+}
+
+#[cfg(test)]
+mod brownlees_engle_srisk_capital_shortfall_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn brownlees_engle_srisk_capital_shortfall_invariants_and_ad_parity() {
+        let base = BrownleesEngleSystemicSriskCapitalShortfallSpec {
+            book_value_of_debt_d: 950.0_f64,
+            market_value_of_equity_w: 85.0_f64,
+            prudential_capital_ratio_k: 0.08_f64,
+            dynamic_conditional_beta_rho: 1.35_f64,
+            systemic_crisis_market_decline_c: 0.40_f64,
+            idiosyncratic_tail_amplification_theta: 0.18_f64,
+            funding_run_haircut_psi: 0.05_f64,
+        };
+        let r0 = evaluate_brownlees_engle_srisk_capital_shortfall(&base);
+        assert!(
+            r0.long_run_marginal_expected_shortfall_lrmes > 0.0
+                && r0.long_run_marginal_expected_shortfall_lrmes < 1.0
+        );
+        assert!(r0.conditional_capital_shortfall_srisk > 0.0);
+
+        let x0 = [
+            base.book_value_of_debt_d,
+            base.market_value_of_equity_w,
+            base.prudential_capital_ratio_k,
+            base.dynamic_conditional_beta_rho,
+            base.systemic_crisis_market_decline_c,
+            base.idiosyncratic_tail_amplification_theta,
+            base.funding_run_haircut_psi,
+        ];
+        let mut xd = [Dual::<7>::from_f64(0.0); 7];
+        for i in 0..7 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_brownlees_engle_srisk_capital_shortfall(
+            &BrownleesEngleSystemicSriskCapitalShortfallSpec {
+                book_value_of_debt_d: xd[0],
+                market_value_of_equity_w: xd[1],
+                prudential_capital_ratio_k: xd[2],
+                dynamic_conditional_beta_rho: xd[3],
+                systemic_crisis_market_decline_c: xd[4],
+                idiosyncratic_tail_amplification_theta: xd[5],
+                funding_run_haircut_psi: xd[6],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..7 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_brownlees_engle_srisk_capital_shortfall(
+                &BrownleesEngleSystemicSriskCapitalShortfallSpec {
+                    book_value_of_debt_d: xp[0],
+                    market_value_of_equity_w: xp[1],
+                    prudential_capital_ratio_k: xp[2],
+                    dynamic_conditional_beta_rho: xp[3],
+                    systemic_crisis_market_decline_c: xp[4],
+                    idiosyncratic_tail_amplification_theta: xp[5],
+                    funding_run_haircut_psi: xp[6],
+                },
+            );
+            let rm = evaluate_brownlees_engle_srisk_capital_shortfall(
+                &BrownleesEngleSystemicSriskCapitalShortfallSpec {
+                    book_value_of_debt_d: xm[0],
+                    market_value_of_equity_w: xm[1],
+                    prudential_capital_ratio_k: xm[2],
+                    dynamic_conditional_beta_rho: xm[3],
+                    systemic_crisis_market_decline_c: xm[4],
+                    idiosyncratic_tail_amplification_theta: xm[5],
+                    funding_run_haircut_psi: xm[6],
+                },
+            );
+            let fd = (rp.conditional_capital_shortfall_srisk
+                - rm.conditional_capital_shortfall_srisk)
+                / (2.0 * h);
+            assert!(rad.conditional_capital_shortfall_srisk.d[i].abs() > 1e-9);
+            assert!((rad.conditional_capital_shortfall_srisk.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

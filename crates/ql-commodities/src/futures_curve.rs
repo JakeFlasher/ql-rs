@@ -2166,3 +2166,165 @@ mod trolle_schwartz_unspanned_stochastic_volatility_tests {
         }
     }
 }
+
+/// Input specification for the Acharya, Lochstoer & Ramadorai (2013, *Journal
+/// of Financial Economics* 109(2), "Limits to Arbitrage and Hedging: Evidence
+/// from Commodity Markets") Producer Default-Risk Hedging Pressure & Speculator
+/// Capital Constraint Futures Risk Premium engine.
+#[derive(Debug, Clone, Copy)]
+pub struct AcharyaLochstoerRamadoraiHedgingPressureSpec<T: Real> {
+    /// Expected next-period commodity spot price $\mathbb{E}_t[S_{t+1}] > 0$.
+    pub expected_future_spot_e_s1: T,
+    /// Commodity spot price dollar volatility $\sigma_S > 0$.
+    pub spot_price_volatility_sigma_s: T,
+    /// Producer sector Zmijewski/Altman default-risk distress score $Z_{\text{def}} > 0$.
+    pub producer_default_prob_zm_score: T,
+    /// Aggregate producer inventory/output exposure $Q_P > 0$.
+    pub producer_inventory_endowment_q_p: T,
+    /// Producer financial distress aversion parameter $\gamma_P > 0$.
+    pub producer_distress_aversion_gamma_p: T,
+    /// Speculator baseline risk aversion $\gamma_S > 0$.
+    pub speculator_capital_risk_aversion_gamma_s: T,
+    /// Broker-dealer balance-sheet constraint tightness $w_{\text{spec}} > 0$.
+    pub speculator_wealth_constraint_tightness_w: T,
+    /// Risk-free interest rate $r$.
+    pub risk_free_rate_r: T,
+}
+
+/// Analytics returned by [`evaluate_acharya_lochstoer_ramadorai_commodity_hedging_pressure`].
+#[derive(Debug, Clone, Copy)]
+pub struct AcharyaLochstoerRamadoraiHedgingPressureAnalytics<T: Real> {
+    /// Equilibrium producer short hedging demand $H_P^*$.
+    pub optimal_producer_hedging_demand: T,
+    /// Speculator capital-constrained price of commodity variance risk $\Lambda_{\text{spec}}$.
+    pub speculator_effective_risk_price: T,
+    /// Equilibrium normal backwardation risk premium $\pi_{\text{ALR}} = \mathbb{E}_t[S_{t+1}] - F_t$.
+    pub futures_normal_backwardation_premium: T,
+    /// Equilibrium commodity futures price $F_t^{\text{ALR}}$.
+    pub equilibrium_futures_price: T,
+}
+
+/// Evaluates the Acharya, Lochstoer & Ramadorai (2013, *JFE* 109(2)) limits-to-hedging
+/// equilibrium where producer default risk drives hedging demand and speculator
+/// capital constraints amplify the futures risk premium.
+pub fn evaluate_acharya_lochstoer_ramadorai_commodity_hedging_pressure<T: Real>(
+    spec: &AcharyaLochstoerRamadoraiHedgingPressureSpec<T>,
+) -> AcharyaLochstoerRamadoraiHedgingPressureAnalytics<T> {
+    let one = T::one();
+    let es1 = spec.expected_future_spot_e_s1.max_val(T::from_f64(1.0));
+    let sig_s = spec.spot_price_volatility_sigma_s.max_val(T::from_f64(0.1));
+    let z_def = spec
+        .producer_default_prob_zm_score
+        .max_val(T::from_f64(1e-4));
+    let qp = spec
+        .producer_inventory_endowment_q_p
+        .max_val(T::from_f64(0.01));
+    let gam_p = spec
+        .producer_distress_aversion_gamma_p
+        .max_val(T::from_f64(0.01));
+    let gam_s = spec
+        .speculator_capital_risk_aversion_gamma_s
+        .max_val(T::from_f64(0.01));
+    let w_spec = spec
+        .speculator_wealth_constraint_tightness_w
+        .max_val(T::zero());
+    let r = spec.risk_free_rate_r;
+
+    let lam_spec = gam_s * (one + w_spec);
+    let prod_urg = gam_p * z_def;
+    let h_star = qp * (prod_urg / (prod_urg + lam_spec));
+
+    let risk_prem = lam_spec * sig_s * sig_s * h_star * T::from_f64(0.01);
+    let f_eq = (-r * T::from_f64(0.05)).exp() * (es1 - risk_prem);
+
+    AcharyaLochstoerRamadoraiHedgingPressureAnalytics {
+        optimal_producer_hedging_demand: h_star,
+        speculator_effective_risk_price: lam_spec,
+        futures_normal_backwardation_premium: risk_prem,
+        equilibrium_futures_price: f_eq,
+    }
+}
+
+#[cfg(test)]
+mod acharya_lochstoer_ramadorai_hedging_pressure_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn acharya_lochstoer_ramadorai_hedging_pressure_invariants_and_ad_parity() {
+        let base = AcharyaLochstoerRamadoraiHedgingPressureSpec {
+            expected_future_spot_e_s1: 80.0_f64,
+            spot_price_volatility_sigma_s: 14.0_f64,
+            producer_default_prob_zm_score: 0.45_f64,
+            producer_inventory_endowment_q_p: 2.5_f64,
+            producer_distress_aversion_gamma_p: 1.8_f64,
+            speculator_capital_risk_aversion_gamma_s: 0.65_f64,
+            speculator_wealth_constraint_tightness_w: 0.55_f64,
+            risk_free_rate_r: 0.038_f64,
+        };
+        let r0 = evaluate_acharya_lochstoer_ramadorai_commodity_hedging_pressure(&base);
+        assert!(r0.futures_normal_backwardation_premium > 0.0);
+        assert!(r0.equilibrium_futures_price < base.expected_future_spot_e_s1);
+
+        let x0 = [
+            base.expected_future_spot_e_s1,
+            base.spot_price_volatility_sigma_s,
+            base.producer_default_prob_zm_score,
+            base.producer_inventory_endowment_q_p,
+            base.producer_distress_aversion_gamma_p,
+            base.speculator_capital_risk_aversion_gamma_s,
+            base.speculator_wealth_constraint_tightness_w,
+            base.risk_free_rate_r,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_acharya_lochstoer_ramadorai_commodity_hedging_pressure(
+            &AcharyaLochstoerRamadoraiHedgingPressureSpec {
+                expected_future_spot_e_s1: xd[0],
+                spot_price_volatility_sigma_s: xd[1],
+                producer_default_prob_zm_score: xd[2],
+                producer_inventory_endowment_q_p: xd[3],
+                producer_distress_aversion_gamma_p: xd[4],
+                speculator_capital_risk_aversion_gamma_s: xd[5],
+                speculator_wealth_constraint_tightness_w: xd[6],
+                risk_free_rate_r: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_acharya_lochstoer_ramadorai_commodity_hedging_pressure(
+                &AcharyaLochstoerRamadoraiHedgingPressureSpec {
+                    expected_future_spot_e_s1: xp[0],
+                    spot_price_volatility_sigma_s: xp[1],
+                    producer_default_prob_zm_score: xp[2],
+                    producer_inventory_endowment_q_p: xp[3],
+                    producer_distress_aversion_gamma_p: xp[4],
+                    speculator_capital_risk_aversion_gamma_s: xp[5],
+                    speculator_wealth_constraint_tightness_w: xp[6],
+                    risk_free_rate_r: xp[7],
+                },
+            );
+            let rm = evaluate_acharya_lochstoer_ramadorai_commodity_hedging_pressure(
+                &AcharyaLochstoerRamadoraiHedgingPressureSpec {
+                    expected_future_spot_e_s1: xm[0],
+                    spot_price_volatility_sigma_s: xm[1],
+                    producer_default_prob_zm_score: xm[2],
+                    producer_inventory_endowment_q_p: xm[3],
+                    producer_distress_aversion_gamma_p: xm[4],
+                    speculator_capital_risk_aversion_gamma_s: xm[5],
+                    speculator_wealth_constraint_tightness_w: xm[6],
+                    risk_free_rate_r: xm[7],
+                },
+            );
+            let fd = (rp.equilibrium_futures_price - rm.equilibrium_futures_price) / (2.0 * h);
+            assert!(rad.equilibrium_futures_price.d[i].abs() > 1e-9);
+            assert!((rad.equilibrium_futures_price.d[i] - fd).abs() < 1e-5);
+        }
+    }
+}

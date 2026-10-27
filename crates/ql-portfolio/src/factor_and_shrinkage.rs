@@ -4117,3 +4117,158 @@ mod ledoit_wolf_nonlinear_eigenvalue_shrinkage_tests {
         }
     }
 }
+
+/// Input specification for the Kelly, Pruitt & Su (2019, *Journal of Financial
+/// Economics* 134(3), "Characteristics Are Covariances: A Unified Model of Risk
+/// and Return") Instrumented Principal Components Analysis (IPCA) Dynamic Latent
+/// Beta & Anomaly Alpha engine.
+#[derive(Debug, Clone, Copy)]
+pub struct KellyPruittSuInstrumentedPcaDynamicBetaSpec<T: Real> {
+    /// Standardized book-to-market value characteristic $z_{i,t,1}$.
+    pub characteristic_value_z1: T,
+    /// Standardized momentum characteristic $z_{i,t,2}$.
+    pub characteristic_momentum_z2: T,
+    /// Standardized operating profitability/investment characteristic $z_{i,t,3}$.
+    pub characteristic_investment_z3: T,
+    /// IPCA mapping matrix loading on value $\Gamma_{\beta,1} > 0$.
+    pub gamma_beta_loading_1: T,
+    /// IPCA mapping matrix loading on momentum $\Gamma_{\beta,2} > 0$.
+    pub gamma_beta_loading_2: T,
+    /// Unrestricted IPCA anomaly intercept parameter $\Gamma_\alpha$.
+    pub gamma_alpha_anomaly_intercept: T,
+    /// Latent IPCA factor expected/realized return $f_{t+1} > 0$.
+    pub latent_factor_realized_return_f: T,
+    /// Cross-sectional idiosyncratic residual variance $\sigma_{e,i}^2 > 0$.
+    pub cross_sectional_idiosyncratic_var_sigma2: T,
+}
+
+/// Analytics returned by [`evaluate_kelly_pruitt_su_instrumented_pca_dynamic_beta`].
+#[derive(Debug, Clone, Copy)]
+pub struct KellyPruittSuInstrumentedPcaDynamicBetaAnalytics<T: Real> {
+    /// Dynamic characteristic-instrumented factor loading $\beta_{i,t}^{\text{IPCA}} = z_{i,t}'\Gamma_\beta$.
+    pub instrumented_dynamic_factor_beta: T,
+    /// Restricted IPCA ($\Gamma_\alpha = 0$) systematic risk compensation $\mu_{i,t}^{\text{sys}}$.
+    pub systematic_ipca_risk_compensation: T,
+    /// Unrestricted IPCA characteristic anomaly alpha $\alpha_{i,t}^{\text{IPCA}} = z_{i,t}'\Gamma_\alpha$.
+    pub characteristic_anomaly_intercept_alpha: T,
+    /// Precision-weighted total IPCA expected return $\hat{r}_{i,t+1}^{\text{IPCA}}$.
+    pub ipca_precision_weighted_expected_return: T,
+}
+
+/// Evaluates the Kelly, Pruitt & Su (2019, *JFE* 134(3)) Instrumented Principal
+/// Components Analysis (IPCA) model $r_{i,t+1} = z_{i,t}'\Gamma_\alpha + (z_{i,t}'\Gamma_\beta)f_{t+1} + \varepsilon_{i,t+1}$.
+pub fn evaluate_kelly_pruitt_su_instrumented_pca_dynamic_beta<T: Real>(
+    spec: &KellyPruittSuInstrumentedPcaDynamicBetaSpec<T>,
+) -> KellyPruittSuInstrumentedPcaDynamicBetaAnalytics<T> {
+    let one = T::one();
+    let half = T::from_f64(0.5);
+
+    let z1 = spec.characteristic_value_z1;
+    let z2 = spec.characteristic_momentum_z2;
+    let z3 = spec.characteristic_investment_z3;
+    let gb1 = spec.gamma_beta_loading_1;
+    let gb2 = spec.gamma_beta_loading_2;
+    let ga = spec.gamma_alpha_anomaly_intercept;
+    let f_ret = spec.latent_factor_realized_return_f;
+    let sig2 = spec
+        .cross_sectional_idiosyncratic_var_sigma2
+        .max_val(T::from_f64(1e-5));
+
+    let beta_ipca = gb1 * z1 + gb2 * z2 + half * (gb1 + gb2) * z3;
+    let mu_sys = beta_ipca * f_ret;
+    let alpha_ipca = ga * (z1 + z2 - half * z3);
+    let r_hat = mu_sys + alpha_ipca / (one + sig2);
+
+    KellyPruittSuInstrumentedPcaDynamicBetaAnalytics {
+        instrumented_dynamic_factor_beta: beta_ipca,
+        systematic_ipca_risk_compensation: mu_sys,
+        characteristic_anomaly_intercept_alpha: alpha_ipca,
+        ipca_precision_weighted_expected_return: r_hat,
+    }
+}
+
+#[cfg(test)]
+mod kelly_pruitt_su_instrumented_pca_tests {
+    use super::*;
+    use ql_ad::Dual;
+
+    #[test]
+    fn kelly_pruitt_su_instrumented_pca_invariants_and_ad_parity() {
+        let base = KellyPruittSuInstrumentedPcaDynamicBetaSpec {
+            characteristic_value_z1: 0.65_f64,
+            characteristic_momentum_z2: 0.80_f64,
+            characteristic_investment_z3: 0.40_f64,
+            gamma_beta_loading_1: 0.55_f64,
+            gamma_beta_loading_2: 0.72_f64,
+            gamma_alpha_anomaly_intercept: 0.015_f64,
+            latent_factor_realized_return_f: 0.068_f64,
+            cross_sectional_idiosyncratic_var_sigma2: 0.042_f64,
+        };
+        let r0 = evaluate_kelly_pruitt_su_instrumented_pca_dynamic_beta(&base);
+        assert!(r0.instrumented_dynamic_factor_beta > 0.0);
+        assert!(r0.ipca_precision_weighted_expected_return > r0.systematic_ipca_risk_compensation);
+
+        let x0 = [
+            base.characteristic_value_z1,
+            base.characteristic_momentum_z2,
+            base.characteristic_investment_z3,
+            base.gamma_beta_loading_1,
+            base.gamma_beta_loading_2,
+            base.gamma_alpha_anomaly_intercept,
+            base.latent_factor_realized_return_f,
+            base.cross_sectional_idiosyncratic_var_sigma2,
+        ];
+        let mut xd = [Dual::<8>::from_f64(0.0); 8];
+        for i in 0..8 {
+            xd[i] = Dual::variable(x0[i], i);
+        }
+        let rad = evaluate_kelly_pruitt_su_instrumented_pca_dynamic_beta(
+            &KellyPruittSuInstrumentedPcaDynamicBetaSpec {
+                characteristic_value_z1: xd[0],
+                characteristic_momentum_z2: xd[1],
+                characteristic_investment_z3: xd[2],
+                gamma_beta_loading_1: xd[3],
+                gamma_beta_loading_2: xd[4],
+                gamma_alpha_anomaly_intercept: xd[5],
+                latent_factor_realized_return_f: xd[6],
+                cross_sectional_idiosyncratic_var_sigma2: xd[7],
+            },
+        );
+        let h = 1e-6;
+        for i in 0..8 {
+            let mut xp = x0;
+            let mut xm = x0;
+            xp[i] += h;
+            xm[i] -= h;
+            let rp = evaluate_kelly_pruitt_su_instrumented_pca_dynamic_beta(
+                &KellyPruittSuInstrumentedPcaDynamicBetaSpec {
+                    characteristic_value_z1: xp[0],
+                    characteristic_momentum_z2: xp[1],
+                    characteristic_investment_z3: xp[2],
+                    gamma_beta_loading_1: xp[3],
+                    gamma_beta_loading_2: xp[4],
+                    gamma_alpha_anomaly_intercept: xp[5],
+                    latent_factor_realized_return_f: xp[6],
+                    cross_sectional_idiosyncratic_var_sigma2: xp[7],
+                },
+            );
+            let rm = evaluate_kelly_pruitt_su_instrumented_pca_dynamic_beta(
+                &KellyPruittSuInstrumentedPcaDynamicBetaSpec {
+                    characteristic_value_z1: xm[0],
+                    characteristic_momentum_z2: xm[1],
+                    characteristic_investment_z3: xm[2],
+                    gamma_beta_loading_1: xm[3],
+                    gamma_beta_loading_2: xm[4],
+                    gamma_alpha_anomaly_intercept: xm[5],
+                    latent_factor_realized_return_f: xm[6],
+                    cross_sectional_idiosyncratic_var_sigma2: xm[7],
+                },
+            );
+            let fd = (rp.ipca_precision_weighted_expected_return
+                - rm.ipca_precision_weighted_expected_return)
+                / (2.0 * h);
+            assert!(rad.ipca_precision_weighted_expected_return.d[i].abs() > 1e-9);
+            assert!((rad.ipca_precision_weighted_expected_return.d[i] - fd).abs() < 1e-6);
+        }
+    }
+}
