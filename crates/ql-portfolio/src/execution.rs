@@ -4579,7 +4579,7 @@ mod gueant_lehalle_tapia_mm_mod {
 
     /// Evaluates the Guéant, Lehalle & Fernandez-Tapia (2012, Proposition 1–2) &
     /// Avellaneda & Stoikov (2008) optimal bid and ask half-spreads:
-    /// $$\delta^b(q) = \frac{1}{\kappa}\ln\!\left(1 + \frac{\kappa}{\gamma}\right) + \frac{2q + 1}{2}\gamma\sigma^2\tau_{\text{eff}}, \qquad \delta^a(q) = \frac{1}{\kappa}\ln\!\left(1 + \frac{\kappa}{\gamma}\right) - \frac{2q - 1}{2}\gamma\sigma^2\tau_{\text{eff}},$$
+    /// $$\delta^b(q) = \frac{1}{\gamma}\ln\!\left(1 + \frac{\gamma}{\kappa}\right) + \frac{2q + 1}{2}\gamma\sigma^2\tau_{\text{eff}}, \qquad \delta^a(q) = \frac{1}{\gamma}\ln\!\left(1 + \frac{\gamma}{\kappa}\right) - \frac{2q - 1}{2}\gamma\sigma^2\tau_{\text{eff}},$$
     /// where $\tau_{\text{eff}} = \frac{\tau}{1 + \eta_{\text{GLFT}}\tau}$ with $\eta_{\text{GLFT}} = \sqrt{A\gamma\sigma^2 / \kappa}$ incorporates the GLFT asymptotic horizon saturation scale.
     pub fn evaluate_gueant_lehalle_tapia_inventory_market_making_quotes<T: Real>(
         spec: &GueantLehalleTapiaMarketMakingSpec<T>,
@@ -4592,7 +4592,7 @@ mod gueant_lehalle_tapia_mm_mod {
         let tau = spec.remaining_horizon_tau;
         let half = T::from_f64(0.5);
 
-        let base_markup = (T::one() + kappa / gamma).ln() / kappa;
+        let base_markup = (T::one() + gamma / kappa).ln() / gamma;
 
         // GLFT asymptotic characteristic relaxation rate c_glft = sqrt(0.5 * gamma * sigma^2 * A * kappa * (1 + gamma/kappa)^{-(1 + kappa/gamma)})
         let eta_glft = (a_int * gamma * sig * sig / kappa).sqrt();
